@@ -86,6 +86,21 @@ func TestFindSh_ReturnsNonEmptyOnError(t *testing.T) {
 	if !strings.Contains(strings.ToLower(path), "sh.exe") && !strings.Contains(strings.ToLower(path), "bash.exe") {
 		t.Fatalf("expected shell path to contain sh.exe or bash.exe, got: %s", path)
 	}
+	if isWSLShell(path) {
+		t.Fatalf("findSh returned a WSL shell: %s", path)
+	}
+}
+
+func TestInboundMCPUnixShellCandidateRejectsSystem32Bash(t *testing.T) {
+	if unixShellCandidate(`C:\Windows\System32\bash.exe`) {
+		t.Fatal("System32 bash.exe must not count as Git Bash")
+	}
+	if unixShellCandidate(`C:\WINDOWS\system32\bash.exe`) {
+		t.Fatal("System32 bash.exe must not count as Git Bash")
+	}
+	if unixShellCandidate(`C:\Users\testuser\AppData\Local\Microsoft\WindowsApps\bash.exe`) {
+		t.Fatal("WindowsApps bash.exe must not count as Git Bash")
+	}
 }
 
 func TestVCRedistRegistryPathAndInstaller(t *testing.T) {

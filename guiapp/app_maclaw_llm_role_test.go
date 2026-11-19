@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -497,6 +499,357 @@ func TestResolveMaclawLLMRolePinRejectsUnknownProvider(t *testing.T) {
 	})
 	if _, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground); err == nil {
 		t.Fatal("expected a pin referencing a missing provider to fail")
+	}
+}
+
+func TestResolveMaclawLLMRoleAssistantSwitchWinsOverCachedBotRole(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "WorkBuddy",
+		HubRoleModels: corelib.MaclawLLMHubRoleModels{
+			Foreground: "auto", Background: "auto", ComputerUse: "auto",
+		},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "wb", Name: "WorkBuddy", URL: "https://copilot.example/v2", Key: "wb-key", Model: "hy4flash-free", Protocol: "openai", SupportsVision: true, VisionModels: []string{"hy4flash-free"}},
+			{ID: "zp", Name: "智谱编程", URL: "https://open.bigmodel.cn/api/anthropic", Key: "zp-key", Model: "glm-5.3-flash", Protocol: "anthropic", VisionModels: []string{"glm-5.3-flash"}},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "wb", Model: "hy4flash-free"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground:  DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+			Background:  DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+			ComputerUse: DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+			Grounder:    DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+		},
+	})
+	for _, role := range []string{maclawLLMRoleForeground, maclawLLMRoleBackground, maclawLLMRoleComputerUse} {
+		got, err := app.ResolveMaclawLLMRole(role)
+		if err != nil || got.Model != "hy4flash-free" || got.ProviderName != "WorkBuddy" || got.URL != "https://copilot.example/v2" {
+			t.Fatalf("%s = %+v err=%v", role, got, err)
+		}
+	}
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Foreground.Model != "hy4flash-free" || state.Foreground.ProviderName != "WorkBuddy" {
+		t.Fatalf("status foreground = %+v", state.Foreground)
+	}
+	if state.Background.Model != "hy4flash-free" || state.Background.ProviderName != "WorkBuddy" {
+		t.Fatalf("status background = %+v", state.Background)
+	}
+}
+
+func TestResolveMaclawLLMRoleOfficialAutoKeepsCachedBotRole(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "MaClaw官方",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto", Background: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "qwen", Name: "Qwen", URL: "https://dashscope.example/v1", Key: "sk-qwen", Model: "qwen-max", Protocol: "openai"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground: DesktopBotLLMRole{Name: "Qwen", Model: "qwen-turbo"},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil || fg.Model != "qwen-turbo" || fg.ProviderName != "Qwen" {
+		t.Fatalf("foreground = %+v err=%v", fg, err)
+	}
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Foreground.Model != "qwen-turbo" || state.Foreground.ProviderName != "Qwen" {
+		t.Fatalf("status foreground = %+v", state.Foreground)
+	}
+}
+
+func TestResolveMaclawLLMRoleBotChoiceUsesLoadedProviders(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "MaClaw官方",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground: DesktopBotLLMRole{Name: "Qwen", Model: "qwen-turbo"},
+		},
+	})
+	loaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.MaclawLLMProviders = append(loaded.MaclawLLMProviders, corelib.MaclawLLMProvider{
+		ID: "qwen", Name: "Qwen", URL: "https://dashscope.example/v1", Key: "sk-qwen", Model: "qwen-max", Protocol: "openai",
+	})
+	state := app.maclawLLMProvidersFromConfig(&loaded)
+	fg, err := app.resolveLoopRole(maclawLLMRoleForeground, loaded, state.Providers, state.Current)
+	if err != nil || fg.Model != "qwen-turbo" || fg.ProviderName != "Qwen" || fg.ProviderID != "qwen" {
+		t.Fatalf("foreground = %+v err=%v", fg, err)
+	}
+}
+
+func TestResolveMaclawLLMRoleBotChoiceStaysOnCallerSnapshot(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "MaClaw官方",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "zp", Name: "智谱编程", URL: "https://open.bigmodel.cn/api/anthropic", Key: "zp-key", Model: "glm-5.3-flash", Protocol: "anthropic"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground: DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+		},
+	})
+	loaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground: DesktopBotLLMRole{Name: "Qwen", Model: "qwen-turbo"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DesktopBotLLMAccounts == nil {
+		t.Fatal("disk bot choice missing")
+	}
+	// LoadConfig shares the account map with the stored config. Replace the
+	// map and the provider slice so the caller snapshot cannot alias disk.
+	accounts := make(map[string]corelib.DesktopBotLLMAccount, len(loaded.DesktopBotLLMAccounts))
+	for id, account := range loaded.DesktopBotLLMAccounts {
+		accounts[id] = account
+	}
+	account := accounts["alice"]
+	account.ChoiceJSON = string(raw)
+	accounts["alice"] = account
+	loaded.DesktopBotLLMAccounts = accounts
+	providers := append([]corelib.MaclawLLMProvider{}, loaded.MaclawLLMProviders...)
+	loaded.MaclawLLMProviders = append(providers, corelib.MaclawLLMProvider{
+		ID: "qwen", Name: "Qwen", URL: "https://dashscope.example/v1", Key: "sk-qwen", Model: "qwen-max", Protocol: "openai",
+	})
+	state := app.maclawLLMProvidersFromConfig(&loaded)
+	app.botLLMCacheMu.Lock()
+	app.botLLMChoice = nil
+	app.botLLMCacheMu.Unlock()
+	fg, err := app.resolveLoopRole(maclawLLMRoleForeground, loaded, state.Providers, state.Current)
+	if err != nil || fg.Model != "qwen-turbo" || fg.ProviderName != "Qwen" || fg.ProviderID != "qwen" {
+		t.Fatalf("foreground = %+v err=%v, want the caller snapshot rather than the disk bot role", fg, err)
+	}
+	disk, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored DesktopBotLLM
+	if err := json.Unmarshal([]byte(disk.DesktopBotLLMAccounts["alice"].ChoiceJSON), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Roles == nil || stored.Roles.Foreground.Model != "glm-5.3-flash" {
+		t.Fatalf("cold read published the caller snapshot: %+v", stored.Roles)
+	}
+	app.botLLMCacheMu.Lock()
+	app.botLLMChoice = nil
+	app.botLLMCacheMu.Unlock()
+	state = app.maclawLLMProvidersFromConfig(&disk)
+	fg, err = app.resolveLoopRole(maclawLLMRoleForeground, disk, state.Providers, state.Current)
+	if err != nil || fg.Model != "glm-5.3-flash" || fg.ProviderName != "智谱编程" {
+		t.Fatalf("disk role after the read = %+v err=%v", fg, err)
+	}
+}
+
+func TestGrounderSummaryUsesBotChoiceOnCallerSnapshot(t *testing.T) {
+	inherit := false
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "MaClaw官方",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "local", Name: "Local", URL: "https://local.example/v1", Key: "key", Model: "stale-ground", Protocol: "openai"},
+			{ID: "zp", Name: "智谱编程", URL: "https://open.bigmodel.cn/api/anthropic", Key: "zp-key", Model: "glm-5.3-flash", Protocol: "anthropic"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+			Grounder:  corelib.MaclawLLMRoleAssignment{InheritHub: &inherit, ProviderID: "local", Model: "stale-ground"},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Grounder: DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+		},
+	})
+	got, err := app.ResolveMaclawLLMGrounder()
+	if err != nil || got.Model != "glm-5.3-flash" || got.ProviderName != "智谱编程" || !got.SupportsVision {
+		t.Fatalf("grounder = %+v err=%v", got, err)
+	}
+	panel, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panel.Grounder.Model != got.Model || panel.Grounder.ProviderName != got.ProviderName || !panel.Grounder.Configured {
+		t.Fatalf("summary = %+v, want the bot grounder", panel.Grounder)
+	}
+
+	app.botLLMCacheMu.Lock()
+	app.botLLMChoice = nil
+	app.botLLMCacheMu.Unlock()
+	loaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Grounder: DesktopBotLLMRole{Name: "Qwen", Model: "qwen-vl"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := make(map[string]corelib.DesktopBotLLMAccount, len(loaded.DesktopBotLLMAccounts))
+	for id, account := range loaded.DesktopBotLLMAccounts {
+		accounts[id] = account
+	}
+	account := accounts["alice"]
+	account.ChoiceJSON = string(raw)
+	accounts["alice"] = account
+	loaded.DesktopBotLLMAccounts = accounts
+	providers := append([]corelib.MaclawLLMProvider{}, loaded.MaclawLLMProviders...)
+	loaded.MaclawLLMProviders = append(providers, corelib.MaclawLLMProvider{
+		ID: "qwen", Name: "Qwen", URL: "https://dashscope.example/v1", Key: "sk-qwen", Model: "qwen-max", Protocol: "openai",
+	})
+	snap := app.maclawLLMProvidersFromConfig(&loaded)
+	app.botLLMCacheMu.Lock()
+	app.botLLMChoice = nil
+	app.botLLMCacheMu.Unlock()
+	snapGot, err := app.resolveGrounderRole(loaded, snap.Providers, snap.Current)
+	if err != nil || snapGot.Model != "qwen-vl" || snapGot.ProviderName != "Qwen" || snapGot.ProviderID != "qwen" {
+		t.Fatalf("snapshot grounder = %+v err=%v", snapGot, err)
+	}
+	disk, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored DesktopBotLLM
+	if err := json.Unmarshal([]byte(disk.DesktopBotLLMAccounts["alice"].ChoiceJSON), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Roles == nil || stored.Roles.Grounder.Model != "glm-5.3-flash" {
+		t.Fatalf("cold read published the caller snapshot: %+v", stored.Roles)
+	}
+}
+
+func TestGrounderBotChoiceWithoutRoleLeavesLocalPinUnused(t *testing.T) {
+	inherit := false
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "local", Name: "Local", URL: "https://local.example/v1", Key: "key", Model: "stale-ground", Protocol: "openai"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "stale-ground"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+			Grounder:  corelib.MaclawLLMRoleAssignment{InheritHub: &inherit, ProviderID: "local", Model: "stale-ground"},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground: DesktopBotLLMRole{Name: "Local", Model: "stale-ground"},
+		},
+	})
+	_, err := app.ResolveMaclawLLMGrounder()
+	if !errors.Is(err, errGrounderNotConfigured) {
+		t.Fatalf("grounder err = %v, want not configured", err)
+	}
+	panel, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panel.Grounder.Configured || panel.Grounder.Model != "" {
+		t.Fatalf("summary fell back to the local pin: %+v", panel.Grounder)
+	}
+}
+
+func TestResolveMaclawLLMRoleTextOnlyAssistantLeavesComputerUseOnBot(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "Local",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{ComputerUse: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "local", Name: "Local", URL: "https://local.example/v1", Key: "key", Model: "text-model", Protocol: "openai"},
+			{ID: "zp", Name: "智谱编程", URL: "https://open.bigmodel.cn/api/anthropic", Key: "zp-key", Model: "glm-5.3-flash", Protocol: "anthropic", VisionModels: []string{"glm-5.3-flash"}},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "text-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "custom", Choice: "custom", Stored: true,
+		Roles: &DesktopBotLLMRoles{
+			Foreground:  DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+			Background:  DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+			ComputerUse: DesktopBotLLMRole{Name: "智谱编程", Model: "glm-5.3-flash"},
+		},
+	})
+	fg, err := app.ResolveMaclawLLMRole(maclawLLMRoleForeground)
+	if err != nil || fg.Model != "text-model" || fg.ProviderName != "Local" {
+		t.Fatalf("foreground = %+v err=%v", fg, err)
+	}
+	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
+	if err != nil || bg.Model != "text-model" || bg.ProviderName != "Local" {
+		t.Fatalf("background = %+v err=%v", bg, err)
+	}
+	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+	if err != nil || cu.Model != "glm-5.3-flash" || cu.ProviderName != "智谱编程" || !cu.SupportsVision {
+		t.Fatalf("computer_use = %+v err=%v", cu, err)
 	}
 }
 

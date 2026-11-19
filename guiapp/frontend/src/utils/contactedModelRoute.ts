@@ -27,9 +27,10 @@ export function contactedProfileForExecution(
 ): ContactedProfileSummary | null {
     if (!summaries) return null;
     if (activeProfile === "coding") return summaries.coding ?? null;
-    // Desktop chat calls ResolveMaclawLLMRole("foreground"). That resolution
-    // follows a third-party assistant assignment. It still replaces the
-    // assistant profile when the official Hub band or a local pin differs.
+    // Interactive chat calls ResolveMaclawLLMRole("foreground"). A chat task
+    // calls background. A third-party assistant owns both, so this foreground
+    // summary is also the task model. Official auto can still name a different
+    // Hub or bot band than the assistant profile.
     if (contactedProfileProviderName(summaries.foreground) || contactedProfileModel(summaries.foreground)) {
         return summaries.foreground ?? null;
     }

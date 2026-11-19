@@ -1,0 +1,116 @@
+.chat-session-locator {
+    position: absolute;
+    z-index: 28;
+    top: 8px;
+    right: 16px;
+    bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-end;
+    width: max-content;
+    max-width: min(300px, calc(100% - 32px));
+    pointer-events: none;
+}
+
+.chat-session-locator-list {
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    max-height: min(240px, 100%);
+    overflow: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+}
+
+.chat-session-locator-list:focus {
+    outline: none;
+}
+
+.chat-session-locator-list:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--csl-tick) 80%, transparent);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+.chat-session-locator.is-open {
+    width: max-content;
+    max-width: min(288px, calc(100% - 32px));
+}
+
+.chat-session-locator.is-open .chat-session-locator-list {
+    box-sizing: border-box;
+    min-width: 0;
+    max-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    /* Scrollbar on the left, so it does not sit on the tick column. */
+    direction: rtl;
+    padding: 4px;
+    background: var(--csl-bg);
+    border: 1px solid var(--csl-border);
+    border-radius: 10px;
+    box-shadow: var(--csl-shadow);
+}
+
+.chat-session-locator-turn {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0;
+    width: auto;
+    margin: 0;
+    padding: 3px 2px;
+    border: none;
+    background: transparent;
+    color: var(--csl-text);
+    font: inherit;
+    font-size: 12px;
+    line-height: 0;
+    text-align: right;
+    cursor: pointer;
+}
+
+.chat-session-locator.is-open .chat-session-locator-turn {
+    direction: ltr;
+    gap: 8px;
+    padding: 4px 6px;
+    line-height: 18px;
+}
+
+.chat-session-locator.is-open .chat-session-locator-turn:hover {
+    background: var(--csl-hover);
+    border-radius: 6px;
+}
+
+.chat-session-locator-label {
+    min-width: 0;
+    max-width: 0;
+    max-height: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: right;
+    opacity: 0;
+}
+
+.chat-session-locator.is-open .chat-session-locator-label {
+    flex: 0 1 auto;
+    max-width: 240px;
+    max-height: none;
+    opacity: 1;
+}
+
+.chat-session-locator-tick {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--csl-tick);
+}
+
+.chat-session-locator-turn:hover .chat-session-locator-tick {
+    background: var(--csl-text);
+}

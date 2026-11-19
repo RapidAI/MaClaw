@@ -409,8 +409,12 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			if saveErr != nil {
 				return
 			}
-			sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
-			output, execErr = executeScriptWithContext(scriptCtx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv, request.MinimalEnv)
+			if backgroundTaskRenews(scriptCtx) {
+				sendProgress(formatCraftRenewingExecutionProgress(request.Language, attempt, attempts, request.Timeout))
+			} else {
+				sendProgress(formatCraftExecutionProgress(request.Language, attempt, attempts, request.Timeout))
+			}
+			output, execErr = executeScriptWithContext(withScriptProgressCallback(scriptCtx, sendProgress), scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv, request.MinimalEnv)
 		}()
 		if scanErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Script: script, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: scanErr.Error()}
@@ -454,6 +458,17 @@ func formatCraftExecutionProgress(language string, attempt, attempts, timeout in
 		return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次，最长等待 %ds）...", language, attempt, attempts, timeout)
 	}
 	return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次）...", language, attempt, attempts)
+}
+
+func formatCraftRenewingExecutionProgress(language string, attempt, attempts, timeout int) string {
+	return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次，有状态则续期，连续 %ds 无进展则停止）...", language, attempt, attempts, craftRenewQuietSeconds(timeout))
+}
+
+func craftRenewQuietSeconds(timeout int) int {
+	if timeout <= 0 {
+		return craftToolMaxTimeout
+	}
+	return timeout
 }
 
 // bindCraftWorkingDir runs the script in the same directory bash and office
@@ -1081,6 +1096,9 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 	if _, timedOut := attempt.ExecErr.(*craftScriptTimeoutError); timedOut {
 		return false
 	}
+	if _, stalled := attempt.ExecErr.(*craftScriptStallError); stalled {
+		return false
+	}
 	if attempt.VerificationStatus == craftVerificationRuntimeMissing {
 		return false
 	}
@@ -1278,6 +1296,9 @@ func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) 
 	// partial traceback; that does not mean the file is missing or that
 	// another immediate run will finish.
 	if _, timedOut := attempt.ExecErr.(*craftScriptTimeoutError); timedOut {
+		return craftFailureCategoryUnknown, ""
+	}
+	if _, stalled := attempt.ExecErr.(*craftScriptStallError); stalled {
 		return craftFailureCategoryUnknown, ""
 	}
 
@@ -1749,6 +1770,9 @@ func executeScript(scriptPath, language, workingDir string, timeout int, runtime
 }
 
 func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability, extraEnv map[string]string, minimalEnv bool) (string, error) {
+	if backgroundTaskRenews(parent) {
+		return executeScriptRenewing(parent, scriptPath, language, workingDir, timeout, runtimes, extraEnv, minimalEnv)
+	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
@@ -1756,6 +1780,70 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 	if err != nil {
 		return "", err
 	}
+	prepareCraftCommand(cmd, workingDir, extraEnv, minimalEnv)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	hideCommandWindow(cmd)
+	runErr := cmd.Run()
+	output := craftCombinedOutput(&stdout, &stderr)
+	if runErr != nil {
+		if scriptDeadlineExpired(parent, ctx, timeout) {
+			return output, &craftScriptTimeoutError{seconds: timeout, err: runErr}
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return output, fmt.Errorf("调用方时限已到，脚本已停止: %w", runErr)
+		}
+		return output, runErr
+	}
+	return output, nil
+}
+
+// executeScriptRenewing runs a background-task script until it exits, the
+// caller cancels, or a full quiet window passes with no output and no
+// process-tree CPU. The script timer is that window, not a total cap.
+func executeScriptRenewing(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability, extraEnv map[string]string, minimalEnv bool) (string, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	quiet := craftRenewQuietSeconds(timeout)
+	// Nil context: exec.Command, not CommandContext. The waiter owns Start,
+	// Wait, and the tree kill. CommandContext(nil) panics, and a Background
+	// context would still start a watcher beside the waiter.
+	cmd, err := buildCraftExecCommand(nil, scriptPath, language, runtimes)
+	if err != nil {
+		return "", err
+	}
+	prepareCraftCommand(cmd, workingDir, extraEnv, minimalEnv)
+	clock := &coretool.ProgressClock{}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = clock.Writer(coretool.CaptureLimitWriter(&stdout, 0))
+	cmd.Stderr = clock.Writer(coretool.CaptureLimitWriter(&stderr, 0))
+	hideCommandWindow(cmd)
+	coretool.PrepareCommandForTreeKill(cmd)
+	if err := parent.Err(); err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	runErr := coretool.WaitCommandRenewing(parent, cmd, backgroundRenewOptions(time.Duration(quiet)*time.Second, clock, scriptProgressFromContext(parent)))
+	output := craftCombinedOutput(&stdout, &stderr)
+	if runErr == nil {
+		return output, nil
+	}
+	var stall *coretool.CommandStallError
+	if errors.As(runErr, &stall) {
+		log.Printf("[background-task] stall quiet=%s", stall.Quiet.Round(time.Second))
+		return output, &craftScriptStallError{quiet: stall.Quiet, err: runErr}
+	}
+	if errors.Is(parent.Err(), context.DeadlineExceeded) {
+		return output, fmt.Errorf("调用方时限已到，脚本已停止: %w", runErr)
+	}
+	return output, runErr
+}
+
+func prepareCraftCommand(cmd *exec.Cmd, workingDir string, extraEnv map[string]string, minimalEnv bool) {
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
 	} else {
@@ -1770,33 +1858,21 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 		baseEnv = craftMinimalCommandEnv(baseEnv, workingDir)
 	}
 	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(baseEnv), map[string]interface{}{"extra_env": extraEnv})
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	hideCommandWindow(cmd)
-	runErr := cmd.Run()
+}
 
+func craftCombinedOutput(stdout, stderr *bytes.Buffer) string {
 	var b strings.Builder
-	if stdout.Len() > 0 {
+	if stdout != nil && stdout.Len() > 0 {
 		b.WriteString(stdout.String())
 	}
-	if stderr.Len() > 0 {
+	if stderr != nil && stderr.Len() > 0 {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
 		b.WriteString("[stderr] ")
 		b.WriteString(stderr.String())
 	}
-	if runErr != nil {
-		if scriptDeadlineExpired(parent, ctx, timeout) {
-			return b.String(), &craftScriptTimeoutError{seconds: timeout, err: runErr}
-		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return b.String(), fmt.Errorf("调用方时限已到，脚本已停止: %w", runErr)
-		}
-		return b.String(), runErr
-	}
-	return b.String(), nil
+	return b.String()
 }
 
 // scriptDeadlineExpired reports that the script's own timer stopped the
@@ -1832,6 +1908,32 @@ func (e *craftScriptTimeoutError) Error() string {
 }
 
 func (e *craftScriptTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+// craftScriptStallError is a background-task script that stopped reporting.
+// A later status report would have reset the stall window. It is not the
+// foreground script deadline and it is not a caller cancel.
+type craftScriptStallError struct {
+	quiet time.Duration
+	err   error
+}
+
+func (e *craftScriptStallError) Error() string {
+	if e == nil || e.quiet <= 0 {
+		return "脚本已卡住（没有新的输出或进程活动），进程已停止。持续报告状态可以续期。"
+	}
+	secs := int(e.quiet.Round(time.Second) / time.Second)
+	if secs <= 0 {
+		secs = 1
+	}
+	return fmt.Sprintf("脚本已卡住（连续 %ds 没有新的输出或进程活动），进程已停止。持续报告状态可以续期。", secs)
+}
+
+func (e *craftScriptStallError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
@@ -1896,26 +1998,36 @@ func buildCraftExecCommand(ctx context.Context, scriptPath, language string, run
 		}
 		// Use the absolute path from runtimes (resolved via cmd /c where on
 		// Windows) to ensure Python is found regardless of which shell is active.
-		return exec.CommandContext(ctx, runtimes.Python, scriptPath), nil
+		return craftExecCommand(ctx, runtimes.Python, scriptPath), nil
 	case craftLanguageNode:
 		if runtimes.Node == "" {
 			return nil, fmt.Errorf("node runtime not found")
 		}
-		return exec.CommandContext(ctx, runtimes.Node, scriptPath), nil
+		return craftExecCommand(ctx, runtimes.Node, scriptPath), nil
 	case craftLanguagePowerShell:
 		if runtimes.PowerShell == "" {
 			return nil, fmt.Errorf("powershell runtime not found")
 		}
-		return exec.CommandContext(ctx, runtimes.PowerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath), nil
+		return craftExecCommand(ctx, runtimes.PowerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath), nil
 	default:
 		if runtimes.Bash != "" {
-			return exec.CommandContext(ctx, runtimes.Bash, scriptPath), nil
+			return craftExecCommand(ctx, runtimes.Bash, scriptPath), nil
 		}
 		if runtimes.PowerShell != "" {
-			return exec.CommandContext(ctx, runtimes.PowerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath), nil
+			return craftExecCommand(ctx, runtimes.PowerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath), nil
 		}
 		return nil, fmt.Errorf("no shell runtime found")
 	}
+}
+
+// craftExecCommand installs a context watcher only for a real deadline.
+// The renewal path passes a nil context and gets exec.Command. CommandContext
+// rejects nil, and a Background context would still watch the process.
+func craftExecCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if ctx == nil {
+		return exec.Command(name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
 }
 
 // detectScriptLanguage guesses the best script language based on the task

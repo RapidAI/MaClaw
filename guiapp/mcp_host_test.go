@@ -2030,8 +2030,8 @@ func TestInboundMCPTaskDetailRoundAndEndReason(t *testing.T) {
 		t.Fatalf("finished %+v", finished)
 	}
 	published := app.mcpPublishTaskView(finished)
-	if published.Provider != "Pinned" || published.Model != "pin-model" || published.EndReason != mcpStatusFailed {
-		t.Fatalf("published finish %+v", published)
+	if published.Provider != "" || published.Model != "" || published.EndReason != mcpStatusFailed {
+		t.Fatalf("finished empty pair stays empty %+v", published)
 	}
 
 	peekApp := &App{}
@@ -2044,8 +2044,16 @@ func TestInboundMCPTaskDetailRoundAndEndReason(t *testing.T) {
 		t.Fatalf("record wins %+v", kept)
 	}
 	filled := peekApp.mcpPublishTaskView(mcpTaskView{ProjectPath: "other", Status: mcpStatusIdle})
-	if filled.Provider != "Peek" || filled.Model != "peek-m" {
-		t.Fatalf("peek fill %+v", filled)
+	if filled.Provider != "" || filled.Model != "" {
+		t.Fatalf("idle query must not use today's config %+v", filled)
+	}
+	finishedEmpty := peekApp.mcpPublishTaskView(mcpTaskView{ProjectPath: "done", Status: mcpStatusCompleted})
+	if finishedEmpty.Provider != "" || finishedEmpty.Model != "" {
+		t.Fatalf("finished empty stays empty %+v", finishedEmpty)
+	}
+	historical := peekApp.mcpPublishTaskView(mcpTaskView{ProjectPath: "old", Status: mcpStatusCompleted, Provider: "Old", Model: "old-m"})
+	if historical.Provider != "Old" || historical.Model != "old-m" {
+		t.Fatalf("finished pair stays %+v", historical)
 	}
 }
 
@@ -3396,7 +3404,7 @@ func TestInboundMCPStopDropsUncommittedInstall(t *testing.T) {
 		Status:      mcpStatusRunning,
 		RequestID:   "mcp-next",
 		Round:       2,
-	}, token, false)
+	}, token, false, mcpCallOpts{})
 	if err == nil || !strings.Contains(err.Error(), "还在运行") {
 		t.Fatalf("commit after stop: %v", err)
 	}
@@ -3421,7 +3429,7 @@ func TestInboundMCPStopDropsUncommittedInstall(t *testing.T) {
 		ProjectPath: "c",
 		Status:      mcpStatusRunning,
 		RequestID:   "mcp-c2",
-	}, createToken, true)
+	}, createToken, true, mcpCallOpts{})
 	if err == nil || !strings.Contains(err.Error(), "还在运行") {
 		t.Fatalf("create commit after stop: %v", err)
 	}
@@ -3440,7 +3448,7 @@ func TestInboundMCPStopDropsUncommittedInstall(t *testing.T) {
 		ProjectPath: "fresh",
 		Status:      mcpStatusRunning,
 		RequestID:   "mcp-fresh",
-	}, fresh, true)
+	}, fresh, true, mcpCallOpts{})
 	if err == nil || !strings.Contains(err.Error(), "还在运行") {
 		t.Fatalf("unstored commit after stop: %v", err)
 	}

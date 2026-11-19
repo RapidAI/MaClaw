@@ -1377,6 +1377,188 @@ func TestDeleteTaskClearsRemoteTaskState(t *testing.T) {
 	}
 }
 
+func TestDeleteTaskReleasesDirectoryLockBeforeCleanup(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.CreateRemoteCodingTask("lock", "10.0.0.14", "deploy", "/srv/app", 22)
+	if first.ProjectPath == "" {
+		t.Fatal("create failed")
+	}
+	if msg := app.CreateProjectTabSession("delete-lock", first.ProjectPath); msg == "" {
+		t.Fatal("session was not created")
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		free()
+		deleteTaskDurableStarted = nil
+	})
+	deleteTaskDurableStarted = func() {
+		close(started)
+		<-release
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.DeleteTask(first.ProjectPath)
+	}()
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		free()
+		t.Fatal("durable cleanup did not start")
+	}
+
+	createCh := make(chan string, 1)
+	go func() {
+		createCh <- app.CreateProjectTabSession("during-delete", first.ProjectPath)
+	}()
+	select {
+	case msg := <-createCh:
+		if msg != "" {
+			free()
+			t.Fatalf("create during delete returned %q", msg)
+		}
+	case <-time.After(3 * time.Second):
+		free()
+		t.Fatal("CreateProjectTabSession blocked while delete cleanup was in progress")
+	}
+
+	locked := make(chan struct{})
+	go func() {
+		app.tabWorkingDirMu.Lock()
+		app.tabWorkingDirMu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		free()
+		t.Fatal("tabWorkingDirMu still held during durable cleanup")
+	}
+
+	app.SaveProjectTabConversation("delete-lock", []interface{}{
+		map[string]string{"role": "user", "content": "late flush"},
+	})
+
+	free()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("DeleteTask: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("DeleteTask did not return after cleanup was released")
+	}
+
+	if rec := app.memoryStore.ProjectIndex().Get(first.ProjectPath); rec != nil {
+		t.Fatalf("deleted task still indexed: %+v", rec)
+	}
+	if session, err := app.ensureProjectTabSessionPersist().LoadSession("delete-lock"); err != nil {
+		t.Fatal(err)
+	} else if session != nil {
+		t.Fatalf("session survived delete: %+v", session)
+	}
+	if session, err := app.ensureProjectTabSessionPersist().LoadSession("during-delete"); err != nil {
+		t.Fatal(err)
+	} else if session != nil {
+		t.Fatalf("create during delete wrote a session: %+v", session)
+	}
+	if _, err := os.Stat(first.ProjectPath); !os.IsNotExist(err) {
+		t.Fatalf("task directory still exists, err=%v", err)
+	}
+}
+
+func TestDeleteTaskRejectsExpertTabFlushUntilReturn(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	rec := app.CreateExpertTask("code-reviewer", "Code Reviewer")
+	if rec.ProjectPath == "" {
+		t.Fatal("CreateExpertTask failed")
+	}
+	tabID := expertTabSessionID("code-reviewer")
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        tabID,
+		Conversation: []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed expert tab session: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		free()
+		deleteTaskBeforeExpertTabRelease = nil
+	})
+	type flushResult struct {
+		exists   bool
+		deleting bool
+		err      error
+	}
+	flushed := make(chan flushResult, 1)
+	deleteTaskBeforeExpertTabRelease = func() {
+		app.SaveProjectTabConversation(tabID, []interface{}{
+			map[string]string{"role": "user", "content": "resurrected"},
+		})
+		session, err := persist.LoadSession(tabID)
+		flushed <- flushResult{session != nil, app.projectTabDeleting(tabID), err}
+		close(started)
+		<-release
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- app.DeleteTask(rec.ProjectPath)
+	}()
+	var got flushResult
+	select {
+	case got = <-flushed:
+	case <-time.After(15 * time.Second):
+		free()
+		t.Fatal("expert tab release hook did not run")
+	}
+	if got.err != nil {
+		free()
+		t.Fatal(got.err)
+	}
+	if !got.deleting {
+		free()
+		t.Fatal("expert tab tombstone was already cleared")
+	}
+	if got.exists {
+		free()
+		t.Fatal("flush during delete recreated the expert session")
+	}
+
+	free()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("DeleteTask: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("DeleteTask did not return")
+	}
+	if app.projectTabDeleting(tabID) {
+		t.Fatal("expert tab tombstone survived DeleteTask")
+	}
+	app.SaveProjectTabConversation(tabID, []interface{}{
+		map[string]string{"role": "user", "content": "fresh"},
+	})
+	session, err := persist.LoadSession(tabID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session == nil || !sessionSnapshotHasUserTurn(session.Conversation) {
+		t.Fatalf("expert tab could not be saved after delete returned: %+v", session)
+	}
+}
+
 func TestDeleteTaskClearsExpertSessionState(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	rec := app.CreateExpertTask("code-reviewer", "Code Reviewer")

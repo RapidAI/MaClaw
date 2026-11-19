@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -411,9 +413,15 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 		}
 	}
 	for _, item := range snap.Configs {
+		if item.Key == ProblemReportAgentAPIKey || item.Key == ProblemReportAgentAPIKeyAt {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO sm_admin_config (key, value) VALUES (?, ?)`, item.Key, item.Value); err != nil {
 			return fmt.Errorf("insert sm_admin_config: %w", err)
 		}
+	}
+	if err := applyProblemReportAgentAPIKey(ctx, tx, snap.Configs); err != nil {
+		return err
 	}
 	for _, item := range snap.Tiers {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_uploader_tiers (user_id, tier, published_count, avg_rating, total_downloads, updated_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -526,15 +534,24 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at, public_download_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET reporter_user_id=excluded.reporter_user_id, reporter_contact=excluded.reporter_contact, os_version=excluded.os_version, gui_version=excluded.gui_version, description=excluded.description, status=excluded.status, admin_note=excluded.admin_note, origin_url=excluded.origin_url, archived_at=excluded.archived_at, created_at=excluded.created_at, updated_at=excluded.updated_at, public_download_token=CASE WHEN excluded.public_download_token != '' THEN excluded.public_download_token ELSE sm_problem_reports.public_download_token END
-			WHERE excluded.updated_at > sm_problem_reports.updated_at OR (excluded.updated_at = sm_problem_reports.updated_at AND excluded.origin_url > sm_problem_reports.origin_url)`, item.ID, canonicalSnapshotUserID(userIDAliases, item.ReporterUserID), item.ReporterContact, item.OSVersion, item.GUIVersion, item.Description, item.Status, item.AdminNote, string(paths), item.OriginURL, fmtTime(item.ArchivedAt), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt), item.PublicDownloadToken); err != nil {
-			return fmt.Errorf("insert sm_problem_reports: %w", err)
+		var localUpdated, localOrigin string
+		readErr := tx.QueryRowContext(ctx, `SELECT updated_at, origin_url FROM sm_problem_reports WHERE id = ?`, item.ID).Scan(&localUpdated, &localOrigin)
+		if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+			return fmt.Errorf("read problem report revision: %w", readErr)
+		}
+		// RFC3339Nano drops a zero fraction, and "10Z" sorts after "10.5Z" as
+		// text. Compare the instants so a same-second repair is not rolled
+		// back by the snapshot of the report it just handled.
+		if readErr != nil || problemReportRevisionWins(item.UpdatedAt, item.OriginURL, localUpdated, localOrigin) {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at, public_download_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET reporter_user_id=excluded.reporter_user_id, reporter_contact=excluded.reporter_contact, os_version=excluded.os_version, gui_version=excluded.gui_version, description=excluded.description, status=excluded.status, admin_note=excluded.admin_note, origin_url=excluded.origin_url, archived_at=excluded.archived_at, created_at=excluded.created_at, updated_at=excluded.updated_at, public_download_token=CASE WHEN excluded.public_download_token != '' THEN excluded.public_download_token ELSE sm_problem_reports.public_download_token END`, item.ID, canonicalSnapshotUserID(userIDAliases, item.ReporterUserID), item.ReporterContact, item.OSVersion, item.GUIVersion, item.Description, item.Status, item.AdminNote, string(paths), item.OriginURL, fmtTime(item.ArchivedAt), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt), item.PublicDownloadToken); err != nil {
+				return fmt.Errorf("insert sm_problem_reports: %w", err)
+			}
 		}
 		// The download token is a capability, not a new revision. Backfill does
-		// not move updated_at, so the freshness guard above skips a peer that
-		// already stored the row. Filling only an empty token keeps a newer
-		// status on this node and still publishes the link.
+		// not move updated_at, so a peer that already stored a newer status
+		// still receives the link. Filling only an empty token keeps that
+		// status.
 		if item.PublicDownloadToken != "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE sm_problem_reports SET public_download_token=? WHERE id=? AND public_download_token=''`, item.PublicDownloadToken, item.ID); err != nil {
 				return fmt.Errorf("fill problem report download token: %w", err)
@@ -546,11 +563,27 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 		if deletedAt.IsZero() || item.ID == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_report_tombstones (id, deleted_at) VALUES (?, ?)
-			ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at WHERE excluded.deleted_at >= sm_problem_report_tombstones.deleted_at`, item.ID, fmtTime(deletedAt)); err != nil {
-			return fmt.Errorf("insert sm_problem_report tombstone: %w", err)
+		var storedDeleted string
+		tombErr := tx.QueryRowContext(ctx, `SELECT deleted_at FROM sm_problem_report_tombstones WHERE id = ?`, item.ID).Scan(&storedDeleted)
+		if tombErr != nil && !errors.Is(tombErr, sql.ErrNoRows) {
+			return fmt.Errorf("read problem report tombstone: %w", tombErr)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sm_problem_reports WHERE id = ? AND updated_at <= ?`, item.ID, fmtTime(deletedAt)); err != nil {
+		// Same text-order trap as report revisions: keep the later instant.
+		if tombErr != nil || !parseTime(storedDeleted).After(deletedAt) {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_report_tombstones (id, deleted_at) VALUES (?, ?)
+				ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at`, item.ID, fmtTime(deletedAt)); err != nil {
+				return fmt.Errorf("insert sm_problem_report tombstone: %w", err)
+			}
+		}
+		var localUpdated string
+		err := tx.QueryRowContext(ctx, `SELECT updated_at FROM sm_problem_reports WHERE id = ?`, item.ID).Scan(&localUpdated)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && parseTime(localUpdated).After(deletedAt)) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read problem report before tombstone delete: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sm_problem_reports WHERE id = ?`, item.ID); err != nil {
 			return fmt.Errorf("delete tombstoned problem report: %w", err)
 		}
 	}
@@ -840,6 +873,82 @@ func (s *Store) dumpRatings(ctx context.Context) ([]Rating, error) {
 	return out, rows.Err()
 }
 
+// problemReportRevisionWins reports whether the incoming row should replace
+// the stored one. An equal instant keeps the row whose origin URL sorts
+// higher, matching the previous tie-break.
+func problemReportRevisionWins(incomingAt time.Time, incomingOrigin, localUpdated, localOrigin string) bool {
+	localAt := parseTime(localUpdated)
+	if incomingAt.After(localAt) {
+		return true
+	}
+	return incomingAt.Equal(localAt) && incomingOrigin > localOrigin
+}
+
+// applyProblemReportAgentAPIKey copies the repair credential only when the
+// incoming revision is at least as new as the local one. A snapshot that
+// omits the key leaves the local credential in place. A blank key is a
+// revoke when its stamp is newer, so every node stops accepting the old key.
+func applyProblemReportAgentAPIKey(ctx context.Context, tx *sql.Tx, configs []AdminConfig) error {
+	var incomingKey, incomingAt string
+	sawKey := false
+	sawAt := false
+	for _, item := range configs {
+		switch item.Key {
+		case ProblemReportAgentAPIKey:
+			incomingKey = item.Value
+			sawKey = true
+		case ProblemReportAgentAPIKeyAt:
+			incomingAt = item.Value
+			sawAt = true
+		}
+	}
+	if !sawKey {
+		return nil
+	}
+	incomingKey = strings.TrimSpace(incomingKey)
+	incomingAt = strings.TrimSpace(incomingAt)
+	var localAt string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM sm_admin_config WHERE key = ?`, ProblemReportAgentAPIKeyAt).Scan(&localAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read problem report agent api key revision: %w", err)
+	}
+	localStamp := parseTime(localAt)
+	incomingStamp := parseTime(incomingAt)
+	if incomingKey == "" {
+		// An empty value without a newer stamp is not a revoke. A snapshot
+		// that never recorded the key must not wipe one that is in use.
+		if !sawAt || incomingAt == "" || incomingStamp.IsZero() {
+			return nil
+		}
+		// The same instant still counts as a revoke. A tie must not leave the
+		// old key active when this snapshot already cleared it.
+		if !localStamp.IsZero() && incomingStamp.Before(localStamp) {
+			return nil
+		}
+	} else {
+		switch {
+		case sawAt && !localStamp.IsZero() && incomingStamp.Before(localStamp):
+			return nil
+		// Compare instants, not the text. 03:04:05Z and 03:04:05.000000000Z
+		// are the same revision. Two empty stamps are not a revision and
+		// still fall through so the key is copied.
+		case !incomingStamp.IsZero() && !localStamp.IsZero() && incomingStamp.Equal(localStamp):
+			return nil
+		case !sawAt && !localStamp.IsZero():
+			return nil
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sm_admin_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ProblemReportAgentAPIKey, incomingKey); err != nil {
+		return fmt.Errorf("insert problem report agent api key: %w", err)
+	}
+	if sawAt && incomingAt != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO sm_admin_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ProblemReportAgentAPIKeyAt, incomingAt); err != nil {
+			return fmt.Errorf("insert problem report agent api key revision: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) dumpConfigs(ctx context.Context) ([]AdminConfig, error) {
 	rows, err := s.readDB.QueryContext(ctx, `SELECT key, value FROM sm_admin_config ORDER BY key`)
 	if err != nil {
@@ -1005,7 +1114,11 @@ func (s *Store) dumpNotificationSequences(ctx context.Context) ([]NotificationSe
 	return out, rows.Err()
 }
 
-// dumpProblemReportsForSnapshot intentionally omits local attachment paths.
+// dumpProblemReportsForSnapshot is the source of the public AI fault list.
+// Status, administrator note, reporter, and the public download token
+// replicate so every node renders the same unrepaired Markdown page. The
+// agent API key rides sm_admin_config in this same snapshot. Local
+// attachment paths stay on the origin.
 func (s *Store) dumpProblemReportsForSnapshot(ctx context.Context) ([]ProblemReport, error) {
 	rows, err := s.readDB.QueryContext(ctx, `SELECT id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, origin_url, archived_at, created_at, updated_at, public_download_token FROM sm_problem_reports ORDER BY created_at, id`)
 	if err != nil {

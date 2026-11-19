@@ -171,17 +171,18 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		return nil, &mcpRPCError{Code: -32602, Message: "invalid params"}
 	}
 	name := strings.TrimSpace(call.Name)
+	ctx = mcpContextWithOpts(ctx, mcpCallOptsFromArgs(name, args))
 	switch name {
 	case "list_models":
 		catalog, err := h.api.mcpListModels(ctx)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(catalog, false), nil
 	case "create_task":
 		view, err := h.api.mcpCreateTask(ctx, mcpParseCreateArgs(args))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "get_task":
@@ -189,14 +190,14 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		runID := mcpFirstString(args, "run_id", "runId")
 		view, err := h.api.mcpGetTask(ctx, path, runID)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "stop_task", "cancel_task":
 		path := mcpFirstString(args, "project_path", "projectPath")
 		view, err := h.api.mcpStopTask(ctx, path)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "send_command":
@@ -206,13 +207,13 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		clientRequestID := mcpFirstString(args, "client_request_id", "clientRequestId")
 		view, err := h.api.mcpSendCommand(ctx, path, command, confirmationID, clientRequestID, mcpLookupBool(args, "wait"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "list_tasks":
 		tasks, err := h.api.mcpListTasks(ctx)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		if tasks == nil {
 			tasks = []mcpTaskView{}
@@ -223,14 +224,14 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		runID := mcpFirstString(args, "run_id", "runId")
 		page, err := h.api.mcpReadLog(ctx, path, runID, mcpLookupInt(args, "cursor"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(page, false), nil
 	case "list_artifacts":
 		path := mcpFirstString(args, "project_path", "projectPath")
 		list, err := h.api.mcpListArtifacts(ctx, path)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(list, false), nil
 	case "read_artifact":
@@ -238,20 +239,20 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		rel := mcpFirstString(args, "path", "file")
 		body, err := h.api.mcpReadArtifact(ctx, path, rel, mcpLookupBool(args, "download"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(body, false), nil
 	case "get_request":
 		id := mcpFirstString(args, "client_request_id", "clientRequestId")
 		state, err := h.api.mcpGetRequest(ctx, id)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(state, false), nil
 	case "get_capabilities":
 		info, err := h.api.mcpCapabilities(ctx)
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(info, false), nil
 	case "retry_steps":
@@ -260,7 +261,7 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		clientRequestID := mcpFirstString(args, "client_request_id", "clientRequestId")
 		view, err := h.api.mcpRetrySteps(ctx, path, mcpLookupStrings(args, "step_ids", "stepIds", "steps"), confirmationID, clientRequestID, mcpLookupBool(args, "wait"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(view, view.Status == mcpStatusFailed), nil
 	case "browser_test":
@@ -274,14 +275,14 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 		stepID := mcpFirstString(args, "step_id", "stepId")
 		result, err := h.api.mcpBrowserTest(ctx, path, action, pageURL, selector, text, key, expect, stepID, mcpLookupPathList(args, "paths", "files"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(result, false), nil
 	case "pack_artifacts":
 		path := mcpFirstString(args, "project_path", "projectPath")
 		packed, err := h.api.mcpPackArtifacts(ctx, path, mcpLookupPathList(args, "paths", "files"))
 		if err != nil {
-			return mcpToolError(err.Error()), nil
+			return mcpToolFail(err), nil
 		}
 		return mcpToolText(packed, false), nil
 	default:
@@ -353,7 +354,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "get_task",
-			"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、run_id、status_version、started_at、finished_at、end_reason、end_detail。run_id 是这一轮执行；传入时只返回这一轮，不传则返回当前轮。status_version 随这一轮的状态变化增加。stop 给出 class、source、reason、at 和 step_id，class 可以是 user_stop、timeout、program_error、dependency_failure、waiting_review 或 unconfirmed。主机自己的等待结束时 class 是 unconfirmed，reason 是「主机等待已结束，尚未证实为超时」，这不是已证实的执行超时。steps 列出每一步的 id、status、error、retryable，未执行的步骤还有 blocked_by 和 block_reason。等待子任务审阅时步骤和任务的 status 都是 waiting_review，不是 failed，也不是 completed。必要步骤没通过时 status 不会是 completed。child_task_id 是第一个内部任务，children 列出全部；已接受的子任务 status 是 admitted，不是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled、waiting_review 或 needs_confirmation。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。",
+			"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、run_id、current_run_id、task_id、status_version、started_at、finished_at、end_reason、end_detail。task_id 等于 project_path。current_run_id 是当前轮，传入的 run_id 是正在查看的那一轮。没有找到任务时 code 是 task_not_found。已知任务没有这一轮时 code 是 run_not_found，消息是「没有这一轮执行」，不会退回当前轮。记录过了保留期时 code 是 task_expired。working_dir 是实际工作目录，另外有 working_dir_requested、working_dir_effective、tool_root、session_path。status_version 随这一轮的状态变化增加。stop 给出 class、source、reason、at、step_id 和 deadline，class 可以是 user_stop、timeout、program_error、dependency_failure、waiting_review 或 unconfirmed。deadline 只在已证实超时时有值。主机自己的等待结束时 class 是 unconfirmed，reason 是「主机等待已结束，尚未证实为超时」，这不是已证实的执行超时。steps 列出每一步的 id、status、error、retryable，未执行的步骤还有 blocked_by 和 block_reason。等待子任务审阅时步骤和任务的 status 都是 waiting_review，不是 failed，也不是 completed。必要步骤没通过时 status 不会是 completed。正文仍是待确认计划时 status 是 needs_confirmation，不是 completed。无法识别的状态是 blocked_unknown，原始值在 status_raw。child_task_id 是第一个内部任务，children 列出全部；已接受的子任务 status 是 admitted，不是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled、waiting_review 或 needs_confirmation。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。",
 			"inputSchema": object(map[string]any{
 				"project_path": str("create_task 返回的 project_path。"),
 				"run_id":       str("只查询这一轮。省略时返回当前轮。别名 runId。"),
@@ -368,13 +369,15 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "send_command",
-			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。返回这一轮的 run_id 和 status_version。新一轮的 steps 只属于这一轮，上一轮用 get_task 的 run_id 查询。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。返回已接受不代表执行完成。wait 默认 false。",
+			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。返回这一轮的 run_id 和 status_version。新一轮的 steps 只属于这一轮，上一轮用 get_task 的 run_id 查询。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。返回已接受不代表执行完成。wait 默认 false。可选 expected_status_version：与当前 status_version 不一致时 code 是 status_version_conflict，消息是「状态版本已经变化，这次没有执行」，不启动、不改状态，也不占用 client_request_id。可选 dry_run：只预检版本和同一工作目录上的其他任务，有未提交改动时注明「既有改动、来源未证实」，不启动执行。用户停止之后仍可以显式发送；自动恢复不会进行。",
 			"inputSchema": object(map[string]any{
-				"project_path":      str("任务的 project_path。"),
-				"command":           str("要发回的原文。别名 text、prompt、message。"),
-				"confirmation_id":   str("get_task 返回的 confirmation_id。决定类命令必填。"),
-				"client_request_id": str("调用方自己的唯一请求编号。超时后用 get_request 查询。"),
-				"wait":              map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
+				"project_path":            str("任务的 project_path。"),
+				"command":                 str("要发回的原文。别名 text、prompt、message。"),
+				"confirmation_id":         str("get_task 返回的 confirmation_id。决定类命令必填。"),
+				"client_request_id":       str("调用方自己的唯一请求编号。超时后用 get_request 查询。"),
+				"wait":                    map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
+				"expected_status_version": map[string]any{"type": "integer", "description": "调用方看到的 status_version。省略时不比较。0 也是一个版本，只要字段出现就会比较。别名 expectedStatusVersion。"},
+				"dry_run":                 map[string]any{"type": "boolean", "description": "为 true 时只预检，不启动。别名 dryRun。"},
 			}, []string{"project_path", "command"}),
 		},
 		{
@@ -384,7 +387,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "read_log",
-			"description": "按游标读取任务进展、工具调用和错误。cursor 传上一次的 next_cursor，第一次传 0。不传 run_id 时序号跨轮次继续增加。传入 run_id 时只返回这一轮，并带上 run_id 和 status_version。如果中间丢过记录，gap 为 true。不会返回整段拼接文本。密钥会打码。",
+			"description": "按游标读取任务进展、工具调用和错误。cursor 传上一次的 next_cursor，第一次传 0。不传 run_id 时序号跨轮次继续增加。传入 run_id 时只返回这一轮，并带上 run_id 和 status_version。如果中间丢过记录，gap 为 true。没有事件时 events 为空数组，empty 为 true，next_cursor 保持这次传入的 cursor。没有找到任务时 code 是 task_not_found。已知任务没有这一轮时 code 是 run_not_found，消息是「没有这一轮执行」，不会退回当前轮。记录过了保留期时 code 是 task_expired。不会返回整段拼接文本。密钥会打码。",
 			"inputSchema": object(map[string]any{
 				"project_path": str("任务的 project_path。"),
 				"run_id":       str("只读取这一轮。省略时跨轮次继续。别名 runId。"),
@@ -393,41 +396,48 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "list_artifacts",
-			"description": "列出任务工作目录里的文件，包含相对路径、大小和 sha256。不能超出这个目录，密钥文件和链接不会列出。远程编程任务的目录在 SSH 主机上，不从本机列出。单文件或本次列出的哈希总量超过 32MiB 时 hash_skipped 为 true。",
+			"description": "列出任务工作目录里的文件，包含相对路径、大小和 sha256。不能超出这个目录，密钥文件和链接不会列出。点目录和点文件默认不列出，include_hidden 为 true 时列出。node_modules、.git、dist、vendor 始终跳过。exclude_dirs 再排除额外目录名。cursor 是上一页最后一个相对路径，省略时从头开始。limit 最大 200。结果带 scope，截断时 truncated_reason 是 page_limit，next_cursor 是本页最后一条路径。远程编程任务的目录在 SSH 主机上，不从本机列出。单文件或本次列出的哈希总量超过 32MiB 时 hash_skipped 为 true。",
 			"inputSchema": object(map[string]any{
-				"project_path": str("任务的 project_path。"),
+				"project_path":   str("任务的 project_path。"),
+				"cursor":         str("上一页最后一条相对路径。省略时从头开始。数字也会按路径文本比较。"),
+				"limit":          map[string]any{"type": "integer", "description": "本页最多多少个文件。默认且最大 200。"},
+				"include_hidden": map[string]any{"type": "boolean", "description": "为 true 时列出点目录和点文件。别名 includeHidden。"},
+				"exclude_dirs":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "额外排除的目录名。别名 excludeDirs。"},
 			}, []string{"project_path"}),
 		},
 		{
 			"name":        "read_artifact",
-			"description": "读取任务工作目录里的一个文件。文本返回 utf-8，最大 1MiB。download 为 true 时返回 base64，最大 16MiB，适合截图和测试报告。路径必须留在工作目录内。链接、密钥文件和 Windows 设备名会拒绝。远程编程任务的目录在 SSH 主机上，不从本机读取。",
+			"description": "读取任务工作目录里的一个文件。文本返回 utf-8，最大 1MiB。download 为 true 时返回 base64，最大 16MiB，适合截图和测试报告。路径必须留在工作目录内。链接、密钥文件和 Windows 设备名会拒绝。可选 expected_sha256：与当时内容不一致时 code 是 artifact_stale，消息是「文件内容和期望的哈希不一致」，不返回内容。成功时 snapshot 为 true，表示这是读取当时的内容。远程编程任务的目录在 SSH 主机上，不从本机读取。",
 			"inputSchema": object(map[string]any{
-				"project_path": str("任务的 project_path。"),
-				"path":         str("相对工作目录的文件路径。"),
-				"download":     map[string]any{"type": "boolean", "description": "为 true 时用 base64 返回内容。"},
+				"project_path":    str("任务的 project_path。"),
+				"path":            str("相对工作目录的文件路径。"),
+				"download":        map[string]any{"type": "boolean", "description": "为 true 时用 base64 返回内容。"},
+				"expected_sha256": str("期望的 sha256。可以带 sha256: 前缀。别名 expectedSha256。不一致时不返回内容。"),
 			}, []string{"project_path", "path"}),
 		},
 		{
 			"name":        "get_request",
-			"description": "按调用方传入的 client_request_id 查询创建、发指令或定向续跑是否已经受理。超时后先查这个，再决定要不要重试。pending 表示还在处理。受理后如果调用失败，error 是当时的原因，同一个编号不会再执行一次。受理前失败时编号可以重试。",
+			"description": "按调用方传入的 client_request_id 查询创建、发指令或定向续跑是否已经受理。超时后先查这个，再决定要不要重试。state 始终存在：not_found、expired_or_unknown、accepted、running、failed、completed。没见过的编号是 not_found。保留期外或已经被挤掉的编号是 expired_or_unknown，accepted 为 false。pending 表示还在处理。payload_hash 是请求正文的 sha256，scope 给出 task_id 和 action。受理后如果调用失败，error 是当时的原因，同一个编号不会再执行一次。同一个编号配了另一份正文时 code 是 request_payload_conflict。受理前失败时编号可以重试。wait 为 false 且任务仍在运行时，state 不会是 completed。",
 			"inputSchema": object(map[string]any{
 				"client_request_id": str("create_task、send_command 或 retry_steps 传入的请求编号。"),
 			}, []string{"client_request_id"}),
 		},
 		{
 			"name":        "get_capabilities",
-			"description": "返回接口版本、支持的功能、当前模型是否已配置，以及浏览器测试的具体调用方式。browser_methods 列出 open、observe、click、key、screenshot、assert 的工具名、动作和参数。电脑使用关闭时 available 为 false。不拨测网络，也没有任意 Shell。",
+			"description": "返回接口版本、支持的功能、当前模型是否已配置，以及浏览器测试的具体调用方式。schema_version 是 mcp-task-v2。server_build 是这个进程的版本，commit 可能为空字符串。persistence 说明轮次会落盘，保留 7 天。current_model.configured 只表示当前配置里有没有模型，probe_ok 固定为 null，不把已配置当成拨测成功。feature_flags 列出持久轮次、版本比较、dry_run、制品分页和期望哈希。browser_methods 列出 open、observe、click、key、screenshot、assert 的工具名、动作和参数。电脑使用关闭时 available 为 false。不拨测网络，也没有任意 Shell。",
 			"inputSchema": object(map[string]any{}, nil),
 		},
 		{
 			"name":        "retry_steps",
-			"description": "按步骤编号重试失败或未完成的步骤。已通过的步骤保留结果，不会重跑整份任务。step_ids 接受 T5、5 或「步骤 5」。任务还在运行时会拒绝。当前有确认编号时必须带上这次的 confirmation_id，编号不匹配不会消耗它。可以带 client_request_id，受理前同一个编号可以再试。",
+			"description": "按步骤编号重试失败或未完成的步骤。已通过的步骤保留结果，不会重跑整份任务。step_ids 接受 T5、5 或「步骤 5」。任务还在运行时会拒绝。当前有确认编号时必须带上这次的 confirmation_id，编号不匹配不会消耗它。可以带 client_request_id，受理前同一个编号可以再试。可选 expected_status_version：不一致时 code 是 status_version_conflict，不启动，也不占用 client_request_id。可选 dry_run：只预检，不要求编码检查点，也不启动。",
 			"inputSchema": object(map[string]any{
-				"project_path":      str("任务的 project_path。"),
-				"step_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "要重试的步骤编号。也可以传一条用逗号分隔的字符串。"},
-				"confirmation_id":   str("当前 get_task 返回的 confirmation_id。有确认时必填。"),
-				"client_request_id": str("调用方自己的唯一请求编号。超时后用 get_request 查询。"),
-				"wait":              map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
+				"project_path":            str("任务的 project_path。"),
+				"step_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "要重试的步骤编号。也可以传一条用逗号分隔的字符串。"},
+				"confirmation_id":         str("当前 get_task 返回的 confirmation_id。有确认时必填。"),
+				"client_request_id":       str("调用方自己的唯一请求编号。超时后用 get_request 查询。"),
+				"wait":                    map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
+				"expected_status_version": map[string]any{"type": "integer", "description": "调用方看到的 status_version。省略时不比较。别名 expectedStatusVersion。"},
+				"dry_run":                 map[string]any{"type": "boolean", "description": "为 true 时只预检，不启动。别名 dryRun。"},
 			}, []string{"project_path", "step_ids"}),
 		},
 		{
@@ -447,10 +457,11 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "pack_artifacts",
-			"description": "把任务工作目录里选定的文件打成一个 zip。返回每个文件的路径、大小、sha256，以及压缩包的 sha256。内容用 base64，最大 16MiB。目录、链接、密钥和越界路径不会打进包，列在 omitted 里。远程编程任务的目录在 SSH 主机上，不从本机打包。",
+			"description": "把任务工作目录里选定的文件打成一个 zip。返回每个文件的路径、大小、sha256，以及压缩包的 sha256。内容用 base64，最大 16MiB。成功时 snapshot 为 true。可选 expected_sha256：与压缩包不一致时 code 是 artifact_stale，不返回压缩包内容。目录、链接、密钥和越界路径不会打进包，列在 omitted 里。远程编程任务的目录在 SSH 主机上，不从本机打包。",
 			"inputSchema": object(map[string]any{
-				"project_path": str("任务的 project_path。"),
-				"paths":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "相对工作目录的文件路径。也可以传一条用逗号分隔的字符串。"},
+				"project_path":    str("任务的 project_path。"),
+				"paths":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "相对工作目录的文件路径。也可以传一条用逗号分隔的字符串。"},
+				"expected_sha256": str("期望的压缩包 sha256。可以带 sha256: 前缀。别名 expectedSha256。不一致时不返回内容。"),
 			}, []string{"project_path", "paths"}),
 		},
 	}
@@ -674,6 +685,106 @@ func mcpLookupBool(args map[string]any, key string) bool {
 	default:
 		return false
 	}
+}
+
+// mcpLookupOptionalInt reports whether the key was present. A present 0 is
+// a real version, not a missing argument. A value that is not an integer
+// stays present and compares as -1, so it cannot match a live version.
+func mcpLookupOptionalInt(args map[string]any, keys ...string) (int, bool) {
+	if args == nil {
+		return 0, false
+	}
+	for _, key := range keys {
+		value, ok := args[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			if typed != float64(int(typed)) {
+				return -1, true
+			}
+			return int(typed), true
+		case int:
+			return typed, true
+		case string:
+			n, err := strconv.Atoi(strings.TrimSpace(typed))
+			if err != nil {
+				return -1, true
+			}
+			return n, true
+		default:
+			return -1, true
+		}
+	}
+	return 0, false
+}
+
+func mcpLookupOptionalString(args map[string]any, keys ...string) (string, bool) {
+	if args == nil {
+		return "", false
+	}
+	for _, key := range keys {
+		value, ok := args[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			return strings.TrimSpace(typed), true
+		case float64:
+			return strconv.FormatFloat(typed, 'f', -1, 64), true
+		case int:
+			return strconv.Itoa(typed), true
+		default:
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// mcpLookupArtifactCursor reads a path cursor. A numeric cursor is the path
+// text, and only list_artifacts uses it. read_log keeps the integer cursor.
+func mcpLookupArtifactCursor(args map[string]any) string {
+	text, ok := mcpLookupOptionalString(args, "cursor", "artifact_cursor", "artifactCursor")
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func mcpLookupBoolKeys(args map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if mcpLookupBool(args, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func mcpCallOptsFromArgs(name string, args map[string]any) mcpCallOpts {
+	opts := mcpCallOpts{}
+	if n, ok := mcpLookupOptionalInt(args, "expected_status_version", "expectedStatusVersion"); ok {
+		opts.HasExpected = true
+		opts.ExpectedVersion = n
+	}
+	opts.DryRun = mcpLookupBoolKeys(args, "dry_run", "dryRun")
+	switch name {
+	case "list_artifacts":
+		opts.ArtifactCursor = mcpLookupArtifactCursor(args)
+		if n, ok := mcpLookupOptionalInt(args, "limit"); ok {
+			opts.HasLimit = true
+			opts.Limit = n
+		}
+		opts.IncludeHidden = mcpLookupBoolKeys(args, "include_hidden", "includeHidden")
+		opts.ExcludeDirs = mcpLookupPathList(args, "exclude_dirs", "excludeDirs")
+	case "read_artifact", "pack_artifacts":
+		if sum, ok := mcpLookupOptionalString(args, "expected_sha256", "expectedSha256"); ok {
+			opts.HasExpectedSHA = true
+			opts.ExpectedSHA = sum
+		}
+	}
+	return opts
 }
 
 func mcpToolText(payload any, isError bool) map[string]any {

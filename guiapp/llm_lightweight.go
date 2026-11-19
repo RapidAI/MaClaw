@@ -82,8 +82,8 @@ type LLMClassifyResult struct {
 	// Text is the message body, trimmed. Classifiers keep reading this field.
 	// Reasoning is the provider reasoning channel, also trimmed. It is not
 	// copied into Text: a chain-of-thought fallback would false-match a
-	// one-word classifier. Callers that need it, such as desktop-bot
-	// understanding, read it themselves.
+	// one-word classifier. Document callers use structuredClassifyTexts,
+	// which tries the body and then the reasoning channel.
 	Text      string
 	Reasoning string
 
@@ -212,8 +212,8 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		outputTokens = resp.Usage.CompletionTokens
 	}
 
-	log.Printf("[%s] result_len=%d input=%d output=%d latency=%.1fs",
-		req.Tag, len([]rune(text)), inputTokens, outputTokens, latency.Seconds())
+	log.Printf("[%s] result_len=%d reasoning_len=%d input=%d output=%d latency=%.1fs",
+		req.Tag, len([]rune(text)), len([]rune(reasoning)), inputTokens, outputTokens, latency.Seconds())
 
 	return &LLMClassifyResult{
 		Text:         text,
@@ -238,6 +238,35 @@ func readingLLMConfig(cfg corelib.MaclawLLMConfig, maxOut int) corelib.MaclawLLM
 		cfg.MaxOutputTokens = maxOut
 	}
 	return cfg
+}
+
+// structuredClassifyTexts lists the strings a document parser should try.
+// The body comes first. A thinking model often leaves it empty and puts the
+// object in the reasoning channel, sometimes only inside a think block.
+// One-word classifiers must keep reading Text so a thought that mentions
+// their label cannot pass.
+func structuredClassifyTexts(result *LLMClassifyResult) []string {
+	if result == nil {
+		return nil
+	}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(result.Text)
+	add(result.Reasoning)
+	add(llm.AnswerFromReasoningOnly(result.Text))
+	add(llm.AnswerFromReasoningOnly(result.Reasoning))
+	return out
 }
 
 // truncateForLogGUI truncates a string for log output (GUI package version).

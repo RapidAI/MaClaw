@@ -112,6 +112,13 @@ describe("codingStepStatusColor", () => {
         expect(codingStepStatusColor("failed", chrome)).toBe(chrome.stepFailedFg);
         expect(codingStepStatusColor("running", chrome)).toBe(chrome.accentStrong);
         expect(codingStepStatusColor("pending", chrome)).toBe(chrome.muted);
+        const review = codingStepStatusColor("waiting_review", chrome);
+        const confirm = codingStepStatusColor("needs_confirmation", chrome);
+        const retry = codingStepStatusColor("retry_wait", chrome);
+        expect(review).not.toBe(chrome.muted);
+        expect(confirm).not.toBe(chrome.muted);
+        expect(retry).not.toBe(chrome.muted);
+        expect(new Set([review, confirm, retry]).size).toBe(3);
     });
 
     it("accepts every spelling of a step state", () => {
@@ -142,9 +149,13 @@ describe("codingStepStatusLabel", () => {
         expect(codingStepStatusLabel("zh-Hans", "verify_failed")).toBe("失败");
         expect(codingStepStatusLabel("zh-Hans", "pending")).toBe("待确认");
         expect(codingStepStatusLabel("zh-Hans", "waiting_review")).toBe("等待审阅");
+        expect(codingStepStatusLabel("zh-Hans", "needs_confirmation")).toBe("需要确认");
+        expect(codingStepStatusLabel("zh-Hans", "retry_wait")).toBe("等待重试");
         expect(codingStepStatusLabel("zh-Hans", "interrupted")).toBe("已中断");
         expect(codingStepStatusLabel("en", "interrupted")).toBe("Interrupted");
         expect(codingStepStatusLabel("en", "waiting_review")).toBe("Waiting for review");
+        expect(codingStepStatusLabel("en", "needs_confirmation")).toBe("Needs confirmation");
+        expect(codingStepStatusLabel("en", "retry_wait")).toBe("Waiting to retry");
         expect(codingStepStatusLabel("en", "completed")).toBe("Completed");
     });
 });

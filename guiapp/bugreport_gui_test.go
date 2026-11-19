@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestSubmitGUIBugReportZipAddsScreenshotAndDescriptionOnly(t *testing.T) {
@@ -310,14 +312,20 @@ func pngHeaderOnly(width, height int) []byte {
 func TestMaybeClearDiagnosticsForNewDayOncePerLocalDay(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
-	t.Cleanup(closeLogSinks)
+	corelib.SetLogDetailEnabled(false)
+	t.Cleanup(func() {
+		closeLogSinks()
+		app.closePetRearingDBLocked()
+		corelib.SetLogDetailEnabled(false)
+	})
 	base := app.getMaclawBaseDir()
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Daily clear must not rewrite diagnostic switches. Writing the file
-	// directly avoids LoadConfig, which opens pet-rearing.db and then fails
-	// TempDir cleanup on Windows.
+	// An older clear-only stamp must not suppress the switch reset.
+	if err := os.WriteFile(filepath.Join(base, "diagnostics-day.txt"), []byte("2026-11-19\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(base, "config.json")
 	configBody := []byte("{\"bug_report_enabled\":false,\"llm_trajectory_logging\":false,\"log_detail_enabled\":false}\n")
 	if err := os.WriteFile(configPath, configBody, 0o644); err != nil {
@@ -333,26 +341,118 @@ func TestMaybeClearDiagnosticsForNewDayOncePerLocalDay(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, "logs")); err != nil {
 		t.Fatal(err)
 	}
+	// The gate starts off. Today's log must still contain the head
+	// restatement and the line that records the switches are on.
+	logBody, err := os.ReadFile(filepath.Join(base, "logs", "maclaw.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBody), "[heads] diagnostics-cleared") {
+		t.Fatalf("daily reset dropped the head status from the fresh log:\n%s", logBody)
+	}
+	if !strings.Contains(string(logBody), "daily reset: log detail and LLM trajectory on") {
+		t.Fatalf("daily reset did not record the enabled switches:\n%s", logBody)
+	}
 	stamp, err := os.ReadFile(filepath.Join(base, "diagnostics-day.txt"))
-	if err != nil || strings.TrimSpace(string(stamp)) != "2026-11-19" {
+	if err != nil || strings.TrimSpace(string(stamp)) != diagnosticsDayStampText("2026-11-19") {
 		t.Fatalf("stamp = %q err=%v", stamp, err)
 	}
-	kept, err := os.ReadFile(configPath)
-	if err != nil || string(kept) != string(configBody) {
-		t.Fatalf("daily clear rewrote config: %q err=%v", kept, err)
+	opened, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opened.LogDetailEnabled || !opened.LLMTrajectoryLogging {
+		t.Fatalf("daily reset left switches off: log=%v trajectory=%v", opened.LogDetailEnabled, opened.LLMTrajectoryLogging)
+	}
+	if opened.BugReportEnabled {
+		t.Fatal("daily reset started the bug-report session")
+	}
+	if opened.BugReportPreviousTrajectory || opened.BugReportPreviousLogDetail {
+		t.Fatal("daily reset rewrote the restore point while the session was off")
+	}
+	if !corelib.IsLogDetailEnabled() {
+		t.Fatal("daily reset left the log detail gate off")
+	}
+	opened.LogDetailEnabled = false
+	opened.LLMTrajectoryLogging = false
+	if err := app.SaveConfig(opened); err != nil {
+		t.Fatal(err)
 	}
 	writeDiagnosticFile(t, base, "logs", "later.txt")
 	app.maybeClearDiagnosticsForNewDay(day.Add(2 * time.Hour))
 	if !diagnosticFileExists(base, "logs", "later.txt") {
 		t.Fatal("same-day launch cleared diagnostics again")
 	}
+	sameDay, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameDay.LogDetailEnabled || sameDay.LLMTrajectoryLogging {
+		t.Fatal("same-day launch turned the switches back on")
+	}
 	app.maybeClearDiagnosticsForNewDay(day.Add(24 * time.Hour))
 	if diagnosticFileExists(base, "logs", "later.txt") {
 		t.Fatal("next-day launch kept the previous diagnostics")
 	}
 	stamp, err = os.ReadFile(filepath.Join(base, "diagnostics-day.txt"))
-	if err != nil || strings.TrimSpace(string(stamp)) != "2026-11-20" {
+	if err != nil || strings.TrimSpace(string(stamp)) != diagnosticsDayStampText("2026-11-20") {
 		t.Fatalf("next stamp = %q err=%v", stamp, err)
+	}
+	nextDay, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nextDay.LogDetailEnabled || !nextDay.LLMTrajectoryLogging || nextDay.BugReportEnabled {
+		t.Fatalf("next day log=%v trajectory=%v bugReport=%v", nextDay.LogDetailEnabled, nextDay.LLMTrajectoryLogging, nextDay.BugReportEnabled)
+	}
+}
+
+func TestMaybeClearDiagnosticsForNewDayKeepsOpenSessionRestoreOn(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	corelib.SetLogDetailEnabled(false)
+	t.Cleanup(func() {
+		closeLogSinks()
+		app.closePetRearingDBLocked()
+		corelib.SetLogDetailEnabled(false)
+	})
+	base := app.getMaclawBaseDir()
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Session left on from yesterday, with the switches it would restore
+	// still off. Closing it after today's reset must not turn collection off.
+	body := []byte("{\"bug_report_enabled\":true,\"bug_report_previous_trajectory\":false,\"bug_report_previous_log_detail\":false,\"llm_trajectory_logging\":true,\"log_detail_enabled\":false}\n")
+	if err := os.WriteFile(filepath.Join(base, "config.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDiagnosticFile(t, base, "logs", "old.log")
+	day := time.Date(2026, 11, 19, 8, 0, 0, 0, time.Local)
+	app.maybeClearDiagnosticsForNewDay(day)
+	if diagnosticFileExists(base, "logs", "old.log") {
+		t.Fatal("open session kept the previous log")
+	}
+	opened, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opened.BugReportEnabled || !opened.LogDetailEnabled || !opened.LLMTrajectoryLogging {
+		t.Fatalf("session=%v log=%v trajectory=%v", opened.BugReportEnabled, opened.LogDetailEnabled, opened.LLMTrajectoryLogging)
+	}
+	if !opened.BugReportPreviousTrajectory || !opened.BugReportPreviousLogDetail {
+		t.Fatal("open session kept an off restore point")
+	}
+	stopped, err := app.SetBugReportEnabled(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.BugReportEnabled || !stopped.LogDetailEnabled || !stopped.LLMTrajectoryLogging {
+		t.Fatalf("close restored collection off: session=%v log=%v trajectory=%v", stopped.BugReportEnabled, stopped.LogDetailEnabled, stopped.LLMTrajectoryLogging)
+	}
+	writeDiagnosticFile(t, base, "logs", "after-close.txt")
+	app.maybeClearDiagnosticsForNewDay(day.Add(time.Hour))
+	if !diagnosticFileExists(base, "logs", "after-close.txt") {
+		t.Fatal("same-day launch cleared diagnostics after the session closed")
 	}
 }
 

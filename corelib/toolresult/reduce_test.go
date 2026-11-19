@@ -543,8 +543,66 @@ func TestStructuredPreview_BrowserCommitRefsAndHintLeadTheNavList(t *testing.T) 
 	if secretAt < 0 || payAt < 0 || pageAt < 0 || streetAt < 0 || hintAt < 0 || navAt < 0 {
 		t.Fatalf("missing part:\n%s", preview)
 	}
-	if secretAt > pageAt || payAt > pageAt || pageAt > streetAt || streetAt > hintAt || hintAt > navAt {
-		t.Fatalf("secret %d pay %d page %d street %d hint %d nav %d\n%s", secretAt, payAt, pageAt, streetAt, hintAt, navAt, preview)
+	if secretAt > hintAt || payAt > hintAt || hintAt > pageAt || pageAt > streetAt || streetAt > navAt {
+		t.Fatalf("secret %d pay %d hint %d page %d street %d nav %d\n%s", secretAt, payAt, hintAt, pageAt, streetAt, navAt, preview)
+	}
+	again := StructuredPreview("browser", preview, 1<<20)
+	if again != preview {
+		t.Fatalf("second preview moved the instruction or the nav list:\n%s", again)
+	}
+}
+
+func TestStructuredPreview_BrowserKeepsTheCommitPrefixWhenThePageIsCut(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	b.WriteString("@e1 textbox commit=secret input=password \"密码\"\n")
+	b.WriteString("@e2 button commit=pay \"确认支付\"\n")
+	b.WriteString("@e3 link \"首页\"\n")
+	b.WriteString("page_text:\n")
+	b.WriteString(strings.Repeat("甲", 2500))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("乙", 2500))
+	b.WriteString("应付总额 ¥9.98")
+	b.WriteString("\n付款前调用 browser(action=\"confirm_order\", item, shop, address, amount)。")
+	raw := b.String()
+	if len(raw) <= 4096 {
+		t.Fatalf("fixture must exceed the cut, len=%d", len(raw))
+	}
+	preview := StructuredPreview("browser", raw, 4096)
+	pageAt := strings.Index(preview, "page_text:\n")
+	secretAt := strings.Index(preview, "@e1")
+	payAt := strings.Index(preview, "@e2")
+	hintAt := strings.Index(preview, "confirm_order")
+	if pageAt < 0 || secretAt < 0 || payAt < 0 || hintAt < 0 || secretAt > pageAt || payAt > pageAt || hintAt > pageAt {
+		t.Fatalf("commit prefix or hint fell behind the page:\n%s", preview)
+	}
+	if !strings.Contains(preview, "上地十街10号") {
+		t.Fatalf("street dropped:\n%s", preview)
+	}
+	if len(preview) > 4096 {
+		t.Fatalf("preview is %d bytes", len(preview))
+	}
+	again := StructuredPreview("browser", preview, 4096)
+	if again != preview {
+		t.Fatalf("second preview of a cut page changed the instruction:\n%s", again)
+	}
+}
+
+func TestStructuredPreview_BrowserHintLeadsAPageWithoutAPayableLine(t *testing.T) {
+	raw := "probed page 登录\nrefs:\n@e1 textbox commit=secret input=password \"密码\"\n@e2 link \"首页\"\npage_text:\n" +
+		strings.Repeat("甲", 80) +
+		"\n密码或验证码框用 browser(action=\"submit_secret\", method, ref)。"
+	preview := StructuredPreview("browser", raw, 1<<20)
+	secretAt := strings.Index(preview, "@e1")
+	hintAt := strings.Index(preview, "submit_secret")
+	pageAt := strings.Index(preview, "page_text:\n")
+	navAt := strings.Index(preview, "@e2")
+	if secretAt < 0 || hintAt < 0 || pageAt < 0 || navAt < 0 || secretAt > hintAt || hintAt > pageAt || pageAt > navAt {
+		t.Fatalf("secret %d hint %d page %d nav %d\n%s", secretAt, hintAt, pageAt, navAt, preview)
+	}
+	again := StructuredPreview("browser", preview, 1<<20)
+	if again != preview {
+		t.Fatalf("second preview moved the instruction:\n%s", again)
 	}
 }
 

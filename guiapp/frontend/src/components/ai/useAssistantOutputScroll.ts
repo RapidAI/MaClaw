@@ -12,6 +12,7 @@ import {
     tryPinAssistantOutput,
     type AssistantScrollIntentEvent,
 } from "./assistantOutputScrollLogic";
+import { locatorCssEscape, userTurnScrollTop } from "./chatSessionLocatorModel";
 
 export { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX };
 
@@ -29,6 +30,17 @@ function cappedThoughtAbsorbsGrowth(container: HTMLElement | null): boolean {
     const last = container ? lastNestedScroll(container) : null;
     if (!last) return false;
     return last.scrollHeight > last.clientHeight + 1;
+}
+
+/** The direct child of the transcript host that contains the user row. */
+function transcriptAnchorElement(host: Element, node: HTMLElement): HTMLElement {
+    let current: HTMLElement = node;
+    while (current.parentElement && current.parentElement !== host && host.contains(current.parentElement)) {
+        const parent = current.parentElement;
+        if (!(parent instanceof HTMLElement)) break;
+        current = parent;
+    }
+    return current;
 }
 
 function childIndexOf(host: Element, el: Element): number {
@@ -275,6 +287,37 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         runPinnedScroll(applyScroll, cancelScheduledScroll, (id) => { scrollRafRef.current = id; }, behavior, force, userScrolledUpRef.current, settleFrames);
     }, [applyScroll, cancelScheduledScroll, commitScrolledUp, containerMetrics, suspendedRef]);
 
+    // Park the reader on a chosen user row. The follow latch must be set in
+    // the same turn: a jump that leaves the tail would otherwise be pinned
+    // back down by the next token flush. Landing already near the bottom
+    // stays unlatched so the live reply can keep following.
+    const jumpToUserTurn = useCallback((messageId: string): boolean => {
+        const container = outputContainerRef.current;
+        const id = messageId.trim();
+        if (!container || !id || outputHostHidden(container)) return false;
+        const node = container.querySelector(`[data-testid="assistant-chat-user-${locatorCssEscape(id)}"]`);
+        if (!(node instanceof HTMLElement)) return false;
+        const top = userTurnScrollTop(node.getBoundingClientRect().top, container.getBoundingClientRect().top, container.scrollTop);
+        programmaticScrollRef.current = true;
+        try {
+            container.scrollTop = top;
+        } finally {
+            programmaticScrollRef.current = false;
+        }
+        const host = anchorHost(container);
+        const anchorEl = transcriptAnchorElement(host, node);
+        anchorRef.current = {
+            el: anchorEl,
+            relTop: anchorEl.getBoundingClientRect().top - container.getBoundingClientRect().top,
+            index: childIndexOf(host, anchorEl),
+            testId: anchorEl.getAttribute("data-testid"),
+        };
+        const away = isAwayFromBottom(container);
+        userIntentRef.current = away;
+        commitScrolledUp(away);
+        return true;
+    }, [anchorHost, commitScrolledUp]);
+
     // Scroll anchoring for a parked reader, checked after every commit before
     // paint. When the transcript re-projection moves the anchor row (or swaps
     // its node), put the viewport back on it — the alternative is the jump
@@ -513,5 +556,5 @@ export function useAssistantOutputScroll({ activityKey, conversationKey = "", ha
         commitScrolledUp(true);
     }, [commitScrolledUp, scrollToTopSeq, hasConversation]);
 
-    return { clearScrolledUp, handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef };
+    return { clearScrolledUp, handleScroll, handleUserScrollIntent, jumpToUserTurn, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef };
 }

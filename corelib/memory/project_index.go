@@ -78,6 +78,21 @@ type ProjectIndex struct {
 	records   map[string]*ProjectRecord // projectPath → record
 	prefs     map[string]*TaskPref      // projectPath → user preferences (persisted)
 	prefsPath string                    // path to task_prefs.json
+	// building is set by BeginRebuild, before the caller releases the store
+	// lock, and cleared when that generation installs its map or aborts.
+	// The replacement map is built without mu so a sidebar read is not stuck
+	// behind a full rescan. Incremental edits apply to records immediately
+	// and are also queued: IndexEntry does not schedule another rebuild, so
+	// an edit that lands after the current snapshot must be replayed onto it.
+	// A newer snapshot already contains every entry still in the store, so
+	// entry replays from the previous generation are dropped. Tag edits are
+	// not stored on the entry and stay queued.
+	building   bool
+	rebuildGen uint64
+	pending    []projectIndexReplay
+	// dropped projects stay out of the index after a permanent delete, including
+	// a rebuild whose snapshot was taken before the delete landed.
+	dropped map[string]struct{}
 
 	// OnChanged is called (outside pi.mu but possibly inside Store.mu)
 	// when IndexEntry produces a meaningful change to the index — a new
@@ -125,23 +140,193 @@ var projectCategories = map[Category]bool{
 	CategoryReference:           true,
 }
 
-// Rebuild reconstructs the entire index from a snapshot of memory entries.
-// Called once on Store initialization.
-func (pi *ProjectIndex) Rebuild(entries []Entry) {
+// projectIndexReplay is one incremental edit that landed while a rebuild was
+// in flight. Replaying it after the swap is silent: IndexEntry already told
+// the UI about the live apply.
+type projectIndexReplayKind uint8
+
+const (
+	projectIndexReplayEntry projectIndexReplayKind = iota
+	projectIndexReplayTags
+)
+
+type projectIndexReplay struct {
+	kind         projectIndexReplayKind
+	entry        Entry
+	path         string
+	dropPrefixes []string
+	addTags      []string
+}
+
+// BeginRebuild marks the start of an off-lock rescan. The caller holds the
+// store write lock, so the snapshot it just copied cannot race IndexEntry.
+// A later BeginRebuild supersedes this generation; the older rescan must not
+// install its map.
+//
+// Entry replays queued for the previous generation are dropped. That snapshot
+// already contains every entry still in the store, and replaying one that was
+// deleted since then would put the project back. Tag edits never live in the
+// entry body, so those ops stay queued for the generation that installs.
+func (pi *ProjectIndex) BeginRebuild() uint64 {
+	if pi == nil {
+		return 0
+	}
 	pi.mu.Lock()
 	defer pi.mu.Unlock()
+	pi.building = true
+	pi.rebuildGen++
+	var kept []projectIndexReplay
+	for i := range pi.pending {
+		if pi.pending[i].kind != projectIndexReplayTags {
+			continue
+		}
+		if kept == nil {
+			kept = make([]projectIndexReplay, 0, len(pi.pending)-i)
+		}
+		kept = append(kept, pi.pending[i])
+	}
+	pi.pending = kept
+	return pi.rebuildGen
+}
 
-	pi.records = make(map[string]*ProjectRecord)
+// AbortRebuild drops an in-flight rescan that will not call finishRebuild.
+// A newer generation owns the queue and is left alone. Incremental edits
+// were already applied to the live map; the replay is idempotent.
+func (pi *ProjectIndex) AbortRebuild(gen uint64) {
+	if pi == nil || gen == 0 {
+		return
+	}
+	pi.mu.Lock()
+	defer pi.mu.Unlock()
+	if pi.rebuildGen != gen {
+		return
+	}
+	pi.replayPendingLocked()
+	pi.pending = nil
+	pi.building = false
+}
+
+// Rebuild reconstructs the entire index from a snapshot of memory entries.
+// Called once on Store initialization and by the synchronous rescan.
+//
+// The new map is built without pi.mu. Holding the write lock across every
+// entry stalled sidebar ListTasks and task open for as long as the rescan
+// took. Readers keep using the previous map until the swap. Edits that land
+// during the build are replayed onto the new map.
+func (pi *ProjectIndex) Rebuild(entries []Entry) {
+	if pi == nil {
+		return
+	}
+	pi.finishRebuild(pi.BeginRebuild(), entries)
+}
+
+// finishRebuild installs entries when gen is still the current rebuild.
+// The async rescan passes the generation BeginRebuild returned; a stale
+// caller returns without touching records or the pending queue.
+func (pi *ProjectIndex) finishRebuild(gen uint64, entries []Entry) {
+	if pi == nil || gen == 0 {
+		return
+	}
+	pi.mu.Lock()
+	if pi.rebuildGen != gen {
+		pi.mu.Unlock()
+		return
+	}
+	dropped := make(map[string]struct{}, len(pi.dropped))
+	for key := range pi.dropped {
+		dropped[key] = struct{}{}
+	}
+	pi.mu.Unlock()
+
+	next := make(map[string]*ProjectRecord)
+	scratch := &ProjectIndex{records: next, dropped: dropped}
 	for i := range entries {
-		_, _ = pi.indexEntryLocked(&entries[i])
+		_, _ = scratch.indexEntryLocked(&entries[i])
+	}
+
+	pi.mu.Lock()
+	defer pi.mu.Unlock()
+	if pi.rebuildGen != gen {
+		return
+	}
+	for key := range pi.dropped {
+		delete(next, key)
+	}
+	pi.records = next
+	pi.replayPendingLocked()
+	pi.pending = nil
+	pi.building = false
+}
+
+// replayPendingLocked applies queued edits onto the map the caller just
+// installed. Entries go first. IndexEntry only unions tags, so an entry that
+// still carries an old prefixed tag would put that tag back if it ran after
+// the replacement. Prefix replacement is the authority for those tags and
+// runs last; later replacements still run after earlier ones.
+func (pi *ProjectIndex) replayPendingLocked() {
+	for i := range pi.pending {
+		op := &pi.pending[i]
+		if op.kind != projectIndexReplayEntry {
+			continue
+		}
+		_, _ = pi.indexEntryLocked(&op.entry)
+	}
+	for i := range pi.pending {
+		op := &pi.pending[i]
+		if op.kind != projectIndexReplayTags {
+			continue
+		}
+		_ = pi.replacePrefixedTagsLocked(op.path, op.dropPrefixes, op.addTags)
 	}
 }
 
-// IndexEntry incrementally updates the index for a single entry.
-// Called after each Save/SaveWithContext.
-func (pi *ProjectIndex) IndexEntry(e *Entry) {
+// ForgetProject removes one project from the live index and keeps a later
+// rebuild from putting it back. Delete uses this so the sidebar drops the
+// row without waiting for the full rescan. A rebuild already in flight
+// deletes this key again at swap time.
+func (pi *ProjectIndex) ForgetProject(projectPath string) {
+	if pi == nil {
+		return
+	}
+	key := normalizeProjectPath(toForwardSlash(projectPath))
+	if key == "" {
+		return
+	}
 	pi.mu.Lock()
+	if pi.dropped == nil {
+		pi.dropped = make(map[string]struct{})
+	}
+	pi.dropped[key] = struct{}{}
+	delete(pi.records, key)
+	pi.mu.Unlock()
+}
+
+// IndexEntry incrementally updates the index for a single entry.
+// Called after each Save/SaveWithContext. Entries that cannot name a project
+// return without being queued: a user fact must not pin its body for the
+// rest of a rescan, and it must not disturb the rescan.
+func (pi *ProjectIndex) IndexEntry(e *Entry) {
+	if pi == nil || e == nil {
+		return
+	}
+	pi.mu.Lock()
+	if !entryAffectsProjectIndex(e) {
+		pi.mu.Unlock()
+		return
+	}
+	if projPath := inferProjectPath(e); projPath != "" {
+		if _, skip := pi.dropped[projPath]; skip {
+			pi.mu.Unlock()
+			return
+		}
+	}
 	changed, projPath := pi.indexEntryLocked(e)
+	if pi.building {
+		pi.pending = append(pi.pending, projectIndexReplay{
+			kind:  projectIndexReplayEntry,
+			entry: cloneProjectIndexEntry(e),
+		})
+	}
 	cb := pi.OnChanged
 	pi.mu.Unlock()
 
@@ -150,6 +335,43 @@ func (pi *ProjectIndex) IndexEntry(e *Entry) {
 	if changed && cb != nil {
 		cb(projPath)
 	}
+}
+
+// entryAffectsProjectIndex reports whether IndexEntry would read this entry
+// into a project record. Dormant, superseded, and non-project rows do not.
+func entryAffectsProjectIndex(e *Entry) bool {
+	if e == nil {
+		return false
+	}
+	if !projectCategories[e.Category] && !projectCategories[MapToCanonical(e.Category)] {
+		return false
+	}
+	if e.Status == StatusDormant || e.Status == StatusSuperseded {
+		return false
+	}
+	return inferProjectPath(e) != ""
+}
+
+// cloneProjectIndexEntry copies the fields the project index reads. Embeddings
+// and graph edges stay on the live row; the queue only has to outlive the rescan.
+func cloneProjectIndexEntry(e *Entry) Entry {
+	out := *e
+	out.Embedding = nil
+	out.RelatedIDs = nil
+	out.RelatedEdges = nil
+	out.EvidenceIDs = nil
+	out.Versions = nil
+	out.Entities = nil
+	out.ChildIDs = nil
+	out.CompactForm = ""
+	if e.Tags != nil {
+		out.Tags = append([]string(nil), e.Tags...)
+	}
+	if e.Boundary != nil {
+		boundary := *e.Boundary
+		out.Boundary = &boundary
+	}
+	return out
 }
 
 // indexEntryLocked updates the index for a single entry (caller holds mu.Lock).
@@ -169,6 +391,9 @@ func (pi *ProjectIndex) indexEntryLocked(e *Entry) (bool, string) {
 	isOutput := isRecentTaskOutputEntry(e)
 	projPath := inferProjectPath(e)
 	if projPath == "" {
+		return false, ""
+	}
+	if _, skip := pi.dropped[projPath]; skip {
 		return false, ""
 	}
 
@@ -472,10 +697,26 @@ func (pi *ProjectIndex) ReplacePrefixedTags(projectPath string, dropPrefixes []s
 	}
 	pi.mu.Lock()
 	defer pi.mu.Unlock()
+	if !pi.replacePrefixedTagsLocked(projectPath, dropPrefixes, addTags) {
+		return
+	}
+	if pi.building {
+		pi.pending = append(pi.pending, projectIndexReplay{
+			kind:         projectIndexReplayTags,
+			path:         projectPath,
+			dropPrefixes: append([]string(nil), dropPrefixes...),
+			addTags:      append([]string(nil), addTags...),
+		})
+	}
+}
+
+// replacePrefixedTagsLocked updates one record. Caller holds pi.mu.
+// False means the project is not in the live map.
+func (pi *ProjectIndex) replacePrefixedTagsLocked(projectPath string, dropPrefixes []string, addTags []string) bool {
 	key := normalizeProjectPath(toForwardSlash(projectPath))
 	rec, ok := pi.records[key]
 	if !ok || rec == nil {
-		return
+		return false
 	}
 	shouldDrop := func(tag string) bool {
 		for _, p := range dropPrefixes {
@@ -504,6 +745,7 @@ func (pi *ProjectIndex) ReplacePrefixedTags(projectPath string, dropPrefixes []s
 		kept = append(kept, tag)
 	}
 	rec.Tags = kept
+	return true
 }
 
 // --- Task preferences (rename / pin / hide) ---

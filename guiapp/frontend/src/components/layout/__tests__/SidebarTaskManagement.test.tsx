@@ -993,14 +993,27 @@ describe('SidebarTaskManagement', () => {
         expect(idleMark.closest('[data-testid="sidebar-task-row"]')?.getAttribute('data-status')).toBeNull();
     });
 
-    it('keeps task cards compact with a hairline so neighbors stay distinct', () => {
+    it('keeps task cards compact and draws a frame only on the selected card', () => {
         const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        const earlier = readFileSync(join(process.cwd(), 'src/styles/partials/100-pet-store-mc.css'), 'utf8');
         const row = css.match(/\.mc-task-pane \.sidebar-task-row \{\s*position: relative;[\s\S]*?\n\}/)?.[0] ?? '';
         expect(row).toMatch(/min-height:\s*0;/);
         expect(row).toMatch(/margin:\s*1px 4px;/);
         expect(row).toMatch(/padding:\s*3px 8px !important;/);
-        expect(row).toMatch(/border:\s*1px solid var\(--theme-border\);/);
+        expect(row).toMatch(/border:\s*1px solid transparent;/);
+        expect(row).not.toMatch(/border:[^;]*!important/);
+        expect(row).not.toMatch(/border:\s*1px solid var\(--theme-border\);/);
         expect(row).not.toMatch(/padding:\s*7px/);
+        expect(css).toMatch(/\.mc-task-pane \.sidebar-task-row\.is-active \{[^}]*border-color:\s*color-mix\(in srgb, var\(--theme-primary\) 32%, var\(--theme-border\)\);/);
+        expect(css).not.toMatch(/\.sidebar-task-row:hover:not\(\.is-active\)[^{]*\{[^}]*border-color/);
+        const officeHover = earlier.match(/\.sidebar-task-row:hover:not\(\.is-busy\):not\(\.is-active\) \{[^}]+\}/)?.[0] ?? '';
+        expect(officeHover).not.toMatch(/border-color/);
+        // A border-color here would outrank the task-pane rule if it ever
+        // gained !important. The pane rule is the only selected frame.
+        expect(earlier).toMatch(/\.sidebar-task-row\.is-active \{ background: var\(--theme-primary-soft\) !important; box-shadow: none !important; \}/);
+        expect(earlier).not.toMatch(/\.mc-task-pane \.sidebar-task-row:hover:not\(\.is-active\) \{[^}]*border-color/);
+        const taskList = readFileSync(join(process.cwd(), 'src/components/layout/SidebarTaskManagement.tsx'), 'utf8');
+        expect(taskList).not.toMatch(/boxShadow: 'inset 3px 0 0 var\(--theme-primary\), inset 0 0 0 1px/);
         // Bold CJK ellipsis clips when the title line box drops to 1.2.
         expect(css).toMatch(/\.mc-task-pane \.sidebar-task-row \.stsm-row-title \{\s*line-height: 1\.35;/);
     });
@@ -1824,8 +1837,9 @@ describe('SidebarTaskManagement', () => {
         fireEvent.doubleClick(screen.getByText('AI math foundations'));
 
         expect(resumeTask).toHaveBeenCalledTimes(1);
-        expect(screen.getByText('Restoring...')).toBeTruthy();
+        expect(screen.getByLabelText('Restoring...')).toBeTruthy();
         expect(screen.getByLabelText('Restoring task')).toBeTruthy();
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
 
         resolveOpen();
         await waitFor(() => expect(screen.queryByText('Restoring...')).toBeNull());
@@ -1866,11 +1880,29 @@ describe('SidebarTaskManagement', () => {
         fireEvent.doubleClick(screen.getByText('Build dashboard'));
 
         expect(resumeTask).toHaveBeenCalledTimes(1);
-        expect(screen.getByText('Restoring...')).toBeTruthy();
+        expect(screen.getByLabelText('Restoring...')).toBeTruthy();
         expect(screen.getByLabelText('Restoring task')).toBeTruthy();
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
+        const busyRow = screen.getByLabelText('Restoring task').closest('.sidebar-task-row') as HTMLElement;
+        expect(busyRow.classList.contains('is-busy')).toBe(true);
+        expect(busyRow.style.opacity).toBe('');
+        const dirsWhileOpening = screen.getAllByTestId('task-working-dir');
+        expect(dirsWhileOpening.every((dir) => {
+            const place = dir.querySelector('.mc-task-working-dir__place');
+            return !!dir.querySelector('.sidebar-task-progress__track')
+                && place?.getAttribute('aria-hidden') === 'true'
+                && (place.textContent || '').includes('build-dashboard');
+        })).toBe(true);
 
         resolveOpen();
         await waitFor(() => expect(screen.queryByText('Restoring...')).toBeNull());
+        const dirsAfter = screen.getAllByTestId('task-working-dir');
+        expect(dirsAfter.every((dir) => {
+            const place = dir.querySelector('.mc-task-working-dir__place');
+            return (place?.textContent || '').includes('build-dashboard')
+                && place?.getAttribute('aria-hidden') !== 'true'
+                && !dir.querySelector('.sidebar-task-progress__track');
+        })).toBe(true);
     });
 
     it('passes the clicked task row when reopening it', async () => {
@@ -1921,7 +1953,9 @@ describe('SidebarTaskManagement', () => {
         await confirmRemoveDialog();
 
         expect((await screen.findByTestId('task-remove-progress')).getAttribute('aria-label')).toBe('Removing task');
-        expect(screen.getByText('Removing task...')).toBeTruthy();
+        expect(screen.getByLabelText('Removing task...')).toBeTruthy();
+        expect(screen.getByTestId('task-working-dir').contains(screen.getByTestId('task-remove-progress'))).toBe(true);
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
         const removingMark = screen.getByTestId('task-status-mark');
         expect(removingMark.getAttribute('data-status')).toBe('running');
         expect(removingMark.getAttribute('aria-label')).toBe('Removing task...');

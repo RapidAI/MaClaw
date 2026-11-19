@@ -719,6 +719,136 @@ func TestParseExpertListJSONShapes(t *testing.T) {
 	}
 }
 
+func TestExpertProfileFromClassifyReadsReasoning(t *testing.T) {
+	object := `{"name":"审稿专家","description":"d","icon":"📝","system_prompt":"按原文审稿","suggested_tools":[],"suggested_skills":[]}`
+	got, err := expertProfileFromClassify(&LLMClassifyResult{
+		Reasoning: "<think>先列标准。\n" + object + "</think>",
+	})
+	if err != nil {
+		t.Fatalf("reasoning-only profile: %v", err)
+	}
+	if !strings.Contains(got, "审稿专家") || !strings.Contains(got, "按原文审稿") {
+		t.Fatalf("got %s", got)
+	}
+
+	body := `{"name":"正文专家","description":"d","icon":"📝","system_prompt":"用正文","suggested_tools":[],"suggested_skills":[]}`
+	got, err = expertProfileFromClassify(&LLMClassifyResult{Text: body, Reasoning: object})
+	if err != nil {
+		t.Fatalf("body profile: %v", err)
+	}
+	if !strings.Contains(got, "正文专家") || strings.Contains(got, "审稿专家") {
+		t.Fatalf("body should win, got %s", got)
+	}
+
+	if _, err := expertProfileFromClassify(&LLMClassifyResult{}); err == nil {
+		t.Fatal("empty classify result must fail")
+	}
+}
+
+func TestParseExpertProfileResponseKeepsLastObject(t *testing.T) {
+	schema := `{"name":"专家名称，不超过 8 个汉字","description":"一句话简介","icon":"📝","system_prompt":"完整的专家系统提示词","suggested_tools":[],"suggested_skills":[]}`
+	real := `{"name":"审稿专家","description":"按四项标准打分","icon":"📝","system_prompt":"先核创新性，再核数据","suggested_tools":[],"suggested_skills":[]}`
+	out, err := parseExpertProfileResponse("格式如下：\n" + schema + "\n最终：\n" + real)
+	if err != nil {
+		t.Fatalf("last profile: %v", err)
+	}
+	if !strings.Contains(out, "审稿专家") || !strings.Contains(out, "先核创新性") || strings.Contains(out, "不超过 8 个汉字") {
+		t.Fatalf("schema echo must not win, got %s", out)
+	}
+
+	unclosed := "先看 {未闭合的说明\n" + real
+	out, err = parseExpertProfileResponse(unclosed)
+	if err != nil || !strings.Contains(out, "审稿专家") {
+		t.Fatalf("unclosed brace must not hide the profile: %s %v", out, err)
+	}
+
+	wrapped := "说明 {先写\n" + real + "\n}"
+	out, err = parseExpertProfileResponse(wrapped)
+	if err != nil || !strings.Contains(out, "审稿专家") || strings.Contains(out, "不超过 8 个汉字") {
+		t.Fatalf("a prose brace closed later must not swallow the profile: %s %v", out, err)
+	}
+
+	if _, err := parseExpertProfileResponse(schema); err == nil {
+		t.Fatal("the prompt template must not become a profile")
+	}
+	out, err = parseExpertProfileResponse(real + "\n" + schema)
+	if err != nil || !strings.Contains(out, "审稿专家") || strings.Contains(out, "不超过 8 个汉字") {
+		t.Fatalf("a trailing template must not replace the profile: %s %v", out, err)
+	}
+
+	nested := `{"name":"审稿专家","description":"d","icon":"📝","system_prompt":"先核创新性","meta":{"name":"内层","system_prompt":"不要用我"}}`
+	out, err = parseExpertProfileResponse(nested)
+	if err != nil || !strings.Contains(out, "先核创新性") || strings.Contains(out, "不要用我") {
+		t.Fatalf("outer profile must win over a nested object: %s %v", out, err)
+	}
+	mistyped := `{"name":"审稿专家","system_prompt":"先核创新性","icon":1,"suggested_tools":"bash"}`
+	out, err = parseExpertProfileResponse(mistyped)
+	var wire struct {
+		Name           string   `json:"name"`
+		Icon           string   `json:"icon"`
+		SystemPrompt   string   `json:"system_prompt"`
+		SuggestedTools []string `json:"suggested_tools"`
+	}
+	if err != nil || json.Unmarshal([]byte(out), &wire) != nil || wire.Name != "审稿专家" || wire.SystemPrompt != "先核创新性" || wire.Icon != "" || len(wire.SuggestedTools) != 1 || wire.SuggestedTools[0] != "bash" {
+		t.Fatalf("optional field types must not reject the profile: %+v %s %v", wire, out, err)
+	}
+	sections := `{"name":"审稿专家","system_prompt":{"工作流程":"先核创新性","角色定位":"你是审稿人"}}`
+	out, err = parseExpertProfileResponse(sections)
+	if err != nil || json.Unmarshal([]byte(out), &wire) != nil {
+		t.Fatalf("section object: %s %v", out, err)
+	}
+	role := strings.Index(wire.SystemPrompt, "# 角色定位\n你是审稿人")
+	flow := strings.Index(wire.SystemPrompt, "# 工作流程\n先核创新性")
+	if role < 0 || flow < 0 || role > flow {
+		t.Fatalf("sections joined out of order: %q", wire.SystemPrompt)
+	}
+
+	echoed := `{"name":"` + expertProfileTemplateName + `","description":"` + expertProfileTemplateDescription + `","icon":"` + expertProfileTemplateIcon + `","system_prompt":"先核创新性","suggested_tools":["` + expertProfileTemplateTool + `","bash"],"suggested_skills":["` + expertProfileTemplateSkill + `"]}`
+	out, err = parseExpertProfileResponse(echoed)
+	var echoedWire struct {
+		Name            string   `json:"name"`
+		Description     string   `json:"description"`
+		Icon            string   `json:"icon"`
+		SystemPrompt    string   `json:"system_prompt"`
+		SuggestedTools  []string `json:"suggested_tools"`
+		SuggestedSkills []string `json:"suggested_skills"`
+	}
+	if err != nil || json.Unmarshal([]byte(out), &echoedWire) != nil {
+		t.Fatalf("example fields: %s %v", out, err)
+	}
+	if echoedWire.Name != "" || echoedWire.Description != "" || echoedWire.Icon != "" || echoedWire.SystemPrompt != "先核创新性" || len(echoedWire.SuggestedTools) != 1 || echoedWire.SuggestedTools[0] != "bash" || len(echoedWire.SuggestedSkills) != 0 {
+		t.Fatalf("prompt examples must not fill the editor: %+v", echoedWire)
+	}
+	onlyExampleSection := `{"name":"审稿专家","system_prompt":{"角色定位":"` + expertProfileTemplatePrompt + `"}}`
+	if _, err := parseExpertProfileResponse(onlyExampleSection); err == nil {
+		t.Fatal("a section that is only the prompt example must not become a profile")
+	}
+}
+
+func TestExpertPromptTemplatesStayInThePrompts(t *testing.T) {
+	checks := []struct{ prompt, example string }{
+		{expertProfileGenSystemPrompt, expertProfileTemplateName},
+		{expertProfileGenSystemPrompt, expertProfileTemplateDescription},
+		{expertProfileGenSystemPrompt, expertProfileTemplateIcon},
+		{expertProfileGenSystemPrompt, expertProfileTemplatePrompt},
+		{expertProfileGenSystemPrompt, expertProfileTemplateTool},
+		{expertProfileGenSystemPrompt, expertProfileTemplateSkill},
+		{expertProfileGenSimplifiedPrompt, expertProfileSimplifiedTemplateName},
+		{expertProfileGenSimplifiedPrompt, expertProfileSimplifiedTemplateDescription},
+		{expertProfileGenSimplifiedPrompt, expertProfileSimplifiedTemplateIcon},
+		{expertProfileGenSimplifiedPrompt, expertProfileSimplifiedTemplatePrompt},
+		{expertOptimizeSystemPrompt, expertOptimizeTemplateName},
+		{expertOptimizeSystemPrompt, expertProfileTemplateDescription},
+		{expertOptimizeSystemPrompt, expertProfileTemplateIcon},
+		{expertOptimizeSystemPrompt, expertOptimizeTemplatePrompt},
+	}
+	for _, check := range checks {
+		if !strings.Contains(check.prompt, check.example) {
+			t.Fatalf("prompt example %q is not in the prompt the parser checks", check.example)
+		}
+	}
+}
+
 func TestParseExpertProfileResponse(t *testing.T) {
 	raw := "前言废话\n```json\n{\"name\":\"翻译助手\",\"description\":\"d\",\"icon\":\"🌐\",\"system_prompt\":\"完整的提示词内容\",\"suggested_tools\":[\"bash\"],\"suggested_skills\":[]}\n```\n"
 	out, err := parseExpertProfileResponse(raw)

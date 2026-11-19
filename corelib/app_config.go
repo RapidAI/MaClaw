@@ -251,7 +251,7 @@ type AppConfig struct {
 	MaclawDebugToolCalls               bool                           `json:"maclaw_debug_tool_calls,omitempty"`
 	// ShowAITraceEntry shows the Trace / run-details entry on assistant
 	// messages. Off is the install default; do not seed it in AppConfigDefaults.
-	ShowAITraceEntry                   bool                           `json:"show_ai_trace_entry,omitempty"`
+	ShowAITraceEntry bool `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
 	ShowAppEntry       *bool `json:"show_app_entry,omitempty"`
@@ -1823,6 +1823,19 @@ func ApplyOfficeReadFullScopeMigration(cfg *AppConfig) bool {
 		cfg.OfficeReadFormats = []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx"}
 	}
 	return true
+}
+
+// ApplyNewInstallDiagnosticDefaults turns detailed logs and LLM trajectory on
+// for a brand-new config. Both fields use omitempty, so they must not be
+// seeded in AppConfigDefaults: a saved false is omitted, and the next load
+// would treat that absence as the default and turn them back on. The GUI
+// forces them on again at the first start of each local day.
+func ApplyNewInstallDiagnosticDefaults(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.LogDetailEnabled = true
+	cfg.LLMTrajectoryLogging = true
 }
 
 // ApplyNewInstallPetDefaults sets figurative pet defaults for brand-new installs only.

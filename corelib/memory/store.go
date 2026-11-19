@@ -2193,7 +2193,7 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 // entries immediately but slightly-stale index scores; this is acceptable
 // because the same race window existed before (all rebuilds happened under
 // the write lock anyway, blocking readers for just as long).
-func (s *Store) rebuildDerivedIndexesOutsideLock(snapshot []Entry, syncGraphLinks bool) {
+func (s *Store) rebuildDerivedIndexesOutsideLock(snapshot []Entry, syncGraphLinks bool, projectGen uint64) {
 	s.bm25.rebuild(snapshot)
 	s.vecIndex.rebuild(snapshot)
 	s.graph.rebuild(snapshot)
@@ -2226,7 +2226,11 @@ func (s *Store) rebuildDerivedIndexesOutsideLock(snapshot []Entry, syncGraphLink
 		s.entityIndex.Rebuild(snapshot)
 	}
 	if s.projIndex != nil {
-		s.projIndex.Rebuild(snapshot)
+		if projectGen != 0 {
+			s.projIndex.finishRebuild(projectGen, snapshot)
+		} else {
+			s.projIndex.Rebuild(snapshot)
+		}
 	}
 	if s.aliasIndex != nil {
 		s.aliasIndex.Rebuild(snapshot)
@@ -3864,19 +3868,32 @@ func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bo
 // s.mu after this call returns (this method does NOT release the lock).
 func (s *Store) scheduleAsyncRebuildLocked(syncGraphLinks bool) {
 	snapshot := append([]Entry(nil), s.entries...)
+	// Claim the project-index generation while s.mu is still held, so an
+	// IndexEntry that runs after this returns sees the in-flight rescan and
+	// is replayed onto its map. A newer schedule supersedes this generation.
+	var projectGen uint64
+	if s.projIndex != nil {
+		projectGen = s.projIndex.BeginRebuild()
+	}
 	prevDone := s.lastRebuildDone
 	done := make(chan struct{})
 	s.lastRebuildDone = done
 	go func() {
+		finished := false
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[memory_store] WARNING: index rebuild panic (recovered): %v", r)
+			}
+			// A rescan that did not install must release the project index.
+			// Otherwise every later IndexEntry queues until process exit.
+			// A newer schedule owns the queue and is left alone.
+			if !finished {
+				s.abortProjectRebuildIfLatest(done, projectGen)
 			}
 			// Ensure done is always closed so WaitRebuild and downstream
 			// goroutines never block permanently, even on panics.
 			select {
 			case <-done:
-				// already closed by normal path
 			default:
 				close(done)
 			}
@@ -3885,7 +3902,6 @@ func (s *Store) scheduleAsyncRebuildLocked(syncGraphLinks bool) {
 			select {
 			case <-prevDone:
 			case <-s.stopCh:
-				close(done)
 				return
 			}
 		}
@@ -3896,12 +3912,30 @@ func (s *Store) scheduleAsyncRebuildLocked(syncGraphLinks bool) {
 		isLatest := s.lastRebuildDone == done
 		s.mu.RUnlock()
 		if !isLatest {
-			close(done)
 			return
 		}
-		s.rebuildDerivedIndexesOutsideLock(snapshot, syncGraphLinks)
-		close(done)
+		s.rebuildDerivedIndexesOutsideLock(snapshot, syncGraphLinks, projectGen)
+		finished = true
 	}()
+}
+
+// abortProjectRebuildIfLatest ends this schedule's project-index generation
+// when no newer rebuild has taken over. TryRLock skips the call when this
+// goroutine already holds s.mu (a panic inside the locked section); waiting
+// there would deadlock the recover path.
+func (s *Store) abortProjectRebuildIfLatest(done chan struct{}, projectGen uint64) {
+	if s == nil || s.projIndex == nil || projectGen == 0 {
+		return
+	}
+	if !s.mu.TryRLock() {
+		return
+	}
+	isLatest := s.lastRebuildDone == done
+	s.mu.RUnlock()
+	if !isLatest {
+		return
+	}
+	s.projIndex.AbortRebuild(projectGen)
 }
 
 // WaitRebuild blocks until the most recent background index rebuild completes.

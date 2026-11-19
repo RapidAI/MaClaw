@@ -2,9 +2,11 @@ package guiapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +51,388 @@ func TestCurrentChannelDeliveryAwaitingReceiptDoesNotBlockModelStop(t *testing.T
 	}
 	if got := hopMissingRequiredEffects(cb.hopRunSnapshot()); len(got) != 0 {
 		t.Fatalf("dispatched delivery still reported as a missing deliverable: %#v", got)
+	}
+}
+
+// A plan revision after the attach can hide the awaiting-receipt row. The
+// file is already on this response, so the capability is not unassigned and
+// the turn must not hard-exit as an uncertain external send. A delivery that
+// has not been staged still holds the turn. Specified-target and a mailbox
+// confirmation still do.
+func TestStagedCurrentChannelAttachIsHostTransport(t *testing.T) {
+	surface, store := newHopRunTestSurface(t)
+	surface.plan.Selections = append(surface.plan.Selections, tool.PlannedSelection{
+		ID:       "deliver",
+		NeedID:   "need:deliver",
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	})
+	surface.completed["shell"] = true
+	surface.completed["report"] = true
+	cb := &sharedAgentLoopCallbacks{
+		semanticSurface:              surface,
+		currentChannelDeliveryStaged: true,
+		semanticDeliveryFileData:     "pdf-bytes",
+	}
+
+	if cb.RequiredEffectUnsettled() {
+		t.Fatal("a staged current-channel attach with no execution row still blocked the stop")
+	}
+	if got := hopMissingRequiredEffects(cb.hopRunSnapshot()); len(got) != 0 {
+		t.Fatalf("staged attach still reported as unassigned: %#v", got)
+	}
+
+	if _, _, err := store.Acquire(tool.PlanExecutionRecord{Scope: surface.scope, SelectionID: "deliver"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Complete(surface.scope, "deliver", tool.PlanExecutionFailed, "", "selection_execution_failed", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if cb.RequiredEffectUnsettled() {
+		t.Fatal("a later failed retry of a staged attach put the capability back on the model")
+	}
+	if got := hopMissingRequiredEffects(cb.hopRunSnapshot()); len(got) != 0 {
+		t.Fatalf("failed retry of a staged attach still unassigned: %#v", got)
+	}
+
+	cb.currentChannelDeliveryStaged = false
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("a failed delivery that was never staged was treated as delivered")
+	}
+	if got := hopMissingRequiredEffects(cb.hopRunSnapshot()); len(got) != 1 || got[0] != hopCurrentChannelDeliveryCapability {
+		t.Fatalf("unstaged failure missing=%#v", got)
+	}
+
+	cb.currentChannelDeliveryStaged = true
+	cb.semanticDeliveryFileData = ""
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("a staged flag with no bytes retired the delivery")
+	}
+}
+
+func TestStagedCurrentChannelAttachLeavesOtherEffects(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = append(surface.plan.Selections,
+		tool.PlannedSelection{
+			ID:       "deliver",
+			NeedID:   "need:deliver",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+		},
+		tool.PlannedSelection{
+			ID:       "send",
+			NeedID:   "need:send",
+			Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "weixin"},
+			FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.specified_target"},
+		},
+	)
+	surface.completed["shell"] = true
+	surface.completed["report"] = true
+	cb := &sharedAgentLoopCallbacks{
+		semanticSurface:              surface,
+		currentChannelDeliveryStaged: true,
+		semanticDeliveryFileData:     "pdf-bytes",
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("a staged chat attach released a specified-target send that has not run")
+	}
+	missing := hopMissingRequiredEffects(cb.hopRunSnapshot())
+	if len(missing) != 1 || missing[0] != string(semanticSpecifiedTargetDeliveryCapability) {
+		t.Fatalf("specified-target was dropped with the chat attach: %#v", missing)
+	}
+
+	mailboxSurface, mailboxStore := newHopRunTestSurface(t)
+	mailboxSurface.plan.Selections = append(mailboxSurface.plan.Selections, tool.PlannedSelection{
+		ID:       "mail",
+		NeedID:   "need:mail",
+		Provider: tool.ProviderBinding{Kind: "builtin", ProviderID: "im"},
+		FitProof: tool.FitProof{MatchedCapability: tool.CapabilityMessageSendMailbox},
+	})
+	mailboxSurface.completed["shell"] = true
+	mailboxSurface.completed["report"] = true
+	if _, _, err := mailboxStore.Acquire(tool.PlanExecutionRecord{Scope: mailboxSurface.scope, SelectionID: "mail"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailboxStore.Complete(mailboxSurface.scope, "mail", tool.PlanExecutionAwaitingReceipt, "", "mailbox_send_awaiting_confirmation", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	mail := &sharedAgentLoopCallbacks{
+		semanticSurface:              mailboxSurface,
+		currentChannelDeliveryStaged: true,
+		semanticDeliveryFileData:     "pdf-bytes",
+	}
+	if !mail.RequiredEffectUnsettled() {
+		t.Fatal("a staged chat attach released a mailbox confirmation")
+	}
+}
+
+func TestCurrentChannelProjectionKeepsEveryDesktopPayload(t *testing.T) {
+	fileAndVoice := &sharedAgentLoopCallbacks{
+		semanticDeliveryFileData:  "pdf-bytes",
+		semanticDeliveryVoiceData: "wav-bytes",
+		semanticDeliverySlot:      semanticDeliverySlotVoice,
+	}
+	if got := fileAndVoice.semanticDeliveryAttachmentKind(); got != semanticDeliverySlotVoice {
+		t.Fatalf("latest slot=%s", got)
+	}
+	if got := fileAndVoice.currentChannelPayloadsToProject(); len(got) != 1 || got[0] != semanticDeliverySlotVoice {
+		t.Fatalf("im projection=%v", got)
+	}
+	fileAndVoice.platform = "desktop"
+	got := fileAndVoice.currentChannelPayloadsToProject()
+	if len(got) != 2 || got[0] != semanticDeliverySlotFile || got[1] != semanticDeliverySlotVoice {
+		t.Fatalf("desktop projection=%v", got)
+	}
+	unstated := &sharedAgentLoopCallbacks{semanticDeliveryFileData: "pdf-bytes", semanticDeliveryVoiceData: "wav-bytes"}
+	if got := unstated.semanticDeliveryAttachmentKind(); got != semanticDeliverySlotFile {
+		t.Fatalf("unstated slot=%s", got)
+	}
+	resp := &IMAgentResponse{}
+	fileDelivered, voiceSaved := fileAndVoice.projectSemanticDeliveryPayloads(resp)
+	if fileDelivered || voiceSaved {
+		t.Fatal("projection saved a file without a handler")
+	}
+	if resp.FileData != "pdf-bytes" || resp.VoiceData != "wav-bytes" {
+		t.Fatalf("desktop response file=%q voice=%q", resp.FileData, resp.VoiceData)
+	}
+	if resp.ResponseSource != imResponseSourceFileDelivery.String() {
+		t.Fatalf("voice beside a document source=%s", resp.ResponseSource)
+	}
+	withImage := &sharedAgentLoopCallbacks{
+		platform:                 "desktop",
+		semanticDeliveryImageKey: "img-bytes",
+		semanticDeliveryFileData: "pdf-bytes",
+		semanticDeliverySlot:     semanticDeliverySlotFile,
+	}
+	imageResp := &IMAgentResponse{}
+	withImage.projectSemanticDeliveryPayloads(imageResp)
+	if imageResp.ImageKey != "img-bytes" || imageResp.FileData != "pdf-bytes" {
+		t.Fatalf("image+file response image=%q file=%q", imageResp.ImageKey, imageResp.FileData)
+	}
+	if imageResp.ResponseSource != imResponseSourceScreenshot.String() {
+		t.Fatalf("image must keep the screenshot label, source=%s", imageResp.ResponseSource)
+	}
+	im := &sharedAgentLoopCallbacks{
+		platform:                  "weixin",
+		semanticDeliveryFileData:  "pdf-bytes",
+		semanticDeliveryVoiceData: "wav-bytes",
+		semanticDeliverySlot:      semanticDeliverySlotVoice,
+	}
+	imResp := &IMAgentResponse{}
+	im.projectSemanticDeliveryPayloads(imResp)
+	if imResp.FileData != "" || imResp.VoiceData != "wav-bytes" {
+		t.Fatalf("im response file=%q voice=%q", imResp.FileData, imResp.VoiceData)
+	}
+}
+
+func TestStagedCurrentChannelPayloadReplacementIsNotTheReceipt(t *testing.T) {
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = append(surface.plan.Selections, tool.PlannedSelection{
+		ID:       "deliver",
+		NeedID:   "need:deliver",
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	})
+	surface.completed["shell"] = true
+	surface.completed["report"] = true
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface, semanticDeliveryFileData: "pdf-bytes"}
+	specified := tool.PlannedSelection{
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "weixin"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.specified_target"},
+	}
+	cb.commitStagedCurrentChannelDelivery(specified)
+	if cb.currentChannelDeliveryStaged {
+		t.Fatal("a specified-target commit staged a current-channel receipt")
+	}
+	cb.semanticDeliveryFileData = ""
+	cb.commitStagedCurrentChannelDelivery(tool.PlannedSelection{
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	})
+	if cb.currentChannelDeliveryStaged {
+		t.Fatal("an empty payload staged a current-channel receipt")
+	}
+	cb.semanticDeliveryFileData = "pdf-bytes"
+	cb.commitStagedCurrentChannelDelivery(tool.PlannedSelection{
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	})
+	if !cb.currentChannelDeliveryStaged || cb.RequiredEffectUnsettled() {
+		t.Fatal("the committed chat file still blocked the stop")
+	}
+	cb.semanticDeliveryFileData = "wav-bytes"
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("a replaced payload kept the previous file as the receipt")
+	}
+	if got := hopMissingRequiredEffects(cb.hopRunSnapshot()); len(got) != 1 || got[0] != hopCurrentChannelDeliveryCapability {
+		t.Fatalf("replaced payload missing=%#v", got)
+	}
+	cb.semanticDeliveryFileData = "pdf-bytes"
+	if cb.RequiredEffectUnsettled() {
+		t.Fatal("restoring the committed payload left the capability unassigned")
+	}
+	cb.semanticDeliveryVoiceData = "wav-bytes"
+	cb.clearStagedCurrentChannelDelivery()
+	if cb.currentChannelDeliveryStaged || cb.stagedCurrentChannelNoted || cb.stagedCurrentChannelFileData != "" {
+		t.Fatal("clear left the staged receipt in place")
+	}
+	if !cb.RequiredEffectUnsettled() {
+		t.Fatal("clearing a replaced payload still treated the capability as delivered")
+	}
+}
+
+func TestStagedCurrentChannelDeliveryRestoresAfterFailedCommit(t *testing.T) {
+	oldScope := tool.InvocationScope{RootTaskID: "root", PlanID: "plan-old", SessionID: "session", TurnID: "turn", PrincipalID: "user"}
+	cb := &sharedAgentLoopCallbacks{
+		currentChannelDeliveryStaged: true,
+		semanticDeliveryFileData:     "pdf-bytes",
+		semanticDeliveryFileName:     "report.pdf",
+		semanticDelivery:             &semanticDeliveryProjection{SelectionID: "selection:old", Scope: oldScope},
+		semanticDeliverySlot:         semanticDeliverySlotFile,
+	}
+	prior := cb.captureStagedCurrentChannelDelivery()
+	cb.semanticDelivery = &semanticDeliveryProjection{SelectionID: "selection:new", Scope: tool.InvocationScope{PlanID: "plan-new"}}
+	cb.semanticDeliveryFileData = "other"
+	cb.semanticDeliverySlot = semanticDeliverySlotVoice
+	cb.semanticPreparedDelivery = &tool.DeliveryRecord{SelectionID: "selection:new"}
+	cb.restoreStagedCurrentChannelDelivery(prior)
+	if cb.semanticDelivery == nil || cb.semanticDelivery.SelectionID != "selection:old" || cb.semanticDelivery.Scope.PlanID != "plan-old" {
+		t.Fatalf("projection = %#v", cb.semanticDelivery)
+	}
+	if cb.semanticDeliverySlot != semanticDeliverySlotFile {
+		t.Fatalf("slot=%s", cb.semanticDeliverySlot)
+	}
+	if cb.semanticDeliveryFileData != "pdf-bytes" || cb.semanticDeliveryFileName != "report.pdf" || cb.semanticPreparedDelivery != nil || !cb.currentChannelDeliveryStaged {
+		t.Fatalf("restore dropped the staged attach: file=%q name=%q prepared=%v staged=%v", cb.semanticDeliveryFileData, cb.semanticDeliveryFileName, cb.semanticPreparedDelivery, cb.currentChannelDeliveryStaged)
+	}
+	if got := (&sharedAgentLoopCallbacks{}).captureStagedCurrentChannelDelivery(); got.staged {
+		t.Fatal("an unstaged callback captured a delivery")
+	}
+}
+
+func TestRememberedCurrentChannelReceiptsKeepTheEarlierDocument(t *testing.T) {
+	deliver := tool.PlannedSelection{
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	}
+	scope := tool.InvocationScope{PlanID: "plan"}
+	pdf := &semanticDeliveryProjection{SelectionID: "pdf", Kind: "document", Scope: scope}
+	cb := &sharedAgentLoopCallbacks{
+		semanticDelivery:         pdf,
+		semanticDeliveryFileData: "pdf-bytes",
+		semanticDeliverySlot:     semanticDeliverySlotFile,
+	}
+	cb.commitStagedCurrentChannelDelivery(deliver)
+	cb.semanticDelivery = pdf
+	cb.commitStagedCurrentChannelDelivery(deliver)
+	if len(cb.rememberedCurrentChannelReceipts) != 1 {
+		t.Fatalf("same selection remembered twice: %d", len(cb.rememberedCurrentChannelReceipts))
+	}
+	wav := &semanticDeliveryProjection{SelectionID: "wav", Kind: "audio", Scope: scope}
+	cb.semanticDelivery = wav
+	cb.semanticDeliveryVoiceData = "wav-bytes"
+	cb.semanticDeliverySlot = semanticDeliverySlotVoice
+	cb.commitStagedCurrentChannelDelivery(deliver)
+	if len(cb.rememberedCurrentChannelReceipts) != 2 {
+		t.Fatalf("remembered=%d", len(cb.rememberedCurrentChannelReceipts))
+	}
+	if !cb.rememberedCurrentChannelReceipts[0].stillHeld(cb) || !cb.rememberedCurrentChannelReceipts[1].stillHeld(cb) {
+		t.Fatal("a later voice file dropped the document that is still on the callback")
+	}
+	cb.semanticDeliveryFileData = "other-pdf"
+	if cb.rememberedCurrentChannelReceipts[0].stillHeld(cb) {
+		t.Fatal("replaced document bytes still counted as the earlier delivery")
+	}
+	if !cb.rememberedCurrentChannelReceipts[1].stillHeld(cb) {
+		t.Fatal("replacing the document dropped the voice receipt")
+	}
+	cb.semanticDeliveryFileData = "pdf-bytes"
+	cb.clearStagedCurrentChannelDelivery()
+	if len(cb.rememberedCurrentChannelReceipts) != 0 || cb.currentChannelDeliveryStaged {
+		t.Fatal("clear left a current-channel receipt")
+	}
+}
+
+func TestStagedCurrentChannelMissingOutboxIsNotAnExternalSend(t *testing.T) {
+	if !currentChannelMissingOutboxIsLocal(true, tool.DeliveryAccepted, tool.ErrDeliveryNotFound) {
+		t.Fatal("an accepted staged attach with no outbox row was kept as a receipt failure")
+	}
+	if currentChannelMissingOutboxIsLocal(false, tool.DeliveryAccepted, tool.ErrDeliveryNotFound) {
+		t.Fatal("an unstaged attach treated a missing row as local")
+	}
+	if currentChannelMissingOutboxIsLocal(true, tool.DeliveryFailed, tool.ErrDeliveryNotFound) {
+		t.Fatal("a failed outcome treated a missing row as local")
+	}
+	if currentChannelMissingOutboxIsLocal(true, tool.DeliveryAccepted, errors.New("delivery_conflict")) {
+		t.Fatal("a conflict was treated as a missing local row")
+	}
+
+	surface, _ := newHopRunTestSurface(t)
+	surface.plan.Selections = append(surface.plan.Selections, tool.PlannedSelection{
+		ID:       "deliver",
+		NeedID:   "need:deliver",
+		Provider: tool.ProviderBinding{Kind: "channel", ProviderID: "desktop"},
+		FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"},
+	})
+	coordinator, err := tool.NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	if _, _, err := coordinator.ClaimDelivery(surface.scope, "deliver", time.Now().UTC()); !errors.Is(err, tool.ErrDeliveryNotFound) {
+		t.Fatalf("precondition claim = %v", err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		semanticSurface:              surface,
+		platform:                     "desktop",
+		currentChannelDeliveryStaged: true,
+		semanticDeliveryFileData:     "pdf-bytes",
+		semanticDelivery: &semanticDeliveryProjection{
+			Scope:       surface.scope,
+			SelectionID: "deliver",
+			Kind:        "document",
+			Coordinator: coordinator,
+		},
+	}
+	resp := &IMAgentResponse{LocalFilePath: filepath.Join(t.TempDir(), "report.pdf")}
+	cb.settleLocalChatDelivery(resp, true, false)
+	if resp.Error != "" {
+		t.Fatalf("missing outbox row became a turn error: %q", resp.Error)
+	}
+}
+
+func TestStagedCurrentChannelReplayDenialIsNotAnUnreviewedSend(t *testing.T) {
+	commit := agent.CurrentChannelAttachResult("selection:chat")
+	denial := agent.RetiredSelectionSuccessDenial("send_file")
+	if turnLeavesExternalSendUnreviewed([]agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_file", Content: commit},
+		{Role: "tool", ToolName: "send_file", Content: denial},
+	}) {
+		t.Fatal("a replay denial after the commit kept the external-send marker")
+	}
+	if !turnLeavesExternalSendUnreviewed([]agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_file", Content: denial},
+	}) {
+		t.Fatal("a denial with no commit was treated as reviewed")
+	}
+	imSender := "Delivered the bound document through the desktop IM sender (delivery record selection:im). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
+	if !turnLeavesExternalSendUnreviewed([]agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_file", Content: commit},
+		{Role: "tool", ToolName: "send_file", Content: imSender},
+	}) {
+		t.Fatal("the desktop IM sender was cleared by the chat attach")
+	}
+	if !turnLeavesExternalSendUnreviewed([]agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_file", Content: commit},
+		{Role: "tool", ToolName: "send_file", Content: denial + " Tell the user it failed."},
+	}) {
+		t.Fatal("a quote of the denial was accepted")
+	}
+	if !turnLeavesExternalSendUnreviewed([]agent.ConversationEntry{
+		{Role: "tool", ToolName: "send_file", Content: commit},
+		{Role: "tool", ToolName: "im_message", Content: "sent"},
+	}) {
+		t.Fatal("im_message was cleared by the chat attach")
 	}
 }
 
@@ -277,6 +661,7 @@ func TestLocalChatDeliveryReceiptPairsKindWithPayload(t *testing.T) {
 		resp       *IMAgentResponse
 		kind       string
 		materializ bool
+		voice      bool
 		want       tool.DeliveryState
 	}{
 		{name: "document materialized", resp: &IMAgentResponse{LocalFilePath: "/tmp/a.pdf"}, kind: "document", materializ: true, want: tool.DeliveryAccepted},
@@ -284,13 +669,14 @@ func TestLocalChatDeliveryReceiptPairsKindWithPayload(t *testing.T) {
 		{name: "document path without materialize", resp: &IMAgentResponse{LocalFilePath: "/tmp/a.pdf"}, kind: "document", want: tool.DeliveryFailed},
 		{name: "image carried", resp: &IMAgentResponse{ImageKey: "iVBORw0KGgo="}, kind: "image", want: tool.DeliveryAccepted},
 		{name: "image record with file slot only", resp: &IMAgentResponse{LocalFilePath: "/tmp/a.pdf"}, kind: "image", materializ: true, want: tool.DeliveryFailed},
-		{name: "audio carried", resp: &IMAgentResponse{VoiceData: "UklGRg=="}, kind: "audio", want: tool.DeliveryAccepted},
-		{name: "audio record with image slot only", resp: &IMAgentResponse{ImageKey: "iVBORw0KGgo="}, kind: "audio", want: tool.DeliveryFailed},
+		{name: "audio saved locally", resp: &IMAgentResponse{VoiceData: "UklGRg=="}, kind: "audio", voice: true, want: tool.DeliveryAccepted},
+		{name: "audio bytes without a local file", resp: &IMAgentResponse{VoiceData: "UklGRg=="}, kind: "audio", want: tool.DeliveryFailed},
+		{name: "audio record with image slot only", resp: &IMAgentResponse{ImageKey: "iVBORw0KGgo="}, kind: "audio", voice: true, want: tool.DeliveryFailed},
 		{name: "empty response", resp: &IMAgentResponse{}, kind: "document", want: tool.DeliveryFailed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			outcome, receipt := localChatDeliveryReceipt(tc.resp, tc.kind, tc.materializ)
+			outcome, receipt := localChatDeliveryReceipt(tc.resp, tc.kind, tc.materializ, tc.voice)
 			if outcome != tc.want {
 				t.Fatalf("outcome=%s want %s", outcome, tc.want)
 			}
@@ -299,7 +685,7 @@ func TestLocalChatDeliveryReceiptPairsKindWithPayload(t *testing.T) {
 			}
 		})
 	}
-	if outcome, _ := localChatDeliveryReceipt(nil, "document", true); outcome != tool.DeliveryFailed {
+	if outcome, _ := localChatDeliveryReceipt(nil, "document", true, false); outcome != tool.DeliveryFailed {
 		t.Fatalf("nil response outcome=%s", outcome)
 	}
 }

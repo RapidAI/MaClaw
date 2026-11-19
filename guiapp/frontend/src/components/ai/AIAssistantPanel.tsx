@@ -31,6 +31,8 @@ import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
 import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
+import { ChatSessionLocator } from "./ChatSessionLocator";
+import { chatSessionLocatorTurns } from "./chatSessionLocatorModel";
 import { useConversationViewArchive } from "./useConversationViewArchive";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
@@ -5694,6 +5696,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [lang, remoteChat, t]);
     const conversationArchive = useConversationViewArchive({ messages: remoteChat ? remoteTranscript : otherMessages, scope: remoteChat ? `remote-control:${remoteChat.grantId}:${remoteChat.projectPath}` : ((isProjectTabActive || isExpertTabActive) && activeTab.id ? `tab:${activeTab.id}` : "desktop"), enabled: remoteChat ? true : ready, lang, theme: t });
     const transcriptMessages = conversationArchive.visibleMessages;
+    const locatorTurns = useMemo(
+        () => chatSessionLocatorTurns(conversationArchive.locatorMessages),
+        [conversationArchive.locatorMessages],
+    );
     const [branchPoints, setBranchPoints] = useState<ConversationBranchPointLike[]>([]);
     useEffect(() => {
         if (!isLocalTabActive || otherMessages.length < 2 || sending || streaming) {
@@ -5849,7 +5855,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
-    const { clearScrolledUp, handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const { clearScrolledUp, handleScroll, handleUserScrollIntent, jumpToUserTurn, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    const jumpToLocatorTurn = useCallback((id: string) => {
+        if (jumpToUserTurn(id)) return;
+        conversationArchive.revealArchiveMessage(id);
+    }, [conversationArchive.revealArchiveMessage, jumpToUserTurn]);
+    const scrollTranscriptBy = useCallback((deltaY: number) => {
+        const scroller = outputContainerRef.current;
+        if (!scroller || !deltaY) return;
+        handleUserScrollIntent({ type: "wheel", deltaY, target: scroller, currentTarget: scroller });
+        scroller.scrollTop += deltaY;
+    }, [handleUserScrollIntent, outputContainerRef]);
     useEffect(() => {
         if (activeTab.type !== "project") return;
         const previous = latestProjectCloseSnapshotRef.current;
@@ -7834,6 +7850,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </ChatBubblesProvider>
                     <div ref={outputEndRef} />
                 </div>
+                {locatorTurns.length > 0 || (!remoteChat && conversationArchive.earlierCount > 0) ? (
+                    <ChatSessionLocator
+                        turns={locatorTurns}
+                        lang={lang}
+                        theme={t}
+                        onWarm={conversationArchive.ensureArchiveRows}
+                        onJump={jumpToLocatorTurn}
+                        onTranscriptWheel={scrollTranscriptBy}
+                    />
+                ) : null}
                 {scrolledUp ? (
                     <button
                         type="button"

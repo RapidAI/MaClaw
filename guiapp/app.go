@@ -523,14 +523,24 @@ type App struct {
 	mcpChildPending map[string]mcpChildView
 	// mcpTurnHeld is the follow-up that may install the next run. It closes
 	// the gap where two sends both still see needs_confirmation.
-	mcpTurnHeld         map[string]uint64
-	mcpTurnSeq          map[string]uint64
-	mcpAccess           mcpAccessStore
-	mcpPinsMu           sync.Mutex
-	mcpPins             map[string]mcpModelPin
-	mcpReqMu            sync.Mutex
-	mcpReqs             map[string]*mcpClientRequest
-	mcpReqOrder         []string
+	mcpTurnHeld map[string]uint64
+	mcpTurnSeq  map[string]uint64
+	mcpAccess   mcpAccessStore
+	mcpPinsMu   sync.Mutex
+	mcpPins     map[string]mcpModelPin
+	mcpReqMu    sync.Mutex
+	mcpReqs     map[string]*mcpClientRequest
+	mcpReqOrder []string
+	mcpReqTombs map[string]mcpRequestTomb
+	// mcpStateDir is the durable MCP host directory. Tests set it to a temp
+	// dir. An empty dir under testing.Testing does not touch the user data dir.
+	mcpStateDir string
+	// mcpDiskMu serializes snapshot writes. The writer recaptures after taking
+	// this lock, so an older snapshot cannot replace a newer one.
+	mcpDiskMu           sync.Mutex
+	mcpDurableOnce      sync.Once
+	mcpExpiredMu        sync.Mutex
+	mcpExpired          map[string]time.Time
 	mcpConfirmIDs       map[string]string
 	imGatewaySyncMu     sync.Mutex
 	passthroughRegistry *PassthroughRegistry
@@ -659,6 +669,18 @@ type App struct {
 	// publication. Without it, two rapid picker completions could persist one
 	// directory while leaving the live owner cache pointed at the other.
 	tabWorkingDirMu sync.Mutex
+	// deletingProjectTasks stays set after DeleteTask releases tabWorkingDirMu
+	// and while session rows and the task directory are still being removed.
+	// Create and save re-check it under the lock so a queued flush cannot
+	// write those files back.
+	deletingProjectTasks sync.Map
+	// deletingProjectTabs is the tab id of a session file DeleteTask is
+	// removing. The expert tab file has no project path, and a project tab
+	// flush can arrive after its path cache was cleared, so the path
+	// tombstone alone does not cover every writer. Project tab ids stay set
+	// for the process lifetime. The shared expert tab id is cleared when
+	// DeleteTask returns, because the next task of that expert reuses it.
+	deletingProjectTabs sync.Map
 	// assistantSessionWorkingDirs bridges a UI tab's private directory to its
 	// runtime session owner, which is the identity used by tools and prompts.
 	assistantSessionWorkingDirs sync.Map
@@ -3023,6 +3045,23 @@ func (a *App) startup(ctx context.Context) {
 	bm25.PrewarmDict()
 	// Initialize CodeBuddy config in project directory
 	if config, err := a.LoadConfig(); err == nil {
+		// First launch of the local day empties logs and trajectories.
+		// Run that before today's startup lines and workdir_ready.txt:
+		// both are written into the logs directory the clear removes.
+		if a.maybeClearDiagnosticsForNewDay(time.Now()) {
+			config.LogDetailEnabled = true
+			config.LLMTrajectoryLogging = true
+			// This value was loaded before the reset. An open session's
+			// restore point was moved to on in that reset; leaving the old
+			// off values here would put them back on the next full save.
+			if config.BugReportEnabled {
+				config.BugReportPreviousLogDetail = true
+				config.BugReportPreviousTrajectory = true
+			}
+			// The clear removed the [startup] begin line written above.
+			// Today's log still needs that boot marker.
+			log.Printf("[startup] begin err=none daily_diagnostics_reset=1 elapsed=%v", time.Since(startupBegin))
+		}
 		// Apply user-configured working directory (or keep default).
 		corelib.SetWorkspaceDir(config.WorkingDirectory)
 		effectiveWD := corelib.EffectiveWorkspaceDir()
@@ -3036,9 +3075,6 @@ func (a *App) startup(ctx context.Context) {
 			strings.TrimSpace(effectiveWD) != "", strings.TrimSpace(skillTemp) != "", time.Since(startupBegin))
 		writeWorkdirReadySidecar(config.WorkingDirectory, effectiveWD, skillTemp)
 		a.logStoragePaths("startup.config_loaded", &config)
-		// First launch of the local day starts a fresh diagnostic window, the
-		// same directory clear as the problem-report reset.
-		a.maybeClearDiagnosticsForNewDay(time.Now())
 		a.applyConfiguredProxies(config)
 		// a.syncToCodeBuddySettings(config, ")
 		a.applyConfigLanguageIfUnchanged(config.Language, languageSeq)
@@ -6241,6 +6277,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 					config.SubAgentConcurrency = corelib.DefaultSubAgentConcurrency
 					// New-format install path (legacy file migration): figurative pet.
 					corelib.ApplyNewInstallPetDefaults(&config)
+					corelib.ApplyNewInstallDiagnosticDefaults(&config)
 
 					// Publish in-memory only; disk write is deferred via
 					// pendingConfigDiskWrite → runConfigPostUnlock (no configMu held).
@@ -6292,6 +6329,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 		}
 		// K18: first-run figurative pet (must not come from UnmarshalJSON seed).
 		corelib.ApplyNewInstallPetDefaults(&defaultConfig)
+		corelib.ApplyNewInstallDiagnosticDefaults(&defaultConfig)
 		// Defer the storage write until after configMu is released.
 		a.publishConfigLocked(defaultConfig)
 		a.configFileState.Store(nil)

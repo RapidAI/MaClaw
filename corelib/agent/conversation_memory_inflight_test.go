@@ -584,6 +584,122 @@ func TestCurrentChannelAttachRetiresProvisionalSendFileLatch(t *testing.T) {
 	}
 }
 
+func TestConsumedGrantDenialRetiresOnlyAPairedCurrentChannelAttach(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	attached := currentChannelAttachSentence("selection:chat")
+	denial := RetiredSelectionSuccessDenial("send_file")
+	loopDenial := consumedGrantToolCallDeniedMessage("invoke_send_file")
+	imSender := "Delivered the bound document through the desktop IM sender (delivery record selection:im). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
+
+	withCommit := []ConversationEntry{
+		{Role: "user", Content: "把合成后文件发我"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, withCommit, "把合成后文件发我", "/project", "run-chat", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withDenial := append(append([]ConversationEntry{}, withCommit...), ConversationEntry{
+		Role: "tool", Content: denial, ToolName: "send_file", ToolCallID: "call-replay",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, withDenial, "把合成后文件发我", "/project", "run-chat", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "send_file" || recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("replay denial re-latched the chat attach: %#v", recovered)
+	}
+
+	loopEntries := append(append([]ConversationEntry{}, withCommit...), ConversationEntry{
+		Role: "tool", Content: loopDenial, ToolName: "send_file", ToolCallID: "call-loop",
+	})
+	if err := cm.PersistInFlightCheckpoint(userID, withCommit, "把合成后文件发我", "/project", "run-loop", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, loopEntries, "把合成后文件发我", "/project", "run-loop", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.SideEffectState != "none" || recovered.RecoveryMode != "resume_context" {
+		t.Fatalf("loop denial re-latched the chat attach: %#v", recovered)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发到微信"}}, "发到微信", "/project", "run-bare", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发到微信"},
+		{Role: "tool", Content: denial, ToolName: "send_file", ToolCallID: "call-only"},
+	}, "发到微信", "/project", "run-bare", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("a denial with no commit retired the latch: %#v", recovered)
+	}
+
+	both := []ConversationEntry{
+		{Role: "user", Content: "同时投递"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach-new"},
+		{Role: "tool", Content: imSender, ToolName: "send_file", ToolCallID: "call-im-new"},
+		{Role: "tool", Content: denial, ToolName: "send_file", ToolCallID: "call-replay-new"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "同时投递"}}, "同时投递", "/project", "run-both", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, both, "同时投递", "/project", "run-both", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("a denial cleared a new IM sender: %#v", recovered)
+	}
+
+	quoted := []ConversationEntry{
+		{Role: "user", Content: "把合成后文件发我"},
+		{Role: "tool", Content: attached, ToolName: "send_file", ToolCallID: "call-attach-q"},
+		{Role: "tool", Content: denial + " Tell the user it failed.", ToolName: "send_file", ToolCallID: "call-quote"},
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, quoted[:2], "把合成后文件发我", "/project", "run-quote", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "send_file", SideEffectState: "none",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, quoted, "把合成后文件发我", "/project", "run-quote", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "send_file", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("a quoted denial retired the latch: %#v", recovered)
+	}
+
+	if !SendFileConsumedGrantDenial(denial) || !SendFileConsumedGrantDenial(loopDenial) {
+		t.Fatal("the host denial sentences were not recognized")
+	}
+	if SendFileConsumedGrantDenial(denial+" extra") || SendFileConsumedGrantDenial(imSender) || SendFileConsumedGrantDenial(attached) {
+		t.Fatal("a non-denial counted as the consumed-grant refusal")
+	}
+}
+
 func TestOlderExternalSendFileDoesNotBlockCurrentChannelAttach(t *testing.T) {
 	cm := NewConversationMemory()
 	defer cm.Stop()

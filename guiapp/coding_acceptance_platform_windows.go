@@ -148,14 +148,11 @@ func (s *realDesktopSession) Click(ctx context.Context, pid, x, y int) error {
 	// One foreground read authorizes the point. A later read could be a
 	// different window whose rectangle still contains the coordinate.
 	obs, ok := s.foreground()
-	if !ok || !acceptanceSameImage(obs.Image, s.exe) || acceptanceWindowIsMaClaw(obs) {
-		return errors.New("前台映像路径与刚构建的程序不一致")
-	}
-	if acceptanceDesktopRefusal(obs, "") != "" {
-		return errors.New("秘密、支付或系统安全界面已拒绝")
+	if err := acceptanceDesktopAuthorize(obs, ok, s.exe, ""); err != nil {
+		return err
 	}
 	if why := acceptanceClickOutside(obs, x, y); why != "" {
-		return errors.New(why)
+		return &acceptanceDesktopDriveFault{detail: "click_outside", reason: why}
 	}
 	return acceptanceSendDesktopClick(x, y)
 }
@@ -181,6 +178,13 @@ func (s *realDesktopSession) Key(ctx context.Context, pid int, key string) error
 	if err := s.allowInput(ctx, pid, key); err != nil {
 		return err
 	}
+	return acceptanceSendDesktopKey(key)
+}
+
+func acceptanceSendDesktopKey(key string) error {
+	if testing.Testing() {
+		return errors.New("refusing to send input under test")
+	}
 	return guiautomation.NewInputSimulator().KeyCombo(key)
 }
 
@@ -189,14 +193,8 @@ func (s *realDesktopSession) allowInput(ctx context.Context, pid int, key string
 		return err
 	}
 	_ = pid
-	obs, ok := acceptanceForegroundObservation()
-	if !ok || !acceptanceSameImage(obs.Image, s.exe) || acceptanceWindowIsMaClaw(obs) {
-		return errors.New("前台映像路径与刚构建的程序不一致")
-	}
-	if acceptanceDesktopRefusal(obs, key) != "" {
-		return errors.New("秘密、支付或系统安全界面已拒绝")
-	}
-	return nil
+	obs, ok := s.foreground()
+	return acceptanceDesktopAuthorize(obs, ok, s.exe, key)
 }
 
 func registerAcceptanceComputerUse(exe string) func() {

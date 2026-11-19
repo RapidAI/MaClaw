@@ -885,11 +885,16 @@ func TestAttachSharedLoopArtifactsMaterializesDesktopSemanticFile(t *testing.T) 
 		semanticDeliveryFileData: pdf,
 		semanticDeliveryFileName: "weather.pdf",
 		semanticDeliveryFileMIME: "application/pdf",
+		semanticDeliverySlot:     semanticDeliverySlotFile,
+		screenshotImageKey:       testOnePixelPNGBase64,
 	}
 	resp := &IMAgentResponse{ResponseSource: "shared_agent_loop"}
 	attachSharedLoopArtifacts(resp, cb)
 	if resp.ResponseSource != imResponseSourceFileDelivery.String() || resp.FileMimeType != "application/pdf" {
 		t.Fatalf("desktop semantic file response = %+v", resp)
+	}
+	if resp.ImageKey != "" {
+		t.Fatalf("a semantic document must not also attach the tool screenshot: %+v", resp)
 	}
 	if resp.LocalFilePath == "" || filepath.Base(resp.LocalFilePath) != "weather.pdf" {
 		t.Fatalf("desktop chat must get a local path: %+v", resp)
@@ -911,6 +916,99 @@ func TestAttachSharedLoopArtifactsMaterializesDesktopSemanticFile(t *testing.T) 
 	})
 	if im.FileData != pdf || im.LocalFilePath != "" {
 		t.Fatalf("IM gateways must keep FileData and not materialize a local path: %+v", im)
+	}
+}
+
+func TestAttachSharedLoopArtifactsKeepsDesktopVoiceBesideDocument(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	pdf := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4\n%fake"))
+	wav := base64.StdEncoding.EncodeToString([]byte("RIFFxxxxWAVEfmt "))
+	cb := &sharedAgentLoopCallbacks{
+		handler:                   &IMMessageHandler{app: app},
+		platform:                  "desktop",
+		semanticDeliveryFileData:  pdf,
+		semanticDeliveryFileName:  "report.pdf",
+		semanticDeliveryFileMIME:  "application/pdf",
+		semanticDeliveryVoiceData: wav,
+		semanticDeliveryVoiceName: "speech.wav",
+		semanticDeliveryVoiceMIME: "audio/wav",
+		semanticDeliverySlot:      semanticDeliverySlotVoice,
+		semanticDelivery:          &semanticDeliveryProjection{Kind: "audio", SelectionID: "sel-voice"},
+	}
+	resp := &IMAgentResponse{ResponseSource: "shared_agent_loop"}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.FileData != "" || resp.VoiceData != "" {
+		t.Fatalf("desktop event kept inline bytes: file=%q voice=%q", resp.FileData, resp.VoiceData)
+	}
+	if resp.LocalFilePath == "" || filepath.Base(resp.LocalFilePath) != "report.pdf" {
+		t.Fatalf("document must stay the first card: %+v", resp)
+	}
+	foundWav := false
+	for _, path := range resp.LocalFilePaths {
+		if filepath.Base(path) == "speech.wav" {
+			foundWav = true
+			break
+		}
+	}
+	if !foundWav || len(resp.LocalFilePaths) < 2 {
+		t.Fatalf("voice must be a second local path: %+v", resp)
+	}
+	if resp.ResponseSource != imResponseSourceFileDelivery.String() {
+		t.Fatalf("source=%s", resp.ResponseSource)
+	}
+	if _, err := os.Stat(resp.LocalFilePath); err != nil {
+		t.Fatalf("materialized PDF missing: %v", err)
+	}
+
+	question := "要允许这一形状的调用吗？"
+	paused := &IMAgentResponse{Text: question}
+	pauseCB := &sharedAgentLoopCallbacks{
+		handler:                   &IMMessageHandler{app: app},
+		platform:                  "desktop",
+		semanticDeliveryFileData:  pdf,
+		semanticDeliveryFileName:  "pause-report.pdf",
+		semanticDeliveryFileMIME:  "application/pdf",
+		semanticDeliveryVoiceData: wav,
+		semanticDeliveryVoiceName: "pause-speech.wav",
+		semanticDeliveryVoiceMIME: "audio/wav",
+		semanticDeliverySlot:      semanticDeliverySlotVoice,
+		semanticDelivery:          &semanticDeliveryProjection{Kind: "audio", SelectionID: "sel-voice"},
+	}
+	pauseCB.projectPausedCurrentChannelFile(paused)
+	if paused.Text != question {
+		t.Fatalf("pause rewrote the question: %q", paused.Text)
+	}
+	if filepath.Base(paused.LocalFilePath) != "pause-report.pdf" || paused.VoiceData != "" {
+		t.Fatalf("pause dropped the document or kept voice bytes: %+v", paused)
+	}
+	foundWav = false
+	for _, path := range paused.LocalFilePaths {
+		if filepath.Base(path) == "pause-speech.wav" {
+			foundWav = true
+			break
+		}
+	}
+	if !foundWav {
+		t.Fatalf("pause card dropped the voice file: %+v", paused)
+	}
+
+	im := &IMAgentResponse{}
+	attachSharedLoopArtifacts(im, &sharedAgentLoopCallbacks{
+		handler:                   &IMMessageHandler{app: app},
+		platform:                  "weixin",
+		semanticDeliveryFileData:  pdf,
+		semanticDeliveryFileName:  "report.pdf",
+		semanticDeliveryFileMIME:  "application/pdf",
+		semanticDeliveryVoiceData: wav,
+		semanticDeliveryVoiceName: "speech.wav",
+		semanticDeliveryVoiceMIME: "audio/wav",
+		semanticDeliverySlot:      semanticDeliverySlotVoice,
+	})
+	if im.VoiceData != wav || im.FileData != "" || im.LocalFilePath != "" {
+		t.Fatalf("IM must send only the latest voice: %+v", im)
+	}
+	if im.ResponseSource != "" {
+		t.Fatalf("IM voice must keep the turn source, got %q", im.ResponseSource)
 	}
 }
 

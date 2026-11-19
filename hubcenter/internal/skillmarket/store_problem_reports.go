@@ -129,6 +129,98 @@ func (s *Store) UpdateProblemReport(ctx context.Context, id, status, adminNote s
 	return err
 }
 
+const (
+	// ProblemReportAgentAPIKey is the shared credential for the public repair API.
+	ProblemReportAgentAPIKey = "problem_report_agent_api_key"
+	// ProblemReportAgentAPIKeyAt is the revision time of that credential.
+	// HA apply keeps the newer stamp so a stale snapshot cannot roll the key back.
+	ProblemReportAgentAPIKeyAt = "problem_report_agent_api_key_at"
+)
+
+// SetProblemReportAgentAPIKey stores the repair credential and its revision
+// time together, then emits one HA snapshot. An empty key revokes the
+// current credential; the stamp lets that revoke win over an older key.
+func (s *Store) SetProblemReportAgentAPIKey(ctx context.Context, key string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var current string
+	currentErr := tx.QueryRowContext(ctx, `SELECT value FROM sm_admin_config WHERE key = ?`, ProblemReportAgentAPIKey).Scan(&current)
+	if currentErr != nil && !errors.Is(currentErr, sql.ErrNoRows) {
+		return currentErr
+	}
+	// Revoking an already empty key must not move the stamp. A newer stamp
+	// on a blank key would erase a key another node created after the first revoke.
+	if strings.TrimSpace(key) == "" && strings.TrimSpace(current) == "" {
+		return nil
+	}
+	// A coarse clock can return the same instant for the key and the revoke
+	// that follows it. The stamp must move forward or peers keep the old key.
+	now := time.Now().UTC()
+	var prev string
+	scanErr := tx.QueryRowContext(ctx, `SELECT value FROM sm_admin_config WHERE key = ?`, ProblemReportAgentAPIKeyAt).Scan(&prev)
+	if scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return scanErr
+	}
+	if prevAt := parseTime(prev); !prevAt.IsZero() && !now.After(prevAt) {
+		now = prevAt.Add(time.Nanosecond)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sm_admin_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ProblemReportAgentAPIKey, key); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sm_admin_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, ProblemReportAgentAPIKeyAt, now.Format(timeFmt)); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.emitSync(ctx)
+	return nil
+}
+
+// ErrProblemReportNotPending means an agent call found the report, but it is
+// no longer 待处理. The agent API may only change a pending report.
+var ErrProblemReportNotPending = errors.New("problem report is not pending")
+
+// ErrProblemReportStatus means the requested status is not one of the
+// handling states shown in the admin console.
+var ErrProblemReportStatus = errors.New("invalid problem report status")
+
+// ResolveUnrepairedProblemReport sets the handling state of a pending report.
+// status is pending, fixed, deferred, rejected, or archived. The pending
+// predicate is in the UPDATE, so a report that was already handled is left
+// unchanged. pending keeps the report on the unrepaired list and only
+// stores the note.
+func (s *Store) ResolveUnrepairedProblemReport(ctx context.Context, id, status, adminNote string) error {
+	now := time.Now().UTC()
+	archived := ""
+	switch status {
+	case "pending", "fixed", "deferred", "rejected":
+	case "archived":
+		archived = now.Format(timeFmt)
+	default:
+		return ErrProblemReportStatus
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sm_problem_reports SET status=?, admin_note=?, archived_at=?, updated_at=? WHERE id=? AND status='pending'`, status, adminNote, archived, now.Format(timeFmt), id)
+	if err != nil {
+		return err
+	}
+	affected, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return rowsErr
+	}
+	if affected > 0 {
+		s.emitSync(ctx)
+		return nil
+	}
+	if _, err = s.GetProblemReport(ctx, id); err != nil {
+		return err
+	}
+	return ErrProblemReportNotPending
+}
+
 func (s *Store) DeleteProblemReport(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

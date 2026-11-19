@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 const (
@@ -71,23 +73,83 @@ type bugReportRootFile struct {
 	data []byte
 }
 
-// maybeClearDiagnosticsForNewDay empties logs and trajectories on the first
-// GUI start of the local day. The file companion and a same-day restart leave
-// the directories alone. The stamp lives beside those directories so the
-// clear itself cannot delete the record of today's run.
-func (a *App) maybeClearDiagnosticsForNewDay(now time.Time) {
+// diagnosticsDayStampFile records that today's first GUI start already ran the
+// diagnostic reset. It lives beside the logs and trajectories directories so
+// the clear itself cannot delete the record of today's run.
+const diagnosticsDayStampFile = "diagnostics-day.txt"
+
+// diagnosticsDayStampText is the stamp body. The "reset" token keeps an older
+// clear-only stamp ("2006-01-02") from counting, so the first launch after
+// this change still resets even when today's logs were already cleared.
+func diagnosticsDayStampText(day string) string {
+	return day + " reset"
+}
+
+// maybeClearDiagnosticsForNewDay runs the About problem-report collection
+// reset on the first GUI start of the local day. It reports whether that
+// reset ran, so the caller can keep using the switches it just forced on.
+// The file companion and a same-day restart leave both the directories and
+// the switches alone. The bug-report session switch itself is not changed.
+// An already-open session keeps a restore point from when it started, often
+// with both switches off. That point is moved to on, so closing the session
+// later the same day cannot undo today's collection. A closed session's
+// restore point is left as it is.
+func (a *App) maybeClearDiagnosticsForNewDay(now time.Time) bool {
 	if a == nil || a.isFileCompanionProcess() {
-		return
+		return false
 	}
 	today := now.In(time.Local).Format("2006-01-02")
-	path := filepath.Join(a.getMaclawBaseDir(), "diagnostics-day.txt")
-	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == today {
-		return
+	base := a.getMaclawBaseDir()
+	path := filepath.Join(base, diagnosticsDayStampFile)
+	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == diagnosticsDayStampText(today) {
+		return false
 	}
-	a.clearBugReportDiagnostics()
-	if err := os.WriteFile(path, []byte(today+"\n"), 0o644); err != nil {
+	if !a.resetDiagnosticsForDailyOpen() {
+		return false
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		log.Printf("[bug-report] daily diagnostics stamp: %v", err)
+		return true
+	}
+	if err := os.WriteFile(path, []byte(diagnosticsDayStampText(today)+"\n"), 0o644); err != nil {
 		log.Printf("[bug-report] daily diagnostics stamp: %v", err)
 	}
+	return true
+}
+
+// resetDiagnosticsForDailyOpen forces the two collection switches on, then
+// empties logs and trajectories. The gate is turned on before the clear so
+// the fresh log records the clear itself, not only the always-kept lines.
+// A failed enable leaves the directories and the day stamp alone so the
+// next launch retries without having discarded the previous log.
+func (a *App) resetDiagnosticsForDailyOpen() bool {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[bug-report] daily reset: load config: %v", err)
+		return false
+	}
+	patch := map[string]interface{}{}
+	if !cfg.LogDetailEnabled || !cfg.LLMTrajectoryLogging {
+		patch["log_detail_enabled"] = true
+		patch["llm_trajectory_logging"] = true
+	}
+	// Closing an open session writes these two fields back onto the live
+	// switches. They have to follow today's on state, or that close turns
+	// collection off and this day's stamp will not turn it on again.
+	if cfg.BugReportEnabled && (!cfg.BugReportPreviousLogDetail || !cfg.BugReportPreviousTrajectory) {
+		patch["bug_report_previous_log_detail"] = true
+		patch["bug_report_previous_trajectory"] = true
+	}
+	if len(patch) > 0 {
+		if _, err := a.PatchConfigFields(patch); err != nil {
+			log.Printf("[bug-report] daily reset: enable switches: %v", err)
+			return false
+		}
+	}
+	corelib.SetLogDetailEnabled(true)
+	a.clearBugReportDiagnostics()
+	log.Printf("[bug-report] daily reset: log detail and LLM trajectory on")
+	return true
 }
 
 // CaptureGUIBugReportScreenshot stores a PNG of the main window before the

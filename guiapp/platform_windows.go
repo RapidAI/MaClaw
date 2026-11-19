@@ -3,6 +3,7 @@
 package guiapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -1763,14 +1764,14 @@ func (a *App) findSh() (string, error) {
 		)
 	}
 	for _, p := range candidates {
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && unixShellCandidate(p) {
 			return p, nil
 		}
 	}
 
-	// 2. PATH 查找，但排除 WSL 入口
+	// 2. PATH 查找。WSL 转发器在执行前就被拒绝。
 	for _, name := range []string{"sh.exe", "bash.exe"} {
-		if path, err := exec.LookPath(name); err == nil && !isWSLShell(path) {
+		if path, err := exec.LookPath(name); err == nil && unixShellCandidate(path) {
 			return path, nil
 		}
 	}
@@ -1779,6 +1780,24 @@ func (a *App) findSh() (string, error) {
 		"找不到 Unix 兼容的 shell（如 Git Bash）\n" +
 			"Suggestion: 安装 Git for Windows: https://git-scm.com/download/win\n" +
 			"或运行: winget install Git.Git")
+}
+
+// unixShellCandidate is true only for a shell that can run a command.
+// System32 and WindowsApps bash.exe are rejected before they are executed.
+func unixShellCandidate(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || isWSLShell(path) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "-c", "echo ok")
+	hideCommandWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "ok"
 }
 
 // isWSLShell 检测路径是否指向 WSL 转发器（不可用的 bash.exe / sh.exe）。

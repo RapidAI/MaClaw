@@ -233,14 +233,21 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		}
 		choice := chunk.Choices[0]
 		delta := choice.Delta
+		extraContent, extraReasoning := openAISDKChunkDeltaText(chunk.RawJSON())
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
 			contentFilter.Write(delta.Content)
+		} else if extraContent != "" {
+			// The SDK only keeps a string content field. Hy and other
+			// gateways send the answer as a list of blocks; those tokens
+			// still count in usage and used to disappear here.
+			contentBuf.WriteString(extraContent)
+			contentFilter.Write(extraContent)
 		}
-		if reasoning := openAISDKChunkReasoningContent(chunk.RawJSON()); reasoning != "" {
-			reasoningBuf.WriteString(reasoning)
+		if extraReasoning != "" {
+			reasoningBuf.WriteString(extraReasoning)
 			if onReasoning != nil {
-				onReasoning(reasoning)
+				onReasoning(extraReasoning)
 			}
 		}
 		if choice.FinishReason != "" {
@@ -342,11 +349,7 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		}
 	}
 
-	msg := Message{
-		Role:             "assistant",
-		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: StripLeakedReasoningProtocol(reasoningBuf.String()),
-	}
+	msg := finishOpenAISDKStreamMessage(contentBuf.String(), reasoningBuf.String())
 	if len(toolCalls) > 0 {
 		maxIdx := 0
 		for idx := range toolCalls {
@@ -432,21 +435,52 @@ func openAISDKChunkLegacyFunctionCall(raw string) *sseFunctionCallDelta {
 	return payload.Choices[0].Delta.FunctionCall
 }
 
-func openAISDKChunkReasoningContent(raw string) string {
+// finishOpenAISDKStreamMessage keeps a think-wrapped answer. StripAllExtra
+// deletes a <think> block. The SSE parser moves that block onto the reasoning
+// channel first; this SDK assembly has to do the same, or a model that writes
+// the whole completion inside the block returns an empty body.
+func finishOpenAISDKStreamMessage(rawContent, reasoning string) Message {
+	visibleContent, taggedReasoning := splitOpenAIThinkingTags(rawContent)
+	if strings.Contains(strings.ToLower(rawContent), "<think>") {
+		visibleContent = strings.TrimPrefix(visibleContent, "\\")
+	}
+	return Message{
+		Role:             "assistant",
+		Content:          StripAllExtra(visibleContent),
+		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoning, taggedReasoning)),
+	}
+}
+
+// openAISDKChunkDeltaText reads content and reasoning from one SSE chunk.
+// String fields stay strings. A list or object is folded the same way a
+// non-stream message is, instead of failing the chunk decode.
+func openAISDKChunkDeltaText(raw string) (content, reasoning string) {
 	var payload struct {
 		Choices []struct {
 			Delta struct {
-				ReasoningContent string `json:"reasoning_content"`
-				Reasoning        string `json:"reasoning"`
-				Thinking         string `json:"thinking"`
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
+				Reasoning        json.RawMessage `json:"reasoning"`
+				Thinking         json.RawMessage `json:"thinking"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
 	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &payload) != nil || len(payload.Choices) == 0 {
-		return ""
+		return "", ""
 	}
 	delta := payload.Choices[0].Delta
-	return openAIReasoningText(delta.ReasoningContent, delta.Reasoning, delta.Thinking)
+	visible, think := openAIFlexibleParts(delta.Content)
+	reasoning = openAIReasoningText(
+		openAIFlexibleText(delta.ReasoningContent),
+		openAIFlexibleText(delta.Reasoning),
+		openAIFlexibleText(delta.Thinking),
+	)
+	// A short text block must not discard a thinking block in the same
+	// content array. The document often lives in that thinking block.
+	if think != "" {
+		reasoning = mergeOpenAIReasoningText(reasoning, think)
+	}
+	return visible, reasoning
 }
 
 func openAISDKChunkUsage(raw string) *Usage {

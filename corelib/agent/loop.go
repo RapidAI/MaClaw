@@ -4841,6 +4841,18 @@ func consumedGrantToolCallDeniedMessage(name string) string {
 	return fmt.Sprintf("Error: tool %q already ran successfully earlier in this turn. That result still stands (e.g. an artifact was already generated or delivered). If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, do not retry %q when it is not listed, and do not report that action as failed, consumed, or undelivered.", name, name)
 }
 
+// RetiredSelectionSuccessDenial is the desktop surface's refusal when a
+// semantic grant already completed earlier in this turn. consumedGrantToolCallDeniedMessage
+// is the loop's sibling for a name that has left the request surface. Recovery
+// accepts only these two sentences as a non-execution.
+func RetiredSelectionSuccessDenial(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("Error: tool %q already ran successfully earlier in this turn. That result still stands and remains valid evidence. If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, and do not report that capability as failed, consumed, or unavailable.", name)
+}
+
 // moaReferenceToolSurfaceDisposition converts only the locally observable
 // outcome of one static advisor request into a diagnostic terminal metric. It
 // deliberately does not assert provider acknowledgement, transport identity,

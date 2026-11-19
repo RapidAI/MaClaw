@@ -26,14 +26,16 @@ type MaclawLLMRoleSummary struct {
 }
 
 // ResolveMaclawLLMRole resolves one loop role.
-// A local pin (inherit_hub false plus a model) wins. A pin that also names a
-// provider runs on that provider; a legacy model-only pin stays on the Hub
-// provider when one exists. Otherwise the interactive assistant (foreground)
-// uses the assistant profile whenever that profile is not MaClaw official, and
-// uses an explicit official model the user selected over the Hub band.
-// Background and computer-use keep the Hub role snapshot. An official
-// assistant left on auto still takes that snapshot. Anything else uses the
-// assistant profile.
+// A local pin (inherit_hub false plus a model) wins when no Hub bot-model
+// cache is present. A pin that also names a provider runs on that provider; a
+// legacy model-only pin stays on the Hub provider when one exists. Otherwise
+// the interactive assistant owns foreground and background whenever that
+// profile is not MaClaw official, and an explicit official model the user
+// selected wins over the Hub band. Computer use follows that assistant when
+// the model can see images. An official assistant left on auto still takes
+// the Hub snapshot, or the cached bot model once that view exists.
+// The bot cache replaces local role pins. It does not replace the assistant
+// the person switched to. The status card uses the same decision.
 func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
@@ -44,15 +46,49 @@ func (a *App) ResolveMaclawLLMRole(role string) (corelib.MaclawLLMConfig, error)
 	if a == nil {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("app is nil")
 	}
-	if choice, ok := a.desktopBotLLMChoice(a.configuredRemoteUserID()); ok {
-		return a.resolveMaclawLLMRoleFromChoice(role, choice)
-	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return corelib.MaclawLLMConfig{}, err
 	}
 	state := a.maclawLLMProvidersFromConfig(&cfg)
-	return a.resolveMaclawLLMRoleFromConfig(role, cfg, state.Providers, state.Current)
+	return a.resolveLoopRole(role, cfg, state.Providers, state.Current)
+}
+
+// resolveLoopRole is the decision the chat loop and the status card share.
+// A cached Hub bot model replaces local role pins. A third-party assistant,
+// or an explicit official band, still owns the role the person switched.
+func (a *App) resolveLoopRole(role string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, error) {
+	// Owner and bot view stay on this snapshot. configuredRemoteUserID and a
+	// cold desktopBotLLMChoice each load config again, so a newer disk write
+	// could pair this assistant with a different bot model.
+	owner := strings.TrimSpace(cfg.RemoteUserID)
+	if choice, ok := a.desktopBotLLMChoiceFromConfig(owner, cfg); ok {
+		if assistant, owned := a.assistantOwnedRole(role, cfg, providers, current); owned {
+			return assistant, nil
+		}
+		return a.resolveMaclawLLMRoleFromChoice(role, choice, cfg, providers, current)
+	}
+	return a.resolveMaclawLLMRoleFromConfig(role, cfg, providers, current)
+}
+
+// assistantOwnedRole is the assistant switch applied before a bot-model cache.
+// Computer use stays on the bot or Hub model when this assistant cannot see,
+// even if the Hub snapshot is empty: the cached bot role can still see.
+func (a *App) assistantOwnedRole(role string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, bool) {
+	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, current)
+	if err != nil || profiles == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	snapshot := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
+	provider, model, selErr := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, cfg, providers, current, profiles)
+	if selErr != nil || !roleUsesAssistantSelection(role, provider, model, snapshot) {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	assistant := ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider))
+	if role == maclawLLMRoleComputerUse && !assistant.SupportsVision {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	return assistant, true
 }
 
 // resolveMaclawLLMRoleFromConfig resolves one role from the config and provider
@@ -108,24 +144,21 @@ func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig,
 }
 
 // resolveMaclawLLMRoleFromChoice follows the Hub-stored bot model. Local
-// role pins are ignored once that view has been read.
-func (a *App) resolveMaclawLLMRoleFromChoice(role string, choice DesktopBotLLM) (corelib.MaclawLLMConfig, error) {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return corelib.MaclawLLMConfig{}, err
-	}
-	state := a.maclawLLMProvidersFromConfig(&cfg)
+// role pins are ignored once that view has been read. The caller reaches
+// here only when the assistant does not own the role, and passes the config
+// it already loaded so a panel draft is not replaced by a later disk read.
+func (a *App) resolveMaclawLLMRoleFromChoice(role string, choice DesktopBotLLM, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, error) {
 	mode := strings.TrimSpace(choice.Choice)
 	if mode == "" {
 		mode = strings.TrimSpace(choice.Mode)
 	}
 	if mode == "custom" {
 		if spec, explicit := explicitDesktopBotRole(choice, role); explicit {
-			return a.materializeDesktopHubRole(role, spec, state.Providers)
+			return a.materializeDesktopHubRole(role, spec, providers)
 		}
 	}
 	if spec, ok := effectiveDesktopBotRole(choice, role); ok {
-		if resolved, matErr := a.materializeDesktopHubRole(role, spec, state.Providers); matErr == nil {
+		if resolved, matErr := a.materializeDesktopHubRole(role, spec, providers); matErr == nil {
 			return resolved, nil
 		}
 	}
@@ -137,7 +170,7 @@ func (a *App) resolveMaclawLLMRoleFromChoice(role string, choice DesktopBotLLM) 
 		profiles.ComputerUse = corelib.MaclawLLMRoleAssignment{}
 		cleared.MaclawLLMProfiles = &profiles
 	}
-	return a.resolveMaclawLLMRoleFromConfig(role, cleared, state.Providers, state.Current)
+	return a.resolveMaclawLLMRoleFromConfig(role, cleared, providers, current)
 }
 
 func explicitDesktopBotRole(choice DesktopBotLLM, role string) (DesktopBotLLMRole, bool) {
@@ -419,7 +452,7 @@ func validateMaclawLLMRoleAssignment(name string, role corelib.MaclawLLMRoleAssi
 
 func (a *App) maclawLLMRoleSummary(role string, assignment corelib.MaclawLLMRoleAssignment, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) MaclawLLMRoleSummary {
 	summary := MaclawLLMRoleSummary{Role: role, InheritHub: assignment.InheritsHub()}
-	resolved, err := a.resolveMaclawLLMRoleFromConfig(role, cfg, providers, current)
+	resolved, err := a.resolveLoopRole(role, cfg, providers, current)
 	if err != nil || strings.TrimSpace(resolved.Model) == "" {
 		return summary
 	}

@@ -738,6 +738,8 @@ type scriptedDesktop struct {
 	startCount   int
 	clicks       []string
 	keys         []string
+	clickErr     error
+	keyErr       error
 }
 
 func (s *scriptedDesktop) Start(context.Context, string, string) (int, func(), error) {
@@ -761,6 +763,9 @@ func (s *scriptedDesktop) Observe(context.Context, int) (desktopObservation, err
 }
 
 func (s *scriptedDesktop) Click(context.Context, int, int, int) error {
+	if s.clickErr != nil {
+		return s.clickErr
+	}
 	s.clicks = append(s.clicks, "click")
 	if s.revealPay {
 		s.labels = []string{"立即支付"}
@@ -769,30 +774,52 @@ func (s *scriptedDesktop) Click(context.Context, int, int, int) error {
 }
 
 func (s *scriptedDesktop) Key(_ context.Context, _ int, key string) error {
+	if s.keyErr != nil {
+		return s.keyErr
+	}
 	s.keys = append(s.keys, key)
 	return nil
 }
 
 type scriptedBrowser struct {
-	page      acceptancePage
-	landed    acceptancePage
-	navigated []string
-	presses   []string
-	clicks    []string
-	hands     []string
-	pressErr  error
+	page       acceptancePage
+	landed     acceptancePage
+	navigated  []string
+	presses    []string
+	clicks     []string
+	hands      []string
+	pressErr   error
+	clickErr   error
+	navErr     error
+	observeErr error
+	stop       func()
 }
 
 func (s *scriptedBrowser) Navigate(_ context.Context, rawURL string) error {
+	if s.navErr != nil {
+		if s.stop != nil {
+			s.stop()
+		}
+		return s.navErr
+	}
 	s.navigated = append(s.navigated, rawURL)
 	return nil
 }
 
 func (s *scriptedBrowser) Observe(context.Context) (acceptancePage, error) {
+	if s.observeErr != nil {
+		if s.stop != nil {
+			s.stop()
+		}
+		return acceptancePage{}, s.observeErr
+	}
 	return s.page, nil
 }
 
 func (s *scriptedBrowser) Click(context.Context, int, int) error {
+	if s.clickErr != nil {
+		return s.clickErr
+	}
 	s.clicks = append(s.clicks, "click")
 	if s.landed.URL != "" || s.landed.Title != "" || s.landed.Text != "" {
 		s.page = s.landed
@@ -826,11 +853,34 @@ type fakeAcceptancePage struct {
 	landedTitle   string
 	revealOnClick bool
 	revealRefs    []browser.BrowserElementRef
+	actionStatus  string
+	actionDetail  string
+	actionDisplay string
+	navStatus     string
+	navDetail     string
+	navDisplay    string
+	navErr        error
+	// navResultURL and actionResultURL are the address the action result
+	// reports. They stay independent of the probe, which can still be the
+	// previous document.
+	navResultURL    string
+	actionResultURL string
+}
+
+func (f *fakeAcceptancePage) actionResult(status, detail, display, resultURL string) *browser.BrowserActionResult {
+	result := &browser.BrowserActionResult{Status: status, Detail: detail, Display: display}
+	if strings.TrimSpace(resultURL) != "" {
+		result.Data = map[string]interface{}{"url": resultURL}
+	}
+	return result
 }
 
 func (f *fakeAcceptancePage) Navigate(string) (*browser.BrowserActionResult, error) {
 	f.navigated++
-	return &browser.BrowserActionResult{}, nil
+	if f.navErr != nil {
+		return nil, f.navErr
+	}
+	return f.actionResult(f.navStatus, f.navDetail, f.navDisplay, f.navResultURL), nil
 }
 
 func (f *fakeAcceptancePage) ProbeForModel(string) (*browser.BrowserObservation, error) {
@@ -857,12 +907,12 @@ func (f *fakeAcceptancePage) Click(snapshotID, ref, selector string) (*browser.B
 	if f.revealOnClick {
 		f.refs = append([]browser.BrowserElementRef(nil), f.revealRefs...)
 	}
-	return &browser.BrowserActionResult{}, nil
+	return f.actionResult(f.actionStatus, f.actionDetail, f.actionDisplay, f.actionResultURL), nil
 }
 
 func (f *fakeAcceptancePage) Press(key string) (*browser.BrowserActionResult, error) {
 	f.presses = append(f.presses, key)
-	return &browser.BrowserActionResult{}, nil
+	return f.actionResult(f.actionStatus, f.actionDetail, f.actionDisplay, f.actionResultURL), nil
 }
 
 func TestAcceptanceDesktopDrive(t *testing.T) {
@@ -1013,6 +1063,54 @@ func TestAcceptanceDesktopDrive(t *testing.T) {
 		t.Fatalf("outside clicks=%v acc=%+v", outsideClick.clicks, acc)
 	}
 
+	// The first look is a normal window. The driver then sees a secret surface
+	// and must not be recorded as a generic click failure.
+	lateSecret := &scriptedDesktop{
+		image: exe, title: "Editor", hasBounds: true, right: 200, bottom: 200,
+		clickErr: &acceptanceDesktopDriveFault{
+			detail: "handoff_refused",
+			reason: "秘密、支付或系统安全界面已拒绝。没有点击，没有按键，也没有等待确认。",
+		},
+	}
+	acceptanceDesktopDriver = lateSecret
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		filesCreated: map[string]bool{exe: true},
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "late", ClickX: &clickX, ClickY: &clickY, Expect: "click",
+		}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(lateSecret.clicks) != 0 || !acceptanceDetailHas(acc, "handoff_refused") || strings.Contains(acc.Reason, "点击失败") || !strings.Contains(acc.Reason, "秘密") {
+		t.Fatalf("late secret clicks=%v acc=%+v", lateSecret.clicks, acc)
+	}
+
+	lateImage := &scriptedDesktop{
+		image: exe, title: "Tetris",
+		keyErr: &acceptanceDesktopDriveFault{
+			detail: "image_mismatch",
+			reason: "前台映像路径与刚构建的程序不一致，没有点击也没有按键。",
+		},
+	}
+	acceptanceDesktopDriver = lateImage
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{filesCreated: map[string]bool{exe: true}}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(lateImage.keys) != 0 || !acceptanceDetailHas(acc, "image_mismatch") || strings.Contains(acc.Reason, "按键失败") {
+		t.Fatalf("late image keys=%v acc=%+v", lateImage.keys, acc)
+	}
+
+	lateBoom := &scriptedDesktop{
+		image: exe, title: "Editor", hasBounds: true, right: 200, bottom: 200,
+		clickErr: errors.New("boom"),
+	}
+	acceptanceDesktopDriver = lateBoom
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		filesCreated: map[string]bool{exe: true},
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "boom", ClickX: &clickX, ClickY: &clickY, Expect: "click",
+		}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(lateBoom.clicks) != 0 || !acceptanceDetailHas(acc, "click_failed") || !strings.Contains(acc.Reason, "点击失败") {
+		t.Fatalf("plain click error clicks=%v acc=%+v", lateBoom.clicks, acc)
+	}
+
 	good := &scriptedDesktop{image: exe, title: "Tetris", covers: true}
 	acceptanceDesktopDriver = good
 	var notes []string
@@ -1080,6 +1178,22 @@ func TestAcceptanceWebDrive(t *testing.T) {
 	if err := acceptanceNavigationAllowed("127.0.0.1", 8080, "http://127.0.0.1:8080/%5c%5cevil"); err == nil {
 		t.Fatal("encoded backslash navigation was allowed")
 	}
+	parseErr := acceptanceNavigationAllowed("127.0.0.1", 8080, "http://127.0.0.1:8080/%zzhunter2")
+	if parseErr == nil || strings.Contains(parseErr.Error(), "hunter2") || strings.Contains(parseErr.Error(), "%zz") {
+		t.Fatalf("parse error echoed the url: %v", parseErr)
+	}
+	hostErr := acceptanceNavigationAllowed("127.0.0.1", 8080, "http://evil.example/hunter2")
+	if hostErr == nil || strings.Contains(hostErr.Error(), "hunter2") || strings.Contains(hostErr.Error(), "evil.example") {
+		t.Fatalf("host refusal echoed the target: %v", hostErr)
+	}
+	schemeErr := acceptanceNavigationAllowed("127.0.0.1", 8080, "hunter2:secret")
+	if schemeErr == nil || strings.Contains(schemeErr.Error(), "hunter2") || strings.Contains(schemeErr.Error(), "secret") {
+		t.Fatalf("scheme refusal echoed the target: %v", schemeErr)
+	}
+	portErr := acceptanceNavigationAllowed("127.0.0.1", 8080, "http://127.0.0.1:9/hunter2")
+	if portErr == nil || strings.Contains(portErr.Error(), "hunter2") || strings.Contains(portErr.Error(), "9") {
+		t.Fatalf("port refusal echoed the target: %v", portErr)
+	}
 
 	lockAcceptanceHooks(t)
 	dir := t.TempDir()
@@ -1113,6 +1227,33 @@ func TestAcceptanceWebDrive(t *testing.T) {
 	}
 	agent.handler.clearCodingExecCheckpoint(userID)
 
+	loginTitle := &scriptedBrowser{page: acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Login", Text: "board"}}
+	acceptanceBrowserDriver = loginTitle
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", nil, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(loginTitle.hands) == 0 || len(loginTitle.clicks) != 0 {
+		t.Fatalf("login title hands=%v clicks=%v acc=%+v", loginTitle.hands, loginTitle.clicks, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	// Words in the page body are prose. The start button is still clicked.
+	proseX, proseY := 8, 9
+	prose := &scriptedBrowser{page: acceptancePage{
+		URL:   "http://127.0.0.1:8080/",
+		Title: "Play",
+		Text:  "请输入密码 Login 立即支付 signing",
+	}}
+	acceptanceBrowserDriver = prose
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		filesCreated: map[string]bool{server: true},
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "play", ClickX: &proseX, ClickY: &proseY, Expect: "click",
+		}}},
+	}, userID, false, false)
+	if acc.Status != acceptanceStatusPassed || len(prose.clicks) != 1 || acceptanceDetailHas(acc, "handoff_refused") || strings.Contains(acc.Reason, "密码") || strings.Contains(acc.Reason, "Login") {
+		t.Fatalf("prose body clicks=%v acc=%+v", prose.clicks, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
 	aboutBrief := &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{ID: "bad", URL: "about:blank", Expect: "navigate"}}}
 	blank := &scriptedBrowser{page: acceptancePage{URL: "about:blank"}}
 	acceptanceBrowserDriver = blank
@@ -1139,8 +1280,24 @@ func TestAcceptanceWebDrive(t *testing.T) {
 	jumped := &scriptedBrowser{page: acceptancePage{URL: "http://localhost:8080/", Title: "Play"}}
 	acceptanceBrowserDriver = jumped
 	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", nil, userID, false, false)
-	if acc.Status == acceptanceStatusPassed || len(jumped.clicks) != 0 || len(jumped.navigated) == 0 {
+	if acc.Status == acceptanceStatusPassed || len(jumped.clicks) != 0 || len(jumped.navigated) == 0 || strings.Contains(acc.Reason, "localhost") || !strings.Contains(acc.Reason, "离开了监听地址") {
 		t.Fatalf("redirect clicks=%v navigated=%v acc=%+v", jumped.clicks, jumped.navigated, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	leftX, leftY := 3, 4
+	left := &scriptedBrowser{
+		page:   acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		landed: acceptancePage{URL: "http://evil.example/x?token=hunter2", Title: "away"},
+	}
+	acceptanceBrowserDriver = left
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "leave", ClickX: &leftX, ClickY: &leftY, Expect: "click",
+		}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(left.clicks) != 1 || !strings.Contains(acc.Reason, "动作之后页面离开了监听地址") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "evil.example") {
+		t.Fatalf("left after click clicks=%v acc=%+v", left.clicks, acc)
 	}
 	agent.handler.clearCodingExecCheckpoint(userID)
 
@@ -1165,6 +1322,72 @@ func TestAcceptanceWebDrive(t *testing.T) {
 	}, userID, false, false)
 	if acc.Status == acceptanceStatusPassed || len(secretKey.presses) != 0 || !acceptanceDetailHas(acc, "handoff_refused") || !strings.Contains(acc.Reason, "留给用户") || strings.Contains(acc.Reason, "hunter2") {
 		t.Fatalf("secret key presses=%v acc=%+v", secretKey.presses, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	// The second look can refuse the origin. That sentence stays the reason.
+	offKey := &scriptedBrowser{
+		page: acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		pressErr: &acceptanceWebDriveFault{
+			detail: "navigation_refused",
+			reason: "隔离浏览器没有留在监听地址。没有按键。",
+		},
+	}
+	acceptanceBrowserDriver = offKey
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{ID: "move", Keys: []string{"left"}, Expect: "direction_change"}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(offKey.presses) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || !strings.Contains(acc.Reason, "没有按键") || strings.Contains(acc.Reason, "localhost") {
+		t.Fatalf("off-origin key presses=%v acc=%+v", offKey.presses, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	// An unclassified click error must not be copied into the summary.
+	boomClick := &scriptedBrowser{
+		page:     acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		clickErr: errors.New("boom hunter2"),
+	}
+	acceptanceBrowserDriver = boomClick
+	boomX, boomY := 4, 4
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{ID: "play", ClickX: &boomX, ClickY: &boomY, Expect: "click"}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(boomClick.clicks) != 0 || !acceptanceDetailHas(acc, "click_failed") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "boom") || !strings.Contains(acc.Reason, "没有点到") {
+		t.Fatalf("plain click error clicks=%v acc=%+v", boomClick.clicks, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	// A blocked navigation did not open the page. The old page must not pass.
+	blockedNav := &scriptedBrowser{
+		page:   acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		navErr: &acceptanceClickWallError{wall: "payment"},
+	}
+	acceptanceBrowserDriver = blockedNav
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", nil, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(blockedNav.navigated) != 0 || len(blockedNav.hands) == 0 || !acceptanceDetailHas(acc, "handoff_refused") || !strings.Contains(acc.Reason, "留给用户") {
+		t.Fatalf("blocked navigate navigated=%v hands=%v acc=%+v", blockedNav.navigated, blockedNav.hands, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	boomNav := &scriptedBrowser{
+		page:   acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		navErr: errors.New("boom hunter2"),
+	}
+	acceptanceBrowserDriver = boomNav
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", nil, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(boomNav.navigated) != 0 || !acceptanceDetailHas(acc, "navigate_failed") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "boom") || !strings.Contains(acc.Reason, "没有打开页面") {
+		t.Fatalf("plain navigate error navigated=%v acc=%+v", boomNav.navigated, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	boomObserve := &scriptedBrowser{
+		page:       acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play", Text: "board"},
+		observeErr: errors.New("boom hunter2"),
+	}
+	acceptanceBrowserDriver = boomObserve
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", nil, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(boomObserve.navigated) == 0 || !acceptanceDetailHas(acc, "observe_failed") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "boom") || !strings.Contains(acc.Reason, "观察页面失败") {
+		t.Fatalf("plain observe error navigated=%v acc=%+v", boomObserve.navigated, acc)
 	}
 	agent.handler.clearCodingExecCheckpoint(userID)
 
@@ -1212,6 +1435,30 @@ func TestAcceptanceWebDrive(t *testing.T) {
 	}, userID, false, false)
 	if acc.Status == acceptanceStatusPassed || len(credPage.navigated) != 0 || len(credPage.clicks) != 0 || strings.Contains(acc.Reason, "hunter2") {
 		t.Fatalf("userinfo navigated=%v acc=%+v", credPage.navigated, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	parsePage := &scriptedBrowser{page: acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play"}}
+	acceptanceBrowserDriver = parsePage
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "parse", URL: "http://127.0.0.1:8080/%zzhunter2", Expect: "navigate",
+		}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(parsePage.navigated) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "%zz") {
+		t.Fatalf("parse url navigated=%v acc=%+v", parsePage.navigated, acc)
+	}
+	agent.handler.clearCodingExecCheckpoint(userID)
+
+	hostPage := &scriptedBrowser{page: acceptancePage{URL: "http://127.0.0.1:8080/", Title: "Play"}}
+	acceptanceBrowserDriver = hostPage
+	_, acc = agent.applyCodingInteractiveAcceptance(nil, "ok", &codingSubAgentCallbacks{
+		acceptanceBrief: &codingAcceptanceBrief{Checks: []codingAcceptanceCheck{{
+			ID: "host", URL: "http://evil.example/hunter2", Expect: "navigate",
+		}}},
+	}, userID, false, false)
+	if acc.Status == acceptanceStatusPassed || len(hostPage.navigated) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "evil.example") {
+		t.Fatalf("foreign host navigated=%v acc=%+v", hostPage.navigated, acc)
 	}
 	agent.handler.clearCodingExecCheckpoint(userID)
 
@@ -1349,6 +1596,39 @@ func TestAcceptanceWebElementClick(t *testing.T) {
 	if !paySelRefused || paySelWall != "payment" || len(page.clicks) != 0 || strings.Contains(paySelErr.Error(), "pay-btn") {
 		t.Fatalf("pay selector wall=%s err=%v clicks=%v", paySelWall, paySelErr, page.clicks)
 	}
+	// The pay token on the left of a combinator names an ancestor. The button
+	// is the last compound. The control's own class and id still count.
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "开始",
+		Selector:           `#pay-btn > button:nth-of-type(1)`,
+		SelectorCandidates: []string{`div[data-testid="buy-now"] > button:nth-of-type(1)`, `#go-pay button`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("ancestor pay selector err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pay", SnapshotID: "snap-1", Name: "继续", Selector: "button.pay-btn",
+		Visible: true, InViewport: true, BoundingBox: small,
+	}}
+	ownPay := live.Click(context.Background(), 10, 10)
+	ownPayWall, ownPayRefused := acceptanceClickWall(ownPay)
+	if !ownPayRefused || ownPayWall != "payment" || len(page.clicks) != 0 || strings.Contains(ownPay.Error(), "pay-btn") {
+		t.Fatalf("own pay class wall=%s err=%v clicks=%v", ownPayWall, ownPay, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pay", SnapshotID: "snap-1", Name: "继续",
+		StableKey: "button|pay-btn||button|继续|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	ownKey := live.Click(context.Background(), 10, 10)
+	ownKeyWall, ownKeyRefused := acceptanceClickWall(ownKey)
+	if !ownKeyRefused || ownKeyWall != "payment" || len(page.clicks) != 0 || strings.Contains(ownKey.Error(), "pay-btn") {
+		t.Fatalf("own pay id wall=%s err=%v clicks=%v", ownKeyWall, ownKey, page.clicks)
+	}
 
 	page.clicks = nil
 	page.flags = browser.BrowserPageFlags{PaymentConfirm: true}
@@ -1457,6 +1737,572 @@ func TestAcceptanceWebElementClick(t *testing.T) {
 	nameWall, nameRefused := acceptanceClickWall(nameErr)
 	if !nameRefused || nameWall != "password" || len(page.clicks) != 0 || strings.Contains(nameErr.Error(), "hunter2") || strings.Contains(nameErr.Error(), "password") {
 		t.Fatalf("name attribute wall=%s err=%v clicks=%v", nameWall, nameErr, page.clicks)
+	}
+
+	// autocomplete is not the visible name. The probe appends it as a selector.
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		SelectorCandidates: []string{`input[autocomplete="current-password"]`},
+		Value:              "hunter2", Visible: true, InViewport: true, BoundingBox: small,
+	}}
+	acErr := live.Click(context.Background(), 10, 10)
+	acWall, acRefused := acceptanceClickWall(acErr)
+	if !acRefused || acWall != "password" || len(page.clicks) != 0 || strings.Contains(acErr.Error(), "hunter2") || strings.Contains(acErr.Error(), "password") || strings.Contains(acErr.Error(), "current-password") {
+		t.Fatalf("autocomplete password wall=%s err=%v clicks=%v", acWall, acErr, page.clicks)
+	}
+	for _, token := range []struct {
+		sel  string
+		wall string
+	}{
+		{`input[autocomplete="one-time-code"]`, "captcha"},
+		{`input[autocomplete="cc-csc"]`, "payment"},
+		{`input[autocomplete="cc-number"]`, "payment"},
+		{`input[autocomplete="cc-exp"]`, "payment"},
+	} {
+		page.clicks = nil
+		page.refs = []browser.BrowserElementRef{{
+			Ref: "@go", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+			SelectorCandidates: []string{token.sel},
+			Visible:            true, InViewport: true, BoundingBox: small,
+		}}
+		err := live.Click(context.Background(), 10, 10)
+		wall, refused := acceptanceClickWall(err)
+		if !refused || wall != token.wall || len(page.clicks) != 0 || strings.Contains(err.Error(), "one-time-code") || strings.Contains(err.Error(), "cc-csc") || strings.Contains(err.Error(), "cc-number") || strings.Contains(err.Error(), "cc-exp") {
+			t.Fatalf("autocomplete %s wall=%s err=%v clicks=%v", token.sel, wall, err, page.clicks)
+		}
+	}
+	if acceptancePageNeedsUser(acceptancePage{Title: "one-time offer"}) != "" {
+		t.Fatal("one-time offer was treated as a code field")
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		SelectorCandidates: []string{`input[autocomplete="email"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("email autocomplete err=%v clicks=%v", err, page.clicks)
+	}
+
+	// A nil error with status ask/blocked did not send the click.
+	page.clicks = nil
+	page.actionStatus = "unchanged"
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("unchanged click err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	page.actionStatus = "ask"
+	page.actionDetail = "login_qr"
+	page.actionDisplay = "hunter2"
+	askErr := live.Click(context.Background(), 10, 10)
+	askWall, askRefused := acceptanceClickWall(askErr)
+	if !askRefused || askWall != "login" || strings.Contains(askErr.Error(), "hunter2") || strings.Contains(askErr.Error(), "login_qr") {
+		t.Fatalf("ask result wall=%s err=%v", askWall, askErr)
+	}
+	page.actionStatus = "blocked"
+	page.actionDetail = ""
+	page.actionDisplay = "已在下单/支付前停下 hunter2"
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "pay", ClickX: &x, ClickY: &y, Expect: "click",
+	}})
+	if acc.Status == acceptanceStatusPassed || !acceptanceDetailHas(acc, "handoff_refused") || !strings.Contains(acc.Reason, "留给用户") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "支付前") {
+		t.Fatalf("blocked click acc=%+v", acc)
+	}
+
+	// unchanged on the same document landed. A different document did not.
+	// ask and blocked did not open the page, and their display is not copied.
+	page.actionStatus = "ok"
+	page.actionDetail = ""
+	page.actionDisplay = ""
+	page.clicks = nil
+	page.navStatus = "unchanged"
+	if err := live.Navigate(context.Background(), origin); err != nil {
+		t.Fatalf("unchanged navigate err=%v", err)
+	}
+	if err := live.Navigate(context.Background(), "http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("unchanged equivalent document err=%v", err)
+	}
+	stayed := live.Navigate(context.Background(), origin+"pay?token=hunter2")
+	stayedDetail, stayedReason := acceptanceWebNavigateFailure(stayed)
+	if stayedDetail != "navigation_refused" || !strings.Contains(stayedReason, "没有打开请求的页面") || strings.Contains(stayed.Error(), "hunter2") || strings.Contains(stayed.Error(), "pay") {
+		t.Fatalf("unchanged other document detail=%s err=%v", stayedDetail, stayed)
+	}
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "stay", URL: origin + "pay?token=hunter2", Expect: "navigate",
+	}})
+	if acc.Status == acceptanceStatusPassed || len(page.clicks) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || !strings.Contains(acc.Reason, "没有打开请求的页面") || strings.Contains(acc.Reason, "hunter2") {
+		t.Fatalf("unchanged navigate through runner clicks=%v acc=%+v", page.clicks, acc)
+	}
+	page.navStatus = "ask"
+	page.navDetail = "login_qr"
+	page.navDisplay = "hunter2"
+	askNav := live.Navigate(context.Background(), origin)
+	askNavWall, askNavRefused := acceptanceClickWall(askNav)
+	if !askNavRefused || askNavWall != "login" || strings.Contains(askNav.Error(), "hunter2") || strings.Contains(askNav.Error(), "login_qr") {
+		t.Fatalf("ask navigate wall=%s err=%v", askNavWall, askNav)
+	}
+	page.navStatus = "blocked"
+	page.navDetail = ""
+	page.navDisplay = "已在下单/支付前停下 hunter2"
+	blockedNavErr := live.Navigate(context.Background(), origin)
+	blockedNavWall, blockedNavRefused := acceptanceClickWall(blockedNavErr)
+	if !blockedNavRefused || blockedNavWall != "payment" || strings.Contains(blockedNavErr.Error(), "hunter2") || strings.Contains(blockedNavErr.Error(), "支付前") {
+		t.Fatalf("blocked navigate wall=%s err=%v", blockedNavWall, blockedNavErr)
+	}
+	page.navStatus = ""
+	page.navDisplay = ""
+	page.navErr = errors.New("boom hunter2")
+	plainNav := live.Navigate(context.Background(), origin)
+	if plainNav == nil || strings.Contains(plainNav.Error(), "hunter2") || strings.Contains(plainNav.Error(), "boom") || !strings.Contains(plainNav.Error(), "没有打开页面") {
+		t.Fatalf("plain navigate err=%v", plainNav)
+	}
+	page.navErr = nil
+	page.navStatus = "blocked"
+	page.navDisplay = "已在下单/支付前停下 hunter2"
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "pay", ClickX: &x, ClickY: &y, Expect: "click",
+	}})
+	if acc.Status == acceptanceStatusPassed || len(page.clicks) != 0 || !acceptanceDetailHas(acc, "handoff_refused") || !strings.Contains(acc.Reason, "留给用户") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "支付前") {
+		t.Fatalf("blocked navigate through runner clicks=%v acc=%+v", page.clicks, acc)
+	}
+
+	navCtx, navCancel := context.WithCancel(context.Background())
+	stopping := &scriptedBrowser{navErr: errors.New("boom hunter2"), stop: navCancel}
+	acc = runWebAcceptance(navCtx, stopping, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, nil)
+	if acc.Status != acceptanceStatusCancelled || acc.Reason != acceptanceReasonCancelled || len(stopping.navigated) != 0 || strings.Contains(acc.Reason, "hunter2") {
+		t.Fatalf("cancel during navigate acc=%+v", acc)
+	}
+	obsCtx, obsCancel := context.WithCancel(context.Background())
+	stoppingObserve := &scriptedBrowser{
+		page:       acceptancePage{URL: origin, Title: "Play"},
+		observeErr: errors.New("boom hunter2"),
+		stop:       obsCancel,
+	}
+	acc = runWebAcceptance(obsCtx, stoppingObserve, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, nil)
+	if acc.Status != acceptanceStatusCancelled || acc.Reason != acceptanceReasonCancelled || strings.Contains(acc.Reason, "hunter2") {
+		t.Fatalf("cancel during observe acc=%+v", acc)
+	}
+
+	// The action result can name a disallowed document while the next probe
+	// still shows this origin. That result is not a pass, and it is not echoed.
+	page.navErr = nil
+	page.navStatus = "unchanged"
+	page.navDetail = ""
+	page.navDisplay = ""
+	page.navResultURL = "http://admin:hunter2@127.0.0.1:8080/"
+	page.url = origin
+	page.clicks = nil
+	page.navigated = 0
+	credNav := live.Navigate(context.Background(), origin)
+	credDetail, credReason := acceptanceWebNavigateFailure(credNav)
+	if credDetail != "navigation_refused" || !strings.Contains(credReason, "没有打开请求的页面") || strings.Contains(credNav.Error(), "hunter2") || strings.Contains(credNav.Error(), "admin") {
+		t.Fatalf("userinfo result detail=%s err=%v", credDetail, credNav)
+	}
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "stay", URL: origin, Expect: "navigate",
+	}})
+	if acc.Status == acceptanceStatusPassed || len(page.clicks) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || !strings.Contains(acc.Reason, "没有打开请求的页面") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "admin") {
+		t.Fatalf("userinfo result through runner clicks=%v acc=%+v", page.clicks, acc)
+	}
+	page.navResultURL = ""
+	page.url = "http://admin:hunter2@127.0.0.1:8080/"
+	bareCred := live.Navigate(context.Background(), origin)
+	if bareCred == nil || strings.Contains(bareCred.Error(), "hunter2") || strings.Contains(bareCred.Error(), "admin") || !strings.Contains(bareCred.Error(), "没有打开请求的页面") {
+		t.Fatalf("userinfo current url err=%v", bareCred)
+	}
+	page.url = origin
+	page.navStatus = "ok"
+	page.navResultURL = "http://evil.example/hunter2"
+	leftNav := live.Navigate(context.Background(), origin)
+	leftDetail, leftReason := acceptanceWebNavigateFailure(leftNav)
+	if leftDetail != "navigation_refused" || !strings.Contains(leftReason, "没有打开请求的页面") || strings.Contains(leftNav.Error(), "hunter2") || strings.Contains(leftNav.Error(), "evil.example") {
+		t.Fatalf("off-origin result detail=%s err=%v", leftDetail, leftNav)
+	}
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "leave", ClickX: &x, ClickY: &y, Expect: "click",
+	}})
+	if acc.Status == acceptanceStatusPassed || len(page.clicks) != 0 || !acceptanceDetailHas(acc, "navigation_refused") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "evil.example") {
+		t.Fatalf("off-origin result through runner clicks=%v acc=%+v", page.clicks, acc)
+	}
+	page.navResultURL = "http://127.0.0.1:8080/play"
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "redirect", URL: origin, Expect: "navigate",
+	}})
+	if acc.Status != acceptanceStatusPassed || len(page.clicks) != 0 || strings.Contains(acc.Reason, "play") {
+		t.Fatalf("same-host redirect acc=%+v", acc)
+	}
+	page.navResultURL = ""
+	page.navStatus = "blocked"
+	page.navDisplay = "已在下单/支付前停下 hunter2"
+	page.navResultURL = "http://evil.example/hunter2"
+	blockedWithURL := live.Navigate(context.Background(), origin)
+	blockedURLWall, blockedURLRefused := acceptanceClickWall(blockedWithURL)
+	if !blockedURLRefused || blockedURLWall != "payment" || strings.Contains(blockedWithURL.Error(), "hunter2") || strings.Contains(blockedWithURL.Error(), "evil.example") {
+		t.Fatalf("blocked result url wall=%s err=%v", blockedURLWall, blockedWithURL)
+	}
+	page.navStatus = ""
+	page.navDisplay = ""
+	page.navResultURL = ""
+
+	page.actionStatus = "unchanged"
+	page.actionResultURL = origin
+	page.clicks = nil
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("unchanged click on origin err=%v clicks=%v", err, page.clicks)
+	}
+	page.actionStatus = "ok"
+	page.actionResultURL = "http://evil.example/hunter2"
+	page.clicks = nil
+	leftClick := live.Click(context.Background(), 10, 10)
+	clickDetail, clickReason := acceptanceWebFailure(leftClick, false)
+	if clickDetail != "navigation_refused" || len(page.clicks) != 1 || !strings.Contains(clickReason, "离开了监听地址") || strings.Contains(leftClick.Error(), "hunter2") || strings.Contains(leftClick.Error(), "evil.example") {
+		t.Fatalf("click result url detail=%s clicks=%v err=%v", clickDetail, page.clicks, leftClick)
+	}
+	page.actionResultURL = "http://127.0.0.1:9/hunter2"
+	page.presses = nil
+	leftPress := live.Press(context.Background(), "left")
+	pressDetail, pressReason := acceptanceWebFailure(leftPress, true)
+	if pressDetail != "navigation_refused" || len(page.presses) != 1 || !strings.Contains(pressReason, "离开了监听地址") || strings.Contains(leftPress.Error(), "hunter2") || strings.Contains(leftPress.Error(), "9") {
+		t.Fatalf("press result url detail=%s presses=%v err=%v", pressDetail, page.presses, leftPress)
+	}
+	page.actionStatus = ""
+	page.actionResultURL = "http://evil.example/hunter2"
+	page.clicks = nil
+	page.presses = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "leave", ClickX: &x, ClickY: &y, Expect: "click",
+	}})
+	if acc.Status == acceptanceStatusPassed || len(page.clicks) != 1 || !acceptanceDetailHas(acc, "navigation_refused") || !strings.Contains(acc.Reason, "离开了监听地址") || strings.Contains(acc.Reason, "hunter2") || strings.Contains(acc.Reason, "evil.example") {
+		t.Fatalf("click result through runner clicks=%v acc=%+v", page.clicks, acc)
+	}
+	page.actionResultURL = ""
+
+	// A paragraph on the control is not a caption. The probe copies that
+	// paragraph into the stable key and can also put it in an aria-label
+	// selector. A short pay label still is.
+	page.actionStatus = ""
+	page.navStatus = ""
+	page.navResultURL = ""
+	page.navDisplay = ""
+	page.navErr = nil
+	page.flags = browser.BrowserPageFlags{}
+	page.url = origin
+	page.title = "Play"
+	page.text = "请输入密码 Login 立即支付"
+	page.revealOnClick = false
+	longCaption := "这是一段放在按钮上的说明文字，里面写了登录、立即支付和密码，但不是按钮标题。"
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "开始",
+		Text:               longCaption,
+		StableKey:          "button|||button|" + longCaption + "|1",
+		SelectorCandidates: []string{`[role="button"][aria-label="` + longCaption + `"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	page.clicks = nil
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("long control text err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	acc = runWebAcceptance(context.Background(), live, acceptanceListen{Host: "127.0.0.1", Port: 8080, URL: origin}, []codingAcceptanceCheck{{
+		ID: "play", ClickX: &x, ClickY: &y, Expect: "click",
+	}})
+	if acc.Status != acceptanceStatusPassed || len(page.clicks) != 1 || acceptanceDetailHas(acc, "handoff_refused") || strings.Contains(acc.Reason, "密码") || strings.Contains(acc.Reason, "Login") {
+		t.Fatalf("prose page clicks=%v acc=%+v", page.clicks, acc)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pay", SnapshotID: "snap-1", Text: "立即支付", Visible: true, InViewport: true, BoundingBox: small,
+	}}
+	shortPay := live.Click(context.Background(), 10, 10)
+	shortWall, shortRefused := acceptanceClickWall(shortPay)
+	if !shortRefused || shortWall != "payment" || len(page.clicks) != 0 || strings.Contains(shortPay.Error(), "立即支付") {
+		t.Fatalf("short pay text wall=%s err=%v clicks=%v", shortWall, shortPay, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@in", SnapshotID: "snap-1", Name: "Sign-in", Visible: true, InViewport: true, BoundingBox: small,
+	}}
+	signErr := live.Click(context.Background(), 10, 10)
+	signWall, signRefused := acceptanceClickWall(signErr)
+	if !signRefused || signWall != "login" || len(page.clicks) != 0 || strings.Contains(signErr.Error(), "Sign-in") {
+		t.Fatalf("sign-in control wall=%s err=%v clicks=%v", signWall, signErr, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@sub", SnapshotID: "snap-1", Name: "密码学", Visible: true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("密码学 control err=%v clicks=%v", err, page.clicks)
+	}
+
+	// The probe's accessible name is the same long sentence the stable key stores.
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: longCaption, Text: longCaption,
+		StableKey:          "button|||button|" + longCaption + "|1",
+		SelectorCandidates: []string{`[role="button"][aria-label="` + longCaption + `"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("long stable caption err=%v clicks=%v", err, page.clicks)
+	}
+	piped := "登录|" + longCaption
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: piped, Text: piped,
+		StableKey: "button|||button|" + piped + "|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("piped long caption err=%v clicks=%v", err, page.clicks)
+	}
+
+	// A short caption in the stable key is still a label. An id is not.
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "开始",
+		StableKey: "button|||button|登录|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	loginKey := live.Click(context.Background(), 10, 10)
+	loginKeyWall, loginKeyRefused := acceptanceClickWall(loginKey)
+	if !loginKeyRefused || loginKeyWall != "login" || len(page.clicks) != 0 || loginKey.Error() != "隔离浏览器拒绝了登录、验证码、密码或支付控件。没有点击。" {
+		t.Fatalf("stable caption wall=%s err=%v clicks=%v", loginKeyWall, loginKey, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "开始",
+		StableKey: "form|login-form||form|开始|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("login-form id err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "继续",
+		SelectorCandidates: []string{`input[name="passwordless"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("passwordless err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pw", SnapshotID: "snap-1", Name: "继续",
+		Selector: `input[type="password"]`,
+		Visible:  true, InViewport: true, BoundingBox: small,
+	}}
+	typeErr := live.Click(context.Background(), 10, 10)
+	typeWall, typeRefused := acceptanceClickWall(typeErr)
+	if !typeRefused || typeWall != "password" || len(page.clicks) != 0 || strings.Contains(typeErr.Error(), "password") {
+		t.Fatalf("type password wall=%s err=%v clicks=%v", typeWall, typeErr, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pw", SnapshotID: "snap-1", Name: "继续",
+		SelectorCandidates: []string{`input[name="Password"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	foldErr := live.Click(context.Background(), 10, 10)
+	foldWall, foldRefused := acceptanceClickWall(foldErr)
+	if !foldRefused || foldWall != "password" || len(page.clicks) != 0 || strings.Contains(foldErr.Error(), "Password") || strings.Contains(foldErr.Error(), "password") {
+		t.Fatalf("folded name wall=%s err=%v clicks=%v", foldWall, foldErr, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pw", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		StableKey: "input|go|password|textbox|继续|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	keyOnly := live.Click(context.Background(), 10, 10)
+	keyOnlyWall, keyOnlyRefused := acceptanceClickWall(keyOnly)
+	if !keyOnlyRefused || keyOnlyWall != "password" || len(page.clicks) != 0 || strings.Contains(keyOnly.Error(), "password") {
+		t.Fatalf("stable html name wall=%s err=%v clicks=%v", keyOnlyWall, keyOnly, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@pw", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		SelectorCandidates: []string{`input[autocomplete="new-password"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	newErr := live.Click(context.Background(), 10, 10)
+	newWall, newRefused := acceptanceClickWall(newErr)
+	if !newRefused || newWall != "password" || len(page.clicks) != 0 || strings.Contains(newErr.Error(), "password") || strings.Contains(newErr.Error(), "new-password") {
+		t.Fatalf("new-password wall=%s err=%v clicks=%v", newWall, newErr, page.clicks)
+	}
+
+	// Body-text flags are not a control. The widget, the login form, and the
+	// card checkout still are. A paragraph that names the tokens is not a field.
+	if got := acceptanceFlagWall(browser.BrowserPageFlags{MFA: true, Captcha: true, LoginQR: true}); got != "" {
+		t.Fatalf("body flag wall=%s", got)
+	}
+	if acceptanceFlagWall(browser.BrowserPageFlags{CaptchaWidget: true}) != "captcha" || acceptanceFlagWall(browser.BrowserPageFlags{LoginWall: true}) != "login" || acceptanceFlagWall(browser.BrowserPageFlags{PaymentConfirm: true}) != "payment" {
+		t.Fatal("structural page flag was dropped")
+	}
+	page.flags = browser.BrowserPageFlags{MFA: true, Captcha: true, LoginQR: true}
+	page.title = "Play"
+	page.text = "请输入验证码 one-time offer 扫码登录"
+	noisy := longCaption + " otp one-time-code current-password pay-btn"
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@go", SnapshotID: "snap-1", Name: "开始", Text: noisy,
+		StableKey:          "button|||button|" + noisy + "|1",
+		SelectorCandidates: []string{`[role="button"][aria-label="` + noisy + `"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	page.clicks = nil
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("body flags and token prose err=%v clicks=%v", err, page.clicks)
+	}
+	page.flags = browser.BrowserPageFlags{CaptchaWidget: true}
+	page.clicks = nil
+	widgetErr := live.Click(context.Background(), 10, 10)
+	widgetWall, widgetRefused := acceptanceClickWall(widgetErr)
+	if !widgetRefused || widgetWall != "captcha" || len(page.clicks) != 0 {
+		t.Fatalf("captcha widget wall=%s err=%v clicks=%v", widgetWall, widgetErr, page.clicks)
+	}
+	// LoginWall without a visible entry is a hidden input plus body text.
+	page.flags = browser.BrowserPageFlags{LoginWall: true}
+	page.text = "请输入密码"
+	page.clicks = nil
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("login flag without entry err=%v clicks=%v", err, page.clicks)
+	}
+	page.refs = []browser.BrowserElementRef{
+		{Ref: "@go", SnapshotID: "snap-1", Name: "开始", Visible: true, InViewport: true, BoundingBox: small},
+		{Ref: "@mail", SnapshotID: "snap-1", Name: "邮箱", InputType: "email", Visible: true, InViewport: true, BoundingBox: small},
+	}
+	page.clicks = nil
+	formErr := live.Click(context.Background(), 10, 10)
+	formWall, formRefused := acceptanceClickWall(formErr)
+	if !formRefused || formWall != "login" || len(page.clicks) != 0 || strings.Contains(formErr.Error(), "邮箱") {
+		t.Fatalf("email entry wall=%s err=%v clicks=%v", formWall, formErr, page.clicks)
+	}
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@name", SnapshotID: "snap-1", Name: "名字", InputType: "text",
+		StableKey: "input|player||textbox|名字|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	page.clicks = nil
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("player name err=%v clicks=%v", err, page.clicks)
+	}
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@mail", SnapshotID: "snap-1", Name: "继续", InputType: "text",
+		StableKey: "input|id|user_email|textbox|继续|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	page.clicks = nil
+	mailErr := live.Click(context.Background(), 10, 10)
+	mailWall, mailRefused := acceptanceClickWall(mailErr)
+	if !mailRefused || mailWall != "login" || len(page.clicks) != 0 || strings.Contains(mailErr.Error(), "email") {
+		t.Fatalf("user_email wall=%s err=%v clicks=%v", mailWall, mailErr, page.clicks)
+	}
+	// The id or HTML name is a word, not a character sequence. A compound
+	// field still confirms the flag. headphone contains the letters of phone
+	// and does not.
+	for _, tc := range []struct {
+		key  string
+		sel  string
+		wall bool
+	}{
+		{key: "input||user-phone|input|继续|1", wall: true},
+		{key: "input|userEmail||input|继续|1", wall: true},
+		{key: "input|userEmail2||input|继续|1", wall: true},
+		{key: "input|HTMLEmail||input|继续|1", wall: true},
+		{key: "input|telephone||input|继续|1", wall: true},
+		{key: "input|id|cellphone|input|继续|1", wall: true},
+		{sel: `input[name="email2"]`, wall: true},
+		{sel: `input[name="user-phone"]`, wall: true},
+		{key: "input|email-support||input|帮助|1", wall: true},
+		{key: "button|email-support||button|帮助|1"},
+		{key: "input|headphone||input|音量|1"},
+		{key: "input|id|microphone|input|音量|1"},
+		{key: "input|automobile||input|继续|1"},
+		{key: "input|id|premailer|input|继续|1"},
+		{key: "input|headphone2||input|音量|1"},
+		{key: "input|template||input|继续|1"},
+		{sel: `input[name="headphone"]`},
+		// The name on the left of a combinator is an ancestor. The control is
+		// the last compound. A button is not an entry field.
+		{key: "input|player||input|名字|1", sel: `form[name="email"] > input:nth-of-type(1)`},
+		{sel: `button[name="user_email"]`},
+		{sel: `div[name="phone"] > input[name="player"]`},
+		{sel: `form[name="password"] > button:nth-of-type(1)`},
+		{sel: `form[autocomplete="current-password"] > button:nth-of-type(1)`},
+		{sel: `input[type="text"][name="user_email"]:nth-of-type(2)`, wall: true},
+		{sel: `input[name="email"]:nth-child(n+1)`, wall: true},
+	} {
+		page.clicks = nil
+		ref := browser.BrowserElementRef{
+			Ref: "@f", SnapshotID: "snap-1", Name: "继续", InputType: "text",
+			Visible: true, InViewport: true, BoundingBox: small,
+		}
+		if tc.key != "" {
+			ref.StableKey = tc.key
+		}
+		if tc.sel != "" {
+			ref.SelectorCandidates = []string{tc.sel}
+		}
+		page.refs = []browser.BrowserElementRef{ref}
+		err := live.Click(context.Background(), 10, 10)
+		if !tc.wall {
+			if err != nil || len(page.clicks) != 1 {
+				t.Fatalf("login name click key=%s sel=%s err=%v clicks=%v", tc.key, tc.sel, err, page.clicks)
+			}
+			continue
+		}
+		wall, refused := acceptanceClickWall(err)
+		if !refused || wall != "login" || len(page.clicks) != 0 || strings.Contains(strings.ToLower(err.Error()), "email") || strings.Contains(strings.ToLower(err.Error()), "phone") {
+			t.Fatalf("login name wall key=%s sel=%s wall=%s err=%v clicks=%v", tc.key, tc.sel, wall, err, page.clicks)
+		}
+	}
+	page.flags = browser.BrowserPageFlags{}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@id", SnapshotID: "snap-1", Name: "继续",
+		StableKey: "input|otp||textbox|继续|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("otp id err=%v clicks=%v", err, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@otp", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		SelectorCandidates: []string{`input[name="OTP"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	otpErr := live.Click(context.Background(), 10, 10)
+	otpWall, otpRefused := acceptanceClickWall(otpErr)
+	if !otpRefused || otpWall != "password" || len(page.clicks) != 0 || strings.Contains(otpErr.Error(), "otp") || strings.Contains(otpErr.Error(), "OTP") {
+		t.Fatalf("otp name wall=%s err=%v clicks=%v", otpWall, otpErr, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@otp", SnapshotID: "snap-1", Name: "继续", Selector: "#go",
+		StableKey: "input|code|otp|textbox|继续|1",
+		Visible:   true, InViewport: true, BoundingBox: small,
+	}}
+	otpKey := live.Click(context.Background(), 10, 10)
+	otpKeyWall, otpKeyRefused := acceptanceClickWall(otpKey)
+	if !otpKeyRefused || otpKeyWall != "password" || len(page.clicks) != 0 || strings.Contains(otpKey.Error(), "otp") {
+		t.Fatalf("otp stable name wall=%s err=%v clicks=%v", otpKeyWall, otpKey, page.clicks)
+	}
+	page.clicks = nil
+	page.refs = []browser.BrowserElementRef{{
+		Ref: "@code", SnapshotID: "snap-1", Name: "继续",
+		SelectorCandidates: []string{`input[name="otpcode"]`},
+		Visible:            true, InViewport: true, BoundingBox: small,
+	}}
+	if err := live.Click(context.Background(), 10, 10); err != nil || len(page.clicks) != 1 {
+		t.Fatalf("otpcode err=%v clicks=%v", err, page.clicks)
 	}
 }
 

@@ -353,6 +353,11 @@ func (a *App) loadConfigSnapshot() (corelib.AppConfig, error) {
 		return corelib.AppConfig{}, err
 	}
 	a.configMu.Unlock()
+	// First-run returns before loadConfigLocked's own gate refresh. Apply the
+	// loaded switches here so a new install's log detail is on before startup
+	// continues.
+	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
+	memory.SetMemoryRecallLogEnabled(config.MemoryRecallLogEnabled)
 	a.runConfigPostUnlock(config)
 	return config, nil
 }

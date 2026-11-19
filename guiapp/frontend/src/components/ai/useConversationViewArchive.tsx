@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { AIAssistantAttachmentPreviewDataURL, ConversationViewArchiveCount, LoadAIAssistantUIArchive, LoadProjectTabConversationArchive } from "../../../wailsjs/go/main/App";
 import type { ChatMessage } from "./useAIAssistant";
@@ -12,6 +12,7 @@ import { capReasoningForDisplay, cleanReasoningTrailForBody, resolveVisibleAssis
 import { completedAssistantSummary, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
 import { isBrowserEchoFieldLabel } from "./rolePrefixDisplay";
+import { locatorCssEscape, retainLocatorUserMessages } from "./chatSessionLocatorModel";
 import { isImageAttachmentPath, userTurnDisplayView, type UserTurnDisplayAttachment } from "./userTurnDisplay";
 import { omitGoalContinuationHeader } from "./visibleChatText";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
@@ -162,6 +163,33 @@ export function reuseArchiveRows(prev: ChatMessage[], next: ChatMessage[]): Chat
     return merged;
 }
 
+/**
+ * The disk read is a snapshot. As the hot window advances, rows that were on
+ * screen join `earlier` and leave the DOM. Append those, and drop rows that
+ * have returned to the live window, without reading the archive again.
+ * An empty snapshot stays empty so the first load is not skipped.
+ */
+export function foldWindowIntoArchiveRows(
+    prev: readonly ChatMessage[],
+    earlier: readonly ChatMessage[],
+    liveIds: ReadonlySet<string>,
+): ChatMessage[] {
+    if (prev.length === 0) return prev as ChatMessage[];
+    const kept = liveIds.size === 0 ? prev : prev.filter((message) => !message.id || !liveIds.has(message.id));
+    const known = new Set<string>();
+    for (const message of kept) {
+        if (message.id) known.add(message.id);
+    }
+    const missing: ChatMessage[] = [];
+    for (const message of earlier) {
+        if (!message.id || known.has(message.id)) continue;
+        known.add(message.id);
+        missing.push(message);
+    }
+    if (missing.length === 0) return kept.length === prev.length ? (prev as ChatMessage[]) : (kept as ChatMessage[]);
+    return [...kept, ...missing];
+}
+
 function dedupeMessages(messages: ChatMessage[]): ChatMessage[] {
     const seen = new Set<string>();
     const out: ChatMessage[] = [];
@@ -251,7 +279,7 @@ const ArchiveMessageRow = memo(function ArchiveMessageRow({ message, lang, theme
     const [reasoningOpen, setReasoningOpen] = useState(false);
     const hasPicture = !!screenshot || !!restoredImagePath;
     return (
-        <div data-testid="conversation-archive-message" style={archiveRowStyle}>
+        <div data-testid="conversation-archive-message" data-locator-turn={isUser ? message.id : undefined} style={archiveRowStyle}>
             <div style={{ fontSize: "11px", color: t.textMuted, marginBottom: "2px" }}>
                 {isUser
                     ? localizeText(lang, "You", "你", "你")
@@ -314,7 +342,13 @@ const ArchiveMessageRow = memo(function ArchiveMessageRow({ message, lang, theme
 
 export function useConversationViewArchive({ messages, scope, enabled, lang, theme: t }: ConversationViewArchiveOptions): {
     visibleMessages: ChatMessage[];
+    /** User rows the rail indexes, oldest first. Identity stays put while a reply streams. */
+    locatorMessages: ChatMessage[];
     earlierCount: number;
+    /** Load the disk archive without opening the viewer. No-op once loaded. */
+    ensureArchiveRows: () => void;
+    /** Open the earlier-messages viewer scrolled to this row. */
+    revealArchiveMessage: (id: string) => void;
     banner: ReactNode;
     dialog: ReactNode;
 } {
@@ -323,13 +357,16 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
     const [open, setOpen] = useState(false);
     const [loading, setLoading] = useState(false);
     const [rows, setRows] = useState<ChatMessage[]>([]);
+    const [revealId, setRevealId] = useState("");
     const [mountedCount, setMountedCount] = useState(CONVERSATION_ARCHIVE_RENDER_PAGE);
     const loadGen = useRef(0);
     const messagesRef = useRef(messages);
     const earlierRef = useRef(earlier);
+    const visibleRef = useRef(visible);
     const scopeRef = useRef(scope);
     messagesRef.current = messages;
     earlierRef.current = earlier;
+    visibleRef.current = visible;
     scopeRef.current = scope;
     const dialogRef = useRef<HTMLDivElement>(null);
     const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -338,6 +375,20 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
     const paging = useRef(false);
     const sentinelSeen = useRef(false);
     const lastFillHeight = useRef(0);
+    const rowsRef = useRef(rows);
+    const openRef = useRef(open);
+    const archiveLoadStartedRef = useRef(false);
+    const archiveWarmPendingRef = useRef(false);
+    // True after this scope has shown a transcript. Used to tell a clear from
+    // the empty array the panel passes before history arrives.
+    const transcriptNonEmptyRef = useRef(messages.length > 0);
+    // Set when the transcript becomes empty on this scope. Holds until a message
+    // returns, so a stale count cannot remount the rail and reload the snapshot.
+    const suppressEmptyCountRef = useRef(false);
+    const earlierCountRef = useRef(0);
+    const locatorUsersRef = useRef<ChatMessage[]>([]);
+    rowsRef.current = rows;
+    openRef.current = open;
 
     useEffect(() => {
         if (!enabled || !scope) {
@@ -349,7 +400,14 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
             ? ConversationViewArchiveCount(scope)
             : Promise.resolve(0);
         void Promise.resolve(loadCount).then((count) => {
-            if (!cancelled) setServerCount(Math.max(0, Number(count) || 0));
+            if (cancelled) return;
+            // A cleared transcript stays empty until the next message. A count
+            // that raced the disk wipe still names the conversation just deleted.
+            if (suppressEmptyCountRef.current && messagesRef.current.length === 0) {
+                setServerCount(0);
+                return;
+            }
+            setServerCount(Math.max(0, Number(count) || 0));
         }).catch(() => {
             if (!cancelled) setServerCount(0);
         });
@@ -362,11 +420,40 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
     useEffect(() => {
         if (seenScope.current === scope) return;
         seenScope.current = scope;
+        // The new scope's first paint is not a clear of the scope we left.
+        transcriptNonEmptyRef.current = messagesRef.current.length > 0;
+        suppressEmptyCountRef.current = false;
         loadGen.current += 1;
+        archiveLoadStartedRef.current = false;
+        archiveWarmPendingRef.current = false;
+        setRevealId("");
         setOpen(false);
         setRows([]);
         setMountedCount(CONVERSATION_ARCHIVE_RENDER_PAGE);
     }, [scope]);
+    const transcriptEmpty = messages.length === 0;
+    useEffect(() => {
+        const has = !transcriptEmpty;
+        const had = transcriptNonEmptyRef.current;
+        transcriptNonEmptyRef.current = has;
+        if (has) {
+            suppressEmptyCountRef.current = false;
+            return;
+        }
+        if (!had) return;
+        // Same scope, transcript removed (开始新对话, /clear, new expert task).
+        // The snapshot is the prefix of the conversation that just left the screen.
+        suppressEmptyCountRef.current = true;
+        loadGen.current += 1;
+        archiveLoadStartedRef.current = false;
+        archiveWarmPendingRef.current = false;
+        setRevealId("");
+        setOpen(false);
+        setRows([]);
+        setServerCount(0);
+        setLoading(false);
+        setMountedCount(CONVERSATION_ARCHIVE_RENDER_PAGE);
+    }, [transcriptEmpty]);
 
     useEffect(() => {
         if (!open) {
@@ -406,14 +493,15 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
     }, [rows, open]);
 
     const earlierCount = Math.max(earlier.length, serverCount);
-    const openArchive = () => {
+    earlierCountRef.current = earlierCount;
+    const loadArchiveRows = useCallback(() => {
         const gen = ++loadGen.current;
-        if (!open) setMountedCount(CONVERSATION_ARCHIVE_RENDER_PAGE);
-        setOpen(true);
+        archiveLoadStartedRef.current = true;
         setLoading(true);
-        const load = scope.startsWith("tab:")
+        const requestedScope = scopeRef.current;
+        const load = requestedScope.startsWith("tab:")
             ? (typeof LoadProjectTabConversationArchive === "function"
-                ? LoadProjectTabConversationArchive(scope.slice(4))
+                ? LoadProjectTabConversationArchive(requestedScope.slice(4))
                 : Promise.resolve([]))
             : (typeof LoadAIAssistantUIArchive === "function"
                 ? LoadAIAssistantUIArchive()
@@ -432,12 +520,59 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
             setRows((prev) => reuseArchiveRows(prev, next));
         }).catch(() => {
             if (loadGen.current !== gen) return;
+            archiveLoadStartedRef.current = false;
             const next = dedupeMessages(earlierRef.current);
             setRows((prev) => reuseArchiveRows(prev, next));
         }).finally(() => {
             if (loadGen.current === gen) setLoading(false);
         });
+    }, []);
+    const openArchive = () => {
+        if (!open) setMountedCount(CONVERSATION_ARCHIVE_RENDER_PAGE);
+        setOpen(true);
+        loadArchiveRows();
     };
+    const ensureArchiveRows = useCallback(() => {
+        if (suppressEmptyCountRef.current && messagesRef.current.length === 0) {
+            archiveWarmPendingRef.current = false;
+            return;
+        }
+        const currentScope = scopeRef.current;
+        const supported = currentScope === "desktop" || currentScope.startsWith("tab:");
+        if (!supported || archiveLoadStartedRef.current || rowsRef.current.length > 0) {
+            archiveWarmPendingRef.current = false;
+            return;
+        }
+        // The count request is still in flight. Remember the ask and load when it lands.
+        if (earlierCountRef.current <= 0 && earlierRef.current.length === 0) {
+            archiveWarmPendingRef.current = true;
+            return;
+        }
+        archiveWarmPendingRef.current = false;
+        loadArchiveRows();
+    }, [loadArchiveRows]);
+    useEffect(() => {
+        if (!archiveWarmPendingRef.current) return;
+        ensureArchiveRows();
+    }, [earlierCount, earlier.length, ensureArchiveRows]);
+    // Length and the two edges. A streaming reply keeps this key, so the fold
+    // does not walk the archive on each token.
+    const archiveWindowKey = `${earlier.length}\0${earlier[0]?.id || ""}\0${earlier[earlier.length - 1]?.id || ""}\0${visible.length}\0${visible[0]?.id || ""}`;
+    useEffect(() => {
+        if (!archiveLoadStartedRef.current) return;
+        const liveIds = new Set(visibleRef.current.map((message) => message.id));
+        setRows((prev) => foldWindowIntoArchiveRows(prev, earlierRef.current, liveIds));
+    }, [archiveWindowKey]);
+    const revealArchiveMessage = useCallback((id: string) => {
+        const trimmed = id.trim();
+        const currentScope = scopeRef.current;
+        const supported = currentScope === "desktop" || currentScope.startsWith("tab:");
+        if (!trimmed || !supported) return;
+        if (!openRef.current) setMountedCount(CONVERSATION_ARCHIVE_RENDER_PAGE);
+        setRevealId(trimmed);
+        setOpen(true);
+        if (rowsRef.current.length === 0 && !archiveLoadStartedRef.current) loadArchiveRows();
+    }, [loadArchiveRows]);
 
     const shownRows = rows.slice(0, mountedCount);
     const hasMoreRows = shownRows.length < rows.length;
@@ -470,6 +605,32 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
         observer.observe(node);
         return () => observer.disconnect();
     }, [open, hasMoreRows, rows.length, mountedCount]);
+
+    useEffect(() => {
+        const id = revealId.trim();
+        if (!open || !id || loading) return;
+        const index = rows.findIndex((message) => message.id === id);
+        if (index < 0) {
+            setRevealId("");
+            return;
+        }
+        if (mountedCount <= index) {
+            setMountedCount(index + 1);
+            return;
+        }
+        const scroller = scrollerRef.current;
+        const node = scroller?.querySelector(`[data-locator-turn="${locatorCssEscape(id)}"]`);
+        if (!(node instanceof HTMLElement) || !scroller) return;
+        const top = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 12;
+        scroller.scrollTop = Math.max(0, top);
+        setRevealId("");
+    }, [loading, mountedCount, open, revealId, rows]);
+
+    const locatorMessages = useMemo(() => {
+        const next = retainLocatorUserMessages(locatorUsersRef.current, [rows, earlier, visible]);
+        locatorUsersRef.current = next as ChatMessage[];
+        return locatorUsersRef.current;
+    }, [earlier, rows, visible]);
 
     const banner = earlierCount > 0 ? (
         <button
@@ -573,5 +734,5 @@ export function useConversationViewArchive({ messages, scope, enabled, lang, the
         </div>
     ) : null;
 
-    return { visibleMessages: visible, earlierCount, banner, dialog };
+    return { visibleMessages: visible, locatorMessages, earlierCount, ensureArchiveRows, revealArchiveMessage, banner, dialog };
 }

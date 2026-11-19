@@ -1996,8 +1996,10 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 	// commit that attaches the file to this chat, that latch is stale. The
 	// sentence says this is not a send. im_message and send_to_im do not
 	// retire here. A send_file result that is not that commit stays latched.
-	// An older send_file that is still on the branch belongs to an earlier
-	// call and does not keep this one.
+	// A consumed-grant denial does not, once a current-channel commit is
+	// already on the branch: the denial did not send. An older send_file
+	// that is still on the branch belongs to an earlier call and does not
+	// keep this one.
 	if !s.inFlightMailboxUncertainDropped && retireProvisionalCurrentChannelAttach(lastTool, sideEffect, previousActive, currentActive) {
 		lastTool, sideEffect = remainingEffectAfterMailboxLatch(incomingTool, incomingEffect, lastTool, previousActive, currentActive)
 	}
@@ -3028,6 +3030,32 @@ func CurrentChannelAttachCommitted(text string) bool {
 	return text == CurrentChannelAttachResult(selection)
 }
 
+// SendFileConsumedGrantDenial reports the host refusal that this send_file
+// call did not run because the same tool already succeeded in this turn.
+// Only the two host sentences count. A quote, a rejection, and the desktop
+// IM sender sentence do not.
+func SendFileConsumedGrantDenial(text string) bool {
+	text = strings.TrimSpace(text)
+	name, ok := consumedGrantDenialName(text)
+	if !ok {
+		return false
+	}
+	return text == consumedGrantToolCallDeniedMessage(name) || text == RetiredSelectionSuccessDenial(name)
+}
+
+func consumedGrantDenialName(text string) (string, bool) {
+	const lead = `Error: tool "`
+	rest, ok := strings.CutPrefix(text, lead)
+	if !ok {
+		return "", false
+	}
+	name, _, ok := strings.Cut(rest, `" already ran successfully earlier in this turn.`)
+	if !ok || name == "" || strings.ContainsAny(name, "\"\r\n") {
+		return "", false
+	}
+	return name, true
+}
+
 // currentChannelSendFileKnown reports that every send_file result in entries
 // is the current-channel commit. The committed-batch classifier passes this
 // batch only, so an older send on the conversation is not in entries. A
@@ -3054,7 +3082,10 @@ func currentChannelSendFileKnown(entries []ConversationEntry) bool {
 // confirmation that is still on the branch. Tool-call ids pair first; a row
 // with no id pairs by text. A non-commit that this save dropped is still an
 // external send and blocks retirement. A new row that is not the commit
-// blocks too.
+// blocks too. A consumed-grant denial is not a send: it retires this call
+// only when a current-channel commit is already on the branch. A denial
+// with no commit stays latched, because the earlier run may have been an
+// external send.
 func currentChannelAttachAdvanced(previous, current []ConversationEntry) bool {
 	prev := sendFileCheckpointResults(previous)
 	cur := sendFileCheckpointResults(current)
@@ -3065,17 +3096,34 @@ func currentChannelAttachAdvanced(previous, current []ConversationEntry) bool {
 		}
 		return false
 	}
-	sawNew := false
+	sawNewCommit := false
+	sawReplay := false
 	for i := range cur {
 		if pairedCur[i] {
 			continue
 		}
-		if !cur[i].known {
-			return false
+		if cur[i].known {
+			sawNewCommit = true
+			continue
 		}
-		sawNew = true
+		if SendFileConsumedGrantDenial(cur[i].content) {
+			sawReplay = true
+			continue
+		}
+		return false
 	}
-	return sawNew
+	if sawNewCommit {
+		return true
+	}
+	if !sawReplay {
+		return false
+	}
+	for i := range cur {
+		if cur[i].known {
+			return true
+		}
+	}
+	return false
 }
 
 func sendFileCheckpointResults(entries []ConversationEntry) []mailboxMutationResult {

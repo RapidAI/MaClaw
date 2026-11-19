@@ -374,22 +374,76 @@ func (a *App) rememberDesktopBotLLM(owner string, view DesktopBotLLM) {
 }
 
 func (a *App) desktopBotLLMChoice(owner string) (DesktopBotLLM, bool) {
+	if view, ok := a.cachedDesktopBotLLMChoice(owner); ok {
+		return view, true
+	}
+	if a == nil {
+		return DesktopBotLLM{}, false
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return DesktopBotLLM{}, false
+	}
+	return a.unmarshalDesktopBotLLMChoice(owner, cfg)
+}
+
+// desktopBotLLMChoiceFromConfig reads the bot model from the config the caller
+// already loaded. A warm memory cache still wins: rememberDesktopBotLLM updates
+// memory before disk. A cold cache does not load config again.
+func (a *App) desktopBotLLMChoiceFromConfig(owner string, cfg corelib.AppConfig) (DesktopBotLLM, bool) {
+	if view, ok := a.cachedDesktopBotLLMChoice(owner); ok {
+		return view, true
+	}
+	return a.unmarshalDesktopBotLLMChoice(owner, cfg)
+}
+
+func desktopBotLLMChoicePresent(view DesktopBotLLM) bool {
+	return view.Choice != "" || view.Mode != "" || view.Stored || view.Effective != nil
+}
+
+func (a *App) cachedDesktopBotLLMChoice(owner string) (DesktopBotLLM, bool) {
 	if a == nil {
 		return DesktopBotLLM{}, false
 	}
 	a.botLLMCacheMu.RLock()
-	var view DesktopBotLLM
-	ok := false
-	if a.botLLMChoice != nil {
-		view, ok = a.botLLMChoice[owner]
-		ok = ok && (view.Choice != "" || view.Mode != "" || view.Stored || view.Effective != nil)
+	defer a.botLLMCacheMu.RUnlock()
+	if a.botLLMChoice == nil {
+		return DesktopBotLLM{}, false
 	}
-	a.botLLMCacheMu.RUnlock()
-	if ok {
-		return view, true
+	view, ok := a.botLLMChoice[owner]
+	if !ok || !desktopBotLLMChoicePresent(view) {
+		return DesktopBotLLM{}, false
 	}
-	cfg, err := a.LoadConfig()
-	if err != nil {
+	return view, true
+}
+
+// cacheDesktopBotLLMChoiceIfAbsent fills memory when this owner has no view
+// yet. A cold read must not write config, and must not replace a choice that
+// was remembered while the caller's snapshot was already in hand.
+func (a *App) cacheDesktopBotLLMChoiceIfAbsent(owner string, view DesktopBotLLM) (DesktopBotLLM, bool) {
+	if a == nil {
+		return DesktopBotLLM{}, false
+	}
+	kept := viewWithoutHint(view)
+	if !desktopBotLLMChoicePresent(kept) {
+		// An empty object is still a successful read for the caller. It must
+		// not occupy the cache, or a later real choice has to overwrite it.
+		return kept, false
+	}
+	a.botLLMCacheMu.Lock()
+	defer a.botLLMCacheMu.Unlock()
+	if a.botLLMChoice == nil {
+		a.botLLMChoice = map[string]DesktopBotLLM{}
+	}
+	if existing, ok := a.botLLMChoice[owner]; ok && desktopBotLLMChoicePresent(existing) {
+		return existing, true
+	}
+	a.botLLMChoice[owner] = kept
+	return kept, true
+}
+
+func (a *App) unmarshalDesktopBotLLMChoice(owner string, cfg corelib.AppConfig) (DesktopBotLLM, bool) {
+	if a == nil {
 		return DesktopBotLLM{}, false
 	}
 	account := desktopBotLLMAccount(cfg, owner)
@@ -400,6 +454,11 @@ func (a *App) desktopBotLLMChoice(owner string) (DesktopBotLLM, bool) {
 	if err := json.Unmarshal([]byte(account.ChoiceJSON), &cached); err != nil {
 		return DesktopBotLLM{}, false
 	}
-	a.rememberDesktopBotLLM(owner, cached)
+	if view, ok := a.cacheDesktopBotLLMChoiceIfAbsent(owner, cached); ok {
+		return view, true
+	}
+	// An empty stored object still counts as a read view. It carries no role,
+	// so the caller falls through to the assistant. It must not stick in memory
+	// ahead of a later real choice, and it must not be written back.
 	return cached, true
 }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AIAssistantAttachmentPreviewDataURL, ConversationViewArchiveCount, LoadAIAssistantUIArchive, LoadProjectTabConversationArchive } from "../../../wailsjs/go/main/App";
 import { lightTheme, type Theme } from "./aiAssistantPanelTheme";
 import type { ChatMessage } from "./useAIAssistant";
-import { archiveMessageView, CONVERSATION_ARCHIVE_RENDER_PAGE, reuseArchiveRows, useConversationViewArchive } from "./useConversationViewArchive";
+import { archiveMessageView, CONVERSATION_ARCHIVE_RENDER_PAGE, foldWindowIntoArchiveRows, reuseArchiveRows, useConversationViewArchive } from "./useConversationViewArchive";
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue("data:image/png;base64,abc"),
@@ -428,5 +428,257 @@ describe("useConversationViewArchive", () => {
         });
         expect(view.body).toBe("本轮只能提交步骤 4：实现绘制与界面。");
         expect(view.body).not.toContain("[系统续接]");
+    });
+
+    it("loads earlier rows for the locator without opening the viewer", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        const hot = Array.from({ length: 40 }, (_, index) => row(`h${index}`, { content: `hot ${index}` }));
+        function WarmProbe() {
+            const view = useConversationViewArchive({ messages: [row("early", { content: "更早" }), ...hot], scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                    {view.dialog}
+                </div>
+            );
+        }
+        render(<WarmProbe />);
+        fireEvent.click(screen.getByTestId("warm"));
+        await waitFor(() => expect(screen.getByTestId("locator-ids").textContent).toContain("old-user,early,"));
+        expect(screen.queryByTestId("conversation-archive-dialog")).toBeNull();
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByTestId("warm"));
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(1);
+    });
+
+    it("reveals a command that left the hot window after the archive was read", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        const hot = Array.from({ length: 40 }, (_, index) => row(`h${index}`, { content: `hot ${index}` }));
+        const initial = [row("early", { content: "更早" }), ...hot];
+        function SlideProbe({ messages }: { messages: ChatMessage[] }) {
+            const view = useConversationViewArchive({ messages, scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <button type="button" data-testid="reveal" onClick={() => view.revealArchiveMessage("h0")}>reveal</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                    {view.dialog}
+                </div>
+            );
+        }
+        const { rerender } = render(<SlideProbe messages={initial} />);
+        fireEvent.click(screen.getByTestId("warm"));
+        await waitFor(() => expect(screen.getByTestId("locator-ids").textContent).toContain("old-user,early,h0,"));
+        rerender(<SlideProbe messages={[...initial, row("extra"), row("newest", { content: "newest" })]} />);
+        fireEvent.click(screen.getByTestId("reveal"));
+        const rowNode = await screen.findByText("hot 0");
+        expect(rowNode.closest("[data-locator-turn]")?.getAttribute("data-locator-turn")).toBe("h0");
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops warmed archive rows when the transcript is cleared on the same scope", async () => {
+        const counts: Array<(count: number) => void> = [];
+        vi.mocked(ConversationViewArchiveCount).mockImplementation(() => new Promise((resolve) => {
+            counts.push(resolve);
+        }));
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        function ClearProbe({ messages }: { messages: ChatMessage[] }) {
+            const view = useConversationViewArchive({ messages, scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <button type="button" data-testid="reveal" onClick={() => view.revealArchiveMessage("old-user")}>reveal</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                    <div data-testid="earlier-count">{view.earlierCount}</div>
+                    {view.dialog}
+                </div>
+            );
+        }
+        const { rerender } = render(<ClearProbe messages={[row("hot", { content: "当前问题" })]} />);
+        await act(async () => { counts[0]?.(1); });
+        fireEvent.click(screen.getByTestId("warm"));
+        await waitFor(() => expect(screen.getByTestId("locator-ids").textContent).toContain("old-user"));
+        fireEvent.click(screen.getByTestId("reveal"));
+        expect(await screen.findByTestId("conversation-archive-dialog")).toBeTruthy();
+        const loads = vi.mocked(LoadAIAssistantUIArchive).mock.calls.length;
+        rerender(<ClearProbe messages={[]} />);
+        await act(async () => { counts[1]?.(9); });
+        expect(screen.getByTestId("locator-ids").textContent).toBe("");
+        expect(screen.getByTestId("earlier-count").textContent).toBe("0");
+        expect(screen.queryByTestId("conversation-archive-dialog")).toBeNull();
+        fireEvent.click(screen.getByTestId("warm"));
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(loads);
+        rerender(<ClearProbe messages={[row("fresh", { content: "新问题" })]} />);
+        await act(async () => { counts[counts.length - 1]?.(0); });
+        expect(screen.getByTestId("locator-ids").textContent).toBe("fresh");
+        expect(screen.getByTestId("earlier-count").textContent).toBe("0");
+    });
+
+    it("discards an archive read that finishes after the transcript is cleared", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        let resolveArchive: ((rows: any) => void) | null = null;
+        vi.mocked(LoadAIAssistantUIArchive).mockImplementation(() => new Promise((resolve) => {
+            resolveArchive = resolve;
+        }));
+        function ClearProbe({ messages }: { messages: ChatMessage[] }) {
+            const view = useConversationViewArchive({ messages, scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                    <div data-testid="earlier-count">{view.earlierCount}</div>
+                </div>
+            );
+        }
+        const { rerender } = render(<ClearProbe messages={[row("hot")]} />);
+        await waitFor(() => expect(screen.getByTestId("earlier-count").textContent).toBe("1"));
+        fireEvent.click(screen.getByTestId("warm"));
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(1);
+        rerender(<ClearProbe messages={[]} />);
+        await act(async () => {
+            resolveArchive?.([{ id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" }]);
+        });
+        expect(screen.getByTestId("locator-ids").textContent).toBe("");
+        expect(screen.getByTestId("earlier-count").textContent).toBe("0");
+    });
+
+    it("loads a scope that opens empty instead of treating the switch as a clear", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        vi.mocked(LoadProjectTabConversationArchive).mockResolvedValue([
+            { id: "tab-old", role: "user", content: "tab archive" },
+        ] as never);
+        function ScopeProbe({ messages, scope }: { messages: ChatMessage[]; scope: string }) {
+            const view = useConversationViewArchive({ messages, scope, enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                    <div data-testid="earlier-count">{view.earlierCount}</div>
+                </div>
+            );
+        }
+        const { rerender } = render(<ScopeProbe messages={[row("hot")]} scope="desktop" />);
+        await waitFor(() => expect(ConversationViewArchiveCount).toHaveBeenCalledWith("desktop"));
+        rerender(<ScopeProbe messages={[]} scope="tab:proj-1" />);
+        await waitFor(() => expect(screen.getByTestId("earlier-count").textContent).toBe("1"));
+        fireEvent.click(screen.getByTestId("warm"));
+        await waitFor(() => expect(screen.getByTestId("locator-ids").textContent).toContain("tab-old"));
+        expect(LoadProjectTabConversationArchive).toHaveBeenCalledWith("proj-1");
+    });
+
+    it("still reads the archive count when the transcript starts empty", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(4);
+        render(<Probe messages={[]} />);
+        await waitFor(() => expect(screen.getByTestId("earlier-count").textContent).toBe("4"));
+    });
+
+    it("folds slid-out rows onto the archive snapshot and drops rows that are live again", () => {
+        const disk = [row("disk", { content: "disk" })];
+        const slid = row("h0", { content: "hot 0" });
+        const live = new Set(["newest"]);
+        expect(foldWindowIntoArchiveRows([], [slid], live)).toEqual([]);
+        const next = foldWindowIntoArchiveRows(disk, [row("disk", { content: "disk" }), slid], live);
+        expect(next.map((message) => message.id)).toEqual(["disk", "h0"]);
+        expect(next[0]).toBe(disk[0]);
+        expect(next[1]).toBe(slid);
+        expect(foldWindowIntoArchiveRows(next, [slid], live)).toBe(next);
+        const back = foldWindowIntoArchiveRows(next, [], new Set(["h0"]));
+        expect(back.map((message) => message.id)).toEqual(["disk"]);
+    });
+
+    it("opens the archive on the requested earlier user row", async () => {
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(1);
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        function RevealProbe() {
+            const view = useConversationViewArchive({ messages: [row("hot")], scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="reveal" onClick={() => view.revealArchiveMessage("old-user")}>reveal</button>
+                    {view.dialog}
+                </div>
+            );
+        }
+        render(<RevealProbe />);
+        fireEvent.click(screen.getByTestId("reveal"));
+        const rowNode = await screen.findByText("更早的问题");
+        expect(rowNode.closest("[data-locator-turn]")?.getAttribute("data-locator-turn")).toBe("old-user");
+    });
+
+    it("mounts the archive page that contains the jumped user row", async () => {
+        const total = CONVERSATION_ARCHIVE_RENDER_PAGE + 2;
+        vi.mocked(ConversationViewArchiveCount).mockResolvedValue(total);
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue(Array.from({ length: total }, (_, index) => ({
+            id: `old-${index}`,
+            role: "user",
+            content: `earlier row ${index}`,
+            sessionKey: "desktop-user",
+        })) as never);
+        function RevealProbe() {
+            const view = useConversationViewArchive({ messages: [row("hot")], scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="reveal" onClick={() => view.revealArchiveMessage(`old-${total - 1}`)}>reveal</button>
+                    {view.dialog}
+                </div>
+            );
+        }
+        render(<RevealProbe />);
+        fireEvent.click(screen.getByTestId("reveal"));
+        expect(await screen.findByText(`earlier row ${total - 1}`)).toBeTruthy();
+    });
+
+    it("keeps locator rows stable while an assistant reply streams", () => {
+        const seen: ChatMessage[][] = [];
+        function StableProbe({ messages }: { messages: ChatMessage[] }) {
+            const view = useConversationViewArchive({ messages, scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            seen.push(view.locatorMessages);
+            return null;
+        }
+        const user = row("u1", { content: "继续" });
+        const { rerender } = render(<StableProbe messages={[user, row("a1", { role: "assistant", content: "a" })]} />);
+        const stable = seen[seen.length - 1];
+        expect(stable.map((message) => message.id)).toEqual(["u1"]);
+        rerender(<StableProbe messages={[{ ...user }, row("a1", { role: "assistant", content: "ab" })]} />);
+        expect(seen[seen.length - 1]).toBe(stable);
+        rerender(<StableProbe messages={[row("u1", { content: "继续改" }), row("a1", { role: "assistant", content: "ab" })]} />);
+        expect(seen[seen.length - 1]).not.toBe(stable);
+        expect(seen[seen.length - 1][0]?.content).toBe("继续改");
+    });
+
+    it("loads the archive after the count arrives when the locator asked first", async () => {
+        let resolveCount: (count: number) => void = () => {};
+        vi.mocked(ConversationViewArchiveCount).mockImplementation(() => new Promise((resolve) => {
+            resolveCount = resolve;
+        }));
+        vi.mocked(LoadAIAssistantUIArchive).mockResolvedValue([
+            { id: "old-user", role: "user", content: "更早的问题", sessionKey: "desktop-user" },
+        ] as never);
+        const hot = Array.from({ length: 10 }, (_, index) => row(`h${index}`, { content: `hot ${index}` }));
+        function WarmProbe() {
+            const view = useConversationViewArchive({ messages: hot, scope: "desktop", enabled: true, lang: "zh-Hans", theme });
+            return (
+                <div>
+                    <button type="button" data-testid="warm" onClick={() => view.ensureArchiveRows()}>warm</button>
+                    <div data-testid="locator-ids">{view.locatorMessages.map((message) => message.id).join(",")}</div>
+                </div>
+            );
+        }
+        render(<WarmProbe />);
+        fireEvent.click(screen.getByTestId("warm"));
+        expect(LoadAIAssistantUIArchive).not.toHaveBeenCalled();
+        await act(async () => { resolveCount(1); });
+        await waitFor(() => expect(screen.getByTestId("locator-ids").textContent).toContain("old-user"));
+        expect(LoadAIAssistantUIArchive).toHaveBeenCalledTimes(1);
     });
 });

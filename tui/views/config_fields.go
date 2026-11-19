@@ -1272,7 +1272,7 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "log_detail_enabled", Tab: CfgTabAdvanced, Section: "advanced",
-		DescKey: i18n.MsgTUIConfigDescLogDetail, Options: boolOpts, Default: "false",
+		DescKey: i18n.MsgTUIConfigDescLogDetail, Options: boolOpts, Default: "true",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LogDetailEnabled }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LogDetailEnabled = v }),
 	},
@@ -1284,7 +1284,7 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "llm_trajectory_logging", Tab: CfgTabAdvanced, Section: "advanced",
-		DescKey: i18n.MsgTUIConfigDescTrajectory, Options: boolOpts, Default: "false",
+		DescKey: i18n.MsgTUIConfigDescTrajectory, Options: boolOpts, Default: "true",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LLMTrajectoryLogging }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LLMTrajectoryLogging = v }),
 	},

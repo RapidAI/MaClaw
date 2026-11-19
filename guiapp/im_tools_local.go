@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -361,7 +362,20 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 
 	workDir := h.resolveToolWorkDirForOwner(stringVal(args, "working_dir"), ownerID)
 
-	ctx, cancel := context.WithTimeout(execCtx, time.Duration(timeout)*time.Second)
+	renewing := backgroundTaskRenews(execCtx)
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if renewing {
+		ctx = execCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		cancel = func() {}
+	} else {
+		ctx, cancel = context.WithTimeout(execCtx, time.Duration(timeout)*time.Second)
+	}
 	defer cancel()
 
 	var shellName string
@@ -392,8 +406,15 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 		cmd.Env = append(cmd.Env, "CLAUDE_SKILL_DIR="+skillDir)
 	}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var renewClock *coretool.ProgressClock
+	if renewing {
+		renewClock = &coretool.ProgressClock{}
+		cmd.Stdout = renewClock.Writer(coretool.CaptureLimitWriter(&stdout, 0))
+		cmd.Stderr = renewClock.Writer(coretool.CaptureLimitWriter(&stderr, 0))
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 	hideCommandWindow(cmd)
 	coretool.PrepareCommandForTreeKill(cmd)
 
@@ -408,32 +429,38 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 		return fmt.Sprintf("[错误] 命令启动失败: %v", err)
 	}
 
-	// Heartbeat goroutine: send progress every 30s while the command runs.
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		elapsed := 0
-		for {
-			select {
-			case <-ticker.C:
-				elapsed += 30
-				// Truncate command for display.
-				displayCmd := command
-				if len(displayCmd) > 60 {
-					displayCmd = displayCmd[:60] + "…"
+	if renewing {
+		// The "命令仍在执行中" heartbeat is not progress. Renewal follows
+		// output and process-tree CPU, and reports that with its own line.
+		err = coretool.WaitCommandRenewing(ctx, cmd, backgroundRenewOptions(time.Duration(timeout)*time.Second, renewClock, onProgress))
+	} else {
+		// Heartbeat goroutine: send progress every 30s while the command runs.
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			elapsed := 0
+			for {
+				select {
+				case <-ticker.C:
+					elapsed += 30
+					// Truncate command for display.
+					displayCmd := command
+					if len(displayCmd) > 60 {
+						displayCmd = displayCmd[:60] + "…"
+					}
+					if onProgress != nil {
+						onProgress(fmt.Sprintf("命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
+					}
+				case <-done:
+					return
 				}
-				if onProgress != nil {
-					onProgress(fmt.Sprintf("命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
-				}
-			case <-done:
-				return
 			}
-		}
-	}()
+		}()
 
-	err = coretool.WaitCommandWithContext(ctx, cmd)
-	close(done)
+		err = coretool.WaitCommandWithContext(ctx, cmd)
+		close(done)
+	}
 
 	var b strings.Builder
 	if stdout.Len() > 0 {
@@ -456,9 +483,17 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
-		} else if execCtx.Err() == context.Canceled {
+		var stall *coretool.CommandStallError
+		if errors.As(err, &stall) {
+			log.Printf("[background-task] stall quiet=%s", stall.Quiet.Round(time.Second))
+			b.WriteString(fmt.Sprintf("\n[错误] 命令已卡住（连续 %s 没有新的输出或进程活动），已停止", stall.Quiet.Round(time.Second)))
+		} else if ctx.Err() == context.DeadlineExceeded {
+			if renewing {
+				b.WriteString("\n[错误] 调用方时限已到，命令已停止")
+			} else {
+				b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
+			}
+		} else if execCtx != nil && execCtx.Err() == context.Canceled {
 			b.WriteString("\n[取消] 命令已被用户取消并终止")
 		} else {
 			b.WriteString(fmt.Sprintf("\n[错误] 退出码: %v", err))

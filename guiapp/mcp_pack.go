@@ -39,10 +39,10 @@ type mcpPackResult struct {
 	Encoding      string            `json:"encoding,omitempty"`
 	Content       string            `json:"content,omitempty"`
 	Omitted       []mcpPackOmission `json:"omitted,omitempty"`
+	Snapshot      bool              `json:"snapshot,omitempty"`
 }
 
 func (a *App) mcpPackArtifacts(ctx context.Context, projectPath string, paths []string) (mcpPackResult, error) {
-	_ = ctx
 	if len(paths) == 0 {
 		return mcpPackResult{}, errors.New("要指定要打包的文件")
 	}
@@ -97,14 +97,19 @@ func (a *App) mcpPackArtifacts(ctx context.Context, projectPath string, paths []
 		return mcpPackResult{}, errMCPPackTooLarge
 	}
 	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
+	if opts := mcpCallOptsFrom(ctx); opts.HasExpectedSHA && !mcpHashMatches(digest, opts.ExpectedSHA) {
+		return mcpPackResult{}, mcpErr(mcpCodeArtifactStale, mcpArtifactStaleMessage, view.ProjectPath, "")
+	}
 	out := mcpPackResult{
 		ProjectPath:   view.ProjectPath,
 		Files:         files,
-		ArchiveSHA256: hex.EncodeToString(sum[:]),
+		ArchiveSHA256: digest,
 		ArchiveSize:   int64(len(raw)),
 		Encoding:      "base64",
 		Content:       base64.StdEncoding.EncodeToString(raw),
 		Omitted:       omitted,
+		Snapshot:      true,
 	}
 	return out, nil
 }

@@ -33,6 +33,243 @@ func TestProblemReportLifecycle(t *testing.T) {
 	}
 }
 
+func TestMarkProblemReportFixedOnlyFromPending(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC()
+	report := &ProblemReport{ID: "BR-repair", ReporterUserID: "user-1", Description: "slow", Status: "pending", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateProblemReport(context.Background(), report); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveUnrepairedProblemReport(context.Background(), "BR-repair", "rejected", "不是 bug"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetProblemReport(context.Background(), "BR-repair")
+	if err != nil || got.Status != "rejected" || got.AdminNote != "不是 bug" || !got.ArchivedAt.IsZero() {
+		t.Fatalf("rejected report = %+v err=%v", got, err)
+	}
+	if err := store.ResolveUnrepairedProblemReport(context.Background(), "BR-repair", "fixed", "again"); err != ErrProblemReportNotPending {
+		t.Fatalf("second resolve err = %v", err)
+	}
+	if again, err := store.GetProblemReport(context.Background(), "BR-repair"); err != nil || again.AdminNote != "不是 bug" {
+		t.Fatalf("note changed after rejected resolve: %+v err=%v", again, err)
+	}
+	if err := store.ResolveUnrepairedProblemReport(context.Background(), "BR-missing", "fixed", "note"); err != ErrNotFound {
+		t.Fatalf("missing resolve err = %v", err)
+	}
+	if err := store.ResolveUnrepairedProblemReport(context.Background(), "BR-repair", "nope", "note"); err != ErrProblemReportStatus {
+		t.Fatalf("bad status err = %v", err)
+	}
+}
+
+func TestProblemReportAgentAPIKeySnapshotKeepsNewerKey(t *testing.T) {
+	origin := newTestStore(t)
+	peer := newTestStore(t)
+	ctx := context.Background()
+	if err := origin.SetProblemReportAgentAPIKey(ctx, "prk_new_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := origin.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, ""); got != "prk_new_key_123456" {
+		t.Fatalf("peer key = %q", got)
+	}
+	stale := newTestStore(t)
+	if err := stale.SetConfig(ctx, ProblemReportAgentAPIKey, "prk_old_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.SetConfig(ctx, ProblemReportAgentAPIKeyAt, time.Now().UTC().Add(-time.Hour).Format(timeFmt)); err != nil {
+		t.Fatal(err)
+	}
+	oldSnap, err := stale.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, oldSnap); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, ""); got != "prk_new_key_123456" {
+		t.Fatalf("stale snapshot rolled the key back to %q", got)
+	}
+}
+
+func TestProblemReportAgentAPIKeySnapshotAppliesUnstampedKey(t *testing.T) {
+	src := newTestStore(t)
+	peer := newTestStore(t)
+	ctx := context.Background()
+	if err := src.SetConfig(ctx, ProblemReportAgentAPIKey, "prk_unstamped_key_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetConfig(ctx, ProblemReportAgentAPIKeyAt, ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := src.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, ""); got != "prk_unstamped_key_1" {
+		t.Fatalf("empty stamp dropped the key: %q", got)
+	}
+}
+
+func TestProblemReportAgentAPIKeySnapshotRevokeClearsPeer(t *testing.T) {
+	origin := newTestStore(t)
+	peer := newTestStore(t)
+	ctx := context.Background()
+	if err := origin.SetProblemReportAgentAPIKey(ctx, "prk_live_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	live, err := origin.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.SetProblemReportAgentAPIKey(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := origin.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, revoked); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, "fallback"); got != "" {
+		t.Fatalf("revoke did not clear the peer key: %q", got)
+	}
+	stale := newTestStore(t)
+	if err := stale.SetConfig(ctx, ProblemReportAgentAPIKey, "prk_live_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.SetConfig(ctx, ProblemReportAgentAPIKeyAt, time.Now().UTC().Add(-time.Hour).Format(timeFmt)); err != nil {
+		t.Fatal(err)
+	}
+	oldSnap, err := stale.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, oldSnap); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, "fallback"); got != "" {
+		t.Fatalf("stale key restored a revoked credential: %q", got)
+	}
+	unstamped := newTestStore(t)
+	if err := peer.SetProblemReportAgentAPIKey(ctx, "prk_again_key_12345"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstamped.SetConfig(ctx, ProblemReportAgentAPIKey, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstamped.SetConfig(ctx, ProblemReportAgentAPIKeyAt, ""); err != nil {
+		t.Fatal(err)
+	}
+	blank, err := unstamped.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, blank); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, ""); got != "prk_again_key_12345" {
+		t.Fatalf("unstamped blank wiped the key: %q", got)
+	}
+	stamp := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKeyAt, "")
+	sameInstant := newTestStore(t)
+	if err := sameInstant.SetConfig(ctx, ProblemReportAgentAPIKey, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := sameInstant.SetConfig(ctx, ProblemReportAgentAPIKeyAt, stamp); err != nil {
+		t.Fatal(err)
+	}
+	tied, err := sameInstant.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, tied); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, "fallback"); got != "" {
+		t.Fatalf("same-instant revoke kept the key: %q", got)
+	}
+}
+
+func TestProblemReportAgentAPIKeySecondRevokeKeepsStamp(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.SetProblemReportAgentAPIKey(ctx, "prk_live_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProblemReportAgentAPIKey(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	stamp := store.GetConfigWithDefault(ctx, ProblemReportAgentAPIKeyAt, "")
+	if stamp == "" {
+		t.Fatal("revoke did not record a stamp")
+	}
+	if err := store.SetProblemReportAgentAPIKey(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.GetConfigWithDefault(ctx, ProblemReportAgentAPIKeyAt, ""); got != stamp {
+		t.Fatalf("second revoke moved the stamp from %q to %q", stamp, got)
+	}
+}
+
+func TestProblemReportAgentAPIKeySameInstantTextDoesNotReplace(t *testing.T) {
+	peer := newTestStore(t)
+	ctx := context.Background()
+	if err := peer.SetProblemReportAgentAPIKey(ctx, "prk_live_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	const whole = "2026-11-19T03:04:05Z"
+	if err := peer.SetConfig(ctx, ProblemReportAgentAPIKeyAt, whole); err != nil {
+		t.Fatal(err)
+	}
+	other := newTestStore(t)
+	if err := other.SetConfig(ctx, ProblemReportAgentAPIKey, "prk_other_key_123456"); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.SetConfig(ctx, ProblemReportAgentAPIKeyAt, "2026-11-19T03:04:05.000000000Z"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := other.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, ""); got != "prk_live_key_123456" {
+		t.Fatalf("same instant written with a fraction replaced the key: %q", got)
+	}
+	revoker := newTestStore(t)
+	if err := revoker.SetConfig(ctx, ProblemReportAgentAPIKey, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := revoker.SetConfig(ctx, ProblemReportAgentAPIKeyAt, "2026-11-19T03:04:05.000000000Z"); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := revoker.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, revoked); err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.GetConfigWithDefault(ctx, ProblemReportAgentAPIKey, "fallback"); got != "" {
+		t.Fatalf("same-instant revoke in fractional form kept the key: %q", got)
+	}
+}
+
 func TestProblemReportSnapshotReplicatesMetadataWithoutAttachments(t *testing.T) {
 	origin := newTestStore(t)
 	now := time.Now().UTC()
@@ -131,6 +368,77 @@ func TestProblemReportSnapshotFillsDownloadTokenWithoutTakingOlderFields(t *test
 	}
 	if newerRow.Description != "newer-status" || newerRow.Status != "fixed" || newerRow.PublicDownloadToken != token || !newerRow.UpdatedAt.Equal(newer) {
 		t.Fatalf("older snapshot took the newer row: %+v", newerRow)
+	}
+}
+
+func TestProblemReportSnapshotSubsecondRepairBeatsExactSecond(t *testing.T) {
+	peer := newTestStore(t)
+	origin := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 19, 1, 32, 10, 0, time.UTC)
+	repaired := base.Add(200 * time.Millisecond)
+	if err := peer.CreateProblemReport(ctx, &ProblemReport{
+		ID: "BR-subsecond", ReporterUserID: "user-1", Description: "已修复", Status: "fixed",
+		AdminNote: "修了启动卡顿", OriginURL: "https://peer.example.com", CreatedAt: base, UpdatedAt: repaired,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.CreateProblemReport(ctx, &ProblemReport{
+		ID: "BR-subsecond", ReporterUserID: "user-1", Description: "旧的待处理", Status: "pending",
+		OriginURL: "https://origin.example.com", CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := origin.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	got, err := peer.GetProblemReport(ctx, "BR-subsecond")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "fixed" || got.AdminNote != "修了启动卡顿" || !got.UpdatedAt.Equal(repaired) {
+		t.Fatalf("exact-second snapshot rolled back the repair: %+v", got)
+	}
+
+	fixed, err := peer.DumpSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.LoadSnapshot(ctx, fixed); err != nil {
+		t.Fatal(err)
+	}
+	synced, err := origin.GetProblemReport(ctx, "BR-subsecond")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced.Status != "fixed" || synced.AdminNote != "修了启动卡顿" {
+		t.Fatalf("subsecond repair did not replicate: %+v", synced)
+	}
+}
+
+func TestProblemReportSnapshotDeleteKeepsNewerSubsecondRow(t *testing.T) {
+	peer := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 19, 1, 32, 10, 0, time.UTC)
+	repaired := base.Add(200 * time.Millisecond)
+	if err := peer.CreateProblemReport(ctx, &ProblemReport{
+		ID: "BR-keep", ReporterUserID: "user-1", Description: "仍在", Status: "fixed",
+		AdminNote: "刚修好", OriginURL: "https://peer.example.com", CreatedAt: base, UpdatedAt: repaired,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(ctx, &Snapshot{ProblemReportDeletes: []ProblemReportTombstone{{
+		ID: "BR-keep", DeletedAt: base.Format(timeFmt),
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := peer.GetProblemReport(ctx, "BR-keep")
+	if err != nil || got.Status != "fixed" || got.AdminNote != "刚修好" {
+		t.Fatalf("older tombstone removed the repair: %+v err=%v", got, err)
 	}
 }
 

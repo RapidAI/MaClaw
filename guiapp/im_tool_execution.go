@@ -300,6 +300,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			var cancel context.CancelFunc
 			execCtx, cancel, _ = opts.Context.BeginReplannableOperation(context.Background())
 			defer cancel()
+			execCtx = markChatTaskToolContext(execCtx, opts.Context.ChatTaskID)
 		}
 		contextTokens := opts.ContextTokens
 		if contextTokens <= 0 {

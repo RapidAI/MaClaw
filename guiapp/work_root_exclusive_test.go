@@ -1,10 +1,13 @@
 package guiapp
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -456,6 +459,166 @@ func TestSharedPlainDirectoryDoesNotJoinTheLiveTree(t *testing.T) {
 	}
 	if normalizeProjectSessionPath(h.projectTabWorkDirForOwner(buddyOwner)) != normalizeProjectSessionPath(shared) {
 		t.Fatalf("holder exec = %q, want %q", h.projectTabWorkDirForOwner(buddyOwner), shared)
+	}
+}
+
+func TestExclusiveGitProcessResultKeepsZeroExit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	okCmd := exec.Command("git", "--version")
+	if err := okCmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := exclusiveGitProcessResult(okCmd.ProcessState, context.DeadlineExceeded); err != nil {
+		t.Fatalf("zero exit with deadline = %v", err)
+	}
+	if err := exclusiveGitProcessResult(okCmd.ProcessState, exec.ErrWaitDelay); err != nil {
+		t.Fatalf("zero exit with wait delay = %v", err)
+	}
+	fail := exec.Command("git", "not-a-real-subcommand")
+	failErr := fail.Run()
+	if failErr == nil {
+		t.Fatal("expected git to reject the subcommand")
+	}
+	if err := exclusiveGitProcessResult(fail.ProcessState, failErr); err == nil {
+		t.Fatal("failed git treated as success")
+	}
+	if err := exclusiveGitProcessResult(nil, context.DeadlineExceeded); err == nil {
+		t.Fatal("missing process treated as success")
+	}
+}
+
+func TestRunExclusiveGitReportsTimeout(t *testing.T) {
+	oldTimeout := exclusiveWorktreeGitTimeout
+	oldRun := runExclusiveGitContext
+	t.Cleanup(func() {
+		exclusiveWorktreeGitTimeout = oldTimeout
+		runExclusiveGitContext = oldRun
+	})
+	exclusiveWorktreeGitTimeout = 200 * time.Millisecond
+	var calls atomic.Int32
+	runExclusiveGitContext = func(ctx context.Context, repo string, args ...string) error {
+		calls.Add(1)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	start := time.Now()
+	err := runExclusiveGit(t.TempDir(), "worktree", "add", "--detach", filepath.Join(t.TempDir(), "co"), "HEAD")
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("git wait took %s", elapsed)
+	}
+	if !errors.Is(err, errExclusiveGitTimeout) {
+		t.Fatalf("err = %v, want timeout", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("git calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestRemoveTimeoutDoesNotStartWorktreeAdd(t *testing.T) {
+	oldTimeout := exclusiveWorktreeGitTimeout
+	oldRun := runExclusiveGitContext
+	t.Cleanup(func() {
+		exclusiveWorktreeGitTimeout = oldTimeout
+		runExclusiveGitContext = oldRun
+	})
+	exclusiveWorktreeGitTimeout = 200 * time.Millisecond
+	var calls atomic.Int32
+	runExclusiveGitContext = func(ctx context.Context, repo string, args ...string) error {
+		n := calls.Add(1)
+		if n == 1 && (len(args) < 2 || args[0] != "worktree" || args[1] != "remove") {
+			t.Errorf("first git = %v, want worktree remove", args)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	app := newProjectSearchTestApp(t)
+	taskPath := filepath.Join(t.TempDir(), "task")
+	checkout := app.exclusiveCheckoutDir(taskPath)
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err := app.ensureDetachedWorktree(taskPath, t.TempDir(), "holder", 1)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("remove timeout took %s", elapsed)
+	}
+	if !errors.Is(err, errExclusiveGitTimeout) {
+		t.Fatalf("err = %v, want timeout", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("git calls = %d, want 1 (no prune, no add)", calls.Load())
+	}
+}
+
+func TestExclusiveWorkRootTimeoutUsesPrivateWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	oldTimeout := exclusiveWorktreeGitTimeout
+	oldRun := runExclusiveGitContext
+	t.Cleanup(func() {
+		exclusiveWorktreeGitTimeout = oldTimeout
+		runExclusiveGitContext = oldRun
+	})
+	exclusiveWorktreeGitTimeout = 200 * time.Millisecond
+	var calls atomic.Int32
+	runExclusiveGitContext = func(ctx context.Context, repo string, args ...string) error {
+		calls.Add(1)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	app := newProjectSearchTestApp(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	readme := filepath.Join(repo, "README")
+	if err := os.WriteFile(readme, []byte("committed-head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "-c", "core.autocrlf=false", "add", "README")
+	mustGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "-c", "core.autocrlf=false", "commit", "-m", "init")
+
+	holderTask := app.createTaskRecordWithWorkingDir("holder", "", []string{taskManagementTag, taskUserCreatedTag}, repo, true)
+	later := app.createTaskRecordWithWorkingDir("later", "", []string{taskManagementTag, taskUserCreatedTag}, repo, true)
+	if holderTask.ProjectPath == "" || later.ProjectPath == "" {
+		t.Fatal("task record was not created")
+	}
+	holderOwner := projectSessionOwnerID(holderTask.ProjectPath)
+	laterOwner := projectSessionOwnerID(later.ProjectPath)
+	t.Cleanup(func() {
+		endForegroundAgentOwner(holderOwner)
+		endForegroundAgentOwner(laterOwner)
+	})
+	beginForegroundAgentOwner(holderOwner)
+	time.Sleep(20 * time.Millisecond)
+	beginForegroundAgentOwner(laterOwner)
+
+	h := &IMMessageHandler{app: app}
+	start := time.Now()
+	got := h.projectTabWorkDirForOwner(laterOwner)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("exclusive resolve took %s", elapsed)
+	}
+	if normalizeProjectSessionPath(got) == normalizeProjectSessionPath(repo) || pathInsideWorkRoot(repo, got) {
+		t.Fatalf("later session joined the live tree %q via %q", repo, got)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("git calls after first resolve = %d, want 1", calls.Load())
+	}
+	if again := h.projectTabWorkDirForOwner(laterOwner); again != got {
+		t.Fatalf("second resolve = %q, want cached %q", again, got)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("git calls after cached resolve = %d, want 1", calls.Load())
+	}
+	if normalizeProjectSessionPath(h.projectTabWorkDirForOwner(holderOwner)) != normalizeProjectSessionPath(repo) {
+		t.Fatalf("holder exec = %q, want %q", h.projectTabWorkDirForOwner(holderOwner), repo)
 	}
 }
 

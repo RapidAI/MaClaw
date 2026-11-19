@@ -18,9 +18,20 @@ export function sidebarEditorUsageProfile(activeProfile: string | undefined): ''
 }
 
 /**
- * Profile bucket whose rows the workbench meter adds. Desktop chat records
- * usage on the foreground role even when that role uses the assistant
- * provider, so the meter follows the role whenever it is resolved.
+ * Profiles whose rows the workbench meter adds for the displayed provider.
+ * Interactive chat is tagged foreground. A chat task is tagged background
+ * even when it dials that same model. Older desktop calls were tagged
+ * assistant. Coding and computer_use stay on their own meters. Rows are
+ * still filtered by provider id, so a background role that dialed a
+ * different provider does not land on this card.
+ */
+export const workbenchTurnUsageProfiles = ['foreground', 'assistant', 'background'] as const;
+
+/**
+ * Profile bucket whose summary the workbench meter names. Interactive chat
+ * records usage on the foreground role even when that role uses the assistant
+ * provider, so the meter follows that role whenever it is resolved. The rows
+ * themselves are workbenchTurnUsageProfiles.
  */
 export function sidebarTurnUsageProfile(
     activeProfile: string | undefined,
@@ -93,10 +104,10 @@ export const sumSidebarProfileUsage = (
 ) => sumSidebarProviderProfiles(profileUsage, providerID, [profile]);
 
 /**
- * Sum rows for one provider across the given profiles. The foreground meter
- * includes assistant-tagged rows for that same provider: desktop calls were
- * stored on the assistant profile before the foreground role existed. Coding
- * rows stay on the coding meter.
+ * Sum rows for one provider across the given profiles. The workbench meter
+ * passes workbenchTurnUsageProfiles: assistant-tagged history, foreground
+ * chat, and background task chats on that provider. Coding rows stay on the
+ * coding meter.
  */
 export const sumSidebarProviderProfiles = (
     profileUsage: Record<string, SidebarTokenUsageStat> | null | undefined,

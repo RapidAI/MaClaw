@@ -373,6 +373,7 @@ func browserObservation(toolName, content string) bool {
 // previewBrowserObservation puts the ship-to line and the payable total ahead
 // of the page, then keeps that page from the front. confirm_order copies the
 // item from the prefix; replacing the prefix with a short lead drops it.
+// The instruction is written ahead of that page line so the line cannot bury it.
 func previewBrowserObservation(s string, limit int) string {
 	if limit <= 0 {
 		limit = 4096
@@ -384,13 +385,27 @@ func previewBrowserObservation(s string, limit int) string {
 		}
 		return previewHeadTail(s, limit, 0.45, 0.55)
 	}
-	display, refLines, note := browserRefLines(preamble)
+	display, refLines, note, leadHint := browserRefLines(preamble)
+	instruction, tailRefs, carriedNote := splitCarriedObservationHint(hint)
+	if strings.TrimSpace(note) == "" {
+		note = carriedNote
+	}
+	if len(tailRefs) > 0 {
+		refLines = append(refLines, tailRefs...)
+	}
+	// A second preview finds the instruction in the preamble, ahead of
+	// page_text, and the nav list in the carried tail. The first preview
+	// finds the instruction after the page. Either one is the page hint.
+	pageHint := leadHint
+	if pageHint == "" {
+		pageHint = instruction
+	}
 	address, payable := browserPinnedFacts(excerpt)
-	if address == "" && payable == "" && len(s) <= limit {
+	if address == "" && payable == "" && pageHint == "" && len(s) <= limit {
 		return s
 	}
 	body := browserPageBody(excerpt, address, payable)
-	full := renderBrowserObservation(display, body, hint, refLines, note)
+	full := renderBrowserObservation(display, body, pageHint, refLines, note)
 	if len(full) <= limit {
 		return full
 	}
@@ -399,7 +414,7 @@ func previewBrowserObservation(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	return fitBrowserObservation(display, body, hint, refLines, note, limit)
+	return fitBrowserObservation(display, body, pageHint, refLines, note, limit)
 }
 
 // browserPageBody moves the ship-to neighborhood and the payable total to the
@@ -499,21 +514,21 @@ func renderBrowserObservation(display, body, hint string, refs []string, refNote
 	}
 	// The top-ranked ref leads. pay and secret refs that follow it stay
 	// there too: a password field and 确认支付 are both click targets.
-	// The page hint sits with the page. The remaining refs follow it, so
-	// a long nav list cannot push the street, the product, or the
-	// confirm_order instruction out of the prefix.
+	// The page is one line. The instruction sits with those refs, ahead
+	// of page_text, or that line buries confirm_order. The nav list
+	// follows the page, so it cannot push the street or the product out.
 	lead, tail := splitObservationRefs(refs)
 	if len(lead) > 0 {
 		b.WriteString("refs:\n")
 		b.WriteString(strings.Join(lead, "\n"))
 		b.WriteByte('\n')
 	}
+	if hint != "" {
+		b.WriteString(hint)
+		b.WriteByte('\n')
+	}
 	b.WriteString("page_text:\n")
 	b.WriteString(body)
-	if hint != "" {
-		b.WriteByte('\n')
-		b.WriteString(hint)
-	}
 	if len(tail) > 0 {
 		b.WriteString("\nrefs:\n")
 		b.WriteString(strings.Join(tail, "\n"))
@@ -548,10 +563,11 @@ func refLineIsCommit(line string) bool {
 // Ranked refs start with the pay control, so the sample grows from the head.
 func fitBrowserObservation(display, body, hint string, refLines []string, refNote string, limit int) string {
 	total := len(refLines)
-	var kept []string
-	if total > 0 {
-		kept = refLines[:1]
-	}
+	// The commit prefix is part of the head, same as the hint. Filling the
+	// page first and then keeping whatever ref still fits drops the password
+	// field or 确认支付 whenever it is not the single first line.
+	lead, _ := splitObservationRefs(refLines)
+	kept := append([]string(nil), lead...)
 	noteFor := func(n int) string {
 		if n < total {
 			if strings.TrimSpace(refNote) != "" {
@@ -611,8 +627,9 @@ func splitBrowserPageText(s string) (preamble, excerpt, hint string, ok bool) {
 	return preamble, excerpt, hint, true
 }
 
-func browserRefLines(preamble string) (display string, lines []string, note string) {
+func browserRefLines(preamble string) (display string, lines []string, note string, leadHint string) {
 	var displayLines []string
+	var hintLines []string
 	seenRefs := false
 	for _, line := range strings.Split(preamble, "\n") {
 		trim := strings.TrimSpace(line)
@@ -629,9 +646,40 @@ func browserRefLines(preamble string) (display string, lines []string, note stri
 			note = trim
 		case !seenRefs:
 			displayLines = append(displayLines, trim)
+		default:
+			// The instruction is written after the commit refs and before
+			// page_text. A second preview has to carry it. Dropping every
+			// non-ref line here deletes confirm_order.
+			hintLines = append(hintLines, trim)
 		}
 	}
-	return strings.Join(displayLines, "\n"), lines, note
+	return strings.Join(displayLines, "\n"), lines, note, strings.Join(hintLines, "\n")
+}
+
+// splitCarriedObservationHint separates a first-pass instruction from the
+// nav list a previous preview wrote after the page. A line that is exactly
+// "refs:" starts that list. @e lines there are tail refs. The truncation
+// note is not an instruction, and a hint with no "refs:" line stays whole.
+func splitCarriedObservationHint(hint string) (instruction string, tailRefs []string, note string) {
+	var instr []string
+	inTail := false
+	for _, line := range strings.Split(hint, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trim, "refs truncated"):
+			note = trim
+		case trim == "refs:":
+			inTail = true
+		case inTail && strings.HasPrefix(trim, "@e"):
+			tailRefs = append(tailRefs, trim)
+		case !inTail:
+			instr = append(instr, trim)
+		}
+	}
+	return strings.Join(instr, "\n"), tailRefs, note
 }
 
 func browserPinnedFacts(excerpt string) (address, payable string) {

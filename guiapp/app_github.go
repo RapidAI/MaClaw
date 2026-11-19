@@ -432,8 +432,8 @@ type GitHubCloneResult struct {
 
 // GitHubCloneRepository clones a github.com repo into destDir using the
 // connected account's token. destDir empty → <dataDir>/github/<repo>.
-// The token rides the git http.extraheader config flag so it never lands in
-// the clone's .git/config remote URL.
+// The token is given to a one-shot credential helper through the
+// environment, so it never lands in the clone's .git/config or in argv.
 func (a *App) GitHubCloneRepository(repoURL, destDir string) (GitHubCloneResult, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return GitHubCloneResult{}, fmt.Errorf("未找到 git，请先安装 Git")
@@ -450,26 +450,17 @@ func (a *App) GitHubCloneRepository(repoURL, destDir string) (GitHubCloneResult,
 	result := GitHubCloneResult{DestDir: destDir, RepoURL: cloneURL}
 
 	token := a.loadGitHubAccessToken()
-	args := []string{"-c", "core.longpaths=true", "clone", "--progress", cloneURL, destDir}
+	if err := githubCloneTokenOK(token); err != nil {
+		return result, err
+	}
+	args := append(githubCloneAuthArgs(token), "clone", "--progress", cloneURL, destDir)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	if token != "" {
-		// The token travels in the process environment rather than argv,
-		// which other local processes can read (ps, /proc/<pid>/cmdline).
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
-			"GIT_CONFIG_VALUE_0=AUTHORIZATION: bearer "+token,
-		)
-	}
+	cmd.Env = githubCloneEnv(os.Environ(), token)
 	out, err := cmd.CombinedOutput()
-	result.Output = string(out)
-	if token != "" {
-		// Never let the token leak into logs/UI via git's stderr echo.
-		result.Output = strings.ReplaceAll(result.Output, token, "***")
-	}
+	result.Output = redactGitHubCloneOutput(string(out), token)
 	if err != nil {
 		// Surface git's own message ("remote: Repository not found") rather
 		// than a bare exit status the UI cannot act on.
@@ -481,4 +472,106 @@ func (a *App) GitHubCloneRepository(repoURL, destDir string) (GitHubCloneResult,
 	}
 	log.Printf("[github] cloned %s -> %s", cloneURL, destDir)
 	return result, nil
+}
+
+// githubCloneTokenEnv is the variable the one-shot credential helper reads.
+// It is not GITHUB_TOKEN: other tools on the machine treat that name as their own.
+const githubCloneTokenEnv = "MACLAW_GITHUB_TOKEN"
+
+// githubCloneHelper is a shell snippet git runs only for this command.
+// GitHub's git HTTPS endpoint rejects Authorization: Bearer with the body
+// "invalid credentials" (that is the maintenance failure). It accepts Basic
+// auth with username x-access-token. The snippet prints that pair and reads
+// the token from the environment, so the secret is not in argv or .git/config.
+// f is invoked with "$@" because git runs `sh -c <snippet> credential-helper get`
+// and the operation is a positional parameter of that shell, not of f.
+// Git for Windows runs that snippet with sh.exe. A desktop process often has
+// Git\cmd on PATH and not Git\usr\bin; cmd\git.exe is a wrapper and puts
+// usr\bin on the helper's PATH itself. The snippet must stay inline: an
+// absolute backslash path is handed to sh, which treats `\` as an escape,
+// and the helper never starts.
+const githubCloneHelper = `credential.helper=!f() { case "$1" in get) printf '%s\n' username=x-access-token; printf '%s\n' "password=$MACLAW_GITHUB_TOKEN";; esac; }; f "$@"`
+
+// githubCloneTokenOK accepts an empty token (anonymous clone) and the
+// characters a GitHub OAuth token or PAT actually uses. Anything else is
+// refused so it cannot break out of the helper's quoted password.
+func githubCloneTokenOK(token string) error {
+	if token == "" {
+		return nil
+	}
+	for _, r := range token {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+		default:
+			return fmt.Errorf("GitHub 令牌无法用于 git 认证")
+		}
+	}
+	return nil
+}
+
+// githubCloneAuthArgs is the git -c prefix for one clone. Empty
+// credential.helper and http.extraheader values are reset sentinels, and
+// they have to be arguments: on Windows an empty environment variable is
+// unset, so git reports "missing config value" and never starts the clone.
+// The helper is added after those resets. Command-line config is applied
+// after files and after GIT_CONFIG_*, so this also drops a stale
+// Authorization header and Git Credential Manager for this command only.
+func githubCloneAuthArgs(token string) []string {
+	args := []string{"-c", "core.longpaths=true"}
+	if token == "" {
+		return args
+	}
+	return append(args,
+		"-c", "credential.helper=",
+		"-c", "credential.https://github.com.helper=",
+		"-c", "http.extraheader=",
+		"-c", "http.https://github.com/.extraheader=",
+		"-c", "http.proactiveAuth=basic",
+		"-c", githubCloneHelper,
+	)
+}
+
+// githubCloneEnv builds the child environment for one clone.
+// The secret stays in the environment, where other local processes can
+// still read it, and out of argv. When a token is set, inherited GIT_CONFIG_*
+// pairs are dropped so a parent process cannot add a second Authorization
+// header. An empty token clones anonymously and leaves the user's credential
+// helper and git config alone.
+func githubCloneEnv(base []string, token string) []string {
+	env := make([]string, 0, len(base)+4)
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if token != "" && githubCloneEnvDropped(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	if token == "" {
+		return env
+	}
+	// An unattended clone must not sit on a credential-manager dialog
+	// after GitHub rejects the request.
+	return append(env,
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=Never",
+		githubCloneTokenEnv+"="+token,
+	)
+}
+
+func githubCloneEnvDropped(key string) bool {
+	switch strings.ToUpper(key) {
+	case "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE", githubCloneTokenEnv:
+		return true
+	}
+	return strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_KEY_") || strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_VALUE_")
+}
+
+func redactGitHubCloneOutput(output, token string) string {
+	if token == "" {
+		return output
+	}
+	return strings.ReplaceAll(output, token, "***")
 }

@@ -54,10 +54,11 @@ type mcpLogEvent struct {
 type mcpLogPage struct {
 	ProjectPath   string        `json:"project_path"`
 	RunID         string        `json:"run_id,omitempty"`
-	StatusVersion int           `json:"status_version,omitempty"`
+	StatusVersion int           `json:"status_version"`
 	Events        []mcpLogEvent `json:"events"`
 	NextCursor    int           `json:"next_cursor"`
 	Gap           bool          `json:"gap,omitempty"`
+	Empty         bool          `json:"empty,omitempty"`
 }
 
 type mcpArtifactFile struct {
@@ -68,9 +69,12 @@ type mcpArtifactFile struct {
 }
 
 type mcpArtifactList struct {
-	ProjectPath string            `json:"project_path"`
-	Files       []mcpArtifactFile `json:"files"`
-	Truncated   bool              `json:"truncated,omitempty"`
+	ProjectPath     string            `json:"project_path"`
+	Files           []mcpArtifactFile `json:"files"`
+	Truncated       bool              `json:"truncated,omitempty"`
+	TruncatedReason string            `json:"truncated_reason,omitempty"`
+	NextCursor      string            `json:"next_cursor,omitempty"`
+	Scope           string            `json:"scope,omitempty"`
 }
 
 type mcpArtifactBody struct {
@@ -81,16 +85,26 @@ type mcpArtifactBody struct {
 	Encoding    string `json:"encoding,omitempty"`
 	Text        string `json:"text,omitempty"`
 	Content     string `json:"content,omitempty"`
+	Snapshot    bool   `json:"snapshot,omitempty"`
+}
+
+type mcpRequestScope struct {
+	TaskID string `json:"task_id,omitempty"`
+	Action string `json:"action,omitempty"`
 }
 
 type mcpRequestView struct {
-	Accepted        bool         `json:"accepted"`
-	Pending         bool         `json:"pending,omitempty"`
-	ClientRequestID string       `json:"client_request_id"`
-	Kind            string       `json:"kind,omitempty"`
-	ProjectPath     string       `json:"project_path,omitempty"`
-	Error           string       `json:"error,omitempty"`
-	Task            *mcpTaskView `json:"task,omitempty"`
+	Accepted        bool             `json:"accepted"`
+	Pending         bool             `json:"pending,omitempty"`
+	ClientRequestID string           `json:"client_request_id"`
+	Kind            string           `json:"kind,omitempty"`
+	ProjectPath     string           `json:"project_path,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	Task            *mcpTaskView     `json:"task,omitempty"`
+	State           string           `json:"state"`
+	PayloadHash     string           `json:"payload_hash,omitempty"`
+	Scope           *mcpRequestScope `json:"scope,omitempty"`
+	RunID           string           `json:"run_id,omitempty"`
 }
 
 type mcpBrowserMethod struct {
@@ -102,20 +116,46 @@ type mcpBrowserMethod struct {
 }
 
 type mcpCapabilityView struct {
-	APIVersion      int                `json:"api_version"`
-	ProtocolVersion string             `json:"protocol_version"`
-	Features        []string           `json:"features"`
-	ModelConnection string             `json:"model_connection"`
-	Provider        string             `json:"provider,omitempty"`
-	Model           string             `json:"model,omitempty"`
-	BrowserTest     bool               `json:"browser_test"`
-	Screenshot      bool               `json:"screenshot"`
-	Shell           bool               `json:"shell"`
-	BrowserMethods  []mcpBrowserMethod `json:"browser_methods"`
+	APIVersion      int                  `json:"api_version"`
+	ProtocolVersion string               `json:"protocol_version"`
+	Features        []string             `json:"features"`
+	ModelConnection string               `json:"model_connection"`
+	Provider        string               `json:"provider,omitempty"`
+	Model           string               `json:"model,omitempty"`
+	BrowserTest     bool                 `json:"browser_test"`
+	Screenshot      bool                 `json:"screenshot"`
+	Shell           bool                 `json:"shell"`
+	BrowserMethods  []mcpBrowserMethod   `json:"browser_methods"`
+	SchemaVersion   string               `json:"schema_version,omitempty"`
+	ServerBuild     string               `json:"server_build,omitempty"`
+	Commit          string               `json:"commit"`
+	Persistence     *mcpPersistenceView  `json:"persistence,omitempty"`
+	CurrentModel    *mcpCurrentModelView `json:"current_model,omitempty"`
+	FeatureFlags    *mcpFeatureFlagView  `json:"feature_flags,omitempty"`
+}
+
+type mcpPersistenceView struct {
+	Durable   bool   `json:"durable"`
+	Retention string `json:"retention"`
+}
+
+type mcpCurrentModelView struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Configured bool   `json:"configured"`
+	ProbeOK    *bool  `json:"probe_ok"`
+}
+
+type mcpFeatureFlagView struct {
+	DurableRuns           bool `json:"durable_runs"`
+	ExpectedStatusVersion bool `json:"expected_status_version"`
+	DryRun                bool `json:"dry_run"`
+	ArtifactPaging        bool `json:"artifact_paging"`
+	ExpectedSHA256        bool `json:"expected_sha256"`
 }
 
 // mcpClientRequest remembers a caller-supplied id so a timed-out retry does
-// not start a second turn. The record is in memory only.
+// not start a second turn. Accepted requests are written with the run snapshot.
 type mcpClientRequest struct {
 	Kind        string
 	Command     string
@@ -126,6 +166,10 @@ type mcpClientRequest struct {
 	done        bool
 	ready       chan struct{}
 	closeOnce   sync.Once
+	Hash        string
+	RunID       string
+	State       string
+	updated     time.Time
 }
 
 func (a *App) mcpPublishTaskView(view mcpTaskView) mcpTaskView {
@@ -136,6 +180,9 @@ func (a *App) mcpPublishTaskView(view mcpTaskView) mcpTaskView {
 		view.WorkingDir = strings.TrimSpace(view.workspace)
 	}
 	view = a.mcpFillProviderModel(view)
+	view = mcpSealTaskIdentity(view)
+	view.Text = mcpRelabelSessionWorkspace(view.Text, view.SessionPath, firstNonEmpty(view.WorkingDirEffective, view.WorkingDir, view.workspace))
+	view = mcpGuardCompletion(view)
 	view = a.mcpEnsureConfirmationID(view)
 	view = mcpPublishChildren(view)
 	return a.mcpAnnotateStepFreshness(view)
@@ -177,6 +224,12 @@ func (a *App) mcpFillProviderModel(view mcpTaskView) mcpTaskView {
 	if provider != "" && model != "" {
 		view.Provider = provider
 		view.Model = model
+		if strings.TrimSpace(view.ProviderEffective) == "" {
+			view.ProviderEffective = provider
+		}
+		if strings.TrimSpace(view.ModelEffective) == "" {
+			view.ModelEffective = model
+		}
 		return view
 	}
 	// A half-filled pair is the record's own value. Filling the blank from
@@ -186,14 +239,20 @@ func (a *App) mcpFillProviderModel(view mcpTaskView) mcpTaskView {
 		view.Model = model
 		return view
 	}
-	if pin, ok := a.mcpPinNames(view.ProjectPath); ok {
-		view.Provider = pin.ProviderName
-		view.Model = pin.Model
-		return view
+	// Only a live run may take the pin captured for this session. A finished
+	// or historical row keeps an empty pair instead of today's configuration.
+	if view.Status == mcpStatusRunning {
+		if pin, ok := a.mcpPinNames(view.ProjectPath); ok {
+			view.Provider = pin.ProviderName
+			view.Model = pin.Model
+			if strings.TrimSpace(view.ProviderEffective) == "" {
+				view.ProviderEffective = pin.ProviderName
+			}
+			if strings.TrimSpace(view.ModelEffective) == "" {
+				view.ModelEffective = pin.Model
+			}
+		}
 	}
-	cfg := a.peekConfigOrEmpty()
-	view.Provider = strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
-	view.Model = strings.TrimSpace(cfg.MaclawLLMModel)
 	return view
 }
 
@@ -459,13 +518,31 @@ func (a *App) mcpAppendLog(path, requestID string, ev mcpLogEvent) {
 	}
 	path = normalizeProjectSessionPath(path)
 	requestID = strings.TrimSpace(requestID)
+	var saved mcpLogEvent
+	version := 0
+	persist := false
 	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			// One synced line beside the snapshot. Folding that file back
+			// into the snapshot waits until it reaches the size bound, and
+			// that rewrite is itself synced.
+			a.mcpPersistLogLine(path, saved, version)
+		}
+	}()
 	defer a.mcpRunsMu.Unlock()
 	rec := a.mcpRuns[path]
 	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
 		return
 	}
+	before := rec.logSeq
 	mcpPushLogLocked(rec, ev)
+	if rec.logSeq == before || len(rec.logs) == 0 {
+		return
+	}
+	saved = rec.logs[len(rec.logs)-1]
+	version = rec.StatusVersion
+	persist = true
 }
 
 func (a *App) mcpRecordToolEvent(path, requestID string, ev ACPToolEvent) {
@@ -510,6 +587,33 @@ func mcpToolLogText(ev ACPToolEvent) string {
 	return strings.Join(parts, " ")
 }
 
+// mcpLogSeqGap reports a missing sequence in the retained log up through the
+// last event on this page. A later hole waits for the next page. A row that
+// belongs to another round still occupies its seq, so it is not a gap.
+func mcpLogSeqGap(logs []mcpLogEvent, cursor, last int) bool {
+	if last <= cursor {
+		return false
+	}
+	seqs := make([]int, 0, len(logs))
+	for _, ev := range logs {
+		if ev.Seq > cursor && ev.Seq <= last {
+			seqs = append(seqs, ev.Seq)
+		}
+	}
+	sort.Ints(seqs)
+	prev := cursor
+	for _, seq := range seqs {
+		if seq <= prev {
+			continue
+		}
+		if seq > prev+1 {
+			return true
+		}
+		prev = seq
+	}
+	return false
+}
+
 func (a *App) mcpReadLog(ctx context.Context, projectPath, runID string, cursor int) (mcpLogPage, error) {
 	if cursor < 0 {
 		cursor = 0
@@ -517,35 +621,55 @@ func (a *App) mcpReadLog(ctx context.Context, projectPath, runID string, cursor 
 	path := normalizeProjectSessionPath(projectPath)
 	runID = strings.TrimSpace(runID)
 	if a == nil || path == "" {
-		return mcpLogPage{}, errors.New("没有找到这个任务")
+		return mcpLogPage{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 	}
+	a.mcpLoadDurable()
 	a.mcpRunsMu.Lock()
-	defer a.mcpRunsMu.Unlock()
 	rec, err := a.mcpRunForReadLocked(path, runID)
-	if err != nil {
+	var page mcpLogPage
+	if err == nil && rec != nil {
+		events := make([]mcpLogEvent, 0)
+		for _, ev := range rec.logs {
+			if ev.Seq <= cursor || !mcpLogMatchesRun(ev, rec, runID) {
+				continue
+			}
+			events = append(events, ev)
+			if len(events) >= mcpLogPageSize {
+				break
+			}
+		}
+		next := cursor
+		gap := false
+		if n := len(events); n > 0 {
+			next = events[n-1].Seq
+			// Another round's row is not a lost row. A hole after this page
+			// is reported when the caller asks for the next page.
+			gap = mcpLogSeqGap(rec.logs, cursor, next)
+		}
+		pageRun := runID
+		if pageRun == "" {
+			pageRun = rec.RunID
+		}
+		page = mcpLogPage{ProjectPath: path, RunID: pageRun, StatusVersion: rec.StatusVersion, Events: events, NextCursor: next, Gap: gap, Empty: len(events) == 0}
+	}
+	a.mcpRunsMu.Unlock()
+	if err == nil {
+		return page, nil
+	}
+	var coded *mcpCallError
+	if errors.As(err, &coded) && coded != nil && coded.Code == mcpCodeRunNotFound {
 		return mcpLogPage{}, err
 	}
-	events := make([]mcpLogEvent, 0)
-	for _, ev := range rec.logs {
-		if ev.Seq <= cursor || !mcpLogMatchesRun(ev, rec, runID) {
-			continue
+	if a.mcpTaskKnown(path) {
+		if runID == "" {
+			return mcpLogPage{ProjectPath: path, Events: []mcpLogEvent{}, NextCursor: cursor, Empty: true}, nil
 		}
-		events = append(events, ev)
-		if len(events) >= mcpLogPageSize {
-			break
-		}
+		return mcpLogPage{}, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
 	}
-	next := cursor
-	gap := false
-	if n := len(events); n > 0 {
-		next = events[n-1].Seq
-		gap = events[0].Seq > cursor+1
+	if a.mcpTaskExpiredOnly(path) {
+		return mcpLogPage{}, mcpErr(mcpCodeTaskExpired, mcpTaskExpiredMessage, path, runID)
 	}
-	pageRun := runID
-	if pageRun == "" {
-		pageRun = rec.RunID
-	}
-	return mcpLogPage{ProjectPath: path, RunID: pageRun, StatusVersion: rec.StatusVersion, Events: events, NextCursor: next, Gap: gap}, nil
+	return mcpLogPage{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 }
 
 func (a *App) mcpArtifactRoot(projectPath string) (string, mcpTaskView, error) {
@@ -601,11 +725,12 @@ func (a *App) mcpListArtifacts(ctx context.Context, projectPath string) (mcpArti
 	if err != nil {
 		return mcpArtifactList{}, err
 	}
-	files, truncated := mcpWalkArtifacts(root)
-	if files == nil {
-		files = []mcpArtifactFile{}
+	list := mcpWalkArtifacts(root, mcpArtifactWalkFrom(ctx))
+	list.ProjectPath = view.ProjectPath
+	if list.Files == nil {
+		list.Files = []mcpArtifactFile{}
 	}
-	return mcpArtifactList{ProjectPath: view.ProjectPath, Files: files, Truncated: truncated}, nil
+	return list, nil
 }
 
 func (a *App) mcpReadArtifact(ctx context.Context, projectPath, rel string, download bool) (mcpArtifactBody, error) {
@@ -663,11 +788,16 @@ func (a *App) mcpReadArtifact(ctx context.Context, projectPath, rel string, down
 		return mcpArtifactBody{}, errors.New("文件超过读取上限")
 	}
 	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
+	if opts := mcpCallOptsFrom(ctx); opts.HasExpectedSHA && !mcpHashMatches(digest, opts.ExpectedSHA) {
+		return mcpArtifactBody{}, mcpErr(mcpCodeArtifactStale, mcpArtifactStaleMessage, view.ProjectPath, "")
+	}
 	body := mcpArtifactBody{
 		ProjectPath: view.ProjectPath,
 		Path:        filepath.ToSlash(mcpRelativeInside(root, full)),
 		Size:        info.Size(),
-		SHA256:      hex.EncodeToString(sum[:]),
+		SHA256:      digest,
+		Snapshot:    true,
 	}
 	if download {
 		body.Encoding = "base64"
@@ -682,30 +812,52 @@ func (a *App) mcpReadArtifact(ctx context.Context, projectPath, rel string, down
 	return body, nil
 }
 
-func mcpWalkArtifacts(root string) ([]mcpArtifactFile, bool) {
-	var files []mcpArtifactFile
-	truncated := false
-	var hashed int64
-	sensitive := mcpSensitiveInfos()
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return nil
+type mcpArtifactWalk struct {
+	Cursor        string
+	Limit         int
+	IncludeHidden bool
+	Exclude       map[string]struct{}
+}
+
+func mcpArtifactWalkFrom(ctx context.Context) mcpArtifactWalk {
+	opts := mcpCallOptsFrom(ctx)
+	limit := mcpArtifactMaxFiles
+	if opts.HasLimit && opts.Limit > 0 && opts.Limit < limit {
+		limit = opts.Limit
+	}
+	exclude := map[string]struct{}{}
+	for _, name := range opts.ExcludeDirs {
+		name = strings.ToLower(strings.TrimSpace(filepath.ToSlash(name)))
+		if name != "" {
+			exclude[name] = struct{}{}
 		}
-		if path == root {
+	}
+	return mcpArtifactWalk{Cursor: strings.TrimSpace(opts.ArtifactCursor), Limit: limit, IncludeHidden: opts.IncludeHidden, Exclude: exclude}
+}
+
+type mcpArtifactCandidate struct {
+	rel  string
+	size int64
+	full string
+}
+
+func mcpWalkArtifacts(root string, opt mcpArtifactWalk) mcpArtifactList {
+	var found []mcpArtifactCandidate
+	sensitive := mcpSensitiveInfos()
+	if opt.Limit <= 0 {
+		opt.Limit = mcpArtifactMaxFiles
+	}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || path == root {
 			return nil
 		}
 		name := entry.Name()
-		// Reserved names such as NUL and COM1 are devices. Opening them can
-		// block the GUI, so they are skipped before Stat or Read.
 		if mcpReservedDevice(name) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		// Skip the link itself. WalkDir lists a directory only after the
-		// callback returns, so SkipDir stops a junction or symlink from
-		// being followed outside the work directory.
 		if entry.Type()&os.ModeSymlink != 0 {
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -719,29 +871,48 @@ func mcpWalkArtifacts(root string) ([]mcpArtifactFile, bool) {
 			}
 			return nil
 		}
+		slash := filepath.ToSlash(rel)
 		depth := strings.Count(rel, string(filepath.Separator)) + 1
 		if entry.IsDir() {
-			if mcpArtifactSkipDir(name) || depth > mcpArtifactMaxDepth {
+			if mcpArtifactSkipDir(name) || depth > mcpArtifactMaxDepth || mcpArtifactExcluded(name, slash, opt.Exclude) {
+				return filepath.SkipDir
+			}
+			if !opt.IncludeHidden && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if depth > mcpArtifactMaxDepth || mcpArtifactSecretName(name) {
+		if depth > mcpArtifactMaxDepth || mcpArtifactSecretName(name) || mcpArtifactExcluded(name, slash, opt.Exclude) {
+			return nil
+		}
+		if !opt.IncludeHidden && strings.HasPrefix(name, ".") {
 			return nil
 		}
 		info, infoErr := entry.Info()
 		if infoErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || mcpInfoIsSensitive(info, sensitive) {
 			return nil
 		}
-		if len(files) >= mcpArtifactMaxFiles {
-			truncated = true
-			return filepath.SkipAll
-		}
-		file := mcpArtifactFile{Path: filepath.ToSlash(rel), Size: info.Size()}
-		if info.Size() <= mcpArtifactMaxHash && hashed+info.Size() <= mcpArtifactHashBudget {
-			if sum, hashErr := mcpHashFile(path); hashErr == nil {
+		found = append(found, mcpArtifactCandidate{rel: slash, size: info.Size(), full: path})
+		return nil
+	})
+	sort.Slice(found, func(i, j int) bool { return found[i].rel < found[j].rel })
+	start := 0
+	if cursor := filepath.ToSlash(strings.TrimSpace(opt.Cursor)); cursor != "" {
+		start = sort.Search(len(found), func(i int) bool { return found[i].rel > cursor })
+	}
+	end := start + opt.Limit
+	truncated := end < len(found)
+	if end > len(found) {
+		end = len(found)
+	}
+	var hashed int64
+	files := make([]mcpArtifactFile, 0, end-start)
+	for _, item := range found[start:end] {
+		file := mcpArtifactFile{Path: item.rel, Size: item.size}
+		if item.size <= mcpArtifactMaxHash && hashed+item.size <= mcpArtifactHashBudget {
+			if sum, hashErr := mcpHashFile(item.full); hashErr == nil {
 				file.SHA256 = sum
-				hashed += info.Size()
+				hashed += item.size
 			} else {
 				file.HashSkipped = true
 			}
@@ -749,10 +920,24 @@ func mcpWalkArtifacts(root string) ([]mcpArtifactFile, bool) {
 			file.HashSkipped = true
 		}
 		files = append(files, file)
-		return nil
-	})
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return files, truncated
+	}
+	list := mcpArtifactList{Files: files, Scope: "working_dir", Truncated: truncated}
+	if truncated && len(files) > 0 {
+		list.NextCursor = files[len(files)-1].Path
+		list.TruncatedReason = "page_limit"
+	}
+	return list
+}
+
+func mcpArtifactExcluded(name, rel string, exclude map[string]struct{}) bool {
+	if len(exclude) == 0 {
+		return false
+	}
+	if _, ok := exclude[strings.ToLower(name)]; ok {
+		return true
+	}
+	_, ok := exclude[strings.ToLower(rel)]
+	return ok
 }
 
 func mcpArtifactSkipDir(name string) bool {
@@ -914,24 +1099,47 @@ func (a *App) mcpClaimRequest(id, kind, command, prompt string) (*mcpClientReque
 	if a == nil {
 		return nil, false, errors.New("MCP 任务服务还没有准备好")
 	}
+	a.mcpLoadDurable()
+	hash := mcpRequestHash(kind, command, prompt)
 	a.mcpReqMu.Lock()
+	evicted := false
+	defer func() {
+		if evicted {
+			a.mcpPersistRequests()
+		}
+	}()
 	defer a.mcpReqMu.Unlock()
+	now := time.Now()
+	a.mcpPruneRequestTombsLocked(now)
 	if a.mcpReqs == nil {
 		a.mcpReqs = map[string]*mcpClientRequest{}
 	}
 	if prev, ok := a.mcpReqs[id]; ok && prev != nil {
-		if prev.Kind != kind || prev.Command != command || prev.Prompt != prompt {
-			return nil, false, errors.New("这个请求编号已经用于另一条调用")
+		if !mcpRequestStillKept(prev, now) {
+			a.mcpForgetRequestLocked(id)
+		} else if prev.Hash != "" && prev.Hash != hash || prev.Kind != kind || prev.Command != command || prev.Prompt != prompt {
+			return nil, false, mcpErr(mcpCodeRequestConflict, "这个请求编号已经用于另一条调用", "", "")
+		} else {
+			return prev, false, nil
 		}
-		return prev, false, nil
 	}
-	req := &mcpClientRequest{Kind: kind, Command: command, Prompt: prompt, ready: make(chan struct{})}
+	if _, tomb := a.mcpReqTombs[id]; tomb {
+		return nil, false, mcpErr(mcpCodeRequestConflict, "这个请求编号已经用于另一条调用", "", "")
+	}
+	req := &mcpClientRequest{Kind: kind, Command: command, Prompt: prompt, Hash: hash, State: mcpRequestStateAccepted, updated: time.Now(), ready: make(chan struct{})}
 	a.mcpReqs[id] = req
 	a.mcpReqOrder = append(a.mcpReqOrder, id)
+	before := len(a.mcpReqTombs)
 	if err := a.mcpEvictRequestsLocked(id); err != nil {
 		return nil, false, err
 	}
+	evicted = len(a.mcpReqTombs) != before
 	return req, true, nil
+}
+
+func mcpRequestHash(kind, command, prompt string) string {
+	sum := sha256.Sum256([]byte(kind + "\n" + command + "\n" + prompt))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (a *App) mcpEvictRequestsLocked(keep string) error {
@@ -945,6 +1153,7 @@ func (a *App) mcpEvictRequestsLocked(keep string) error {
 			continue
 		}
 		if id != keep && len(a.mcpReqs) > mcpClientRequestLimit && item.done {
+			a.mcpTombRequestLocked(id)
 			delete(a.mcpReqs, id)
 			continue
 		}
@@ -978,7 +1187,12 @@ func (a *App) mcpBindRequest(req *mcpClientRequest, path string) {
 	}
 	a.mcpReqMu.Lock()
 	req.ProjectPath = normalizeProjectSessionPath(path)
+	if req.State == "" || req.State == mcpRequestStateAccepted {
+		req.State = mcpRequestStateRunning
+	}
+	req.updated = time.Now()
 	a.mcpReqMu.Unlock()
+	a.mcpPersistRequests()
 }
 
 func (a *App) mcpCompleteRequest(req *mcpClientRequest, callErr error) {
@@ -990,8 +1204,15 @@ func (a *App) mcpCompleteRequest(req *mcpClientRequest, callErr error) {
 		req.errText = callErr.Error()
 	}
 	req.done = true
+	req.updated = time.Now()
+	if strings.TrimSpace(req.errText) != "" {
+		req.State = mcpRequestStateFailed
+	} else if req.State == "" {
+		req.State = mcpRequestStateAccepted
+	}
 	a.mcpReqMu.Unlock()
 	req.finish()
+	a.mcpPersistRequests()
 }
 
 func (a *App) mcpSucceedRequest(req *mcpClientRequest, path string) {
@@ -1024,6 +1245,7 @@ func (a *App) mcpAbandonRequest(req *mcpClientRequest, reason error) {
 	}
 	a.mcpReqMu.Unlock()
 	req.finish()
+	a.mcpPersistRequests()
 }
 
 func (req *mcpClientRequest) finish() {
@@ -1078,22 +1300,37 @@ func (a *App) mcpGetRequest(ctx context.Context, clientRequestID string) (mcpReq
 	if id == "" {
 		return mcpRequestView{}, errors.New("请求编号不能为空")
 	}
-	out := mcpRequestView{ClientRequestID: id}
+	out := mcpRequestView{ClientRequestID: id, State: mcpRequestStateNotFound}
 	if a == nil {
 		return out, nil
 	}
+	a.mcpLoadDurable()
 	a.mcpReqMu.Lock()
+	now := time.Now()
+	a.mcpPruneRequestTombsLocked(now)
 	req := a.mcpReqs[id]
-	var path, kind, errText string
+	if req != nil && !mcpRequestStillKept(req, now) {
+		a.mcpForgetRequestLocked(id)
+		req = nil
+	}
+	_, tomb := a.mcpReqTombs[id]
+	var path, kind, errText, hash, runID string
 	done := false
+	failed := false
 	if req != nil {
 		path = req.ProjectPath
 		kind = req.Kind
 		errText = req.errText
 		done = req.done
+		failed = req.failed
+		hash = req.Hash
+		runID = req.RunID
 	}
 	a.mcpReqMu.Unlock()
 	if req == nil {
+		if tomb {
+			out.State = mcpRequestStateExpired
+		}
 		return out, nil
 	}
 	out.Accepted = true
@@ -1101,12 +1338,23 @@ func (a *App) mcpGetRequest(ctx context.Context, clientRequestID string) (mcpReq
 	out.ProjectPath = path
 	out.Error = errText
 	out.Pending = !done
+	out.PayloadHash = hash
+	out.RunID = runID
+	if path != "" || kind != "" {
+		out.Scope = &mcpRequestScope{TaskID: path, Action: kind}
+	}
+	var published *mcpTaskView
 	if path != "" {
 		if view, ok := a.mcpViewFromRegistry(path); ok {
-			published := a.mcpReturnTask(view)
-			out.Task = &published
+			next := a.mcpReturnTask(view)
+			published = &next
+			out.Task = published
+			if out.RunID == "" {
+				out.RunID = firstNonEmpty(next.CurrentRunID, next.RunID)
+			}
 		}
 	}
+	out.State = mcpDeriveRequestState(&mcpClientRequest{ProjectPath: path, errText: errText, failed: failed, done: done}, published)
 	return out, nil
 }
 
@@ -1122,6 +1370,10 @@ func (a *App) mcpCapabilities(ctx context.Context) (mcpCapabilityView, error) {
 		connection = "configured"
 	}
 	enabled := computerUseEnabledFromConfig(&cfg)
+	build := strings.TrimSpace(versionVar())
+	if build == "" {
+		build = "dev"
+	}
 	return mcpCapabilityView{
 		APIVersion:      mcpHostAPIVersion,
 		ProtocolVersion: mcpProtocolVersionLatest,
@@ -1133,6 +1385,23 @@ func (a *App) mcpCapabilities(ctx context.Context) (mcpCapabilityView, error) {
 		Screenshot:      enabled,
 		Shell:           false,
 		BrowserMethods:  mcpBrowserMethods(enabled),
+		SchemaVersion:   mcpSchemaVersion,
+		ServerBuild:     build,
+		Commit:          "",
+		Persistence:     &mcpPersistenceView{Durable: true, Retention: "7d"},
+		CurrentModel: &mcpCurrentModelView{
+			Provider:   provider,
+			Model:      model,
+			Configured: connection == "configured",
+			ProbeOK:    nil,
+		},
+		FeatureFlags: &mcpFeatureFlagView{
+			DurableRuns:           true,
+			ExpectedStatusVersion: true,
+			DryRun:                true,
+			ArtifactPaging:        true,
+			ExpectedSHA256:        true,
+		},
 	}, nil
 }
 

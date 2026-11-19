@@ -395,12 +395,17 @@ func (a *App) RunAIAssistantProgrammingPrompt(
 		}
 	}
 	workDir := ""
+	sessionDir := ""
 	if projectPath != "" {
-		workDir = a.EffectiveWorkingDirForOwner(userID)
+		sessionDir = a.EffectiveWorkingDirForOwner(userID)
+		workDir = sessionDir
 	}
 	if hostMCP && workspace != "" {
 		workDir = workspace
 		a.mcpSetRunWorkspace(projectPath, requestID, workspace)
+		if normalizeProjectSessionPath(sessionDir) != "" && normalizeProjectSessionPath(sessionDir) != normalizeProjectSessionPath(workspace) {
+			a.mcpSetRunSessionPath(projectPath, requestID, sessionDir)
+		}
 	}
 	log.Printf("%s programming prompt request_id=%s user=%q project=%q work_dir=%q text_len=%d agent_text_len=%d",
 		logTag, requestID, userID, projectPath, workDir, len(text), len(agentText))

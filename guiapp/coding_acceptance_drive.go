@@ -288,9 +288,8 @@ func runDesktopAcceptance(ctx context.Context, sess desktopAcceptanceSession, ex
 				break
 			}
 			if err := sess.Click(ctx, pid, *check.ClickX, *check.ClickY); err != nil {
-				result.Detail = "click_failed"
+				result.Detail, acc.Reason = acceptanceDesktopDriveError(err, "click_failed")
 				acc.Checks = append(acc.Checks, result)
-				acc.Reason = "点击失败：" + err.Error()
 				passed = false
 				break
 			}
@@ -317,9 +316,8 @@ func runDesktopAcceptance(ctx context.Context, sess desktopAcceptanceSession, ex
 			break
 		}
 		if err := sess.Key(ctx, pid, key); err != nil {
-			result.Detail = "key_failed"
+			result.Detail, acc.Reason = acceptanceDesktopDriveError(err, "key_failed")
 			acc.Checks = append(acc.Checks, result)
-			acc.Reason = "按键失败：" + err.Error()
 			passed = false
 			break
 		}
@@ -371,6 +369,54 @@ func acceptanceDesktopAfterAction(ctx context.Context, sess desktopAcceptanceSes
 		return "handoff_refused", "动作之后出现秘密、支付或系统安全界面。没有继续发送键鼠，也没有等待确认。"
 	}
 	return "", ""
+}
+
+// acceptanceDesktopDriveFault is a refusal the desktop driver already
+// classified on the observation taken immediately before input. The runner
+// records detail as-is. A plain error is still click_failed or key_failed.
+type acceptanceDesktopDriveFault struct {
+	detail string
+	reason string
+}
+
+func (e *acceptanceDesktopDriveFault) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+
+func acceptanceDesktopDriveError(err error, fallback string) (string, string) {
+	var fault *acceptanceDesktopDriveFault
+	if errors.As(err, &fault) && fault != nil && fault.detail != "" {
+		return fault.detail, fault.reason
+	}
+	if fallback == "key_failed" {
+		return fallback, "按键失败：" + err.Error()
+	}
+	return fallback, "点击失败：" + err.Error()
+}
+
+// acceptanceDesktopAuthorize is the last look before a click or a key.
+// MaClaw, a different image, and a secret or pay surface each keep their
+// own result. They are not a generic click or key failure.
+func acceptanceDesktopAuthorize(obs desktopObservation, ok bool, exe, key string) error {
+	if ok && acceptanceWindowIsMaClaw(obs) {
+		return &acceptanceDesktopDriveFault{detail: "handoff_refused", reason: acceptanceReasonMaClaw}
+	}
+	if !ok || !acceptanceSameImage(obs.Image, exe) {
+		return &acceptanceDesktopDriveFault{
+			detail: "image_mismatch",
+			reason: "前台映像路径与刚构建的程序不一致，没有点击也没有按键。",
+		}
+	}
+	if acceptanceDesktopRefusal(obs, key) != "" {
+		return &acceptanceDesktopDriveFault{
+			detail: "handoff_refused",
+			reason: "秘密、支付或系统安全界面已拒绝。没有点击，没有按键，也没有等待确认。",
+		}
+	}
+	return nil
 }
 
 // acceptanceClickOutside refuses a point that is not inside the foreground
@@ -491,9 +537,21 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 		}
 		if !opened || target != listen.URL {
 			if err := sess.Navigate(ctx, target); err != nil {
-				result.Detail = "navigate_failed"
+				if ctx.Err() != nil {
+					acc.Status = acceptanceStatusCancelled
+					acc.Reason = acceptanceReasonCancelled
+					return acc
+				}
+				if wall, ok := acceptanceClickWall(err); ok {
+					acceptanceHandWebToUser(ctx, sess, listen, acceptancePage{URL: listen.URL}, wall)
+					result.Detail = "handoff_refused"
+					acc.Checks = append(acc.Checks, result)
+					acc.Reason = "页面留给用户完成登录、验证码、密码或支付。没有代点，也没有打开 Computer Use。"
+					passed = false
+					break
+				}
+				result.Detail, acc.Reason = acceptanceWebNavigateFailure(err)
 				acc.Checks = append(acc.Checks, result)
-				acc.Reason = "隔离浏览器没有打开页面：" + err.Error() + "。没有打开 Computer Use。"
 				passed = false
 				break
 			}
@@ -501,9 +559,14 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 		}
 		page, err := sess.Observe(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				acc.Status = acceptanceStatusCancelled
+				acc.Reason = acceptanceReasonCancelled
+				return acc
+			}
 			result.Detail = "observe_failed"
 			acc.Checks = append(acc.Checks, result)
-			acc.Reason = "观察页面失败：" + err.Error()
+			acc.Reason = "观察页面失败。没有打开 Computer Use。"
 			passed = false
 			break
 		}
@@ -529,6 +592,11 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 		}
 		if check.ClickX != nil && check.ClickY != nil && len(check.Keys) == 0 {
 			if err := sess.Click(ctx, *check.ClickX, *check.ClickY); err != nil {
+				if ctx.Err() != nil {
+					acc.Status = acceptanceStatusCancelled
+					acc.Reason = acceptanceReasonCancelled
+					return acc
+				}
 				if wall, ok := acceptanceClickWall(err); ok {
 					acceptanceHandWebToUser(ctx, sess, listen, page, wall)
 					result.Detail = "handoff_refused"
@@ -537,7 +605,7 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 					passed = false
 					break
 				}
-				result.Detail = "click_failed"
+				result.Detail, acc.Reason = acceptanceWebFailure(err, false)
 				acc.Checks = append(acc.Checks, result)
 				passed = false
 				break
@@ -551,6 +619,11 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 				break
 			}
 			if err := sess.Press(ctx, check.Keys[0]); err != nil {
+				if ctx.Err() != nil {
+					acc.Status = acceptanceStatusCancelled
+					acc.Reason = acceptanceReasonCancelled
+					return acc
+				}
 				if wall, ok := acceptanceClickWall(err); ok {
 					acceptanceHandWebToUser(ctx, sess, listen, page, wall)
 					result.Detail = "handoff_refused"
@@ -559,7 +632,7 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 					passed = false
 					break
 				}
-				result.Detail = "press_failed"
+				result.Detail, acc.Reason = acceptanceWebFailure(err, true)
 				acc.Checks = append(acc.Checks, result)
 				passed = false
 				break
@@ -575,9 +648,14 @@ func runWebAcceptance(ctx context.Context, sess acceptanceBrowserSession, listen
 			}
 			landed, err := sess.Observe(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					acc.Status = acceptanceStatusCancelled
+					acc.Reason = acceptanceReasonCancelled
+					return acc
+				}
 				result.Detail = "observe_failed"
 				acc.Checks = append(acc.Checks, result)
-				acc.Reason = "观察页面失败：" + err.Error()
+				acc.Reason = "观察页面失败。没有打开 Computer Use。"
 				passed = false
 				break
 			}
@@ -615,14 +693,17 @@ func acceptanceWebPageBlock(page acceptancePage, listen acceptanceListen, acted 
 		return "navigation_refused", "隔离浏览器没有留下可核对的页面地址。没有点击，也没有打开 Computer Use。", ""
 	}
 	if err := acceptanceNavigationAllowed(listen.Host, listen.Port, page.URL); err != nil {
+		// The allowlist error is not copied. The observed address can carry a token.
 		if acted {
-			return "navigation_refused", "动作之后页面离开了监听地址：" + err.Error() + "。没有继续操作，也没有打开 Computer Use。", ""
+			return "navigation_refused", "动作之后页面离开了监听地址。没有继续操作，也没有打开 Computer Use。", ""
 		}
-		return "navigation_refused", "页面离开了监听地址：" + err.Error() + "。没有点击，也没有打开 Computer Use。", ""
+		return "navigation_refused", "页面离开了监听地址。没有点击，也没有打开 Computer Use。", ""
 	}
 	wall = page.Wall
 	if wall == "" {
-		wall = acceptancePageNeedsUser(page)
+		// The document title is the dialog caption. The probe excerpt is
+		// page prose, so a sentence that mentions a password is not a wall.
+		wall = acceptancePageNeedsUser(acceptancePage{Title: page.Title})
 	}
 	if wall == "" {
 		return "", "", ""
@@ -635,8 +716,8 @@ func acceptanceWebPageBlock(page acceptancePage, listen acceptanceListen, acted 
 
 // acceptanceNavigationAllowed is the acceptance policy. It refuses about:,
 // file:, data:, an empty allowlist, a different port, and the other loopback
-// name. 127.0.0.1 does not admit localhost. A URL that carries userinfo or a
-// backslash is refused without echoing that text.
+// name. 127.0.0.1 does not admit localhost. Every error is copied into the
+// acceptance reason, so none of them repeat the URL, scheme, host, or port.
 func acceptanceNavigationAllowed(host string, port int, rawURL string) error {
 	host = strings.TrimSpace(host)
 	if host == "" || port <= 0 {
@@ -648,19 +729,17 @@ func acceptanceNavigationAllowed(host string, port int, rawURL string) error {
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("拒绝导航：%v", err)
+		return fmt.Errorf("拒绝导航")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	switch scheme {
 	case "http", "https":
-	case "about", "file", "data", "":
-		return fmt.Errorf("拒绝 %s 导航", schemeName(scheme))
 	default:
-		return fmt.Errorf("拒绝 %s 导航", scheme)
+		return fmt.Errorf("拒绝导航")
 	}
 	gotHost := strings.ToLower(parsed.Hostname())
 	if gotHost != strings.ToLower(host) {
-		return fmt.Errorf("允许域是 %s，拒绝 %s", host, gotHost)
+		return fmt.Errorf("拒绝离开监听地址的导航")
 	}
 	gotPort := parsed.Port()
 	if gotPort == "" {
@@ -671,7 +750,7 @@ func acceptanceNavigationAllowed(host string, port int, rawURL string) error {
 		}
 	}
 	if gotPort != strconv.Itoa(port) {
-		return fmt.Errorf("允许端口是 %d，拒绝 %s", port, gotPort)
+		return fmt.Errorf("拒绝不在监听端口上的导航")
 	}
 	return nil
 }
@@ -686,11 +765,16 @@ func acceptanceURLHasEncodedTrick(rawURL string) bool {
 	return false
 }
 
-func schemeName(scheme string) string {
-	if scheme == "" {
-		return "空 scheme"
+// acceptanceCaptionRunes is the longest control caption. A longer string is
+// the control's paragraph, and acceptance does not scan that for keywords.
+const acceptanceCaptionRunes = 32
+
+func acceptanceControlCaption(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || len([]rune(text)) > acceptanceCaptionRunes {
+		return ""
 	}
-	return scheme + ":"
+	return text
 }
 
 func acceptancePageNeedsUser(page acceptancePage) string {

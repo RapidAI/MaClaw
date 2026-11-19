@@ -123,6 +123,21 @@ func (c *sharedAgentLoopCallbacks) hopRunSnapshot() *HopRunSnapshot {
 		if superseded {
 			step.Superseded = true
 		}
+		// This turn already attached the file to the response. A later plan
+		// revision reads a different scope, so the current selection can look
+		// pending or failed even though the bytes are staged. Counting that
+		// row told the model the capability was still unassigned, the turn
+		// hard-exited required_effect_unsettled, and the next message was
+		// refused as an uncertain external send. The response projection owns
+		// the receipt. A delivery that has not been staged stays on the switch
+		// below. Specified-target and mailbox confirmation do not take this path.
+		if c.stagedCurrentChannelDelivery(step) {
+			step.Status = HopStepRunning
+			step.Evidence.State = tool.PlanExecutionAwaitingReceipt
+			step.Evidence.ReasonCode = "current_channel_attach_staged"
+			snapshot.Steps = append(snapshot.Steps, step)
+			continue
+		}
 		// No execution record means the selection has not started. Repeat
 		// slots stay optional until a call acquires them. A real running
 		// record keeps that status; inventing one left unused slots looking
@@ -217,7 +232,9 @@ func requiredEffectUnsettled(snapshot *HopRunSnapshot) bool {
 //
 // Both are dispatched work. A mailbox send waiting for confirmation is not:
 // its receipt is a human decision the pause mechanism owns, so it keeps the
-// run open.
+// run open. A current-channel attach already staged on this callback is the
+// same dispatched work when the current surface has no awaiting-receipt row;
+// hopRunSnapshot marks that step before this check runs.
 func hostTransportDeliveryStep(step HopRunStep) bool {
 	if step.Status != HopStepRunning || step.Evidence.State != tool.PlanExecutionAwaitingReceipt {
 		return false
@@ -225,6 +242,28 @@ func hostTransportDeliveryStep(step HopRunStep) bool {
 	capability := strings.TrimSpace(step.Capability)
 	return strings.EqualFold(capability, hopCurrentChannelDeliveryCapability) ||
 		strings.EqualFold(capability, string(semanticSpecifiedTargetDeliveryCapability))
+}
+
+// stagedCurrentChannelDelivery reports a required current-channel step whose
+// file this turn has already handed to the response. A trusted success stays
+// on the normal completed path. Any other record — missing, pending, failed,
+// or unknown — is this turn's transport, not a deliverable the model can
+// still assign. The flag is set only after the outbox commit, the bytes have
+// to still be on the callback, and they have to be the payload that commit
+// attached. A later delivery that replaced the file is not this receipt.
+func (c *sharedAgentLoopCallbacks) stagedCurrentChannelDelivery(step HopRunStep) bool {
+	if c == nil || !c.currentChannelDeliveryStaged || !step.Required {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(step.Capability), hopCurrentChannelDeliveryCapability) {
+		return false
+	}
+	if step.Evidence.State == tool.PlanExecutionSucceeded {
+		return false
+	}
+	// The payload compare walks the staged bytes. Do it only for this
+	// capability, not once per selection in the plan.
+	return c.currentChannelBytesStaged() && c.currentChannelPayloadHeld()
 }
 
 // webSearchRecoveredByFetch reports that a trusted fetch already delivered

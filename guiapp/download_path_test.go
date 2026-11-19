@@ -60,6 +60,7 @@ func TestIsImportantLogLineKeepsDownloadWorkdirDiagnostics(t *testing.T) {
 		`[embedding] head asset fetch kind=intent_head file=head_mlp_qwen3go_r7.json 40%`,
 		`[embedding] head asset fetch failed kind=intent_head file=head_mlp_qwen3go_r7.json err=timeout`,
 		`[embedding] head asset ready path=C:\Users\me\.maclaw\models\intent_heads\head_mlp_qwen3go_r7.json`,
+		`[heads] diagnostics-cleared: intent_head pinned=head.json@abc disk=missing attached=no`,
 	}
 	for _, line := range must {
 		if !isImportantLogLine(line) {

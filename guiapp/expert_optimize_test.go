@@ -541,4 +541,42 @@ func TestParseExpertOptimizeResponseFindsBalancedJSON(t *testing.T) {
 	if err != nil || parsed.SystemPrompt != "保留 {花括号} 内容" {
 		t.Fatalf("balanced JSON with braces in a string must parse: %+v, %v", parsed, err)
 	}
+
+	draftThenReal := `{"name":"占位","description":"d","icon":"✨","system_prompt":"完整的专家系统提示词"}
+{"name":"优化专家","description":"简介","icon":"✨","system_prompt":"保留 {花括号} 内容"}`
+	parsed, err = parseExpertOptimizeResponse(draftThenReal)
+	if err != nil || parsed.Name != "优化专家" || parsed.SystemPrompt != "保留 {花括号} 内容" {
+		t.Fatalf("last non-empty system_prompt must win: %+v, %v", parsed, err)
+	}
+	emptyThenReal := `{"name":"草稿","system_prompt":""} {"name":"优化专家","description":"简介","icon":"✨","system_prompt":"正式提示词"}`
+	parsed, err = parseExpertOptimizeResponse(emptyThenReal)
+	if err != nil || parsed.SystemPrompt != "正式提示词" {
+		t.Fatalf("empty draft must not fail the later prompt: %+v, %v", parsed, err)
+	}
+
+	wrapped := "说明 {先写\n{\"name\":\"优化专家\",\"description\":\"简介\",\"icon\":\"✨\",\"system_prompt\":\"正式提示词\"}\n}"
+	parsed, err = parseExpertOptimizeResponse(wrapped)
+	if err != nil || parsed.SystemPrompt != "正式提示词" {
+		t.Fatalf("a prose brace closed later must not swallow the distillation: %+v, %v", parsed, err)
+	}
+	template := `{"name":"优化版专家名称，不超过 10 个汉字，必须与原专家名称不同","system_prompt":"完整的优化版系统提示词（中文，结构化，含 角色定位/工作流程/输出格式/边界约束 小节）"}`
+	if _, err := parseExpertOptimizeResponse(template); err == nil {
+		t.Fatal("the prompt template must not become a distillation")
+	}
+	parsed, err = parseExpertOptimizeResponse(`{"name":"优化专家","system_prompt":"正式提示词"}` + "\n" + template)
+	if err != nil || parsed.Name != "优化专家" || parsed.SystemPrompt != "正式提示词" {
+		t.Fatalf("a trailing template must not replace the distillation: %+v, %v", parsed, err)
+	}
+	parsed, err = parseExpertOptimizeResponse(`{"name":"优化专家","system_prompt":"正式提示词","extra":{"name":"内层","system_prompt":"不要用我"},"icon":1}`)
+	if err != nil || parsed.Name != "优化专家" || parsed.SystemPrompt != "正式提示词" {
+		t.Fatalf("outer distillation must win: %+v, %v", parsed, err)
+	}
+	parsed, err = parseExpertOptimizeResponse(`{"name":"优化专家","system_prompt":{"角色定位":"保持正式","工作流程":"先核对用户偏好"}}`)
+	if err != nil || !strings.Contains(parsed.SystemPrompt, "# 角色定位\n保持正式") || !strings.Contains(parsed.SystemPrompt, "# 工作流程\n先核对用户偏好") {
+		t.Fatalf("section object must become one prompt: %+v, %v", parsed, err)
+	}
+	parsed, err = parseExpertOptimizeResponse(`{"name":"` + expertOptimizeTemplateName + `","description":"` + expertProfileTemplateDescription + `","icon":"` + expertProfileTemplateIcon + `","system_prompt":"正式提示词"}`)
+	if err != nil || parsed.Name != "" || parsed.Description != "" || parsed.Icon != "" || parsed.SystemPrompt != "正式提示词" {
+		t.Fatalf("prompt examples must not fill the distillation: %+v, %v", parsed, err)
+	}
 }

@@ -143,6 +143,323 @@ func TestProjectIndex_Rebuild(t *testing.T) {
 	}
 }
 
+func TestProjectIndex_ForgetProjectSurvivesRebuild(t *testing.T) {
+	pi := NewProjectIndex()
+	entries := []Entry{
+		{
+			ID:        "e1",
+			Content:   "# Snake Game Requirements\nA classic snake game with keyboard controls.",
+			Category:  CategoryTaskArtifact,
+			Tags:      []string{"snake", "game", "workflow:coding"},
+			SourceURL: "D:\\workprj\\snake\\requirements.md",
+			UpdatedAt: time.Now().Add(-2 * time.Hour),
+		},
+		{
+			ID:        "e3",
+			Content:   "# PPT Presentation Design\nProduct launch presentation.",
+			Category:  CategoryTaskArtifact,
+			Tags:      []string{"ppt", "presentation"},
+			SourceURL: "/home/user/projects/launch-ppt/slides.md",
+			UpdatedAt: time.Now(),
+		},
+	}
+	pi.Rebuild(entries)
+	if pi.Get(`D:\workprj\snake`) == nil {
+		t.Fatal("snake missing before forget")
+	}
+	pi.ForgetProject(`D:/workprj/snake`)
+	if pi.Get(`D:\workprj\snake`) != nil {
+		t.Fatal("forget left the snake record")
+	}
+	pi.Rebuild(entries)
+	if pi.Get(`D:\workprj\snake`) != nil {
+		t.Fatal("rebuild restored a forgotten project")
+	}
+	if pi.Get("/home/user/projects/launch-ppt") == nil {
+		t.Fatal("rebuild dropped the project that was not forgotten")
+	}
+	pi.IndexEntry(&entries[0])
+	if pi.Get(`D:\workprj\snake`) != nil {
+		t.Fatal("index entry restored a forgotten project")
+	}
+	if pi.Count() != 1 {
+		t.Fatalf("project count = %d, want 1", pi.Count())
+	}
+}
+
+func TestProjectIndex_RebuildKeepsEditsThatLandedDuringBuild(t *testing.T) {
+	pi := NewProjectIndex()
+	var notified int
+	pi.OnChanged = func(string) { notified++ }
+	gen := pi.BeginRebuild()
+	if gen == 0 {
+		t.Fatal("BeginRebuild returned 0")
+	}
+	pi.IndexEntry(&Entry{
+		ID:        "fact",
+		Content:   "User prefers dark mode.",
+		Category:  CategoryUserFact,
+		UpdatedAt: time.Now(),
+	})
+	pi.IndexEntry(&Entry{
+		ID:        "late",
+		Content:   "# Weather\nBeijing today.",
+		Category:  CategoryTaskArtifact,
+		SourceURL: `D:\workprj\weather\notes.md`,
+		UpdatedAt: time.Now(),
+	})
+	if notified != 1 {
+		t.Fatalf("OnChanged calls = %d, want 1", notified)
+	}
+	pi.finishRebuild(gen, []Entry{
+		{
+			ID:        "e1",
+			Content:   "# Snake Game Requirements\nA classic snake game.",
+			Category:  CategoryTaskArtifact,
+			SourceURL: `D:\workprj\snake\requirements.md`,
+			UpdatedAt: time.Now().Add(-time.Hour),
+		},
+	})
+	if notified != 1 {
+		t.Fatalf("replay fired OnChanged, calls = %d", notified)
+	}
+	if pi.Get(`D:\workprj\snake`) == nil {
+		t.Fatal("snapshot project was dropped")
+	}
+	if pi.Get(`D:\workprj\weather`) == nil {
+		t.Fatal("project saved during the rebuild was dropped")
+	}
+	if pi.Count() != 2 {
+		t.Fatalf("project count = %d, want 2", pi.Count())
+	}
+}
+
+func TestProjectIndex_ForgetDuringRebuildStaysForgotten(t *testing.T) {
+	pi := NewProjectIndex()
+	entries := []Entry{
+		{
+			ID:        "e1",
+			Content:   "# Snake Game Requirements",
+			Category:  CategoryTaskArtifact,
+			SourceURL: `D:\workprj\snake\requirements.md`,
+			UpdatedAt: time.Now().Add(-time.Hour),
+		},
+		{
+			ID:        "e3",
+			Content:   "# PPT Presentation Design",
+			Category:  CategoryTaskArtifact,
+			SourceURL: "/home/user/projects/launch-ppt/slides.md",
+			UpdatedAt: time.Now(),
+		},
+	}
+	pi.Rebuild(entries)
+	gen := pi.BeginRebuild()
+	pi.ForgetProject(`D:/workprj/snake`)
+	pi.finishRebuild(gen, entries)
+	if pi.Get(`D:\workprj\snake`) != nil {
+		t.Fatal("rebuild restored a project forgotten during the build")
+	}
+	if pi.Get("/home/user/projects/launch-ppt") == nil {
+		t.Fatal("rebuild dropped the project that was not forgotten")
+	}
+}
+
+func TestProjectIndex_TagEditDuringRebuildSurvivesSwap(t *testing.T) {
+	pi := NewProjectIndex()
+	path := `D:\work\tasks\remote-1`
+	entry := Entry{
+		ID:        "e1",
+		Content:   "# remote task",
+		Category:  CategoryTaskArtifact,
+		Tags:      []string{"manual_task", "recent_task", path, "remote_host:10.0.0.1"},
+		SourceURL: filepath.Join(path, "task.md"),
+		UpdatedAt: time.Now(),
+	}
+	pi.IndexEntry(&entry)
+	gen := pi.BeginRebuild()
+	pi.ReplacePrefixedTags(path, []string{"remote_host:"}, []string{"remote_host:10.0.0.9"})
+	pi.finishRebuild(gen, []Entry{entry})
+	rec := pi.Get(path)
+	if rec == nil {
+		t.Fatal("record missing after rebuild")
+	}
+	has := func(target string) bool {
+		for _, tag := range rec.Tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("remote_host:10.0.0.9") || has("remote_host:10.0.0.1") {
+		t.Fatalf("host tags: %#v", rec.Tags)
+	}
+}
+
+func TestProjectIndex_StaleRebuildDoesNotDropLaterEdit(t *testing.T) {
+	pi := NewProjectIndex()
+	first := pi.BeginRebuild()
+	second := pi.BeginRebuild()
+	if second == first {
+		t.Fatal("second rebuild reused the first generation")
+	}
+	pi.IndexEntry(&Entry{
+		ID:        "late",
+		Content:   "# Weather\nBeijing today.",
+		Category:  CategoryTaskArtifact,
+		SourceURL: `D:\workprj\weather\notes.md`,
+		UpdatedAt: time.Now(),
+	})
+	pi.finishRebuild(first, nil)
+	if pi.Get(`D:\workprj\weather`) == nil {
+		t.Fatal("stale rebuild removed the live project")
+	}
+	pi.finishRebuild(second, []Entry{
+		{
+			ID:        "e1",
+			Content:   "# Snake Game Requirements",
+			Category:  CategoryTaskArtifact,
+			SourceURL: `D:\workprj\snake\requirements.md`,
+			UpdatedAt: time.Now().Add(-time.Hour),
+		},
+	})
+	if pi.Get(`D:\workprj\weather`) == nil {
+		t.Fatal("current rebuild dropped the project saved during the build")
+	}
+	if pi.Get(`D:\workprj\snake`) == nil {
+		t.Fatal("current rebuild did not install the snapshot")
+	}
+}
+
+func TestProjectIndex_NewerSnapshotDropsDeletedPendingEntry(t *testing.T) {
+	pi := NewProjectIndex()
+	snake := Entry{
+		ID:        "e1",
+		Content:   "# Snake Game Requirements",
+		Category:  CategoryTaskArtifact,
+		SourceURL: `D:\workprj\snake\requirements.md`,
+		UpdatedAt: time.Now().Add(-time.Hour),
+	}
+	weather := Entry{
+		ID:        "late",
+		Content:   "# Weather\nBeijing today.",
+		Category:  CategoryTaskArtifact,
+		SourceURL: `D:\workprj\weather\notes.md`,
+		UpdatedAt: time.Now(),
+	}
+	pi.Rebuild([]Entry{snake})
+	first := pi.BeginRebuild()
+	pi.IndexEntry(&weather)
+	if pi.Get(`D:\workprj\weather`) == nil {
+		t.Fatal("save during the first rebuild did not apply live")
+	}
+	second := pi.BeginRebuild()
+	if second == first {
+		t.Fatal("second rebuild reused the first generation")
+	}
+	// The first snapshot still contains the deleted project. It must not install.
+	pi.finishRebuild(first, []Entry{snake, weather})
+	if pi.Get(`D:\workprj\weather`) == nil {
+		t.Fatal("stale rebuild cleared the live project before the new snapshot")
+	}
+	// The newer snapshot was taken after the delete, so weather is absent.
+	// Replaying the entry queued for the first generation would resurrect it.
+	pi.finishRebuild(second, []Entry{snake})
+	if pi.Get(`D:\workprj\weather`) != nil {
+		t.Fatal("newer snapshot restored a project deleted before it was taken")
+	}
+	if pi.Get(`D:\workprj\snake`) == nil {
+		t.Fatal("newer snapshot dropped the project it still contains")
+	}
+}
+
+func TestProjectIndex_TagEditSurvivesNewerSnapshot(t *testing.T) {
+	pi := NewProjectIndex()
+	path := `D:\work\tasks\remote-1`
+	entry := Entry{
+		ID:        "e1",
+		Content:   "# remote task",
+		Category:  CategoryTaskArtifact,
+		Tags:      []string{"manual_task", "recent_task", path, "remote_host:10.0.0.1"},
+		SourceURL: filepath.Join(path, "task.md"),
+		UpdatedAt: time.Now(),
+	}
+	pi.IndexEntry(&entry)
+	first := pi.BeginRebuild()
+	pi.ReplacePrefixedTags(path, []string{"remote_host:"}, []string{"remote_host:10.0.0.9"})
+	second := pi.BeginRebuild()
+	if second == first {
+		t.Fatal("second rebuild reused the first generation")
+	}
+	pi.finishRebuild(first, []Entry{entry})
+	pi.finishRebuild(second, []Entry{entry})
+	rec := pi.Get(path)
+	if rec == nil {
+		t.Fatal("record missing after the newer snapshot")
+	}
+	has := func(target string) bool {
+		for _, tag := range rec.Tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("remote_host:10.0.0.9") || has("remote_host:10.0.0.1") {
+		t.Fatalf("host tags: %#v", rec.Tags)
+	}
+}
+
+func TestProjectIndex_TagEditStaysAfterLaterEntryReplay(t *testing.T) {
+	pi := NewProjectIndex()
+	path := `D:\work\tasks\remote-1`
+	entry := Entry{
+		ID:        "e1",
+		Content:   "# remote task",
+		Category:  CategoryTaskArtifact,
+		Tags:      []string{"manual_task", "recent_task", path, "remote_host:10.0.0.1"},
+		SourceURL: filepath.Join(path, "task.md"),
+		UpdatedAt: time.Now(),
+	}
+	pi.IndexEntry(&entry)
+	first := pi.BeginRebuild()
+	pi.ReplacePrefixedTags(path, []string{"remote_host:"}, []string{"remote_host:10.0.0.9"})
+	second := pi.BeginRebuild()
+	if second == first {
+		t.Fatal("second rebuild reused the first generation")
+	}
+	// A save after the host change still carries the old prefix. IndexEntry
+	// unions tags, and this entry is not in the snapshot that is about to install.
+	later := entry
+	later.ID = "e2"
+	later.Tags = append(append([]string{}, entry.Tags...), "origin:diagnosis")
+	later.UpdatedAt = time.Now().Add(time.Minute)
+	pi.IndexEntry(&later)
+	pi.finishRebuild(first, []Entry{entry})
+	pi.finishRebuild(second, []Entry{entry})
+	rec := pi.Get(path)
+	if rec == nil {
+		t.Fatal("record missing after replay")
+	}
+	has := func(target string) bool {
+		for _, tag := range rec.Tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("remote_host:10.0.0.9") || has("remote_host:10.0.0.1") {
+		t.Fatalf("host tags: %#v", rec.Tags)
+	}
+	if !has("origin:diagnosis") {
+		t.Fatalf("entry tag dropped: %#v", rec.Tags)
+	}
+	if rec.EntryCount != 2 {
+		t.Fatalf("entry count = %d, want 2", rec.EntryCount)
+	}
+}
+
 func TestProjectIndex_Search(t *testing.T) {
 	pi := NewProjectIndex()
 

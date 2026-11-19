@@ -6249,10 +6249,8 @@ export const SidebarTaskManagement = ({
                 : workspaceValue;
             // Cloud rows always keep the type badge, even before Hub names load.
             const showWorkspaceLine = workspaceKind === 'cloud' || !!workspaceValue;
-            // When the workspace line already carries the identity text (cloud
-            // workspace name), keep the muted subtitle from repeating it.
-            // A third summary line repeats the title or the workspace path.
-            // Keep it only while a row is restoring or being removed.
+            // Status copy stays on the mark and the row tooltip. Painting it as
+            // its own line, or fading the card, made a switch look like a flash.
             const secondaryText = secondaryStatusLabel;
             const rowStyle: CSSProperties = {
                 display: 'flex',
@@ -6262,15 +6260,26 @@ export const SidebarTaskManagement = ({
                 padding: '3px 8px',
                 borderRadius: '8px',
                 cursor: isBusy ? 'progress' : (remote.selected || folder.kind === 'recent') ? 'pointer' : 'grab',
-                opacity: isBusy ? 0.78 : 1,
                 // Only the active row keeps a selection highlight; open-but-inactive
                 // and plain rows stay transparent (hover comes from CSS).
+                // The card frame is the CSS border. This shadow is only the
+                // left bar — a full inset ring stacks a second frame on it.
                 ...(isActive ? {
                     background: 'var(--theme-surface)',
-                    boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
+                    boxShadow: 'inset 3px 0 0 var(--theme-primary)',
                 } : {}),
             };
             const orderKey = taskOrderKey(proj);
+            // Opening and removal paint their progress on the workspace line
+            // (the directory row under the title). A separate track under that
+            // line grew the card, then collapsed when the work finished.
+            const rowProgressLabel = isRemoving
+                ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務')
+                : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務');
+            const progressOnWorkspaceLine = isBusy && showWorkspaceLine;
+            const rowProgress = isBusy ? (
+                <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : 'progressbar'} aria-label={rowProgressLabel} className={`sidebar-task-progress__track${progressOnWorkspaceLine ? '' : ' stsm-row-progress'}`}><span className="sidebar-task-progress__bar" /></span>
+            ) : null;
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
                 <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, storedName: String(proj.name || '').trim(), listAnchor: taskListRenameAnchor(folder.kind, orderKey), archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
@@ -6332,21 +6341,24 @@ export const SidebarTaskManagement = ({
                             </span>
                         )}
                         {renamingTaskPath === proj.project_path && renameAnchor === taskListRenameAnchor(folder.kind, orderKey) ? <input data-testid="task-rename-input" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={e => { void commitTaskRenameBlur(e, renameSession, proj.project_path, storedTaskName || taskTitleText); }} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
-                        {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
+                        {secondaryText && !showWorkspaceLine ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
                                 data-testid="task-working-dir"
-                                className="mc-task-working-dir"
+                                className={`mc-task-working-dir${progressOnWorkspaceLine ? ' mc-task-working-dir--progress' : ''}`}
                                 style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '12px', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
                             >
-                                <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
-                                {workspaceValueText ? (
-                                    <span className="stsm-workspace-value" title={workspaceKind === 'remote' ? workspaceValueText : undefined}>{workspaceValueText}</span>
-                                ) : null}
+                                <span className="mc-task-working-dir__place" aria-hidden={progressOnWorkspaceLine ? true : undefined} style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: '1 1 auto', overflow: 'hidden' }}>
+                                    <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
+                                    {workspaceValueText ? (
+                                        <span className="stsm-workspace-value" title={workspaceKind === 'remote' ? workspaceValueText : undefined}>{workspaceValueText}</span>
+                                    ) : null}
+                                </span>
+                                {progressOnWorkspaceLine ? rowProgress : null}
                             </span>
                         ) : null}
                         {!isBusy && createdAtLabel && <span data-testid="task-created-at" className="stsm-row-created">{createdAtLabel}</span>}
-                        {isBusy && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track stsm-row-progress"><span className="sidebar-task-progress__bar" /></span>}
+                        {isBusy && !showWorkspaceLine ? rowProgress : null}
                         {removalError && <span data-testid="task-remove-error" role="alert" className="stsm-row-error">{removalError}</span>}
                     </span>
                     <span className="stsm-row-actions">

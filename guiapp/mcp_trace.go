@@ -42,11 +42,12 @@ type mcpChildView struct {
 // mcpStopView is why a run stopped. Status alone is not this record:
 // cancelled and "Stopped before finishing" do not say who stopped it.
 type mcpStopView struct {
-	Class  string `json:"class"`
-	Source string `json:"source"`
-	Reason string `json:"reason"`
-	At     string `json:"at"`
-	StepID string `json:"step_id,omitempty"`
+	Class    string `json:"class"`
+	Source   string `json:"source"`
+	Reason   string `json:"reason"`
+	At       string `json:"at"`
+	StepID   string `json:"step_id,omitempty"`
+	Deadline string `json:"deadline,omitempty"`
 }
 
 func mcpNewRunID() string {
@@ -226,6 +227,7 @@ func mcpStopFor(status, errText string, steps []mcpStepView, cause error, at tim
 	case errors.Is(cause, context.DeadlineExceeded):
 		stop.Class = mcpStopTimeout
 		stop.Source = "timeout"
+		stop.Deadline = mcpFormatTime(at)
 		stop.StepID = mcpOpenStepID(steps)
 		if stop.Reason == "" {
 			stop.Reason = "执行超时"
@@ -264,6 +266,10 @@ func mcpStopFor(status, errText string, steps []mcpStepView, cause error, at tim
 		if stop.Reason == "" {
 			stop.Reason = mcpStepFailureDetail(steps, "", nil)
 		}
+	}
+	if stop.Class == mcpStopTimeout && strings.TrimSpace(stop.Deadline) == "" {
+		stop.Class = mcpStopUnconfirmed
+		stop.Source = "host_wait"
 	}
 	return stop
 }
@@ -868,7 +874,7 @@ func (a *App) mcpRunForReadLocked(path, runID string) (*mcpRunRecord, error) {
 	rec := a.mcpRuns[path]
 	if runID == "" {
 		if rec == nil {
-			return nil, errors.New("没有找到这个任务")
+			return nil, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, "")
 		}
 		return rec, nil
 	}
@@ -887,7 +893,10 @@ func (a *App) mcpRunForReadLocked(path, runID string) (*mcpRunRecord, error) {
 			}
 		}
 	}
-	return nil, errors.New("没有这一轮执行")
+	if rec == nil && len(a.mcpRunArchive[path]) == 0 {
+		return nil, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
+	}
+	return nil, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
 }
 
 func mcpLogMatchesRun(ev mcpLogEvent, rec *mcpRunRecord, runID string) bool {
@@ -907,7 +916,13 @@ func (a *App) mcpNoteAdmittedChildren(path, requestID, text string) {
 	}
 	path = normalizeProjectSessionPath(path)
 	requestID = strings.TrimSpace(requestID)
+	persist := false
 	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
 	defer a.mcpRunsMu.Unlock()
 	rec := a.mcpRuns[path]
 	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
@@ -922,6 +937,7 @@ func (a *App) mcpNoteAdmittedChildren(path, requestID, text string) {
 		rec.ChildTaskID = rec.Children[0].ChildTaskID
 	}
 	mcpTouchLocked(rec)
+	persist = true
 }
 
 // mcpNoteChildOutcome writes one detached child's durable result onto every
@@ -935,23 +951,29 @@ func (a *App) mcpNoteChildOutcome(child mcpChildView) {
 	}
 	child.ChildTaskID = id
 	a.mcpRunsMu.Lock()
-	defer a.mcpRunsMu.Unlock()
 	a.mcpRememberChildOutcomeLocked(child)
 	applied := false
-	for _, rec := range a.mcpRuns {
+	dirty := map[string]struct{}{}
+	for path, rec := range a.mcpRuns {
 		if mcpApplyChildOutcomeLocked(rec, child) {
 			applied = true
+			dirty[path] = struct{}{}
 		}
 	}
-	for _, list := range a.mcpRunArchive {
+	for path, list := range a.mcpRunArchive {
 		for _, rec := range list {
 			if mcpApplyChildOutcomeLocked(rec, child) {
 				applied = true
+				dirty[path] = struct{}{}
 			}
 		}
 	}
 	if applied {
 		delete(a.mcpChildPending, child.ChildTaskID)
+	}
+	a.mcpRunsMu.Unlock()
+	for path := range dirty {
+		a.mcpPersistRun(path)
 	}
 }
 

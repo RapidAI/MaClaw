@@ -37,36 +37,53 @@ var (
 
 // mcpTaskView is the JSON text returned by create, get, stop, and list.
 type mcpTaskView struct {
-	ProjectPath      string         `json:"project_path"`
-	Name             string         `json:"name,omitempty"`
-	Mode             string         `json:"mode,omitempty"`
-	Status           string         `json:"status"`
-	Text             string         `json:"text,omitempty"`
-	Error            string         `json:"error,omitempty"`
-	Provider         string         `json:"provider,omitempty"`
-	Model            string         `json:"model,omitempty"`
-	RequestID        string         `json:"request_id,omitempty"`
-	ConfirmationKind string         `json:"confirmation_kind,omitempty"`
-	ConfirmationID   string         `json:"confirmation_id,omitempty"`
-	Commands         []string       `json:"commands,omitempty"`
-	WorkingDir       string         `json:"working_dir,omitempty"`
-	Round            int            `json:"round,omitempty"`
-	StartedAt        string         `json:"started_at,omitempty"`
-	FinishedAt       string         `json:"finished_at,omitempty"`
-	EndReason        string         `json:"end_reason,omitempty"`
-	EndDetail        string         `json:"end_detail,omitempty"`
-	RemoteHost       string         `json:"ssh_host,omitempty"`
-	RemoteUser       string         `json:"ssh_user,omitempty"`
-	RemotePort       int            `json:"ssh_port,omitempty"`
-	RemoteWorkDir    string         `json:"remote_work_dir,omitempty"`
-	Steps            []mcpStepView  `json:"steps,omitempty"`
-	Checks           []mcpCheckView `json:"checks,omitempty"`
-	RunID            string         `json:"run_id,omitempty"`
-	StatusVersion    int            `json:"status_version,omitempty"`
-	ParentTaskID     string         `json:"parent_task_id,omitempty"`
-	ChildTaskID      string         `json:"child_task_id,omitempty"`
-	Children         []mcpChildView `json:"children,omitempty"`
-	Stop             *mcpStopView   `json:"stop,omitempty"`
+	ProjectPath         string              `json:"project_path"`
+	Name                string              `json:"name,omitempty"`
+	Mode                string              `json:"mode,omitempty"`
+	Status              string              `json:"status"`
+	Text                string              `json:"text,omitempty"`
+	Error               string              `json:"error,omitempty"`
+	Provider            string              `json:"provider,omitempty"`
+	Model               string              `json:"model,omitempty"`
+	RequestID           string              `json:"request_id,omitempty"`
+	ConfirmationKind    string              `json:"confirmation_kind,omitempty"`
+	ConfirmationID      string              `json:"confirmation_id,omitempty"`
+	Commands            []string            `json:"commands,omitempty"`
+	WorkingDir          string              `json:"working_dir,omitempty"`
+	Round               int                 `json:"round,omitempty"`
+	StartedAt           string              `json:"started_at,omitempty"`
+	FinishedAt          string              `json:"finished_at,omitempty"`
+	EndReason           string              `json:"end_reason,omitempty"`
+	EndDetail           string              `json:"end_detail,omitempty"`
+	RemoteHost          string              `json:"ssh_host,omitempty"`
+	RemoteUser          string              `json:"ssh_user,omitempty"`
+	RemotePort          int                 `json:"ssh_port,omitempty"`
+	RemoteWorkDir       string              `json:"remote_work_dir,omitempty"`
+	Steps               []mcpStepView       `json:"steps,omitempty"`
+	Checks              []mcpCheckView      `json:"checks,omitempty"`
+	RunID               string              `json:"run_id,omitempty"`
+	CurrentRunID        string              `json:"current_run_id,omitempty"`
+	TaskID              string              `json:"task_id,omitempty"`
+	StatusVersion       int                 `json:"status_version,omitempty"`
+	PlanID              string              `json:"plan_id,omitempty"`
+	PlanVersion         int                 `json:"plan_version,omitempty"`
+	ProviderRequested   string              `json:"provider_requested,omitempty"`
+	ModelRequested      string              `json:"model_requested,omitempty"`
+	ProviderEffective   string              `json:"provider_effective,omitempty"`
+	ModelEffective      string              `json:"model_effective,omitempty"`
+	WorkDirRequested    string              `json:"working_dir_requested,omitempty"`
+	WorkingDirEffective string              `json:"working_dir_effective,omitempty"`
+	ToolRoot            string              `json:"tool_root,omitempty"`
+	SessionPath         string              `json:"session_path,omitempty"`
+	StatusRaw           string              `json:"status_raw,omitempty"`
+	ParentTaskID        string              `json:"parent_task_id,omitempty"`
+	ChildTaskID         string              `json:"child_task_id,omitempty"`
+	Children            []mcpChildView      `json:"children,omitempty"`
+	Stop                *mcpStopView        `json:"stop,omitempty"`
+	DryRun              bool                `json:"dry_run,omitempty"`
+	ResumeOK            bool                `json:"resume_ok,omitempty"`
+	Conflicts           []mcpResumeConflict `json:"conflicts,omitempty"`
+	DirtyNote           string              `json:"dirty_note,omitempty"`
 	// workspace is the directory tools are editing. Scope approvals name that
 	// directory, which is not always the task record path. Publish copies it
 	// to WorkingDir. The unexported field stays the scope-match key.
@@ -115,6 +132,14 @@ type mcpRunRecord struct {
 	ChildTaskID        string
 	Children           []mcpChildView
 	Stop               *mcpStopView
+	PlanID             string
+	PlanVersion        int
+	ProviderRequested  string
+	ModelRequested     string
+	ProviderEffective  string
+	ModelEffective     string
+	WorkDirRequested   string
+	SessionPath        string
 	cancel             context.CancelFunc
 	// hostWaitEnded is set only by this process's own wait budget, and only
 	// while the run is still waiting. It is not a confirmed execution timeout.
@@ -131,39 +156,51 @@ func (rec *mcpRunRecord) view() mcpTaskView {
 		return mcpTaskView{}
 	}
 	return mcpTaskView{
-		ProjectPath:      rec.ProjectPath,
-		Name:             rec.Name,
-		Mode:             rec.Mode,
-		Status:           rec.Status,
-		Text:             rec.Text,
-		Error:            rec.Error,
-		Provider:         rec.Provider,
-		Model:            rec.Model,
-		RequestID:        rec.RequestID,
-		ConfirmationKind: rec.ConfirmationKind,
-		ConfirmationID:   rec.ConfirmationID,
-		Commands:         append([]string(nil), rec.Commands...),
-		WorkingDir:       rec.Workspace,
-		Round:            rec.Round,
-		StartedAt:        mcpFormatTime(rec.StartedAt),
-		FinishedAt:       mcpFormatTime(rec.FinishedAt),
-		EndReason:        rec.EndReason,
-		EndDetail:        rec.EndDetail,
-		RemoteHost:       rec.RemoteHost,
-		RemoteUser:       rec.RemoteUser,
-		RemotePort:       rec.RemotePort,
-		RemoteWorkDir:    rec.RemoteWorkDir,
-		Steps:            mcpCloneSteps(rec.Steps),
-		Checks:           mcpCloneChecks(rec.Checks),
-		RunID:            rec.RunID,
-		StatusVersion:    rec.StatusVersion,
-		ParentTaskID:     rec.ParentTaskID,
-		ChildTaskID:      rec.ChildTaskID,
-		Children:         mcpCloneChildren(rec.Children),
-		Stop:             mcpCloneStop(rec.Stop),
-		workspace:        rec.Workspace,
-		historyCount:     rec.historyCount,
-		historySeal:      rec.historySeal,
+		ProjectPath:         rec.ProjectPath,
+		Name:                rec.Name,
+		Mode:                rec.Mode,
+		Status:              rec.Status,
+		Text:                rec.Text,
+		Error:               rec.Error,
+		Provider:            rec.Provider,
+		Model:               rec.Model,
+		RequestID:           rec.RequestID,
+		ConfirmationKind:    rec.ConfirmationKind,
+		ConfirmationID:      rec.ConfirmationID,
+		Commands:            append([]string(nil), rec.Commands...),
+		WorkingDir:          rec.Workspace,
+		Round:               rec.Round,
+		StartedAt:           mcpFormatTime(rec.StartedAt),
+		FinishedAt:          mcpFormatTime(rec.FinishedAt),
+		EndReason:           rec.EndReason,
+		EndDetail:           rec.EndDetail,
+		RemoteHost:          rec.RemoteHost,
+		RemoteUser:          rec.RemoteUser,
+		RemotePort:          rec.RemotePort,
+		RemoteWorkDir:       rec.RemoteWorkDir,
+		Steps:               mcpCloneSteps(rec.Steps),
+		Checks:              mcpCloneChecks(rec.Checks),
+		RunID:               rec.RunID,
+		CurrentRunID:        rec.RunID,
+		TaskID:              rec.ProjectPath,
+		StatusVersion:       rec.StatusVersion,
+		PlanID:              rec.PlanID,
+		PlanVersion:         rec.PlanVersion,
+		ProviderRequested:   rec.ProviderRequested,
+		ModelRequested:      rec.ModelRequested,
+		ProviderEffective:   rec.ProviderEffective,
+		ModelEffective:      rec.ModelEffective,
+		WorkDirRequested:    rec.WorkDirRequested,
+		WorkingDirEffective: rec.Workspace,
+		ToolRoot:            rec.Workspace,
+		SessionPath:         rec.SessionPath,
+		ParentTaskID:        rec.ParentTaskID,
+		ChildTaskID:         rec.ChildTaskID,
+		Children:            mcpCloneChildren(rec.Children),
+		Stop:                mcpCloneStop(rec.Stop),
+		workspace:           rec.Workspace,
+		historyCount:        rec.historyCount,
+		historySeal:         rec.historySeal,
 	}
 }
 
@@ -460,6 +497,18 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 	if command == "" {
 		return mcpTaskView{}, errors.New("命令不能为空")
 	}
+	registryPath := normalizeProjectSessionPath(projectPath)
+	opts := mcpCallOptsFrom(ctx)
+	if opts.HasExpected || opts.DryRun {
+		a.mcpLoadDurable()
+		current, known := a.mcpViewFromRegistry(registryPath)
+		if err := mcpRejectStaleVersion(registryPath, current, known, opts); err != nil {
+			return mcpTaskView{}, err
+		}
+		if opts.DryRun {
+			return a.mcpDryRunView(registryPath, current, known)
+		}
+	}
 	req, claimed, err := a.mcpClaimRequest(clientRequestID, mcpRequestKindCommand, mcpCommandClaimKey(projectPath, command, confirmationID), "")
 	if err != nil {
 		return mcpTaskView{}, err
@@ -479,7 +528,6 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 		accepted = true
 		a.mcpBindRequest(req, path)
 	}
-	registryPath := normalizeProjectSessionPath(projectPath)
 	reg, inRegistry := a.mcpViewFromRegistry(registryPath)
 	if live, err := a.mcpPrepareLiveGate(projectPath, reg, inRegistry, command); live {
 		if err != nil {
@@ -552,6 +600,17 @@ func (a *App) mcpRetrySteps(ctx context.Context, projectPath string, rawIDs []st
 		return mcpTaskView{}, errors.New("没有找到这个任务")
 	}
 	confirmationID = strings.TrimSpace(confirmationID)
+	opts := mcpCallOptsFrom(ctx)
+	if opts.HasExpected || opts.DryRun {
+		a.mcpLoadDurable()
+		current, known := a.mcpViewFromRegistry(path)
+		if err := mcpRejectStaleVersion(path, current, known, opts); err != nil {
+			return mcpTaskView{}, err
+		}
+		if opts.DryRun {
+			return a.mcpDryRunView(path, current, known)
+		}
+	}
 	req, claimed, claimErr := a.mcpClaimRequest(clientRequestID, mcpRequestKindRetry, mcpRetryClaimKey(path, confirmationID, ids), "")
 	if claimErr != nil {
 		return mcpTaskView{}, claimErr
@@ -656,31 +715,50 @@ func (a *App) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTas
 	path := normalizeProjectSessionPath(projectPath)
 	runID = strings.TrimSpace(runID)
 	if a == nil || path == "" {
-		return mcpTaskView{}, errors.New("没有找到这个任务")
+		return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 	}
+	a.mcpLoadDurable()
 	if runID != "" {
 		view, ok := a.mcpViewForRun(path, runID)
 		if !ok {
-			return mcpTaskView{}, errors.New("没有这一轮执行")
+			if a.mcpTaskKnown(path) {
+				return mcpTaskView{}, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
+			}
+			if a.mcpTaskExpiredOnly(path) {
+				return mcpTaskView{}, mcpErr(mcpCodeTaskExpired, mcpTaskExpiredMessage, path, runID)
+			}
+			return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 		}
 		return a.mcpReturnTask(view), nil
 	}
 	if view, ok := a.mcpViewFromRegistry(path); ok && view.Status == mcpStatusRunning {
 		return a.mcpReturnTask(view), nil
 	}
-	known, err := a.remoteControlKnownTask(path)
 	reg, hasReg := a.mcpViewFromRegistry(path)
-	if err != nil {
-		if hasReg {
-			return a.mcpReturnTask(reg), nil
+	if a.memoryStore != nil {
+		known, err := a.remoteControlKnownTask(path)
+		if err != nil {
+			if hasReg {
+				return a.mcpReturnTask(reg), nil
+			}
+			if a.mcpTaskExpiredOnly(path) {
+				return mcpTaskView{}, mcpErr(mcpCodeTaskExpired, mcpTaskExpiredMessage, path, "")
+			}
+			return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, "")
 		}
-		return mcpTaskView{}, err
+		store := a.mcpTaskViewFromStore(known)
+		if !hasReg {
+			return a.mcpReturnTask(store), nil
+		}
+		return a.mcpReturnTask(mcpPreferTaskView(reg, store)), nil
 	}
-	store := a.mcpTaskViewFromStore(known)
-	if !hasReg {
-		return a.mcpReturnTask(store), nil
+	if hasReg {
+		return a.mcpReturnTask(reg), nil
 	}
-	return a.mcpReturnTask(mcpPreferTaskView(reg, store)), nil
+	if a.mcpTaskExpiredOnly(path) {
+		return mcpTaskView{}, mcpErr(mcpCodeTaskExpired, mcpTaskExpiredMessage, path, "")
+	}
+	return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, "")
 }
 
 func (a *App) mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView, error) {
@@ -715,6 +793,7 @@ func (a *App) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
 	if a == nil {
 		return []mcpTaskView{}, nil
 	}
+	a.mcpLoadDurable()
 	listed := a.ListTasks(50)
 	seen := map[string]struct{}{}
 	out := make([]mcpTaskView, 0, len(listed))
@@ -804,29 +883,54 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		cancel()
 	})
 	mark := a.mcpConversationMark(path)
-	rec := &mcpRunRecord{
-		ProjectPath:   path,
-		Name:          view.Name,
-		Mode:          view.Mode,
-		Status:        mcpStatusRunning,
-		Provider:      view.Provider,
-		Model:         view.Model,
-		RequestID:     requestID,
-		Workspace:     view.workspace,
-		RemoteHost:    view.RemoteHost,
-		RemoteUser:    view.RemoteUser,
-		RemotePort:    view.RemotePort,
-		RemoteWorkDir: view.RemoteWorkDir,
-		Round:         a.mcpNextRound(path),
-		RunID:         mcpNewRunID(),
-		StatusVersion: 1,
-		StartedAt:     time.Now(),
-		Checks:        mcpCloneChecks(view.Checks),
-		historyCount:  mark.count,
-		historySeal:   mark.text,
-		cancel:        cancel,
+	reqProvider := strings.TrimSpace(view.ProviderRequested)
+	reqModel := strings.TrimSpace(view.ModelRequested)
+	if reqProvider == "" && reqModel == "" {
+		reqProvider = strings.TrimSpace(view.Provider)
+		reqModel = strings.TrimSpace(view.Model)
 	}
-	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew)
+	effProvider, effModel := reqProvider, reqModel
+	if effProvider == "" || effModel == "" {
+		if pin, ok := a.mcpPinNames(path); ok {
+			if effProvider == "" {
+				effProvider = pin.ProviderName
+			}
+			if effModel == "" {
+				effModel = pin.Model
+			}
+		}
+	}
+	rec := &mcpRunRecord{
+		ProjectPath:       path,
+		Name:              view.Name,
+		Mode:              view.Mode,
+		Status:            mcpStatusRunning,
+		Provider:          effProvider,
+		Model:             effModel,
+		ProviderRequested: reqProvider,
+		ModelRequested:    reqModel,
+		ProviderEffective: effProvider,
+		ModelEffective:    effModel,
+		RequestID:         requestID,
+		Workspace:         view.workspace,
+		RemoteHost:        view.RemoteHost,
+		RemoteUser:        view.RemoteUser,
+		RemotePort:        view.RemotePort,
+		RemoteWorkDir:     view.RemoteWorkDir,
+		Round:             a.mcpNextRound(path),
+		RunID:             mcpNewRunID(),
+		StatusVersion:     1,
+		StartedAt:         time.Now(),
+		Checks:            mcpCloneChecks(view.Checks),
+		PlanID:            strings.TrimSpace(view.PlanID),
+		PlanVersion:       view.PlanVersion,
+		WorkDirRequested:  strings.TrimSpace(firstNonEmpty(view.WorkDirRequested, view.WorkingDir, view.workspace)),
+		SessionPath:       strings.TrimSpace(view.SessionPath),
+		historyCount:      mark.count,
+		historySeal:       mark.text,
+		cancel:            cancel,
+	}
+	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
 	if err != nil {
 		timer.Stop()
 		cancel()
@@ -909,8 +1013,18 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	view.RequestID = requestID
 	view.Round = rec.Round
 	view.RunID = rec.RunID
+	view.CurrentRunID = rec.RunID
+	view.TaskID = path
 	view.StatusVersion = rec.StatusVersion
 	view.StartedAt = mcpFormatTime(rec.StartedAt)
+	view.Provider = rec.Provider
+	view.Model = rec.Model
+	view.ProviderRequested = rec.ProviderRequested
+	view.ModelRequested = rec.ModelRequested
+	view.ProviderEffective = rec.ProviderEffective
+	view.ModelEffective = rec.ModelEffective
+	view.WorkDirRequested = rec.WorkDirRequested
+	view.SessionPath = rec.SessionPath
 	view.workspace = rec.Workspace
 	view.FinishedAt = ""
 	view.EndReason = ""
@@ -948,7 +1062,7 @@ func mcpRunStillWaiting(status string) bool {
 }
 
 func (a *App) mcpReplaceRun(rec *mcpRunRecord) {
-	cancel, dismiss, _ := a.mcpCommitRun(rec, 0, true)
+	cancel, dismiss, _ := a.mcpCommitRun(rec, 0, true, mcpCallOpts{})
 	if cancel != nil {
 		cancel()
 	}
@@ -1009,19 +1123,40 @@ func (a *App) mcpReleaseTurn(path string, token uint64) {
 // mcpCommitRun installs rec. token 0 is the unconditional store used by tests
 // and idle create. A follow-up token installs only while it still owns the
 // path, and replaceRunning false leaves a running record in place.
-func (a *App) mcpCommitRun(rec *mcpRunRecord, token uint64, replaceRunning bool) (context.CancelFunc, bool, error) {
+// opts is compared under this lock, before the previous round is archived
+// or cancelled. A version that changed after the caller's earlier read does
+// not install.
+func (a *App) mcpCommitRun(rec *mcpRunRecord, token uint64, replaceRunning bool, opts mcpCallOpts) (context.CancelFunc, bool, error) {
 	if a == nil || rec == nil {
 		return nil, false, errors.New("没有创建任务")
 	}
 	path := normalizeProjectSessionPath(rec.ProjectPath)
 	rec.ProjectPath = path
+	persist := false
 	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
 	defer a.mcpRunsMu.Unlock()
 	if token != 0 && a.mcpTurnHeld[path] != token {
 		return nil, false, errMCPTaskRunning
 	}
-	if prev := a.mcpRuns[path]; prev != nil && prev.Status == mcpStatusRunning && !replaceRunning {
+	prev := a.mcpRuns[path]
+	if prev != nil && prev.Status == mcpStatusRunning && !replaceRunning {
 		return nil, false, errMCPTaskRunning
+	}
+	if opts.HasExpected {
+		current := mcpTaskView{}
+		if prev != nil {
+			current.StatusVersion = prev.StatusVersion
+			current.RunID = prev.RunID
+			current.CurrentRunID = prev.RunID
+		}
+		if err := mcpRejectStaleVersion(path, current, prev != nil, opts); err != nil {
+			return nil, false, err
+		}
 	}
 	if a.mcpRuns == nil {
 		a.mcpRuns = map[string]*mcpRunRecord{}
@@ -1060,8 +1195,15 @@ func (a *App) mcpCommitRun(rec *mcpRunRecord, token uint64, replaceRunning bool)
 		if len(rec.logs) == 0 && len(prev.logs) > 0 {
 			rec.logs = append([]mcpLogEvent(nil), prev.logs...)
 		}
+		// A new round must not reuse an older version. Callers that still
+		// hold the previous status_version then conflict instead of matching
+		// this round by accident.
+		if rec.StatusVersion <= prev.StatusVersion {
+			rec.StatusVersion = prev.StatusVersion + 1
+		}
 	}
 	a.mcpRuns[path] = rec
+	persist = true
 	return cancel, dismiss, nil
 }
 
@@ -1689,7 +1831,7 @@ func (a *App) mcpConfirmRecovery(ctx context.Context, view mcpTaskView, command,
 		historyCount: view.historyCount,
 		historySeal:  view.historySeal,
 	}
-	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, false)
+	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, false, mcpCallOptsFrom(ctx))
 	if err != nil {
 		return mcpTaskView{}, err
 	}
@@ -1920,6 +2062,7 @@ func (a *App) mcpCancelRun(path string) {
 	a.mcpRunsMu.Lock()
 	rec := a.mcpRuns[path]
 	var cancel context.CancelFunc
+	changed := false
 	// A follow-up may already hold the install claim and not have stored its
 	// run. Leaving that claim in place lets the commit land after this cancel
 	// and start the turn that stop just rejected.
@@ -1937,11 +2080,15 @@ func (a *App) mcpCancelRun(path string) {
 		cancel = rec.cancel
 		rec.cancel = nil
 		dropClaim = true
+		changed = true
 	}
 	if dropClaim {
 		delete(a.mcpTurnHeld, path)
 	}
 	a.mcpRunsMu.Unlock()
+	if changed {
+		a.mcpPersistRun(path)
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -1992,7 +2139,13 @@ func (a *App) mcpFinishRunCause(path, requestID, status, text, errText string, k
 		return
 	}
 	path = normalizeProjectSessionPath(path)
+	persist := false
 	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
 	defer a.mcpRunsMu.Unlock()
 	rec := a.mcpRuns[path]
 	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
@@ -2042,6 +2195,7 @@ func (a *App) mcpFinishRunCause(path, requestID, status, text, errText string, k
 	rec.ConfirmationID = ""
 	rec.confirmFingerprint = ""
 	rec.cancel = nil
+	persist = true
 }
 
 // mcpStoredRunDelta is the piece that belongs in the polled run transcript.
@@ -2079,7 +2233,13 @@ func (a *App) mcpSetRunWorkspace(path, requestID, workspace string) {
 	if path == "" || workspace == "" {
 		return
 	}
+	persist := false
 	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
 	defer a.mcpRunsMu.Unlock()
 	rec := a.mcpRuns[path]
 	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
@@ -2095,6 +2255,39 @@ func (a *App) mcpSetRunWorkspace(path, requestID, workspace string) {
 	}
 	rec.Workspace = workspace
 	mcpTouchLocked(rec)
+	persist = true
+}
+
+// mcpSetRunSessionPath records the session directory only when it is a
+// different folder from the tool workspace. Matching paths do not bump
+// status_version a second time.
+func (a *App) mcpSetRunSessionPath(path, requestID, sessionPath string) {
+	if a == nil {
+		return
+	}
+	path = normalizeProjectSessionPath(path)
+	sessionPath = normalizeProjectSessionPath(sessionPath)
+	if path == "" || sessionPath == "" {
+		return
+	}
+	persist := false
+	a.mcpRunsMu.Lock()
+	defer func() {
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return
+	}
+	if normalizeProjectSessionPath(rec.Workspace) == sessionPath || rec.SessionPath == sessionPath {
+		return
+	}
+	rec.SessionPath = sessionPath
+	mcpTouchLocked(rec)
+	persist = true
 }
 
 func (a *App) mcpViewFromRegistry(path string) (mcpTaskView, bool) {
@@ -2121,7 +2314,8 @@ func (a *App) mcpTaskViewFromStore(path string) mcpTaskView {
 		name = ""
 	}
 	host, user, workDir, port := mcpRemoteMetaFromTags(snap.Tags)
-	status := mcpDisplayStatus("", mcpWorkflowStatus(snap.ActiveWorkflow), text)
+	rawWorkflow := strings.TrimSpace(mcpWorkflowStatus(snap.ActiveWorkflow))
+	status := mcpDisplayStatus("", rawWorkflow, text)
 	view := mcpTaskView{
 		ProjectPath:   path,
 		Name:          name,
@@ -2133,6 +2327,9 @@ func (a *App) mcpTaskViewFromStore(path string) mcpTaskView {
 		RemotePort:    port,
 		RemoteWorkDir: workDir,
 		historyCount:  mcpAssistantReplyCount(items),
+	}
+	if status == mcpStatusBlockedUnknown {
+		view.StatusRaw = rawWorkflow
 	}
 	if status == mcpStatusFailed && mcpTextBlocksCompletion(text) {
 		view.Steps = mcpStepsFromFinishText(text, nil)
@@ -2223,7 +2420,8 @@ func mcpPreferTaskView(reg, store mcpTaskView) mcpTaskView {
 // is not a new MCP run: a new run is already the registry row.
 func mcpHoldProjectedOutcome(view, reg mcpTaskView) mcpTaskView {
 	upgrade := view.Status == mcpStatusCompleted || view.Status == mcpStatusIdle || view.Status == "" || view.Status == mcpStatusRunning
-	blocked := reg.Status == mcpStatusWaitingReview || (upgrade && reg.Status != mcpStatusCompleted && reg.Status != mcpStatusRunning && reg.Status != "" && mcpStepsBlockCompletion(reg.Steps))
+	holds := reg.Status == mcpStatusWaitingReview || reg.Status == mcpStatusNeedsConfirmation || reg.Status == mcpStatusCancelled || reg.Status == mcpStatusFailed || reg.Status == mcpStatusBlockedUnknown
+	blocked := holds || (upgrade && reg.Status != mcpStatusCompleted && reg.Status != mcpStatusRunning && reg.Status != "" && mcpStepsBlockCompletion(reg.Steps))
 	if !blocked {
 		return view
 	}
@@ -2274,8 +2472,47 @@ func mcpFillTaskView(primary, fallback mcpTaskView) mcpTaskView {
 	if strings.TrimSpace(primary.RunID) == "" {
 		primary.RunID = fallback.RunID
 	}
+	if strings.TrimSpace(primary.CurrentRunID) == "" {
+		primary.CurrentRunID = firstNonEmpty(fallback.CurrentRunID, fallback.RunID)
+	}
+	if strings.TrimSpace(primary.TaskID) == "" {
+		primary.TaskID = firstNonEmpty(fallback.TaskID, fallback.ProjectPath)
+	}
 	if primary.StatusVersion == 0 {
 		primary.StatusVersion = fallback.StatusVersion
+	}
+	if strings.TrimSpace(primary.PlanID) == "" {
+		primary.PlanID = fallback.PlanID
+	}
+	if primary.PlanVersion == 0 {
+		primary.PlanVersion = fallback.PlanVersion
+	}
+	if strings.TrimSpace(primary.ProviderRequested) == "" {
+		primary.ProviderRequested = fallback.ProviderRequested
+	}
+	if strings.TrimSpace(primary.ModelRequested) == "" {
+		primary.ModelRequested = fallback.ModelRequested
+	}
+	if strings.TrimSpace(primary.ProviderEffective) == "" {
+		primary.ProviderEffective = fallback.ProviderEffective
+	}
+	if strings.TrimSpace(primary.ModelEffective) == "" {
+		primary.ModelEffective = fallback.ModelEffective
+	}
+	if strings.TrimSpace(primary.WorkDirRequested) == "" {
+		primary.WorkDirRequested = fallback.WorkDirRequested
+	}
+	if strings.TrimSpace(primary.WorkingDirEffective) == "" {
+		primary.WorkingDirEffective = fallback.WorkingDirEffective
+	}
+	if strings.TrimSpace(primary.ToolRoot) == "" {
+		primary.ToolRoot = fallback.ToolRoot
+	}
+	if strings.TrimSpace(primary.SessionPath) == "" {
+		primary.SessionPath = fallback.SessionPath
+	}
+	if strings.TrimSpace(primary.StatusRaw) == "" {
+		primary.StatusRaw = fallback.StatusRaw
 	}
 	if primary.Stop == nil {
 		primary.Stop = mcpCloneStop(fallback.Stop)
@@ -2476,9 +2713,15 @@ func mcpNormalizeTaskMode(mode, workingDir string) (string, error) {
 }
 
 func mcpDisplayStatus(registryStatus, workflowStatus, lastAssistant string) string {
-	switch registryStatus {
-	case mcpStatusRunning, mcpStatusCancelled, mcpStatusFailed, mcpStatusCompleted, mcpStatusNeedsConfirmation, mcpStatusWaitingReview:
-		return registryStatus
+	switch strings.TrimSpace(registryStatus) {
+	case mcpStatusRunning, mcpStatusCancelled, mcpStatusFailed, mcpStatusCompleted, mcpStatusNeedsConfirmation, mcpStatusWaitingReview, mcpStatusIdle, mcpStatusBlockedUnknown:
+		return strings.TrimSpace(registryStatus)
+	}
+	if strings.TrimSpace(registryStatus) != "" {
+		return mcpStatusBlockedUnknown
+	}
+	if mcpTextAsksConfirmation(lastAssistant) {
+		return mcpStatusNeedsConfirmation
 	}
 	switch strings.ToLower(strings.TrimSpace(workflowStatus)) {
 	case "running", "queued", "paused":
@@ -2486,10 +2729,16 @@ func mcpDisplayStatus(registryStatus, workflowStatus, lastAssistant string) stri
 	case "failed":
 		return mcpStatusFailed
 	case "completed", "done":
+		if mcpTextAsksConfirmation(lastAssistant) {
+			return mcpStatusNeedsConfirmation
+		}
 		if mcpTextBlocksCompletion(lastAssistant) {
 			return mcpStatusFailed
 		}
 		return mcpStatusCompleted
+	}
+	if strings.TrimSpace(workflowStatus) != "" {
+		return mcpStatusBlockedUnknown
 	}
 	if mcpTextBlocksCompletion(lastAssistant) {
 		return mcpStatusFailed

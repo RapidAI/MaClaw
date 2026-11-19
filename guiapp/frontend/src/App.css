@@ -28348,7 +28348,6 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: v
   padding-inline: 10px;
 }
 .sidebar-task-row:hover:not(.is-busy):not(.is-active) {
-  border-color: var(--office-line);
   background: var(--office-canvas);
 }
 .sidebar-task-row.is-active {
@@ -28888,7 +28887,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   border-right: 1px solid var(--theme-border) !important;
 }
 .sidebar-task-row { min-height: 48px; margin: 2px 10px; border-radius: var(--radius-md); }
-.sidebar-task-row.is-active { background: var(--theme-primary-soft) !important; border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; box-shadow: none !important; }
+.sidebar-task-row.is-active { background: var(--theme-primary-soft) !important; box-shadow: none !important; }
 .global-action-bar { min-height: 48px; background: var(--theme-surface) !important; border-bottom: 1px solid var(--theme-border) !important; }
 .main-content, .content-panel, .workspace-content { background: var(--theme-surface); }
 textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], input[placeholder*='办公任务'] { border-radius: var(--radius-lg) !important; box-shadow: 0 2px 8px rgba(30,60,90,.08) !important; }
@@ -29541,7 +29540,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .sidebar-task-row[data-status='pending']::before { background: var(--theme-warning); }
 
 /* Reference task pane separators and hover states */
-.mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-primary-soft) !important; border-color: var(--theme-border) !important; }
+.mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-primary-soft) !important; }
 .mc-task-pane .sidebar-task-row + .sidebar-task-row { border-top: 0; }
 .mc-task-pane > div:nth-child(2) { border-bottom: 1px solid var(--theme-border-subtle); padding-bottom: 8px; margin-bottom: 8px; }
 
@@ -29660,7 +29659,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference task interactions */
 .mc-task-pane .sidebar-task-row { transition: background .16s ease, border-color .16s ease, transform .16s ease; }
 .mc-task-pane .sidebar-task-row:hover { transform: translateX(1px); }
-.mc-task-pane .sidebar-task-row.is-busy { cursor: progress; opacity: .68; }
+.mc-task-pane .sidebar-task-row.is-busy { cursor: progress; }
 
 /* Reference primary action emphasis */
 .mc-welcome .btn-primary,
@@ -31601,7 +31600,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__item--unopened:hover { color: var(--theme-primary); }
 #App[data-ai-theme='dark'] .mc-task-execution-actions .mc-task-tab-switcher__close { background: transparent !important; color: var(--theme-text-muted) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-actions .mc-task-tab-switcher__close:hover { background: color-mix(in srgb, var(--theme-danger) 18%, transparent) !important; color: var(--theme-danger) !important; }
-#App[data-ai-theme='dark'] .mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; }
+#App[data-ai-theme='dark'] .mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-surface-muted) !important; }
 #App[data-ai-theme='dark'] .mc-conversation-body .mc-chat-copy-btn,
 #App[data-ai-theme='dark'] .mc-conversation-body [data-testid^='assistant-chat-copy-'] {
   border: 0 !important;
@@ -32760,11 +32759,13 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   gap: 4px !important;
   /* 1px block margin on each card. The row sits inside an unstyled wrapper,
      and adjacent flex items do not collapse those margins, so the slit
-     between borders is 2px. min-height: 0 keeps the older 52px/48px row
-     rules from undoing the compact padding. */
+     between cards is 2px. The border stays 1px and transparent so a
+     selected card does not change size when its frame appears.
+     min-height: 0 keeps the older 52px/48px row rules from undoing the
+     compact padding. */
   margin: 1px 4px;
   padding: 3px 8px !important;
-  border: 1px solid var(--theme-border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   /* Selecting the title fights the row drag and the gesture never starts. */
   user-select: none;
@@ -32955,6 +32956,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-pane .sidebar-task-row.is-active {
   background: var(--theme-surface-muted) !important;
+  /* Owns the selected frame. This selector outranks the transparent
+     shorthand above. Hover rules must not set border-color or they
+     paint a frame back on the other cards. */
+  border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
   box-shadow: inset 3px 0 0 var(--mc-accent, #2e75cb) !important;
 }
 .mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
@@ -33953,6 +33958,27 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .stsm-row-progress {
   margin-top: 6px;
+}
+/* The directory badge and name stay in the line while hidden, so the card
+   keeps that line's height. The track is painted over the same box. */
+.mc-task-pane .mc-task-working-dir--progress {
+  position: relative;
+}
+.mc-task-pane .mc-task-working-dir--progress .mc-task-working-dir__place {
+  visibility: hidden;
+}
+.mc-task-pane .mc-task-working-dir--progress .sidebar-task-progress__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin: 0;
+  transform: translateY(-50%);
+}
+.mc-task-pane .mc-task-working-dir--progress:hover {
+  color: var(--theme-text-secondary) !important;
+  text-decoration: none !important;
 }
 .stsm-row-error {
   display: block;

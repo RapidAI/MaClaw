@@ -13,7 +13,6 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -483,25 +482,8 @@ func (h *ProblemReportHandlers) AdminList(w http.ResponseWriter, r *http.Request
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for i := range items {
-		token := strings.TrimSpace(items[i].PublicDownloadToken)
-		// Only the node that stored the ZIP may mint the token. A peer that
-		// invents one would publish a URL the origin cannot serve.
-		if token == "" && !h.isRemoteOrigin(&items[i]) && strings.TrimSpace(items[i].DiagnosticsPath) != "" {
-			ensured, ensureErr := h.store.EnsureProblemReportDownloadToken(r.Context(), items[i].ID)
-			if ensureErr != nil {
-				// The list is already loaded. One row that cannot grow a
-				// public link must not hide every other report.
-				if r.Context().Err() != nil {
-					return
-				}
-				log.Printf("[problem-report] download token for %s: %v", items[i].ID, ensureErr)
-			} else {
-				items[i].PublicDownloadToken = ensured
-			}
-		}
-		items[i].DiagnosticsURL = h.diagnosticsPublicURL(&items[i])
-		items[i].PublicDownloadToken = ""
+	if !h.publishProblemReportLinks(r.Context(), items) {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
 }

@@ -697,7 +697,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 		if len(loopResult.HistoryDelta) > 0 {
 			h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
 		}
-		if strings.TrimSpace(paused.FileData) == "" && strings.TrimSpace(paused.LocalFilePath) == "" {
+		if !hostResponseCarriesProjectedArtifact(paused) {
 			paused = nil
 		}
 		return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, paused)
@@ -1010,7 +1010,6 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 	}
 	// The local-chat file materialization below is this host's delivery act.
 	// Its result is the receipt for a current-channel delivery.
-	localFileDelivered := false
 	// Specified-target runs before current-channel. Both can be live for one
 	// bound document. Current-channel would attach the local card first and
 	// set the file payload, and the IM sender would then no-op. A generate
@@ -1032,31 +1031,18 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 			setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
 		}
 	}
-	if cb.semanticDeliveryImageKey != "" {
-		resp.ImageKey = cb.semanticDeliveryImageKey
-		resp.SemanticDelivery = cb.semanticDelivery
-		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
-	} else if cb.semanticDeliveryFileData != "" {
-		resp.FileData = cb.semanticDeliveryFileData
-		resp.FileName = cb.semanticDeliveryFileName
-		resp.FileMimeType = cb.semanticDeliveryFileMIME
-		resp.SemanticDelivery = cb.semanticDelivery
-		setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
-		localFileDelivered = materializeSemanticDeliveryFileForLocalChat(resp, cb)
-	} else if cb.semanticDeliveryVoiceData != "" {
-		resp.VoiceData = cb.semanticDeliveryVoiceData
-		resp.VoiceFileName = cb.semanticDeliveryVoiceName
-		resp.VoiceMimeType = cb.semanticDeliveryVoiceMIME
-		resp.SemanticDelivery = cb.semanticDelivery
-	} else if cb.screenshotImageKey != "" {
-		resp.ImageKey = cb.screenshotImageKey
-		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
-	}
+	localFileDelivered, voiceMaterialized := cb.projectSemanticDeliveryPayloads(resp)
 	finalizeHostOwnedFileResponse(resp, cb)
 	// The attached file is the execution record the plan was missing. Record
 	// it before the recovery decision, which reads the same plan.
 	cb.settleHostProducedPlanEffects(resp)
-	cb.settleLocalChatDelivery(resp, localFileDelivered)
+	cb.settleLocalChatDelivery(resp, localFileDelivered, voiceMaterialized)
+	// Desktop already has the voice as a local path. Dropping the base64 keeps
+	// it off the event, the same way a materialized document drops FileData.
+	// The receipt above already observed the bytes.
+	if voiceMaterialized {
+		resp.VoiceData = ""
+	}
 	// required_effect_unsettled is stale only once that record discharged the
 	// plan. Clearing it beside a file that left other required work open made
 	// the reply look finished while the recovery marker stayed behind.
@@ -1093,6 +1079,169 @@ func materializeSemanticDeliveryFileForLocalChat(resp *IMAgentResponse, cb *shar
 	}
 	attachLocalPreview(resp, path, "")
 	resp.FileData = ""
+	if resp.FileMaterializeNanos == 0 {
+		resp.FileMaterializeNanos = time.Since(started).Nanoseconds()
+	}
+	return true
+}
+
+const (
+	semanticDeliverySlotImage = "image"
+	semanticDeliverySlotFile  = "file"
+	semanticDeliverySlotVoice = "voice"
+)
+
+// semanticDeliveryAttachmentKind is the payload the one-slot projection sends.
+// A recorded slot wins, so a later voice attach is not hidden behind an
+// earlier file. An empty slot keeps image, then file, then voice.
+func (c *sharedAgentLoopCallbacks) semanticDeliveryAttachmentKind() string {
+	if c == nil {
+		return ""
+	}
+	switch c.semanticDeliverySlot {
+	case semanticDeliverySlotImage:
+		if strings.TrimSpace(c.semanticDeliveryImageKey) != "" {
+			return semanticDeliverySlotImage
+		}
+	case semanticDeliverySlotFile:
+		if strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+			return semanticDeliverySlotFile
+		}
+	case semanticDeliverySlotVoice:
+		if strings.TrimSpace(c.semanticDeliveryVoiceData) != "" {
+			return semanticDeliverySlotVoice
+		}
+	}
+	if strings.TrimSpace(c.semanticDeliveryImageKey) != "" {
+		return semanticDeliverySlotImage
+	}
+	if strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+		return semanticDeliverySlotFile
+	}
+	if strings.TrimSpace(c.semanticDeliveryVoiceData) != "" {
+		return semanticDeliverySlotVoice
+	}
+	return ""
+}
+
+// localChatProjectsEveryCurrentChannelPayload reports a desktop or TUI chat.
+// That panel can show every local path. An IM gateway still sends one media
+// item, the latest slot.
+func (c *sharedAgentLoopCallbacks) localChatProjectsEveryCurrentChannelPayload() bool {
+	if c == nil {
+		return false
+	}
+	switch normalizeIMMessagePlatformKind(c.effectivePlatform()) {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+		return true
+	default:
+		return false
+	}
+}
+
+// currentChannelPayloadsToProject lists the callback payloads that belong on
+// this response. Desktop and TUI list every nonempty kind. Any other platform
+// lists the one slot semanticDeliveryAttachmentKind chose.
+func (c *sharedAgentLoopCallbacks) currentChannelPayloadsToProject() []string {
+	if c == nil {
+		return nil
+	}
+	if !c.localChatProjectsEveryCurrentChannelPayload() {
+		if kind := c.semanticDeliveryAttachmentKind(); kind != "" {
+			return []string{kind}
+		}
+		return nil
+	}
+	var kinds []string
+	if strings.TrimSpace(c.semanticDeliveryImageKey) != "" {
+		kinds = append(kinds, semanticDeliverySlotImage)
+	}
+	if strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+		kinds = append(kinds, semanticDeliverySlotFile)
+	}
+	if strings.TrimSpace(c.semanticDeliveryVoiceData) != "" {
+		kinds = append(kinds, semanticDeliverySlotVoice)
+	}
+	return kinds
+}
+
+// projectSemanticDeliveryPayloads copies the staged payloads onto the response.
+// voiceMaterialized is true only after the voice bytes were saved as a local
+// file; the caller then drops VoiceData so the event keeps the path.
+func (c *sharedAgentLoopCallbacks) projectSemanticDeliveryPayloads(resp *IMAgentResponse) (localFileDelivered, voiceMaterialized bool) {
+	if c == nil || resp == nil {
+		return false, false
+	}
+	sawSemantic := false
+	for _, kind := range c.currentChannelPayloadsToProject() {
+		sawSemantic = true
+		switch kind {
+		case semanticDeliverySlotImage:
+			resp.ImageKey = c.semanticDeliveryImageKey
+			resp.SemanticDelivery = c.semanticDelivery
+			setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
+		case semanticDeliverySlotFile:
+			resp.FileData = c.semanticDeliveryFileData
+			resp.FileName = c.semanticDeliveryFileName
+			resp.FileMimeType = c.semanticDeliveryFileMIME
+			resp.SemanticDelivery = c.semanticDelivery
+			// An image already on this reply keeps the screenshot label.
+			// The file is still attached below it.
+			if canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceScreenshot {
+				setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
+			}
+			if materializeSemanticDeliveryFileForLocalChat(resp, c) {
+				localFileDelivered = true
+			}
+		case semanticDeliverySlotVoice:
+			resp.VoiceData = c.semanticDeliveryVoiceData
+			resp.VoiceFileName = c.semanticDeliveryVoiceName
+			resp.VoiceMimeType = c.semanticDeliveryVoiceMIME
+			resp.SemanticDelivery = c.semanticDelivery
+			// Desktop saves the clip as a path. Label that path as a file
+			// before attachLocalPreview, which would otherwise call an empty
+			// source a screenshot. An IM gateway still sends VoiceData and
+			// keeps whatever source the turn already had.
+			if c.localChatProjectsEveryCurrentChannelPayload() && canonicalIMResponseSourceKind(resp.ResponseSource) != imResponseSourceScreenshot {
+				setSharedLoopArtifactSource(resp, imResponseSourceFileDelivery)
+			}
+			if materializeSemanticDeliveryVoiceForLocalChat(resp, c) {
+				voiceMaterialized = true
+			}
+		}
+	}
+	// A tool screenshot is the else of the semantic payloads. deliveredPaths
+	// may already have set LocalFilePath; that path does not hide the shot.
+	// A semantic file cannot be detected from FileData here: materialize
+	// clears those bytes after the save.
+	if !sawSemantic && c.screenshotImageKey != "" {
+		resp.ImageKey = c.screenshotImageKey
+		setSharedLoopArtifactSource(resp, imResponseSourceScreenshot)
+	}
+	return localFileDelivered, voiceMaterialized
+}
+
+// materializeSemanticDeliveryVoiceForLocalChat saves the voice next to a
+// document that already took the first local path. The desktop card lists
+// every path. The bool is the receipt: VoiceData stays so settlement can
+// pair this save, and is dropped only after that. Bytes left unsaved are
+// not a delivery.
+func materializeSemanticDeliveryVoiceForLocalChat(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) bool {
+	if resp == nil || cb == nil || cb.handler == nil || strings.TrimSpace(resp.VoiceData) == "" {
+		return false
+	}
+	switch normalizeIMMessagePlatformKind(cb.effectivePlatform()) {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+	default:
+		return false
+	}
+	started := time.Now()
+	path, err := cb.handler.saveFileDataForLocalDelivery(cb.userID, resp.VoiceFileName, resp.VoiceData)
+	if err != nil {
+		log.Printf("[semantic-delivery] local chat voice materialize failed: %v", err)
+		return false
+	}
+	attachLocalPreview(resp, path, "")
 	if resp.FileMaterializeNanos == 0 {
 		resp.FileMaterializeNanos = time.Since(started).Nanoseconds()
 	}
@@ -1174,20 +1323,50 @@ func (c *sharedAgentLoopCallbacks) selectionRecordAbsent(id string) bool {
 // acceptance: the response that carries the bytes is the delivery, so the
 // projection producing it is the receipt owner. An IM gateway keeps its own
 // settlement because SendMedia, not the response, is its delivery act.
-func (c *sharedAgentLoopCallbacks) settleLocalChatDelivery(resp *IMAgentResponse, fileMaterialized bool) {
-	if c == nil || resp == nil || c.semanticDelivery == nil || c.semanticSurface == nil {
+// rememberedCurrentChannelReceipt is one current-channel commit. Later
+// commits keep their own projection pointer; the callback bytes decide
+// whether this one is still the file on the chat.
+type rememberedCurrentChannelReceipt struct {
+	delivery  *semanticDeliveryProjection
+	imageKey  string
+	fileData  string
+	voiceData string
+}
+
+func sameCurrentChannelReceipt(left, right *semanticDeliveryProjection) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return left.SelectionID == right.SelectionID && left.Scope == right.Scope
+}
+
+// stillHeld reports that this commit's own bytes are still the callback
+// payload. A later attach that replaces the document does not accept the
+// old selection. Adding a voice file does not replace the document bytes.
+func (e rememberedCurrentChannelReceipt) stillHeld(c *sharedAgentLoopCallbacks) bool {
+	if e.delivery == nil || c == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(e.delivery.Kind)) {
+	case "image":
+		return e.imageKey != "" && c.semanticDeliveryImageKey == e.imageKey
+	case "audio":
+		return e.voiceData != "" && c.semanticDeliveryVoiceData == e.voiceData
+	default:
+		return e.fileData != "" && c.semanticDeliveryFileData == e.fileData
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) settleLocalChatDelivery(resp *IMAgentResponse, fileMaterialized, voiceMaterialized bool) {
+	if c == nil || resp == nil || c.semanticSurface == nil {
+		return
+	}
+	if c.semanticDelivery == nil && len(c.rememberedCurrentChannelReceipts) == 0 {
 		return
 	}
 	switch normalizeIMMessagePlatformKind(c.effectivePlatform()) {
 	case imMessagePlatformDesktop, imMessagePlatformTUI:
 	default:
-		return
-	}
-	// Only a receipt-bound current-channel delivery belongs here. A desktop
-	// specified-target send already completed synchronously in its adapter and
-	// has no prepared delivery row to claim.
-	selection, ok := semanticSelectionByID(c.semanticSurface.plan, c.semanticDelivery.SelectionID)
-	if !ok || !semanticCurrentChannelArtifactDelivery(selection) {
 		return
 	}
 	// A turn that keeps a failure is not a delivered turn, even when the bytes
@@ -1197,10 +1376,178 @@ func (c *sharedAgentLoopCallbacks) settleLocalChatDelivery(resp *IMAgentResponse
 	if strings.TrimSpace(resp.Error) != "" && keepVisibleErrorAfterHostFileAttach(resp.Error) {
 		return
 	}
-	outcome, receipt := localChatDeliveryReceipt(resp, c.semanticDelivery.Kind, fileMaterialized)
-	if err := c.semanticDelivery.settleLocalChatDelivery(outcome, receipt); err != nil {
-		log.Printf("[semantic-delivery] local chat receipt failed selection=%s outcome=%s: %v", c.semanticDelivery.SelectionID, outcome, err)
+	receipts := c.rememberedCurrentChannelReceipts
+	if len(receipts) == 0 {
+		receipts = []rememberedCurrentChannelReceipt{{
+			delivery:  c.semanticDelivery,
+			imageKey:  c.semanticDeliveryImageKey,
+			fileData:  c.semanticDeliveryFileData,
+			voiceData: c.semanticDeliveryVoiceData,
+		}}
 	}
+	var currentScope tool.InvocationScope
+	currentID := ""
+	if c.semanticDelivery != nil {
+		currentID = c.semanticDelivery.SelectionID
+		currentScope = c.semanticDelivery.Scope
+	}
+	for _, entry := range receipts {
+		if entry.delivery == nil || !entry.stillHeld(c) {
+			continue
+		}
+		// Only a receipt-bound current-channel delivery belongs here. A desktop
+		// specified-target send already completed synchronously in its adapter and
+		// has no prepared delivery row to claim.
+		selection, ok := semanticSelectionByID(c.semanticSurface.plan, entry.delivery.SelectionID)
+		if !ok || !semanticCurrentChannelArtifactDelivery(selection) {
+			continue
+		}
+		outcome, receipt := localChatDeliveryReceipt(resp, entry.delivery.Kind, fileMaterialized, voiceMaterialized)
+		// The latest selection keeps its failure. An earlier one that is no
+		// longer the visible payload stays unclaimed instead of being failed.
+		isCurrent := entry.delivery.SelectionID == currentID && entry.delivery.Scope == currentScope
+		if !isCurrent && outcome != tool.DeliveryAccepted {
+			continue
+		}
+		if err := entry.delivery.settleLocalChatDelivery(outcome, receipt); err != nil {
+			// The file is already on this chat. A later attempt can leave the
+			// projection aimed at a scope whose outbox row was never inserted.
+			// That miss is not an external send, and it must not be recorded as
+			// one. A specified-target or mailbox delivery never reaches here. A
+			// current-channel attach that was not staged still logs.
+			if currentChannelMissingOutboxIsLocal(c.currentChannelDeliveryStaged && c.currentChannelPayloadHeld(), outcome, err) {
+				log.Printf("[semantic-delivery] current-channel file is already on this chat; missing outbox row is not an external send selection=%s", entry.delivery.SelectionID)
+				continue
+			}
+			log.Printf("[semantic-delivery] local chat receipt failed selection=%s outcome=%s: %v", entry.delivery.SelectionID, outcome, err)
+		}
+	}
+}
+
+// currentChannelMissingOutboxIsLocal reports a claim that found no outbox row
+// for a current-channel attach this turn already put on the chat. The caller
+// has already restricted the projection to that capability. Acceptance is the
+// response carrying the bytes. A failed or unstaged delivery stays a receipt
+// error so a missing specified-target or mailbox row is never accepted here.
+func currentChannelMissingOutboxIsLocal(staged bool, outcome tool.DeliveryState, err error) bool {
+	return staged && outcome == tool.DeliveryAccepted && errors.Is(err, tool.ErrDeliveryNotFound)
+}
+
+// currentChannelBytesStaged reports the payload the response projection will
+// attach. The hop snapshot uses it with currentChannelDeliveryStaged so a
+// flag left behind after the bytes were cleared cannot retire a real delivery.
+func (c *sharedAgentLoopCallbacks) currentChannelBytesStaged() bool {
+	if c == nil {
+		return false
+	}
+	return strings.TrimSpace(c.semanticDeliveryFileData) != "" ||
+		strings.TrimSpace(c.semanticDeliveryImageKey) != "" ||
+		strings.TrimSpace(c.semanticDeliveryVoiceData) != ""
+}
+
+// commitStagedCurrentChannelDelivery records that this call's outbox commit
+// left a current-channel file on the callback. Specified-target and a commit
+// that left no bytes do not take the receipt. The remembered payload is the
+// one the hop snapshot may treat as already handed to this response.
+func (c *sharedAgentLoopCallbacks) commitStagedCurrentChannelDelivery(selection tool.PlannedSelection) {
+	if c == nil || !semanticCurrentChannelArtifactDelivery(selection) || !c.currentChannelBytesStaged() {
+		return
+	}
+	c.currentChannelDeliveryStaged = true
+	c.stagedCurrentChannelNoted = true
+	c.stagedCurrentChannelFileData = c.semanticDeliveryFileData
+	c.stagedCurrentChannelImageKey = c.semanticDeliveryImageKey
+	c.stagedCurrentChannelVoiceData = c.semanticDeliveryVoiceData
+	if c.semanticDelivery == nil {
+		return
+	}
+	entry := rememberedCurrentChannelReceipt{
+		delivery:  c.semanticDelivery,
+		imageKey:  c.semanticDeliveryImageKey,
+		fileData:  c.semanticDeliveryFileData,
+		voiceData: c.semanticDeliveryVoiceData,
+	}
+	for i, existing := range c.rememberedCurrentChannelReceipts {
+		if sameCurrentChannelReceipt(existing.delivery, entry.delivery) {
+			c.rememberedCurrentChannelReceipts[i] = entry
+			return
+		}
+	}
+	c.rememberedCurrentChannelReceipts = append(c.rememberedCurrentChannelReceipts, entry)
+}
+
+// currentChannelPayloadHeld reports that the callback still carries the
+// payload recorded at the current-channel commit. A later attach replaces
+// one of those strings. Until a commit is noted, there is nothing to hold.
+func (c *sharedAgentLoopCallbacks) currentChannelPayloadHeld() bool {
+	if c == nil || !c.stagedCurrentChannelNoted {
+		return true
+	}
+	return c.semanticDeliveryFileData == c.stagedCurrentChannelFileData &&
+		c.semanticDeliveryImageKey == c.stagedCurrentChannelImageKey &&
+		c.semanticDeliveryVoiceData == c.stagedCurrentChannelVoiceData
+}
+
+func (c *sharedAgentLoopCallbacks) clearStagedCurrentChannelDelivery() {
+	if c == nil {
+		return
+	}
+	c.currentChannelDeliveryStaged = false
+	c.stagedCurrentChannelNoted = false
+	c.stagedCurrentChannelFileData = ""
+	c.stagedCurrentChannelImageKey = ""
+	c.stagedCurrentChannelVoiceData = ""
+	c.rememberedCurrentChannelReceipts = nil
+}
+
+// stagedCurrentChannelProjection is the committed current-channel attach a
+// later adapter attempt must not replace until its own outbox commit succeeds.
+type stagedCurrentChannelProjection struct {
+	staged    bool
+	delivery  *semanticDeliveryProjection
+	imageKey  string
+	fileData  string
+	fileName  string
+	fileMIME  string
+	voiceData string
+	voiceName string
+	voiceMIME string
+	slot      string
+}
+
+func (c *sharedAgentLoopCallbacks) captureStagedCurrentChannelDelivery() stagedCurrentChannelProjection {
+	if c == nil || !c.currentChannelDeliveryStaged {
+		return stagedCurrentChannelProjection{}
+	}
+	return stagedCurrentChannelProjection{
+		staged:    true,
+		delivery:  c.semanticDelivery,
+		imageKey:  c.semanticDeliveryImageKey,
+		fileData:  c.semanticDeliveryFileData,
+		fileName:  c.semanticDeliveryFileName,
+		fileMIME:  c.semanticDeliveryFileMIME,
+		voiceData: c.semanticDeliveryVoiceData,
+		voiceName: c.semanticDeliveryVoiceName,
+		voiceMIME: c.semanticDeliveryVoiceMIME,
+		slot:      c.semanticDeliverySlot,
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) restoreStagedCurrentChannelDelivery(prior stagedCurrentChannelProjection) {
+	if c == nil || !prior.staged {
+		return
+	}
+	c.semanticDelivery = prior.delivery
+	c.semanticDeliveryImageKey = prior.imageKey
+	c.semanticDeliveryFileData = prior.fileData
+	c.semanticDeliveryFileName = prior.fileName
+	c.semanticDeliveryFileMIME = prior.fileMIME
+	c.semanticDeliveryVoiceData = prior.voiceData
+	c.semanticDeliveryVoiceName = prior.voiceName
+	c.semanticDeliveryVoiceMIME = prior.voiceMIME
+	c.semanticDeliverySlot = prior.slot
+	c.semanticPreparedDelivery = nil
+	c.currentChannelDeliveryStaged = true
 }
 
 func (c *sharedAgentLoopCallbacks) flushHostOwnedDocumentGenerate(resp *IMAgentResponse) {
@@ -1662,15 +2009,20 @@ func (c *sharedAgentLoopCallbacks) projectPausedCurrentChannelFile(resp *IMAgent
 	if strings.TrimSpace(c.semanticDeliveryFileData) == "" {
 		c.attachReadyCurrentChannelFile(resp)
 	}
-	if strings.TrimSpace(c.semanticDeliveryFileData) == "" {
+	// Same projection as the finished reply. A pause used to copy only the
+	// document, so a voice file staged after that document never reached the
+	// card. Nothing staged still skips settlement: an empty current-channel
+	// projection must not be recorded as a failed receipt.
+	if strings.TrimSpace(c.semanticDeliveryImageKey) == "" &&
+		strings.TrimSpace(c.semanticDeliveryFileData) == "" &&
+		strings.TrimSpace(c.semanticDeliveryVoiceData) == "" {
 		return
 	}
-	resp.FileData = c.semanticDeliveryFileData
-	resp.FileName = c.semanticDeliveryFileName
-	resp.FileMimeType = c.semanticDeliveryFileMIME
-	resp.SemanticDelivery = c.semanticDelivery
-	delivered := materializeSemanticDeliveryFileForLocalChat(resp, c)
-	c.settleLocalChatDelivery(resp, delivered)
+	localFileDelivered, voiceMaterialized := c.projectSemanticDeliveryPayloads(resp)
+	c.settleLocalChatDelivery(resp, localFileDelivered, voiceMaterialized)
+	if voiceMaterialized {
+		resp.VoiceData = ""
+	}
 }
 
 // flushHostOwnedSpecifiedTargetDelivery closes the model-stop gap for a
@@ -2106,6 +2458,11 @@ type sharedAgentLoopCallbacks struct {
 	semanticDeliveryVoiceData string
 	semanticDeliveryVoiceName string
 	semanticDeliveryVoiceMIME string
+	// semanticDeliverySlot is the latest current-channel attach kind
+	// (image, file, or voice). An IM gateway sends that one item. Desktop
+	// and TUI project every nonempty payload, so a later voice file is not
+	// hidden by an earlier document.
+	semanticDeliverySlot string
 	// semanticPreparedDelivery is populated only by the adapter from a trusted
 	// artifact binding. Coordinated execution commits it through
 	// PrepareDeliveryAndComplete so a host-call result can never be durable
@@ -2115,6 +2472,25 @@ type sharedAgentLoopCallbacks struct {
 	// ImageKey projection. A gateway must record accepted/unknown after its
 	// actual transport attempt; the prepared ToolPlan selection cannot do so.
 	semanticDelivery *semanticDeliveryProjection
+	// currentChannelDeliveryStaged is set only after this turn has committed
+	// a current-channel attach: the outbox row exists and the bytes are on
+	// this callback. A later plan revision can hide that execution record.
+	// The hop snapshot still treats artifact.deliver.current_channel as this
+	// turn's own transport. Specified-target, mailbox confirmation, and a
+	// delivery that never committed do not set it. stagedCurrentChannel*
+	// remembers the payload that commit attached. A later delivery that
+	// replaces those bytes is a different file, and the hop snapshot must
+	// not keep retiring the earlier capability.
+	currentChannelDeliveryStaged  bool
+	stagedCurrentChannelNoted     bool
+	stagedCurrentChannelFileData  string
+	stagedCurrentChannelImageKey  string
+	stagedCurrentChannelVoiceData string
+	// rememberedCurrentChannelReceipts is every current-channel commit this
+	// turn made. The callback keeps each payload, and settlement claims each
+	// one whose bytes are still those bytes. The latest pointer alone would
+	// leave the earlier document prepared forever.
+	rememberedCurrentChannelReceipts []rememberedCurrentChannelReceipt
 	// semanticCapturedImageKey is a short-lived handoff from the legacy handler
 	// projection to its already-admitted semantic capture adapter. It is not
 	// exposed to the model or attached to the gateway response.
@@ -3343,10 +3719,7 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 			// 2026-08-26: the second web_search in one batch was denied and
 			// the model dropped the user's photo requirement, declaring
 			// search unavailable with 8 fresh results in context).
-			return fmt.Sprintf(
-				"Error: tool %q already ran successfully earlier in this turn. That result still stands and remains valid evidence. If the name is listed, call it and continue the unfinished task. Do not tell the user that a quota or usage limit was used up, do not ask them to send another message, and do not report that capability as failed, consumed, or unavailable.",
-				resolved,
-			)
+			return agent.RetiredSelectionSuccessDenial(resolved)
 		}
 	}
 	if !c.semanticLightLookup() {
@@ -6227,6 +6600,9 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	if strings.TrimSpace(name) == "bash" {
 		execCtx = withHostProcedureDir(execCtx, c.hostProcedureDir)
 	}
+	if c.loopCtx != nil {
+		execCtx = markChatTaskToolContext(execCtx, c.loopCtx.ChatTaskID)
+	}
 	// Close the check/start race in core RunLoop: steering may have landed after
 	// its last batch check but before this operation was installed. In that case
 	// no cancel function existed for TryRequestReplan to call, so reject the stale
@@ -7217,6 +7593,18 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 	if result, done := tool.HostCallAcquireTerminal(acquired, action, record, store, c.semanticSurface.scope, grant.SelectionID); done {
 		return hostCallAcquireModelText(result)
 	}
+	// The adapter assigns semanticDelivery before PrepareDeliveryAndComplete
+	// writes the outbox row. A later send_file that then fails leaves the
+	// projection on an intent that was rolled back, and the receipt looks up
+	// a row that was never inserted. Keep the committed attach unless this
+	// call's own outbox commit succeeds.
+	priorStaged := c.captureStagedCurrentChannelDelivery()
+	keepStagedReplacement := false
+	defer func() {
+		if !keepStagedReplacement {
+			c.restoreStagedCurrentChannelDelivery(priorStaged)
+		}
+	}()
 	result, selected, err := c.semanticSurface.executor.ExecuteAdmitted(selection, c.semanticSurface.scope, c.semanticSurface.plan, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
 		ctx, cancel := c.semanticDynamicExecutionContext()
 		defer cancel()
@@ -7300,6 +7688,14 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 			c.semanticDelivery.ChannelScope = record.ChannelScope
 			c.semanticDelivery.DestinationID = record.DestinationID
 		}
+		if semanticCurrentChannelArtifactDelivery(selected) && c.currentChannelBytesStaged() {
+			c.commitStagedCurrentChannelDelivery(selected)
+		} else if c.stagedCurrentChannelNoted && !c.currentChannelPayloadHeld() {
+			// This commit belongs to another delivery and replaced the chat
+			// file. The earlier capability is no longer on the response.
+			c.clearStagedCurrentChannelDelivery()
+		}
+		keepStagedReplacement = true
 	} else if len(payloads) > 0 {
 		if _, err := c.semanticSurface.coordinator.CompleteWithArtifactPayloads(admission, state, result.Result, result.ReasonCode, payloads, time.Now().UTC()); err != nil {
 			return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error())
@@ -8348,15 +8744,20 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		var attachKind func()
 		switch strings.ToLower(strings.TrimSpace(artifact.Ref.Kind)) {
 		case "image":
-			attachKind = func() { c.semanticDeliveryImageKey = artifact.Base64 }
+			attachKind = func() {
+				c.semanticDeliverySlot = semanticDeliverySlotImage
+				c.semanticDeliveryImageKey = artifact.Base64
+			}
 		case "document":
 			attachKind = func() {
+				c.semanticDeliverySlot = semanticDeliverySlotFile
 				c.semanticDeliveryFileData = artifact.Base64
 				c.semanticDeliveryFileMIME = artifact.Ref.MIMEType
 				c.semanticDeliveryFileName = semanticArtifactFileName(artifact.Ref)
 			}
 		case "audio":
 			attachKind = func() {
+				c.semanticDeliverySlot = semanticDeliverySlotVoice
 				c.semanticDeliveryVoiceData = artifact.Base64
 				c.semanticDeliveryVoiceMIME = artifact.Ref.MIMEType
 				c.semanticDeliveryVoiceName = semanticArtifactFileName(artifact.Ref)
@@ -8398,8 +8799,14 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 		}}
 		if c.semanticSurface.coordinator != nil {
 			// App hosts defer durable outbox creation until it can be committed
-			// with the host-call terminal projection.
+			// with the host-call terminal projection. The staged flag is set
+			// only after that commit, in executeCoordinatedSemanticToolCall.
 			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: artifact.Ref.ID, ArtifactSourceScope: artifact.Ref.Scope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
+		} else {
+			// No coordinator: prepareCurrentChannelDelivery already inserted
+			// the outbox row. Only the current-channel attach is that receipt.
+			// Specified-target, including an IM gateway send, stays unstaged.
+			c.commitStagedCurrentChannelDelivery(selection)
 		}
 		if desktopForward {
 			return "Delivered the bound document through the desktop IM sender (delivery record " + record.SelectionID + "). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
@@ -10361,6 +10768,8 @@ func sharedLoopHostSettledStaleModelError(result agent.LoopResult, resp *IMAgent
 // the file on this chat, so it does not keep the marker. An older turn's
 // tools are not in this delta and do not settle or block this decision.
 func turnLeavesExternalSendUnreviewed(entries []agent.ConversationEntry) bool {
+	sawCurrentChannelCommit := false
+	sawSendFileReplay := false
 	for _, entry := range entries {
 		if !strings.EqualFold(strings.TrimSpace(entry.Role), "tool") {
 			continue
@@ -10370,14 +10779,27 @@ func turnLeavesExternalSendUnreviewed(entries []agent.ConversationEntry) bool {
 		case "im_message", "send_to_im":
 			return true
 		case "send_file":
-			if !agent.CurrentChannelAttachCommitted(text) {
-				return true
+			if agent.CurrentChannelAttachCommitted(text) {
+				sawCurrentChannelCommit = true
+				continue
 			}
+			// The host refused to run send_file again. That refusal is not a
+			// send. It leaves the turn only when a current-channel commit is
+			// already in this delta. A denial alone can follow an external
+			// send whose result is not the commit sentence.
+			if agent.SendFileConsumedGrantDenial(text) {
+				sawSendFileReplay = true
+				continue
+			}
+			return true
 		case "mailbox_send", "mailbox_delete":
 			if !mailbox.ExternalMutationKnown(text) {
 				return true
 			}
 		}
+	}
+	if sawSendFileReplay && !sawCurrentChannelCommit {
+		return true
 	}
 	return false
 }

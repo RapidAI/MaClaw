@@ -816,4 +816,34 @@ describe('useAssistantOutputScroll', () => {
         rerender(<Harness messages={[makeMsg({ id: 'a1', role: 'assistant', content: 'started' })]} hasConversation={true} seq={1} />);
         expect(apiBox.current?.unreadTail).toBe(true);
     });
+
+    it('parks the transcript on a user turn', () => {
+        const user = makeMsg({ id: 'u1', role: 'user', content: 'hello there' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'reply' });
+        function Harness() {
+            const api = useAssistantOutputScroll({ hasConversation: true, messages: [user, assistant], ready: true });
+            return (
+                <div ref={api.outputContainerRef} data-testid="jump-box" onScroll={api.handleScroll} style={{ height: 100, overflow: 'auto' }}>
+                    <div className="mc-conversation-body">
+                        <div data-testid="assistant-chat-user-u1">hello there</div>
+                        <div style={{ height: 800 }}>reply</div>
+                    </div>
+                    <div ref={api.outputEndRef} />
+                    <button type="button" data-testid="jump" onClick={() => { api.jumpToUserTurn('missing'); api.jumpToUserTurn('u1'); }}>jump</button>
+                    <div data-testid="latched">{api.scrolledUp ? 'up' : 'follow'}</div>
+                </div>
+            );
+        }
+        const view = render(<Harness />);
+        const box = view.getByTestId('jump-box');
+        const node = view.getByTestId('assistant-chat-user-u1');
+        const rect = (top: number, height: number): DOMRect => ({ top, bottom: top + height, left: 0, right: 10, width: 10, height, x: 0, y: top, toJSON() { return {}; } });
+        node.getBoundingClientRect = () => rect(500, 40);
+        box.getBoundingClientRect = () => rect(0, 100);
+        Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 2000 });
+        Object.defineProperty(box, 'clientHeight', { configurable: true, value: 100 });
+        fireEvent.click(view.getByTestId('jump'));
+        expect(box.scrollTop).toBe(488);
+        expect(view.getByTestId('latched').textContent).toBe('up');
+    });
 });

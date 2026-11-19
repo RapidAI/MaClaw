@@ -2521,7 +2521,7 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground, cfg, loaded.Providers, loaded.Current)
 	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background, cfg, loaded.Providers, loaded.Current)
 	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse, cfg, loaded.Providers, loaded.Current)
-	state.Grounder = a.maclawLLMGrounderSummary(*profiles, loaded.Providers)
+	state.Grounder = a.maclawLLMGrounderSummary(cfg, *profiles, loaded.Providers, loaded.Current)
 	return state, nil
 }
 

@@ -486,17 +486,34 @@ func (a *App) ListAvailableToolNames() (string, error) {
 // profile draft via a lightweight LLM call.
 // ---------------------------------------------------------------------------
 
+// The generation prompt shows these strings as the JSON example. They are not
+// field values. The parser drops an exact copy so the editor does not replace
+// the form with the example.
+const (
+	expertProfileTemplateName        = "专家名称，不超过 8 个汉字"
+	expertProfileTemplateDescription = "一句话卡片简介，不超过 40 个汉字"
+	expertProfileTemplateIcon        = "一个最能代表该专家的 emoji（单个字符）"
+	expertProfileTemplatePrompt      = "完整的专家系统提示词"
+	expertProfileTemplateTool        = "从用户给出的工具清单中挑选的工具名"
+	expertProfileTemplateSkill       = "从用户给出的技能清单中挑选的技能名"
+
+	expertProfileSimplifiedTemplateName        = "≤8个汉字的专家名"
+	expertProfileSimplifiedTemplateDescription = "≤40字简介"
+	expertProfileSimplifiedTemplateIcon        = "单个emoji"
+	expertProfileSimplifiedTemplatePrompt      = "300字以上的中文系统提示词，含 角色定位/工作流程/输出格式/边界约束 四节"
+)
+
 // expertProfileGenSystemPrompt is the meta prompt for profile generation.
 const expertProfileGenSystemPrompt = `你是一名"AI 专家设计师"。用户会给你一句话想法，你要把它设计成一个可落地的"专家助手"配置。
 
 只输出一个严格的 JSON 对象，不要输出任何其他文字、解释或 Markdown 代码块标记：
 {
-  "name": "专家名称，不超过 8 个汉字",
-  "description": "一句话卡片简介，不超过 40 个汉字",
-  "icon": "一个最能代表该专家的 emoji（单个字符）",
-  "system_prompt": "完整的专家系统提示词",
-  "suggested_tools": ["从用户给出的工具清单中挑选的工具名"],
-  "suggested_skills": ["从用户给出的技能清单中挑选的技能名"]
+  "name": "` + expertProfileTemplateName + `",
+  "description": "` + expertProfileTemplateDescription + `",
+  "icon": "` + expertProfileTemplateIcon + `",
+  "system_prompt": "` + expertProfileTemplatePrompt + `",
+  "suggested_tools": ["` + expertProfileTemplateTool + `"],
+  "suggested_skills": ["` + expertProfileTemplateSkill + `"]
 }
 
 system_prompt 写作要求：
@@ -514,18 +531,8 @@ suggested_tools / suggested_skills 规则：
 // expertProfileGenSimplifiedPrompt is the retry prompt when the full meta
 // prompt's output fails to parse.
 const expertProfileGenSimplifiedPrompt = `把用户的想法转成一个专家配置。只输出一个 JSON 对象，不要其他文字：
-{"name":"≤8个汉字的专家名","description":"≤40字简介","icon":"单个emoji","system_prompt":"300字以上的中文系统提示词，含 角色定位/工作流程/输出格式/边界约束 四节","suggested_tools":[],"suggested_skills":[]}
+{"name":"` + expertProfileSimplifiedTemplateName + `","description":"` + expertProfileSimplifiedTemplateDescription + `","icon":"` + expertProfileSimplifiedTemplateIcon + `","system_prompt":"` + expertProfileSimplifiedTemplatePrompt + `","suggested_tools":[],"suggested_skills":[]}
 suggested_tools 和 suggested_skills 只能从用户给的清单中原样挑选，没有就输出 []。`
-
-// expertProfileSuggestion validates the LLM's profile draft shape.
-type expertProfileSuggestion struct {
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	Icon            string   `json:"icon"`
-	SystemPrompt    string   `json:"system_prompt"`
-	SuggestedTools  []string `json:"suggested_tools"`
-	SuggestedSkills []string `json:"suggested_skills"`
-}
 
 // GenerateExpertProfile generates an expert profile draft JSON from a one-line
 // idea. The returned JSON is passed through for the frontend editor to refine;
@@ -553,10 +560,10 @@ func (a *App) GenerateExpertProfile(idea string) (string, error) {
 		Tag:               "expert-profile-gen",
 	})
 	if err == nil {
-		if parsed, perr := parseExpertProfileResponse(result.Text); perr == nil {
+		if parsed, perr := expertProfileFromClassify(result); perr == nil {
 			return parsed, nil
 		} else {
-			log.Printf("[expert-profile-gen] attempt 1 parse failed: %v (raw_len=%d)", perr, len([]rune(result.Text)))
+			log.Printf("[expert-profile-gen] attempt 1 parse failed: %v (raw_len=%d reasoning_len=%d)", perr, classifyRuneLen(result.Text), classifyRuneLen(result.Reasoning))
 		}
 	} else {
 		log.Printf("[expert-profile-gen] attempt 1 LLM call failed: %v", err)
@@ -573,8 +580,9 @@ func (a *App) GenerateExpertProfile(idea string) (string, error) {
 	if err2 != nil {
 		return "", fmt.Errorf("expert profile generation failed: %w", err2)
 	}
-	parsed2, perr2 := parseExpertProfileResponse(result2.Text)
+	parsed2, perr2 := expertProfileFromClassify(result2)
 	if perr2 != nil {
+		log.Printf("[expert-profile-gen-retry] parse failed: %v (raw_len=%d reasoning_len=%d)", perr2, classifyRuneLen(result2.Text), classifyRuneLen(result2.Reasoning))
 		return "", fmt.Errorf("expert profile generation returned unparseable output: %w", perr2)
 	}
 	return parsed2, nil
@@ -616,31 +624,111 @@ func buildExpertProfileGenUserMessage(h *IMMessageHandler, idea string) string {
 	return b.String()
 }
 
-// parseExpertProfileResponse extracts and validates the profile draft JSON,
-// returning the raw JSON object for pass-through. Mirrors
-// parseTaskUnderstandingResponse: strip code fences, take first { to last }.
+func classifyRuneLen(s string) int {
+	return len([]rune(s))
+}
+
+// expertProfileFromClassify reads the profile from the message body, then
+// from the reasoning channel. Thinking models leave the body empty and put
+// the object in reasoning, sometimes inside a think block.
+func expertProfileFromClassify(result *LLMClassifyResult) (string, error) {
+	texts := structuredClassifyTexts(result)
+	if len(texts) == 0 {
+		return "", fmt.Errorf("empty response")
+	}
+	var last error
+	for _, raw := range texts {
+		parsed, err := parseExpertProfileResponse(raw)
+		if err == nil {
+			return parsed, nil
+		}
+		last = err
+	}
+	return "", last
+}
+
+// parseExpertProfileResponse extracts the profile draft and returns the JSON
+// the editor stores. The last object with a real system_prompt wins. Example
+// text from the prompt is omitted, including a name or icon that is still the
+// example. A system_prompt written as the four required sections is joined
+// into one text, because the editor reads a string.
 func parseExpertProfileResponse(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```JSON")
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty response")
 	}
-	start := strings.Index(raw, "{")
-	end := strings.LastIndex(raw, "}")
-	if start < 0 || end <= start {
+	var lastErr error
+	found := false
+	chosen := ""
+	for _, object := range balancedJSONObjects(raw) {
+		found = true
+		fields, err := expertJSONFields(object)
+		if err != nil {
+			lastErr = fmt.Errorf("JSON parse: %w", err)
+			continue
+		}
+		prompt := expertJSONText(fields["system_prompt"])
+		if prompt == "" {
+			lastErr = fmt.Errorf("name or system_prompt is empty")
+			continue
+		}
+		if expertFieldIsTemplate(prompt) {
+			lastErr = fmt.Errorf("profile is the prompt template")
+			continue
+		}
+		encoded, err := expertProfileJSON(fields)
+		if err != nil {
+			lastErr = fmt.Errorf("JSON parse: %w", err)
+			continue
+		}
+		chosen = encoded
+		lastErr = nil
+	}
+	if chosen != "" {
+		return chosen, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	if !found {
 		return "", fmt.Errorf("no JSON object found")
 	}
-	raw = raw[start : end+1]
+	return "", fmt.Errorf("name or system_prompt is empty")
+}
 
-	var profile expertProfileSuggestion
-	if err := json.Unmarshal([]byte(raw), &profile); err != nil {
-		return "", fmt.Errorf("JSON parse: %w", err)
+// expertProfileJSON is the editor payload: string fields and string arrays.
+// The model's optional-field types are not part of that contract.
+func expertProfileJSON(fields map[string]json.RawMessage) (string, error) {
+	tools := expertJSONStringList(fields["suggested_tools"])
+	skills := expertJSONStringList(fields["suggested_skills"])
+	if tools == nil {
+		tools = []string{}
 	}
-	if strings.TrimSpace(profile.Name) == "" || strings.TrimSpace(profile.SystemPrompt) == "" {
-		return "", fmt.Errorf("name or system_prompt is empty")
+	if skills == nil {
+		skills = []string{}
 	}
-	return raw, nil
+	encoded, err := json.Marshal(struct {
+		Name            string   `json:"name"`
+		Description     string   `json:"description"`
+		Icon            string   `json:"icon"`
+		SystemPrompt    string   `json:"system_prompt"`
+		SuggestedTools  []string `json:"suggested_tools"`
+		SuggestedSkills []string `json:"suggested_skills"`
+	}{
+		Name:            expertJSONString(fields, "name"),
+		Description:     expertJSONString(fields, "description"),
+		Icon:            expertJSONString(fields, "icon"),
+		SystemPrompt:    expertJSONText(fields["system_prompt"]),
+		SuggestedTools:  tools,
+		SuggestedSkills: skills,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }

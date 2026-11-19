@@ -222,6 +222,61 @@ func openAIReasoningText(reasoningContent, reasoning, thinking string) string {
 // field. The unclosed form matters when an upstream response is truncated.
 var openAIThinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
 
+// AnswerFromReasoningOnly returns the document a parser should read from a
+// reasoning channel. Visible text outside <think> wins. A channel that is
+// only a think block returns the inside, because that is where the document
+// was written. Chat display keeps that block in the reasoning lane.
+func AnswerFromReasoningOnly(reasoning string) string {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return ""
+	}
+	visible, inner := splitOpenAIThinkingTags(reasoning)
+	if strings.TrimSpace(visible) != "" {
+		return strings.TrimSpace(visible)
+	}
+	if strings.TrimSpace(inner) != "" {
+		return strings.TrimSpace(inner)
+	}
+	return reasoning
+}
+
+// openAIFlexibleText reads a provider field that is either a string or a
+// list of text or thinking blocks, and joins both lanes. Decoding the field
+// as a string used to fail the whole chunk, so the tokens were counted and
+// then discarded.
+func openAIFlexibleText(raw json.RawMessage) string {
+	visible, think := openAIFlexibleParts(raw)
+	return mergeOpenAIReasoningText(visible, think)
+}
+
+// openAIFlexibleParts splits one provider field into visible text and
+// thinking text. A number or other scalar is not text: stringifying it used
+// to invent a body from a typed delta.
+func openAIFlexibleParts(raw json.RawMessage) (visible, think string) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, ""
+	}
+	var generic interface{}
+	if json.Unmarshal(raw, &generic) != nil {
+		return "", ""
+	}
+	switch body := generic.(type) {
+	case []interface{}:
+		visible, think, _ = normalizeOpenAIMessageContent(body)
+	case map[string]interface{}:
+		visible, think, _ = normalizeOpenAIMessageContent([]interface{}{body})
+	default:
+		return "", ""
+	}
+	return visible, think
+}
+
 func splitOpenAIThinkingTags(content string) (visible string, reasoning string) {
 	if !strings.Contains(strings.ToLower(content), "<think>") {
 		return strings.TrimSpace(content), ""

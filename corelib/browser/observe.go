@@ -241,6 +241,22 @@ const browserObserveScript = `(function () {
     }
     const legacy = (combo !== tag ? combo : tag) + pos;
     if (isUnique(legacy, doc)) pushRaw(legacy);
+    // Credential autocomplete is not the accessible name. Append it last so
+    // the primary selector stays the id or name the click already uses.
+    const acRaw = el.getAttribute && el.getAttribute('autocomplete');
+    if (acRaw) {
+      const secretAc = {
+        'current-password': 1,
+        'new-password': 1,
+        'one-time-code': 1,
+        'cc-number': 1,
+        'cc-exp': 1,
+        'cc-csc': 1
+      };
+      String(acRaw).toLowerCase().split(/\s+/).forEach(function (token) {
+        if (secretAc[token]) pushRaw(tag + attrSel('autocomplete', token));
+      });
+    }
     return out;
   }
   function isDisabled(el) {

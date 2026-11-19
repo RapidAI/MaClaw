@@ -7166,6 +7166,74 @@ func (a *App) HideTask(projectPath string) {
 	a.emitProjectTaskClosed(projectPath)
 }
 
+// deleteTaskDurableStarted runs after DeleteTask has released
+// tabWorkingDirMu and before session rows, memory, and the task directory
+// are removed. Tests block here to prove other directory calls are not
+// stuck behind that cleanup.
+var deleteTaskDurableStarted func()
+
+func (a *App) noteProjectTaskDeleting(projectPath string) {
+	if a == nil {
+		return
+	}
+	key := normalizeRecentTaskPathKey(projectPath)
+	if key == "" {
+		return
+	}
+	a.deletingProjectTasks.Store(key, struct{}{})
+}
+
+func (a *App) projectTaskDeleting(projectPath string) bool {
+	if a == nil {
+		return false
+	}
+	key := normalizeRecentTaskPathKey(projectPath)
+	if key == "" {
+		return false
+	}
+	_, ok := a.deletingProjectTasks.Load(key)
+	return ok
+}
+
+func (a *App) noteDeletingProjectTab(tabID string) {
+	if a == nil {
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	a.deletingProjectTabs.Store(tabID, struct{}{})
+}
+
+func (a *App) projectTabDeleting(tabID string) bool {
+	if a == nil {
+		return false
+	}
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return false
+	}
+	_, ok := a.deletingProjectTabs.Load(tabID)
+	return ok
+}
+
+func (a *App) clearDeletingProjectTab(tabID string) {
+	if a == nil {
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	a.deletingProjectTabs.Delete(tabID)
+}
+
+// deleteTaskBeforeExpertTabRelease runs after the expert session file has been
+// removed and before the shared expert tab id is cleared. Tests flush here to
+// prove that flush cannot recreate the file.
+var deleteTaskBeforeExpertTabRelease func()
+
 // DeleteTask permanently removes a task and all state scoped to it. Unlike
 // HideTask (used for recoverable rollback), this makes a later launch through
 // onboarding or a shortcut a genuinely new task. Cloud workspaces stay on Hub
@@ -7185,15 +7253,6 @@ func (a *App) DeleteTask(projectPath string) error {
 	}
 	a.releaseCloudWorkspaceIfLastRow(projectPath)
 	forgetCloudWorkspaceTaskByPath(projectPath)
-	// Directory updates and task deletion both mutate the same tab session files
-	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
-	// recreate a deleted tab's directory override halfway through this cleanup.
-	a.tabWorkingDirMu.Lock()
-	defer a.tabWorkingDirMu.Unlock()
-
-	// First stop anything that could write task state back while it is removed.
-	a.cancelProjectTaskLoop(projectPath)
-	ownerID := projectSessionOwnerID(projectPath)
 	// Expert tasks keep their agent session under "desktop-user:expert:<id>"
 	// rather than the task's project path. Resolve the retirement plan BEFORE
 	// the record is deleted below, so the expert session can be purged too.
@@ -7202,12 +7261,33 @@ func (a *App) DeleteTask(projectPath string) error {
 	// live session alone.
 	expertID, nextExpertTaskPath, liveExpertTask := a.expertTaskRetirement(projectPath)
 	assistantTabType := a.assistantTabTypeForTaskPath(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
+
+	// The tombstone is the only directory-lock work that has to precede the
+	// waits. CancelSessionForUser blocks until the turn unwinds, and the
+	// memory rescan plus the task-directory removal are the multi-minute
+	// part. Neither may sit on tabWorkingDirMu: every other task's open,
+	// save, and directory read queues behind that lock.
+	a.tabWorkingDirMu.Lock()
+	a.noteProjectTaskDeleting(projectPath)
+	// The expert tab file carries no project path. Note its id before the
+	// cancel wait, or a flush during that wait writes the deleted transcript
+	// back after DeleteSession.
+	if liveExpertTask && expertID != "" {
+		a.noteDeletingProjectTab(expertTabSessionID(expertID))
+	}
+	a.tabWorkingDirMu.Unlock()
+
 	// Dismiss before dropping the record so a concurrent EnsureAssistantTabTask
 	// cannot mint a replacement VS Code / ACP row in the gap.
 	if assistantTabType == assistantTabACPType {
 		a.dismissAssistantTabType(assistantTabACPType)
 	}
 	var errs []error
+	// Stop anything that could write task state back while it is removed.
+	// This wait stays off tabWorkingDirMu; a stuck turn must not freeze
+	// every other tab's directory read.
+	a.cancelProjectTaskLoop(projectPath)
 	handler := a.imHandler
 	if handler == nil {
 		if hub := a.hubClient(); hub != nil {
@@ -7265,8 +7345,9 @@ func (a *App) DeleteTask(projectPath string) error {
 	// conversation memory is keyed by the expert owner id and the tab session
 	// file carries no project path. Without this, recreating the expert would
 	// resurrect the deleted task's memory.
+	expertOwner := ""
 	if liveExpertTask {
-		expertOwner := expertSessionUserID(expertID)
+		expertOwner = expertSessionUserID(expertID)
 		if handler != nil {
 			_, _ = handler.CancelSessionForUser(expertOwner)
 			if handler.memory != nil {
@@ -7285,44 +7366,63 @@ func (a *App) DeleteTask(projectPath string) error {
 				errs = append(errs, fmt.Errorf("delete expert task workflow: %w", err))
 			}
 		}
-		if err := a.ensureProjectTabSessionPersist().DeleteSession(expertTabSessionID(expertID)); err != nil {
-			errs = append(errs, fmt.Errorf("delete expert tab session: %w", err))
-		}
-		// The expert owner and its tab id are unrelated to the task path. Clear
-		// every runtime directory binding here so recreating an expert never
-		// inherits a deleted expert's private workdir in this process.
+	}
+	// Map updates are the critical section. A picker that was queued behind
+	// the tombstone lock observes the delete and must not publish a directory
+	// for this task. The session file and the task directory come next,
+	// outside the lock.
+	a.tabWorkingDirMu.Lock()
+	if liveExpertTask {
 		a.sessionEventScopeIDs.Delete(expertOwner)
 		a.assistantSessionWorkingDirs.Delete(expertOwner)
 		a.tabWorkingDirOverrides.Delete(expertTabSessionID(expertID))
 		a.expertSessionTaskPaths.Delete(expertOwner)
+	}
+	a.sessionEventScopeIDs.Delete(ownerID)
+	a.assistantSessionWorkingDirs.Delete(ownerID)
+	a.tabProjectPaths.Range(func(tabID, value any) bool {
+		path, _ := value.(string)
+		if normalizeProjectSessionPath(path) != projectPath {
+			return true
+		}
+		if id, _ := tabID.(string); id != "" {
+			a.noteDeletingProjectTab(id)
+		}
+		a.tabProjectPaths.Delete(tabID)
+		a.tabWorkingDirOverrides.Delete(tabID)
+		return true
+	})
+	a.tabWorkingDirMu.Unlock()
+	if deleteTaskDurableStarted != nil {
+		deleteTaskDurableStarted()
+	}
+	if liveExpertTask {
+		if err := a.ensureProjectTabSessionPersist().DeleteSession(expertTabSessionID(expertID)); err != nil {
+			errs = append(errs, fmt.Errorf("delete expert tab session: %w", err))
+		}
 		// The next task of this expert becomes the live one. Put its archived
 		// transcript back on the shared session so opening it is not blank.
 		if nextExpertTaskPath != "" {
 			a.restoreExpertConversationFrom(expertID, nextExpertTaskPath)
 		}
 	}
-	a.sessionEventScopeIDs.Delete(ownerID)
-	a.assistantSessionWorkingDirs.Delete(ownerID)
-	a.tabProjectPaths.Range(func(tabID, value any) bool {
-		if path, _ := value.(string); normalizeProjectSessionPath(path) == projectPath {
-			a.tabProjectPaths.Delete(tabID)
-			a.tabWorkingDirOverrides.Delete(tabID)
-		}
-		return true
-	})
 
 	a.ensureMemoryStore()
 	if a.memoryStore != nil {
-		if _, err := a.memoryStore.DeleteProjectEntries(projectPath); err != nil {
-			errs = append(errs, fmt.Errorf("delete task memory: %w", err))
-		}
+		// Drop the sidebar row before the entry delete. The rescan is
+		// asynchronous; ForgetProject keeps that rescan from putting the row
+		// back, so this call does not wait for it.
 		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			pi.ForgetProject(projectPath)
 			pi.ClearTaskPrefs(projectPath)
 		}
+		if _, err := a.memoryStore.DeleteProjectEntriesUnwaited(projectPath); err != nil {
+			errs = append(errs, fmt.Errorf("delete task memory: %w", err))
+		}
 	}
-	// Clear tab persistence after task memory. The frontend will close tabs only
-	// after this method emits EventProjectTaskClosed, so no close callback can
-	// recreate an archived session entry during deletion.
+	// Session files go next. Close and save can run during this window; the
+	// project-path and tab-id tombstones are what keep them from writing the
+	// deleted task back.
 	if _, err := a.ensureProjectTabSessionPersist().DeleteProjectSessions(projectPath); err != nil {
 		errs = append(errs, err)
 	}
@@ -7366,6 +7466,15 @@ func (a *App) DeleteTask(projectPath string) error {
 		}
 	}
 	a.emitProjectTaskClosed(projectPath)
+	if deleteTaskBeforeExpertTabRelease != nil {
+		deleteTaskBeforeExpertTabRelease()
+	}
+	// The next task of this expert reuses the same tab id. Clear it only after
+	// the deleted transcript is gone, so a flush in this window cannot recreate
+	// that file, and a flush after return still can.
+	if liveExpertTask && expertID != "" {
+		a.clearDeletingProjectTab(expertTabSessionID(expertID))
+	}
 	return errors.Join(errs...)
 }
 
@@ -7724,7 +7833,7 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	if rawProjectPath != projectPath {
 		log.Printf("[CreateProjectTabSession] normalized project path tab=%q raw=%q normalized=%q", tabID, rawProjectPath, projectPath)
 	}
-	if a.isProjectTaskClosed(projectPath) {
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(projectPath) || a.isProjectTaskClosed(projectPath) {
 		log.Printf("[CreateProjectTabSession] skipped closed task tab=%q project=%q", tabID, projectPath)
 		return ""
 	}
@@ -7732,6 +7841,12 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	// session file and runtime maps. Keep them as one lifecycle transaction.
 	a.tabWorkingDirMu.Lock()
 	defer a.tabWorkingDirMu.Unlock()
+	// DeleteTask releases the lock before the session file is gone. A create
+	// that queued behind the tombstone must not write that file back.
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(projectPath) {
+		log.Printf("[CreateProjectTabSession] skipped deleting task tab=%q project=%q", tabID, projectPath)
+		return ""
+	}
 	persist := a.ensureProjectTabSessionPersist()
 
 	// Cache the tabID → projectPath mapping in memory for fast lookup.
@@ -8219,11 +8334,23 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	// completion must not publish a live owner override after this tab closed.
 	a.tabWorkingDirMu.Lock()
 	defer a.tabWorkingDirMu.Unlock()
+	if a.projectTabDeleting(tabID) {
+		log.Printf("[CloseProjectTabSession] skipped deleting task tab=%s", tabID)
+		a.tabProjectPaths.Delete(tabID)
+		a.tabWorkingDirOverrides.Delete(tabID)
+		return
+	}
 
 	persist := a.ensureProjectTabSessionPersist()
 	var projectPath string
 	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
 		projectPath, _ = cached.(string)
+	}
+	if a.projectTaskDeleting(projectPath) {
+		log.Printf("[CloseProjectTabSession] skipped deleting task tab=%s project=%q", tabID, projectPath)
+		a.tabProjectPaths.Delete(tabID)
+		a.tabWorkingDirOverrides.Delete(tabID)
+		return
 	}
 
 	// Mark the tab as archived in the index so it won't be restored on startup.
@@ -8232,16 +8359,29 @@ func (a *App) CloseProjectTabSession(tabID string) {
 		log.Printf("[CloseProjectTabSession] LoadIndex failed: %v", err)
 	} else if index != nil {
 		found := false
+		deleting := false
 		for i, entry := range index.Tabs {
 			if entry.ID == tabID {
 				found = true
 				if strings.TrimSpace(projectPath) == "" {
 					projectPath = entry.ProjectPath
 				}
+				if a.projectTaskDeleting(projectPath) || a.projectTaskDeleting(entry.ProjectPath) {
+					deleting = true
+					break
+				}
 				index.Tabs[i].LastActiveAt = time.Now().Unix()
 				index.Tabs[i].Archived = true
 				break
 			}
+		}
+		if deleting {
+			// The index write would put an archived row back over the delete
+			// that is still removing this task's sessions.
+			log.Printf("[CloseProjectTabSession] skipped deleting task tab=%s project=%q", tabID, projectPath)
+			a.tabProjectPaths.Delete(tabID)
+			a.tabWorkingDirOverrides.Delete(tabID)
+			return
 		}
 
 		if err := persist.SaveIndex(index); err != nil {
@@ -8370,6 +8510,11 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 
 	a.tabWorkingDirMu.Lock()
 	ownerID, projectPath := a.assistantOwnerForTab(tabID)
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(projectPath) {
+		a.tabWorkingDirMu.Unlock()
+		log.Printf("[SetTabWorkingDir] tab=%s project=%q rejected: task is deleting", tabID, projectPath)
+		return fmt.Errorf("task is deleting")
+	}
 	if ownerID == "" {
 		a.tabWorkingDirMu.Unlock()
 		// A tab whose session binding is not registered yet (freshly opened or
@@ -8631,6 +8776,11 @@ func (a *App) assistantTabWorkingDir(tabID string) string {
 }
 
 func (a *App) persistAssistantTabWorkingDir(tabID, projectPath, dir string) error {
+	tabID = strings.TrimSpace(tabID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(projectPath) {
+		return fmt.Errorf("task is deleting")
+	}
 	persist := a.ensureProjectTabSessionPersist()
 	session, err := persist.LoadSession(tabID)
 	if err != nil {
@@ -8650,6 +8800,9 @@ func (a *App) persistAssistantTabWorkingDir(tabID, projectPath, dir string) erro
 		dir = ""
 	}
 	session.WorkingDir = dir
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(projectPath) || a.projectTaskDeleting(session.ProjectPath) {
+		return fmt.Errorf("task is deleting")
+	}
 	if err := persist.SaveSession(session); err != nil {
 		return fmt.Errorf("save tab working directory: %w", err)
 	}
@@ -8949,8 +9102,19 @@ func (a *App) rewriteCodingSessionCacheLocked(tabID, dir string) {
 // bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
 // form for callers that already hold tabWorkingDirMu.
 func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
+	if a.projectTabDeleting(tabID) {
+		return
+	}
 	dir := a.assistantTabWorkingDir(tabID)
 	projectPath := projectPathFromSessionOwnerID(ownerID)
+	if a.projectTaskDeleting(projectPath) {
+		return
+	}
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		if path, _ := cached.(string); a.projectTaskDeleting(path) {
+			return
+		}
+	}
 	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" {
 		if dir == "" || !cloudWorkspacePathInsideRoot(cloudDir, dir) {
 			dir = cloudDir
@@ -9565,6 +9729,10 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 			go a.flushCloudWorkspaceSessionBestEffort(cloudProjectPath)
 		}
 	}()
+	if a.projectTabDeleting(tabID) {
+		log.Printf("[SaveProjectTabConversation] skipped deleting task tab=%s", tabID)
+		return
+	}
 	// An explicit empty history is a clear request, not a normal save. Do not
 	// create a file for an unknown tab: task-level clearing already removes all
 	// owned snapshots, and an unowned late debounce must not revive history.
@@ -9630,6 +9798,10 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	// Keep both, or reopening the paper drops whichever side lost the race.
 	session.Conversation = mergeConversationWithExpertArchive(persist, tabID, session.ProjectPath, session.Conversation, session.ConversationClearedAt)
 	session.Conversation = foldProjectTabConversationWindow(persist, tabID, session.Conversation)
+	if a.projectTabDeleting(tabID) || a.projectTaskDeleting(session.ProjectPath) {
+		log.Printf("[SaveProjectTabConversation] skipped deleting task tab=%s project=%q", tabID, session.ProjectPath)
+		return
+	}
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
 	}
@@ -10118,6 +10290,13 @@ func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
 	// store is startup's job. A nil store reports no staged transcript, so
 	// this load returns the file as stored and a later open can still repair it.
 	if !a.projectHasStagedTaskTranscript(session.ProjectPath) {
+		// A short transcript is returned as stored. Folding a longer one writes
+		// the session file, so it takes the same lock as delete's tombstone.
+		if len(session.Conversation) <= conversationViewHotMessages {
+			return session.Conversation
+		}
+		a.tabWorkingDirMu.Lock()
+		defer a.tabWorkingDirMu.Unlock()
 		return a.finishProjectTabConversationLoad(persist, tabID, session, false)
 	}
 	a.tabWorkingDirMu.Lock()
@@ -10131,6 +10310,9 @@ func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
 }
 
 func (a *App) finishProjectTabConversationLoad(persist *ProjectTabSessionPersist, tabID string, session *TabSessionData, healed bool) []interface{} {
+	if session != nil && (a.projectTabDeleting(tabID) || a.projectTaskDeleting(session.ProjectPath)) {
+		return session.Conversation
+	}
 	if len(session.Conversation) <= conversationViewHotMessages {
 		if healed {
 			if err := persist.SaveSession(session); err != nil {

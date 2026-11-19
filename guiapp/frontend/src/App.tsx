@@ -169,7 +169,7 @@ import { reportBillingTimezoneOnAuthenticatedLaunch } from './utils/reportBillin
 import { restoreCloudWorkspaceTasksShared } from './utils/cloudWorkspaceTaskRestore';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
-import { getSidebarUsageForProvider, selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles } from './utils/sidebarProviderSelection';
+import { getSidebarUsageForProvider, selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles, workbenchTurnUsageProfiles } from './utils/sidebarProviderSelection';
 import { buildSidebarModelOptions, replaceCachedModelsWithLiveCatalog } from './utils/sidebarModelOptions';
 import { isQoderProvider } from './components/remote/providerLogos';
 import { capabilityBandName, hubOfficialModelAliases, multipliersFromModelItems } from './utils/capabilityModelLabel';
@@ -4358,7 +4358,7 @@ function App() {
                 const providerName = String(summary?.provider_name ?? summary?.providerName ?? '').trim() || legacyCurrentProviderName;
                 const numbers = summary && providerID && profile
                     ? (profile === 'foreground'
-                        ? sumSidebarProviderProfiles(profileUsage, providerID, ['foreground', 'assistant'])
+                        ? sumSidebarProviderProfiles(profileUsage, providerID, workbenchTurnUsageProfiles)
                         : sumSidebarProfileUsage(profileUsage, profile, providerID))
                     : getSidebarUsageForProvider(normalizedMap, providerName);
                 return { summary, providerID, providerName, numbers };

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -669,6 +670,7 @@ func TestShouldRetryCraftAttempt(t *testing.T) {
 		{name: "stop when suspicious output is an environment failure", attempt: craftAttemptResult{VerificationStatus: craftVerificationOutputSuspicious, VerificationMessage: "脚本输出包含明显错误信号，自动验收未通过。", Output: "dial tcp: connection refused"}, current: 1, max: 2, wantRetry: false},
 		{name: "retry when exit status hides a script traceback", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "exit status 1", Output: "Traceback: FileNotFoundError: no such file or directory: 'out.png'"}, current: 1, max: 2, wantRetry: true},
 		{name: "stop on script timeout", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, ExecErr: &craftScriptTimeoutError{seconds: 90}, Output: "Traceback: syntaxerror"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on script stall", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, ExecErr: &craftScriptStallError{quiet: 90 * time.Second}, Output: "partial"}, current: 1, max: 2, wantRetry: false},
 		{name: "stop when exit status output is an environment failure", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "exit status 1", Output: "dial tcp: connection refused"}, current: 1, max: 2, wantRetry: false},
 		{name: "retry a truncated script", attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: craftTruncatedScriptMessage, Script: "print("}, current: 1, max: 2, wantRetry: true},
 	}

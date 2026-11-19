@@ -133,7 +133,9 @@ export function codingStepGlyph(status: string, live = true): string {
 
 /** Step row color for the control-panel checklist / plan panel.
  *  Finished → panel accent (no standalone green: it fought the blue shell);
- *  running → accentStrong; failed → theme danger; everything else → muted. */
+ *  running → accentStrong; failed → theme danger.
+ *  Review, confirmation, and retry wait each keep their own mix.
+ *  Everything else → muted. */
 export function codingStepStatusColor(
     status: string,
     chrome: Pick<CodingBannerChrome, "accentStrong" | "muted" | "stepDoneFg" | "stepFailedFg">,
@@ -141,6 +143,16 @@ export function codingStepStatusColor(
     if (codingStepIsDone(status)) return chrome.stepDoneFg;
     if (codingStepIsFailed(status)) return chrome.stepFailedFg;
     if (codingStepIsActive(status)) return chrome.accentStrong;
+    const s = (status || "").toLowerCase();
+    if (s === "waiting_review") {
+        return `color-mix(in srgb, ${chrome.stepFailedFg} 28%, ${chrome.stepDoneFg})`;
+    }
+    if (s === "needs_confirmation") {
+        return `color-mix(in srgb, ${chrome.accentStrong} 70%, ${chrome.stepFailedFg})`;
+    }
+    if (s === "retry_wait") {
+        return `color-mix(in srgb, ${chrome.stepFailedFg} 46%, ${chrome.accentStrong})`;
+    }
     return chrome.muted;
 }
 
@@ -160,6 +172,12 @@ export function codingStepStatusLabel(lang: string | undefined, status: string):
     }
     if (s === "waiting_review") {
         return localizeText(lang, "Waiting for review", "等待审阅", "等待審閱");
+    }
+    if (s === "needs_confirmation") {
+        return localizeText(lang, "Needs confirmation", "需要确认", "需要確認");
+    }
+    if (s === "retry_wait") {
+        return localizeText(lang, "Waiting to retry", "等待重试", "等待重試");
     }
     if (s === "interrupted") {
         return localizeText(lang, "Interrupted", "已中断", "已中斷");

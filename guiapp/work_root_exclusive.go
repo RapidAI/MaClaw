@@ -1,12 +1,14 @@
 package guiapp
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,7 +56,24 @@ var (
 	errExclusiveNotGit           = errors.New("not a git checkout")
 	errExclusiveNoCommits        = errors.New("git checkout has no commits")
 	errExclusiveGitContainsStore = errors.New("git root contains the task store")
+	errExclusiveGitTimeout       = errors.New("git worktree timed out")
 )
+
+// exclusiveWorktreeGitTimeout bounds git worktree add/remove on the UI
+// binding. A checkout another live task is holding can sit inside git until
+// that task drops the repository lock; the binding used to wait with no
+// deadline. Past this, the later task uses its own workspace for the rest of
+// the occupation instead of trying git again.
+var exclusiveWorktreeGitTimeout = 15 * time.Second
+
+// exclusiveGitWaitDelay is how long CombinedOutput may wait after the
+// timeout kills the git process. Without it, a child that ignores the kill
+// keeps the binding blocked. The tree kill runs first; this is the backstop.
+const exclusiveGitWaitDelay = 2 * time.Second
+
+// runExclusiveGitContext is the process runner behind runExclusiveGit.
+// Tests replace it to force the timeout path.
+var runExclusiveGitContext = execExclusiveGit
 
 func lockExclusiveCheckout(key string) func() {
 	value, _ := exclusiveCheckoutLocks.LoadOrStore(key, &sync.Mutex{})
@@ -626,7 +645,52 @@ func (a *App) exclusiveWorkRoot(taskPath, dir string) string {
 }
 
 func stableExclusiveFailure(err error) bool {
-	return errors.Is(err, errExclusiveNotGit) || errors.Is(err, errExclusiveNoCommits) || errors.Is(err, errExclusiveGitContainsStore)
+	return errors.Is(err, errExclusiveNotGit) || errors.Is(err, errExclusiveNoCommits) || errors.Is(err, errExclusiveGitContainsStore) || errors.Is(err, errExclusiveGitTimeout)
+}
+
+// exclusiveGitProcessResult keeps a finished git command. CombinedOutput can
+// still return WaitDelay or the context error after the process has already
+// exited zero.
+func exclusiveGitProcessResult(state *os.ProcessState, err error) error {
+	if err == nil || (state != nil && state.Success()) {
+		return nil
+	}
+	return err
+}
+
+func runExclusiveGit(repo string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), exclusiveWorktreeGitTimeout)
+	defer cancel()
+	err := runExclusiveGitContext(ctx, repo, args...)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %s: %v", errExclusiveGitTimeout, exclusiveWorktreeGitTimeout, err)
+	}
+	return err
+}
+
+func execExclusiveGit(ctx context.Context, repo string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	cmd.WaitDelay = exclusiveGitWaitDelay
+	// CommandContext's default Cancel kills only the direct child. Replace it
+	// with a process-tree kill, and keep the console window hidden.
+	configureExclusiveGitCommand(cmd)
+	out, err := cmd.CombinedOutput()
+	// A zero exit finished the git command. The checkout is complete. WaitDelay
+	// or a timeout that raced that exit must not turn it into a failed add:
+	// the caller would delete the new worktree and stay on a private sandbox.
+	err = exclusiveGitProcessResult(cmd.ProcessState, err)
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, msg)
 }
 
 func reusableExclusiveCheckout(key, dir, holder string, entered int64) (string, bool) {
@@ -828,34 +892,62 @@ func (a *App) ensureDetachedWorktree(taskPath, gitRoot, holder string, entered i
 		} else if got, ok := cached.(exclusiveCheckout); ok && got.path != "" {
 			// A new occupation, or a different repository, snapshots HEAD again.
 			// Remove through the repository that registered the worktree.
-			removeWorktree(got.gitRoot, got.path)
+			// A timed-out remove means the source repository is busy; adding
+			// another worktree would wait out the same deadline.
+			if err := removeWorktree(got.gitRoot, got.path); err != nil {
+				return "", false, err
+			}
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(checkout), 0o755); err != nil {
 		return "", false, err
 	}
 	if _, err := os.Stat(checkout); err == nil {
-		removeWorktree(gitRoot, checkout)
+		if err := removeWorktree(gitRoot, checkout); err != nil {
+			return "", false, err
+		}
 		if _, statErr := os.Stat(checkout); statErr == nil {
 			return "", false, fmt.Errorf("exclusive path %s is already in use", checkout)
 		}
 	}
-	if err := remote.RunGit(gitRoot, "worktree", "add", "--detach", checkout, "HEAD"); err != nil {
-		removeWorktree(gitRoot, checkout)
-		if err2 := remote.RunGit(gitRoot, "worktree", "add", "--detach", checkout, "HEAD"); err2 != nil {
+	if err := runExclusiveGit(gitRoot, "worktree", "add", "--detach", checkout, "HEAD"); err != nil {
+		if errors.Is(err, errExclusiveGitTimeout) {
+			// The checkout directory is ours. The source repository may be
+			// locked by the live task; another git command there would wait
+			// out the same deadline.
+			_ = os.RemoveAll(checkout)
+			return "", false, err
+		}
+		if rmErr := removeWorktree(gitRoot, checkout); rmErr != nil {
+			return "", false, rmErr
+		}
+		if err2 := runExclusiveGit(gitRoot, "worktree", "add", "--detach", checkout, "HEAD"); err2 != nil {
+			if errors.Is(err2, errExclusiveGitTimeout) {
+				_ = os.RemoveAll(checkout)
+			}
 			return "", false, err2
 		}
 	}
 	return checkout, true, nil
 }
 
-func removeWorktree(gitRoot, checkout string) {
+// removeWorktree returns errExclusiveGitTimeout when git did not finish.
+// Prune is skipped in that case: it talks to the same busy repository.
+// Other git errors stay ignored. The checkout directory is always removed
+// when it is not inside the source tree.
+func removeWorktree(gitRoot, checkout string) error {
 	if strings.TrimSpace(checkout) == "" || pathInsideWorkRoot(gitRoot, checkout) {
-		return
+		return nil
 	}
-	_ = remote.RunGit(gitRoot, "worktree", "remove", "--force", checkout)
+	err := runExclusiveGit(gitRoot, "worktree", "remove", "--force", checkout)
 	_ = os.RemoveAll(checkout)
-	if strings.TrimSpace(gitRoot) != "" {
-		_ = remote.RunGit(gitRoot, "worktree", "prune")
+	if errors.Is(err, errExclusiveGitTimeout) {
+		return err
 	}
+	if strings.TrimSpace(gitRoot) != "" {
+		if pruneErr := runExclusiveGit(gitRoot, "worktree", "prune"); errors.Is(pruneErr, errExclusiveGitTimeout) {
+			return pruneErr
+		}
+	}
+	return nil
 }

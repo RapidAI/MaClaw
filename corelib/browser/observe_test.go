@@ -68,6 +68,11 @@ func TestObserveScriptGeneratesMultipleCandidates(t *testing.T) {
 	if strings.Contains(browserObserveScript, "return String(document.body ? (document.body.innerText") {
 		t.Fatal("observe pageText must walk shadow roots and same-origin iframes, not only document.body")
 	}
+	for _, token := range []string{"current-password", "new-password", "one-time-code", "cc-number", "cc-exp", "cc-csc", "attrSel('autocomplete', token)"} {
+		if !strings.Contains(browserObserveScript, token) {
+			t.Fatalf("observe script missing autocomplete candidate %q", token)
+		}
+	}
 }
 
 func TestRemapRefFrameIDsByURL(t *testing.T) {

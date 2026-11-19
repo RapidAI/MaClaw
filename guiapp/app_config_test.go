@@ -1844,6 +1844,34 @@ func TestLoadConfigRefreshesLogDetailGateAfterCacheInvalidation(t *testing.T) {
 	}
 }
 
+func TestFreshInstallEnablesDiagnosticSwitches(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closePetRearingDBLocked()
+		corelib.SetLogDetailEnabled(false)
+	})
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.LogDetailEnabled || !cfg.LLMTrajectoryLogging {
+		t.Fatalf("fresh install log=%v trajectory=%v, want both on", cfg.LogDetailEnabled, cfg.LLMTrajectoryLogging)
+	}
+	if cfg.BugReportEnabled {
+		t.Fatal("fresh install started the bug-report session")
+	}
+	if !corelib.IsLogDetailEnabled() {
+		t.Fatal("fresh install left the log detail gate off")
+	}
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() reload error = %v", err)
+	}
+	if !reloaded.LogDetailEnabled || !reloaded.LLMTrajectoryLogging {
+		t.Fatal("fresh install diagnostic switches did not persist")
+	}
+}
+
 func TestSaveConfigPersistsLogDetailEnabled(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

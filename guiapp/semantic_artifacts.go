@@ -98,8 +98,11 @@ type semanticDeliveryProjection struct {
 // localChatDeliveryReceipt maps the projected response onto the outcome of the
 // delivery this record owns. Acceptance requires the matching payload slot:
 // a screenshot accepted on a document record would claim a delivery whose
-// bytes never reached the chat.
-func localChatDeliveryReceipt(resp *IMAgentResponse, kind string, fileMaterialized bool) (tool.DeliveryState, string) {
+// bytes never reached the chat. Desktop and TUI show a voice file only after
+// it has been saved as a local path. VoiceData is the bytes that pair the
+// receipt with that save. A failed save leaves the base64 on the response,
+// and the panel never renders it, so those bytes alone are not acceptance.
+func localChatDeliveryReceipt(resp *IMAgentResponse, kind string, fileMaterialized, voiceMaterialized bool) (tool.DeliveryState, string) {
 	if resp == nil {
 		return tool.DeliveryFailed, ""
 	}
@@ -109,8 +112,10 @@ func localChatDeliveryReceipt(resp *IMAgentResponse, kind string, fileMaterializ
 			return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:image:" + key))
 		}
 	case "audio":
-		if data := strings.TrimSpace(resp.VoiceData); data != "" {
-			return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:voice:" + data))
+		if voiceMaterialized {
+			if data := strings.TrimSpace(resp.VoiceData); data != "" {
+				return tool.DeliveryAccepted, tool.SchemaDigest([]byte("local-chat:voice:" + data))
+			}
 		}
 	default:
 		// A document (or a projection without a kind) reaches the local chat as

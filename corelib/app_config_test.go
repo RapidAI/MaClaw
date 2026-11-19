@@ -398,6 +398,32 @@ func TestAppConfigDefaultTrueBoolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDiagnosticSwitchesStayOffWhenAbsent(t *testing.T) {
+	var missing AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &missing); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if missing.LogDetailEnabled || missing.LLMTrajectoryLogging {
+		t.Fatal("absent diagnostic switches must stay off; new installs and the daily reset turn them on")
+	}
+	saved, err := json.Marshal(AppConfig{LogDetailEnabled: false, LLMTrajectoryLogging: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again AppConfig
+	if err := json.Unmarshal(saved, &again); err != nil {
+		t.Fatal(err)
+	}
+	if again.LogDetailEnabled || again.LLMTrajectoryLogging {
+		t.Fatal("explicit false diagnostic switches flipped back on")
+	}
+	turnedOn := AppConfig{}
+	ApplyNewInstallDiagnosticDefaults(&turnedOn)
+	if !turnedOn.LogDetailEnabled || !turnedOn.LLMTrajectoryLogging {
+		t.Fatal("new-install diagnostic defaults are off")
+	}
+}
+
 func TestAppConfigShowAITraceEntryDefaultsOff(t *testing.T) {
 	if AppConfigDefaults().ShowAITraceEntry {
 		t.Fatal("ShowAITraceEntry = true, want off for a new install")

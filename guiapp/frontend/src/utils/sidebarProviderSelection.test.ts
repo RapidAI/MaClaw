@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles } from './sidebarProviderSelection';
+import { selectSidebarCurrentProvider, sidebarEditorUsageProfile, sidebarTurnUsageProfile, sumSidebarProfileUsage, sumSidebarProviderProfiles, workbenchTurnUsageProfiles } from './sidebarProviderSelection';
 
 describe('selectSidebarCurrentProvider', () => {
     it('keeps the configured current provider even when another provider has usage', () => {
@@ -84,5 +84,18 @@ describe('sumSidebarProfileUsage', () => {
             other: { profile: 'assistant', provider_id: 'workbuddy', total_tokens: 52000 },
         }, 'hub', ['foreground', 'assistant']);
         expect(total.total).toBe(9150);
+    });
+
+    it('counts task-chat background rows on the displayed provider only', () => {
+        const total = sumSidebarProviderProfiles({
+            foreground: { profile: 'foreground', provider_id: 'wb', total_tokens: 100 },
+            assistant: { profile: 'assistant', provider_id: 'wb', total_tokens: 40 },
+            background: { profile: 'background', provider_id: 'wb', total_tokens: 25, today_tokens: 7 },
+            otherBackground: { profile: 'background', provider_id: 'zhipu', total_tokens: 999 },
+            coding: { profile: 'coding', provider_id: 'wb', total_tokens: 800 },
+            computer: { profile: 'computer_use', provider_id: 'wb', total_tokens: 500 },
+        }, 'wb', workbenchTurnUsageProfiles);
+        expect(total.total).toBe(165);
+        expect(total.today).toBe(7);
     });
 });

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -54,6 +55,13 @@ var (
 	expertOptimizeSensitiveFieldLabelPattern = regexp.MustCompile(`(?i)(?:\b(?:authorization|x-?api[_ -]?key|api[_ -]?key|password|secret|token|email|phone|id)\b\s*[:=]?|邮箱\s*[:：=]?|电话\s*[:：=]?|身份证\s*[:：=]?)`)
 )
 
+// expertOptimizeTemplateName is the name example inside the optimization prompt.
+const expertOptimizeTemplateName = "优化版专家名称，不超过 10 个汉字，必须与原专家名称不同"
+
+// expertOptimizeTemplatePrompt is the system_prompt example inside the
+// optimization prompt. The parser rejects this exact text.
+const expertOptimizeTemplatePrompt = "完整的优化版系统提示词（中文，结构化，含 角色定位/工作流程/输出格式/边界约束 小节）"
+
 // expertOptimizeSystemPrompt is the meta prompt for session distillation.
 const expertOptimizeSystemPrompt = `你是一名"AI 专家优化师"。用户会给你一位专家的现有配置，以及用户与该专家的最近会话记录。
 你的任务：从会话中提炼用户反复强调的要求、纠正、偏好和约束，把它们固化进专家的系统提示词，产出一份"优化版专家"配置。
@@ -69,10 +77,10 @@ const expertOptimizeSystemPrompt = `你是一名"AI 专家优化师"。用户会
 
 只输出一个严格的 JSON 对象，不要输出任何其他文字、解释或 Markdown 代码块标记：
 {
-  "name": "优化版专家名称，不超过 10 个汉字，必须与原专家名称不同",
-  "description": "一句话卡片简介，不超过 40 个汉字",
-  "icon": "一个最能代表该专家的 emoji（单个字符）",
-  "system_prompt": "完整的优化版系统提示词（中文，结构化，含 角色定位/工作流程/输出格式/边界约束 小节）"
+  "name": "` + expertOptimizeTemplateName + `",
+  "description": "` + expertProfileTemplateDescription + `",
+  "icon": "` + expertProfileTemplateIcon + `",
+  "system_prompt": "` + expertOptimizeTemplatePrompt + `"
 }`
 
 // expertOptimizeDraft is the payload returned to the frontend editor. It is
@@ -154,9 +162,9 @@ func (a *App) OptimizeExpertFromSession(expertID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("expert optimization failed: %w", err)
 	}
-	output, err := parseExpertOptimizeResponse(result.Text)
+	output, err := expertOptimizeFromClassify(result)
 	if err != nil {
-		log.Printf("[expert-optimize] parse failed: %v (raw_len=%d)", err, len([]rune(result.Text)))
+		log.Printf("[expert-optimize] parse failed: %v (raw_len=%d reasoning_len=%d)", err, classifyRuneLen(result.Text), classifyRuneLen(result.Reasoning))
 		return "", fmt.Errorf("expert optimization returned unparseable output: %w", err)
 	}
 
@@ -472,8 +480,28 @@ func buildExpertOptimizeUserMessage(base *ExpertDefinition, transcript string) s
 	return b.String()
 }
 
+// expertOptimizeFromClassify reads the distillation from the message body,
+// then from the reasoning channel when a thinking model left the body empty.
+func expertOptimizeFromClassify(result *LLMClassifyResult) (expertOptimizeLLMOutput, error) {
+	var zero expertOptimizeLLMOutput
+	texts := structuredClassifyTexts(result)
+	if len(texts) == 0 {
+		return zero, fmt.Errorf("empty response")
+	}
+	var last error
+	for _, raw := range texts {
+		out, err := parseExpertOptimizeResponse(raw)
+		if err == nil {
+			return out, nil
+		}
+		last = err
+	}
+	return zero, last
+}
+
 // parseExpertOptimizeResponse extracts and validates the distillation JSON.
-// Mirrors parseExpertProfileResponse: strip code fences, first { to last }.
+// The last object with a real system_prompt is the distillation. A prompt
+// template echo is not a distillation.
 func parseExpertOptimizeResponse(raw string) (expertOptimizeLLMOutput, error) {
 	var out expertOptimizeLLMOutput
 	raw = strings.TrimSpace(raw)
@@ -484,77 +512,192 @@ func parseExpertOptimizeResponse(raw string) (expertOptimizeLLMOutput, error) {
 	if raw == "" {
 		return out, fmt.Errorf("empty response")
 	}
-	var parseErr error
+	var lastErr error
 	foundObject := false
-	for offset := 0; offset < len(raw); {
-		next := strings.IndexByte(raw[offset:], '{')
-		if next < 0 {
-			break
-		}
-		start := offset + next
-		object, ok := extractExpertOptimizeJSONObject(raw[start:])
-		if !ok {
-			break
-		}
+	chosen := false
+	for _, object := range balancedJSONObjects(raw) {
 		foundObject = true
-		var candidate expertOptimizeLLMOutput
-		if err := json.Unmarshal([]byte(object), &candidate); err == nil {
-			out = candidate
-			parseErr = nil
-			break
-		} else {
-			parseErr = err
+		fields, err := expertJSONFields(object)
+		if err != nil {
+			lastErr = fmt.Errorf("JSON parse: %w", err)
+			continue
 		}
-		offset = start + 1
+		candidate := expertOptimizeLLMOutput{
+			Name:         expertJSONString(fields, "name"),
+			Description:  expertJSONString(fields, "description"),
+			Icon:         expertJSONString(fields, "icon"),
+			SystemPrompt: expertJSONText(fields["system_prompt"]),
+		}
+		if candidate.SystemPrompt == "" {
+			lastErr = fmt.Errorf("system_prompt is empty")
+			continue
+		}
+		if expertFieldIsTemplate(candidate.SystemPrompt) {
+			lastErr = fmt.Errorf("profile is the prompt template")
+			continue
+		}
+		out = candidate
+		chosen = true
+		lastErr = nil
 	}
-	if parseErr != nil {
-		return out, fmt.Errorf("JSON parse: %w", parseErr)
+	if chosen {
+		return out, nil
+	}
+	if lastErr != nil {
+		return out, lastErr
 	}
 	if !foundObject {
 		return out, fmt.Errorf("no JSON object found")
 	}
-	if strings.TrimSpace(out.SystemPrompt) == "" {
-		return out, fmt.Errorf("system_prompt is empty")
-	}
-	return out, nil
+	return out, fmt.Errorf("system_prompt is empty")
 }
 
-// extractExpertOptimizeJSONObject finds the first balanced JSON object while
-// respecting quoted strings and escapes. The former first-{ / last-} approach
-// breaks when an otherwise valid model response includes braces in prose.
-func extractExpertOptimizeJSONObject(raw string) (string, bool) {
-	start := strings.IndexByte(raw, '{')
-	if start < 0 {
-		return "", false
+// expertFieldIsTemplate reports a value that is still an example from a
+// generation or optimization prompt. Name, description, icon, tools, skills,
+// and system_prompt examples are the same kind of text: not a field value.
+func expertFieldIsTemplate(value string) bool {
+	switch strings.TrimSpace(value) {
+	case expertProfileTemplateName, expertProfileTemplateDescription, expertProfileTemplateIcon,
+		expertProfileTemplatePrompt, expertProfileTemplateTool, expertProfileTemplateSkill,
+		expertProfileSimplifiedTemplateName, expertProfileSimplifiedTemplateDescription, expertProfileSimplifiedTemplateIcon,
+		expertProfileSimplifiedTemplatePrompt,
+		expertOptimizeTemplateName, expertOptimizeTemplatePrompt:
+		return true
+	default:
+		return false
 	}
-	depth := 0
-	inString := false
-	escaped := false
-	for i := start; i < len(raw); i++ {
-		ch := raw[i]
-		if inString {
-			if escaped {
-				escaped = false
+}
+
+// expertPromptSectionOrder is the section order the generation prompt requires.
+var expertPromptSectionOrder = []string{"角色定位", "工作流程", "输出格式", "边界约束", "用户偏好"}
+
+// expertJSONText reads a system_prompt. A string stays a string. An array of
+// strings is joined. An object whose keys are the required sections becomes
+// one prompt, because that is the shape the meta prompt asked the model to
+// write and the editor can only store text.
+func expertJSONText(raw json.RawMessage) string {
+	return expertJSONTextDepth(raw, 0)
+}
+
+func expertJSONTextDepth(raw json.RawMessage, depth int) string {
+	if depth > 3 {
+		return ""
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var asString string
+	if json.Unmarshal([]byte(text), &asString) == nil {
+		return strings.TrimSpace(asString)
+	}
+	var asArray []json.RawMessage
+	if json.Unmarshal([]byte(text), &asArray) == nil {
+		var parts []string
+		for _, item := range asArray {
+			part := expertJSONTextDepth(item, depth+1)
+			if part == "" || expertFieldIsTemplate(part) {
 				continue
 			}
-			if ch == '\\' {
-				escaped = true
-			} else if ch == '"' {
-				inString = false
-			}
-			continue
+			parts = append(parts, part)
 		}
-		switch ch {
-		case '"':
-			inString = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return raw[start : i+1], true
-			}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	}
+	var asObject map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &asObject) != nil || len(asObject) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(asObject))
+	var parts []string
+	add := func(key string) {
+		if seen[key] {
+			return
+		}
+		value, ok := asObject[key]
+		if !ok {
+			return
+		}
+		seen[key] = true
+		body := expertJSONTextDepth(value, depth+1)
+		if body == "" || expertFieldIsTemplate(body) {
+			return
+		}
+		parts = append(parts, "# "+key+"\n"+body)
+	}
+	for _, key := range expertPromptSectionOrder {
+		add(key)
+	}
+	rest := make([]string, 0, len(asObject))
+	for key := range asObject {
+		if !seen[key] {
+			rest = append(rest, key)
 		}
 	}
-	return "", false
+	sort.Strings(rest)
+	for _, key := range rest {
+		add(key)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+// expertJSONStringList reads suggested_tools or suggested_skills. A single
+// string is one entry. Non-strings are skipped so they cannot reject the profile.
+func expertJSONStringList(raw json.RawMessage) []string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return nil
+	}
+	var one string
+	if json.Unmarshal([]byte(text), &one) == nil {
+		one = strings.TrimSpace(one)
+		if one == "" || expertFieldIsTemplate(one) {
+			return nil
+		}
+		return []string{one}
+	}
+	var items []json.RawMessage
+	if json.Unmarshal([]byte(text), &items) != nil {
+		return nil
+	}
+	var out []string
+	for _, item := range items {
+		var entry string
+		if json.Unmarshal(item, &entry) != nil {
+			continue
+		}
+		entry = strings.TrimSpace(entry)
+		if entry != "" && !expertFieldIsTemplate(entry) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// expertJSONFields parses one object far enough to read its string fields.
+// A mistyped optional field must not reject the object.
+func expertJSONFields(object string) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(object), &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("empty object")
+	}
+	return fields, nil
+}
+
+func expertJSONString(fields map[string]json.RawMessage, key string) string {
+	raw := strings.TrimSpace(string(fields[key]))
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal([]byte(raw), &text) != nil {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if expertFieldIsTemplate(text) {
+		return ""
+	}
+	return text
 }

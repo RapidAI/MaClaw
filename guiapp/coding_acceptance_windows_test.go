@@ -113,6 +113,43 @@ func TestAcceptanceDesktopClickUsesOneObservation(t *testing.T) {
 	if err := sess.Click(context.Background(), 1, 10, 12); err != nil || clicks != 1 || reads != 1 || gotX != 10 || gotY != 12 {
 		t.Fatalf("inside err=%v clicks=%d reads=%d point=%d,%d", err, clicks, reads, gotX, gotY)
 	}
+	payDetail, payReason, payOK := acceptanceDesktopFaultDetail(payErr)
+	if !payOK || payDetail != "handoff_refused" || !strings.Contains(payReason, "秘密") || strings.Contains(payReason, "点击失败") {
+		t.Fatalf("pay fault detail=%s reason=%q", payDetail, payReason)
+	}
+	reads = 0
+	acceptanceReadForeground = func() (desktopObservation, bool) {
+		reads++
+		return desktopObservation{Image: exe, Class: "wailsWindow", Title: "Tetris", HasBounds: true, Left: 0, Top: 0, Right: 100, Bottom: 80}, true
+	}
+	maclawErr := sess.Click(context.Background(), 1, 10, 12)
+	maclawDetail, maclawReason, maclawOK := acceptanceDesktopFaultDetail(maclawErr)
+	if reads != 1 || clicks != 1 || !maclawOK || maclawDetail != "handoff_refused" || maclawReason != acceptanceReasonMaClaw {
+		t.Fatalf("maclaw reads=%d clicks=%d detail=%s reason=%q err=%v", reads, clicks, maclawDetail, maclawReason, maclawErr)
+	}
+	acceptanceReadForeground = func() (desktopObservation, bool) {
+		return desktopObservation{Image: exe, Title: "Tetris", HasBounds: true, Left: 0, Top: 0, Right: 100, Bottom: 80}, true
+	}
+	keyErr := sess.Key(context.Background(), 1, "left")
+	if keyErr == nil || !strings.Contains(keyErr.Error(), "refusing to send input under test") {
+		t.Fatalf("key under test: %v", keyErr)
+	}
+	acceptanceReadForeground = func() (desktopObservation, bool) {
+		return desktopObservation{Image: exe, Title: "请输入密码", HasBounds: true, Left: 0, Top: 0, Right: 100, Bottom: 80}, true
+	}
+	secretKey := sess.Key(context.Background(), 1, "left")
+	secretDetail, secretReason, secretOK := acceptanceDesktopFaultDetail(secretKey)
+	if !secretOK || secretDetail != "handoff_refused" || !strings.Contains(secretReason, "秘密") || strings.Contains(secretKey.Error(), "按键失败") {
+		t.Fatalf("secret key detail=%s reason=%q err=%v", secretDetail, secretReason, secretKey)
+	}
+}
+
+func acceptanceDesktopFaultDetail(err error) (string, string, bool) {
+	detail, reason := acceptanceDesktopDriveError(err, "click_failed")
+	if detail == "click_failed" {
+		return detail, reason, false
+	}
+	return detail, reason, true
 }
 
 func TestAcceptancePasswordEditClass(t *testing.T) {

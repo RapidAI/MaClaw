@@ -169,7 +169,9 @@ function sharedExecutionBadge(lang: string, status: string | undefined): TaskExe
         case "running":
             return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
         case "needs_confirmation":
-            return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+            return { label: localizeText(lang, "Needs confirmation", "需要确认", "需要確認"), tone: "pending" };
+        case "retry_wait":
+            return { label: localizeText(lang, "Waiting to retry", "等待重试", "等待重試"), tone: "pending" };
         default:
             return null;
     }

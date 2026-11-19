@@ -811,7 +811,7 @@ var (
 
 func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 	var found *DesktopBotUnderstanding
-	for _, body := range desktopBotJSONObjects(raw) {
+	for _, body := range balancedJSONObjects(raw) {
 		var parsed DesktopBotUnderstanding
 		if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 			continue
@@ -881,7 +881,10 @@ func desktopBotWithoutThink(raw string) string {
 	return strings.TrimSpace(stripThinkTags(b.String()))
 }
 
-func desktopBotJSONObjects(raw string) []string {
+// balancedJSONObjects returns every brace-balanced object, innermost first.
+// A prose "{" that is closed by a later "}" still leaves the inner object in
+// the list, so that span cannot hide the document written inside it.
+func balancedJSONObjects(raw string) []string {
 	var out []string
 	var starts []int
 	inStr := false
@@ -1125,7 +1128,7 @@ func (a *App) raceDesktopTaskSupplement(userPrompt, newMessage string) *DesktopT
 				out <- nil
 				return
 			}
-			for _, block := range desktopBotJSONObjects(raw) {
+			for _, block := range balancedJSONObjects(raw) {
 				var eval DesktopTaskSupplementEval
 				if json.Unmarshal([]byte(block), &eval) == nil && (eval.Decision != "" || strings.Contains(block, "is_supplement")) {
 					out <- normalizeDesktopTaskSupplementEval(&eval, newMessage)

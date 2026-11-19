@@ -874,7 +874,7 @@ func (m *ConfigManager) initSchema() {
 				{Key: "check_update_on_startup", Description: "启动时检查更新", Type: "bool", Default: "true"},
 				{Key: "hide_startup_popup", Description: "隐藏启动弹窗", Type: "bool", Default: "false"},
 				{Key: "hide_maclaw_llm_popup", Description: "隐藏MaClaw LLM未配置提示弹窗", Type: "bool", Default: "false"},
-				{Key: "log_detail_enabled", Description: "是否启用详细日志", Type: "bool", Default: "false"},
+				{Key: "log_detail_enabled", Description: "是否启用详细日志", Type: "bool", Default: "true"},
 				{Key: "maclaw_debug_tool_calls", Description: "MaClaw Debug 开关：开启后显示工具调用过程", Type: "bool", Default: "false"},
 			},
 		},

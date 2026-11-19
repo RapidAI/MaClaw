@@ -1096,6 +1096,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	)
 	reasoning := stripXMLToolCalls(stripRolePrefixReasoningForDisplay(msg.ReasoningContent))
 	if content == "" && reasoning != "" && len(msg.ToolCalls) == 0 {
+		// Untagged reasoning is the answer some models put on that channel.
+		// A <think> block stays in the reasoning lane. Lifting it would print
+		// the chain of thought in the chat bubble. Document parsers read the
+		// reasoning channel themselves.
 		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
 	}
 	msg.Content = content

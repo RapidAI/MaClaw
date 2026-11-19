@@ -246,6 +246,7 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['guiapp/openhuman_wiring.go', 'PatchConfigFields(model_routes)', 'model router reload documents the closed model_routes patch'],
   ['guiapp/computer_use_warmup.go', 'a.PatchConfigFields(patch)', 'computer-use log prune policy patch is assembled from validated keep/max-age fields and optional auto-prune toggle'],
   ['guiapp/frontend/src/components/pages/MCPServerPanel.tsx', 'PatchConfigFields({ [field]: value })', 'MCP toggles restrict field to the two literal mcp_host_enabled keys'],
+  ['guiapp/bugreport_gui.go', 'a.PatchConfigFields(patch)', 'bug-report daily reset persists a closed patch map of bug report switches and collection date'],
 ];
 
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
@@ -623,7 +624,8 @@ const extractedFileLineLimits = [
   // 7890 -> 7950 (2026-11-14): measured 7896 lines.
   // 7950 -> 8020 (2026-11-17): measured 7951 lines.
   // 8020 -> 8100 (2026-11-17): browser stage & MCP integration measured 8058 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8100],
+  // 8100 -> 8160 (2026-11-19): chat session locator & conversation view archive measured 8126 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8160],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -667,7 +669,8 @@ const extractedFileLineLimits = [
   // keep growing this hook (guard counts 339); headroom absorbs the in-flight
   // work. Re-tighten once it lands and extract.
   // 380 -> 540 (2026-11-17): scroll follow/smooth refactor measured 518 lines.
-  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 540],
+  // 540 -> 580 (2026-11-19): chat session locator integration measured 561 lines.
+  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 580],
   // 120 -> 135 (2026-11-17): measured 122 lines.
   ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 135],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
