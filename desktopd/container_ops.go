@@ -108,7 +108,20 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 // ReadBytes returns one file as standard base64. The text read above is a Go
 // string, and JSON would replace a PDF's bytes, so the container encodes the
 // file before it leaves. A file past the chat limit is refused whole.
+// This is the shared read: any container path the bot can name, including
+// ~/Downloads and /tmp.
 func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath string) (string, error) {
+	return s.readEncodedFile(ctx, tenantID, userID, filePath, "bytes")
+}
+
+// ReadDesktopLink is the Hub /desktop-file fetch. The supervisor resolves
+// symlinks and allows only the work tree and Desktop. The shared bytes
+// read does not.
+func (s *Service) ReadDesktopLink(ctx context.Context, tenantID, userID, filePath string) (string, error) {
+	return s.readEncodedFile(ctx, tenantID, userID, filePath, "link")
+}
+
+func (s *Service) readEncodedFile(ctx context.Context, tenantID, userID, filePath, op string) (string, error) {
 	filePath, err := desktop.ContainerPath(filePath)
 	if err != nil {
 		return "", err
@@ -129,7 +142,7 @@ func (s *Service) ReadBytes(ctx context.Context, tenantID, userID, filePath stri
 		container, onDesktop = c, desk
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{
 			Kind: ExecFile,
-			Args: fileServiceArgs(container, "bytes", filePath, desktop.FileBytesMax+1),
+			Args: fileServiceArgs(container, op, filePath, desktop.FileBytesMax+1),
 		})
 		output, exitCode = result.Out, result.Exit
 		return runErr
