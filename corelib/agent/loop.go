@@ -1520,6 +1520,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// dropped it, the retry was denied, and the assistant announced the PDF
 	// could not be sent).
 	succeededToolNames := map[string]struct{}{}
+	// prevFailedToolArgs maps a tool name to the arguments of its most recent
+	// failed call. It drives the no-progress miss check: a failed call that
+	// reran the same command produced no new information, while one that
+	// changed the command is forward progress even on a non-zero exit. It
+	// deliberately survives a steer clear — a steered re-run of an identical
+	// failing call is still the same stale information.
+	prevFailedToolArgs := map[string]string{}
 	const driftWindow = 4 // check last N calls for repetition
 	consecutiveSame := 0
 	// notedCommits are identities already handed back to the model. Each one
@@ -3977,8 +3984,37 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// A steer skipped this call before it ran. It is not a failed
 			// attempt: counting it would burn the no-progress budget and could
 			// hard-stop the turn before the replacement request is sent.
+			//
+			// A call that actually ran but kept rerunning the same failing
+			// command is forward progress only in name: each identical failure
+			// teaches the model nothing it did not already know. What counts as
+			// progress is a call that *changed* something — a `go test` run under
+			// a different `-run` filter that exits non-zero but reports which
+			// cases now fail. Treating every non-zero exit as "got nothing" made
+			// the no-progress breaker abort a turn that was actively verifying
+			// work, and the report then surfaced as a misleading "empty
+			// response" stop (BR-20261119-CBC5D7D318C7). A genuine repeated-
+			// failure run is still caught by the separate consecutive-same-tool-
+			// failure breaker below.
 			if !toolSuccess && !replanSkip {
-				batchProgressMiss = true
+				if !toolExecuted {
+					// Denied / schema-rejected / never ran: produced nothing,
+					// the definition of a no-progress miss.
+					batchProgressMiss = true
+				} else {
+					// A failed call that made no forward progress — its first
+					// failure, an empty body, or the same command as the previous
+					// failed call to that tool — is a no-progress miss. A failed
+					// call that changed the command is real debugging progress
+					// even on a non-zero exit.
+					if noProgressFailedRepeat(prevFailedToolArgs, tc.Function.Name, argsJSON, execResult.Result) {
+						batchProgressMiss = true
+					} else {
+						log.Printf("[agent-loop] tool %s tried a different command despite a non-ok outcome; counted as progress, not a no-progress miss (iteration=%d)",
+							tc.Function.Name, iteration)
+					}
+					rememberFailedToolCall(prevFailedToolArgs, tc.Function.Name, argsJSON)
+				}
 			}
 			// Record policy denies and invalid args once a workspace exists.
 			// Replan-skipped stale calls must not look like a new fail.
@@ -4155,6 +4191,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			consecutiveNoProgressIterations = 0
 		} else if batchProgressMiss {
 			consecutiveNoProgressIterations++
+			// Surface each counted miss so a "no progress" hard exit is
+			// diagnosable instead of looking like the model went silent.
+			log.Printf("[agent-loop] no-progress iteration %d/%d: batch produced no usable result (lastTool=%s, iteration=%d)",
+				consecutiveNoProgressIterations, hardStopNoProgressIterations, lastToolName, iteration)
 			if consecutiveNoProgressIterations >= hardStopNoProgressIterations {
 				noProgressHardStop = true
 			}
@@ -5098,6 +5138,42 @@ type toolCallRecord struct {
 	poll    bool
 	skipped bool
 	batch   uint64
+}
+
+// noProgressMissedExecution reports whether an executed tool call counts as a
+// no-progress miss: it ran, but produced nothing the model did not already
+// have. An empty body is a miss. An identical (name, args, result) failing
+// call already on record means the rerun taught the model nothing new. A
+// failed call that returned a different result — a fresh test report, a
+// different compile error — is forward progress and returns false.
+// noProgressFailedRepeat reports whether an executed-but-failed tool call made
+// no forward progress. A failure is a miss when it is the tool's first failure
+// this turn, produced an empty body, or reran the same command as the previous
+// failed call to that tool. The only failure treated as forward progress is one
+// that changed the arguments relative to the tool's last failed call — the
+// model actively tried a different command (e.g. a fresh `go test -run` filter
+// returning a new report), which teaches it something even on a non-zero exit.
+// Counting every failed call as a miss aborted legitimate debug loops and
+// reported a misleading empty response (BR-20261119-CBC5D7D318C7).
+//
+// prevFailed maps a tool name to the arguments of its most recent failed call.
+// It is updated by rememberFailedToolCall for every failed call regardless of
+// the verdict.
+func noProgressFailedRepeat(prevFailed map[string]string, name, argsJSON, result string) bool {
+	if strings.TrimSpace(result) == "" {
+		return true
+	}
+	prev, seen := prevFailed[name]
+	if !seen {
+		return true // first failure of this tool: nothing preceded it to build on
+	}
+	return prev == argsJSON
+}
+
+// rememberFailedToolCall stores the arguments of the most recent failed call to
+// a tool so a same-args rerun is recognised as a no-progress miss.
+func rememberFailedToolCall(prevFailed map[string]string, name, argsJSON string) {
+	prevFailed[name] = argsJSON
 }
 
 // driftFailureHint reports a window of identical calls that did not succeed.
