@@ -148,6 +148,27 @@ print("short " + str(sup.run_file(["py", "file", "list"])))
 print("cut " + sup.file_read(dest, 4).decode())
 print("body " + sup.file_read(dest, 20).decode())
 print("b64 " + sup.file_bytes(dest, 20).decode())
+home = tmp / "fetchhome"
+work = home / "work"
+work.mkdir(parents=True)
+(work / "ok.txt").write_bytes(b"ok")
+secret = tmp / "secret.txt"
+secret.write_bytes(b"nope")
+link = work / "link"
+link.symlink_to(secret)
+sup.FILE_HOME = home.as_posix()
+downloads = home / "Downloads"
+downloads.mkdir()
+(downloads / "a.bin").write_bytes(b"down")
+tmpf = tmp / "tmpfile.bin"
+tmpf.write_bytes(b"temp")
+print("bytes-dl " + str(sup.run_file(["py", "file", "bytes", (downloads / "a.bin").as_posix(), "10"])))
+print("bytes-tmp " + str(sup.run_file(["py", "file", "bytes", tmpf.as_posix(), "10"])))
+print("bytes-symlink " + str(sup.run_file(["py", "file", "bytes", link.as_posix(), "10"])))
+print("link-dl " + str(sup.run_file(["py", "file", "link", (downloads / "a.bin").as_posix(), "10"])))
+print("link-tmp " + str(sup.run_file(["py", "file", "link", tmpf.as_posix(), "10"])))
+print("link-symlink " + str(sup.run_file(["py", "file", "link", link.as_posix(), "10"])))
+print("link-kept " + str(sup.run_file(["py", "file", "link", (work / "ok.txt").as_posix(), "10"])))
 print("parent " + ("1" if (tmp / "desk" / "sub" / "a.c").is_file() else "0"))
 print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
 `)
@@ -167,6 +188,13 @@ print("registry " + ("1" if (sup.ROOT / "registry.json").exists() else "0"))
 			"b64 " + base64.StdEncoding.EncodeToString([]byte("int main(){}\n")),
 			"parent 1",
 			"registry 0",
+			"bytes-dl 0",
+			"bytes-tmp 0",
+			"bytes-symlink 0",
+			"link-dl 2",
+			"link-tmp 2",
+			"link-symlink 2",
+			"link-kept 0",
 		} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("supervisor missing %q\n%s", want, out)

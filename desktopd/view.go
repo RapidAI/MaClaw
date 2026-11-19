@@ -262,3 +262,59 @@ func (s *Service) displayRunning(ctx context.Context, spec Spec) bool {
 	}
 	return displayStatusLive(out)
 }
+
+const (
+	DesktopRunning        = "running"
+	DesktopAsleep         = "asleep"
+	DesktopDisplayStopped = "display_stopped"
+	DesktopUnavailable    = "unavailable"
+)
+
+// ViewState is the typed picture for a viewer. It never starts the desktop.
+// A docker failure is unavailable, a stopped container is asleep, and a
+// container whose display is not running is display_stopped.
+func (s *Service) ViewState(ctx context.Context, spec Spec) (Session, error) {
+	spec, err := normalize(spec)
+	if err != nil {
+		return Session{}, err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return Session{}, ctx.Err()
+	}
+	name := containerName(spec.TenantID, spec.UserID)
+	up, err := s.containerRunning(ctx, name)
+	if err != nil {
+		return Session{State: DesktopUnavailable}, nil
+	}
+	live := false
+	if up {
+		live, err = s.screenLive(ctx, spec)
+		if err != nil {
+			return Session{State: DesktopUnavailable}, nil
+		}
+	}
+	var page string
+	var session Session
+	if up && live {
+		session, err = s.PeekSession(ctx, spec)
+		if err != nil {
+			return Session{}, err
+		}
+		page = session.Novnc
+	}
+	session.State = classifyDesktopView(up, live, page)
+	if session.State != DesktopRunning {
+		session.Novnc = ""
+	}
+	return session, nil
+}
+
+func classifyDesktopView(containerUp, displayLive bool, page string) string {
+	if !containerUp {
+		return DesktopAsleep
+	}
+	if !displayLive || strings.TrimSpace(page) == "" {
+		return DesktopDisplayStopped
+	}
+	return DesktopRunning
+}

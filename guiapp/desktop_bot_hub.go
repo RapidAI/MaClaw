@@ -233,6 +233,9 @@ type DesktopBotInfo struct {
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
 // user's desktop and whether a bot handed that keyboard to the person.
+// DesktopState is running, asleep, display_stopped, or unavailable.
+// Code is a typed Hub error code such as DESKTOP_ASLEEP; the message text
+// is not a signal.
 type DesktopBotWatch struct {
 	NovncURL        string `json:"novnc_url"`
 	DirectURL       string `json:"direct_url,omitempty"`
@@ -240,6 +243,26 @@ type DesktopBotWatch struct {
 	InputGranted    bool   `json:"input_granted"`
 	AttentionReason string `json:"attention_reason,omitempty"`
 	DesktopMode     string `json:"desktop_mode,omitempty"`
+	DesktopState    string `json:"desktop_state,omitempty"`
+	Code            string `json:"code,omitempty"`
+}
+
+// desktopCodedError is a Hub failure that carried a code field. Callers
+// branch on Code. They do not read it out of Message.
+type desktopCodedError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *desktopCodedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	return e.Code
 }
 
 // DesktopBotScreen is one GET /api/v1/bots/{id}/desktop result. Shared bots
@@ -297,6 +320,8 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 		InputGranted    bool   `json:"input_granted"`
 		AttentionReason string `json:"attention_reason"`
 		DesktopMode     string `json:"desktop_mode"`
+		DesktopState    string `json:"desktop_state"`
+		Code            string `json:"code"`
 	}
 	body := map[string]any{}
 	if epoch > 0 {
@@ -312,7 +337,16 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 	// 60s matches the Hub watch-open budget. Wake may cold-start the container.
 	err := a.desktopBotCallRetryingGateway(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", payload, &out, 60*time.Second)
 	if err != nil {
+		var coded *desktopCodedError
+		if errors.As(err, &coded) && coded.Code == desktopbot.CodeDesktopAsleep {
+			return &DesktopBotWatch{DesktopState: "asleep", Code: coded.Code}, nil
+		}
 		return nil, err
+	}
+	state := strings.TrimSpace(out.DesktopState)
+	code := strings.TrimSpace(out.Code)
+	if code == desktopbot.CodeDesktopAsleep {
+		state = "asleep"
 	}
 	return &DesktopBotWatch{
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
@@ -321,6 +355,8 @@ func (a *App) watchOrWakeDesktopBot(botID string, epoch int, wake bool) (*Deskto
 		InputGranted:    out.InputGranted,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
 		DesktopMode:     desktopModeLabel(out.DesktopMode),
+		DesktopState:    state,
+		Code:            code,
 	}, nil
 }
 
@@ -611,7 +647,14 @@ func (a *App) SetDesktopBotAppearance(botID, color, shape string) (*DesktopBotIn
 }
 
 func (a *App) DeleteDesktopBot(botID string) error {
-	return a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
+	err := a.desktopBotCall(context.Background(), http.MethodDelete, "/api/v1/bots/"+url.PathEscape(strings.TrimSpace(botID)), nil, nil, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	if forgetErr := a.ForgetDesktopBotFiles(botID); forgetErr != nil {
+		log.Printf("[desktop-bot] delete files bot=%s: %v", botID, forgetErr)
+	}
+	return nil
 }
 
 // DesktopBotLLM is the model setting every bot of this user runs on. Mode is
@@ -2830,6 +2873,149 @@ func stageDesktopPictures(botID string, images []DesktopBotImage, files []Deskto
 	return ids
 }
 
+const (
+	desktopBotFileTTL = 14 * 24 * time.Hour
+	desktopBotFileCap = 32 << 20
+)
+
+// desktopBotDataDir is the configured data directory. Tests point it at a
+// temporary base with SetMaclawBaseDir; it is read at write time.
+func desktopBotDataDir() string {
+	return corelib.MaclawDataDir()
+}
+
+func desktopBotFilesDir(botID string) string {
+	id := safeDesktopBotDir(botID)
+	if id == "" {
+		return ""
+	}
+	return filepath.Join(desktopBotDataDir(), "bot-files", id)
+}
+
+func stagedShotDir(botID string) string {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "shots")
+}
+
+func stagedShotName(id, mime string) string {
+	ext := ".png"
+	if mime == "image/jpeg" {
+		ext = ".jpg"
+	}
+	return safeShotID(id) + ext
+}
+
+func safeShotID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 80 {
+		return ""
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+			return ""
+		}
+	}
+	if strings.Contains(id, "..") {
+		return ""
+	}
+	return id
+}
+
+func writeStagedDesktopShot(botID, id, mime, data string) (string, error) {
+	dir := stagedShotDir(botID)
+	name := stagedShotName(id, mime)
+	if dir == "" || name == "" {
+		return "", fmt.Errorf("screenshot is not on this machine")
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil || len(raw) == 0 {
+		return "", fmt.Errorf("screenshot is not on this machine")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, name)
+	if err := os.WriteFile(dest, raw, 0o644); err != nil {
+		log.Printf("[desktop-bot] shot write %s: %v", dest, err)
+		return "", err
+	}
+	return filepath.Abs(dest)
+}
+
+// ForgetDesktopBotFiles removes pictures and files this GUI saved for one bot.
+// Deleting the bot and clearing its chat both drop them.
+func (a *App) ForgetDesktopBotFiles(botID string) error {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("[desktop-bot] delete files bot=%s: %v", botID, err)
+		return err
+	}
+	if a != nil {
+		path := "/api/v1/bots/" + url.PathEscape(strings.TrimSpace(botID)) + "/desktop-media"
+		if err := a.desktopBotCall(context.Background(), http.MethodDelete, path, nil, nil, 15*time.Second); err != nil {
+			log.Printf("[desktop-bot] clear run media bot=%s: %v", botID, err)
+		}
+	}
+	return nil
+}
+
+func pruneDesktopBotFiles(botID string) {
+	dir := desktopBotFilesDir(botID)
+	if dir == "" {
+		return
+	}
+	var files []struct {
+		path    string
+		size    int64
+		modTime time.Time
+	}
+	var total int64
+	now := time.Now()
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if now.Sub(info.ModTime()) > desktopBotFileTTL {
+			_ = os.Remove(path)
+			return nil
+		}
+		files = append(files, struct {
+			path    string
+			size    int64
+			modTime time.Time
+		}{path, info.Size(), info.ModTime()})
+		total += info.Size()
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	for len(files) > 0 && total > desktopBotFileCap {
+		_ = os.Remove(files[0].path)
+		total -= files[0].size
+		files = files[1:]
+	}
+}
+
+func readStagedDesktopShot(botID, id string) (mime, data string, ok bool) {
+	dir := stagedShotDir(botID)
+	if dir == "" || safeShotID(id) == "" {
+		return "", "", false
+	}
+	for _, item := range []struct{ ext, mime string }{{".png", "image/png"}, {".jpg", "image/jpeg"}} {
+		raw, err := os.ReadFile(filepath.Join(dir, safeShotID(id)+item.ext))
+		if err != nil || len(raw) == 0 || len(raw) > 1_000_000 {
+			continue
+		}
+		return item.mime, base64.StdEncoding.EncodeToString(raw), true
+	}
+	return "", "", false
+}
+
 // FetchDesktopBotAttachment returns one picture this process staged for the
 // bot. A picture for another bot, or one past its TTL, is not returned.
 func (a *App) FetchDesktopBotAttachment(botID, id string) (*DesktopBotImage, error) {
@@ -2838,16 +3024,79 @@ func (a *App) FetchDesktopBotAttachment(botID, id string) (*DesktopBotImage, err
 	if botID == "" || id == "" {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	v, ok := desktopAttachmentCache.Load(botID + "\x00" + id)
+	key := botID + "\x00" + id
+	if v, ok := desktopAttachmentCache.Load(key); ok {
+		pic := v.(cachedDesktopPicture)
+		if time.Since(pic.at) <= desktopAttachmentTTL && pic.data != "" {
+			return &DesktopBotImage{MIME: pic.mime, Data: pic.data, AttachmentID: id}, nil
+		}
+		desktopAttachmentCache.Delete(key)
+	}
+	mime, data, ok := readStagedDesktopShot(botID, id)
 	if !ok {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	pic := v.(cachedDesktopPicture)
-	if time.Since(pic.at) > desktopAttachmentTTL || pic.data == "" {
-		desktopAttachmentCache.Delete(botID + "\x00" + id)
+	desktopAttachmentCache.Store(key, cachedDesktopPicture{mime: mime, data: data, at: time.Now()})
+	return &DesktopBotImage{MIME: mime, Data: data, AttachmentID: id}, nil
+}
+
+// RefetchDesktopBotRunImage asks Hub for the pictures stored with this run
+// and writes the one with this id back under the maclaw data directory.
+func (a *App) RefetchDesktopBotRunImage(botID, runID, id string) (*DesktopBotImage, error) {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	id = strings.TrimSpace(id)
+	if a == nil || botID == "" || runID == "" || id == "" {
 		return nil, fmt.Errorf("screenshot is not on this machine")
 	}
-	return &DesktopBotImage{MIME: pic.mime, Data: pic.data, AttachmentID: id}, nil
+	var out struct {
+		Items []DesktopBotImage `json:"items"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/" + url.PathEscape(runID) + "/images"
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	for _, image := range out.Items {
+		image.AttachmentID = desktopPictureID(image.AttachmentID, image.Data)
+		if image.AttachmentID != id {
+			continue
+		}
+		stageDesktopPictures(botID, []DesktopBotImage{image}, nil)
+		return a.FetchDesktopBotAttachment(botID, id)
+	}
+	return nil, fmt.Errorf("screenshot is not on this machine")
+}
+
+// FetchDesktopBotContainerFile reads one file from the bot's desktop through
+// Hub and saves it under the maclaw data directory. The returned path is on
+// this machine. A path that is not on that desktop is refused.
+func (a *App) FetchDesktopBotContainerFile(botID, filePath string) (string, error) {
+	botID = strings.TrimSpace(botID)
+	filePath = strings.TrimSpace(filePath)
+	if a == nil || botID == "" || filePath == "" {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	var out struct {
+		Name string `json:"name"`
+		MIME string `json:"mime"`
+		Data string `json:"data"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/desktop-file"
+	if err := a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{"path": filePath}, &out, 30*time.Second); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.Data) == "" {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	name := strings.TrimSpace(out.Name)
+	if name == "" {
+		name = "file"
+	}
+	paths, left := storeDesktopBotFiles(botID, []DesktopBotFile{{Name: name, MIME: out.MIME, Data: out.Data}})
+	if len(paths) != 1 || len(left) != 0 {
+		return "", fmt.Errorf("file is not on this desktop")
+	}
+	return paths[0], nil
 }
 
 // desktopAttachmentIDs are the server or volume ids on this result.
@@ -2975,8 +3224,9 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 	if id == "" || len(files) == 0 {
 		return nil, files
 	}
-	dir := filepath.Join(corelib.MaclawDataDir(), "bot-files", id)
+	dir := filepath.Join(desktopBotDataDir(), "bot-files", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[desktop-bot] file dir bot=%s: %v", botID, err)
 		return nil, files
 	}
 	for _, file := range files {
@@ -2987,6 +3237,7 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 		}
 		dest := uniqueBotFile(dir, file.Name)
 		if err := os.WriteFile(dest, raw, 0o644); err != nil {
+			log.Printf("[desktop-bot] file write bot=%s name=%s: %v", botID, file.Name, err)
 			left = append(left, file)
 			continue
 		}
@@ -2995,6 +3246,9 @@ func storeDesktopBotFiles(botID string, files []DesktopBotFile) (paths []string,
 			abs = dest
 		}
 		paths = append(paths, abs)
+	}
+	if len(paths) > 0 {
+		pruneDesktopBotFiles(botID)
 	}
 	return paths, left
 }
@@ -3674,6 +3928,13 @@ func (a *App) desktopBotExchange(ctx context.Context, method, path string, body 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		callErr := desktopHubStatusError(resp.StatusCode, payload)
+		var failure struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(payload, &failure)
+		if code := strings.TrimSpace(failure.Code); code != "" {
+			callErr = &desktopCodedError{Status: resp.StatusCode, Code: code, Message: callErr.Error()}
+		}
 		// The failure body is still decoded into dest when it carries the
 		// per-turn key echo. Hub names the key it received even on a 502,
 		// and that echo is the only proof this Hub forwards the key to

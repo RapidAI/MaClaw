@@ -1879,7 +1879,9 @@ def screen_record(key):
 # HOME matches corelib/desktop.ContainerHome. container_path matches
 # ContainerPath, including absolute paths outside that home.
 FILE_HOME = "/home/desktop"
-FILE_OPS = ("read", "write", "list", "bytes")
+# link is only the Hub /desktop-file fetch. read/write/list/bytes stay
+# unrestricted so a bot can share ~/Downloads or /tmp.
+FILE_OPS = ("read", "write", "list", "bytes", "link")
 
 
 def container_path(raw):
@@ -1941,6 +1943,23 @@ def file_bytes(path, limit):
     return base64.b64encode(file_read(path, limit))
 
 
+def deliverable_file(path):
+    """The real path of a file the person may fetch through /desktop-file.
+
+    Symlinks are resolved before the work-tree and Desktop check, and
+    before a hidden directory is refused. The lexical path is not enough.
+    The shared file read does not use this.
+    """
+    real = os.path.realpath(path)
+    parts = [part for part in real.split("/") if part not in ("", ".", "..")]
+    if any(part.startswith(".") for part in parts):
+        raise ValueError("path is invalid")
+    roots = (FILE_HOME + "/work", FILE_HOME + "/Desktop", FILE_HOME + "/桌面")
+    if not any(real == root or real.startswith(root + "/") for root in roots):
+        raise ValueError("path is invalid")
+    return real
+
+
 def file_list(path):
     proc = subprocess.run(file_list_command(path))
     return proc.returncode
@@ -1952,7 +1971,7 @@ def run_file(argv):
     This does not start Chrome, clone a profile, write the registry, or
     refresh last_used. A bad path is refused before any file is opened.
     """
-    usage = "usage: desktop_supervisor.py file read|write|list|bytes <path> [limit]"
+    usage = "usage: desktop_supervisor.py file read|write|list|bytes|link <path> [limit]"
     if len(argv) < 4 or argv[1] != "file" or argv[2] not in FILE_OPS:
         print(usage, file=sys.stderr)
         return 2
@@ -1963,7 +1982,7 @@ def run_file(argv):
         print("path is invalid", file=sys.stderr)
         return 2
     limit = None
-    if op in ("read", "bytes"):
+    if op in ("read", "bytes", "link"):
         if len(argv) != 5:
             print(usage, file=sys.stderr)
             return 2
@@ -1978,12 +1997,18 @@ def run_file(argv):
     elif len(argv) != 4:
         print(usage, file=sys.stderr)
         return 2
+    if op == "link":
+        try:
+            path = deliverable_file(path)
+        except ValueError:
+            print("path is invalid", file=sys.stderr)
+            return 2
     try:
         if op == "list":
             return file_list(path)
         if op == "write":
             payload = file_write(path, sys.stdin.buffer)
-        elif op == "bytes":
+        elif op in ("bytes", "link"):
             payload = file_bytes(path, limit)
         else:
             payload = file_read(path, limit)
@@ -4917,6 +4942,7 @@ const badge=document.getElementById("b");
 let surface=document.getElementById("s"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false;
 let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
 function fallback(){if(VNC){location.replace(VNC);return true}badge.textContent="此浏览器不支持 H.264 播放";return false}
+function noteStream(event){try{parent.postMessage({source:"maclaw-desktop",event:event},"*")}catch(_){}}
 function show(){let t,c="";if(!ws||ws.readyState!==1)t="连接中…";else if(lease==="you"){t="你在控制";c="you"}else if(lease==="bot"){t="Bot 正在操作";c="bot"}else if(lease==="human")t="其他人在控制";else t=inputOn?"可以操作":"仅观看";badge.textContent=t;badge.className=c;try{parent.postMessage({type:"maclaw-desktop-lease",holder:lease,input:inputOn},"*")}catch(_){}}
 function send(type,payload){if(ws&&ws.readyState===1)ws.send(JSON.stringify(Object.assign({type},payload||{})))}
 function requestKey(){const n=performance.now();if(n-lastKeyReq<500)return;lastKeyReq=n;send("request_keyframe")}
@@ -4939,8 +4965,9 @@ function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift(
 // ---- connection
 function connect(){const qs=[];if(USE_MSE)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
+ ws.onopen=()=>noteStream("connect");
  ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
- ws.onclose=()=>{ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
+ ws.onclose=()=>{noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
 function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
  else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}
