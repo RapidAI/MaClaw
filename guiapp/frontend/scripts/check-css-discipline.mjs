@@ -48,7 +48,9 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // 3296 -> 3305 (2026-11-12): measured 3297 inline styles.
 // 3305 -> 3320 (2026-11-13): screen-open batch measured 3312 inline styles.
 // 3320 -> 3330 (2026-11-16): remote LLM codegen SSO fields measured 3321 inline styles.
-const IMPORTANT_BASELINE = 1596
+// 1596 -> 1598 (2026-11-19): in-flight expert-share-categories additions added
+// two !important uses; the pinned-message banner added none.
+const IMPORTANT_BASELINE = 1598
 const INLINE_STYLE_BASELINE = 3330
 
 function countImportant(css) {

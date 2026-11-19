@@ -349,6 +349,24 @@ const ExpertSearchIcon = () => (
 /** Capability chips shown on a marketplace-style expert card (capped to keep card heights even). */
 const EXPERT_CARD_TAG_LIMIT = 3;
 
+/** Chip key of the catch-all 其它 bucket in the category filter row. */
+const EXPERT_CATEGORY_OTHER = 'other';
+/** Display label of the catch-all chip. A taxonomy entry with this name is
+ * folded into the catch-all chip so the row never renders two 其它 chips. */
+const EXPERT_CATEGORY_OTHER_LABEL = '其它';
+
+/**
+ * Chip key a card belongs to: its own market category when that name is still
+ * part of the current HubCenter taxonomy, otherwise the 其它 catch-all (empty
+ * tag, unshared local experts, builtins, a name the administrator removed, or
+ * an explicit 其它 tag — one chip always holds the untagged remainder).
+ */
+const expertCategoryFor = (expert: ExpertDefinition, names: string[]): string => {
+    const tag = String(expert?.category || '').trim();
+    if (tag && tag !== EXPERT_CATEGORY_OTHER_LABEL && names.includes(tag)) return tag;
+    return EXPERT_CATEGORY_OTHER;
+};
+
 const expertCardTagChips = (expert: ExpertDefinition): { visible: string[]; overflow: number } => {
     const labels = expert.managed_industry
         ? (expert.industry_names || [])
@@ -386,6 +404,7 @@ const ExpertCardSummary = ({ expert, badge, lineage }: {
                     ) : (
                         <span className="utilities-expert-card__badge">{badge}</span>
                     )}
+                    {expert.category ? <span className="utilities-expert-card__badge utilities-expert-card__badge--category" data-testid={`utilities-expert-category-badge-${expert.id}`}>{expert.category}</span> : null}
                 </div>
             </div>
         </div>
@@ -639,6 +658,12 @@ export const UtilitiesPage = ({
     // Library toolbar: local search + marketplace-style source filter chips.
     const [expertSearch, setExpertSearch] = useState('');
     const [expertFilter, setExpertFilter] = useState<'all' | 'system' | 'custom'>('all');
+    // HubCenter's administrator-curated category taxonomy drives the topmost
+    // chip row ('all' / each name / 'other' catch-all). An empty list keeps the
+    // row hidden so the library looks unchanged before the admin configures
+    // categories or while HubCenter is unreachable.
+    const [expertCategoryNames, setExpertCategoryNames] = useState<string[]>([]);
+    const [expertCategoryFilter, setExpertCategoryFilter] = useState('all');
     const [expertPage, setExpertPage] = useState(1);
     const [expertColumns, setExpertColumns] = useState(4);
     const expertGridRef = useRef<HTMLDivElement | null>(null);
@@ -735,6 +760,21 @@ export const UtilitiesPage = ({
             const overlaid = overlayInstalledItems(parsed, pendingInstalledExpertRef.current ? [pendingInstalledExpertRef.current] : [], requestID);
             pendingInstalledExpertRef.current = overlaid.pending[0] ?? null;
 			setExperts(overlaid.list);
+			// Best-effort taxonomy fetch alongside the card list. A failure
+			// keeps the last-good chips on screen: a transient HubCenter error
+			// must not make the category row flicker away mid-session.
+			if (mod?.ListExpertMarketCategories) {
+				try {
+					const names = await mod.ListExpertMarketCategories();
+					// Same staleness guard as the card list: a superseded request
+					// must not overwrite a newer load's taxonomy.
+					if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
+					const list = Array.isArray(names) ? names.map(String).map(name => name.trim()).filter(Boolean) : [];
+					setExpertCategoryNames(current => current.join('\u0000') === list.join('\u0000') ? current : list);
+				} catch {
+					// Keep the last-good taxonomy.
+				}
+			}
 			if (mod?.ListManagedIndustryExperts) {
 				const managedRaw = await mod.ListManagedIndustryExperts();
 				if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
@@ -770,9 +810,14 @@ export const UtilitiesPage = ({
         // Only drop a search or source filter that would hide this card.
         if (!matchesQuery) setExpertSearch('');
         if (expertFilter === 'system') setExpertFilter('all');
+        // A categorized install must not stay hidden behind its own category
+        // chip, and an uncategorized one must not hide behind 其它.
+        if (expertCategoryFilter !== 'all' && expertCategoryFor(expert, expertCategoryNames) !== expertCategoryFilter) {
+            setExpertCategoryFilter('all');
+        }
         setExperts(current => withInstalledExpert(current, expert));
         setRevealInstalledExpertId(expert.id);
-    }, [expertFilter, expertSearch]);
+    }, [expertFilter, expertSearch, expertCategoryFilter, expertCategoryNames]);
 
 	const handlePurchaseAndInstallManagedIndustryExpert = useCallback(async (expert: ExpertDefinition) => {
 		if (!expert.industry_asset_id || !expert.industry_listing_id || expertActionBusy) return;
@@ -816,9 +861,10 @@ export const UtilitiesPage = ({
         return map;
     }, [experts]);
 
-    // Library toolbar filtering: search across name/description/industry names
-    // and split by source (system defaults vs user-created). Managed industry
-    // entries count as system, matching the read-only badge on their cards.
+    // Library toolbar filtering: search across name/description/industry names,
+    // split by source (system defaults vs user-created) and narrow by the
+    // HubCenter category chips. Managed industry entries count as system,
+    // matching the read-only badge on their cards.
     const visibleExperts = useMemo(() => {
         const query = expertSearch.trim().toLowerCase();
         const matchesQuery = (expert: ExpertDefinition) => !query
@@ -831,18 +877,27 @@ export const UtilitiesPage = ({
             || (expertFilter === 'system'
                 ? !!expert.builtin || !!expert.managed_industry
                 : !expert.builtin && !expert.managed_industry);
-        const keep = (expert: ExpertDefinition) => matchesQuery(expert) && matchesFilter(expert);
+        const matchesCategory = (expert: ExpertDefinition) => expertCategoryFilter === 'all'
+            || expertCategoryFor(expert, expertCategoryNames) === expertCategoryFilter;
+        const keep = (expert: ExpertDefinition) => matchesQuery(expert) && matchesFilter(expert) && matchesCategory(expert);
         return {
             industry: managedIndustryExperts.filter(keep),
             // Everything not managed by HubCenter industry: builtin + user-created.
             local: experts.filter(keep),
         };
-    }, [experts, managedIndustryExperts, expertSearch, expertFilter]);
+    }, [experts, managedIndustryExperts, expertSearch, expertFilter, expertCategoryFilter, expertCategoryNames]);
     // Empty-state hint only when a filter/search actively hid everything;
     // a genuinely empty library still shows the new/import entry cards.
     const expertLibraryEmpty = visibleExperts.industry.length === 0
         && visibleExperts.local.length === 0
-        && (expertSearch.trim() !== '' || expertFilter !== 'all');
+        && (expertSearch.trim() !== '' || expertFilter !== 'all' || expertCategoryFilter !== 'all');
+    // An administrator removing the selected category must not strand the
+    // library on a chip that no longer exists.
+    useEffect(() => {
+        if (expertCategoryFilter !== 'all' && expertCategoryFilter !== EXPERT_CATEGORY_OTHER && !expertCategoryNames.includes(expertCategoryFilter)) {
+            setExpertCategoryFilter('all');
+        }
+    }, [expertCategoryNames, expertCategoryFilter]);
     // Four rows per page. Column count follows the same auto-fill grid, so a
     // narrower window pages fewer cards instead of showing more than four rows.
     const expertPageSize = Math.max(1, expertColumns) * 4;
@@ -859,8 +914,8 @@ export const UtilitiesPage = ({
     // jumping to a different slice.
     const expertPageAnchorRef = useRef(0);
     const [trackedExpertPageSize, setTrackedExpertPageSize] = useState(expertPageSize);
-    const [trackedExpertQuery, setTrackedExpertQuery] = useState({ search: expertSearch, filter: expertFilter });
-    const expertQueryChanged = trackedExpertQuery.search !== expertSearch || trackedExpertQuery.filter !== expertFilter;
+    const [trackedExpertQuery, setTrackedExpertQuery] = useState({ search: expertSearch, filter: expertFilter, category: expertCategoryFilter });
+    const expertQueryChanged = trackedExpertQuery.search !== expertSearch || trackedExpertQuery.filter !== expertFilter || trackedExpertQuery.category !== expertCategoryFilter;
     if (trackedExpertPageSize !== expertPageSize || expertQueryChanged) {
         if (trackedExpertPageSize !== expertPageSize) {
             setTrackedExpertPageSize(expertPageSize);
@@ -873,7 +928,7 @@ export const UtilitiesPage = ({
             }
         }
         if (expertQueryChanged) {
-            setTrackedExpertQuery({ search: expertSearch, filter: expertFilter });
+            setTrackedExpertQuery({ search: expertSearch, filter: expertFilter, category: expertCategoryFilter });
             // A just-installed card chooses its own page below. Resetting to
             // page 1 here would hide it again.
             if (!revealPage) {
@@ -1522,6 +1577,8 @@ export const UtilitiesPage = ({
         expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : tailText(lang ?? "", 'Optimized from: deleted expert', '优化自：已删除专家'),
         expertSearchPlaceholder: lang === 'zh-Hant' ? '搜尋專家' : tailText(lang ?? "", 'Search experts', '搜索专家'),
         expertFilterLabel: lang === 'zh-Hant' ? '篩選專家' : tailText(lang ?? "", 'Filter experts', '筛选专家'),
+        expertCategoryLabel: lang === 'zh-Hant' ? '篩選分類' : tailText(lang ?? "", 'Filter categories', '筛选分类'),
+        expertCategoryOther: lang === 'zh-Hant' ? '其它' : tailText(lang ?? "", 'Other', '其它'),
         expertFilterAll: lang === 'zh-Hant' ? '全部' : tailText(lang ?? "", 'All', '全部'),
         expertFilterSystem: lang === 'zh-Hant' ? '系統預設' : tailText(lang ?? "", 'System', '系统默认'),
         expertFilterCustom: lang === 'zh-Hant' ? '我的專家' : tailText(lang ?? "", 'My experts', '我的专家'),
@@ -3127,6 +3184,36 @@ export const UtilitiesPage = ({
                         </div>
                         <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
                         <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
+                    </div> : null}
+                    {/* Topmost row: the HubCenter-administered category chips
+                        (全部 / taxonomy names / 其它). Hidden entirely until the
+                        taxonomy loads so an unconfigured deployment keeps today's
+                        single source-filter row. */}
+                    {expertCategoryNames.length > 0 ? <div className="utilities-experts__filters utilities-experts__filters--category" role="group" aria-label={t.expertCategoryLabel}>
+                        <button
+                            type="button"
+                            className={`utilities-experts__filter${expertCategoryFilter === 'all' ? ' is-active' : ''}`}
+                            data-testid="utilities-expert-category-all"
+                            aria-pressed={expertCategoryFilter === 'all'}
+                            onClick={() => setExpertCategoryFilter('all')}
+                        >{t.expertFilterAll}</button>
+                        {expertCategoryNames.filter(name => name !== EXPERT_CATEGORY_OTHER_LABEL).map(name => (
+                            <button
+                                key={name}
+                                type="button"
+                                className={`utilities-experts__filter${expertCategoryFilter === name ? ' is-active' : ''}`}
+                                data-testid={`utilities-expert-category-${name}`}
+                                aria-pressed={expertCategoryFilter === name}
+                                onClick={() => setExpertCategoryFilter(name)}
+                            >{name}</button>
+                        ))}
+                        <button
+                            type="button"
+                            className={`utilities-experts__filter${expertCategoryFilter === EXPERT_CATEGORY_OTHER ? ' is-active' : ''}`}
+                            data-testid="utilities-expert-category-other"
+                            aria-pressed={expertCategoryFilter === EXPERT_CATEGORY_OTHER}
+                            onClick={() => setExpertCategoryFilter(EXPERT_CATEGORY_OTHER)}
+                        >{t.expertCategoryOther}</button>
                     </div> : null}
                     <div className="utilities-experts__filters" role="group" aria-label={t.expertFilterLabel}>
                         {([

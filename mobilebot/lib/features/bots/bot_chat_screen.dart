@@ -1036,7 +1036,9 @@ class _MessageBubble extends ConsumerWidget {
           for (final image in message.images) _ReplyImage(image: image),
           for (final file in message.files) _ReplyFileChip(file: file),
           if (message.question.isAnswerable && !message.askResolved)
-            _AskCard(message: message),
+            isDesktopHandoffAsk(message)
+                ? _TakeoverCard(message: message, bot: bot)
+                : _AskCard(message: message),
           if (message.options.isNotEmpty && !message.optionsUsed)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -1054,9 +1056,15 @@ class _MessageBubble extends ConsumerWidget {
                 ],
               ),
             ),
+          // A pending handoff ask already shows the takeover card — the
+          // banner would repeat the same reason under it. The banner stays
+          // for replies without a question, and for resolved asks.
           if (botHasComputer(bot.desktopMode) &&
               (message.handoffUrl.isNotEmpty ||
-                  message.attentionReason.isNotEmpty))
+                  message.attentionReason.isNotEmpty) &&
+              !(message.question.isAnswerable &&
+                    !message.askResolved &&
+                    isDesktopHandoffAsk(message)))
             _HandoffBanner(message: message, bot: bot),
         ],
       ),
@@ -1149,6 +1157,8 @@ class _ReplyFileChip extends StatelessWidget {
 
 /// The bot's question — a text field for free answers/secrets, or option
 /// chips for a choice. Secrets are sent via secret-fill, not the transcript.
+/// A desktop handoff ask (login wall, payment) renders as [_TakeoverCard]
+/// instead: the answer happens on the computer screen, not in this chat.
 class _AskCard extends ConsumerStatefulWidget {
   final ChatMessage message;
 
@@ -1259,6 +1269,67 @@ class _AskCardState extends ConsumerState<_AskCard> {
   }
 }
 
+/// A desktop handoff ask: the bot stopped on a login wall / payment / captcha
+/// and the person's step is ON the computer, not in this chat. Shows the wall
+/// itself (the screenshot the desktop attached) plus a takeover button that
+/// opens the computer view and claims the keyboard; no answer field — a typed
+/// reply cannot complete this step.
+class _TakeoverCard extends StatelessWidget {
+  final ChatMessage message;
+  final Bot bot;
+
+  const _TakeoverCard({required this.message, required this.bot});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.desktop_windows,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  message.attentionReason.isNotEmpty
+                      ? attentionReasonLabel(message.attentionReason, context.S)
+                      : context.S.chatHandoffDefault,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (message.images.isNotEmpty)
+            _ReplyImage(image: message.images.first),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: () => context.push(
+              '/bot/${Uri.encodeComponent(bot.id)}/desktop?takeover=1',
+            ),
+            icon: const Icon(Icons.touch_app_outlined),
+            label: Text(context.S.chatTakeover),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The bot handed its desktop to the person — jump straight to the screen.
 class _HandoffBanner extends StatelessWidget {
   final ChatMessage message;
@@ -1287,7 +1358,7 @@ class _HandoffBanner extends StatelessWidget {
           Expanded(
             child: Text(
               message.attentionReason.isNotEmpty
-                  ? message.attentionReason
+                  ? attentionReasonLabel(message.attentionReason, context.S)
                   : context.S.chatHandoffDefault,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onTertiaryContainer,

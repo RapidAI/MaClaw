@@ -993,6 +993,18 @@ describe('SidebarTaskManagement', () => {
         expect(idleMark.closest('[data-testid="sidebar-task-row"]')?.getAttribute('data-status')).toBeNull();
     });
 
+    it('keeps task cards compact with a hairline so neighbors stay distinct', () => {
+        const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        const row = css.match(/\.mc-task-pane \.sidebar-task-row \{\s*position: relative;[\s\S]*?\n\}/)?.[0] ?? '';
+        expect(row).toMatch(/min-height:\s*0;/);
+        expect(row).toMatch(/margin:\s*1px 4px;/);
+        expect(row).toMatch(/padding:\s*3px 8px !important;/);
+        expect(row).toMatch(/border:\s*1px solid var\(--theme-border\);/);
+        expect(row).not.toMatch(/padding:\s*7px/);
+        // Bold CJK ellipsis clips when the title line box drops to 1.2.
+        expect(css).toMatch(/\.mc-task-pane \.sidebar-task-row \.stsm-row-title \{\s*line-height: 1\.35;/);
+    });
+
     it('does not let the status-mark layout rule override paused, cancelled, and idle colors', () => {
         const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
         const layout = css.match(/\.mc-task-pane \.sidebar-task-row > \.mc-task-status \{[^}]+\}/)?.[0] ?? '';

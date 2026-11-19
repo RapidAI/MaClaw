@@ -155,6 +155,9 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 	if !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" {
 		t.Fatalf("execute login=%q", login)
 	}
+	if !asked.Takeover {
+		t.Fatal("login ask is not marked as a takeover handoff")
+	}
 	if !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
 		t.Fatal("a login page did not hand the desktop to the person")
 	}

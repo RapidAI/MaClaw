@@ -211,7 +211,7 @@
   cursor or a lone 需求理解 hover target over the composer. Exceptions that
   keep it mounted: `codingPlanGateOpen` (awaiting Start/Skip/Reject), any
   `codingStepIsFailed` row, and non-terminal tones (paused/interrupted keep
-  resume context). The bar itself is centered at 40% column width
+  resume context). The bar itself is centered at 45% column width
   (`100-pet-store-mc.css` overrides the shared inset rule) so the pointer can
   pass the edges without opening the step-list popover; `.capc-popover` is
   `width:100%` of that bar.
@@ -658,6 +658,32 @@
   reducers at once — the Go one is embed-golden
   (`TestReduceViewerEventMatchesGolden`) and fails the build first when a
   consumer implementation drifts.
+- Login-wall handoff ask → takeover card (`_TakeoverCard` in
+  `bot_chat_screen.dart`; gate `isDesktopHandoffAsk` in `bot_models.dart`):
+  a desktop-bot ask that is really a handoff (`attention_reason`/`novnc_url`
+  on the same message, ask still pending) must NOT render `_AskCard`'s
+  answer field — the person acts on the computer, not in chat. The card
+  shows `attentionReasonLabel(reason)` (never the raw enum; unknown reasons
+  fall back to themselves for forward-compat); an ask with option chips
+  (choice/confirm) or a secret field is NEVER a takeover card —
+  `isDesktopHandoffAsk` excludes it so the chips/obscured input stay
+  usable. Plus the screenshot MaClawSrv
+  attached + 「接管」→ `/bot/<id>/desktop?takeover=1` which auto-claims the
+  keyboard once the first watch reports a controllable desktop (one attempt,
+  no 45s retry nag). Server side: `finishDesktopActionPhase` sets
+  `AskUserRequest.Takeover` (marker field, display hint "请在电脑上完成，
+  或点「接管」继续。" replaces 请直接输入您的回复) and
+  `desktopAttachHandoffShot` (http_agent.go, after `takeDesktopTurn` in all
+  THREE reply paths) captures one screen via the round wake and appends it
+  when the reply has no image yet — `ensureDesktopPictureDelivered` skips
+  `awaiting_user` by design, so this is the only picture source for a
+  handoff reply. The `_HandoffBanner` is suppressed while the takeover card
+  is up (same reason twice); it still renders for replies without a pending
+  ask. `BotDesktopScreen` is fullscreen landscape: no AppBar, no watch row —
+  back/takeover/menu are semi-transparent overlays on the letterbox sides,
+  the attention reason is an `IgnorePointer` pill on top, and the page runs
+  `SystemUiMode.immersiveSticky` (restore `edgeToEdge` + portrait on
+  dispose). Keep the `_noComputer` AppBar scaffold.
 - CI: `.github/workflows/mobilebot.yml` (PR/push checks + debug APK artifact);
   `.github/workflows/main.yml` `build-android` job ships signed
   `MaclawGo.apk` into tagged Releases — needs secrets
@@ -830,3 +856,33 @@
 - To change a node's visibility from the hub side, set it on the hub's own
   admin console (writes `system_settings.hub_visibility`); the next
   heartbeat converges HubCenter and clears the lock.
+
+## Pinned messages 置顶消息 (hub + hubcenter + guiapp)
+
+- A notification can carry `pinned` / `pinned_forever` / `link_url` / `button_text`
+  (button defaults to 查看详情 server-side when pinned and empty; link must be
+  http(s), ≤500 runes; button label ≤20 runes). The fields persist through the
+  HubCenter→Hub cascade as plain JSON struct fields, so both sides' structs and
+  stores must stay in lockstep (hub `admin_notifications`, hubcenter
+  `hc_notifications`; additive ALTER TABLE migrations live in the best-effort
+  loop of each InitSchema).
+- Client pull is `GET /api/v1/notifications/pinned` (machine auth): the ONE
+  newest published `pinned_forever` row first, then the latest 3 regular pinned
+  rows, audience-filtered like unread but WITHOUT the read-join — a pinned
+  message shows regardless of read state until revoked/expired. Read tracking
+  does not apply to the banner.
+- guiapp: `pinnedCache` + `PullPinnedNotifications`/`GetPinnedNotifications`
+  (notification_binding.go) publish `notification:pinned`; the pull rides WS
+  reconnect (next to PullUnreadNotifications) and re-fires on any WS
+  `notification.push` with `pinned` or a revoke.
+- Frontend: `PinnedMessageBanner` (components/layout) floats fixed-positioned
+  above `.mc-workbench-status-row` (anchor = statusRowRef; fixed because the
+  sidebar scroll wrapper clips absolute overlays — same as the status/devices
+  popovers, which sit at z-index 99999 above the banner's 60). Dots + arrows
+  page the slides; the X is hover-revealed ONLY (CSS opacity) and dismisses
+  ALL visible ids for the SESSION (`sessionDismissedIds` in
+  usePinnedNotifications.ts, in-memory: restart shows the banner again, a
+  newly-published id still pops).
+- Admin forms: hub `notification-tab.js` (CJK via \uXXXX escapes) and hubcenter
+  `notification-admin.js` both gate the pinned extras (永久置顶/链接/按钮名)
+  behind the 置顶 checkbox; the list/detail views badge pinned rows.

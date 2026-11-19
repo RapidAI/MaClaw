@@ -122,8 +122,11 @@ final _routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/bot/:id/desktop',
-        builder: (context, state) =>
-            _BotRoute(botId: state.pathParameters['id']!, tab: _BotTab.desktop),
+        builder: (context, state) => _BotRoute(
+          botId: state.pathParameters['id']!,
+          tab: _BotTab.desktop,
+          desktopTakeover: state.uri.queryParameters['takeover'] == '1',
+        ),
       ),
       GoRoute(
         path: '/bot/:id/status',
@@ -252,7 +255,14 @@ class _BotRoute extends ConsumerWidget {
   final String botId;
   final _BotTab tab;
 
-  const _BotRoute({required this.botId, required this.tab});
+  /// 进入电脑画面即申请键盘 — 聊天里「接管」按钮的跳转。
+  final bool desktopTakeover;
+
+  const _BotRoute({
+    required this.botId,
+    required this.tab,
+    this.desktopTakeover = false,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -290,7 +300,10 @@ class _BotRoute extends ConsumerWidget {
       overrides: [botChatBotIdProvider.overrideWithValue(botId)],
       child: switch (tab) {
         _BotTab.chat => BotChatScreen(bot: bot),
-        _BotTab.desktop => BotDesktopScreen(bot: bot),
+        _BotTab.desktop => BotDesktopScreen(
+          bot: bot,
+          takeover: desktopTakeover,
+        ),
         _BotTab.status => BotStatusScreen(bot: bot),
         _BotTab.settings => BotSettingsScreen(bot: bot),
         _BotTab.style => BotStyleScreen(bot: bot),

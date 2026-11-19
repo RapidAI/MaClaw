@@ -25,16 +25,20 @@ func NewNotificationHandler(svc *notification.Service) *NotificationHandler {
 // ---------------------------------------------------------------------------
 
 type createNotificationRequest struct {
-	Title        string   `json:"title"`
-	Content      string   `json:"content"`
-	Category     string   `json:"category"`
-	Priority     string   `json:"priority"`
-	AudienceType string   `json:"audience_type"`
-	AudienceIDs  []string `json:"audience_ids"`
-	Status       string   `json:"status"`
-	IMPush       bool     `json:"im_push"`
-	PublishAt    *string  `json:"publish_at,omitempty"`
-	ExpireAt     *string  `json:"expire_at,omitempty"`
+	Title         string   `json:"title"`
+	Content       string   `json:"content"`
+	Category      string   `json:"category"`
+	Priority      string   `json:"priority"`
+	AudienceType  string   `json:"audience_type"`
+	AudienceIDs   []string `json:"audience_ids"`
+	Status        string   `json:"status"`
+	IMPush        bool     `json:"im_push"`
+	Pinned        bool     `json:"pinned"`
+	PinnedForever bool     `json:"pinned_forever"`
+	LinkURL       string   `json:"link_url"`
+	ButtonText    string   `json:"button_text"`
+	PublishAt     *string  `json:"publish_at,omitempty"`
+	ExpireAt      *string  `json:"expire_at,omitempty"`
 }
 
 // HandleCreateNotification handles POST /api/v1/admin/notifications.
@@ -76,16 +80,20 @@ func (h *NotificationHandler) HandleCreateNotification(w http.ResponseWriter, r 
 	}
 
 	createReq := notification.CreateRequest{
-		Title:        req.Title,
-		Content:      req.Content,
-		Category:     notification.Category(req.Category),
-		Priority:     notification.Priority(req.Priority),
-		AudienceType: notification.AudienceType(req.AudienceType),
-		AudienceIDs:  req.AudienceIDs,
-		IMPush:       req.IMPush,
-		CreatedBy:    createdBy,
-		PublishAt:    publishAt,
-		ExpireAt:     expireAt,
+		Title:         req.Title,
+		Content:       req.Content,
+		Category:      notification.Category(req.Category),
+		Priority:      notification.Priority(req.Priority),
+		AudienceType:  notification.AudienceType(req.AudienceType),
+		AudienceIDs:   req.AudienceIDs,
+		IMPush:        req.IMPush,
+		Pinned:        req.Pinned,
+		PinnedForever: req.PinnedForever,
+		LinkURL:       req.LinkURL,
+		ButtonText:    req.ButtonText,
+		CreatedBy:     createdBy,
+		PublishAt:     publishAt,
+		ExpireAt:      expireAt,
 	}
 
 	requestedStatus := notification.Status(strings.TrimSpace(req.Status))
@@ -314,6 +322,36 @@ func (h *NotificationHandler) HandleUnread(w http.ResponseWriter, r *http.Reques
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/notifications/pinned — Client pull pinned messages (machine auth)
+// ---------------------------------------------------------------------------
+
+// HandlePinned handles GET /api/v1/notifications/pinned. It returns the
+// permanent pin first, then the latest regular pinned messages, so the GUI
+// banner can play them left to right.
+func (h *NotificationHandler) HandlePinned(w http.ResponseWriter, r *http.Request) {
+	machineID := MachineIDFromContext(r.Context())
+	if machineID == "" {
+		writeError(w, http.StatusUnauthorized, "MACHINE_UNAUTHORIZED", "machine auth required")
+		return
+	}
+
+	notifications, err := h.svc.GetPinnedForMachine(r.Context(), machineID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "NOTIFICATION_PINNED_FAILED", err.Error())
+		return
+	}
+
+	if notifications == nil {
+		notifications = []notification.ClientNotification{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"items": notifications,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/v1/notifications/{id}/read — Client mark single as read (machine auth)
 // ---------------------------------------------------------------------------
 
@@ -415,12 +453,15 @@ func (h *NotificationHandler) HandleCascade(w http.ResponseWriter, r *http.Reque
 // ---------------------------------------------------------------------------
 
 // isNotificationValidationError checks whether the error is a service-layer
-// validation error (title/content/category/audience/priority constraints).
+// validation error (title/content/category/audience/priority constraints,
+// plus the pinned-card link/button constraints).
 func isNotificationValidationError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "is required") ||
 		strings.Contains(msg, "exceeds") ||
 		strings.Contains(msg, "invalid category") ||
 		strings.Contains(msg, "invalid audience_type") ||
-		strings.Contains(msg, "invalid priority")
+		strings.Contains(msg, "invalid priority") ||
+		strings.Contains(msg, "link_url") ||
+		strings.Contains(msg, "button_text")
 }

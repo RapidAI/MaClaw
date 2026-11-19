@@ -2413,7 +2413,7 @@ func peelCodingContinueTrailingParticles(rest string) string {
 
 func codingPlanStepWasStarted(status string) bool {
 	switch strings.TrimSpace(status) {
-	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning, mcpStepWaiting:
+	case codingStepPassed, codingStepFailed, codingStepVerifyFail, codingStepSkipped, codingStepRunning, codingStepInterrupted, mcpStepWaiting:
 		return true
 	default:
 		return false
@@ -2429,8 +2429,14 @@ func codingPlanStepNeedsResume(status string) bool {
 // row mirrored from the runner status is only skipped, and the handoff
 // sentence is what still identifies it.
 func codingPlanStepIsReviewHandoff(st codingWorkbenchStepStatus) bool {
-	if strings.TrimSpace(st.Status) == mcpStepWaiting {
+	status := strings.TrimSpace(st.Status)
+	// A passed or failed row keeps that result. Leftover handoff text in
+	// its note is not a second review, and it must not hide the failure.
+	if status == mcpStepWaiting {
 		return true
+	}
+	if status != codingStepSkipped && status != "" {
+		return false
 	}
 	return mcpSkipIsReviewHandoff(st.Summary)
 }
@@ -2485,7 +2491,7 @@ func (h *IMMessageHandler) codingChildReviewHoldResponse(userID string) *IMAgent
 	}
 	return &IMAgentResponse{
 		Text:        mcpReviewHandoffErrorText,
-		CodingSteps: codingReviewHoldSteps(mem.StepStatuses, known),
+		CodingSteps: codingReviewHoldSteps(codingDisplayedRoundSteps(mem.StepStatuses, mem.DisplayedStepRound), known),
 	}
 }
 
@@ -2764,6 +2770,7 @@ func (h *IMMessageHandler) reopenIncompleteCodingPlanSteps(userID string, mem st
 			stored.StepStatuses[i].VerifyCmd = ""
 			stored.StepStatuses[i].VerifyOK = nil
 			stored.StepStatuses[i].UpdatedUnix = now
+			stored.StepStatuses[i].Round = stored.DisplayedStepRound
 		}
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)

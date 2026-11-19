@@ -14,6 +14,17 @@ type Store struct {
 	db *sql.DB
 }
 
+// Shared column lists so every read of admin_notifications carries the same
+// fields (scanNotificationRow expects exactly this order).
+const (
+	notificationColumns = `id, title, content, category, priority, audience_type, audience_ids, status, im_push, ` +
+		`pinned, pinned_forever, link_url, button_text, ` +
+		`source, source_id, created_by, publish_at, expire_at, created_at, updated_at`
+	notificationColumnsQualified = `n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, ` +
+		`n.pinned, n.pinned_forever, n.link_url, n.button_text, ` +
+		`n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at`
+)
+
 // NewStore creates a new notification Store backed by the given database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
@@ -33,6 +44,10 @@ func (s *Store) InitSchema(ctx context.Context) error {
 			audience_ids    TEXT NOT NULL DEFAULT '[]',
 			status          TEXT NOT NULL DEFAULT 'draft',
 			im_push         INTEGER NOT NULL DEFAULT 0,
+			pinned          INTEGER NOT NULL DEFAULT 0,
+			pinned_forever  INTEGER NOT NULL DEFAULT 0,
+			link_url        TEXT NOT NULL DEFAULT '',
+			button_text     TEXT NOT NULL DEFAULT '',
 			source          TEXT NOT NULL DEFAULT 'hub',
 			source_id       TEXT NOT NULL DEFAULT '',
 			created_by      TEXT NOT NULL DEFAULT '',
@@ -56,6 +71,18 @@ func (s *Store) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("init notification schema: %w", err)
 		}
 	}
+	// Additive upgrades keep databases created before pinned messages readable.
+	// Duplicate-column errors on already-migrated schemas are ignored; the
+	// pinned index rides the same best-effort pass so existing stores get it.
+	for _, stmt := range []string{
+		`ALTER TABLE admin_notifications ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE admin_notifications ADD COLUMN pinned_forever INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE admin_notifications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_notifications ADD COLUMN button_text TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_notif_pinned ON admin_notifications(status, pinned, created_at)`,
+	} {
+		_, _ = s.db.ExecContext(ctx, stmt)
+	}
 	return nil
 }
 
@@ -74,11 +101,19 @@ func (s *Store) Create(ctx context.Context, n *Notification) error {
 	if n.IMPush {
 		imPush = 1
 	}
+	pinned := 0
+	if n.Pinned {
+		pinned = 1
+	}
+	pinnedForever := 0
+	if n.PinnedForever {
+		pinnedForever = 1
+	}
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO admin_notifications
-			(id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(`+notificationColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.ID,
 		n.Title,
 		n.Content,
@@ -88,6 +123,10 @@ func (s *Store) Create(ctx context.Context, n *Notification) error {
 		string(audienceJSON),
 		string(n.Status),
 		imPush,
+		pinned,
+		pinnedForever,
+		n.LinkURL,
+		n.ButtonText,
 		n.Source,
 		n.SourceID,
 		n.CreatedBy,
@@ -102,8 +141,7 @@ func (s *Store) Create(ctx context.Context, n *Notification) error {
 // GetByID retrieves a single notification by its ID.
 func (s *Store) GetByID(ctx context.Context, id string) (*Notification, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at
-		 FROM admin_notifications WHERE id = ?`, id)
+		`SELECT `+notificationColumns+` FROM admin_notifications WHERE id = ?`, id)
 	return scanNotification(row)
 }
 
@@ -130,7 +168,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]*Notification, e
 		}
 	}
 
-	query := "SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at FROM admin_notifications"
+	query := "SELECT " + notificationColumns + " FROM admin_notifications"
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -226,7 +264,7 @@ func (s *Store) FindBySource(ctx context.Context, source, sourceID string) (*Not
 	// A key can briefly hold a settled row plus its replacement while a feature
 	// re-raises the same notice. The newest row is the live one.
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, source, source_id, created_by, publish_at, expire_at, created_at, updated_at
+		`SELECT `+notificationColumns+`
 		 FROM admin_notifications WHERE source = ? AND source_id = ?
 		 ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
 		source, sourceID)
@@ -243,8 +281,16 @@ func (s *Store) UpdateFromCascade(ctx context.Context, id string, incoming *Noti
 	if incoming.IMPush {
 		imPush = 1
 	}
+	pinned := 0
+	if incoming.Pinned {
+		pinned = 1
+	}
+	pinnedForever := 0
+	if incoming.PinnedForever {
+		pinnedForever = 1
+	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE admin_notifications SET title=?, content=?, category=?, priority=?, audience_type=?, audience_ids=?, im_push=?, expire_at=?, updated_at=? WHERE id=?`,
+		`UPDATE admin_notifications SET title=?, content=?, category=?, priority=?, audience_type=?, audience_ids=?, im_push=?, pinned=?, pinned_forever=?, link_url=?, button_text=?, expire_at=?, updated_at=? WHERE id=?`,
 		incoming.Title,
 		incoming.Content,
 		string(incoming.Category),
@@ -252,6 +298,10 @@ func (s *Store) UpdateFromCascade(ctx context.Context, id string, incoming *Noti
 		string(incoming.AudienceType),
 		string(audienceJSON),
 		imPush,
+		pinned,
+		pinnedForever,
+		incoming.LinkURL,
+		incoming.ButtonText,
 		formatNullableTime(incoming.ExpireAt),
 		now.Format(time.RFC3339),
 		id,
@@ -339,7 +389,7 @@ func (s *Store) queryUnreadForMachine(ctx context.Context, machineID, now string
 func (s *Store) queryUnreadForMachineWithDepartments(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
 	limitSQL := unreadLimitSQL(limit)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
+		`SELECT `+notificationColumnsQualified+`
 		 FROM admin_notifications n
 		 JOIN machines m ON m.id = ?
 		 LEFT JOIN users u ON u.id = m.user_id
@@ -376,7 +426,7 @@ func (s *Store) queryUnreadForMachineWithDepartments(ctx context.Context, machin
 func (s *Store) getUnreadForMachineLegacy(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
 	limitSQL := unreadLimitSQL(limit)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
+		`SELECT `+notificationColumnsQualified+`
 		 FROM admin_notifications n
 		 LEFT JOIN admin_notification_reads r ON r.notification_id = n.id AND r.machine_id = ?
 		 WHERE n.status = 'published'
@@ -395,7 +445,7 @@ func (s *Store) getUnreadForMachineLegacy(ctx context.Context, machineID, now st
 func (s *Store) getUnreadForMachineWithoutDepartments(ctx context.Context, machineID, now string, limit int) ([]*Notification, error) {
 	limitSQL := unreadLimitSQL(limit)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at
+		`SELECT `+notificationColumnsQualified+`
 		 FROM admin_notifications n
 		 JOIN machines m ON m.id = ?
 		 LEFT JOIN users u ON u.id = m.user_id
@@ -429,6 +479,135 @@ func unreadLimitSQL(limit int) string {
 		return ""
 	}
 	return fmt.Sprintf(" LIMIT %d", limit)
+}
+
+// ---------------------------------------------------------------------------
+// Pinned (置顶) queries
+// ---------------------------------------------------------------------------
+
+// Pinned-permanent and pinned-regular query caps: the GUI banner shows ONE
+// permanent pin leftmost plus the latest 3 regular pinned messages.
+const (
+	pinnedPermanentLimit = 1
+	pinnedRegularLimit   = 3
+)
+
+// GetPinnedForMachine returns the pinned messages targeted to the machine,
+// permanent pin first, then the latest regular pinned messages. Read state is
+// irrelevant here: a pinned message keeps showing until it is revoked, expired,
+// or dismissed locally for the session.
+func (s *Store) GetPinnedForMachine(ctx context.Context, machineID string) ([]*Notification, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	permanent, err := s.queryPinnedForMachine(ctx, machineID, now, "n.pinned = 1 AND n.pinned_forever = 1", pinnedPermanentLimit)
+	if err != nil {
+		return nil, err
+	}
+	regular, err := s.queryPinnedForMachine(ctx, machineID, now, "n.pinned = 1 AND n.pinned_forever = 0", pinnedRegularLimit)
+	if err != nil {
+		return nil, err
+	}
+	return append(permanent, regular...), nil
+}
+
+func (s *Store) queryPinnedForMachine(ctx context.Context, machineID, now string, pinnedFilter string, limit int) ([]*Notification, error) {
+	notifications, err := s.queryPinnedForMachineWithDepartments(ctx, machineID, now, pinnedFilter, limit)
+	if err == nil {
+		return notifications, nil
+	}
+	lowerErr := strings.ToLower(err.Error())
+	// Missing org_members → drop the department branch but keep the
+	// tenant/user resolution (which needs machines + users).
+	if isMissingTableError(err) && strings.Contains(lowerErr, "org_members") {
+		return s.queryPinnedForMachineWithoutDepartments(ctx, machineID, now, pinnedFilter, limit)
+	}
+	// Missing users (or machines entirely) → no joins are safe; the legacy
+	// variant reads published pinned rows without audience resolution.
+	if isMissingTableError(err) && (strings.Contains(lowerErr, "users") || strings.Contains(lowerErr, "machines")) {
+		return s.queryPinnedForMachineLegacy(ctx, machineID, now, pinnedFilter, limit)
+	}
+	return nil, err
+}
+
+func (s *Store) queryPinnedForMachineWithDepartments(ctx context.Context, machineID, now, pinnedFilter string, limit int) ([]*Notification, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+notificationColumnsQualified+`
+		 FROM admin_notifications n
+		 JOIN machines m ON m.id = ?
+		 LEFT JOIN users u ON u.id = m.user_id
+		 WHERE n.status = 'published'
+		   AND (n.expire_at IS NULL OR n.expire_at > ?)
+		   AND `+pinnedFilter+`
+		   AND (
+		     n.audience_type = 'all'
+		     OR (n.audience_type = 'tenant' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = COALESCE(NULLIF(u.tenant_id, ''), m.tenant_id)
+		     ))
+		     OR (n.audience_type = 'user' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = m.user_id
+		     ))
+		     OR (n.audience_type = 'department' AND EXISTS (
+		       SELECT 1 FROM org_members om
+		       JOIN json_each(n.audience_ids) a ON a.value = om.department_id
+		       WHERE om.user_id = m.user_id
+		     ))
+		   )
+		 ORDER BY n.created_at DESC
+		 `+unreadLimitSQL(limit),
+		machineID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotificationRows(rows)
+}
+
+func (s *Store) queryPinnedForMachineWithoutDepartments(ctx context.Context, machineID, now, pinnedFilter string, limit int) ([]*Notification, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+notificationColumnsQualified+`
+		 FROM admin_notifications n
+		 JOIN machines m ON m.id = ?
+		 LEFT JOIN users u ON u.id = m.user_id
+		 WHERE n.status = 'published'
+		   AND (n.expire_at IS NULL OR n.expire_at > ?)
+		   AND `+pinnedFilter+`
+		   AND (
+		     n.audience_type = 'all'
+		     OR (n.audience_type = 'tenant' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = COALESCE(NULLIF(u.tenant_id, ''), m.tenant_id)
+		     ))
+		     OR (n.audience_type = 'user' AND EXISTS (
+		       SELECT 1 FROM json_each(n.audience_ids) a
+		       WHERE a.value = m.user_id
+		     ))
+		   )
+		 ORDER BY n.created_at DESC
+		 `+unreadLimitSQL(limit),
+		machineID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotificationRows(rows)
+}
+
+func (s *Store) queryPinnedForMachineLegacy(ctx context.Context, machineID, now, pinnedFilter string, limit int) ([]*Notification, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+notificationColumnsQualified+`
+		 FROM admin_notifications n
+		 WHERE n.status = 'published'
+		   AND (n.expire_at IS NULL OR n.expire_at > ?)
+		   AND `+pinnedFilter+`
+		 ORDER BY n.created_at DESC
+		 `+unreadLimitSQL(limit),
+		now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotificationRows(rows)
 }
 
 func scanNotificationRows(rows *sql.Rows) ([]*Notification, error) {
@@ -641,26 +820,33 @@ func (s *Store) MachineIDsByUserIDs(ctx context.Context, userIDs []string) ([]st
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-func scanNotification(row *sql.Row) (*Notification, error) {
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanNotificationRow scans one admin_notifications row in the
+// notificationColumns order and applies the parsed values to a Notification.
+func scanNotificationRow(scan rowScanner) (*Notification, error) {
 	var (
 		n                                Notification
 		category, priority, audienceType string
 		audienceJSON, status, source     string
 		sourceID, createdBy              string
 		imPush                           int
+		pinned, pinnedForever            int
+		linkURL, buttonText              string
 		publishAt, expireAt              sql.NullString
 		createdAt, updatedAt             string
 	)
-	err := row.Scan(
+	err := scan.Scan(
 		&n.ID, &n.Title, &n.Content,
 		&category, &priority, &audienceType, &audienceJSON,
-		&status, &imPush, &source, &sourceID, &createdBy,
+		&status, &imPush, &pinned, &pinnedForever, &linkURL, &buttonText,
+		&source, &sourceID, &createdBy,
 		&publishAt, &expireAt, &createdAt, &updatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, err
 	}
 
@@ -669,6 +855,10 @@ func scanNotification(row *sql.Row) (*Notification, error) {
 	n.AudienceType = AudienceType(audienceType)
 	n.Status = Status(status)
 	n.IMPush = imPush != 0
+	n.Pinned = pinned != 0
+	n.PinnedForever = pinnedForever != 0
+	n.LinkURL = linkURL
+	n.ButtonText = buttonText
 	n.Source = source
 	n.SourceID = sourceID
 	n.CreatedBy = createdBy
@@ -691,51 +881,19 @@ func scanNotification(row *sql.Row) (*Notification, error) {
 	return &n, nil
 }
 
-func scanNotificationFromRows(rows *sql.Rows) (*Notification, error) {
-	var (
-		n                                Notification
-		category, priority, audienceType string
-		audienceJSON, status, source     string
-		sourceID, createdBy              string
-		imPush                           int
-		publishAt, expireAt              sql.NullString
-		createdAt, updatedAt             string
-	)
-	err := rows.Scan(
-		&n.ID, &n.Title, &n.Content,
-		&category, &priority, &audienceType, &audienceJSON,
-		&status, &imPush, &source, &sourceID, &createdBy,
-		&publishAt, &expireAt, &createdAt, &updatedAt,
-	)
+func scanNotification(row *sql.Row) (*Notification, error) {
+	n, err := scanNotificationRow(row)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
+	return n, nil
+}
 
-	n.Category = Category(category)
-	n.Priority = Priority(priority)
-	n.AudienceType = AudienceType(audienceType)
-	n.Status = Status(status)
-	n.IMPush = imPush != 0
-	n.Source = source
-	n.SourceID = sourceID
-	n.CreatedBy = createdBy
-	n.CreatedAt = mustParseTime(createdAt)
-	n.UpdatedAt = mustParseTime(updatedAt)
-
-	if publishAt.Valid {
-		t := mustParseTime(publishAt.String)
-		n.PublishAt = &t
-	}
-	if expireAt.Valid {
-		t := mustParseTime(expireAt.String)
-		n.ExpireAt = &t
-	}
-
-	if err := json.Unmarshal([]byte(audienceJSON), &n.AudienceIDs); err != nil {
-		n.AudienceIDs = nil
-	}
-
-	return &n, nil
+func scanNotificationFromRows(rows *sql.Rows) (*Notification, error) {
+	return scanNotificationRow(rows)
 }
 
 func mustParseTime(v string) time.Time {

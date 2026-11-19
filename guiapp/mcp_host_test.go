@@ -3535,6 +3535,203 @@ func TestInboundMCPStopAndGateExplainTheBlock(t *testing.T) {
 	}
 }
 
+func TestInboundMCPHostWaitIsNotAConfirmedTimeout(t *testing.T) {
+	timeout := mcpStopFor(mcpStatusCancelled, "", nil, context.DeadlineExceeded, time.Unix(1, 0).UTC())
+	if timeout == nil || timeout.Class != mcpStopTimeout || timeout.Source != "timeout" || timeout.Reason != "执行超时" {
+		t.Fatalf("deadline %+v", timeout)
+	}
+	later := time.Unix(0, 0).UTC().Add(30 * time.Minute)
+	host := mcpStopFor(mcpStatusCancelled, "有步骤失败或未完成", []mcpStepView{{ID: "T2", Status: mcpStepUnfinished}}, errMCPHostWaitEnded, later)
+	if host == nil || host.Class != mcpStopUnconfirmed || host.Source != "host_wait" || host.Reason != "主机等待已结束，尚未证实为超时" || host.StepID != "T2" {
+		t.Fatalf("host %+v", host)
+	}
+	if status, _, _, _, _ := mcpRunOutcomeCause(nil, errMCPHostWaitEnded, nil); status != mcpStatusCancelled {
+		t.Fatalf("outcome %s", status)
+	}
+	if status, _, _, _, _ := mcpRunOutcomeCause(context.Canceled, errMCPHostWaitEnded, nil); status != mcpStatusCancelled {
+		t.Fatalf("canceled outcome %s", status)
+	}
+
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-1", RunID: "run-1",
+		Steps: []mcpStepView{{ID: "T2", Status: mcpStepUnfinished}},
+	})
+	app.mcpCancelRun("p")
+	app.mcpNoteHostWaitEnded("p", "mcp-1")
+	app.mcpFinishRunCause("p", "mcp-1", mcpStatusCancelled, "", "", false, "", nil, nil, errMCPHostWaitEnded)
+	view, ok := app.mcpViewFromRegistry("p")
+	if !ok || view.Status != mcpStatusCancelled || view.Stop == nil || view.Stop.Class != mcpStopUser {
+		t.Fatalf("user stop %+v stop=%+v", view, view.Stop)
+	}
+	if app.mcpHostWaitEnded("p", "mcp-1") {
+		t.Fatal("timer marked a run that was no longer running")
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "q", Status: mcpStatusRunning, RequestID: "mcp-q", RunID: "run-q",
+		Steps: []mcpStepView{{ID: "T1", Status: mcpStepUnfinished}},
+	})
+	app.mcpNoteHostWaitEnded("q", "mcp-other")
+	if app.mcpHostWaitEnded("q", "mcp-q") {
+		t.Fatal("another request marked this run")
+	}
+	app.mcpNoteHostWaitEnded("q", "mcp-q")
+	if !app.mcpHostWaitEnded("q", "mcp-q") {
+		t.Fatal("a running run did not record the host wait")
+	}
+	status, text, errText, keep, steps := mcpRunOutcomeCause(nil, errMCPHostWaitEnded, nil)
+	app.mcpFinishRunCause("q", "mcp-q", status, text, errText, keep, "", nil, steps, errMCPHostWaitEnded)
+	finished, ok := app.mcpViewFromRegistry("q")
+	if !ok || finished.Status != mcpStatusCancelled || finished.Stop == nil || finished.Stop.Class != mcpStopUnconfirmed || finished.Stop.Source != "host_wait" || finished.Stop.Reason != "主机等待已结束，尚未证实为超时" || finished.Stop.StepID != "T1" {
+		t.Fatalf("finished %+v stop=%+v", finished, finished.Stop)
+	}
+}
+
+func TestInboundMCPCancelledSkipIsNotComplete(t *testing.T) {
+	cancelled := []codingWorkbenchStepStatus{
+		{Index: 1, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},
+		{Index: 2, Title: "逻辑", Status: codingStepSkipped, Summary: "cancelled"},
+		{Index: 3, Title: "收尾", Status: codingStepSkipped, Summary: "cancelled"},
+	}
+	status, stop := mcpExecutionFromWorkbench(cancelled)
+	if status != mcpStatusCancelled || stop == nil || stop.Class != mcpStopUser || stop.Reason != "用户停止" || stop.StepID != "T2" {
+		t.Fatalf("cancel skip published %s stop=%+v", status, stop)
+	}
+	snap := codingWorkbenchStepsSnapshot(cancelled)
+	if snap[0].Status != codingStepPassed || snap[1].Status != codingStepInterrupted || snap[2].Status != codingStepInterrupted {
+		t.Fatalf("snapshot %+v", snap)
+	}
+
+	failed, failedStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 1, Title: "逻辑", Status: codingStepFailed, Summary: "exit status 1"},
+		{Index: 2, Title: "收尾", Status: codingStepSkipped, Summary: "cancelled"},
+	})
+	if failed != mcpStatusFailed || failedStop == nil || failedStop.Class != mcpStopProgram || failedStop.StepID != "T1" {
+		t.Fatalf("failed still wins %s %+v", failed, failedStop)
+	}
+
+	done, doneStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Summary: "ok"},
+		{Index: 2, Status: codingStepSkipped, Summary: "Skipped this step."},
+	})
+	if done != mcpStatusCompleted || doneStop != nil {
+		t.Fatalf("ordinary skip %s %+v", done, doneStop)
+	}
+
+	review, reviewStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 5, Status: codingStepSkipped, Summary: mcpReviewHandoffErrorText},
+		{Index: 6, Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	})
+	if review != mcpStatusWaitingReview || reviewStop == nil || reviewStop.Class != mcpStopReview {
+		t.Fatalf("review %s %+v", review, reviewStop)
+	}
+	reviewSnap := codingWorkbenchStepsSnapshot([]codingWorkbenchStepStatus{
+		{Index: 5, Status: codingStepSkipped, Summary: mcpReviewHandoffErrorText},
+		{Index: 6, Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+	})
+	if reviewSnap[0].Status != mcpStepWaiting || reviewSnap[1].Status != codingStepSkipped || reviewSnap[1].BlockReason != "等待子任务审阅" {
+		t.Fatalf("review rows %+v", reviewSnap)
+	}
+
+	stopped, stoppedStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 2, Status: codingStepSkipped, Summary: "cancelled"},
+		{Index: 5, Status: codingStepSkipped, Summary: mcpReviewHandoffErrorText},
+	})
+	if stopped != mcpStatusCancelled || stoppedStop == nil || stoppedStop.Class != mcpStopUser || stoppedStop.Reason != "用户停止" || stoppedStop.StepID != "T2" {
+		t.Fatalf("user stop wins %s %+v", stopped, stoppedStop)
+	}
+
+	cold, coldStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepInterrupted, Summary: "was running"},
+	})
+	if cold != mcpStatusFailed || coldStop == nil || coldStop.Class != mcpStopProgram {
+		t.Fatalf("cold load %s %+v", cold, coldStop)
+	}
+
+	shown := codingDisplayedRoundSteps([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Round: 0, Summary: "ok"},
+		{Index: 2, Status: codingStepSkipped, Round: 0, Summary: "cancelled"},
+		{Index: 3, Status: codingStepSkipped, Round: 0, Summary: "Skipped this step."},
+	}, 1)
+	if len(shown) != 1 || shown[0].Index != 2 {
+		t.Fatalf("round %+v", shown)
+	}
+
+	if codingRunnerSkipStickyStatus("cancelled") != codingStepInterrupted || codingRunnerSkipStickyStatus("skipped: prior step failed") != codingStepSkipped {
+		t.Fatal("runner skip status")
+	}
+	if !codingPlanStepWasStarted(codingStepInterrupted) {
+		t.Fatal("interrupted plan was not started")
+	}
+
+	host := mcpStopFor(mcpStatusCancelled, "", []mcpStepView{{ID: "T2", Status: codingStepInterrupted, Error: "cancelled"}}, errMCPHostWaitEnded, time.Unix(30, 0).UTC())
+	if host == nil || host.Class != mcpStopUnconfirmed || host.Source != "host_wait" || host.Reason != "主机等待已结束，尚未证实为超时" || host.StepID != "T2" {
+		t.Fatalf("host wait %+v", host)
+	}
+
+	h := &IMMessageHandler{}
+	userID := projectSessionOwnerID(t.TempDir())
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},
+		{Index: 2, Title: "逻辑", Status: codingStepRunning, Summary: "working"},
+		{Index: 3, Title: "收尾", Status: codingStepPending},
+	})
+	h.interruptOpenCodingSteps(userID)
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if !mem.PlanRunStarted || len(mem.StepStatuses) != 3 || mem.StepStatuses[0].Status != codingStepPassed || mem.StepStatuses[0].Summary != "画面已接上" {
+		t.Fatalf("passed %+v started=%v", mem.StepStatuses, mem.PlanRunStarted)
+	}
+	if mem.StepStatuses[1].Status != codingStepInterrupted || mem.StepStatuses[1].Summary != "cancelled" || mem.StepStatuses[2].Status != codingStepInterrupted || mem.StepStatuses[2].Summary != "cancelled" {
+		t.Fatalf("open %+v %+v", mem.StepStatuses[1], mem.StepStatuses[2])
+	}
+	live, liveStop := mcpExecutionFromWorkbench(mem.StepStatuses)
+	if live != mcpStatusCancelled || liveStop == nil || liveStop.Class != mcpStopUser || liveStop.Reason != "用户停止" || liveStop.StepID != "T2" {
+		t.Fatalf("live %s %+v", live, liveStop)
+	}
+
+	reported := []v2.TaskRunResult{
+		{TaskIndex: 1, Title: "画面", Status: v2.TaskPassed},
+		{TaskIndex: 2, Title: "逻辑", Status: v2.TaskSkipped, Error: "cancelled"},
+		{TaskIndex: 3, Title: "收尾", Status: v2.TaskSkipped, Error: "cancelled"},
+	}
+	classified, _, classErr, _, classSteps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{CodingSteps: codingStepsFromResults(reported)})
+	classStop := mcpStopFor(classified, classErr, classSteps, nil, time.Unix(30, 0).UTC())
+	if classified != mcpStatusCancelled || classErr != "" || classStop == nil || classStop.Class != mcpStopUser || classStop.Reason != "用户停止" || classStop.StepID != "T2" || len(classSteps) != 3 || classSteps[1].Status != codingStepInterrupted || classSteps[2].Status != codingStepInterrupted {
+		t.Fatalf("classified %s %q stop=%+v steps=%+v", classified, classErr, classStop, classSteps)
+	}
+	failedReported, _, failedErr, _, failedSteps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{CodingSteps: codingStepsFromResults([]v2.TaskRunResult{
+		{TaskIndex: 1, Title: "逻辑", Status: v2.TaskFailed, Error: "exit status 1"},
+		{TaskIndex: 2, Title: "收尾", Status: v2.TaskSkipped, Error: "cancelled"},
+	})})
+	failedClassStop := mcpStopFor(failedReported, failedErr, failedSteps, nil, time.Unix(30, 0).UTC())
+	if failedReported != mcpStatusFailed || failedClassStop == nil || failedClassStop.Class != mcpStopProgram || failedClassStop.StepID != "T1" {
+		t.Fatalf("classified failure %s %+v", failedReported, failedClassStop)
+	}
+	hostStatus, _, hostErr, _, hostSteps := mcpRunOutcomeCause(nil, errMCPHostWaitEnded, &IMAgentResponse{CodingSteps: codingStepsFromResults(reported)})
+	hostStop := mcpStopFor(hostStatus, hostErr, hostSteps, errMCPHostWaitEnded, time.Unix(30, 0).UTC())
+	if hostStatus != mcpStatusCancelled || hostStop == nil || hostStop.Class != mcpStopUnconfirmed || hostStop.Source != "host_wait" || hostStop.Reason != "主机等待已结束，尚未证实为超时" || hostStop.StepID != "T2" {
+		t.Fatalf("classified host %+v steps=%+v", hostStop, hostSteps)
+	}
+	deadStatus, _, deadErr, _, deadSteps := mcpRunOutcomeCause(nil, context.DeadlineExceeded, &IMAgentResponse{CodingSteps: codingStepsFromResults(reported)})
+	deadStop := mcpStopFor(deadStatus, deadErr, deadSteps, context.DeadlineExceeded, time.Unix(1, 0).UTC())
+	if deadStatus != mcpStatusCancelled || deadStop == nil || deadStop.Class != mcpStopTimeout || deadStop.Reason != "执行超时" {
+		t.Fatalf("classified deadline %+v", deadStop)
+	}
+	plain, _, _, _, plainSteps := mcpRunOutcomeCause(nil, nil, &IMAgentResponse{CodingSteps: codingStepsFromResults([]v2.TaskRunResult{
+		{TaskIndex: 1, Status: v2.TaskPassed},
+		{TaskIndex: 2, Status: v2.TaskSkipped, Error: "skipped: remote isolation unavailable"},
+	})})
+	if plain == mcpStatusCancelled || plain == mcpStatusCompleted || len(plainSteps) != 2 || plainSteps[1].Status == codingStepInterrupted {
+		t.Fatalf("ordinary unfinished %s %+v", plain, plainSteps)
+	}
+	remoteStatus, remoteSummary, _ := remoteCodingStickyStep(&RemoteCodingSubAgentResult{Status: "cancelled", Summary: "已完成画面", Error: "cancelled"})
+	if remoteStatus != codingStepInterrupted || remoteSummary != "cancelled" {
+		t.Fatalf("remote cancel row %s %q", remoteStatus, remoteSummary)
+	}
+}
+
 func TestInboundMCPAdmittedChildIsNotComplete(t *testing.T) {
 	if codingChildPublicStatus(codingruntime.TaskQueued) != "admitted" {
 		t.Fatal("queued must stay admitted")

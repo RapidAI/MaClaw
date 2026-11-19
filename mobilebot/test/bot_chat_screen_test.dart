@@ -22,6 +22,10 @@ final _account = Account(
 
 const _bot = Bot(id: 'b1', name: '小助', description: 'd');
 
+/// 1×1 PNG — the wall screenshot a handoff ask carries.
+const _tinyPng =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 class _FakeApi extends BotApi {
   _FakeApi() : super(ApiClient(_account));
 
@@ -178,5 +182,87 @@ void main() {
     await tester.tap(find.text('继续这个任务'));
     await tester.pumpAndSettle();
     expect(find.text('下一条消息将继续该任务线程'), findsOneWidget);
+  });
+
+  testWidgets('a login-wall ask renders the takeover card, not an answer field', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '这一步需要你在当前桌面的浏览器里完成登录或验证。',
+            'attentionReason': 'login_wall',
+            'askUser': {
+              'inputType': 'text',
+              'question': '这一步需要你在当前桌面的浏览器里完成登录或验证。',
+            },
+            'images': [
+              {'mime': 'image/png', 'data': _tinyPng},
+            ],
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    // The localized reason and the takeover button replace the input card.
+    expect(find.text('需要你登录'), findsOneWidget);
+    expect(find.text('接管'), findsOneWidget);
+    expect(find.text('输入回答'), findsNothing);
+    expect(find.text('提交'), findsNothing);
+  });
+
+  testWidgets('a plain ask keeps the answer field and gains no takeover button', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '站点密码是多少?',
+            'askUser': {'inputType': 'text', 'question': '站点密码是多少?'},
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    expect(find.text('输入回答'), findsOneWidget);
+    expect(find.text('提交'), findsOneWidget);
+    expect(find.text('接管'), findsNothing);
+  });
+
+  testWidgets('a choice ask that rides with a handoff keeps its option chips', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '登录方式选哪个?',
+            'attentionReason': 'login_wall',
+            'askUser': {
+              'inputType': 'choice',
+              'question': '登录方式选哪个?',
+              'options': ['扫码登录', '密码登录'],
+            },
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    // The chips stay tappable — a handoff ask is always free text, so an
+    // options ask is never treated as one.
+    expect(find.text('扫码登录'), findsOneWidget);
+    expect(find.text('密码登录'), findsOneWidget);
+    expect(find.text('接管'), findsNothing);
   });
 }

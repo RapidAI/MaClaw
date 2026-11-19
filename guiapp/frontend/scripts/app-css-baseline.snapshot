@@ -9196,7 +9196,7 @@ button.knowledge-chip:disabled {
 .expert-market-close { width: 32px; height: 32px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--theme-text-secondary); font-size: 1.35rem; cursor: pointer; }.expert-market-close:hover { background: var(--theme-primary-soft); color: var(--theme-primary-strong); }
 .expert-market-tabs { display: flex; align-items: center; gap: 12px; padding: 10px 22px; border-bottom: 1px solid var(--theme-border); }.expert-market-tablist, .expert-market-account-actions { display: flex; align-items: center; gap: 6px; }.expert-market-account-actions { margin-left: auto; }.expert-market-tablist button { border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--theme-text-secondary); padding: 7px 9px; font: inherit; font-size: .78rem; cursor: pointer; }.expert-market-tablist button.active, .expert-market-tablist button:hover { background: var(--theme-primary-soft); color: var(--theme-primary-strong); }.expert-market-balance { color: var(--theme-text-secondary); font-size: .75rem; white-space: nowrap; }.expert-market-balance strong { color: var(--theme-text-primary); }.expert-market-assets-button { min-height: 30px; border: 1px solid var(--theme-border); border-radius: var(--radius-sm); background: var(--theme-surface-muted); color: var(--theme-text-primary); padding: 6px 9px; font: inherit; font-size: .72rem; white-space: nowrap; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }.expert-market-assets-button:hover { border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border)); background: var(--theme-primary-soft); color: var(--theme-primary-strong); }.expert-market-assets-button:active { background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface)); }
 .expert-market-body { min-height: 0; flex: 1; overflow: auto; padding: 18px 22px 22px; }.expert-market-toolbar { display: flex; gap: 8px; margin-bottom: 16px; }.expert-market-toolbar input, .expert-market-toolbar select, .expert-market-share input, .expert-market-share select { min-width: 0; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-primary); padding: 7px 9px; font: inherit; font-size: .8rem; }.expert-market-toolbar input { flex: 1; }.expert-market-toolbar button, .expert-market-row > button { border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface-muted); color: var(--theme-text-primary); padding: 7px 10px; font: inherit; font-size: .76rem; cursor: pointer; }
-.expert-market-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }.expert-market-card { display: flex; min-width: 0; height: 158px; flex-direction: column; padding: 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); transition: border-color 160ms ease-out, box-shadow 160ms ease-out; }.expert-market-card:hover { border-color: color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border)); box-shadow: 0 4px 8px color-mix(in srgb, var(--theme-text-primary) 9%, transparent); }.expert-market-card:focus-within { border-color: var(--theme-primary); }.expert-market-card-head { display: flex; align-items: center; gap: 9px; min-width: 0; }.expert-market-card-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-md); background: var(--theme-primary-soft); font-size: 1.15rem; }.expert-market-card-copy { min-width: 0; }.expert-market-card-copy h3 { margin: 0 0 2px; overflow: hidden; font-size: .86rem; text-overflow: ellipsis; white-space: nowrap; }.expert-market-card-copy span { color: var(--theme-text-secondary); font-size: .66rem; }.expert-market-card > p { display: -webkit-box; margin: 10px 0 7px; overflow: hidden; color: var(--theme-text-secondary); font-size: .72rem; line-height: 1.42; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.expert-market-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }.expert-market-card footer .btn-primary, .expert-market-card footer .expert-market-uninstall { min-width: 52px; padding: 6px 9px; }.expert-market-price { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-primary-strong); font-size: .75rem; font-weight: 700; }.expert-market-free { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-success, #4f7f6f); font-size: .75rem; font-weight: 700; }.expert-market-card--skeleton { pointer-events: none; }.expert-market-skeleton { display: block; border-radius: var(--radius-xs); background: var(--theme-surface-muted); }.expert-market-skeleton--icon { width: 34px; height: 34px; border-radius: var(--radius-md); }.expert-market-skeleton--title { width: 104px; height: 11px; margin-bottom: 7px; }.expert-market-skeleton--version { width: 46px; height: 8px; }.expert-market-skeleton--description { width: 100%; height: 9px; margin: 10px 0 0; }.expert-market-skeleton--short { width: 70%; margin-top: 7px; }.expert-market-skeleton--price { width: 38px; height: 10px; }.expert-market-skeleton--action { width: 55px; height: 30px; border-radius: var(--radius-md); }
+.expert-market-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }.expert-market-card { display: flex; min-width: 0; height: 158px; flex-direction: column; padding: 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); transition: border-color 160ms ease-out, box-shadow 160ms ease-out; }.expert-market-card:hover { border-color: color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border)); box-shadow: 0 4px 8px color-mix(in srgb, var(--theme-text-primary) 9%, transparent); }.expert-market-card:focus-within { border-color: var(--theme-primary); }.expert-market-card-head { display: flex; align-items: center; gap: 9px; min-width: 0; }.expert-market-card-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-md); background: var(--theme-primary-soft); font-size: 1.15rem; }.expert-market-card-copy { min-width: 0; }.expert-market-card-copy h3 { margin: 0 0 2px; overflow: hidden; font-size: .86rem; text-overflow: ellipsis; white-space: nowrap; }.expert-market-card-copy span { color: var(--theme-text-secondary); font-size: .66rem; }.expert-market-card-copy .expert-market-category { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--theme-border); border-radius: var(--radius-pill, 999px); font-style: normal; font-size: .62rem; color: var(--theme-text-secondary); }.expert-market-card > p { display: -webkit-box; margin: 10px 0 7px; overflow: hidden; color: var(--theme-text-secondary); font-size: .72rem; line-height: 1.42; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }.expert-market-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }.expert-market-card footer .btn-primary, .expert-market-card footer .expert-market-uninstall { min-width: 52px; padding: 6px 9px; }.expert-market-price { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-primary-strong); font-size: .75rem; font-weight: 700; }.expert-market-free { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--theme-success, #4f7f6f); font-size: .75rem; font-weight: 700; }.expert-market-card--skeleton { pointer-events: none; }.expert-market-skeleton { display: block; border-radius: var(--radius-xs); background: var(--theme-surface-muted); }.expert-market-skeleton--icon { width: 34px; height: 34px; border-radius: var(--radius-md); }.expert-market-skeleton--title { width: 104px; height: 11px; margin-bottom: 7px; }.expert-market-skeleton--version { width: 46px; height: 8px; }.expert-market-skeleton--description { width: 100%; height: 9px; margin: 10px 0 0; }.expert-market-skeleton--short { width: 70%; margin-top: 7px; }.expert-market-skeleton--price { width: 38px; height: 10px; }.expert-market-skeleton--action { width: 55px; height: 30px; border-radius: var(--radius-md); }
 .expert-market-empty, .expert-market-message { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding: 26px 8px; color: var(--theme-text-secondary); font-size: .82rem; }.expert-market-message { color: var(--theme-danger, #dc1f25); }.expert-market-message button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; }.expert-share-fields fieldset { grid-column: 1 / -1; display: grid; gap: 7px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); }.expert-share-fields legend { padding: 0 4px; color: var(--theme-text-secondary); font-size: .76rem; }.expert-share-fields fieldset label { display: flex; align-items: center; gap: 7px; color: var(--theme-text-primary); }.expert-share-fields fieldset input { min-width: auto; padding: 0; }
 .expert-market-uninstall { border: 1px solid color-mix(in srgb, var(--theme-danger, #dc1f25) 46%, var(--theme-border)); border-radius: var(--radius-md); background: transparent; color: var(--theme-danger, #dc1f25); padding: 7px 10px; font: inherit; font-size: .76rem; cursor: pointer; }.expert-market-uninstall:hover:not(:disabled) { background: color-mix(in srgb, var(--theme-danger, #dc1f25) 10%, transparent); }.expert-market-uninstall:disabled { cursor: wait; opacity: .68; }
 .expert-share-overlay {
@@ -9274,6 +9274,16 @@ button.knowledge-chip:disabled {
 .expert-share-visibility__options input { margin-top: 3px; }
 .expert-share-visibility__options span, .expert-share-distribution span { display: grid; gap: 1px; color: var(--theme-text-primary); line-height: 1.25; }
 .expert-share-visibility__options small, .expert-share-distribution small { color: var(--theme-text-secondary); font-size: .68rem; line-height: 1.35; }
+
+/* Required HubCenter category picker (chip radios, taxonomy-driven). */
+.expert-share-categories { grid-column: 1 / -1; padding: 8px 10px !important; }
+.expert-share-categories[data-invalid='true'] { border-color: var(--theme-danger, #d64545); }
+.expert-share-categories__options { display: flex; flex-wrap: wrap; gap: 8px; }
+.expert-share-categories__options label { display: flex !important; align-items: center !important; gap: 6px; padding: 6px 12px; border: 1px solid var(--theme-border); border-radius: var(--radius-pill, 999px); cursor: pointer; font-size: .76rem; color: var(--theme-text-primary); }
+.expert-share-categories__options label:hover { background: var(--theme-surface-muted); }
+.expert-share-categories__options input { margin: 0; }
+.expert-share-categories__options label:has(input:checked) { border-color: var(--theme-primary); background: var(--theme-primary); color: var(--theme-on-primary, #ffffff); }
+.expert-share-categories small { display: block; margin-top: 6px; color: var(--theme-text-secondary); font-size: .68rem; line-height: 1.4; }
 
 .expert-share-distribution {
     display: flex !important;
@@ -26885,12 +26895,19 @@ button.tbk-pill {
    file list so the popover paints above the composer below. */
 .capc-checklist:has(.capc-files.capc-open),
 .mc-goal-quick-bar:has(.capc-files.capc-open) { z-index: 6; }
-.capc-bar { display: flex; align-items: stretch; gap: 8px; min-width: 0; }
-.capc-hover { flex: 1 1 auto; min-width: 0; }
+/* Center the readout in the 45% bar. The summary does not grow, so a wide
+   column cannot leave a hole between the current step and the files chip. */
+.capc-bar { display: flex; align-items: stretch; justify-content: center; gap: 8px; min-width: 0; }
+.capc-hover { flex: 0 1 auto; min-width: 0; }
 .capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }
+/* Only the steps bar yields width to the summary. The goal bar hosts the
+   same chip as a direct child and must keep flex: 0 0 auto. */
+.capc-bar > .capc-files { flex-shrink: 1; }
 .capc-bar > .capc-files:first-child { margin-left: auto; }
 .capc-hover + .capc-files { border-left: 1px solid color-mix(in srgb, var(--theme-border, #d8dee8) 70%, transparent); padding-left: 8px; }
-.capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
+/* Clip the diff stat inside the button. The chip can shrink below that stat,
+   and the popover is a sibling, so hidden here does not crop the file list. */
+.capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; overflow: hidden; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-files-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
 .capc-files:hover .capc-files-toggle,
 .capc-files-toggle:focus-visible { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
@@ -26907,13 +26924,18 @@ button.tbk-pill {
 .capc-file-stat { display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
 .capc-toggle { display: block; width: 100%; border: 0; margin: 0; padding: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }
 .capc-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary, #2f5f98) 60%, transparent); outline-offset: 2px; }
-.capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }
+/* The count and the current step are one readout. space-between pulled
+   them apart once the summary was wider than that text. */
+.capc-head { display: flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }
 .capc-hover:hover .capc-head,
 .capc-toggle:focus-visible .capc-head { background: color-mix(in srgb, var(--theme-primary, #2f5f98) 5%, transparent); }
-.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; font-weight: 600; }
-.capc-title svg { flex-shrink: 0; }
-.capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.capc-track { width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
+/* CJK in a shrinkable flex item stacks to one character per line unless the
+   label is its own nowrap item. The track shortens before the status. */
+.capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; font-weight: 600; }
+.capc-title svg, .capc-title-label { flex-shrink: 0; }
+.capc-title-label { white-space: nowrap; }
+.capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; min-width: 0; flex: 0 1 auto; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.capc-track { flex: 0 1 48px; width: 48px; min-width: 0; max-width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
 .capc-fill { display: block; height: 100%; border-radius: 999px; transition: width 0.25s ease; }
 .capc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
 .capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
@@ -26923,7 +26945,7 @@ button.tbk-pill {
 .capc-files.capc-open .capc-chevron { transform: rotate(180deg); }
 /* The list floats above the summary and overlaps the bar's top padding, so
    the pointer can move onto the list without crossing a dead gap. The bar
-   itself is the middle 40% of the column, so the list fills it. */
+   itself is the middle 45% of the column, so the list fills it. */
 .capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }
 .capc-hover.capc-open .capc-popover { pointer-events: auto; visibility: visible; }
 /* border-box keeps the padding and border inside the height cap.
@@ -28955,11 +28977,11 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   margin-right: var(--mc-composer-inset-x, 24px);
   align-self: stretch;
 }
-/* The steps bar is a hover target: keeping it to the middle 40% of the
+/* The steps bar is a hover target: keeping it to the middle 45% of the
    column leaves clear space on both sides, so the pointer can pass along
    the edges without opening the step list. */
 [data-testid='coding-agent-plan-checklist'] {
-  width: 40%;
+  width: 45%;
   margin-left: auto;
   margin-right: auto;
 }
@@ -32703,8 +32725,13 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   min-height: 0;
   align-items: center !important;
   gap: 4px !important;
+  /* 1px block margin on each card. The row sits inside an unstyled wrapper,
+     and adjacent flex items do not collapse those margins, so the slit
+     between borders is 2px. min-height: 0 keeps the older 52px/48px row
+     rules from undoing the compact padding. */
   margin: 1px 4px;
-  padding: 7px 8px 7px 8px !important;
+  padding: 3px 8px !important;
+  border: 1px solid var(--theme-border);
   border-radius: var(--radius-md);
   /* Selecting the title fights the row drag and the gesture never starts. */
   user-select: none;
@@ -32814,8 +32841,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   opacity: 0.72;
 }
 .mc-task-pane .stsm-drag-handle:active { cursor: grabbing; }
+.mc-task-pane .sidebar-task-row:hover,
 .mc-task-pane .sidebar-task-row[data-task-drop-target='true'],
 .mc-task-pane:has(.sidebar-task-row[data-task-drop-target='true']) .sidebar-task-row:hover {
+  /* A 1px sideways nudge collides with the next card once the gap is 2px. */
   transform: none;
 }
 /* Status is a real glyph now. The old colored dot stays out of the row. */

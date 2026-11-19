@@ -951,3 +951,233 @@ func TestClearGoalFinishedCodingChecklistLeavesPlainChatAlone(t *testing.T) {
 		t.Fatalf("plain chat checklist changed: %+v", mem)
 	}
 }
+
+func TestFailedStepSummaryLeadsWhenTheModelAnswerIsEmpty(t *testing.T) {
+	const blocker = "模型连续返回空响应，任务中断"
+	status, stepStatus, stepSummary, resultErr := codingWorkbenchStepOutcome(&CodingSubAgentResult{
+		Status: TaskExecFailed,
+		Error:  blocker,
+	})
+	if status != v2.TaskFailed || stepStatus != codingStepFailed || stepSummary != blocker || resultErr != blocker {
+		t.Fatalf("empty answer %s %s %q %q", status, stepStatus, stepSummary, resultErr)
+	}
+	kept, _, keptSummary, _ := codingWorkbenchStepOutcome(&CodingSubAgentResult{
+		Status:  TaskExecFailed,
+		Summary: "浏览器没有弹出窗口",
+		Error:   "exit status 1",
+	})
+	if kept != v2.TaskFailed || keptSummary != "浏览器没有弹出窗口" {
+		t.Fatalf("explanation %s %q", kept, keptSummary)
+	}
+	shaped, _, shapedSummary, _ := codingWorkbenchStepOutcome(&CodingSubAgentResult{
+		Status:  TaskExecFailed,
+		Summary: "已完成画面",
+		Error:   blocker,
+	})
+	if shaped != v2.TaskFailed || shapedSummary != blocker {
+		t.Fatalf("success-shaped summary %s %q", shaped, shapedSummary)
+	}
+	if codingPlanStepIsReviewHandoff(codingWorkbenchStepStatus{Status: codingStepPassed, Summary: mcpReviewHandoffErrorText}) {
+		t.Fatal("a passed note must not become a review handoff")
+	}
+	remoteStatus, remoteSummary, _ := remoteCodingStickyStep(&RemoteCodingSubAgentResult{Status: "failed", Summary: "已完成画面", Error: blocker})
+	if remoteStatus != codingStepFailed || remoteSummary != blocker {
+		t.Fatalf("remote %s %q", remoteStatus, remoteSummary)
+	}
+	report := formatCodingAgentUserFinish([]v2.TaskRunResult{
+		{Title: "画面", Status: v2.TaskPassed, Summary: "画面已接上"},
+		{Title: "浏览器验收", Status: v2.TaskFailed, Error: resultErr},
+	}, false)
+	got := codingRoundConclusion(report, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},
+		{Index: 2, Title: "浏览器验收", Status: codingStepFailed, Summary: codingStepChecklistNote(stepSummary)},
+	})
+	if !strings.HasPrefix(got, blocker) || strings.Count(got, blocker) != 1 || !strings.Contains(got, "still failed") {
+		t.Fatalf("finish %s", got)
+	}
+	stopped := codingRoundConclusion(formatCodingAgentUserFinish([]v2.TaskRunResult{{
+		Title: "画面", Status: v2.TaskPassed, Summary: "画面已接上",
+	}}, true), []codingWorkbenchStepStatus{
+		{Index: 2, Title: "浏览器验收", Status: codingStepFailed, Summary: blocker},
+	})
+	if !strings.HasPrefix(stopped, "Stopped before finishing.") || strings.Count(stopped, blocker) != 1 {
+		t.Fatalf("cancel line %s", stopped)
+	}
+}
+
+func TestDisplayedRoundOmitsEarlierPassedSteps(t *testing.T) {
+	h := &IMMessageHandler{}
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+
+	h.codingBeginDisplayedStepRound(userID)
+	if got := h.getStickyCodingWorkbenchMemory(userID).DisplayedStepRound; got != 0 {
+		t.Fatalf("empty checklist started round %d", got)
+	}
+
+	h.setStickyCodingExecutionPlan(userID, "### T1: 定位\n描述: gather")
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "定位", Status: codingStepRunning},
+	})
+	goal := "[系统续接] 继续当前目标，不要重新规划。\n1. 调用 goal(action=\"step\") 推进当前步骤。\n"
+	if _, _, planned := h.resolveCodingWorkbenchTasks(userID, goal, dir, h.getStickyCodingWorkbenchMemory(userID), nil, nil); planned {
+		t.Fatal("goal continuation planned a new checklist")
+	}
+	if got := h.getStickyCodingWorkbenchMemory(userID).DisplayedStepRound; got != 0 {
+		t.Fatalf("goal continuation started round %d", got)
+	}
+	h.clearStickyCodingStepStatuses(userID)
+
+	const blocker = "模型连续返回空响应，任务中断"
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},
+		{Index: 2, Title: "旧待办", Status: codingStepPending},
+		{Index: 3, Title: "浏览器验收", Status: codingStepFailed, Summary: blocker},
+		{Index: 4, Title: "校验", Status: codingStepVerifyFail, Summary: "gate failed"},
+		{Index: 5, Title: "未完成", Status: mcpStepUnfinished, Summary: "还没做完"},
+		{Index: 6, Title: "交接", Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText},
+		{Index: 7, Title: "后续", Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+		{Index: 8, Title: "已通过", Status: codingStepPassed, Summary: mcpReviewHandoffErrorText + " dependency"},
+		{Index: 9, Title: "普通跳过", Status: codingStepSkipped, Summary: "Skipped this step."},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.DisplayedStepRound != 0 || len(mem.StepStatuses) != 9 {
+		t.Fatalf("seed round=%d len=%d", mem.DisplayedStepRound, len(mem.StepStatuses))
+	}
+	if payload := h.codingWorkbenchStepsEventPayload(userID, mem); len(payload["step_statuses"].([]codingWorkbenchStepStatus)) != 9 {
+		t.Fatalf("round 0 published %d", len(payload["step_statuses"].([]codingWorkbenchStepStatus)))
+	}
+
+	h.codingBeginDisplayedStepRound(userID)
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if mem.DisplayedStepRound != 1 || len(mem.StepStatuses) != 9 {
+		t.Fatalf("sticky round=%d len=%d", mem.DisplayedStepRound, len(mem.StepStatuses))
+	}
+	if mem.StepStatuses[0].Status != codingStepPassed || mem.StepStatuses[0].Summary != "画面已接上" {
+		t.Fatalf("sticky passed row %v", mem.StepStatuses[0])
+	}
+	shown := codingDisplayedRoundSteps(mem.StepStatuses, mem.DisplayedStepRound)
+	assertDisplayedRoundIndexes(t, shown, 3, 4, 5, 6, 7)
+	kept := codingWorkbenchStepsSnapshot([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Summary: mcpReviewHandoffErrorText},
+		{Index: 2, Status: codingStepFailed, Summary: mcpReviewHandoffErrorText},
+	})
+	if kept[0].Status != codingStepPassed || kept[1].Status != codingStepFailed {
+		t.Fatalf("leftover review rewrote the row %+v", kept)
+	}
+
+	payload := h.codingWorkbenchStepsEventPayload(userID, mem)
+	assertDisplayedRoundIndexes(t, payload["step_statuses"].([]codingWorkbenchStepStatus), 3, 4, 5, 6, 7)
+	if payload["execution_status"] != mcpStatusFailed {
+		t.Fatalf("execution_status %v", payload["execution_status"])
+	}
+	status := (&App{}).codingWorkbenchStatusFromHandler(dir, h)
+	assertDisplayedRoundIndexes(t, status.StepStatuses, 3, 4, 5, 6, 7)
+	if status.ExecutionStatus != mcpStatusFailed {
+		t.Fatalf("poll status %s", status.ExecutionStatus)
+	}
+	hold := h.codingChildReviewHoldResponse(userID)
+	holdIDs := map[string]bool{}
+	for _, step := range hold.CodingSteps {
+		holdIDs[step.ID] = true
+	}
+	for _, id := range []string{"T3", "T4", "T5", "T6", "T7"} {
+		if !holdIDs[id] {
+			t.Fatalf("hold missing %s in %+v", id, hold.CodingSteps)
+		}
+	}
+	for _, id := range []string{"T1", "T2", "T8", "T9"} {
+		if holdIDs[id] {
+			t.Fatalf("hold published %s", id)
+		}
+	}
+
+	got := codingRoundConclusion("Finished 4 of 5 steps; 1 still failed.", shown)
+	if !strings.HasPrefix(got, blocker) || strings.Count(got, blocker) != 1 || !strings.Contains(got, "still failed") {
+		t.Fatalf("finish %s", got)
+	}
+	if !strings.Contains(got, mcpReviewHandoffErrorText) || strings.Count(got, mcpReviewHandoffErrorText) != 1 {
+		t.Fatalf("review line %s", got)
+	}
+	if codingPlanStepIsReviewHandoff(codingWorkbenchStepStatus{Status: codingStepPassed, Summary: mcpReviewHandoffErrorText + " dependency"}) {
+		t.Fatal("passed note became a handoff")
+	}
+	stopped := codingRoundConclusion("Stopped before finishing.\n\nFinished 4 of 5 steps; 1 still failed.", shown)
+	if !strings.HasPrefix(stopped, "Stopped before finishing.") || strings.Count(stopped, blocker) != 1 {
+		t.Fatalf("cancel %s", stopped)
+	}
+
+	running := codingDisplayedRoundSteps([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Round: 0, Summary: "dependency"},
+		{Index: 2, Status: codingStepRunning, Round: 0},
+	}, 1)
+	assertDisplayedRoundIndexes(t, running, 2)
+
+	annotated := codingDisplayedRoundSteps(codingWorkbenchStepsSnapshot([]codingWorkbenchStepStatus{
+		{Index: 1, Status: mcpStepWaiting, Summary: mcpReviewHandoffErrorText},
+		{Index: 2, Status: codingStepSkipped, Summary: "skipped: prior step failed"},
+		{Index: 3, Status: codingStepPassed, Summary: "dependency " + mcpReviewHandoffErrorText},
+	}), 1)
+	assertDisplayedRoundIndexes(t, annotated, 1, 2)
+	if annotated[1].Status != codingStepSkipped || annotated[1].BlockReason != "等待子任务审阅" {
+		t.Fatalf("dependent %+v", annotated[1])
+	}
+
+	h.updateStickyCodingStepStatus(userID, 5, mcpStepUnfinished, "还没做完", "")
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if mem.StepStatuses[4].Round != 1 {
+		t.Fatalf("live write %+v", mem.StepStatuses[4])
+	}
+	h.reopenIncompleteCodingPlanSteps(userID, mem, []*v2.TaskItem{{Index: 3, Title: "浏览器验收"}})
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if mem.StepStatuses[0].Status != codingStepPassed || mem.StepStatuses[0].Round != 0 {
+		t.Fatalf("passed row changed %+v", mem.StepStatuses[0])
+	}
+	if mem.StepStatuses[2].Status != codingStepPending || mem.StepStatuses[2].Round != 1 || mem.StepStatuses[2].Summary != "" {
+		t.Fatalf("reopen %+v", mem.StepStatuses[2])
+	}
+	assertDisplayedRoundIndexes(t, codingDisplayedRoundSteps(mem.StepStatuses, mem.DisplayedStepRound), 3, 4, 5, 6, 7)
+
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "新计划", Status: codingStepPending},
+		{Index: 2, Title: "第二步", Status: codingStepPending},
+	})
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if mem.DisplayedStepRound != 0 {
+		t.Fatalf("replace round %d", mem.DisplayedStepRound)
+	}
+	if n := len(h.codingWorkbenchStepsEventPayload(userID, mem)["step_statuses"].([]codingWorkbenchStepStatus)); n != 2 {
+		t.Fatalf("new plan published %d", n)
+	}
+
+	skipID := "displayed-round-skip"
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(skipID) })
+	h.setStickyCodingStepStatuses(skipID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "失败", Status: codingStepFailed, Summary: blocker},
+		{Index: 2, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},
+	})
+	h.codingBeginDisplayedStepRound(skipID)
+	h.markRemainingCodingStepsSkipped(skipID, 1, "skipped: prior step failed")
+	skipped := h.getStickyCodingWorkbenchMemory(skipID)
+	if skipped.DisplayedStepRound != 1 || skipped.StepStatuses[1].Round != 1 || skipped.StepStatuses[1].Status != codingStepSkipped {
+		t.Fatalf("skip stamp %+v", skipped.StepStatuses)
+	}
+	assertDisplayedRoundIndexes(t, codingDisplayedRoundSteps(skipped.StepStatuses, skipped.DisplayedStepRound), 1, 2)
+}
+
+func assertDisplayedRoundIndexes(t *testing.T, list []codingWorkbenchStepStatus, want ...int) {
+	t.Helper()
+	if len(list) != len(want) {
+		got := make([]int, len(list))
+		for i, st := range list {
+			got[i] = st.Index
+		}
+		t.Fatalf("indexes %v want %v", got, want)
+	}
+	for i, st := range list {
+		if st.Index != want[i] {
+			t.Fatalf("index %d = %d want %d", i, st.Index, want[i])
+		}
+	}
+}

@@ -1468,7 +1468,9 @@ export function ImportExpertPackageFromFile(arg1:string):Promise<main.ExpertPack
 
 export function GetExpertMarketAccount():Promise<Record<string, any>>;
 
-export function InstallExpertMarketListing(arg1:string):Promise<main.ExpertPackageImportResult>;
+export function InstallExpertMarketListing(arg1:string,arg2:string):Promise<main.ExpertPackageImportResult>;
+
+export function ListExpertMarketCategories():Promise<Array<string>>;
 
 export function UninstallExpertMarketListing(arg1:string):Promise<void>;
 
@@ -1476,11 +1478,11 @@ export function ListExpertMarketListings(arg1:string,arg2:string,arg3:number,arg
 
 export function PurchaseExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string):Promise<Record<string, any>>;
+export function SubmitExpertMarketListing(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean):Promise<Record<string, any>>;
+export function SubmitExpertMarketListingWithDistribution(arg1:string,arg2:string,arg3:number,arg4:string,arg5:boolean,arg6:string):Promise<Record<string, any>>;
 
-export function SubmitExpertMarketListingToUsers(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+export function SubmitExpertMarketListingToUsers(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function PublishExpertMarketListing(arg1:string):Promise<Record<string, any>>;
 

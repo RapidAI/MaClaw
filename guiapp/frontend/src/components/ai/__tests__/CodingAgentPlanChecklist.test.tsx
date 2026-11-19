@@ -83,6 +83,7 @@ describe("CodingAgentPlanChecklist", () => {
         expect(card.style.marginBottom).toBe("8px");
         expect(card.style.width).toBe("");
         expect(card.style.maxWidth).toBe("");
+        expect(card.querySelector(".capc-title-label")?.textContent).toBe("步骤");
         expect(getByTestId("coding-agent-plan-current").textContent).toContain("T2");
         expect(getByTestId("coding-agent-plan-step-2").getAttribute("data-status")).toBe("running");
         expect(queryByTestId("coding-agent-plan-approve")).toBeNull();
@@ -770,8 +771,8 @@ describe("CodingAgentPlanChecklist", () => {
             expect(block).toContain("margin-right: var(--mc-composer-inset-x, 24px)");
             expect(block).not.toContain("overflow-wrap");
             // A hover target stays out of the pointer's way: the bar keeps the
-            // middle 40% of the column so the edges stay clear.
-            const half = css.indexOf("[data-testid='coding-agent-plan-checklist'] {\n  width: 40%");
+            // middle 45% of the column so the edges stay clear.
+            const half = css.indexOf("[data-testid='coding-agent-plan-checklist'] {\n  width: 45%");
             expect(half).toBeGreaterThan(-1);
             const halfBlock = css.slice(half, css.indexOf("}", half));
             expect(halfBlock).toContain("margin-left: auto");
@@ -782,8 +783,18 @@ describe("CodingAgentPlanChecklist", () => {
             expect(css).toContain(".capc-step-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }");
             expect(css).toContain("[data-testid='coding-agent-plan-understanding'] { overflow-wrap: anywhere; }");
             expect(css).toContain(".capc-step-idx { flex-shrink: 0; min-width: 24px; opacity: 0.86; font-variant-numeric: tabular-nums; white-space: nowrap; }");
+            expect(css).toContain(".capc-bar { display: flex; align-items: stretch; justify-content: center; gap: 8px; min-width: 0; }");
+            expect(css).toContain(".capc-hover { flex: 0 1 auto; min-width: 0; }");
+            expect(css).toContain(".capc-files { flex: 0 0 auto; min-width: 0; max-width: 48%; display: flex; align-items: center; }");
+            expect(css).toContain(".capc-bar > .capc-files { flex-shrink: 1; }");
             expect(css).toContain(".capc-bar > .capc-files:first-child { margin-left: auto; }");
-            expect(css).toContain(".capc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }");
+            expect(css).toContain(".capc-files-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; overflow: hidden; border: 0; margin: 0; padding: 2px 4px; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: default; }");
+            expect(css).toContain(".capc-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; font-weight: 600; }");
+            expect(css).toContain(".capc-title svg, .capc-title-label { flex-shrink: 0; }");
+            expect(css).toContain(".capc-title-label { white-space: nowrap; }");
+            expect(css).toContain(".capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; min-width: 0; flex: 0 1 auto; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }");
+            expect(css).toContain(".capc-track { flex: 0 1 48px; width: 48px; min-width: 0; max-width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }");
+            expect(css).toContain(".capc-head { display: flex; align-items: center; justify-content: flex-start; gap: 8px; min-width: 0; padding: 2px 4px; margin: 0; overflow: hidden; border-radius: 8px; transition: background-color 0.15s ease; }");
             expect(css).toContain(".capc-popover { position: absolute; z-index: 6; left: 0; bottom: calc(100% - 6px); width: 100%; min-width: min(260px, 100%); max-width: 100%; box-sizing: border-box; padding-bottom: 6px; pointer-events: none; visibility: hidden; }");
             expect(css).toContain(".capc-popover-card { box-sizing: border-box; max-height: min(320px, var(--capc-room, 42vh)); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border-radius: 12px; box-shadow: 0 12px 32px rgba(34, 56, 82, 0.16); }");
         }

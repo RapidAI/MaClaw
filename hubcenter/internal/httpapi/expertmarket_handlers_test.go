@@ -29,6 +29,11 @@ func newExpertMarketTestHandler(t *testing.T) (*SkillMarketHandlers, *skillmarke
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each :memory: connection is an independent empty database. Production
+	// keeps a single writer connection; pinning the pool to one connection
+	// gives the in-memory store the same invariant and stops schema-once
+	// writes from landing on a connection that never saw them.
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	store, err := skillmarket.NewStore(db, db)
 	if err != nil {
@@ -303,7 +308,7 @@ func TestExpertMarketMakePrivateClearsPlatformDistribution(t *testing.T) {
 	}
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'public', 'listed', ?, 0, 0, 0, 0, '', ?, ?, 1)`, "make-private-distribution", seller.ID, seller.Email, "pkgexp-make-private-distribution", "Make private distribution", "", "", "1.0.0", 0, filepath.Join(h.expertMarketDir(), "unused.zip"), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'public', 'listed', ?, 0, 0, 0, 0, '', ?, ?, ?, 1)`, "make-private-distribution", seller.ID, seller.Email, "pkgexp-make-private-distribution", "Make private distribution", "", "", "1.0.0", 0, filepath.Join(h.expertMarketDir(), "unused.zip"), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/make-private-distribution/make-private", nil)
@@ -462,7 +467,7 @@ func TestExpertMarketOwnerPurchaseIsIdempotentOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "owner-purchase-listing", seller.ID, seller.Email, "pkgexp-owner-purchase", "Owner purchase", "", "", "1", 0, "public", "listed", path, len(archive), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "owner-purchase-listing", seller.ID, seller.Email, "pkgexp-owner-purchase", "Owner purchase", "", "", "1", 0, "public", "listed", path, len(archive), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/owner-purchase-listing/purchase", nil)
@@ -735,7 +740,7 @@ func TestExpertMarketPrivateDeleteNeverRemovesPackageOutsideMarketStorage(t *tes
 	}
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "private-foreign-path", seller.ID, seller.Email, "pkgexp-private-foreign-path", "Private external path", "", "", "1", 0, "private", "private", foreignPath, 12, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "private-foreign-path", seller.ID, seller.Email, "pkgexp-private-foreign-path", "Private external path", "", "", "1", 0, "private", "private", foreignPath, 12, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/expert-market/experts/private-foreign-path/private", nil)
@@ -776,7 +781,7 @@ func TestExpertMarketPrivateDeletePreservesMalformedEntitlements(t *testing.T) {
 	}
 	now := expertMarketNow()
 	const listingID = "private-entitlement-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-entitlement", "Private entitlement", "", "", "1", 0, "private", "private", packagePath, 15, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-entitlement", "Private entitlement", "", "", "1", 0, "private", "private", packagePath, 15, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_purchases (id, listing_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, 0, 'active', ?)`, "private-entitlement-purchase", listingID, buyer.ID, buyer.Email, now); err != nil {
@@ -827,7 +832,7 @@ func TestExpertMarketPrivateListingNeverDownloadsForMalformedEntitlement(t *test
 	}
 	now := expertMarketNow()
 	const listingID = "private-download-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-download", "Private download", "", "", "1", 0, "private", "private", packagePath, 15, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-download", "Private download", "", "", "1", 0, "private", "private", packagePath, 15, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_purchases (id, listing_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, 0, 'active', ?)`, "private-download-purchase", listingID, buyer.ID, buyer.Email, now); err != nil {
@@ -865,7 +870,7 @@ func TestExpertMarketPrivateListingOwnerCanRestoreDownloadedPackage(t *testing.T
 	}
 	now := expertMarketNow()
 	const listingID = "private-owner-restore-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-owner-restore", "Private owner restore", "", "", "1", 0, "private", "private", packagePath, int64(len(packageData)), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-owner-restore", "Private owner restore", "", "", "1", 0, "private", "private", packagePath, int64(len(packageData)), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+listingID+"/download", nil)
@@ -903,7 +908,7 @@ func TestExpertMarketDownloadNeverServesPackageOutsideMarketStorage(t *testing.T
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "download-foreign-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-download-foreign", "External package", "", "", "1", 0, "private", "private", foreignPath, 19, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-download-foreign", "External package", "", "", "1", 0, "private", "private", foreignPath, 19, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+listingID+"/download", nil)
@@ -932,7 +937,7 @@ func TestExpertMarketAdminPrivateOperations(t *testing.T) {
 	}
 	h.ensureExpertMarketSchema()
 	now, listingID := expertMarketNow(), "admin-private-operations"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-ops", "Private operations", "owner transfer and admin publication", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-ops", "Private operations", "owner transfer and admin publication", "", "1", 0, "private", "private", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, keyword := range []string{"", "t"} {
@@ -992,7 +997,7 @@ func TestExpertMarketAdminSearchEscapesLikeMetacharacters(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	for _, item := range []struct{ id, name string }{{"search-percent", "100% verified"}, {"search-plain", "100x verified"}} {
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, item.id, owner.ID, owner.Email, "pkgexp-"+item.id, item.name, "", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, item.id, owner.ID, owner.Email, "pkgexp-"+item.id, item.name, "", "", "1", 0, "private", "private", "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1033,7 +1038,7 @@ func TestExpertMarketAdminPrivateDeletePreventsOwnerDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-delete", "Private delete", "", "", "1", 0, "private", "private", packagePath, 7, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-delete", "Private delete", "", "", "1", 0, "private", "private", packagePath, 7, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/expert-market/experts/"+listingID+"/private", strings.NewReader(`{"reason":"policy removal"}`))
@@ -1089,7 +1094,7 @@ func TestExpertMarketPrivatePurgeKeepsPackageWhenAuditWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "private-purge-audit-failure", owner.ID, owner.Email, "pkgexp-private-purge-audit-failure", "Private purge audit failure", "", "", "1", 0, "private", "deleted", packagePath, 15, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "private-purge-audit-failure", owner.ID, owner.Email, "pkgexp-private-purge-audit-failure", "Private purge audit failure", "", "", "1", 0, "private", "deleted", packagePath, 15, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_private_purge_audit BEFORE INSERT ON sm_expert_market_audit_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
@@ -1129,7 +1134,7 @@ func TestExpertMarketPrivateListingNeverAcceptsInstallationReportForMalformedEnt
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "private-install-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-install", "Private install", "", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-install", "Private install", "", "", "1", 0, "private", "private", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_purchases (id, listing_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, 0, 'active', ?)`, "private-install-purchase", listingID, buyer.ID, buyer.Email, now); err != nil {
@@ -1167,7 +1172,7 @@ func TestExpertMarketAccountDoesNotExposePrivateListingThroughMalformedEntitleme
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "private-account-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-account", "Private account expert", "", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-private-account", "Private account expert", "", "", "1", 0, "private", "private", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_purchases (id, listing_id, buyer_user_id, buyer_email, amount_paid, status, created_at) VALUES (?, ?, ?, ?, 0, 'active', ?)`, "private-account-purchase", listingID, buyer.ID, buyer.Email, now); err != nil {
@@ -1194,7 +1199,7 @@ func TestExpertMarketApprovalDoesNotPublishPrivateLegacyListing(t *testing.T) {
 	}
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "private-review-listing", seller.ID, seller.Email, "pkgexp-private-review", "Private review", "", "", "1", 0, "private", "pending_review", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "private-review-listing", seller.ID, seller.Email, "pkgexp-private-review", "Private review", "", "", "1", 0, "private", "pending_review", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	approve := httptest.NewRequest(http.MethodPost, "/api/v1/admin/expert-market/experts/private-review-listing/approve", nil)
@@ -1222,7 +1227,7 @@ func TestExpertMarketAdminLifecycleDoesNotAlterPrivateLegacyListing(t *testing.T
 	}
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "private-admin-listing", seller.ID, seller.Email, "pkgexp-private-admin", "Private admin", "", "", "1", 0, "private", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "private-admin-listing", seller.ID, seller.Email, "pkgexp-private-admin", "Private admin", "", "", "1", 0, "private", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1260,7 +1265,7 @@ func TestExpertMarketUnlistStopsNewDistributionAndMakePrivateChangesVisibility(t
 	sellerSession, _ := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "visibility-listing", seller.ID, seller.Email, "pkgexp-visibility", "Visibility Expert", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "visibility-listing", seller.ID, seller.Email, "pkgexp-visibility", "Visibility Expert", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	unlist := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/visibility-listing/withdraw", nil)
@@ -1299,7 +1304,7 @@ func TestExpertMarketUnlistedBlocksNewPurchaseButAllowsEntitledDownload(t *testi
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "listing", seller.ID, seller.Email, "pkgexp-unlisted", "Unlisted", "", "", "1", 5, "public", "listed", path, len(data), now, now)
+	_, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "listing", seller.ID, seller.Email, "pkgexp-unlisted", "Unlisted", "", "", "1", 5, "public", "listed", path, len(data), now, now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1364,7 +1369,7 @@ func TestExpertMarketDeleteRetainsEntitledDownloadButPurgeRequiresNoEntitlements
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "delete-listing", seller.ID, seller.Email, "pkgexp-delete", "Archived expert", "", "", "1", 5, "public", "listed", path, len(data), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "delete-listing", seller.ID, seller.Email, "pkgexp-delete", "Archived expert", "", "", "1", 5, "public", "listed", path, len(data), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	purchase := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1424,7 +1429,7 @@ func TestExpertMarketOptionalModerationNoteAndInstallationAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "audit-listing", seller.ID, seller.Email, "pkgexp-audit", "Audited expert", "", "", "1", 1, "public", "pending_review", path, len(data), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "audit-listing", seller.ID, seller.Email, "pkgexp-audit", "Audited expert", "", "", "1", 1, "public", "pending_review", path, len(data), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	approve := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1474,7 +1479,7 @@ func TestExpertMarketInstallationReportRejectsTrailingOrOversizedInput(t *testin
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "installation-validation-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-validation", "Installation validation", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-validation", "Installation validation", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range []string{
@@ -1510,7 +1515,7 @@ func TestExpertMarketInstallationReportUpsertsRetryState(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "installation-retry-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-retry", "Installation retry", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-retry", "Installation retry", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range []string{
@@ -1542,7 +1547,7 @@ func TestExpertMarketRejectAllowsEmptyReviewNote(t *testing.T) {
 	seller, _ := users.EnsureAccountWithID(ctx, "seller-reject", "seller-reject@example.test")
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "reject-listing", seller.ID, seller.Email, "pkgexp-reject", "Rejected expert", "", "", "1", 0, "public", "pending_review", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "reject-listing", seller.ID, seller.Email, "pkgexp-reject", "Rejected expert", "", "", "1", 0, "public", "pending_review", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	reject := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -1564,7 +1569,7 @@ func TestExpertMarketReviewRollsBackWhenAuditWriteFails(t *testing.T) {
 	seller, _ := users.EnsureAccountWithID(ctx, "seller-review-rollback", "seller-review-rollback@example.test")
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "review-rollback-listing", seller.ID, seller.Email, "pkgexp-review-rollback", "Review rollback", "", "", "1", 0, "public", "pending_review", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "review-rollback-listing", seller.ID, seller.Email, "pkgexp-review-rollback", "Review rollback", "", "", "1", 0, "public", "pending_review", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_expert_review_audit BEFORE INSERT ON sm_expert_market_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
@@ -1589,7 +1594,7 @@ func TestExpertMarketAdminLifecycleRollsBackWhenAuditWriteFails(t *testing.T) {
 	seller, _ := users.EnsureAccountWithID(ctx, "seller-admin-audit-rollback", "seller-admin-audit-rollback@example.test")
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "admin-audit-rollback", seller.ID, seller.Email, "pkgexp-admin-audit-rollback", "Admin audit rollback", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "admin-audit-rollback", seller.ID, seller.Email, "pkgexp-admin-audit-rollback", "Admin audit rollback", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_expert_admin_audit BEFORE INSERT ON sm_expert_market_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
@@ -1619,7 +1624,7 @@ func TestExpertMarketStructuredAuditIncludesPublicLifecycleTransitions(t *testin
 	now := expertMarketNow()
 	insert := func(id, status string) {
 		t.Helper()
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1679,7 +1684,7 @@ func TestExpertMarketOwnerLifecycleRollsBackWhenAuditWriteFails(t *testing.T) {
 	now := expertMarketNow()
 	insert := func(id, sourceID, visibility, status string) {
 		t.Helper()
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, visibility, status, "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, visibility, status, "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1730,7 +1735,7 @@ func TestExpertMarketLifecycleActionsStillRequireReason(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	insert := func(id, sourceID, status string) {
 		t.Helper()
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, "public", status, "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, "public", status, "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1771,7 +1776,7 @@ func TestExpertMarketAdminLifecycleRejectsMalformedAndOversizedRequests(t *testi
 	now := expertMarketNow()
 	insert := func(id, status string) {
 		t.Helper()
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1818,8 +1823,8 @@ func TestExpertMarketAdminListReflectsModerationDecision(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := h.store.DB().Exec(
-		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`,
-		"admin-listing", seller.ID, seller.Email, "pkgexp-admin-list", "Reviewed expert", "", "", "1", 0, "public", "pending_review", "", 0, now, now,
+		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`,
+		"admin-listing", seller.ID, seller.Email, "pkgexp-admin-list", "Reviewed expert", "", "", "1", 0, "public", "pending_review", "", 0, now, now, "",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1861,7 +1866,7 @@ func TestExpertMarketAdminListFiltersByVisibility(t *testing.T) {
 	now := expertMarketNow()
 	insert := func(id, sourceID, visibility string) {
 		t.Helper()
-		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, visibility, "listed", "", 0, now, now); err != nil {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, id, seller.ID, seller.Email, sourceID, id, "", "", "1", 0, visibility, "listed", "", 0, now, now, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1936,7 +1941,7 @@ func TestExpertMarketAdminListUsesPrimaryForConsistentTotal(t *testing.T) {
 	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, DataDir: t.TempDir()})
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "primary-listing", "seller", "seller@example.test", "pkgexp-primary-list", "Primary listing", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "primary-listing", "seller", "seller@example.test", "pkgexp-primary-list", "Primary listing", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
@@ -1985,7 +1990,7 @@ func TestExpertMarketPublicListUsesPrimaryForConsistentResults(t *testing.T) {
 	schemaHandler.ensureExpertMarketSchema()
 	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: users, AuthSvc: auth, DataDir: t.TempDir()})
 	now := expertMarketNow()
-	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "primary-catalogue-listing", "seller", "seller@example.test", "pkgexp-primary-catalogue", "Primary catalogue", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "primary-catalogue-listing", "seller", "seller@example.test", "pkgexp-primary-catalogue", "Primary catalogue", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts", nil)
@@ -2039,7 +2044,7 @@ func TestExpertMarketPurchaseDownloadAndInstallationUsePrimaryState(t *testing.T
 	schemaHandler.ensureExpertMarketSchema()
 	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: users, AuthSvc: auth, CreditsSvc: credits, DataDir: t.TempDir()})
 	now := expertMarketNow()
-	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "primary-state-listing", seller.ID, seller.Email, "pkgexp-primary-state", "Primary state", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := writeDB.Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "primary-state-listing", seller.ID, seller.Email, "pkgexp-primary-state", "Primary state", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2072,8 +2077,8 @@ func TestExpertMarketAdminDeleteRequiresUnlistedStatus(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := h.store.DB().Exec(
-		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`,
-		"listed-delete-guard", seller.ID, seller.Email, "pkgexp-delete-guard", "Listed expert", "", "", "1", 0, "public", "listed", "", 0, now, now,
+		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`,
+		"listed-delete-guard", seller.ID, seller.Email, "pkgexp-delete-guard", "Listed expert", "", "", "1", 0, "public", "listed", "", 0, now, now, "",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2097,8 +2102,8 @@ func TestExpertMarketAdminEventsUseWriteDBAndStableOrdering(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := h.store.DB().Exec(
-		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`,
-		"event-listing", seller.ID, seller.Email, "pkgexp-event-list", "Event expert", "", "", "1", 0, "public", "listed", "", 0, now, now,
+		`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`,
+		"event-listing", seller.ID, seller.Email, "pkgexp-event-list", "Event expert", "", "", "1", 0, "public", "listed", "", 0, now, now, "",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2137,7 +2142,7 @@ func TestExpertMarketAdminEventsOrderChronologicallyAndExposeStructuredAudit(t *
 		t.Fatal(err)
 	}
 	h.ensureExpertMarketSchema()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "event-details-listing", seller.ID, seller.Email, "pkgexp-event-details", "Event details", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "event-details-listing", seller.ID, seller.Email, "pkgexp-event-details", "Event details", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_events (id, listing_id, actor, action, reason, created_at) VALUES ('event-whole-second', 'event-details-listing', 'administrator', 'unlisted', 'legacy', '2026-08-15T09:00:00Z')`); err != nil {
@@ -2181,7 +2186,7 @@ func TestExpertMarketAdminEventsArePaginatedAndBounded(t *testing.T) {
 	}
 	h.ensureExpertMarketSchema()
 	const listingID = "event-pagination-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-pagination", "Event pagination", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-pagination", "Event pagination", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z", ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 55; i++ {
@@ -2228,7 +2233,7 @@ func TestExpertMarketAdminEventsHasMoreUsesLookahead(t *testing.T) {
 	}
 	h.ensureExpertMarketSchema()
 	const listingID = "event-lookahead-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-lookahead", "Event lookahead", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-lookahead", "Event lookahead", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z", ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4; i++ {
@@ -2276,7 +2281,7 @@ func TestExpertMarketListEndpointsRejectInvalidPages(t *testing.T) {
 	h.ensureExpertMarketSchema()
 	now := expertMarketNow()
 	const listingID = "invalid-page-listing"
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, viewer.ID, viewer.Email, "pkgexp-invalid-page", "Invalid page", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, listingID, viewer.ID, viewer.Email, "pkgexp-invalid-page", "Invalid page", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -2352,7 +2357,7 @@ func TestExpertMarketPurgesUnentitledArchivedPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "purge-listing", seller.ID, seller.Email, "pkgexp-purge", "Purgeable expert", "", "", "1", 0, "public", "deleted", path, len(data), now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "purge-listing", seller.ID, seller.Email, "pkgexp-purge", "Purgeable expert", "", "", "1", 0, "public", "deleted", path, len(data), now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	purge := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"safe to remove"}`))
@@ -2387,7 +2392,7 @@ func TestExpertMarketPublicPurgeKeepsPackageWhenAuditWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "public-purge-audit-failure", seller.ID, seller.Email, "pkgexp-public-purge-audit-failure", "Public purge audit failure", "", "", "1", 0, "public", "deleted", packagePath, 14, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "public-purge-audit-failure", seller.ID, seller.Email, "pkgexp-public-purge-audit-failure", "Public purge audit failure", "", "", "1", 0, "public", "deleted", packagePath, 14, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_public_purge_audit BEFORE INSERT ON sm_expert_market_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
@@ -2426,7 +2431,7 @@ func TestExpertMarketPurgeNeverRemovesPackageOutsideMarketStorage(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "purge-foreign-listing", seller.ID, seller.Email, "pkgexp-purge-foreign", "External archive", "", "", "1", 0, "public", "deleted", foreignPath, 11, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "purge-foreign-listing", seller.ID, seller.Email, "pkgexp-purge-foreign", "External archive", "", "", "1", 0, "public", "deleted", foreignPath, 11, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	purge := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"remove bytes"}`))
@@ -2461,7 +2466,7 @@ func TestExpertMarketPurgeNeverFollowsDirectorySymlinkOutsideMarketStorage(t *te
 	linkPath := filepath.Join(h.expertMarketDir(), "outside-link")
 	requireResolvableSymlink(t, foreignDir, linkPath)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "purge-symlink-listing", seller.ID, seller.Email, "pkgexp-purge-symlink", "Symlinked archive", "", "", "1", 0, "public", "deleted", filepath.Join(linkPath, filepath.Base(foreignPath)), 11, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "purge-symlink-listing", seller.ID, seller.Email, "pkgexp-purge-symlink", "Symlinked archive", "", "", "1", 0, "public", "deleted", filepath.Join(linkPath, filepath.Base(foreignPath)), 11, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	purge := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"remove bytes"}`))
@@ -2526,7 +2531,7 @@ func TestExpertMarketPurgeKeepsDeletedListingWhenPackageRemovalFails(t *testing.
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "blocked-purge-listing", seller.ID, seller.Email, "pkgexp-purge-failure", "Blocked purge", "", "", "1", 0, "public", "deleted", blockedPath, 4, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, "blocked-purge-listing", seller.ID, seller.Email, "pkgexp-purge-failure", "Blocked purge", "", "", "1", 0, "public", "deleted", blockedPath, 4, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	purge := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"remove bytes"}`))

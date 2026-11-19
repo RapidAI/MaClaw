@@ -50,6 +50,12 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		if push.Notification.Priority == "urgent" {
 			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)
 		}
+		// A pinned message changes what the sidebar banner shows. The push
+		// payload itself is not enough (the banner caps at 1 permanent + 3
+		// latest), so re-pull the authoritative pinned list.
+		if push.Notification.Pinned {
+			go a.PullPinnedNotifications()
+		}
 
 	case "revoke":
 		if push.NotifID == "" {
@@ -57,5 +63,7 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		}
 		a.notifCache.Remove(push.NotifID)
 		emitNotificationFrontendEvent(a, "notification:revoke", push.NotifID)
+		// The revoke may target a pinned row; re-pull keeps the banner exact.
+		go a.PullPinnedNotifications()
 	}
 }

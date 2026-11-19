@@ -1433,6 +1433,7 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	return agent.AskUserResultMarker(&agent.AskUserRequest{
 		Question:  question,
 		InputType: "text",
+		Takeover:  true,
 	}), nil
 }
 

@@ -160,6 +160,30 @@ String desktopModeMark(String mode, AppLocalizations S) => switch (mode) {
 
 bool botHasComputer(String mode) => mode != 'none';
 
+/// The person-facing sentence for a desktop handoff reason. The desktop sends
+/// short enums (login_wall, payment_confirm, …) that must not show raw; an
+/// unknown reason falls back to itself, so a newer desktop still reads sensibly.
+String attentionReasonLabel(String reason, AppLocalizations S) => switch (reason.trim()) {
+  'login_wall' => S.chatAttentionLoginWall,
+  'captcha_widget' => S.chatAttentionCaptcha,
+  'mfa' => S.chatAttentionMfa,
+  'login_qr' => S.chatAttentionQr,
+  'payment_confirm' => S.chatAttentionPayment,
+  'computer_takeover' => S.chatAttentionTakeover,
+  _ => reason.trim(),
+};
+
+/// True when the ask on this message is really a desktop handoff: the next
+/// step happens on the computer screen, not as a typed chat answer. Such an
+/// ask renders as a takeover card instead of an answer field. A handoff ask
+/// is always free text; an ask with option chips (choice/confirm) or a
+/// secret field keeps the answer card even if a handoff rides along, so the
+/// choices/obscured input stay usable.
+bool isDesktopHandoffAsk(ChatMessage message) =>
+    !message.question.isSecret &&
+    message.question.options.isEmpty &&
+    (message.attentionReason.isNotEmpty || message.handoffUrl.isNotEmpty);
+
 /// True when another bot already has this name — the same quick check the
 /// desktop dialog runs (trim + collapse whitespace + fold case). The Hub is
 /// still authoritative for full-width and numbered-name forms.

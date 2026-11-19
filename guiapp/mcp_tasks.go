@@ -30,7 +30,10 @@ const (
 	mcpPlanDialogueHint        = "规划还在等回复，确认前不会改文件。用 send_command 把要补充或修改的话发回这个任务。"
 )
 
-var errMCPTaskRunning = errors.New("任务还在运行，先停止或等这轮结束再发命令")
+var (
+	errMCPTaskRunning   = errors.New("任务还在运行，先停止或等这轮结束再发命令")
+	errMCPHostWaitEnded = errors.New("主机等待已结束，尚未证实为超时")
+)
 
 // mcpTaskView is the JSON text returned by create, get, stop, and list.
 type mcpTaskView struct {
@@ -113,6 +116,9 @@ type mcpRunRecord struct {
 	Children           []mcpChildView
 	Stop               *mcpStopView
 	cancel             context.CancelFunc
+	// hostWaitEnded is set only by this process's own wait budget, and only
+	// while the run is still waiting. It is not a confirmed execution timeout.
+	hostWaitEnded bool
 }
 
 type mcpModelPin struct {
@@ -790,7 +796,13 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	}
 	defer a.mcpReleaseTurn(path, token)
 	requestID := "mcp-" + randomHexID(8)
-	runCtx, cancel := context.WithTimeout(context.Background(), mcpRunTimeout)
+	// The budget cancels the call. It does not stamp DeadlineExceeded, so a
+	// later stop is not reported as a confirmed timeout.
+	runCtx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(mcpRunTimeout, func() {
+		a.mcpNoteHostWaitEnded(path, requestID)
+		cancel()
+	})
 	mark := a.mcpConversationMark(path)
 	rec := &mcpRunRecord{
 		ProjectPath:   path,
@@ -816,6 +828,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	}
 	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew)
 	if err != nil {
+		timer.Stop()
 		cancel()
 		return mcpTaskView{}, err
 	}
@@ -838,6 +851,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer timer.Stop()
 		defer cancel()
 		resp, err := a.RunAIAssistantProgrammingPrompt(runCtx, AIAssistantSendRequest{
 			Text:                        bound.Text,
@@ -870,7 +884,11 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 				a.mcpRecordToolEvent(path, requestID, ev)
 			},
 		})
+		timer.Stop()
 		cause := runCtx.Err()
+		if cause != nil && a.mcpHostWaitEnded(path, requestID) {
+			cause = errMCPHostWaitEnded
+		}
 		status, finalText, errText, keepText, steps := mcpRunOutcomeCause(err, cause, resp)
 		steps = a.mcpStampStepFiles(path, steps)
 		var kind string
@@ -1823,6 +1841,8 @@ func mcpRunOutcomeCause(runErr, cause error, resp *IMAgentResponse) (status, tex
 	status = mcpStatusCompleted
 	keepText = true
 	switch {
+	case errors.Is(cause, errMCPHostWaitEnded):
+		status = mcpStatusCancelled
 	case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled):
 		status = mcpStatusCancelled
 	case runErr != nil:
@@ -1925,6 +1945,42 @@ func (a *App) mcpCancelRun(path string) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// mcpNoteHostWaitEnded records that this process stopped waiting. A run that
+// is no longer waiting, or a different request, is left alone so a user stop
+// that already landed stays a user stop.
+func (a *App) mcpNoteHostWaitEnded(path, requestID string) {
+	if a == nil {
+		return
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return
+	}
+	rec.hostWaitEnded = true
+}
+
+func (a *App) mcpHostWaitEnded(path, requestID string) bool {
+	if a == nil {
+		return false
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return false
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	return rec != nil && rec.RequestID == requestID && rec.hostWaitEnded
 }
 
 func (a *App) mcpFinishRun(path, requestID, status, text, errText string, keepText bool, kind string, commands []string, steps []mcpStepView) {

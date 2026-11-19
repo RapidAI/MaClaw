@@ -1082,6 +1082,7 @@ func (h *IMMessageHandler) runCodingPlanDialogueTurn(userID, userText, projectPa
 			m.ExecutionPlan = ""
 			m.StepStatuses = nil
 			m.PlanRunStarted = false
+			m.DisplayedStepRound = 0
 		}
 		m.PlanDialogue = true
 		if strings.TrimSpace(m.PlanDialogueBrief) == "" {
@@ -1340,6 +1341,7 @@ func (h *IMMessageHandler) commitCodingPlanDraft(userID, brief string, tasks []*
 			m.ExecutionPlan = truncateRunesForSubAgent(pending.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}
 		m.StepStatuses = steps
+		m.DisplayedStepRound = 0
 		m.RequirementRestatement = truncateRunesForSubAgent(note, 400)
 		stored = true
 	})

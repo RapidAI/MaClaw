@@ -55,6 +55,13 @@
       notifPriorityImportant: 'Important',
       notifPriorityUrgent: 'Urgent',
       notifFormImPush: 'Push to IM channel',
+      notifFormPinned: 'Pinned message (floating banner)',
+      notifFormPinnedForever: 'Permanent pin (always leftmost)',
+      notifFormLink: 'Link (optional)',
+      notifFormLinkPlaceholder: 'https://... opened by the banner button',
+      notifFormButtonText: 'Button label',
+      notifFormButtonTextPlaceholder: 'View details',
+      notifBadgePinned: 'PINNED',
       notifFormPublishAt: 'Publish Time',
       notifFormPublishNow: 'Immediately',
       notifFormPublishScheduled: 'Scheduled',
@@ -124,6 +131,13 @@
       notifPriorityImportant: '\u91cd\u8981',
       notifPriorityUrgent: '\u7d27\u6025',
       notifFormImPush: '\u63a8\u9001\u5230 IM \u901a\u9053',
+      notifFormPinned: '\u7f6e\u9876\u6d88\u606f\uff08\u6d6e\u7a97\u5c55\u793a\uff09',
+      notifFormPinnedForever: '\u6c38\u4e45\u7f6e\u9876\uff08\u59cb\u7ec8\u6700\u5de6\uff09',
+      notifFormLink: '\u94fe\u63a5\uff08\u53ef\u9009\uff09',
+      notifFormLinkPlaceholder: 'https://... \u7531\u6d6e\u7a97\u6309\u94ae\u6253\u5f00',
+      notifFormButtonText: '\u6309\u94ae\u540d\u79f0',
+      notifFormButtonTextPlaceholder: '\u67e5\u770b\u8be6\u60c5',
+      notifBadgePinned: '\u7f6e\u9876',
       notifFormPublishAt: '\u53d1\u5e03\u65f6\u95f4',
       notifFormPublishNow: '\u7acb\u5373\u53d1\u5e03',
       notifFormPublishScheduled: '\u5b9a\u65f6\u53d1\u5e03',
@@ -329,6 +343,7 @@
         + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
         + '<span class="badge ' + statusBadgeClass(item.status) + '">' + escapeHtml(statusLabel(item.status)) + '</span>'
         + '<span class="badge info">' + escapeHtml(categoryLabel(item.category)) + '</span>'
+        + (item.pinned ? '<span class="badge warn">' + escapeHtml(tr('notifBadgePinned')) + '</span>' : '')
         + (item.priority === 'urgent' ? '<span class="badge danger">URGENT</span>' : '')
         + (item.priority === 'important' ? '<span class="badge warn">IMPORTANT</span>' : '')
         + '</div>'
@@ -391,6 +406,17 @@
       // IM Push (only visible for urgent)
       + '<div id="notifImPushWrap" class="hidden"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:0;text-transform:none;font-weight:normal;font-size:13px">'
       + '<input type="checkbox" id="notifInputImPush"> ' + escapeHtml(tr('notifFormImPush')) + '</label></div>'
+      // Pinned message (floating banner)
+      + '<div><label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:0;text-transform:none;font-weight:normal;font-size:13px">'
+      + '<input type="checkbox" id="notifInputPinned" onchange="notifPinnedChanged()"> ' + escapeHtml(tr('notifFormPinned')) + '</label></div>'
+      + '<div id="notifPinnedExtras" class="hidden" style="display:grid;gap:12px">'
+      + '<div><label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:0;text-transform:none;font-weight:normal;font-size:13px">'
+      + '<input type="checkbox" id="notifInputPinnedForever"> ' + escapeHtml(tr('notifFormPinnedForever')) + '</label></div>'
+      + '<div><label for="notifInputLinkUrl">' + escapeHtml(tr('notifFormLink')) + '</label>'
+      + '<input id="notifInputLinkUrl" maxlength="500" placeholder="' + escapeHtml(tr('notifFormLinkPlaceholder')) + '"></div>'
+      + '<div><label for="notifInputButtonText">' + escapeHtml(tr('notifFormButtonText')) + '</label>'
+      + '<input id="notifInputButtonText" maxlength="20" placeholder="' + escapeHtml(tr('notifFormButtonTextPlaceholder')) + '"></div>'
+      + '</div>'
       // Publish time
       + '<div><label>' + escapeHtml(tr('notifFormPublishAt')) + '</label>'
       + '<div style="display:flex;gap:14px;align-items:center">'
@@ -435,6 +461,7 @@
       + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'
       + '<span class="badge ' + statusBadgeClass(data.status) + '">' + escapeHtml(statusLabel(data.status)) + '</span>'
       + '<span class="badge info">' + escapeHtml(categoryLabel(data.category)) + '</span>'
+      + (data.pinned ? '<span class="badge warn">' + escapeHtml(tr('notifBadgePinned')) + '</span>' : '')
       + (data.priority === 'urgent' ? '<span class="badge danger">URGENT</span>' : '')
       + (data.priority === 'important' ? '<span class="badge warn">IMPORTANT</span>' : '')
       + '</div>'
@@ -445,6 +472,8 @@
       + '<div class="item" style="padding:14px 16px">'
       + '<div class="item-title" style="font-size:13px;margin-bottom:8px">' + escapeHtml(tr('notifDetailContent')) + '</div>'
       + '<div style="font-size:13px;line-height:1.7">' + contentHtml + '</div>'
+      + (data.link_url ? '<div class="item-meta" style="margin-top:10px">' + escapeHtml(tr('notifFormLink')) + ': <a href="' + escapeHtml(data.link_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(data.link_url) + '</a>'
+        + (data.button_text ? ' &nbsp;|&nbsp; ' + escapeHtml(tr('notifFormButtonText')) + ': ' + escapeHtml(data.button_text) : '') + '</div>' : '')
       + '</div>'
       // Statistics
       + '<div class="item" style="padding:14px 16px">'
@@ -570,6 +599,17 @@
     }
   };
 
+  global.notifPinnedChanged = function() {
+    const pinned = document.getElementById('notifInputPinned');
+    const extras = document.getElementById('notifPinnedExtras');
+    if (!pinned || !extras) return;
+    if (pinned.checked) {
+      extras.classList.remove('hidden');
+    } else {
+      extras.classList.add('hidden');
+    }
+  };
+
   global.notifPublishModeChanged = function() {
     const selected = document.querySelector('input[name="notifPublishMode"]:checked');
     const wrap = document.getElementById('notifPublishAtWrap');
@@ -603,6 +643,10 @@
     const audienceIdsRaw = (document.getElementById('notifInputAudienceIds') || {}).value || '';
     const priority = (document.querySelector('input[name="notifPriority"]:checked') || {}).value || 'normal';
     const imPush = !!(document.getElementById('notifInputImPush') || {}).checked;
+    const pinned = !!(document.getElementById('notifInputPinned') || {}).checked;
+    const pinnedForever = !!(document.getElementById('notifInputPinnedForever') || {}).checked;
+    const linkUrl = ((document.getElementById('notifInputLinkUrl') || {}).value || '').trim();
+    const buttonText = ((document.getElementById('notifInputButtonText') || {}).value || '').trim();
     const publishMode = (document.querySelector('input[name="notifPublishMode"]:checked') || {}).value || 'now';
     const publishAtRaw = (document.getElementById('notifInputPublishAt') || {}).value || '';
     const expireAtRaw = (document.getElementById('notifInputExpireAt') || {}).value || '';
@@ -612,6 +656,7 @@
     if (title.length > 100) { showToast('Title exceeds 100 characters', 'error'); return; }
     if (!content.trim()) { showToast('Content is required', 'error'); return; }
     if (content.length > 2000) { showToast('Content exceeds 2000 characters', 'error'); return; }
+    if (linkUrl && !/^https?:\/\//i.test(linkUrl)) { showToast('Link must start with http:// or https://', 'error'); return; }
 
     const audienceIds = audienceType === 'all' ? [] :
       audienceIdsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
@@ -624,6 +669,10 @@
       audience_type: audienceType,
       audience_ids: audienceIds,
       im_push: imPush && priority === 'urgent',
+      pinned: pinned || pinnedForever,
+      pinned_forever: pinnedForever,
+      link_url: linkUrl,
+      button_text: buttonText,
       status: mode === 'publish' ? 'published' : 'draft'
     };
 

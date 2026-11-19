@@ -2790,8 +2790,13 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   min-height: 0;
   align-items: center !important;
   gap: 4px !important;
+  /* 1px block margin on each card. The row sits inside an unstyled wrapper,
+     and adjacent flex items do not collapse those margins, so the slit
+     between borders is 2px. min-height: 0 keeps the older 52px/48px row
+     rules from undoing the compact padding. */
   margin: 1px 4px;
-  padding: 7px 8px 7px 8px !important;
+  padding: 3px 8px !important;
+  border: 1px solid var(--theme-border);
   border-radius: var(--radius-md);
   /* Selecting the title fights the row drag and the gesture never starts. */
   user-select: none;
@@ -2901,8 +2906,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   opacity: 0.72;
 }
 .mc-task-pane .stsm-drag-handle:active { cursor: grabbing; }
+.mc-task-pane .sidebar-task-row:hover,
 .mc-task-pane .sidebar-task-row[data-task-drop-target='true'],
 .mc-task-pane:has(.sidebar-task-row[data-task-drop-target='true']) .sidebar-task-row:hover {
+  /* A 1px sideways nudge collides with the next card once the gap is 2px. */
   transform: none;
 }
 /* Status is a real glyph now. The old colored dot stays out of the row. */

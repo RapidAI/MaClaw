@@ -695,6 +695,10 @@ type App struct {
 	// Notification cache: in-memory LRU cache of up to 10 unread notifications.
 	notifCache *notificationCache
 
+	// Pinned (置顶) messages shown by the sidebar floating banner. Replaced
+	// wholesale by PullPinnedNotifications; see notification_binding.go.
+	pinnedNotifs *pinnedCache
+
 	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
 	// once per App (docs/design/tool-routing-improvement-plan-zh.md Phase 1,
 	// R3). The snapshot is immutable, so the core loop's dual-eval harness can
@@ -795,6 +799,7 @@ func NewApp() *App {
 		hubCenterCache:    remote.NewHubCenterSelectionCache(60 * time.Second),
 		toolVersionCache:  NewToolVersionCache(),
 		notifCache:        newNotificationCache(),
+		pinnedNotifs:      &pinnedCache{},
 	}
 	// The legacy direct-search chain (embedded hub mobile search, provider
 	// paths) selects browser fallback engines under the same persisted

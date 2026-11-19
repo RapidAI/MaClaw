@@ -30,6 +30,7 @@ type expertMarketSyncRecorder interface {
 	AppendExpertMarketListingSnapshot(context.Context, string, any)
 	DeleteExpertMarketListingSnapshot(context.Context, string)
 	AppendExpertMarketMetrics(context.Context, string, int64)
+	AppendExpertMarketCategoriesSnapshot(context.Context, any)
 }
 
 type expertMarketSnapshot struct {
@@ -45,6 +46,7 @@ type expertMarketSnapshotListing struct {
 	Description          string                         `json:"description"`
 	Icon                 string                         `json:"icon"`
 	Version              string                         `json:"version"`
+	Category             string                         `json:"category,omitempty"`
 	Price                int64                          `json:"price"`
 	Visibility           string                         `json:"visibility"`
 	Status               string                         `json:"status"`
@@ -163,7 +165,7 @@ func (h *SkillMarketHandlers) dumpExpertMarketSnapshot(ctx context.Context, list
 	}
 	listing := expertMarketSnapshotListing{
 		ID: item.ID, OwnerID: item.OwnerID, OwnerEmail: item.OwnerEmail, SourceExpertID: item.SourceExpertID,
-		Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Price: item.Price,
+		Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Category: item.Category, Price: item.Price,
 		Visibility: item.Visibility, Status: item.Status, PackageSize: item.PackageSize, DownloadCount: item.DownloadCount,
 		PurchaseCount: item.PurchaseCount, SalesAmount: item.SalesAmount, ReviewNote: item.ReviewNote,
 		PlatformDistribution: item.PlatformDistribution, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
@@ -352,9 +354,9 @@ func (h *SkillMarketHandlers) upsertExpertMarketSnapshot(ctx context.Context, ra
 	if listing.PlatformDistribution {
 		dist = 1
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET owner_user_id=excluded.owner_user_id, owner_email=excluded.owner_email, source_expert_id=excluded.source_expert_id, name=excluded.name, description=excluded.description, icon=excluded.icon, version=excluded.version, price=excluded.price, visibility=excluded.visibility, status=excluded.status, zip_path=excluded.zip_path, package_size=excluded.package_size, download_count=MAX(sm_expert_market_listings.download_count, excluded.download_count), purchase_count=MAX(sm_expert_market_listings.purchase_count, excluded.purchase_count), sales_amount=MAX(sm_expert_market_listings.sales_amount, excluded.sales_amount), review_note=excluded.review_note, platform_distribution=excluded.platform_distribution, created_at=excluded.created_at, updated_at=excluded.updated_at`,
-		listing.ID, listing.OwnerID, listing.OwnerEmail, listing.SourceExpertID, listing.Name, listing.Description, listing.Icon, listing.Version, listing.Price, listing.Visibility, listing.Status, zipPath, listing.PackageSize, listing.DownloadCount, listing.PurchaseCount, listing.SalesAmount, listing.ReviewNote, listing.CreatedAt, listing.UpdatedAt, dist)
+	_, err = tx.ExecContext(ctx, `INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET owner_user_id=excluded.owner_user_id, owner_email=excluded.owner_email, source_expert_id=excluded.source_expert_id, name=excluded.name, description=excluded.description, icon=excluded.icon, version=excluded.version, price=excluded.price, visibility=excluded.visibility, status=excluded.status, zip_path=excluded.zip_path, package_size=excluded.package_size, download_count=MAX(sm_expert_market_listings.download_count, excluded.download_count), purchase_count=MAX(sm_expert_market_listings.purchase_count, excluded.purchase_count), sales_amount=MAX(sm_expert_market_listings.sales_amount, excluded.sales_amount), review_note=excluded.review_note, category=excluded.category, platform_distribution=excluded.platform_distribution, created_at=excluded.created_at, updated_at=excluded.updated_at`,
+		listing.ID, listing.OwnerID, listing.OwnerEmail, listing.SourceExpertID, listing.Name, listing.Description, listing.Icon, listing.Version, listing.Price, listing.Visibility, listing.Status, zipPath, listing.PackageSize, listing.DownloadCount, listing.PurchaseCount, listing.SalesAmount, listing.ReviewNote, listing.CreatedAt, listing.UpdatedAt, listing.Category, dist)
 	if err != nil {
 		restoreExpertMarketArchive(zipPath, previous, previousExists)
 		return err
@@ -407,6 +409,13 @@ func validateExpertMarketSnapshotListing(listing *expertMarketSnapshotListing) (
 	case "public", "private", "users":
 	default:
 		return nil, fmt.Errorf("invalid expert market listing visibility")
+	}
+	// The category is an untrusted display tag: bound it like the listing name
+	// so a runaway peer snapshot cannot bloat every consumer response. Content
+	// is not validated against the local taxonomy — convergence with the
+	// origin's categories happens through the categories snapshot.
+	if len([]rune(listing.Category)) > expertMarketCategoryMaxRunes {
+		return nil, fmt.Errorf("invalid expert market listing category")
 	}
 	if !expertMarketValidStatus(listing.Status) || listing.Price < 0 || listing.PackageSize < 0 || listing.DownloadCount < 0 || listing.PurchaseCount < 0 || listing.SalesAmount < 0 || !validExpertMarketSnapshotTime(listing.CreatedAt) || !validExpertMarketSnapshotTime(listing.UpdatedAt) {
 		return nil, fmt.Errorf("invalid expert market listing snapshot")

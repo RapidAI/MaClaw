@@ -320,7 +320,7 @@ func TestExpertMarketAdminRemovesSpecifiedUserShare(t *testing.T) {
 
 	publicID := "share-admin-public"
 	now := expertMarketNow()
-	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, publicID, owner.ID, owner.Email, "pkgexp-share-admin-public", "Public", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?,?)`, publicID, owner.ID, owner.Email, "pkgexp-share-admin-public", "Public", "", "", "1", 0, "public", "listed", "", 0, now, now, ""); err != nil {
 		t.Fatal(err)
 	}
 	publicReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/expert-market/experts/"+publicID+"/private", strings.NewReader(`{"reason":"should not apply"}`))

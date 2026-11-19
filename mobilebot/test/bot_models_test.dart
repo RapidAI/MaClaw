@@ -300,4 +300,41 @@ void main() {
       expect(d.userControl, isFalse);
     });
   });
+
+  group('isDesktopHandoffAsk', () {
+    ChatMessage ask({
+      String attentionReason = 'login_wall',
+      String inputType = 'text',
+      String secretName = '',
+      List<String> options = const [],
+    }) => ChatMessage(
+      id: 'a1',
+      role: 'assistant',
+      content: 'q',
+      attentionReason: attentionReason,
+      question: BotQuestion(
+        inputType: inputType,
+        secretName: secretName,
+        options: options,
+      ),
+    );
+
+    test('free-text ask with a handoff is a takeover card', () {
+      expect(isDesktopHandoffAsk(ask()), isTrue);
+    });
+
+    test('choice and secret asks keep the answer card', () {
+      expect(
+        isDesktopHandoffAsk(ask(inputType: 'choice', options: ['A', 'B'])),
+        isFalse,
+      );
+      // isSecret keys off secretName — the same signal _AskCard uses for
+      // the obscured field.
+      expect(isDesktopHandoffAsk(ask(secretName: 'SITE_PASSWORD')), isFalse);
+    });
+
+    test('plain ask without a handoff is not a takeover', () {
+      expect(isDesktopHandoffAsk(ask(attentionReason: '')), isFalse);
+    });
+  });
 }

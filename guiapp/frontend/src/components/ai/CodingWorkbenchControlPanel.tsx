@@ -161,6 +161,9 @@ export function codingStepStatusLabel(lang: string | undefined, status: string):
     if (s === "waiting_review") {
         return localizeText(lang, "Waiting for review", "等待审阅", "等待審閱");
     }
+    if (s === "interrupted") {
+        return localizeText(lang, "Interrupted", "已中断", "已中斷");
+    }
     if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
         return localizeText(lang, "Pending", "待确认", "待確認");
     }

@@ -6259,7 +6259,7 @@ export const SidebarTaskManagement = ({
                 flexDirection: 'row',
                 alignItems: 'flex-start',
                 gap: '6px',
-                padding: '4px 6px 4px 8px',
+                padding: '3px 8px',
                 borderRadius: '8px',
                 cursor: isBusy ? 'progress' : (remote.selected || folder.kind === 'recent') ? 'pointer' : 'grab',
                 opacity: isBusy ? 0.78 : 1,
@@ -6337,7 +6337,7 @@ export const SidebarTaskManagement = ({
                             <span
                                 data-testid="task-working-dir"
                                 className="mc-task-working-dir"
-                                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '12px', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '12px', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
                             >
                                 <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
                                 {workspaceValueText ? (

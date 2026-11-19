@@ -2929,8 +2929,12 @@ export function GetExpertMarketAccount() {
   return window['go']['main']['App']['GetExpertMarketAccount']();
 }
 
-export function InstallExpertMarketListing(arg1) {
-  return window['go']['main']['App']['InstallExpertMarketListing'](arg1);
+export function InstallExpertMarketListing(arg1, arg2) {
+  return window['go']['main']['App']['InstallExpertMarketListing'](arg1, arg2);
+}
+
+export function ListExpertMarketCategories() {
+  return window['go']['main']['App']['ListExpertMarketCategories']();
 }
 
 export function UninstallExpertMarketListing(arg1) {
@@ -2945,16 +2949,16 @@ export function PurchaseExpertMarketListing(arg1) {
   return window['go']['main']['App']['PurchaseExpertMarketListing'](arg1);
 }
 
-export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4);
+export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5);
+export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
-export function SubmitExpertMarketListingToUsers(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SubmitExpertMarketListingToUsers'](arg1, arg2, arg3);
+export function SubmitExpertMarketListingToUsers(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SubmitExpertMarketListingToUsers'](arg1, arg2, arg3, arg4);
 }
 
 export function PublishExpertMarketListing(arg1) {

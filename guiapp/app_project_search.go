@@ -3124,7 +3124,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	if len(mem.StepStatuses) > 0 {
 		// Project notes at the exit boundary, like the live event does: a legacy
 		// row must not hand the checklist a report body.
-		st.StepStatuses = codingWorkbenchStepsSnapshot(mem.StepStatuses)
+		st.StepStatuses = codingDisplayedRoundSteps(codingWorkbenchStepsSnapshot(mem.StepStatuses), mem.DisplayedStepRound)
 		st.ExecutionStatus, st.Stop = mcpExecutionFromWorkbench(st.StepStatuses)
 	}
 	st.StepsRevision = mem.StepsEmitSeq

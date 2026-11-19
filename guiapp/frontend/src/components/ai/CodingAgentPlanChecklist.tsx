@@ -191,7 +191,7 @@ export function CodingAgentPlanChecklist({
         closeTimer.current = window.setTimeout(tick, 120);
     };
     const open = hasList && (hovered || focused);
-    // The list is the bar's full width (the bar itself is the middle 40% of
+    // The list is the bar's full width (the bar itself is the middle 45% of
     // the column). Center it on the pointer, and keep it inside the bar.
     const placePopover = () => {
         const clientX = anchorX.current;
@@ -242,7 +242,7 @@ export function CodingAgentPlanChecklist({
             className={"capc-checklist" + (open ? " capc-open" : "")}
             style={{
                 // Width and centering come from the stylesheet: the bar keeps the
-                // middle 40% of the column. An inline margin shorthand would
+                // middle 45% of the column. An inline margin shorthand would
                 // override that, so only the vertical margin lives here.
                 marginBottom: 8,
                 border: `1px solid ${chrome.border}`,
@@ -296,7 +296,7 @@ export function CodingAgentPlanChecklist({
                         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
                             <path d="M2.6 3.6h10.8M2.6 8h10.8M2.6 12.4h6.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                         </svg>
-                        {title}
+                        <span className="capc-title-label">{title}</span>
                         {steps.length > 0 ? (
                             <span data-testid="coding-agent-plan-progress" className="capc-progress">
                                 {codingPlanProgressLabel(steps)}

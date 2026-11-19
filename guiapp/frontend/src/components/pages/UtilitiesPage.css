@@ -641,6 +641,12 @@
     margin-top: 2px;
 }
 
+/* HubCenter-administered category chips sit above the source-filter row and
+   span the full library width. */
+.utilities-experts__filters--category {
+    margin-top: 0;
+}
+
 .utilities-experts__filter {
     padding: 5px 15px;
     border: 1px solid var(--theme-border, #d5e0ef);
@@ -856,6 +862,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     vertical-align: bottom;
+}
+
+/* Market category tag next to the source badge on a shared/installed card. */
+.utilities-expert-card__badge--category {
+    max-width: 8em;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: var(--radius-pill, 999px);
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--theme-text-secondary, #46586f);
 }
 
 .utilities-expert-card__desc {

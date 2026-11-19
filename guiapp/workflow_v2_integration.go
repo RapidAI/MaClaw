@@ -3274,6 +3274,9 @@ func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatu
 		resultErr = reason
 		stepSummary = mcpReviewHandoffErrorText
 	}
+	if status == v2.TaskFailed && stepStatus == codingStepFailed {
+		stepSummary = codingFailedStepSummary(stepSummary, resultErr)
+	}
 	return status, stepStatus, stepSummary, resultErr
 }
 
@@ -3289,6 +3292,16 @@ func codingRunnerSkipNeedsStickyMirror(rr v2.TaskRunResult) bool {
 		return false
 	}
 	return true
+}
+
+// codingRunnerSkipStickyStatus is the checklist status for a runner skip.
+// A cancellation is not an ordinary skip: that status counts as closed and
+// lets the task look completed.
+func codingRunnerSkipStickyStatus(errText string) string {
+	if isCodingExecCancelError(errText) {
+		return codingStepInterrupted
+	}
+	return codingStepSkipped
 }
 
 // failedTaskItemsFromResults returns original task items whose matching result failed.
@@ -3800,6 +3813,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				// paraphrase would rewrite the objective (for example "图形界面"
 				// becomes "改成图形界面版本") and the plan gate would wait for
 				// /plan approve instead of calling goal(action=plan|step).
+				// Goal continuation keeps the checklist and does not start a displayed round.
 				resumeIncompletePlan = false
 				h.setStickyCodingRequirementRestatement(userID, "")
 				sessionMem.RequirementRestatement = ""
@@ -3807,6 +3821,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			} else if resumeIncompletePlan {
 				// Keep the previous requirement text and skip another planner call.
 				// "继续" after a credit failure is the unfinished plan, not a new ask.
+				// The next displayed round omits earlier passed and pending rows.
+				if len(sessionMem.StepStatuses) > 0 {
+					h.codingBeginDisplayedStepRound(userID)
+				}
 				decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
 				log.Printf("[coding-plan] continue resumes incomplete local plan user=%s", userID)
 			} else {
@@ -4348,7 +4366,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// the runner status is skipped only because the ledger has no waiting value.
 	for _, rr := range runResults {
 		if codingRunnerSkipNeedsStickyMirror(rr) {
-			h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, codingStepSkipped, rr.Error)
+			h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, codingRunnerSkipStickyStatus(rr.Error), rr.Error)
 		}
 	}
 	// A step that spent its iteration budget is unfinished, not a failure.
@@ -4413,6 +4431,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
 
+	memForReport := h.getStickyCodingWorkbenchMemory(userID)
+	report = codingRoundConclusion(report, codingDisplayedRoundSteps(memForReport.StepStatuses, memForReport.DisplayedStepRound))
 	if onToken != nil && strings.TrimSpace(report) != "" && codingAgentFinishNeedsToken(report, lastCodingResult, runResults, runCtx.Err() != nil) {
 		onToken("\n\n" + report)
 	}
@@ -4731,11 +4751,15 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
 			resumeIncompletePlan = codingWorkbenchShouldResumeIncompletePlan(userText, sessionMem)
 			if isGoalSystemContinuation(recordUserText) {
+				// Goal continuation keeps the checklist and does not start a displayed round.
 				resumeIncompletePlan = false
 				h.setStickyCodingRequirementRestatement(userID, "")
 				sessionMem.RequirementRestatement = ""
 				decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false}
 			} else if resumeIncompletePlan {
+				if len(sessionMem.StepStatuses) > 0 {
+					h.codingBeginDisplayedStepRound(userID)
+				}
 				decision = codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: true}
 				log.Printf("[coding-plan] continue resumes incomplete remote plan user=%s", userID)
 			} else {
@@ -5093,6 +5117,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	applyRemoteCodingTurnFileAudit(result, turnFilesModified, turnFilesCreated)
+	if loopCtx != nil && loopCtx.IsCancelled() {
+		h.interruptOpenCodingSteps(userID)
+	}
 	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
 	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
@@ -5150,6 +5177,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if note := h.pendingSteerInjectionNote(userID); note != "" {
 		report = strings.TrimRight(report, "\n") + "\n\n" + note
 	}
+	report = codingRoundConclusion(report, codingDisplayedRoundSteps(memAfter.StepStatuses, memAfter.DisplayedStepRound))
 	if onToken != nil && strings.TrimSpace(report) != "" && codingAgentFinishNeedsToken(report, nil, runResults, cancelled) {
 		onToken("\n\n" + report)
 	}

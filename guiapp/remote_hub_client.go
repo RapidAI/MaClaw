@@ -601,6 +601,9 @@ func (c *RemoteHubClient) Connect() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// The pinned banner list rides the same reconnect refresh so a message
+	// published while offline shows on next open.
+	go c.app.PullPinnedNotifications()
 	// A reading-group invitation sent while offline rides the same reconnect, so
 	// check the pending list now instead of waiting out an idle poll interval.
 	go c.app.pollCompanionGroupInvites()
@@ -1000,6 +1003,9 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// The pinned banner list rides the same reconnect refresh so a message
+	// published while offline shows on next open.
+	go c.app.PullPinnedNotifications()
 	// A reading-group invitation sent while offline rides the same reconnect, so
 	// check the pending list now instead of waiting out an idle poll interval.
 	go c.app.pollCompanionGroupInvites()

@@ -248,6 +248,37 @@ func mcpStepViewFromCoding(step CodingStepOutcome) mcpStepView {
 	return mcpPresentStep(view)
 }
 
+// mcpStepsStoppedByCancel reports a run whose open rows are cancellations.
+// A failed step still wins. A review row can sit beside the cancellation;
+// the stop is the user stop, not a second review and not a success.
+func mcpStepsStoppedByCancel(steps []mcpStepView) bool {
+	saw := false
+	for _, step := range steps {
+		switch strings.TrimSpace(step.Status) {
+		case mcpStepPassed:
+			continue
+		case mcpStepFailed:
+			return false
+		case mcpStepSkipped:
+			if isCodingExecCancelError(step.Error) {
+				saw = true
+			}
+		case mcpStepWaiting:
+			continue
+		default:
+			// Interrupted is the checklist spelling. Unfinished is the
+			// classified agent spelling of the same runner skip.
+			status := strings.TrimSpace(step.Status)
+			if isCodingExecCancelError(step.Error) && (status == codingStepInterrupted || status == mcpStepUnfinished) {
+				saw = true
+				continue
+			}
+			return false
+		}
+	}
+	return saw
+}
+
 func mcpStepsBlockCompletion(steps []mcpStepView) bool {
 	for _, step := range steps {
 		status := strings.TrimSpace(step.Status)

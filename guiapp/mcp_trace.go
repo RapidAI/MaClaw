@@ -15,11 +15,12 @@ const (
 	mcpStepWaiting         = "waiting_review"
 	mcpStatusWaitingReview = "waiting_review"
 
-	mcpStopUser       = "user_stop"
-	mcpStopTimeout    = "timeout"
-	mcpStopProgram    = "program_error"
-	mcpStopDependency = "dependency_failure"
-	mcpStopReview     = "waiting_review"
+	mcpStopUser        = "user_stop"
+	mcpStopTimeout     = "timeout"
+	mcpStopProgram     = "program_error"
+	mcpStopDependency  = "dependency_failure"
+	mcpStopReview      = "waiting_review"
+	mcpStopUnconfirmed = "unconfirmed"
 
 	mcpRunArchiveLimit   = 8
 	mcpChildPendingLimit = 64
@@ -65,14 +66,19 @@ func mcpPresentSteps(steps []mcpStepView) []mcpStepView {
 
 // mcpPresentStep turns a child-review handoff into waiting. The stored
 // runner status is often only skipped; that is not a failure and not an
-// ordinary skip.
+// ordinary skip. A passed or failed row keeps that result. Leftover handoff
+// text in its note is not a second review.
 func mcpPresentStep(step mcpStepView) mcpStepView {
-	if step.Status == mcpStepWaiting || mcpSkipIsReviewHandoff(step.Error) {
-		step.Status = mcpStepWaiting
-		step.Retryable = false
-		if strings.TrimSpace(step.Error) == "" {
-			step.Error = mcpReviewHandoffErrorText
-		}
+	status := strings.TrimSpace(step.Status)
+	handoff := status == mcpStepWaiting ||
+		((status == codingStepSkipped || status == "") && mcpSkipIsReviewHandoff(step.Error))
+	if !handoff {
+		return step
+	}
+	step.Status = mcpStepWaiting
+	step.Retryable = false
+	if strings.TrimSpace(step.Error) == "" {
+		step.Error = mcpReviewHandoffErrorText
 	}
 	return step
 }
@@ -82,6 +88,16 @@ func mcpPresentStep(step mcpStepView) mcpStepView {
 func mcpAnnotateBlocks(steps []mcpStepView) []mcpStepView {
 	if len(steps) == 0 {
 		return steps
+	}
+	for i := range steps {
+		// A runner cancellation is stored as an ordinary skip. The agent
+		// step list classifies that same row as unfinished before this
+		// gate runs. Neither status blocks as a user stop, so the plan
+		// looks finished or like a program error.
+		status := steps[i].Status
+		if (status == codingStepSkipped || status == mcpStepUnfinished) && isCodingExecCancelError(steps[i].Error) {
+			steps[i].Status = codingStepInterrupted
+		}
 	}
 	steps = mcpPresentSteps(steps)
 	rootID, rootReason, rootClass := mcpBlockRoot(steps)
@@ -172,6 +188,9 @@ func mcpApplyStepGate(status, errText string, steps []mcpStepView) (string, stri
 		}
 		return mcpStatusWaitingReview, mcpReviewHandoffErrorText, steps
 	}
+	if status == mcpStatusCompleted && mcpStepsStoppedByCancel(steps) {
+		return mcpStatusCancelled, "", steps
+	}
 	if status == mcpStatusCompleted && mcpStepsBlockCompletion(steps) {
 		status = mcpStatusFailed
 		if strings.TrimSpace(errText) == "" {
@@ -199,6 +218,11 @@ func mcpStopFor(status, errText string, steps []mcpStepView, cause error, at tim
 	}
 	stop := &mcpStopView{At: mcpFormatTime(at), Reason: strings.TrimSpace(errText)}
 	switch {
+	case errors.Is(cause, errMCPHostWaitEnded):
+		stop.Class = mcpStopUnconfirmed
+		stop.Source = "host_wait"
+		stop.StepID = mcpOpenStepID(steps)
+		stop.Reason = errMCPHostWaitEnded.Error()
 	case errors.Is(cause, context.DeadlineExceeded):
 		stop.Class = mcpStopTimeout
 		stop.Source = "timeout"
@@ -643,6 +667,9 @@ func annotateWorkbenchBlocks(steps []codingWorkbenchStepStatus) []codingWorkbenc
 		}
 		if views[i].Status == mcpStepWaiting {
 			out[i].Status = mcpStepWaiting
+		}
+		if views[i].Status == codingStepInterrupted && strings.TrimSpace(out[i].Status) == codingStepSkipped && isCodingExecCancelError(out[i].Summary) {
+			out[i].Status = codingStepInterrupted
 		}
 	}
 	return out

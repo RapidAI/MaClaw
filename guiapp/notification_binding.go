@@ -58,8 +58,123 @@ type PushNotificationDTO struct {
 	Category  string `json:"category"`
 	Priority  string `json:"priority"`
 	CreatedAt string `json:"created_at"`
-	Source    string `json:"source,omitempty"`
-	SourceID  string `json:"source_id,omitempty"`
+	// Pinned marks a 置顶消息: the GUI shows it as a floating banner card
+	// above the sidebar status row, so the push must refresh that banner.
+	Pinned   bool   `json:"pinned,omitempty"`
+	Source   string `json:"source,omitempty"`
+	SourceID string `json:"source_id,omitempty"`
+}
+
+// PinnedNotification is one 置顶消息 returned to the frontend banner. The Hub
+// orders the list permanent-pin first, then the latest three regular pins.
+type PinnedNotification struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Content       string `json:"content"`
+	LinkURL       string `json:"link_url"`
+	ButtonText    string `json:"button_text"`
+	PinnedForever bool   `json:"pinned_forever"`
+	CreatedAt     string `json:"created_at"`
+}
+
+// pinnedHubResponse is the GET /api/v1/notifications/pinned payload.
+type pinnedHubResponse struct {
+	Ok    bool                 `json:"ok"`
+	Items []PinnedNotification `json:"items"`
+}
+
+// ---------------------------------------------------------------------------
+// pinnedCache — the current pinned-message list shown by the sidebar banner.
+// Thread-safe via a mutex; replaced wholesale on every pull.
+// ---------------------------------------------------------------------------
+
+type pinnedCache struct {
+	mu    sync.RWMutex
+	items []PinnedNotification
+}
+
+func (pc *pinnedCache) replace(items []PinnedNotification) (changed bool) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pinnedListsEqual(pc.items, items) {
+		return false
+	}
+	pc.items = items
+	return true
+}
+
+func (pc *pinnedCache) snapshot() []PinnedNotification {
+	if pc == nil {
+		return nil
+	}
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	if len(pc.items) == 0 {
+		return nil
+	}
+	out := make([]PinnedNotification, len(pc.items))
+	copy(out, pc.items)
+	return out
+}
+
+func pinnedListsEqual(left, right []PinnedNotification) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// GetPinnedNotifications returns the cached pinned-message list for the
+// frontend banner. The list is refreshed by PullPinnedNotifications.
+func (a *App) GetPinnedNotifications() []PinnedNotification {
+	if a == nil || a.pinnedNotifs == nil {
+		return nil
+	}
+	return a.pinnedNotifs.snapshot()
+}
+
+// PullPinnedNotifications fetches the pinned list from the Hub and, when it
+// changed, publishes it to the frontend as notification:pinned. Called on
+// WebSocket reconnect and whenever a pinned push/revoke lands.
+func (a *App) PullPinnedNotifications() error {
+	if a == nil || a.pinnedNotifs == nil {
+		return fmt.Errorf("notification system not initialized")
+	}
+	var resp pinnedHubResponse
+	err := a.doNotificationHubRequest(
+		context.Background(),
+		http.MethodGet,
+		"/api/v1/notifications/pinned",
+		nil,
+		&resp,
+	)
+	if err != nil {
+		a.log("[notification] PullPinnedNotifications API failed: " + err.Error())
+		return err
+	}
+	items := resp.Items
+	if items == nil {
+		items = []PinnedNotification{}
+	}
+	if a.pinnedNotifs.replace(items) {
+		a.publishPinnedNotifications(items)
+	}
+	return nil
+}
+
+func (a *App) publishPinnedNotifications(items []PinnedNotification) {
+	if a == nil {
+		return
+	}
+	if items == nil {
+		items = []PinnedNotification{}
+	}
+	emitNotificationFrontendEvent(a, "notification:pinned", items)
 }
 
 // ---------------------------------------------------------------------------

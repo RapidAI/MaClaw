@@ -329,6 +329,12 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 		msg.Content = correctNoDesktopAttachClaim(msg.Content, len(msg.Attachments))
 	}
 	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
+	// A reply that hands the desktop to a person carries the wall itself:
+	// the phone renders the screenshot with a takeover button instead of an
+	// answer field, so the picture must be on this message.
+	if err == nil && msg != nil && run != nil && attention != "" && !noDesktop {
+		imageCount += desktopAttachHandoffShot(msg, run.ID)
+	}
 	if err != nil {
 		callErr = err
 		textLen := 0
@@ -563,6 +569,11 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 		msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 	}
 	handoff, attention := takeDesktopTurn(desktopTenantID, desktopUserID, shotID)
+	// Same person-handoff picture as the SendMessage path above: the phone
+	// shows the wall with a takeover button, not an answer field.
+	if err == nil && msg != nil && run != nil && attention != "" && !noDesktop {
+		desktopAttachHandoffShot(msg, run.ID)
+	}
 	if err != nil {
 		if run != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "desktop_handoff": handoff, "attention_reason": attention})
@@ -689,6 +700,12 @@ func desktopAsyncHooks(svc *agentservice.Service, tenantID, userID, instanceID, 
 			return
 		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
+		// A reply that hands the desktop to a person carries the wall itself:
+		// the phone renders the screenshot with a takeover button instead of
+		// an answer field, so the picture must be on the stored receipt.
+		if err == nil && msg != nil && run != nil && attention != "" && !noDesktop {
+			desktopAttachHandoffShot(msg, run.ID)
+		}
 		// Exactly one result per task, on success and on failure.
 		msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: tenantID, UserID: userID, InstanceID: instanceID}, run, msg, err, handoff, noDesktop)
 		if perr := persistDesktopReceipt(svc, run, msg); perr != nil {

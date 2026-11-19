@@ -3,7 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show DeviceOrientation, SystemChrome;
+import 'package:flutter/services.dart'
+    show DeviceOrientation, SystemChrome, SystemUiMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -22,7 +23,10 @@ import '../../core/ui_kit.dart' show EmptyState;
 class BotDesktopScreen extends ConsumerStatefulWidget {
   final Bot bot;
 
-  const BotDesktopScreen({super.key, required this.bot});
+  /// 进入即申请键盘 — 聊天里的「接管」按钮带 takeover=1 跳转过来。
+  final bool takeover;
+
+  const BotDesktopScreen({super.key, required this.bot, this.takeover = false});
 
   @override
   ConsumerState<BotDesktopScreen> createState() => _BotDesktopScreenState();
@@ -59,6 +63,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   /// h264 like the desktop default; 'vnc' falls back to the noVNC page.
   String _viewer = 'h264';
 
+  /// One auto-claim after entering via the chat's 接管 button, attempted on
+  /// the first watch that reports a controllable desktop. Cleared once the
+  /// claim is attempted: a refusal (another device holds the keyboard) shows
+  /// the busy snackbar once and must not retry every watch refresh.
+  bool _takeoverPending = false;
+
   bool get _noComputer => widget.bot.desktopMode == 'none';
 
   @override
@@ -70,6 +80,9 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+    // 全屏画面：系统状态栏也收起，sticky 让首次触摸后自动恢复隐藏。
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    _takeoverPending = widget.takeover;
     WidgetsBinding.instance.addObserver(this);
     _loadViewerPref();
     _hold(wake: false);
@@ -79,6 +92,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   void dispose() {
     if (!_noComputer) {
       SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       WidgetsBinding.instance.removeObserver(this);
       _holdTimer?.cancel();
       _loadGuardTimer?.cancel();
@@ -156,6 +170,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
         _reloadTick++;
       });
       _reconcileControl(desktop.inputGranted);
+      if (_takeoverPending && desktop.isRunning && desktop.userControl) {
+        _takeoverPending = false;
+        unawaited(_setControlling(true));
+      }
       _scheduleHold();
     } on Object catch (error) {
       if (!mounted) return;
@@ -556,121 +574,174 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
     }
     final theme = Theme.of(context);
     final url = _watchUrl();
+    // 横屏顶栏不占垂直空间：画面铺满全屏，操作按钮半透明悬浮在左右两侧
+    // （电脑画面居中显示，两侧是黑边）。
     return Scaffold(
-      appBar: AppBar(
-        title: Text(context.S.dtTitle(widget.bot.title)),
-        actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) async {
-              switch (value) {
-                case 'refresh':
-                  _hold();
-                case 'viewer':
-                  final next = _viewer == 'h264' ? 'vnc' : 'h264';
-                  setState(() {
-                    _viewer = next;
-                    _reloadTick++;
-                  });
-                  await _saveViewerPref(next);
-                case 'handback':
-                  final S = context.S;
-                  final messenger = ScaffoldMessenger.of(context);
-                  try {
-                    await _api?.handBackDesktop(widget.bot.id);
-                    messenger.showSnackBar(
-                      SnackBar(content: Text(S.dtHandedBack)),
-                    );
-                  } on Object catch (error) {
-                    messenger.showSnackBar(
-                      SnackBar(content: Text(failureMessage(error))),
-                    );
-                  }
-                case 'computer':
-                  _computerSheet();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(value: 'refresh', child: Text(context.S.refresh)),
-              PopupMenuItem(
-                value: 'viewer',
-                child: Text(
-                  _viewer == 'h264'
-                      ? context.S.dtSwitchToVnc
-                      : context.S.dtSwitchToH264,
+      body: Stack(
+        children: [
+          Positioned.fill(child: _buildBody(url, theme)),
+          if (_desktop.attentionReason.isNotEmpty)
+            Positioned(
+              top: 8,
+              left: 56,
+              right: 56,
+              child: IgnorePointer(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.tertiaryContainer.withValues(
+                        alpha: 0.85,
+                      ),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.notifications_active_outlined,
+                          size: 14,
+                          color: theme.colorScheme.onTertiaryContainer,
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            attentionReasonLabel(
+                              _desktop.attentionReason,
+                              context.S,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onTertiaryContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-              PopupMenuItem(
-                value: 'handback',
-                child: Text(context.S.dtHandback),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: _overlayButton(
+                icon: Icons.arrow_back,
+                tooltip: context.S.dtBack,
+                onPressed: () => Navigator.of(context).maybePop(),
               ),
-              PopupMenuItem(
-                value: 'computer',
-                child: Text(context.S.dtComputerMaintenance),
-              ),
-            ],
+            ),
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (_desktop.attentionReason.isNotEmpty)
-            Container(
-              width: double.infinity,
-              color: theme.colorScheme.tertiaryContainer,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.notifications_active_outlined,
-                    size: 16,
-                    color: theme.colorScheme.onTertiaryContainer,
+                  _overlayButton(
+                    icon: _controlling
+                        ? Icons.touch_app
+                        : Icons.touch_app_outlined,
+                    tooltip: _controlling
+                        ? context.S.dtControlling
+                        : context.S.dtWatching,
+                    active: _controlling,
+                    onPressed:
+                        _desktop.isRunning && _desktop.userControl && !_claiming
+                        ? () => _setControlling(!_controlling)
+                        : null,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _desktop.attentionReason,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onTertiaryContainer,
-                      ),
+                  const SizedBox(height: 12),
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: theme.colorScheme.surface.withValues(alpha: 0.55),
+                    ),
+                    child: PopupMenuButton<String>(
+                      icon: const Icon(Icons.more_vert),
+                      onSelected: (value) async {
+                        switch (value) {
+                          case 'refresh':
+                            _hold();
+                          case 'viewer':
+                            final next = _viewer == 'h264' ? 'vnc' : 'h264';
+                            setState(() {
+                              _viewer = next;
+                              _reloadTick++;
+                            });
+                            await _saveViewerPref(next);
+                          case 'handback':
+                            final S = context.S;
+                            final messenger = ScaffoldMessenger.of(context);
+                            try {
+                              await _api?.handBackDesktop(widget.bot.id);
+                              messenger.showSnackBar(
+                                SnackBar(content: Text(S.dtHandedBack)),
+                              );
+                            } on Object catch (error) {
+                              messenger.showSnackBar(
+                                SnackBar(content: Text(failureMessage(error))),
+                              );
+                            }
+                          case 'computer':
+                            _computerSheet();
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        PopupMenuItem(
+                          value: 'refresh',
+                          child: Text(context.S.refresh),
+                        ),
+                        PopupMenuItem(
+                          value: 'viewer',
+                          child: Text(
+                            _viewer == 'h264'
+                                ? context.S.dtSwitchToVnc
+                                : context.S.dtSwitchToH264,
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'handback',
+                          child: Text(context.S.dtHandback),
+                        ),
+                        PopupMenuItem(
+                          value: 'computer',
+                          child: Text(context.S.dtComputerMaintenance),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
-          if (_desktop.isRunning && _desktop.userControl)
-            Material(
-              color: theme.colorScheme.surfaceContainerLow,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 4,
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.touch_app_outlined, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _controlling
-                            ? context.S.dtControlling
-                            : context.S.dtWatching,
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ),
-                    Switch(
-                      value: _controlling,
-                      onChanged: _claiming
-                          ? null
-                          : (value) => _setControlling(value),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          Expanded(child: _buildBody(url, theme)),
+          ),
         ],
       ),
+    );
+  }
+
+  /// 半透明圆形悬浮按钮 — 悬在画面两侧的黑边上，不占画面空间。
+  Widget _overlayButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    bool active = false,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      onPressed: onPressed,
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        backgroundColor: scheme.surface.withValues(alpha: 0.55),
+        foregroundColor: active ? scheme.primary : scheme.onSurface,
+      ),
+      icon: Icon(icon),
     );
   }
 

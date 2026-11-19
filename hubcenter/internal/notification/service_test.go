@@ -208,3 +208,73 @@ func TestDeleteNotificationRequiresInactiveStatus(t *testing.T) {
 		t.Fatalf("GetByID after delete = %#v, %v; want nil, nil", got, err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Pinned (置顶) message fields
+// ---------------------------------------------------------------------------
+
+func TestCreateNotificationPinnedDefaultsAndValidation(t *testing.T) {
+	store := &memoryNotificationStore{}
+	svc := NewService(store, nil, nil)
+	ctx := context.Background()
+
+	// A pinned message without a button label gets the default, and a
+	// permanent pin implies pinned.
+	notif, err := svc.CreateNotification(ctx, CreateRequest{
+		Title:         "hc banner",
+		Content:       "launch",
+		Category:      CategorySystemAnnouncement,
+		AudienceType:  AudienceAll,
+		Status:        StatusPublished,
+		PinnedForever: true,
+		LinkURL:       "https://example.com/launch",
+	})
+	if err != nil {
+		t.Fatalf("CreateNotification returned error: %v", err)
+	}
+	if !notif.Pinned || !notif.PinnedForever {
+		t.Fatalf("pinned flags = %v/%v, want true/true", notif.Pinned, notif.PinnedForever)
+	}
+	if notif.ButtonText != DefaultPinnedButtonText {
+		t.Fatalf("button text = %q, want %q", notif.ButtonText, DefaultPinnedButtonText)
+	}
+	if notif.LinkURL != "https://example.com/launch" {
+		t.Fatalf("link url = %q", notif.LinkURL)
+	}
+	persisted := store.created[0]
+	if !persisted.Pinned || !persisted.PinnedForever || persisted.ButtonText != DefaultPinnedButtonText {
+		t.Fatalf("persisted pinned fields = %#v", persisted)
+	}
+
+	// A non-http link is rejected.
+	if _, err := svc.CreateNotification(ctx, CreateRequest{
+		Title:        "bad link",
+		Content:      "c",
+		Category:     CategorySystemAnnouncement,
+		AudienceType: AudienceAll,
+		Pinned:       true,
+		LinkURL:      "javascript:alert(1)",
+	}); err != ErrLinkURLInvalid {
+		t.Fatalf("javascript link error = %v, want %v", err, ErrLinkURLInvalid)
+	}
+
+	// An over-long button label is rejected.
+	if _, err := svc.CreateNotification(ctx, CreateRequest{
+		Title:        "long button",
+		Content:      "c",
+		Category:     CategorySystemAnnouncement,
+		AudienceType: AudienceAll,
+		Pinned:       true,
+		ButtonText:   repeatRunesForTest("长", 21),
+	}); err != ErrButtonTextTooLong {
+		t.Fatalf("button text error = %v, want %v", err, ErrButtonTextTooLong)
+	}
+}
+
+func repeatRunesForTest(r string, n int) string {
+	out := make([]rune, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, []rune(r)...)
+	}
+	return string(out)
+}

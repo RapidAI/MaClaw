@@ -31,12 +31,13 @@ const (
 
 // Step status values for live Todo UI.
 const (
-	codingStepPending    = "pending"
-	codingStepRunning    = "running"
-	codingStepPassed     = "passed"
-	codingStepFailed     = "failed"
-	codingStepSkipped    = "skipped"
-	codingStepVerifyFail = "verify_failed"
+	codingStepPending     = "pending"
+	codingStepRunning     = "running"
+	codingStepPassed      = "passed"
+	codingStepFailed      = "failed"
+	codingStepSkipped     = "skipped"
+	codingStepVerifyFail  = "verify_failed"
+	codingStepInterrupted = "interrupted"
 )
 
 // codingWorkbenchStepStatus tracks one execution-plan step for sticky + UI.
@@ -55,6 +56,10 @@ type codingWorkbenchStepStatus struct {
 	BlockedBy   []string `json:"blocked_by,omitempty"`
 	BlockReason string   `json:"block_reason,omitempty"`
 	ChildTaskID string   `json:"child_task_id,omitempty"`
+	// Round is the displayed resume that last wrote this row. Zero matches
+	// the first plan. A later round leaves the old value so a passed or
+	// pending row stays in sticky memory without being published again.
+	Round int `json:"round,omitempty"`
 }
 
 func (s codingWorkbenchStepStatus) MarshalJSON() ([]byte, error) {
@@ -246,6 +251,7 @@ func (h *IMMessageHandler) storeStickyPendingCodingPlanAt(userID, userText, mark
 			mem.ExecutionPlan = truncateRunesForSubAgent(pending.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}
 		mem.StepStatuses = codingWorkbenchStepsFromTasks(cloned, codingStepPending)
+		mem.DisplayedStepRound = 0
 	})
 }
 
@@ -464,6 +470,7 @@ func (h *IMMessageHandler) restoreApprovedCodingPlanAsPending(userID string) (co
 			mem.ExecutionPlan = truncateRunesForSubAgent(restored.Markdown, codingWorkbenchExecutionPlanPersistRunes)
 		}
 		mem.StepStatuses = codingWorkbenchStepsFromTasks(restored.Tasks, codingStepPending)
+		mem.DisplayedStepRound = 0
 		ok = true
 	})
 	if !ok {
@@ -508,11 +515,13 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 		copy(projected, steps)
 		for i := range projected {
 			projected[i].Summary = codingStepChecklistNote(projected[i].Summary)
+			projected[i].Round = 0
 		}
 		steps = projected
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = steps
+		mem.DisplayedStepRound = 0
 		// A freshly seeded list is an approval or a new plan. Keep the
 		// started bit only when this list itself already has a started step.
 		started := false
@@ -580,6 +589,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 					mem.StepStatuses[i].ChildTaskID = childTaskID
 				}
 				mem.StepStatuses[i].UpdatedUnix = now
+				mem.StepStatuses[i].Round = mem.DisplayedStepRound
 				found = true
 				break
 			}
@@ -591,6 +601,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 				Summary:     note,
 				ChildTaskID: childTaskID,
 				UpdatedUnix: now,
+				Round:       mem.DisplayedStepRound,
 			})
 		}
 		if codingPlanStepWasStarted(status) {
@@ -627,6 +638,7 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 					mem.StepStatuses[i].Summary = note
 				}
 				mem.StepStatuses[i].UpdatedUnix = now
+				mem.StepStatuses[i].Round = mem.DisplayedStepRound
 				found = true
 				break
 			}
@@ -640,6 +652,7 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 				VerifyOK:    &v,
 				Summary:     note,
 				UpdatedUnix: now,
+				Round:       mem.DisplayedStepRound,
 			})
 		}
 		if codingPlanStepWasStarted(status) {
@@ -660,6 +673,7 @@ func (h *IMMessageHandler) clearStickyCodingStepStatuses(userID string) {
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = nil
 		mem.PlanRunStarted = false
+		mem.DisplayedStepRound = 0
 	})
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
@@ -687,6 +701,7 @@ func (h *IMMessageHandler) clearGoalFinishedCodingChecklist(userID string) {
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = nil
 		mem.PlanRunStarted = false
+		mem.DisplayedStepRound = 0
 		mem.ExecutionPlan = ""
 		mem.RequirementRestatement = ""
 	})
@@ -723,6 +738,64 @@ func workbenchPlanStarted(steps []codingWorkbenchStepStatus) bool {
 	return false
 }
 
+// codingStepRoundStillOpen reports a row a later displayed round must keep.
+// Passed and pending rows belong to the round that wrote them. A skipped
+// row stays only when it is still a prior-step or review wait. A passed
+// note that mentions a dependency or a review sentence does not stay.
+func codingStepRoundStillOpen(st codingWorkbenchStepStatus) bool {
+	switch strings.TrimSpace(st.Status) {
+	case codingStepPassed, codingStepPending, "":
+		return false
+	case codingStepSkipped:
+		if isCodingExecCancelError(st.Summary) || mcpSkipIsReviewHandoff(st.Summary) || mcpSkipWaitsOnPrior(st.Summary) {
+			return true
+		}
+		return strings.TrimSpace(st.BlockReason) == "等待子任务审阅"
+	default:
+		return true
+	}
+}
+
+// codingDisplayedRoundSteps is the checklist for one resume. Round 0 publishes
+// every step. A later round publishes rows it wrote and rows that are still
+// open. The sticky list itself is not filtered.
+func codingDisplayedRoundSteps(steps []codingWorkbenchStepStatus, round int) []codingWorkbenchStepStatus {
+	if round <= 0 || len(steps) == 0 {
+		return steps
+	}
+	out := make([]codingWorkbenchStepStatus, 0, len(steps))
+	for _, st := range steps {
+		if st.Round == round || codingStepRoundStillOpen(st) {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// codingBeginDisplayedStepRound opens the next checklist window. Call it only
+// when a resume is about to execute steps that already exist. Goal
+// continuation does not start a round. The first plan stays at round 0.
+func (h *IMMessageHandler) codingBeginDisplayedStepRound(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	started := false
+	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
+		if len(mem.StepStatuses) == 0 {
+			return
+		}
+		mem.DisplayedStepRound++
+		started = true
+	})
+	if started {
+		h.emitCodingWorkbenchStepsUpdate(userID)
+	}
+}
+
 // codingWorkbenchStepsEventPayload shapes the checklist snapshot shared by
 // the local event, the remote-control mirror, and the watch_task reply.
 // The expert rule stays here: an expert workbench carries no project_path so
@@ -735,7 +808,7 @@ func (h *IMMessageHandler) codingWorkbenchStepsEventPayload(userID string, mem s
 			projectPath = strings.TrimSpace(mem.ProjectPath)
 		}
 	}
-	steps := codingWorkbenchStepsSnapshot(mem.StepStatuses)
+	steps := codingDisplayedRoundSteps(codingWorkbenchStepsSnapshot(mem.StepStatuses), mem.DisplayedStepRound)
 	payload := map[string]interface{}{
 		"user_id":                 userID,
 		"project_path":            projectPath,
@@ -857,8 +930,43 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 				st.Status = codingStepSkipped
 				st.Summary = note
 				st.UpdatedUnix = now
+				st.Round = mem.DisplayedStepRound
 				changed = true
 			}
+		}
+	})
+	if changed {
+		h.emitCodingWorkbenchStepsUpdate(userID)
+	}
+}
+
+// interruptOpenCodingSteps records a run that stopped before those steps
+// finished. Pending and running rows are not ordinary skips, so they stay
+// open and the task is not completed.
+func (h *IMMessageHandler) interruptOpenCodingSteps(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	changed := false
+	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
+		now := time.Now().Unix()
+		for i := range mem.StepStatuses {
+			st := &mem.StepStatuses[i]
+			switch strings.TrimSpace(st.Status) {
+			case codingStepPending, "", codingStepRunning:
+			default:
+				continue
+			}
+			st.Status = codingStepInterrupted
+			st.Summary = "cancelled"
+			st.UpdatedUnix = now
+			st.Round = mem.DisplayedStepRound
+			mem.PlanRunStarted = true
+			changed = true
 		}
 	})
 	if changed {

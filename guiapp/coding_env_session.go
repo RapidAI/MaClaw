@@ -114,6 +114,10 @@ type stickyCodingWorkbenchMemory struct {
 	PlanReviewRunning bool `json:"plan_review_running,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// DisplayedStepRound is the checklist window. Zero publishes every step
+	// (the first plan, or a full replace). A resume increments it. Sticky
+	// rows from earlier rounds stay for the next continue.
+	DisplayedStepRound int `json:"displayed_step_round,omitempty"`
 	// StepsEmitSeq orders checklist snapshots. Unix seconds collide when a
 	// plan is confirmed in the same second it was stored, and a late copy of
 	// that earlier snapshot would put Start / Skip / Reject back.

@@ -616,6 +616,13 @@
   "chatSubmit": "提交",
   "chatHandoffDefault": "Bot 把电脑交给你了",
   "chatHandoffView": "去查看",
+  "chatTakeover": "接管",
+  "chatAttentionLoginWall": "需要你登录",
+  "chatAttentionCaptcha": "需要人机验证",
+  "chatAttentionMfa": "需要两步验证",
+  "chatAttentionQr": "需要扫码登录",
+  "chatAttentionPayment": "需要确认支付",
+  "chatAttentionTakeover": "需要你接管电脑",
   "chatQueueHeld": "已暂存（电脑正被你接管中）",
   "chatQueuedPosition": "排队中 · 第 {position} 位",
   "@chatQueuedPosition": {
@@ -667,6 +674,7 @@
     }
   },
   "dtNoComputer": "这个 bot 没有电脑",
+  "dtBack": "返回",
   "dtHandedBack": "已把电脑交还给 Bot",
   "dtSwitchToVnc": "切换到 noVNC 画面",
   "dtSwitchToH264": "切换到 H.264 画面",

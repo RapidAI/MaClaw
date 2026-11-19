@@ -272,6 +272,12 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		if !expertJSONHasCapabilityRules(expertJSON) {
 			def.CapabilityRules = cloneExpertCapabilityRules(storedExisting.CapabilityRules)
 		}
+		// Same for the market category: only the share flow assigns it, and the
+		// editor payload never carries the key. An omitted tag must not erase
+		// the choice a share recorded; an explicit "" clears it.
+		if !expertJSONHasCategory(expertJSON) {
+			def.Category = storedExisting.Category
+		}
 	}
 	isBuiltinID := builtinExpertByID(def.ID) != nil
 	// RFC3339Nano keeps sub-second precision so rapid successive edits keep a
@@ -351,6 +357,15 @@ func expertJSONHasCapabilityRules(expertJSON string) bool {
 		return false
 	}
 	_, ok := raw["capability_rules"]
+	return ok
+}
+
+func expertJSONHasCategory(expertJSON string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(expertJSON), &raw); err != nil {
+		return false
+	}
+	_, ok := raw["category"]
 	return ok
 }
 

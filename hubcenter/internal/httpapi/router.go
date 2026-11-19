@@ -1278,6 +1278,16 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("DELETE /api/v1/expert-market/experts/{id}/private", smHandlers.DeletePrivateExpertMarketListing)
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/make-private", smHandlers.MakeExpertMarketListingPrivate)
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/publish", smHandlers.PublishExpertMarketListing)
+		// The finite category taxonomy behind the desktop AI expert library's
+		// top-level filter chips. Public list feeds the share picker; the admin
+		// CRUD is the only writer.
+		mux.HandleFunc("GET /api/v1/expert-market/categories", smHandlers.ListExpertMarketCategories)
+		mux.HandleFunc("GET /api/v1/admin/expert-market/categories", RequireAdmin(adminService, smHandlers.AdminListExpertMarketCategories))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/categories", RequireAdmin(adminService, smHandlers.AdminCreateExpertMarketCategory))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/categories/reorder", RequireAdmin(adminService, smHandlers.AdminReorderExpertMarketCategories))
+		mux.HandleFunc("PUT /api/v1/admin/expert-market/categories/{id}", RequireAdmin(adminService, smHandlers.AdminUpdateExpertMarketCategory))
+		mux.HandleFunc("DELETE /api/v1/admin/expert-market/categories/{id}", RequireAdmin(adminService, smHandlers.AdminDeleteExpertMarketCategory))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/category", RequireAdmin(adminService, smHandlers.AdminSetExpertMarketListingCategory))
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts", RequireAdmin(adminService, smHandlers.AdminListExpertMarketListings))
 		mux.HandleFunc("GET /api/v1/admin/expert-market/users", RequireAdmin(adminService, smHandlers.AdminListExpertMarketUsers))
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts/{id}/events", RequireAdmin(adminService, smHandlers.AdminListExpertMarketEvents))

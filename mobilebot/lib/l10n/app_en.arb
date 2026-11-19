@@ -616,6 +616,13 @@
   "chatSubmit": "Submit",
   "chatHandoffDefault": "The bot handed the computer to you",
   "chatHandoffView": "Take a look",
+  "chatTakeover": "Take over",
+  "chatAttentionLoginWall": "You need to sign in",
+  "chatAttentionCaptcha": "You need to pass a human check",
+  "chatAttentionMfa": "You need a verification code",
+  "chatAttentionQr": "You need to scan a QR code to sign in",
+  "chatAttentionPayment": "You need to confirm the payment",
+  "chatAttentionTakeover": "You need to take over the computer",
   "chatQueueHeld": "Held (you are currently taking over the computer)",
   "chatQueuedPosition": "Queued · position {position}",
   "@chatQueuedPosition": {
@@ -667,6 +674,7 @@
     }
   },
   "dtNoComputer": "This bot has no computer",
+  "dtBack": "Back",
   "dtHandedBack": "The computer was handed back to the bot",
   "dtSwitchToVnc": "Switch to the noVNC view",
   "dtSwitchToH264": "Switch to the H.264 view",

@@ -1571,6 +1571,7 @@ func NewRouter(
 		// Client routes (machine auth)
 		machineAuth := requireMachineAuth(identity)
 		mux.HandleFunc("GET /api/v1/notifications/unread", machineAuth(notifHandler.HandleUnread))
+		mux.HandleFunc("GET /api/v1/notifications/pinned", machineAuth(notifHandler.HandlePinned))
 		mux.HandleFunc("POST /api/v1/notifications/{id}/read", machineAuth(notifHandler.HandleMarkRead))
 		mux.HandleFunc("POST /api/v1/notifications/read-all", machineAuth(notifHandler.HandleMarkAllRead))
 
