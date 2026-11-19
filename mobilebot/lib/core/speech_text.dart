@@ -3,14 +3,17 @@
 /// voice assistant strips structure and keeps only the prose.
 library;
 
+import 'locale.dart';
+
 /// Maximum characters spoken in one turn — very long replies get truncated
 /// with a spoken pointer back to the screen instead of a minutes-long readout.
 const int _speechTextLimit = 1200;
 
 String plainTextForSpeech(String markdown) {
+  final l = sharedL10n;
   var s = markdown;
   // Fenced code reads terribly aloud — name it and move on.
-  s = s.replaceAll(RegExp(r'```[\s\S]*?(```|$)'), '，代码内容见屏幕，');
+  s = s.replaceAll(RegExp(r'```[\s\S]*?(```|$)'), l.speechCodeOnScreen);
   s = s.replaceAllMapped(RegExp(r'`([^`]*)`'), (m) => m[1] ?? '');
   s = s.replaceAll(RegExp(r'!\[[^\]]*\]\([^)]*\)'), '');
   s = s.replaceAllMapped(RegExp(r'\[([^\]]*)\]\([^)]*\)'), (m) => m[1] ?? '');
@@ -31,7 +34,7 @@ String plainTextForSpeech(String markdown) {
   s = s.replaceAll(RegExp(r'\n{3,}'), '\n\n');
   s = s.trim();
   if (s.length > _speechTextLimit) {
-    s = '${s.substring(0, _speechTextLimit)}……回复较长，完整内容请查看屏幕';
+    s = '${s.substring(0, _speechTextLimit)}${l.speechReplyTooLong}';
   }
   return s;
 }

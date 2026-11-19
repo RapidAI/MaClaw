@@ -2,6 +2,7 @@ package skillmarket
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,7 +36,8 @@ func TestProblemReportLifecycle(t *testing.T) {
 func TestProblemReportSnapshotReplicatesMetadataWithoutAttachments(t *testing.T) {
 	origin := newTestStore(t)
 	now := time.Now().UTC()
-	report := &ProblemReport{ID: "BR-ha", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "fails", Status: "pending", DiagnosticsPath: "diagnostics.zip", ScreenshotPaths: []string{"screenshot-01.png"}, OriginURL: "https://origin.example.com", CreatedAt: now, UpdatedAt: now}
+	token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	report := &ProblemReport{ID: "BR-ha", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "fails", Status: "pending", DiagnosticsPath: "diagnostics.zip", ScreenshotPaths: []string{"screenshot-01.png"}, OriginURL: "https://origin.example.com", PublicDownloadToken: token, CreatedAt: now, UpdatedAt: now}
 	if err := origin.CreateProblemReport(context.Background(), report); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +45,7 @@ func TestProblemReportSnapshotReplicatesMetadataWithoutAttachments(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.ProblemReports) != 1 || snapshot.ProblemReports[0].DiagnosticsPath != "" || len(snapshot.ProblemReports[0].ScreenshotPaths) != 0 {
+	if len(snapshot.ProblemReports) != 1 || snapshot.ProblemReports[0].DiagnosticsPath != "" || len(snapshot.ProblemReports[0].ScreenshotPaths) != 0 || snapshot.ProblemReports[0].PublicDownloadToken != token {
 		t.Fatalf("attachments leaked into HA snapshot: %+v", snapshot.ProblemReports)
 	}
 	peer := newTestStore(t)
@@ -54,8 +56,81 @@ func TestProblemReportSnapshotReplicatesMetadataWithoutAttachments(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OriginURL != "https://origin.example.com" || got.DiagnosticsPath != "" || len(got.ScreenshotPaths) != 0 {
+	if got.OriginURL != "https://origin.example.com" || got.DiagnosticsPath != "" || len(got.ScreenshotPaths) != 0 || got.PublicDownloadToken != token {
 		t.Fatalf("unexpected replicated report: %+v", got)
+	}
+}
+
+func TestProblemReportSnapshotKeepsDownloadTokenWhenReplicaOmitsIt(t *testing.T) {
+	origin := newTestStore(t)
+	peer := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	token := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	if err := peer.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-token", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "peer", Status: "pending", OriginURL: "https://peer.example.com", PublicDownloadToken: token, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(2 * time.Second)
+	if err := origin.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-token", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "origin", Status: "pending", OriginURL: "https://origin.example.com", CreatedAt: now, UpdatedAt: later}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := origin.DumpSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ProblemReports) != 1 || snapshot.ProblemReports[0].PublicDownloadToken != "" {
+		t.Fatalf("origin snapshot should carry an empty token: %+v", snapshot.ProblemReports)
+	}
+	if err := peer.LoadSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	got, err := peer.GetProblemReport(context.Background(), "BR-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != "origin" || got.PublicDownloadToken != token || got.DiagnosticsPath != "" {
+		t.Fatalf("empty replica token erased the public link: %+v", got)
+	}
+}
+
+func TestProblemReportSnapshotFillsDownloadTokenWithoutTakingOlderFields(t *testing.T) {
+	peer := newTestStore(t)
+	origin := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	token := strings.Repeat("cd", 32)
+	same := now
+	if err := peer.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-same", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "local", Status: "fixed", OriginURL: "https://peer.example.com", CreatedAt: same, UpdatedAt: same}); err != nil {
+		t.Fatal(err)
+	}
+	newer := same.Add(5 * time.Second)
+	if err := peer.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-newer", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "newer-status", Status: "fixed", OriginURL: "https://peer.example.com", CreatedAt: same, UpdatedAt: newer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-same", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "stale", Status: "pending", OriginURL: "https://origin.example.com", PublicDownloadToken: token, CreatedAt: same, UpdatedAt: same}); err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.CreateProblemReport(context.Background(), &ProblemReport{ID: "BR-newer", ReporterUserID: "user-1", ReporterContact: "user@example.com", OSVersion: "Linux", Description: "stale", Status: "pending", OriginURL: "https://origin.example.com", PublicDownloadToken: token, CreatedAt: same, UpdatedAt: same}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := origin.DumpSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.LoadSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	sameRow, err := peer.GetProblemReport(context.Background(), "BR-same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameRow.Description != "local" || sameRow.Status != "fixed" || sameRow.PublicDownloadToken != token {
+		t.Fatalf("same-revision snapshot rewrote the row or dropped the token: %+v", sameRow)
+	}
+	newerRow, err := peer.GetProblemReport(context.Background(), "BR-newer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newerRow.Description != "newer-status" || newerRow.Status != "fixed" || newerRow.PublicDownloadToken != token || !newerRow.UpdatedAt.Equal(newer) {
+		t.Fatalf("older snapshot took the newer row: %+v", newerRow)
 	}
 }
 

@@ -3732,6 +3732,36 @@ func TestInboundMCPCancelledSkipIsNotComplete(t *testing.T) {
 	}
 }
 
+func TestInboundMCPRemoteCancelLeavesTheTailOpen(t *testing.T) {
+	handoff := &RemoteCodingSubAgentResult{Status: "cancelled", RuntimeHandoff: true, Error: "waiting_child", Summary: "children", Children: []v2.ChildTaskView{{TaskID: "child-9", Name: "explorer"}}}
+	status, summary, childID := remoteCodingStickyStep(handoff)
+	if status != mcpStepWaiting || summary != mcpReviewHandoffErrorText || childID != "child-9" {
+		t.Fatalf("handoff row %s %q %s", status, summary, childID)
+	}
+	run := remoteCodingStepToRunResult(&v2.TaskItem{Index: 5, Title: "交接"}, handoff)
+	if !run.RuntimeHandoff || !mcpSkipIsReviewHandoff(run.Error) {
+		t.Fatalf("handoff result %+v", run)
+	}
+	if remoteCodingDependentsAfterStop("cancelled", "cancelled") != "" || remoteCodingDependentsAfterStop("canceled", "") != "" {
+		t.Fatal("cancel tail was recorded as a finished skip")
+	}
+	if remoteCodingDependentsAfterStop("failed", "exit status 1") != "skipped: prior step failed" {
+		t.Fatal("failure tail")
+	}
+	if remoteCodingDependentsAfterStop("waiting_child", "waiting_child") != "skipped: prior step failed" {
+		t.Fatal("review tail")
+	}
+	if remoteCodingDependentsAfterStop("success", "") != "" || remoteCodingDependentsAfterStop("failed", "max iterations reached (8/8)") != "" {
+		t.Fatal("open tail")
+	}
+	if !remoteCodingTurnNeedsInterrupt(false, &RemoteCodingSubAgentResult{Status: "cancelled"}) || !remoteCodingTurnNeedsInterrupt(true, nil) {
+		t.Fatal("interrupt")
+	}
+	if remoteCodingTurnNeedsInterrupt(false, &RemoteCodingSubAgentResult{Status: "failed"}) || remoteCodingTurnNeedsInterrupt(false, nil) {
+		t.Fatal("failure interrupt")
+	}
+}
+
 func TestInboundMCPAdmittedChildIsNotComplete(t *testing.T) {
 	if codingChildPublicStatus(codingruntime.TaskQueued) != "admitted" {
 		t.Fatal("queued must stay admitted")

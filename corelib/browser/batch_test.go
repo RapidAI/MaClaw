@@ -1,10 +1,31 @@
 package browser
 
 import (
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDropProbePageTextKeepsTheModelSample(t *testing.T) {
+	dropped := observePayload{PageTextExcerpt: "应付 ¥9.98", PageTextTotal: 8, PageTextHasMore: true}
+	dropProbePageText(true, false, &dropped)
+	if dropped.PageTextExcerpt != "" || dropped.PageTextTotal != 0 || dropped.PageTextHasMore {
+		t.Fatalf("batch probe kept text: %+v", dropped)
+	}
+	kept := observePayload{PageTextExcerpt: "应付 ¥9.98", PageTextTotal: 8, PageTextHasMore: true}
+	dropProbePageText(true, true, &kept)
+	if kept.PageTextExcerpt != "应付 ¥9.98" || kept.PageTextTotal != 8 || !kept.PageTextHasMore {
+		t.Fatalf("model probe dropped text: %+v", kept)
+	}
+	full := observePayload{PageTextExcerpt: "page", PageTextTotal: 4}
+	dropProbePageText(false, false, &full)
+	if full.PageTextExcerpt != "page" {
+		t.Fatal("snapshot text was cleared")
+	}
+}
 
 func TestProbeScriptSkipsFullPageText(t *testing.T) {
 	if !strings.Contains(browserObserveScript, "const __maclawProbe = false;") {
@@ -18,6 +39,53 @@ func TestProbeScriptSkipsFullPageText(t *testing.T) {
 	}
 	if !strings.Contains(browserObserveScript, "function pageText()") {
 		t.Fatal("full pageText walk must remain on the observe script")
+	}
+	if !strings.Contains(browserProbeScript, "return mainDocumentText().slice(0, 2000)") {
+		t.Fatal("page flags must stay on the head sample")
+	}
+	if !strings.Contains(browserProbeScript, "const excerptSource = __maclawProbe ? mainDocumentText() : fullText;") {
+		t.Fatal("probe excerpt does not read the full main document")
+	}
+	if !strings.Contains(browserProbeScript, "page_text_excerpt: excerptSourceForModel(excerptSource, excerptLimit)") {
+		t.Fatal("excerpt still uses a prefix clip")
+	}
+	quoted := make([]string, len(payableMarkers))
+	for i, marker := range payableMarkers {
+		quoted[i] = strconv.Quote(marker)
+	}
+	wantMarkers := "const markers = [" + strings.Join(quoted, ", ") + "];"
+	if !strings.Contains(browserObserveScript, wantMarkers) {
+		t.Fatalf("excerpt markers diverged from payableMarkers: %s", wantMarkers)
+	}
+}
+
+func TestExcerptSourceKeepsPayableTotalPastTheHead(t *testing.T) {
+	start := strings.Index(browserObserveScript, "function excerptSourceForModel")
+	end := strings.Index(browserObserveScript, "function cssEscape")
+	if start < 0 || end < start {
+		t.Fatal("excerpt function missing")
+	}
+	body := "收货地址北京海淀" + strings.Repeat("甲", 200) + "合计 ¥8.00" + strings.Repeat("乙", 2000) + "应付总额 ¥9.98 含运费" + strings.Repeat("丁", 2500) + "页脚版权"
+	late := strings.Repeat("甲", 1700) + "收货地址北京海淀上地" + strings.Repeat("乙", 2000) + "应付总额 ¥9.98 含运费" + strings.Repeat("丁", 800) + "页脚版权"
+	article := "商品详情" + strings.Repeat("正", 4000) + "页脚版权"
+	header := "管理收货地址" + strings.Repeat("甲", 1700) + "收货地址北京海淀上地十号" + strings.Repeat("乙", 400) + "页脚版权"
+	script := browserObserveScript[start:end] + "\nconst body = " + strconv.Quote(body) + ";\nconst out = excerptSourceForModel(body, 1200);\nif (!out.startsWith('收货地址北京海淀') || !out.includes('应付总额 ¥9.98') || !out.includes('合计 ¥8.00') || out.includes('页脚版权')) { console.error(out); process.exit(1); }\nconst late = " + strconv.Quote(late) + ";\nconst lateOut = excerptSourceForModel(late, 1200);\nif (!lateOut.includes('收货地址北京海淀上地') || !lateOut.includes('应付总额 ¥9.98') || lateOut.includes('页脚版权')) { console.error(lateOut); process.exit(2); }\nconst article = " + strconv.Quote(article) + ";\nconst articleOut = excerptSourceForModel(article, 1200);\nif (!articleOut.startsWith('商品详情') || articleOut.includes('页脚版权') || !articleOut.includes('正')) { console.error(articleOut); process.exit(3); }\nconst header = " + strconv.Quote(header) + ";\nconst headerOut = excerptSourceForModel(header, 1200);\nif (!headerOut.includes('收货地址北京海淀上地十号') || headerOut.includes('页脚版权')) { console.error(headerOut); process.exit(4); }\n"
+	file, err := os.CreateTemp("", "excerpt-*.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.WriteString(script); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("node", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("excerpt clip: %v\n%s", err, out)
 	}
 }
 

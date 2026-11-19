@@ -64,8 +64,10 @@ type Message struct {
 	Content          string     `json:"content"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	// ThoughtSignature is a Gemini signature that belongs to the visible text
-	// part rather than a function call. Tool-call signatures stay on ToolCall.
+	// ThoughtSignature is replayed on the next request. Gemini attaches it to
+	// the visible text part. DeepSeek's Anthropic thinking block uses the same
+	// field so a tool continuation can pass the signature back with the
+	// thinking text. Tool-call signatures stay on ToolCall.
 	ThoughtSignature string      `json:"thought_signature,omitempty"`
 	RawContent       interface{} `json:"-"`
 }
@@ -195,10 +197,11 @@ type openAIWireMessage struct {
 	// Some OpenAI-compatible providers use these aliases instead of
 	// reasoning_content. They are display-safe provider output and are kept in
 	// the same lane as the canonical field.
-	Reasoning    string     `json:"reasoning,omitempty"`
-	Thinking     string     `json:"thinking,omitempty"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FunctionCall *struct {
+	Reasoning        string     `json:"reasoning,omitempty"`
+	Thinking         string     `json:"thinking,omitempty"`
+	ThoughtSignature string     `json:"thought_signature,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	FunctionCall     *struct {
 		Name      string          `json:"name,omitempty"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
 	} `json:"function_call,omitempty"`
@@ -268,12 +271,13 @@ type TokenCallback func(delta string)
 // Anthropic specific structures
 
 type AnthropicContentBlock struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	Thinking string      `json:"thinking,omitempty"`
-	ID       string      `json:"id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Input    interface{} `json:"input,omitempty"`
+	Type      string      `json:"type"`
+	Text      string      `json:"text,omitempty"`
+	Thinking  string      `json:"thinking,omitempty"`
+	Signature string      `json:"signature,omitempty"`
+	ID        string      `json:"id,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Input     interface{} `json:"input,omitempty"`
 }
 
 // ParseNonStreamAnthropicResponse handles the fallback case where the provider
@@ -348,6 +352,25 @@ func normalizeOpenAIMessageContent(raw interface{}) (content string, reasoning s
 	}
 }
 
+// openAIContentThinkingSignature returns the first thinking-block signature.
+// DeepSeek asks callers to pass that value back with the block. An empty
+// signature is not a value.
+func openAIContentThinkingSignature(raw interface{}) string {
+	for _, item := range toInterfaceSlice(raw) {
+		m := toStringInterfaceMap(item)
+		if m == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(stringField(m, "type")), "thinking") {
+			continue
+		}
+		if sig := strings.TrimSpace(stringField(m, "signature")); sig != "" {
+			return sig
+		}
+	}
+	return ""
+}
+
 func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 	result := &Response{ResponseID: strings.TrimSpace(wire.ID), Usage: wire.Usage}
 	if len(wire.Choices) == 0 {
@@ -358,11 +381,16 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 		content, blockReasoning, rawContent := normalizeOpenAIMessageContent(choice.Message.Content)
 		visibleContent, taggedReasoning := splitOpenAIThinkingTags(content)
 		explicitReasoning := openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking)
+		signature := strings.TrimSpace(choice.Message.ThoughtSignature)
+		if signature == "" {
+			signature = openAIContentThinkingSignature(choice.Message.Content)
+		}
 		msg := Message{
 			Role:             choice.Message.Role,
 			Content:          StripAllExtra(visibleContent),
 			ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(explicitReasoning, mergeOpenAIReasoningText(blockReasoning, taggedReasoning))),
 			ToolCalls:        choice.Message.ToolCalls,
+			ThoughtSignature: signature,
 			RawContent:       rawContent,
 		}
 		finishReason := choice.FinishReason

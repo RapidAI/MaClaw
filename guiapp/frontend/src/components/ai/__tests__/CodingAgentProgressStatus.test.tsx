@@ -1175,6 +1175,10 @@ describe('CodingAgentProgressStatus', () => {
         expect(isCodingAgentActivePhase('running')).toBe(true);
         expect(isCodingAgentActivePhase('retrying')).toBe(true);
         expect(isCodingAgentActivePhase('waiting_writer')).toBe(true);
+        expect(isCodingAgentActivePhase('verifying_ui')).toBe(true);
+        expect(codingAgentStatusLabel('verifying_ui', 'en')).toBe('Verifying the interface');
+        expect(codingAgentStatusLabel('verifying_ui', 'zh-Hans')).toBe('正在验证界面');
+        expect(codingAgentStatusLabel('verifying_ui', 'zh-Hant')).toBe('正在驗證界面');
         expect(isCodingAgentActivePhase('queued')).toBe(true);
         expect(isCodingAgentActivePhase('completed')).toBe(false);
         expect(isCodingAgentTerminalPhase('completed')).toBe(true);

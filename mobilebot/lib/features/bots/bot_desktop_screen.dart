@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show DeviceOrientation, SystemChrome, SystemUiMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
@@ -633,7 +634,17 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
               child: _overlayButton(
                 icon: Icons.arrow_back,
                 tooltip: context.S.dtBack,
-                onPressed: () => Navigator.of(context).maybePop(),
+                // 冷启动直达本页（通知深链）时没有路由可弹，回 bot 页兜底，
+                // 不然用户会困在横屏全屏里。
+                onPressed: () {
+                  if (Navigator.of(context).canPop()) {
+                    Navigator.of(context).pop();
+                  } else {
+                    context.go(
+                      '/bot/${Uri.encodeComponent(widget.bot.id)}',
+                    );
+                  }
+                },
               ),
             ),
           ),

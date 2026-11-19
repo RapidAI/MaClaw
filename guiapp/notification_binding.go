@@ -140,11 +140,16 @@ func (a *App) GetPinnedNotifications() []PinnedNotification {
 
 // PullPinnedNotifications fetches the pinned list from the Hub and, when it
 // changed, publishes it to the frontend as notification:pinned. Called on
-// WebSocket reconnect and whenever a pinned push/revoke lands.
+// WebSocket reconnect and whenever a pinned push/revoke lands. The whole
+// fetch→replace→publish is serialized by pinnedPullMu so concurrent callers
+// cannot interleave an older response past a newer one.
 func (a *App) PullPinnedNotifications() error {
 	if a == nil || a.pinnedNotifs == nil {
 		return fmt.Errorf("notification system not initialized")
 	}
+	a.pinnedPullMu.Lock()
+	defer a.pinnedPullMu.Unlock()
+
 	var resp pinnedHubResponse
 	err := a.doNotificationHubRequest(
 		context.Background(),

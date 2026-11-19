@@ -30,8 +30,24 @@ func BuildAnthropicMessagesRequestBody(
 	messages []interface{},
 	opts AnthropicMessagesRequestOptions,
 ) map[string]interface{} {
+	// DeepSeek thinking mode requires content[].thinking on every replayed
+	// assistant message. Preserve reasoning_content through sanitizing and
+	// emit it as a thinking block. Other Anthropic providers stay unchanged.
+	if corelib.DeepSeekAnthropicThinkingPassback(cfg) {
+		messages = SanitizeOpenAICompatRequestMessagesPreserveReasoning(messages, true)
+		converted := ConvertToAnthropicMessagesPassBackThinking(messages)
+		return finishAnthropicMessagesRequestBody(cfg, converted, opts)
+	}
 	messages = SanitizeOpenAICompatRequestMessages(messages, true)
 	converted := ConvertToAnthropicMessages(messages)
+	return finishAnthropicMessagesRequestBody(cfg, converted, opts)
+}
+
+func finishAnthropicMessagesRequestBody(
+	cfg corelib.MaclawLLMConfig,
+	converted AnthropicConvertedMessages,
+	opts AnthropicMessagesRequestOptions,
+) map[string]interface{} {
 	maxTokens := opts.MaxTokens
 	if maxTokens <= 0 && !opts.KeepZeroMaxTokens {
 		// Use config-aware default: user setting > model-specific default > hardcoded fallback.
@@ -168,6 +184,9 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 		case "thinking":
 			if text := anthropicThinkingBlockText(block.Type, block.Thinking, block.Text); text != "" {
 				reasoningParts = append(reasoningParts, text)
+			}
+			if msg.ThoughtSignature == "" {
+				msg.ThoughtSignature = strings.TrimSpace(block.Signature)
 			}
 		case "tool_use":
 			argsJSON, _ := json.Marshal(block.Input)

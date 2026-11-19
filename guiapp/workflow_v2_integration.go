@@ -5100,10 +5100,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			// Sequential plans stop on a real failure. An iteration cap ends
 			// this round too, but the later steps are still open.
 			if stepResult.Status != "success" {
-				if !codingLoopIterationExhausted(stepResult.Error) {
-					// Dependents stay prior-step skips. The handoff sentence
-					// would make each of them a second review handoff.
-					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, "skipped: prior step failed")
+				// A cancel leaves the tail pending. interrupt records those
+				// rows as interrupted. A prior-step skip would count them done.
+				if reason := remoteCodingDependentsAfterStop(stepResult.Status, stepResult.Error); reason != "" {
+					h.skipRemainingOrchestratedCodingSteps(planned, userID, step.Index, reason)
 				}
 				break
 			}
@@ -5117,7 +5117,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	applyRemoteCodingTurnFileAudit(result, turnFilesModified, turnFilesCreated)
-	if loopCtx != nil && loopCtx.IsCancelled() {
+	if remoteCodingTurnNeedsInterrupt(loopCtx != nil && loopCtx.IsCancelled(), result) {
 		h.interruptOpenCodingSteps(userID)
 	}
 	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)

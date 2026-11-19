@@ -20,6 +20,17 @@ type AnthropicConvertedMessages struct {
 // ConvertToAnthropicMessages converts OpenAI-style conversation messages
 // into Anthropic Messages API format, separating the system prompt.
 func ConvertToAnthropicMessages(messages []interface{}) AnthropicConvertedMessages {
+	return convertToAnthropicMessages(messages, false)
+}
+
+// ConvertToAnthropicMessagesPassBackThinking is ConvertToAnthropicMessages
+// for DeepSeek thinking mode. Every assistant message gets a content[].thinking
+// block so a tool continuation is not rejected with HTTP 400.
+func ConvertToAnthropicMessagesPassBackThinking(messages []interface{}) AnthropicConvertedMessages {
+	return convertToAnthropicMessages(messages, true)
+}
+
+func convertToAnthropicMessages(messages []interface{}, passBackThinking bool) AnthropicConvertedMessages {
 	var result AnthropicConvertedMessages
 	messages = normalizeOpenAIChatToolCallLinkage(messages)
 	for _, m := range messages {
@@ -38,23 +49,7 @@ func ConvertToAnthropicMessages(messages []interface{}) AnthropicConvertedMessag
 				}
 			}
 		case "assistant":
-			var contentBlocks []interface{}
-			if text := extractContentString(mm); text != "" {
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type": "text", "text": text,
-				})
-			}
-			for _, tc := range extractToolCalls(mm) {
-				var inputObj interface{}
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
-				if inputObj == nil {
-					inputObj = map[string]interface{}{}
-				}
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type": "tool_use", "id": tc.ID,
-					"name": tc.Function.Name, "input": inputObj,
-				})
-			}
+			contentBlocks := assistantAnthropicContentBlocks(mm, passBackThinking)
 			if len(contentBlocks) > 0 {
 				result.Messages = append(result.Messages, map[string]interface{}{
 					"role": "assistant", "content": contentBlocks,
@@ -106,6 +101,108 @@ func ConvertToAnthropicMessages(messages []interface{}) AnthropicConvertedMessag
 		}
 	}
 	return result
+}
+
+// assistantAnthropicContentBlocks orders thinking, then text, then tool_use.
+// passBackThinking forces a thinking block on every assistant message. DeepSeek
+// accepts an empty thinking string and rejects a missing thinking field.
+func assistantAnthropicContentBlocks(mm map[string]interface{}, passBackThinking bool) []interface{} {
+	thinking := anthropicThinkingBlocksFromContent(mm["content"])
+	reasoning, hasReasoning := mm["reasoning_content"].(string)
+	if len(thinking) > 0 && anthropicThinkingBlocksText(thinking) == "" && hasReasoning && reasoning != "" {
+		filled := cloneAnthropicThinkingBlock(toStringInterfaceMap(thinking[0]))
+		filled["thinking"] = reasoning
+		thinking = []interface{}{filled}
+	}
+	if len(thinking) == 0 && passBackThinking {
+		text := ""
+		if hasReasoning {
+			text = reasoning
+		}
+		thinking = []interface{}{map[string]interface{}{"type": "thinking", "thinking": text}}
+	}
+	if passBackThinking {
+		stampAnthropicThinkingSignature(thinking, mm["thought_signature"])
+	}
+	blocks := make([]interface{}, 0, len(thinking)+2)
+	blocks = append(blocks, thinking...)
+	if text := extractContentString(mm); text != "" {
+		blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+	}
+	for _, tc := range extractToolCalls(mm) {
+		var inputObj interface{}
+		_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
+		if inputObj == nil {
+			inputObj = map[string]interface{}{}
+		}
+		blocks = append(blocks, map[string]interface{}{
+			"type": "tool_use", "id": tc.ID,
+			"name": tc.Function.Name, "input": inputObj,
+		})
+	}
+	return blocks
+}
+
+func stampAnthropicThinkingSignature(blocks []interface{}, raw interface{}) {
+	sig, _ := raw.(string)
+	sig = strings.TrimSpace(sig)
+	if sig == "" || len(blocks) == 0 {
+		return
+	}
+	first := toStringInterfaceMap(blocks[0])
+	if first == nil || strings.TrimSpace(stringField(first, "signature")) != "" {
+		return
+	}
+	first["signature"] = sig
+}
+
+func anthropicThinkingBlocksFromContent(raw interface{}) []interface{} {
+	items := toInterfaceSlice(raw)
+	if len(items) == 0 {
+		return nil
+	}
+	var out []interface{}
+	for _, item := range items {
+		block := toStringInterfaceMap(item)
+		if block == nil || !strings.EqualFold(stringField(block, "type"), "thinking") {
+			continue
+		}
+		out = append(out, cloneAnthropicThinkingBlock(block))
+	}
+	return out
+}
+
+func cloneAnthropicThinkingBlock(block map[string]interface{}) map[string]interface{} {
+	cloned := map[string]interface{}{"type": "thinking"}
+	if block == nil {
+		cloned["thinking"] = ""
+		return cloned
+	}
+	if thinking, ok := block["thinking"].(string); ok {
+		cloned["thinking"] = thinking
+	} else if text := stringField(block, "text"); text != "" {
+		cloned["thinking"] = text
+	} else {
+		cloned["thinking"] = ""
+	}
+	if sig := strings.TrimSpace(stringField(block, "signature")); sig != "" {
+		cloned["signature"] = sig
+	}
+	return cloned
+}
+
+func anthropicThinkingBlocksText(blocks []interface{}) string {
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		m := toStringInterfaceMap(block)
+		if m == nil {
+			continue
+		}
+		if text, ok := m["thinking"].(string); ok && text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // convertUserContentToAnthropicBlocks converts an OpenAI-style user content

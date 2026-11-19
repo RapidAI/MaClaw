@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -203,6 +204,31 @@ func (h *IMMessageHandler) ownerTurnClaimed(state *sessionLoopState, userID stri
 		return !turn.ctx.IsDone()
 	}
 	return false
+}
+
+// ownerWindowHeld reports whether this user currently holds the owner turn
+// window. It only loads an existing record. A missing record is false, and a
+// live loopCtx without the window marker is not enough.
+func (h *IMMessageHandler) ownerWindowHeld(userID string) bool {
+	if h == nil {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	raw, ok := h.sessionLoops.Load(userID)
+	if !ok {
+		return false
+	}
+	state, ok := raw.(*sessionLoopState)
+	if !ok || state == nil {
+		return false
+	}
+	state.stateMu.RLock()
+	held := state.windowHeld
+	state.stateMu.RUnlock()
+	return held
 }
 
 // ownerTurnSteerEligible mirrors the entry interrupt check in

@@ -526,10 +526,19 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET reporter_user_id=excluded.reporter_user_id, reporter_contact=excluded.reporter_contact, os_version=excluded.os_version, gui_version=excluded.gui_version, description=excluded.description, status=excluded.status, admin_note=excluded.admin_note, origin_url=excluded.origin_url, archived_at=excluded.archived_at, created_at=excluded.created_at, updated_at=excluded.updated_at
-			WHERE excluded.updated_at > sm_problem_reports.updated_at OR (excluded.updated_at = sm_problem_reports.updated_at AND excluded.origin_url > sm_problem_reports.origin_url)`, item.ID, canonicalSnapshotUserID(userIDAliases, item.ReporterUserID), item.ReporterContact, item.OSVersion, item.GUIVersion, item.Description, item.Status, item.AdminNote, string(paths), item.OriginURL, fmtTime(item.ArchivedAt), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_problem_reports (id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, diagnostics_path, screenshot_paths, origin_url, archived_at, created_at, updated_at, public_download_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET reporter_user_id=excluded.reporter_user_id, reporter_contact=excluded.reporter_contact, os_version=excluded.os_version, gui_version=excluded.gui_version, description=excluded.description, status=excluded.status, admin_note=excluded.admin_note, origin_url=excluded.origin_url, archived_at=excluded.archived_at, created_at=excluded.created_at, updated_at=excluded.updated_at, public_download_token=CASE WHEN excluded.public_download_token != '' THEN excluded.public_download_token ELSE sm_problem_reports.public_download_token END
+			WHERE excluded.updated_at > sm_problem_reports.updated_at OR (excluded.updated_at = sm_problem_reports.updated_at AND excluded.origin_url > sm_problem_reports.origin_url)`, item.ID, canonicalSnapshotUserID(userIDAliases, item.ReporterUserID), item.ReporterContact, item.OSVersion, item.GUIVersion, item.Description, item.Status, item.AdminNote, string(paths), item.OriginURL, fmtTime(item.ArchivedAt), fmtTime(item.CreatedAt), fmtTime(item.UpdatedAt), item.PublicDownloadToken); err != nil {
 			return fmt.Errorf("insert sm_problem_reports: %w", err)
+		}
+		// The download token is a capability, not a new revision. Backfill does
+		// not move updated_at, so the freshness guard above skips a peer that
+		// already stored the row. Filling only an empty token keeps a newer
+		// status on this node and still publishes the link.
+		if item.PublicDownloadToken != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE sm_problem_reports SET public_download_token=? WHERE id=? AND public_download_token=''`, item.PublicDownloadToken, item.ID); err != nil {
+				return fmt.Errorf("fill problem report download token: %w", err)
+			}
 		}
 	}
 	for _, item := range snap.ProblemReportDeletes {
@@ -998,7 +1007,7 @@ func (s *Store) dumpNotificationSequences(ctx context.Context) ([]NotificationSe
 
 // dumpProblemReportsForSnapshot intentionally omits local attachment paths.
 func (s *Store) dumpProblemReportsForSnapshot(ctx context.Context) ([]ProblemReport, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, origin_url, archived_at, created_at, updated_at FROM sm_problem_reports ORDER BY created_at, id`)
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id, reporter_user_id, reporter_contact, os_version, gui_version, description, status, admin_note, origin_url, archived_at, created_at, updated_at, public_download_token FROM sm_problem_reports ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1007,7 +1016,7 @@ func (s *Store) dumpProblemReportsForSnapshot(ctx context.Context) ([]ProblemRep
 	for rows.Next() {
 		var item ProblemReport
 		var archivedAt, createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.ReporterUserID, &item.ReporterContact, &item.OSVersion, &item.GUIVersion, &item.Description, &item.Status, &item.AdminNote, &item.OriginURL, &archivedAt, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ReporterUserID, &item.ReporterContact, &item.OSVersion, &item.GUIVersion, &item.Description, &item.Status, &item.AdminNote, &item.OriginURL, &archivedAt, &createdAt, &updatedAt, &item.PublicDownloadToken); err != nil {
 			return nil, err
 		}
 		item.ArchivedAt, item.CreatedAt, item.UpdatedAt = parseTime(archivedAt), parseTime(createdAt), parseTime(updatedAt)

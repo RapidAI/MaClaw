@@ -14,6 +14,7 @@ const (
 	codingAgentEventPhaseSkipped       codingAgentEventPhaseKind = "skipped"
 	codingAgentEventPhaseResult        codingAgentEventPhaseKind = "result"
 	codingAgentEventPhaseWaitingWriter codingAgentEventPhaseKind = "waiting_writer"
+	codingAgentEventPhaseVerifyingUI   codingAgentEventPhaseKind = "verifying_ui"
 )
 
 func normalizeCodingAgentEventPhaseKind(phase string) codingAgentEventPhaseKind {
@@ -34,6 +35,8 @@ func normalizeCodingAgentEventPhaseKind(phase string) codingAgentEventPhaseKind 
 		return codingAgentEventPhaseResult
 	case codingAgentEventPhaseWaitingWriter:
 		return codingAgentEventPhaseWaitingWriter
+	case codingAgentEventPhaseVerifyingUI:
+		return codingAgentEventPhaseVerifyingUI
 	default:
 		return codingAgentEventPhaseUnknown
 	}

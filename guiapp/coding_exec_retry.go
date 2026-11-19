@@ -54,6 +54,9 @@ type codingExecCheckpoint struct {
 	// fresh parent attempts; past it the manual action remains available.
 	AutoReviewHops int       `json:"auto_review_hops,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// InteractiveAcceptance records a passed console check for this user.
+	// Screenshot bytes and console buffers stay out of the checkpoint.
+	InteractiveAcceptance *codingInteractiveAcceptanceRecord `json:"interactive_acceptance,omitempty"`
 
 	// Lineage guard (in-memory only). A detached auto-review writes the
 	// checkpoint outside the owner turn window; without a fence it could
@@ -125,8 +128,85 @@ func (h *IMMessageHandler) storeCodingExecCheckpoint(userID string, cp codingExe
 			return
 		}
 	}
+	if cp.InteractiveAcceptance == nil {
+		if kept := codingInteractiveAcceptanceRemembered[userID]; kept != nil {
+			copied := *kept
+			cp.InteractiveAcceptance = &copied
+		} else if curRaw, ok := h.codingExecCheckpoint.Load(userID); ok {
+			if cur, ok2 := curRaw.(codingExecCheckpoint); ok2 && cur.InteractiveAcceptance != nil {
+				copied := *cur.InteractiveAcceptance
+				cp.InteractiveAcceptance = &copied
+			}
+		}
+	} else {
+		copied := *cp.InteractiveAcceptance
+		codingInteractiveAcceptanceRemembered[userID] = &copied
+	}
 	h.codingExecCheckpoint.Store(userID, cp)
 	persistCodingExecCheckpointToDisk(userID, cp)
+}
+
+// codingInteractiveAcceptanceRecord is the passed-artifact skip key.
+// Only status "passed" suppresses another drive of the same artifact.
+type codingInteractiveAcceptanceRecord struct {
+	Artifact  string `json:"artifact,omitempty"`
+	Status    string `json:"status,omitempty"`
+	FlakeUsed bool   `json:"flake_used,omitempty"`
+}
+
+// codingInteractiveAcceptanceRemembered keeps a pass that has no task list yet.
+// loadCodingExecCheckpoint ignores an empty Tasks slice, so the field on that
+// checkpoint would not come back. Cleared with the checkpoint.
+var codingInteractiveAcceptanceRemembered = map[string]*codingInteractiveAcceptanceRecord{}
+
+func (h *IMMessageHandler) rememberCodingInteractiveAcceptance(userID string, rec codingInteractiveAcceptanceRecord) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || rec.Artifact == "" || rec.Status != acceptanceStatusPassed {
+		return
+	}
+	codingExecCheckpointEpochMu.Lock()
+	defer codingExecCheckpointEpochMu.Unlock()
+	copied := rec
+	codingInteractiveAcceptanceRemembered[userID] = &copied
+	raw, ok := h.codingExecCheckpoint.Load(userID)
+	if !ok {
+		return
+	}
+	cp, ok := raw.(codingExecCheckpoint)
+	if !ok || len(cp.Tasks) == 0 {
+		return
+	}
+	cp.InteractiveAcceptance = &copied
+	cp.UpdatedAt = time.Now()
+	h.codingExecCheckpoint.Store(userID, cp)
+	persistCodingExecCheckpointToDisk(userID, cp)
+}
+
+func (h *IMMessageHandler) lookupCodingInteractiveAcceptance(userID string) (codingInteractiveAcceptanceRecord, bool) {
+	if h == nil {
+		return codingInteractiveAcceptanceRecord{}, false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return codingInteractiveAcceptanceRecord{}, false
+	}
+	codingExecCheckpointEpochMu.Lock()
+	defer codingExecCheckpointEpochMu.Unlock()
+	if rec := codingInteractiveAcceptanceRemembered[userID]; rec != nil {
+		return *rec, true
+	}
+	raw, ok := h.codingExecCheckpoint.Load(userID)
+	if !ok {
+		return codingInteractiveAcceptanceRecord{}, false
+	}
+	cp, ok := raw.(codingExecCheckpoint)
+	if !ok || cp.InteractiveAcceptance == nil {
+		return codingInteractiveAcceptanceRecord{}, false
+	}
+	return *cp.InteractiveAcceptance, true
 }
 
 // codingExecCheckpointEpochMu serializes checkpoint writes: the lineage
@@ -221,6 +301,7 @@ func (h *IMMessageHandler) clearCodingExecCheckpoint(userID string) {
 	// between a lineage compare and its Store, resurrecting the checkpoint.
 	codingExecCheckpointEpochMu.Lock()
 	h.codingExecCheckpoint.Delete(userID)
+	delete(codingInteractiveAcceptanceRemembered, userID)
 	codingExecCheckpointEpochMu.Unlock()
 	// The checkpoint file is not the retry attempt. A stale checkpoint is
 	// dropped so the workbench can run the same "重试失败" command, and that

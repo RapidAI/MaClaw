@@ -186,7 +186,9 @@ func (h *SkillMarketHandlers) AdminListExpertMarketCategories(w http.ResponseWri
 		return
 	}
 	counts := map[string]int64{}
-	rows, err := h.store.DB().QueryContext(r.Context(), `SELECT category, COUNT(*) FROM sm_expert_market_listings GROUP BY category`)
+	// Counts answer "how many listings carry this name" for the admin card;
+	// rows already deleted or purged do not represent usable market entries.
+	rows, err := h.store.DB().QueryContext(r.Context(), `SELECT category, COUNT(*) FROM sm_expert_market_listings WHERE status NOT IN ('deleted', 'purged') GROUP BY category`)
 	if err == nil {
 		for rows.Next() {
 			var name string

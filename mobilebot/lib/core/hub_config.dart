@@ -4,6 +4,8 @@ library;
 
 import 'package:dio/dio.dart';
 
+import 'locale.dart';
+
 const maclawDefaultHubCenterUrl = 'https://hubs.mypapers.top';
 const maclawOfficialHubCenterUrls = [
   maclawDefaultHubCenterUrl,
@@ -195,13 +197,17 @@ HubApiException hubExceptionFrom(Object error) {
     }
     final status = error.response?.statusCode;
     if (message.isEmpty) {
+      final s = sharedL10n;
       message = switch (error.type) {
         DioExceptionType.connectionTimeout ||
         DioExceptionType.receiveTimeout ||
-        DioExceptionType.sendTimeout => '网络超时，请稍后重试',
-        DioExceptionType.connectionError => '无法连接服务器，请检查网络',
-        DioExceptionType.badCertificate => '服务器证书不受信任',
-        _ => (status != null && status >= 500) ? '服务器异常，请稍后重试' : '请求失败，请稍后重试',
+        DioExceptionType.sendTimeout => s.netTimeout,
+        DioExceptionType.connectionError => s.netConnectionError,
+        DioExceptionType.badCertificate => s.netBadCertificate,
+        _ =>
+          (status != null && status >= 500)
+              ? s.netServerError
+              : s.netRequestFailed,
       };
     }
     return HubApiException(

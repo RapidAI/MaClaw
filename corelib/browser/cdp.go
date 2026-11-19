@@ -263,6 +263,13 @@ func cdpHostIsLocal(hostname string) bool {
 // cdpDialTarget splits a debugger socket into the URL gorilla can dial and
 // the gate token for the Authorization header. A ws URL that still has
 // userinfo never leaves this process: gorilla returns "malformed ws or wss URL".
+// CDPDialTarget splits a debugger socket into the URL a client can dial and
+// the gate token for the Authorization header. Acceptance uses this for an
+// in-container browser and does not send the userinfo to the dialer.
+func CDPDialTarget(wsURL string) (dialURL, token string) {
+	return cdpDialTarget(wsURL)
+}
+
 func cdpDialTarget(wsURL string) (dialURL, token string) {
 	trimmed := strings.TrimSpace(wsURL)
 	parsed, err := url.Parse(trimmed)

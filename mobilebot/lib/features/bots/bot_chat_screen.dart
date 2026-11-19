@@ -613,7 +613,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
               onProgress: onProgress,
             );
       if (!mounted) return;
-      final line = path.isNotEmpty ? path : '~/素材/${widget.bot.name}/$name';
+      final line = path.isNotEmpty
+          ? path
+          : S.chatMaterialFallbackPath(widget.bot.name, name);
       final current = _inputCtrl.text;
       final notice = S.chatMaterialSent(line);
       _inputCtrl.text = current.isEmpty ? notice : '$current\n$notice';

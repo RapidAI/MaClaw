@@ -113,4 +113,12 @@ describe('ComputerUseQuickBar polling', () => {
         });
         expect(screen.queryByTestId('computer-use-handoff')).toBeNull();
     });
+
+    it('shows acceptance driving even when Computer Use is off', async () => {
+        getStatusMock.mockResolvedValue({ enabled: false, session_active: false, acceptance_driving: true });
+        render(<ComputerUseQuickBar lang="zh" theme={theme} />);
+        await flushStatus();
+        const bar = screen.getByTestId('computer-use-quick-bar');
+        expect(bar.textContent).toContain('正在验证刚构建的界面');
+    });
 });

@@ -133,6 +133,7 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 		description = "Attaches the artifact already bound to this chat. This is not an external send and does not wait for approval."
 	}
 	description += semanticRemoteHostSchemaCue(capability.ID, params)
+	description += semanticBrowserAndDesktopSchemaCue(capability.ID, params)
 	description += semanticRenderedReuseCue(capability.ID, selection)
 	if semanticSchemaAdmitsNoArguments(params) {
 		if channelAttach {
@@ -157,6 +158,46 @@ const semanticListedCallCue = " Call it whenever it is listed; after a successfu
 // denying fields the connect schema requires. A session-less turn publishes
 // host; a bound session does not. Optional names are only the ones this
 // schema actually lists.
+// semanticBrowserAndDesktopSchemaCue names the handoff actions when this
+// host's schema actually publishes them. The Hub floor (navigate/snapshot,
+// observe/click/done) stays on the capability summary alone.
+func semanticBrowserAndDesktopSchemaCue(id CapabilityID, params map[string]interface{}) string {
+	switch id {
+	case CapabilityBrowserControlWeb:
+		if !schemaEnumContains(params, "submit_secret") {
+			return ""
+		}
+		return " Passwords and one-time codes use submit_secret with method and ref; do not pass the secret. Captcha, QR, and passkeys use request_takeover. Before pay, confirm_order with the payable total. Type the account name yourself."
+	case CapabilityComputerControlDesktop:
+		if !schemaEnumContains(params, "type") {
+			return ""
+		}
+		return " observe, then click or type by ref. A pay button and a password field are handed to the person. Do not pass the secret."
+	default:
+		return ""
+	}
+}
+
+func schemaEnumContains(params map[string]interface{}, name string) bool {
+	props, _ := params["properties"].(map[string]interface{})
+	action, _ := props["action"].(map[string]interface{})
+	switch enum := action["enum"].(type) {
+	case []string:
+		for _, item := range enum {
+			if item == name {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range enum {
+			if text, _ := item.(string); text == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func semanticRemoteHostSchemaCue(id CapabilityID, params map[string]interface{}) string {
 	if id != CapabilityShellExecuteRemoteHost {
 		return ""
