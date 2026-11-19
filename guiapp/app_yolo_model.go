@@ -175,6 +175,9 @@ func (a *App) GetComputerUseStatus() map[string]interface{} {
 			"error":             e2e["error"],
 		}
 	}
+	driving, target := acceptanceDrivingSnapshot()
+	status["acceptance_driving"] = driving
+	status["acceptance_target"] = target
 	return status
 }
 

@@ -200,6 +200,13 @@ async function setExpertMarketListingCategory(card, value) {
 function fillExpertMarketCategorySelect(select, current) {
   select.dataset.expertCategoryValue = current;
   const options = expertMarketCategories.map(cat => `<option value="${expertMarketEsc(cat.name)}"${cat.name === current ? ' selected' : ''}>${expertMarketEsc(cat.name)}</option>`);
+  // A listing whose category the administrator later deleted keeps the stale
+  // text. Show it as a disabled selected entry instead of silently displaying
+  // the first taxonomy name (a wrong "assigned" impression); picking any live
+  // option retags it for real.
+  if (current && !expertMarketCategories.some(cat => cat.name === current)) {
+    options.unshift(`<option value="" disabled selected>${expertMarketEsc(current)}</option>`);
+  }
   options.push(`<option value=""${current === '' ? ' selected' : ''}>${expertMarketEsc(expertMarketText('categoryNone'))}</option>`);
   select.innerHTML = options.join('');
 }

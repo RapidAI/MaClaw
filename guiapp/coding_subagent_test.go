@@ -8562,14 +8562,14 @@ func TestCodingSubAgentRejectsWritesOutsideProjectPath(t *testing.T) {
 	prefixSibling := filepath.Join(root, "project-other", "file.txt")
 
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
-	if msg := cb.requireProjectWriteScope(filepath.Join(project, "main.go")); msg != "" {
-		t.Fatalf("expected project file to be allowed, got %q", msg)
+	if msg := cb.requireProjectWriteScope(filepath.Join(project, "main.go")); msg.rejected() {
+		t.Fatalf("expected project file to be allowed, got %q", msg.String())
 	}
-	if msg := cb.requireProjectWriteScope(outside); !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("expected outside file to be rejected, got %q", msg)
+	if msg := cb.requireProjectWriteScope(outside); msg.argument || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("expected outside file to be rejected, got %q", msg.String())
 	}
-	if msg := cb.requireProjectWriteScope(prefixSibling); !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("expected prefix sibling to be rejected, got %q", msg)
+	if msg := cb.requireProjectWriteScope(prefixSibling); msg.argument || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("expected prefix sibling to be rejected, got %q", msg.String())
 	}
 }
 
@@ -8589,8 +8589,8 @@ func TestCodingSubAgentRejectsWriteThroughSymlinkEscape(t *testing.T) {
 	}
 
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
-	if msg := cb.requireProjectWriteScope(filepath.Join(link, "new.go")); msg == "" {
-		t.Fatal("expected symlink escape write to be rejected")
+	if msg := cb.requireProjectWriteScope(filepath.Join(link, "new.go")); !msg.rejected() || msg.argument {
+		t.Fatalf("expected symlink escape write to be rejected, got %q", msg.String())
 	}
 }
 
@@ -8610,14 +8610,14 @@ func TestCodingSubAgentRejectsReadsOutsideProjectPath(t *testing.T) {
 	}
 
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
-	if msg := cb.requireProjectReadScope(inside, "read_file"); msg != "" {
-		t.Fatalf("expected project read path to be allowed, got %q", msg)
+	if msg := cb.requireProjectReadScope(inside, "read_file"); msg.rejected() {
+		t.Fatalf("expected project read path to be allowed, got %q", msg.String())
 	}
-	if msg := cb.requireProjectReadScope(outside, "read_file"); !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("expected outside read path to be rejected, got %q", msg)
+	if msg := cb.requireProjectReadScope(outside, "read_file"); msg.argument || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("expected outside read path to be rejected, got %q", msg.String())
 	}
-	if msg := cb.requireProjectReadScope(prefixSibling, "ripgrep"); !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("expected prefix sibling read path to be rejected, got %q", msg)
+	if msg := cb.requireProjectReadScope(prefixSibling, "ripgrep"); msg.argument || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("expected prefix sibling read path to be rejected, got %q", msg.String())
 	}
 }
 
@@ -8634,21 +8634,21 @@ func TestCodingSubAgentRejectsCommandAndDiffOutsideProjectPath(t *testing.T) {
 	}
 
 	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
-	if msg := cb.requireProjectWorkingDirScope(inside); msg != "" {
-		t.Fatalf("expected project command working dir to be allowed, got %q", msg)
+	if msg := cb.requireProjectWorkingDirScope(inside); msg.rejected() {
+		t.Fatalf("expected project command working dir to be allowed, got %q", msg.String())
 	}
-	if msg := cb.requireProjectWorkingDirScope(outside); !strings.Contains(msg, "项目目录外执行命令") {
-		t.Fatalf("expected outside command dir to be rejected, got %q", msg)
+	if msg := cb.requireProjectWorkingDirScope(outside); msg.argument || !strings.Contains(msg.String(), "项目目录外执行命令") {
+		t.Fatalf("expected outside command dir to be rejected, got %q", msg.String())
 	}
-	if msg := cb.requireProjectWorkingDirScope(prefixSibling); !strings.Contains(msg, "项目目录外执行命令") {
-		t.Fatalf("expected prefix sibling command dir to be rejected, got %q", msg)
+	if msg := cb.requireProjectWorkingDirScope(prefixSibling); msg.argument || !strings.Contains(msg.String(), "项目目录外执行命令") {
+		t.Fatalf("expected prefix sibling command dir to be rejected, got %q", msg.String())
 	}
 
-	if msg := cb.requireProjectDiffScope(inside); msg != "" {
-		t.Fatalf("expected project diff path to be allowed, got %q", msg)
+	if msg := cb.requireProjectDiffScope(inside); msg.rejected() {
+		t.Fatalf("expected project diff path to be allowed, got %q", msg.String())
 	}
-	if msg := cb.requireProjectDiffScope(outside); !strings.Contains(msg, "项目目录外的 diff") {
-		t.Fatalf("expected outside diff path to be rejected, got %q", msg)
+	if msg := cb.requireProjectDiffScope(outside); msg.argument || !strings.Contains(msg.String(), "项目目录外的 diff") {
+		t.Fatalf("expected outside diff path to be rejected, got %q", msg.String())
 	}
 }
 
@@ -8758,6 +8758,189 @@ func TestIsPathWithinDir(t *testing.T) {
 	}
 }
 
+func TestSSHLocalPathThroughFileDoesNotFailTheTask(t *testing.T) {
+	project := t.TempDir()
+	blocker := filepath.Join(project, "_sync_server")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, fullEnvironment: true}}
+	payload, err := json.Marshal(map[string]string{
+		"action":      "download",
+		"session_id":  "s",
+		"local_path":  filepath.Join("_sync_server", "out.txt"),
+		"remote_path": "/tmp/out.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cb.executeToolWithOutcome("ssh", string(payload))
+	if got.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("outcome = %s, want a retryable failure", got.Outcome)
+	}
+	if strings.Contains(got.Text, "无法确认") || strings.Contains(got.Text, "guardrail") {
+		t.Fatalf("file component must not be an unresolved scope block: %s", got.Text)
+	}
+	if !strings.Contains(got.Text, "不是目录") || !strings.Contains(got.Text, "_sync_server") {
+		t.Fatalf("expected a directory component error, got %s", got.Text)
+	}
+	if violations := cb.getGuardrailViolations(); len(violations) != 0 {
+		t.Fatalf("path shape error recorded a guardrail: %#v", violations)
+	}
+	status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", cb.getGuardrailViolations())
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("task outcome = %s %q", status, errMsg)
+	}
+
+	missing := cb.executeToolWithOutcome("ssh", `{"action":"download","session_id":"s","local_path":"_sync_missing/out.txt","remote_path":"/tmp/out.txt"}`)
+	if strings.Contains(missing.Text, "不是目录") || strings.Contains(missing.Text, "无法确认") {
+		t.Fatalf("missing directory must stay in scope: %s", missing.Text)
+	}
+}
+
+func TestCodingOpenedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	final, isDir := codingOpenedDirectory(dir)
+	if !isDir || final == "" {
+		t.Fatalf("directory = %q isDir=%v", final, isDir)
+	}
+	file := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if final, isDir := codingOpenedDirectory(file); isDir || final != "" {
+		t.Fatalf("file = %q isDir=%v", final, isDir)
+	}
+	child := filepath.Join(file, "out.txt")
+	ok, err := isPathWithinDir(child, dir)
+	var arg codingPathArgumentError
+	if err == nil || ok || !errors.As(err, &arg) || !strings.Contains(arg.Component, "note.txt") {
+		t.Fatalf("path through a file = ok=%v err=%v", ok, err)
+	}
+}
+
+func TestScopeWalkReplyKeepsProjectStopFailClosed(t *testing.T) {
+	uncertain := func(err error) string {
+		return fmt.Sprintf("无法确认 ssh 本地路径是否位于项目目录内：%s", err.Error())
+	}
+	component := filepath.Join("proj", "_sync_server")
+	reply := codingScopeWalkReply("ssh", codingNotDirectoryError{Component: component}, uncertain)
+	if reply.argument || !strings.Contains(reply.String(), "无法确认") || strings.Contains(reply.String(), "不是目录，不能继续访问其下级") {
+		t.Fatalf("project stop = %q argument=%v", reply.String(), reply.argument)
+	}
+	reply = codingScopeWalkReply("ssh", codingPathArgumentError{Component: component}, uncertain)
+	if !reply.argument || strings.Contains(reply.String(), "无法确认") || !strings.Contains(reply.String(), "_sync_server") {
+		t.Fatalf("target stop = %q argument=%v", reply.String(), reply.argument)
+	}
+}
+
+func TestSSHProjectPathThroughFileStaysFailClosed(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "_sync_server")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range []string{blocker, filepath.Join(blocker, "qmobjdetv26")} {
+		cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project, fullEnvironment: true}}
+		payload, err := json.Marshal(map[string]string{
+			"action":      "download",
+			"session_id":  "s",
+			"local_path":  "out.txt",
+			"remote_path": "/tmp/out.txt",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := cb.executeToolWithOutcome("ssh", string(payload))
+		if got.Outcome != codingToolOutcomeBlocked {
+			t.Fatalf("project %s outcome = %s, want a scope block: %s", project, got.Outcome, got.Text)
+		}
+		if !strings.Contains(got.Text, "无法确认") || strings.Contains(got.Text, "不是目录，不能继续访问其下级") {
+			t.Fatalf("project %s must stay unresolved: %s", project, got.Text)
+		}
+		if len(cb.getGuardrailViolations()) == 0 {
+			t.Fatalf("project %s recorded no guardrail", project)
+		}
+		status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", cb.getGuardrailViolations())
+		if status != TaskExecFailed || errMsg == "" {
+			t.Fatalf("project %s task outcome = %s %q", project, status, errMsg)
+		}
+	}
+}
+
+func TestDirectoryLinkFinalPathKeepsContainment(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	real := filepath.Join(project, "real")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, "_sync_server")
+	if err := os.WriteFile(link, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requested := filepath.Join(link, "out.txt")
+	openAs := func(final string, isDir bool) func(string) (string, bool) {
+		return func(path string) (string, bool) {
+			if filepath.Clean(path) == filepath.Clean(link) {
+				return final, isDir
+			}
+			return "", false
+		}
+	}
+	got, err := codingFollowReparse(requested, 0, openAs(real, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := pathWithinCleanDir(got, project)
+	if err != nil || !ok {
+		t.Fatalf("in-project final path = %q ok=%v err=%v", got, ok, err)
+	}
+	got, err = codingFollowReparse(requested, 0, openAs(outside, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err = pathWithinCleanDir(got, project)
+	if err != nil || ok {
+		t.Fatalf("outside final path = %q ok=%v err=%v", got, ok, err)
+	}
+	got, err = codingFollowReparse(requested, 0, openAs(link, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err = pathWithinCleanDir(got, project)
+	if err != nil || !ok {
+		t.Fatalf("final path equal to the link = %q ok=%v err=%v", got, ok, err)
+	}
+	_, err = codingFollowReparse(requested, 0, openAs("", true))
+	if err == nil || !strings.Contains(err.Error(), "unresolved directory link") {
+		t.Fatalf("unresolved link err=%v", err)
+	}
+	var arg codingPathArgumentError
+	if errors.As(err, &arg) {
+		t.Fatal("an unresolved directory link must stay fail-closed")
+	}
+}
+
+func TestPathThroughInsideJunctionStaysInProject(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	sub := filepath.Join(project, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, "_sync_server")
+	makeCodingJunction(t, link, sub)
+	ok, err := isPathWithinDir(filepath.Join(link, "out.txt"), project)
+	if err != nil || !ok {
+		t.Fatalf("child of an in-project junction = ok=%v err=%v", ok, err)
+	}
+}
+
 func TestCodingVolumeNamesIgnoreExtendedPrefixAndEmptyVolumes(t *testing.T) {
 	if codingVolumeNamesDiffer("foo", "bar") {
 		t.Fatal("paths without a volume are not a cross-volume pair")
@@ -8845,8 +9028,8 @@ func TestCrossVolumePathIsOutsideAndHonorsFullControlOrAsk(t *testing.T) {
 		fullCalls++
 		return ScopeApprovalDeny
 	}, true)
-	if msg := full.requireProjectReadScope(outside, "Glob"); msg != "" {
-		t.Fatalf("完全控制 should allow cross-volume Glob, got %q", msg)
+	if msg := full.requireProjectReadScope(outside, "Glob"); msg.rejected() {
+		t.Fatalf("完全控制 should allow cross-volume Glob, got %q", msg.String())
 	}
 	if fullCalls != 0 {
 		t.Fatalf("完全控制 should not ask, got %d calls", fullCalls)
@@ -8859,11 +9042,11 @@ func TestCrossVolumePathIsOutsideAndHonorsFullControlOrAsk(t *testing.T) {
 		return ScopeApprovalDeny
 	}, false)
 	msg := ask.requireProjectReadScope(outside, "Glob")
-	if msg == "" || strings.Contains(msg, "无法确认") || strings.Contains(msg, "Rel:") {
-		t.Fatalf("denied cross-volume read should be a scope rejection, got %q", msg)
+	if !msg.rejected() || msg.argument || strings.Contains(msg.String(), "无法确认") || strings.Contains(msg.String(), "Rel:") {
+		t.Fatalf("denied cross-volume read should be a scope rejection, got %q", msg.String())
 	}
-	if !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("denied cross-volume read should name the project boundary, got %q", msg)
+	if !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("denied cross-volume read should name the project boundary, got %q", msg.String())
 	}
 	if asked.ToolName != "Glob" || asked.Path != outside || asked.ProjectPath != project {
 		t.Fatalf("expected an approval ask for the Glob path, got %#v", asked)
@@ -8873,14 +9056,14 @@ func TestCrossVolumePathIsOutsideAndHonorsFullControlOrAsk(t *testing.T) {
 	allow.subagent.SetScopeApprovalCallback(func(ScopeApprovalRequest) ScopeApprovalDecision {
 		return ScopeApprovalAllowOnce
 	}, false)
-	if msg := allow.requireProjectReadScope(outside, "Glob"); msg != "" {
-		t.Fatalf("user allow should pass the cross-volume Glob, got %q", msg)
+	if msg := allow.requireProjectReadScope(outside, "Glob"); msg.rejected() {
+		t.Fatalf("user allow should pass the cross-volume Glob, got %q", msg.String())
 	}
 
 	bare := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: project}}
 	msg = bare.requireProjectReadScope(outside, "Glob")
-	if msg == "" || strings.Contains(msg, "Rel:") || strings.Contains(msg, "无法确认") {
-		t.Fatalf("missing approval should reject as outside the project, got %q", msg)
+	if !msg.rejected() || msg.argument || strings.Contains(msg.String(), "Rel:") || strings.Contains(msg.String(), "无法确认") {
+		t.Fatalf("missing approval should reject as outside the project, got %q", msg.String())
 	}
 }
 
@@ -9008,8 +9191,8 @@ func TestIsPathWithinDirRejectsJunctionEscape(t *testing.T) {
 		calls++
 		return ScopeApprovalDeny
 	}, true)
-	if msg := full.requireProjectReadScope(child, "read_file"); msg != "" {
-		t.Fatalf("完全控制 should allow a junction read, got %q", msg)
+	if msg := full.requireProjectReadScope(child, "read_file"); msg.rejected() {
+		t.Fatalf("完全控制 should allow a junction read, got %q", msg.String())
 	}
 	if calls != 0 {
 		t.Fatalf("完全控制 should not ask, got %d calls", calls)
@@ -9022,8 +9205,8 @@ func TestIsPathWithinDirRejectsJunctionEscape(t *testing.T) {
 		return ScopeApprovalDeny
 	}, false)
 	msg := ask.requireProjectReadScope(child, "read_file")
-	if msg == "" || strings.Contains(msg, "无法确认") || !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("denied junction read should be a scope rejection, got %q", msg)
+	if !msg.rejected() || msg.argument || strings.Contains(msg.String(), "无法确认") || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("denied junction read should be a scope rejection, got %q", msg.String())
 	}
 	if asked.Path != child {
 		t.Fatalf("expected an approval ask for the junction path, got %#v", asked)
@@ -9083,11 +9266,11 @@ func TestProjectThroughJunctionKeepsContainment(t *testing.T) {
 		calls++
 		return ScopeApprovalDeny
 	}, true)
-	if msg := full.requireProjectReadScope(file, "read_file"); msg != "" {
-		t.Fatalf("in-project file through a junction = %q", msg)
+	if msg := full.requireProjectReadScope(file, "read_file"); msg.rejected() {
+		t.Fatalf("in-project file through a junction = %q", msg.String())
 	}
-	if msg := full.requireProjectReadScope(escape, "read_file"); msg != "" {
-		t.Fatalf("完全控制 should allow the junction escape, got %q", msg)
+	if msg := full.requireProjectReadScope(escape, "read_file"); msg.rejected() {
+		t.Fatalf("完全控制 should allow the junction escape, got %q", msg.String())
 	}
 	if calls != 0 {
 		t.Fatalf("完全控制 should not ask, got %d calls", calls)
@@ -9098,8 +9281,8 @@ func TestProjectThroughJunctionKeepsContainment(t *testing.T) {
 		return ScopeApprovalDeny
 	}, false)
 	msg := ask.requireProjectReadScope(escape, "read_file")
-	if msg == "" || strings.Contains(msg, "无法确认") || !strings.Contains(msg, "项目目录外") {
-		t.Fatalf("denied junction escape = %q", msg)
+	if !msg.rejected() || msg.argument || strings.Contains(msg.String(), "无法确认") || !strings.Contains(msg.String(), "项目目录外") {
+		t.Fatalf("denied junction escape = %q", msg.String())
 	}
 
 	s := newScopeApprovalState(nil, false)

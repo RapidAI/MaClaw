@@ -188,6 +188,8 @@ export function CaptureRemoteScreenshot(arg1:string):Promise<void>;
 
 export function CaptureRemoteWindowScreenshot(arg1:string,arg2:string):Promise<void>;
 
+export function CaptureGUIBugReportScreenshot():Promise<string>;
+
 export function CheckASRModel():Promise<Record<string, any>>;
 
 export function CheckDiarizationModel():Promise<Record<string, any>>;
@@ -3010,6 +3012,10 @@ export function StopWeixin():Promise<void>;
 export function SubmitAgentView(arg1:main.AgentViewSubmitPayload):Promise<main.IMAgentResponse>;
 
 export function SubmitBugReport(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
+
+export function SubmitGUIBugReport(arg1:string):Promise<Record<string, any>>;
+
+export function DiscardGUIBugReportScreenshot(arg1:string):Promise<void>;
 
 export function SubmitMaclawAppPackage(arg1:string):Promise<Record<string, any>>;
 

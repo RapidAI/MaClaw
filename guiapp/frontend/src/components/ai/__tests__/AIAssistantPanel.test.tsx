@@ -225,6 +225,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
     AIAssistantFileTypeIconDataURL: vi.fn().mockResolvedValue(''),
     ConversationViewArchiveCount: vi.fn().mockResolvedValue(0),
+    CaptureGUIBugReportScreenshot: vi.fn().mockResolvedValue('shot'),
+    DiscardGUIBugReportScreenshot: vi.fn().mockResolvedValue(undefined),
+    SubmitGUIBugReport: vi.fn().mockResolvedValue({ id: 'BR-test' }),
     AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),
     SelectProjectDir: vi.fn(),
     SetWorkflowWorkingDir: vi.fn(),
@@ -985,7 +988,7 @@ describe('AIAssistantPanel property tests', () => {
     it('cancels a durable running snapshot when no live round is tracked', async () => {
         const projectPath = 'D:/tasks/stale-running-task';
         const cancelSession = vi.fn<(sessionKey?: string, force?: boolean) => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
-        const { getByRole } = renderPanel({
+        const { getByRole, getByTestId, queryByRole } = renderPanel({
             pendingProjectTabOpen: { projectPath, taskTitle: 'Stale running task', autoSend: false },
             onPendingProjectTabOpenHandled: vi.fn(),
             tasks: [
@@ -1000,7 +1003,12 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
-        const cancelButton = getByRole('button', { name: 'Pause task' }) as HTMLButtonElement;
+        expect(queryByRole('button', { name: 'Pause task' })).toBeNull();
+        const bugButton = getByTestId('task-bug-report-btn');
+        expect(bugButton.getAttribute('aria-label')).toBe('Bug report');
+        expect(bugButton.querySelector('svg')).toBeTruthy();
+        expect(bugButton.textContent || '').toBe('');
+        const cancelButton = getByRole('button', { name: 'Cancel' }) as HTMLButtonElement;
         expect(cancelButton.disabled).toBe(false);
         fireEvent.click(cancelButton);
 
@@ -1011,7 +1019,7 @@ describe('AIAssistantPanel property tests', () => {
         const projectPath = 'D:/tasks/background-only-task';
         const sessionKey = `desktop-user:${projectPath}`;
         const cancelSession = vi.fn<(sessionKey?: string, force?: boolean) => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
-        const { getByRole } = renderPanel({
+        const { getByTestId, queryByRole } = renderPanel({
             pendingProjectTabOpen: { projectPath, taskTitle: 'Background only task', autoSend: false },
             onPendingProjectTabOpenHandled: vi.fn(),
             state: {
@@ -1026,7 +1034,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
-        const cancelButton = getByRole('button', { name: 'Pause task' }) as HTMLButtonElement;
+        expect(queryByRole('button', { name: 'Pause task' })).toBeNull();
+        const cancelButton = getByTestId('ai-cancel-progress') as HTMLButtonElement;
         expect(cancelButton.disabled).toBe(false);
         fireEvent.click(cancelButton);
 
@@ -10245,6 +10254,8 @@ describe('AIAssistantPanel property tests', () => {
             expect(heading.textContent || '').toMatch(/正在连接 Hub|正在加载组件|正在预热/);
             expect(view.queryByText('待处理')).toBeNull();
             expect(view.queryByRole('button', { name: '暂停任务' })).toBeNull();
+            expect(view.queryByRole('button', { name: '故障报告' })).toBeNull();
+            expect(view.queryByTestId('task-bug-report-btn')).toBeNull();
             expect(view.queryByRole('button', { name: '分享任务' })).toBeNull();
             const input = view.getByTestId('ai-input') as HTMLTextAreaElement;
             expect(input.disabled).toBe(true);

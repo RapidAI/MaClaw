@@ -497,15 +497,11 @@ func TruncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		for k, v := range mm {
 			cp[k] = v
 		}
-		// Truncate reasoning_content first (it can be very long with
-		// thinking-mode models like Kimi) since it's less critical than
-		// the actual content for subsequent reasoning.
-		if rc, _ := cp["reasoning_content"].(string); len(rc) > 200 {
-			runes := []rune(rc)
-			if len(runes) > 200 {
-				cp["reasoning_content"] = string(runes[:100]) + "\n…(reasoning truncated)…\n" + string(runes[len(runes)-50:])
-			}
-		}
+		// Leave reasoning_content whole. DeepSeek thinking mode requires the
+		// full chain on every later tool turn; a shortened value is not a
+		// valid replay and the request returns 400. Visible content is the
+		// field this pass may shorten. A trace that still exceeds the budget
+		// is dropped with its group by the caller.
 		content, _ := cp["content"].(string)
 		if len(content) <= 200 {
 			result[i] = cp
@@ -990,6 +986,15 @@ const (
 	// so a 4 KiB generic cap cannot strip every click target.
 	ComputerObserveMaxToolResult = 32768
 
+	// BrowserObserveMaxToolResult keeps one managed probe inline. The excerpt
+	// is a 1600-character prefix plus ship-to and payable windows, and the
+	// ref list runs to 80 lines. CJK makes that larger than 4 KiB; cutting
+	// there drops the product the confirmation card copies.
+	// FoldBrowserObservations fingerprints every older probe, the same way
+	// FoldComputerUseObserves fingerprints older desktop screens, so a turn
+	// that probes after each click keeps this budget once.
+	BrowserObserveMaxToolResult = 32768
+
 	// DocumentReadMaxToolResult is deliberately larger than the general 4 KiB
 	// tool-result preview. Current model providers expose at least 200K-token
 	// windows (normally 400K), while document readers have their own paging
@@ -1106,6 +1111,8 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return WebFetchMaxToolResult
 	case "computer_observe":
 		return ComputerObserveMaxToolResult
+	case "browser":
+		return BrowserObserveMaxToolResult
 	case "bash", "get_session_output", "run_terminal_command":
 		return TerminalMaxToolResult
 	case "desktop":

@@ -10,6 +10,21 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
+func TestTruncateAssistantContentKeepsReasoningContent(t *testing.T) {
+	reasoning := strings.Repeat("思维链必须完整回传。", 80)
+	visible := strings.Repeat("可见回答。", 80)
+	out := TruncateAssistantContent([]interface{}{
+		map[string]interface{}{"role": "assistant", "content": visible, "reasoning_content": reasoning},
+	}, 1)
+	got := out[0].(map[string]interface{})
+	if got["reasoning_content"] != reasoning {
+		t.Fatalf("reasoning_content = %q", got["reasoning_content"])
+	}
+	if got["content"] == visible {
+		t.Fatal("visible content was not shortened")
+	}
+}
+
 func TestPreviewToolResultForToolComputerObserveKeepsRefs(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("mode=text_primary screen=100x100\nwindows:\n  - Word\nelements (80):\n")
@@ -27,6 +42,49 @@ func TestPreviewToolResultForToolComputerObserveKeepsRefs(t *testing.T) {
 	}
 	if !strings.Contains(got, "ocr_excerpt: Document saved successfully") {
 		t.Fatal("OCR excerpt missing from observe preview")
+	}
+}
+
+func TestProjectToolResultBrowserObservationKeepsShipTo(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("probed page 结算\nrefs:\n")
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "@e%d link %q\n", i+1, strings.Repeat("导航按钮", 8))
+	}
+	b.WriteString("page_text:\n")
+	b.WriteString("管理收货地址")
+	b.WriteString(strings.Repeat("甲", 700))
+	b.WriteString("收货地址北京市海淀区上地十街10号")
+	b.WriteString(strings.Repeat("乙", 700))
+	b.WriteString("应付总额 ¥9.98 含运费")
+	b.WriteString(strings.Repeat("丙", 400))
+	b.WriteString("\n付款前调用 browser(action=\"confirm_order\", item, shop, address, amount)。不要自己点击支付。")
+	raw := b.String()
+	if len(raw) <= MaxToolResultLen {
+		t.Fatalf("fixture must exceed the preview cap, len=%d", len(raw))
+	}
+	projection, err := ProjectToolResult("browser", "owner", raw)
+	if err != nil && projection.Preview == "" {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"收货地址北京市海淀区上地十街10号", "应付总额 ¥9.98", "confirm_order", "@e1"} {
+		if !strings.Contains(projection.Preview, want) {
+			t.Fatalf("model preview missing %q:\n%s", want, projection.Preview)
+		}
+	}
+	streetAt := strings.Index(projection.Preview, "上地十街10号")
+	headerAt := strings.Index(projection.Preview, "管理收货地址")
+	if streetAt < 0 || (headerAt >= 0 && headerAt < streetAt) {
+		t.Fatalf("header precedes the ship-to line:\n%s", projection.Preview)
+	}
+	if got := toolResultPreviewLimit("browser"); got != BrowserObserveMaxToolResult {
+		t.Fatalf("browser preview limit = %d, want %d", got, BrowserObserveMaxToolResult)
+	}
+	if got := toolResultPreviewLimit("browser_click"); got != MaxToolResultLen {
+		t.Fatalf("legacy browser preview limit = %d", got)
+	}
+	if len(projection.Preview) > BrowserObserveMaxToolResult {
+		t.Fatalf("preview is %d bytes", len(projection.Preview))
 	}
 }
 

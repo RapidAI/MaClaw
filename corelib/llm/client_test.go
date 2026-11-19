@@ -2614,6 +2614,53 @@ func TestOpenAI_RequestBody_PreservesReasoningContentForDeepSeekThinking(t *test
 	}
 }
 
+func TestOpenAI_RequestBody_FoldsThinkingBlocksIntoDeepSeekReasoning(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{
+			map[string]interface{}{
+				"role": "assistant",
+				"content": []interface{}{
+					map[string]interface{}{"type": "thinking", "thinking": "Count the tables."},
+					map[string]interface{}{"type": "text", "text": "noted"},
+				},
+			},
+			map[string]interface{}{
+				"role":              "assistant",
+				"reasoning_content": "",
+				"content": []interface{}{
+					map[string]interface{}{"type": "thinking", "thinking": "From the block."},
+					map[string]interface{}{"type": "text", "text": "done"},
+				},
+			},
+		},
+		OpenAIChatRequestOptions{Stream: false},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	messages := req["messages"].([]interface{})
+	message := messages[0].(map[string]interface{})
+	if message["reasoning_content"] != "Count the tables." {
+		t.Fatalf("reasoning_content = %#v", message["reasoning_content"])
+	}
+	encoded, _ := json.Marshal(message["content"])
+	if strings.Contains(string(encoded), `"thinking"`) {
+		t.Fatalf("openai content kept a thinking block: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "noted") {
+		t.Fatalf("content = %s", encoded)
+	}
+	replaced := messages[1].(map[string]interface{})
+	if replaced["reasoning_content"] != "From the block." {
+		t.Fatalf("empty reasoning_content hid the thinking block: %#v", replaced["reasoning_content"])
+	}
+}
+
 func TestOpenAI_RequestBody_KeepsMaclawOfficialHubInitialTools(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto", ProviderName: "MaClaw官方"},
@@ -5826,6 +5873,60 @@ func TestParseSSE_ReasoningContent(t *testing.T) {
 	}
 	if got := streamed.String(); got != "The answer is 42." {
 		t.Errorf("streamed tokens = %q, want content only", got)
+	}
+}
+
+func TestParseSSE_ThoughtSignature(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"Count the tables.","thought_signature":"sig-sse"}}]}`,
+		`data: {"choices":[{"delta":{"thought_signature":"sig-later","content":"noted"},"finish_reason":"tool_calls"}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n"))
+
+	streamResp, err := parseSSEStreamWithReasoning(strings.NewReader(string(body)), nil, nil)
+	if err != nil {
+		t.Fatalf("parseSSEStreamWithReasoning: %v", err)
+	}
+	assertThoughtSignature(t, streamResp, "sig-sse", "Count the tables.", "noted")
+
+	parsed, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse: %v", err)
+	}
+	assertThoughtSignature(t, parsed, "sig-sse", "Count the tables.", "noted")
+}
+
+func TestParseNonStreamOpenAIResponseBody_ThoughtSignature(t *testing.T) {
+	sibling := []byte(`{"choices":[{"message":{"role":"assistant","content":"noted","reasoning_content":"Count the tables.","thought_signature":"sig-json"},"finish_reason":"tool_calls"}]}`)
+	resp, err := ParseNonStreamOpenAIResponseBody(sibling)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody: %v", err)
+	}
+	assertThoughtSignature(t, resp, "sig-json", "Count the tables.", "noted")
+
+	block := []byte(`{"choices":[{"message":{"role":"assistant","content":[{"type":"thinking","thinking":"From the block.","signature":"sig-block"},{"type":"text","text":"noted"}]},"finish_reason":"stop"}]}`)
+	resp, err = ParseNonStreamOpenAIResponseBody(block)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody block: %v", err)
+	}
+	assertThoughtSignature(t, resp, "sig-block", "From the block.", "noted")
+}
+
+func assertThoughtSignature(t *testing.T, resp *Response, signature, reasoning, content string) {
+	t.Helper()
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("expected a choice")
+	}
+	msg := resp.Choices[0].Message
+	if got := msg.ThoughtSignature; got != signature {
+		t.Fatalf("thought_signature = %q, want %q", got, signature)
+	}
+	if got := msg.ReasoningContent; got != reasoning {
+		t.Fatalf("reasoning_content = %q, want %q", got, reasoning)
+	}
+	if got := msg.Content; got != content {
+		t.Fatalf("content = %q, want %q", got, content)
 	}
 }
 

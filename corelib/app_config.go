@@ -221,6 +221,10 @@ type AppConfig struct {
 	// ComputerUseEnabled controls desktop Computer Use tools/playbook injection.
 	// Nil means default true. Independent of ScreenParsingEnabled (OmniParser YOLO weights).
 	ComputerUseEnabled *bool `json:"computer_use_enabled,omitempty"`
+	// CodingInteractiveAcceptance drives a freshly built console program after a
+	// coding turn. Nil means default true. The console path does not read
+	// ComputerUseEnabled.
+	CodingInteractiveAcceptance *bool `json:"coding_interactive_acceptance,omitempty"`
 	// ComputerUseTargetApps restricts computer_* interactions to windows whose title
 	// contains one of these substrings. Empty means all non-blocked windows.
 	ComputerUseTargetApps []string `json:"computer_use_target_apps,omitempty"`

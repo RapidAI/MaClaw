@@ -488,7 +488,8 @@ func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]inter
 func isCodingOperationalTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "glob", "ripgrep", "read_file", "list_directory", "bash", codeNavigationToolName, codeSearchToolName,
-		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search":
+		"coding_knowledge_search", "knowledge_search", "knowledge_image_search", "memory_search",
+		codingAcceptanceBriefToolName:
 		return true
 	default:
 		return false

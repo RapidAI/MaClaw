@@ -901,5 +901,75 @@
     }
   },
   "roomEmptyTranscript": "Say something in the room and the bots will hear it",
-  "rcCreate": "Create"
+  "rcCreate": "Create",
+  "voiceStageDownloadKokoro": "Downloading the Kokoro model",
+  "voiceStageDownloadVoices": "Downloading the voice pack",
+  "voiceStageUnpackVoices": "Unpacking the voice pack",
+  "voiceStageReady": "Ready",
+  "voiceStageDownloadSenseVoice": "Downloading the SenseVoice model",
+  "voiceStageDownloadFailedRetry": "Download failed — retry later in the voice engine: {error}",
+  "@voiceStageDownloadFailedRetry": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "wakeNodeOffline": "This intranet computer is unreachable right now",
+  "wakeNoFreeDisplay": "No free display right now — try again later",
+  "wakeTimeout": "The computer did not come up within a minute",
+  "wakeNotOpenYet": "The computer is not powered on yet",
+  "wakeServiceUnreachable": "The computer service is unreachable right now",
+  "netTimeout": "The network timed out — try again later",
+  "netConnectionError": "Cannot reach the server — check your network",
+  "netBadCertificate": "The server certificate is not trusted",
+  "netServerError": "Server error — try again later",
+  "netRequestFailed": "Request failed — try again later",
+  "pendingApprovalHint": "Registration submitted — sign in again once it is approved",
+  "hubNotFoundForAccount": "No usable Hub found for this account",
+  "hubCenterUnreachable": "Cannot reach HubCenter",
+  "chatRoutedTo": "Passed to “{target}”",
+  "@chatRoutedTo": {
+    "placeholders": {
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatRoutedWithText": "{text} (passed to “{target}”)",
+  "@chatRoutedWithText": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      },
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReplyTimedOut": "Timed out waiting for the reply — the bot may still be working; check the task status later",
+  "chatDoneNoReply": "(Done, with no text reply)",
+  "speechCodeOnScreen": ", the code is on screen, ",
+  "speechReplyTooLong": "…the reply is long — see the screen for the full content",
+  "updateDownloadFailed": "Failed to download the update package: {error}",
+  "@updateDownloadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "requestFailedShort": "Request failed",
+  "assistantAttachQuery": "Please read and summarize this attachment.",
+  "chatMaterialFallbackPath": "~/material/{bot}/{name}",
+  "@chatMaterialFallbackPath": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }
