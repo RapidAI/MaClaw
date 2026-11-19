@@ -91,6 +91,9 @@ func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*Br
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
 	if !s.IsTargetAlive() {
 		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
@@ -570,7 +573,7 @@ func wrapPageScript(script, siteHost string) string {
     const value = String(text == null ? '' : text);
     if (value.length > 4000) throw new Error('text is too long');
     const el = await waitEl(target, 2500);
-    if (secret(el)) throw new Error('refusing a password or card field');
+    if (secret(el)) throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     setValue(el, value);
     note(did.typed, target);
     return norm(target);
@@ -600,9 +603,9 @@ func wrapPageScript(script, siteHost string) string {
     const name = norm(key);
     if (!name || name.length > 20) throw new Error('press needs one key');
     const el = document.activeElement || document.body;
-    if (secret(el)) throw new Error('refusing a password or card field');
+    if (secret(el)) throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     if (/^enter$/i.test(name) && el && el.form && el.form.querySelector && el.form.querySelector('input[type="password"],input[autocomplete^="cc-"]')) {
-      throw new Error('refusing a password or card field');
+      throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.');
     }
     if (/^enter$/i.test(name) && el && el.form && typeof el.form.requestSubmit === 'function') {
       el.form.requestSubmit();
@@ -631,7 +634,7 @@ func wrapPageScript(script, siteHost string) string {
   function pageSignals() {
     const text = pageText();
     const nodes = queryAll('input,iframe,frame,[role="dialog"],[aria-modal="true"],[class*="captcha"],[id*="captcha"],[class*="cookie"],[id*="cookie"]');
-    let password = false, card = false, captchaEl = false, dialog = false;
+    let password = false, account = false, card = false, captchaEl = false, dialog = false;
     const srcs = [], capSrcs = [];
     for (const el of nodes) {
       const tag = String(el.tagName || '').toLowerCase();
@@ -641,6 +644,7 @@ func wrapPageScript(script, siteHost string) string {
         const ac = String((el.getAttribute && el.getAttribute('autocomplete')) || '').toLowerCase();
         const name = String((el.getAttribute && (el.getAttribute('name') || el.getAttribute('id'))) || '').toLowerCase();
         if (type === 'password' && visible(el)) password = true;
+        if (visible(el) && (type === 'email' || ac === 'username' || ac === 'email' || name.indexOf('email') >= 0)) account = true;
         if (ac === 'cc-number' || ac === 'cc-exp' || name.indexOf('cardnumber') >= 0) card = true;
         continue;
       }
@@ -660,7 +664,10 @@ func wrapPageScript(script, siteHost string) string {
       const blob = String((el.getAttribute && ((el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '') + ' ' + (el.getAttribute('autocomplete') || ''))) || '').toLowerCase();
       return visible(el) && (type === 'tel' || /phone|mobile|手机|电话/.test(blob));
     });
-    const typeable = (password && /login|sign in|登录|密码/.test(text)) || (phone && /登录|login|sign in|手机/.test(text));
+    const lower = text.toLowerCase();
+    const signInPage = /sign in or create|sign in to|log in to|enter mobile number or email|手机号或邮箱|请登录|登录或注册|密码登录|账号登录/.test(lower);
+    const loginURL = /\/signin\b|\/signup\b|\/login\b|passport\./i.test(String(location.href || ''));
+    const typeable = (password && /login|sign in|登录|密码/.test(lower)) || (phone && /登录|login|sign in|手机/.test(lower)) || (account && signInPage) || (loginURL && /sign in|log in|登录|create account|邮箱|email|手机号/.test(lower));
     const cookieAccept = nodes.some(el => {
       const idc = String((el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '')).toLowerCase();
       return idc.indexOf('cookie') >= 0;
@@ -688,7 +695,7 @@ func wrapPageScript(script, siteHost string) string {
         Object.defineProperty(el, 'value', {
           configurable: true,
           get() { return ''; },
-          set() { throw new Error('refusing a password or card field'); }
+          set() { throw new Error('refusing a password or card field. Use submit_secret for a password or code. Do not put the secret in the script.'); }
         });
         sealed.push(el);
       } catch (e) {}

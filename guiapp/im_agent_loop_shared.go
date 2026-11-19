@@ -1487,6 +1487,7 @@ func (c *sharedAgentLoopCallbacks) issueHostOwnedGenerateFromAvailableEvidence(r
 		return err
 	}
 	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		return err
 	}
 	if err := c.syncSemanticToolSurface(); err != nil {
@@ -1518,6 +1519,7 @@ func (c *sharedAgentLoopCallbacks) issueHostOwnedLiveVisualGrant() error {
 		return err
 	}
 	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		return err
 	}
 	if err := c.syncSemanticToolSurface(); err != nil {
@@ -2643,6 +2645,7 @@ func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 		c.semanticSurface.plan = updated
 	}
 	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		log.Printf("[semantic] repeat wave issue failed: %v", err)
 		return false
 	}
@@ -3571,15 +3574,18 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		}
 		if len(closed) == 0 {
 			c.setVisibleToolDefinitions(nil)
+			c.publishRequestSurface()
 			return nil
 		}
 		c.setVisibleToolDefinitions(closed)
+		c.publishRequestSurface()
 		return closed
 	}
 	if petCompanionToolsDisabled(c.userID) {
 		c.semanticSurface = nil
 		c.dropDiscoveredMCPSidecar()
 		c.setVisibleToolDefinitions(nil)
+		c.publishRequestSurface()
 		return nil
 	}
 	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.capabilityExtensionReason) != "" && c.semanticSurface == nil {
@@ -3591,6 +3597,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		}
 		c.tools = defs
 		c.legacySurface = c.legacySurface.replaceDefinitions(defs, nil)
+		c.publishRequestSurface()
 		return c.tools
 	}
 	if c.semanticSurface != nil {
@@ -3634,6 +3641,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 		// The loop filters this list, then SyncDirectoryToRenderedTools
 		// rewrites the directory from the slice that will be sent.
 		c.projectSemanticDirectoryPrompt()
+		c.publishRequestSurface()
 		return c.tools
 	}
 	if c.handler == nil {
@@ -3672,7 +3680,21 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	// preference, and those would be a second program.
 	c.publishHostProcedureTools(procedureText)
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
+	c.publishRequestSurface()
 	return c.tools
+}
+
+// publishRequestSurface records the names on the request the shared loop is
+// about to send. prepareAgentLoopTools publishes its closed plan inside the
+// build, but request-control tools, procedure tools, installed MCP tools,
+// admitted skill tools, and the managed surface all join afterwards — the
+// grant ledger and discover_tool's on-surface status must see this final
+// list, not the intermediate build.
+func (c *sharedAgentLoopCallbacks) publishRequestSurface() {
+	if c == nil || c.loopCtx == nil {
+		return
+	}
+	c.loopCtx.setExposedToolNames(agentLoopToolNamesForLog(c.tools))
 }
 
 // PetitionToolCall implements agent.ToolCallPetitioner for the governed
@@ -3697,10 +3719,8 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if name == "" {
 		return false, ""
 	}
-	if name == "ssh" {
-		if _, rejected := semanticUserTextSSHDirectives(c.userText); rejected {
-			return false, ""
-		}
+	if name == "ssh" && semanticUserTextBansSSH(c.userText) {
+		return false, ""
 	}
 	if blocked, message := c.discoveryPetitionBlocked(name); blocked {
 		return false, message
@@ -4891,6 +4911,7 @@ func (c *sharedAgentLoopCallbacks) exposeAlreadyPlannedPetition(name string, cap
 		_, err = refreshSemanticCallSurface(c.semanticSurface)
 	}
 	if err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		return false, ""
 	}
 	if err := c.syncSemanticToolSurface(); err != nil {
@@ -6088,6 +6109,79 @@ func semanticAgentToolExecutionResult(text string) agent.ToolExecutionResult {
 	return agentruntime.SemanticToolExecutionResult(text)
 }
 
+// semanticRouteAuthorityError reports a durable-route fencing failure: this
+// surface's published revision stopped being the lineage's current revision
+// (a newer publish superseded it, or the route was cancelled). A revision
+// never becomes current again, so every later call on the same surface fails
+// the same way.
+func semanticRouteAuthorityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "route_revision_superseded") || strings.Contains(msg, "route_revision_cancelled")
+}
+
+// semanticRouteAuthorityLostResult is the last result a governed call gets on
+// a dead route. It names the routing condition instead of blaming the tool:
+// a "[system rejected]"-shaped code invites exactly the blind retries a dead
+// surface cannot complete — the 2026-11 ssh deployment turn retried every
+// superseded call, hit the same-tool stop guidance, and detoured around the
+// governed path with a local paramiko script.
+const semanticRouteAuthorityLostResult = "[system] 本轮工具调用授权已被更新的请求取代（route_revision_superseded），本轮执行终止；这不是工具执行失败，请在新的一轮重新发起任务。"
+
+// semanticRouteAuthorityLossResult converts a durable-route fencing failure
+// into its real scope. A dead discovered-MCP sidecar loses only the sidecar —
+// its lineage is separate from the managed surface, so the caller's own
+// rejection text stands. A dead managed surface ends the turn: nothing it
+// issues can land on the route anymore, so the loop is cancelled rather than
+// let the model burn calls on a fence that can never pass.
+func (c *sharedAgentLoopCallbacks) semanticRouteAuthorityLossResult(err error, fallback string) string {
+	if !c.noteSemanticRouteAuthorityLoss(err) {
+		return fallback
+	}
+	if semanticSurfaceIsMCPSidecar(c.semanticSurface, c.discoveredMCPSurface) {
+		return fallback
+	}
+	return semanticRouteAuthorityLostResult
+}
+
+// noteSemanticRouteAuthorityLoss applies the turn-level consequence of a
+// durable-route fencing failure without choosing the model-facing text.
+// Callers that already produced a result (a completed call whose post-success
+// advance then failed, a discovered-MCP sidecar call) keep their own text;
+// callers about to emit a rejection wrap it through
+// semanticRouteAuthorityLossResult instead.
+func (c *sharedAgentLoopCallbacks) noteSemanticRouteAuthorityLoss(err error) bool {
+	if c == nil || !semanticRouteAuthorityError(err) || c.semanticSurface == nil {
+		return false
+	}
+	log.Printf("[semantic-routing] route authority lost scope=%+v err=%v", c.semanticSurface.scope, err)
+	if semanticSurfaceIsMCPSidecar(c.semanticSurface, c.discoveredMCPSurface) {
+		c.dropDiscoveredMCPSidecar()
+		return true
+	}
+	if c.loopCtx != nil {
+		c.loopCtx.Cancel()
+	}
+	return true
+}
+
+// semanticSurfaceIsMCPSidecar reports whether the surface that lost route
+// authority is an installed-MCP sidecar. Pointer identity covers the normal
+// case (the surface is swapped in for the sidecar call); the session suffix
+// covers a concurrently dropped sidecar, where discoveredMCPSurface was
+// already cleared while its call was still in flight.
+func semanticSurfaceIsMCPSidecar(surface, discovered *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	if discovered != nil && surface == discovered {
+		return true
+	}
+	return strings.HasSuffix(strings.TrimSpace(surface.scope.SessionID), ":mcp-sidecar")
+}
+
 // executeToolWithoutSemanticSurface is the legacy execution projection used
 // only after a bound semantic adapter has admitted the selection, or by turns
 // that have not migrated to a declared capability family yet.
@@ -6880,7 +6974,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 		})
 	}
 	if renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant); renewErr != nil {
-		return semanticGrantRejectMessage(renewErr.Error())
+		return c.semanticRouteAuthorityLossResult(renewErr, semanticGrantRejectMessage(renewErr.Error()))
 	} else {
 		grant = renewed
 	}
@@ -6889,12 +6983,12 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
 		if renewErr != nil {
 			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
-			return semanticGrantRejectMessage(err.Error())
+			return c.semanticRouteAuthorityLossResult(renewErr, semanticGrantRejectMessage(err.Error()))
 		}
 		execResult, selection, err = invoke(renewed)
 	}
 	if err != nil {
-		return semanticGrantRejectMessage(err.Error())
+		return c.semanticRouteAuthorityLossResult(err, semanticGrantRejectMessage(err.Error()))
 	}
 	result := execResult.Result
 	// A paused user interaction is not an outcome: the gate that emitted the
@@ -7012,7 +7106,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 		// would record the revoked nonce while the executor consumes the new one.
 		renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant)
 		if renewErr != nil {
-			return semanticGrantRejectMessage(renewErr.Error())
+			return c.semanticRouteAuthorityLossResult(renewErr, semanticGrantRejectMessage(renewErr.Error()))
 		}
 		grant = renewed
 	}
@@ -7101,7 +7195,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
 		if renewErr != nil {
 			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
-			return semanticGrantRejectMessage(err.Error())
+			return c.semanticRouteAuthorityLossResult(renewErr, semanticGrantRejectMessage(err.Error()))
 		}
 		grant = renewed
 	}
@@ -7112,7 +7206,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 	admission := tool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: canonical.Digest, Scope: c.semanticSurface.scope, Selection: selection, Now: time.Now().UTC()}
 	record, action, err := c.semanticSurface.coordinator.Admit(admission)
 	if err != nil {
-		return semanticGrantRejectMessage(err.Error())
+		return c.semanticRouteAuthorityLossResult(err, semanticGrantRejectMessage(err.Error()))
 	}
 	acquired := action
 	action = tool.ResolveHostCallAcquireAction(action, record, admission.RequestDigest)
@@ -7135,7 +7229,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		if retractErr := c.semanticSurface.coordinator.RetractUnexecuted(admission); retractErr != nil {
 			log.Printf("[semantic-routing] executor error for %s left the admission: %v", selection.ID, retractErr)
 		}
-		return "[system rejected] " + err.Error()
+		return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error())
 	}
 	if result.Paused {
 		// Backstop for a pause that still reached an admitted call. Admit has
@@ -7198,7 +7292,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 	if state == tool.PlanExecutionAwaitingReceipt && c.semanticPreparedDelivery != nil {
 		record, _, err := c.semanticSurface.coordinator.PrepareDeliveryAndComplete(admission, *c.semanticPreparedDelivery, result.Result, result.ReasonCode, time.Now().UTC())
 		if err != nil {
-			return "[system rejected] " + err.Error()
+			return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error())
 		}
 		if c.semanticDelivery != nil {
 			c.semanticDelivery.Scope = record.Scope
@@ -7208,10 +7302,10 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		}
 	} else if len(payloads) > 0 {
 		if _, err := c.semanticSurface.coordinator.CompleteWithArtifactPayloads(admission, state, result.Result, result.ReasonCode, payloads, time.Now().UTC()); err != nil {
-			return "[system rejected] " + err.Error()
+			return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error())
 		}
 	} else if _, err := c.semanticSurface.coordinator.CompleteWithArtifacts(admission, state, result.Result, result.ReasonCode, artifacts, time.Now().UTC()); err != nil {
-		return "[system rejected] " + err.Error()
+		return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error())
 	}
 	if result.AwaitingReceipt {
 		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
@@ -7318,7 +7412,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName
 	// consume a successor the host-call row does not name.
 	execResult, selection, err := invoke(grant)
 	if err != nil {
-		return "[system rejected] " + err.Error(), false
+		return c.semanticRouteAuthorityLossResult(err, "[system rejected] "+err.Error()), false
 	}
 	result := execResult.Result
 	if execResult.Paused {
@@ -7480,6 +7574,7 @@ func (c *sharedAgentLoopCallbacks) retireSemanticToolSurface(functionName, selec
 	// left the live map, and the sidecar must not run it in this request.
 	c.noteManagedInstalledMCPSpent(functionName)
 	if err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		log.Printf("[semantic-routing] retire selection %q failed: %v", selectionID, err)
 		return err
 	}
@@ -7525,6 +7620,7 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	// running a second tools/call in this request.
 	c.noteManagedInstalledMCPSpent(c.renderedNameForSelection(selectionID))
 	if err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		log.Printf("[semantic] plan advance failed selection=%q err=%v", selectionID, err)
 		return "", err
 	}
@@ -7738,6 +7834,7 @@ func (c *sharedAgentLoopCallbacks) syncSemanticToolSurface() error {
 	}
 	definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 	if err != nil {
+		c.noteSemanticRouteAuthorityLoss(err)
 		return err
 	}
 	c.setVisibleToolDefinitions(definitions)
@@ -9569,6 +9666,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if remotePath != "" || localPath != "" {
 		session := trustedSSHSingleBoundSession(c.handler, c.semanticPrincipalID())
 		if session == nil {
+			// The copy rides the pooled connection keyed by the session's
+			// HostConfig, not the PTY; a dead session's record is enough.
+			session = trustedSSHRecoverableBoundSession(c.handler, c.semanticPrincipalID())
+		}
+		if session == nil {
 			return semanticUnexecutedRejection(fmt.Errorf("trusted_ssh_session_unavailable"))
 		}
 		return c.trustedSSHDownload(session.ID, remotePath, localPath)
@@ -9762,6 +9864,7 @@ func (c *sharedAgentLoopCallbacks) registerSemanticArtifacts(selectionID string)
 	}
 	for _, payload := range c.semanticSurface.pendingArtifacts[selectionID] {
 		if err := c.semanticSurface.artifacts.registerPublished(payload.Ref); err != nil {
+			c.noteSemanticRouteAuthorityLoss(err)
 			return err
 		}
 	}
@@ -10786,6 +10889,20 @@ func (c *sharedAgentLoopCallbacks) OnToolExecuted(name, argsJSON, result string,
 		return
 	}
 	c.toolCalls++
+	// Mirror processSkillPreferenceToolExecutions's release conditions on the
+	// shared loop: a required market-search call, or a failed run_skill/
+	// get_skill_run/search_and_install_skill, discharges this turn's forced
+	// skill preference. The latch lives on the loop context so the next
+	// request-boundary posture recompute honors it instead of re-narrowing
+	// the surface.
+	if c.loopCtx != nil && c.phase.ForceSkillPreference {
+		kind := classifyAgentToolKind(name)
+		searchAttempted := c.phase.SkillMode == skillPreferenceRemoteRequired && kind.IsSkillSearchTool()
+		skillToolFailed := !success && (kind == agentToolKindRunSkill || kind == agentToolKindGetSkillRun || kind == agentToolKindSearchAndInstallSkill)
+		if searchAttempted || skillToolFailed {
+			c.loopCtx.noteSkillPreferenceReleased()
+		}
+	}
 	c.maybeEscalateAfterTools()
 }
 

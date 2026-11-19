@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -28,7 +28,7 @@ func TestAIAssistantUIStatePersistsUnderDataDir(t *testing.T) {
 		t.Fatalf("SaveAIAssistantUIState() error = %v", err)
 	}
 
-	wantPath := filepath.Join(home, ".maclaw", "data", "ai_assistant_ui_state.json")
+	wantPath := filepath.Join(home, ".maclaw", "data", "ai_assistant_ui_state.db")
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("state file not written at %s: %v", wantPath, err)
 	}
@@ -53,8 +53,15 @@ func TestAIAssistantUIStatePersistsUnderDataDir(t *testing.T) {
 	if err := app.ClearAIAssistantUIState(); err != nil {
 		t.Fatalf("ClearAIAssistantUIState() error = %v", err)
 	}
-	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
-		t.Fatalf("state file still exists after clear, stat err = %v", err)
+	cleared, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() after clear error = %v", err)
+	}
+	if len(cleared.Messages) != 0 || len(cleared.Prompts) != 0 || cleared.ContextBoundaryMessageID != "" {
+		t.Fatalf("clear left state behind: %#v", cleared)
+	}
+	if _, err := os.Stat(app.aiAssistantUIStatePath()); !os.IsNotExist(err) {
+		t.Fatalf("legacy state file still exists after clear, stat err = %v", err)
 	}
 }
 
@@ -206,12 +213,15 @@ func TestAIAssistantUIStateStripsAssistantHiddenAndToolCallContent(t *testing.T)
 	if got := loaded.Messages[1]["content"]; got != "<tool_call[]> keep user text" {
 		t.Fatalf("user content = %#v, want untouched user content", got)
 	}
-	sanitized, err := os.ReadFile(path)
+	aiAssistantUIStateMu.Lock()
+	app.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	persisted, err := app.LoadAIAssistantUIState()
 	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
+		t.Fatalf("LoadAIAssistantUIState() after reopen error = %v", err)
 	}
-	if strings.Contains(string(sanitized), "<details") || strings.Contains(string(sanitized), "hidden") || strings.Contains(string(sanitized), "write_file") {
-		t.Fatalf("sanitized file still contains assistant hidden/tool content: %s", sanitized)
+	if got := persisted.Messages[0]["content"]; got != "visible" {
+		t.Fatalf("persisted assistant content = %#v, want visible", got)
 	}
 }
 
@@ -230,7 +240,7 @@ func TestNormalizeAIAssistantUIMessageRemovesControlCharacters(t *testing.T) {
 	}
 }
 
-func TestLoadAIAssistantUIStateRewritesControlCharacters(t *testing.T) {
+func TestLoadAIAssistantUIStateMigratesControlCharacters(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	path := app.aiAssistantUIStatePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -251,12 +261,18 @@ func TestLoadAIAssistantUIStateRewritesControlCharacters(t *testing.T) {
 	if got := loaded.Messages[0]["reasoning"]; got != "private thought" {
 		t.Fatalf("reasoning = %#v", got)
 	}
-	rewritten, err := os.ReadFile(path)
+	aiAssistantUIStateMu.Lock()
+	app.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	persisted, err := app.LoadAIAssistantUIState()
 	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
+		t.Fatalf("LoadAIAssistantUIState() after reopen error = %v", err)
 	}
-	if strings.Contains(string(rewritten), "\\u0000") || strings.Contains(string(rewritten), "\\u0001") || strings.Contains(string(rewritten), "\\u0085") {
-		t.Fatalf("rewritten state still contains controls: %s", rewritten)
+	if got := persisted.Messages[0]["content"]; got != "visible answer" {
+		t.Fatalf("persisted content = %#v", got)
+	}
+	if got := persisted.Messages[0]["reasoning"]; got != "private thought" {
+		t.Fatalf("persisted reasoning = %#v", got)
 	}
 }
 
@@ -330,5 +346,235 @@ func TestAIAssistantUIStateDropsPromptAttachmentsOutsideTheKeptWindow(t *testing
 	}
 	if len(loaded.PromptAttachments[0]) != 0 {
 		t.Fatalf("kept window inherited a dropped image: %#v", loaded.PromptAttachments[0])
+	}
+}
+
+func TestAIAssistantUIStateSQLiteStoresNormalizedFields(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	details := map[string]interface{}{
+		"items": []interface{}{map[string]interface{}{"name": "first", "done": true}},
+		"empty": map[string]interface{}{},
+	}
+	if err := app.SaveAIAssistantUIState(AIAssistantUIState{
+		Messages: []map[string]interface{}{{
+			"id": "normalized", "role": "assistant", "content": "database column",
+			"sessionKey": "desktop-user", "timestamp": float64(1234), "details": details,
+		}},
+		Prompts: []string{"with attachment"},
+		PromptAttachments: [][]AIAssistantPromptAttachment{{
+			{FilePath: "D:/docs/a.pdf", FileName: "a.pdf", Extension: ".pdf"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.aiAssistantUIStateDBLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content string
+	if err := db.QueryRow(`SELECT content FROM ai_assistant_ui_messages WHERE message_id='normalized'`).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "database column" {
+		t.Fatalf("content column = %q", content)
+	}
+	fieldPath := sqliteArrayFieldPath(sqliteMapFieldPath(sqliteMapFieldPath("", "details"), "items"), 0)
+	fieldPath = sqliteMapFieldPath(fieldPath, "name")
+	var fieldValue string
+	if err := db.QueryRow(`SELECT value_text FROM ai_assistant_ui_message_fields WHERE field_path=?`, fieldPath).Scan(&fieldValue); err != nil {
+		t.Fatal(err)
+	}
+	if fieldValue != "first" {
+		t.Fatalf("nested field value = %q", fieldValue)
+	}
+	var attachmentPath string
+	if err := db.QueryRow(`SELECT file_path FROM ai_assistant_ui_prompt_attachments`).Scan(&attachmentPath); err != nil {
+		t.Fatal(err)
+	}
+	if attachmentPath != "D:/docs/a.pdf" {
+		t.Fatalf("attachment path = %q", attachmentPath)
+	}
+	var jsonColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload%' OR sql LIKE '%_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("SQLite schema still contains JSON document columns: %d", jsonColumns)
+	}
+
+	aiAssistantUIStateMu.Lock()
+	app.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Messages[0]["details"]; !reflect.DeepEqual(got, details) {
+		t.Fatalf("nested details = %#v, want %#v", got, details)
+	}
+}
+
+func TestAIAssistantUIStateClearDoesNotReimportLegacyJSON(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	path := app.aiAssistantUIStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"messages":[{"id":"legacy","role":"user","content":"must stay cleared"}],"prompts":["legacy"]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil || len(loaded.Messages) != 1 {
+		t.Fatalf("legacy import = %#v, %v", loaded.Messages, err)
+	}
+	if err := app.ClearAIAssistantUIState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aiAssistantUIStateMu.Lock()
+	app.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	loaded, err = app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 0 || len(loaded.Prompts) != 0 {
+		t.Fatalf("legacy JSON resurrected cleared state: %#v", loaded)
+	}
+}
+
+func TestACPAssistantUIStateRoundTripsThroughSQLite(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.appendACPRoundToUIState("from ACP", "request-1", desktopUserID)
+	app.patchACPAssistantUIState("request-1", "ACP answer")
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 2 || loaded.Messages[0]["content"] != "from ACP" || loaded.Messages[1]["content"] != "ACP answer" {
+		t.Fatalf("ACP messages = %#v", loaded.Messages)
+	}
+	if _, err := os.Stat(app.aiAssistantUIStatePath()); !os.IsNotExist(err) {
+		t.Fatalf("ACP created a legacy JSON state file: %v", err)
+	}
+	db, err := app.aiAssistantUIStateDBLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content string
+	if err := db.QueryRow(`SELECT content FROM ai_assistant_ui_messages WHERE message_id='acp-asst-request-1'`).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "ACP answer" {
+		t.Fatalf("ACP database content = %q", content)
+	}
+}
+
+func TestAIAssistantUIStateIncrementalWrites(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	state := AIAssistantUIState{
+		Messages: []map[string]interface{}{
+			{"id": "m1", "role": "user", "content": "first"},
+			{"id": "m2", "role": "assistant", "content": "second", "details": map[string]interface{}{"step": 1}},
+		},
+		Prompts: []string{"first"},
+	}
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.aiAssistantUIStateDBLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE ui_write_audit(changes INTEGER NOT NULL);
+INSERT INTO ui_write_audit VALUES(0);
+CREATE TRIGGER ui_audit_insert AFTER INSERT ON ai_assistant_ui_messages BEGIN UPDATE ui_write_audit SET changes=changes+1; END;
+CREATE TRIGGER ui_audit_update AFTER UPDATE ON ai_assistant_ui_messages BEGIN UPDATE ui_write_audit SET changes=changes+1; END;
+CREATE TRIGGER ui_audit_delete AFTER DELETE ON ai_assistant_ui_messages BEGIN UPDATE ui_write_audit SET changes=changes+1; END;
+`); err != nil {
+		t.Fatal(err)
+	}
+	changes := func() int {
+		var count int
+		if err := db.QueryRow(`SELECT changes FROM ui_write_audit`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 0 {
+		t.Fatalf("identical save rewrote %d message rows", got)
+	}
+	state.Messages[1]["content"] = "second edited"
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 2 {
+		t.Fatalf("single message edit changed %d rows, want delete+insert of one row", got)
+	}
+	state.Messages = append(state.Messages, map[string]interface{}{"id": "m3", "role": "user", "content": "third"})
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	if got := changes(); got != 3 {
+		t.Fatalf("append changed %d total rows, want one additional insert", got)
+	}
+	state.Messages[0], state.Messages[2] = state.Messages[2], state.Messages[0]
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 3 || loaded.Messages[0]["id"] != "m3" || loaded.Messages[1]["id"] != "m2" || loaded.Messages[2]["id"] != "m1" {
+		t.Fatalf("reordered messages = %#v", loaded.Messages)
+	}
+	if loaded.Messages[1]["content"] != "second edited" {
+		t.Fatalf("message fields were lost during reorder: %#v", loaded.Messages[1])
+	}
+}
+
+func TestAIAssistantUIStateBackfillsMessageSignatures(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	state := AIAssistantUIState{Messages: []map[string]interface{}{{
+		"id": "legacy-row", "role": "assistant", "content": "keep", "details": map[string]interface{}{"step": 2},
+	}}}
+	if err := app.SaveAIAssistantUIState(state); err != nil {
+		t.Fatal(err)
+	}
+	db, err := app.aiAssistantUIStateDBLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE ai_assistant_ui_messages DROP COLUMN signature`); err != nil {
+		t.Fatal(err)
+	}
+	aiAssistantUIStateMu.Lock()
+	app.closeAIAssistantUIStateDBLocked()
+	aiAssistantUIStateMu.Unlock()
+	db, err = app.aiAssistantUIStateDBLocked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signature string
+	if err := db.QueryRow(`SELECT signature FROM ai_assistant_ui_messages WHERE message_id='legacy-row'`).Scan(&signature); err != nil {
+		t.Fatal(err)
+	}
+	if signature == "" {
+		t.Fatal("legacy message signature was not backfilled")
+	}
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0]["content"] != "keep" {
+		t.Fatalf("message changed during signature backfill: %#v", loaded.Messages)
 	}
 }

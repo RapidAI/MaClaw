@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DesktopBotComposer } from './DesktopBotComposer';
 import { DESKTOP_BOT_INPUT_HISTORY_KEY, rememberBotInput } from './desktopBotInputHistory';
+
+vi.mock('../../../wailsjs/go/main/App', () => ({
+    LoadConfig: () => Promise.resolve({}),
+    IsASRReady: () => Promise.resolve(false),
+}));
+
+vi.mock('../../../wailsjs/runtime', () => ({
+    EventsOn: () => () => {},
+    EventsOff: () => {},
+}));
 
 const ASSISTANT_PROMPT_HISTORY_KEY = 'ai-assistant-prompt-history';
 
@@ -178,5 +188,32 @@ describe('DesktopBotComposer', () => {
         });
         expect(pasted).toBe(false);
         expect(got).toEqual([file]);
+    });
+
+    it('hides the mic button unless voice dispatch is wired', () => {
+        render(<Harness />);
+        expect(screen.queryByTestId('desktop-bot-voice-input')).toBeNull();
+    });
+
+    it('shows a disabled mic while ASR is unavailable and still sends typed text', async () => {
+        const spoken: string[] = [];
+        render(
+            <DesktopBotComposer
+                userId="alice"
+                botId="bot_1"
+                lang="zh-Hans"
+                value=""
+                onChange={() => undefined}
+                onSubmit={() => undefined}
+                placeholder="给 值班 发消息"
+                ariaLabel="给 值班 发消息"
+                sendLabel="发送"
+                onVoiceText={text => spoken.push(text)}
+            />,
+        );
+        const mic = await screen.findByTestId('desktop-bot-voice-input');
+        expect(mic).toBeTruthy();
+        await waitFor(() => expect((mic as HTMLButtonElement).disabled).toBe(true));
+        expect(spoken).toEqual([]);
     });
 });

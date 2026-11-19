@@ -24,7 +24,7 @@ var ErrGrounderUnused = fmt.Errorf("no grounding model is configured")
 
 // ResolveLLMRole returns the model for one bot role.
 //
-// MaclawBotLLMMode picks the one source Hub wrote for this user:
+// MaclawGoLLMMode picks the one source Hub wrote for this user:
 //   - custom: an explicit maclaw_llm_profiles role pin. A role with no pin
 //     follows the service, so an administrator pin still applies there.
 //   - default: the service. A Hub Bot-management pin (maclaw_hub_bot_roles)
@@ -46,10 +46,10 @@ func ResolveLLMRole(cfg corelib.AppConfig, role string) (corelib.MaclawLLMConfig
 	if role == "" {
 		role = LLMRoleForeground
 	}
-	switch strings.ToLower(strings.TrimSpace(cfg.MaclawBotLLMMode)) {
-	case corelib.MaclawBotLLMModeCustom:
+	switch strings.ToLower(strings.TrimSpace(cfg.MaclawGoLLMMode)) {
+	case corelib.MaclawGoLLMModeCustom:
 		return resolveCustomBotRole(cfg, role)
-	case corelib.MaclawBotLLMModeDefault:
+	case corelib.MaclawGoLLMModeDefault:
 		return resolveServiceBotRole(cfg, role)
 	default:
 		if pinned, ok, err := resolveProfileRolePin(cfg, role); ok {

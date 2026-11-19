@@ -117,10 +117,14 @@ func TestCoreMemoryDirectEntryWritesStayInAllowedBoundaries(t *testing.T) {
 			"(*ArchiveStore).Add":             true,
 			"(*ArchiveStore).addLocked":       true,
 			"(*ArchiveStore).removeIDsLocked": true,
-			"(*ArchiveStore).GC":              true,
-			"(*ArchiveStore).load":            true,
-			"(*ArchiveStore).loadDB":          true,
-			"(*ArchiveStore).loadJSON":        true,
+			// Snapshot restore swaps the whole cold archive in one durable
+			// transaction (compressor restore path), which is the same
+			// reconstruction boundary as the load* helpers above.
+			"(*ArchiveStore).ReplaceEntriesDurable": true,
+			"(*ArchiveStore).GC":                    true,
+			"(*ArchiveStore).load":                  true,
+			"(*ArchiveStore).loadDB":                true,
+			"(*ArchiveStore).loadJSON":              true,
 		},
 		filepath.ToSlash(filepath.Join("corelib", "memory", "store.go")): {
 			"(*Store).UpdateEntriesAndDeleteIDs":      true,

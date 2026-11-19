@@ -958,6 +958,7 @@ func publishCodingAgentTodosToUI(handler *IMMessageHandler, userID string, items
 			return
 		}
 		changed = true
+		mem.DisplayedStepRound = 0
 		if len(steps) == 0 {
 			mem.StepStatuses = nil
 			return

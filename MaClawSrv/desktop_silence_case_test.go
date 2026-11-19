@@ -10,9 +10,13 @@ import (
 )
 
 func TestDesktopBotSilenceCases(t *testing.T) {
-	got := scheduledTaskPrompt("打开首页")
+	got := scheduledTaskPrompt("打开首页", false)
 	if !strings.HasPrefix(got, desktopbot.RoutineQuietPrompt) || strings.Contains(got, "请直接执行以下操作并返回结果") || !strings.Contains(got, "打开首页") {
 		t.Fatalf("schedule prompt = %q", got)
+	}
+	got = scheduledTaskPrompt("打开首页", true)
+	if !strings.HasPrefix(got, desktopbot.RoutineQuietPromptNoDesktop) || strings.Contains(got, "send_to_user") {
+		t.Fatalf("no-desktop schedule prompt names a tool that does not exist: %q", got)
 	}
 	if strings.Contains(desktopbot.WorthSayingPrompt, "没有变化就结束") {
 		t.Fatal("routine line entered the system prompt")

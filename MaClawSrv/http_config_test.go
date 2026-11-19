@@ -1353,7 +1353,6 @@ func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *test
 		EnvCheckInterval:         33,
 		PetEnabled:               true,
 		PetSkin:                  "focus-claw",
-		UseWindowsTerminal:       true,
 		RemoteHubURL:             "https://hub.example",
 		RemoteMachineToken:       "remote-secret",
 		SkillMarketSessionToken:  "skill-session-secret",
@@ -1381,7 +1380,7 @@ func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *test
 		t.Fatalf("get config status = %d body = %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, hidden := range []string{"hide_startup_popup", "power_optimization", "workstation_mode", "check_update_on_startup", "pause_env_check", "env_check_interval", "pet_enabled", "pet_skin", "use_windows_terminal", "remote_hub_url", "remote_machine_token", "skill_market_session_token", "onboarding_done", "default_launch_mode", "working_directory", "data_dir", "local_needle_enabled", "local_needle_model_path", "local_needle_min_confidence"} {
+	for _, hidden := range []string{"hide_startup_popup", "power_optimization", "workstation_mode", "check_update_on_startup", "pause_env_check", "env_check_interval", "pet_enabled", "pet_skin", "remote_hub_url", "remote_machine_token", "skill_market_session_token", "onboarding_done", "default_launch_mode", "working_directory", "data_dir", "local_needle_enabled", "local_needle_model_path", "local_needle_min_confidence"} {
 		if strings.Contains(body, hidden) {
 			t.Fatalf("user config response should not expose removed settings tab field %s: %s", hidden, body)
 		}
@@ -1402,7 +1401,7 @@ func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *test
 	if raw.AppConfig.MemoryMaxBackups != 9 {
 		t.Fatalf("visible edit was not applied: %#v", raw.AppConfig)
 	}
-	if !raw.AppConfig.HideStartupPopup || !raw.AppConfig.PowerOptimization || !raw.AppConfig.WorkstationMode || !raw.AppConfig.CheckUpdateOnStartup || !raw.AppConfig.PauseEnvCheck || raw.AppConfig.EnvCheckInterval != 33 || !raw.AppConfig.PetEnabled || raw.AppConfig.PetSkin != "focus-claw" || !raw.AppConfig.UseWindowsTerminal || raw.AppConfig.RemoteHubURL != "https://hub.example" || raw.AppConfig.RemoteMachineToken != "remote-secret" || raw.AppConfig.SkillMarketSessionToken != "skill-session-secret" || !raw.AppConfig.OnboardingDone || raw.AppConfig.DefaultLaunchMode != "remote" || raw.AppConfig.WorkingDirectory != "" || raw.AppConfig.DataDir != "D:/data" || !raw.AppConfig.LocalNeedleEnabled || raw.AppConfig.LocalNeedleModelPath != "models/needle" || raw.AppConfig.LocalNeedleMinConfidence != 0.87 {
+	if !raw.AppConfig.HideStartupPopup || !raw.AppConfig.PowerOptimization || !raw.AppConfig.WorkstationMode || !raw.AppConfig.CheckUpdateOnStartup || !raw.AppConfig.PauseEnvCheck || raw.AppConfig.EnvCheckInterval != 33 || !raw.AppConfig.PetEnabled || raw.AppConfig.PetSkin != "focus-claw" || raw.AppConfig.RemoteHubURL != "https://hub.example" || raw.AppConfig.RemoteMachineToken != "remote-secret" || raw.AppConfig.SkillMarketSessionToken != "skill-session-secret" || !raw.AppConfig.OnboardingDone || raw.AppConfig.DefaultLaunchMode != "remote" || raw.AppConfig.WorkingDirectory != "" || raw.AppConfig.DataDir != "D:/data" || !raw.AppConfig.LocalNeedleEnabled || raw.AppConfig.LocalNeedleModelPath != "models/needle" || raw.AppConfig.LocalNeedleMinConfidence != 0.87 {
 		t.Fatalf("removed settings tab fields should be preserved, got %#v", raw.AppConfig)
 	}
 
@@ -1413,7 +1412,6 @@ func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *test
 	next, err := server.userVisibleConfigUpdate(context.Background(), agentservice.Principal{TenantID: tenant.ID, UserID: emptyUser.ID}, corelib.AppConfig{
 		HideStartupPopup:   true,
 		PetEnabled:         true,
-		UseWindowsTerminal: true,
 		RemoteMachineToken: "should-not-save",
 		OnboardingDone:     true,
 		DefaultLaunchMode:  "remote",
@@ -1424,7 +1422,7 @@ func TestUserConfigHiddenRetiredSettingsTabsAreNotExposedAndArePreserved(t *test
 	if err != nil {
 		t.Fatalf("userVisibleConfigUpdate no existing: %v", err)
 	}
-	if next.HideStartupPopup || next.PetEnabled || next.UseWindowsTerminal || next.RemoteMachineToken != "" || next.OnboardingDone || next.DefaultLaunchMode != "" || next.WorkingDirectory != "" || next.LocalNeedleEnabled {
+	if next.HideStartupPopup || next.PetEnabled || next.RemoteMachineToken != "" || next.OnboardingDone || next.DefaultLaunchMode != "" || next.WorkingDirectory != "" || next.LocalNeedleEnabled {
 		t.Fatalf("new user visible update should not accept removed tab fields: %#v", next)
 	}
 	if next.MemoryMaxBackups != 5 {

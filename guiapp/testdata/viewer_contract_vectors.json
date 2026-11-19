@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "name": "piecewise-x02",
+      "events": [
+        {"event": "token", "cursor": 1, "pieces": ["hello", "\u0002", "world"]}
+      ],
+      "expect": {"body": "world", "last": 1, "timeline": []}
+    },
+    {
+      "name": "thinking-deltas",
+      "events": [
+        {"event": "thinking", "state": "started", "cursor": 1},
+        {"event": "thinking", "state": "delta", "cursor": 2, "text": "先"},
+        {"event": "thinking", "state": "delta", "cursor": 3, "text": "想想"}
+      ],
+      "expect": {"thinking": [{"text": "先想想", "done": false}], "last": 3}
+    },
+    {
+      "name": "coding-agent-text",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent: running T2 - edit parser"}
+      ],
+      "expect": {"timeline": [{"phase": "running", "taskId": "T2", "title": "edit parser", "runId": ""}], "body": ""}
+    },
+    {
+      "name": "coding-object-ignores-damaged-text",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent Event: {\"agent\":\"coding\",\"title\":", "coding": {"phase": "running", "task_id": "T9", "title": "解析", "run_id": "run-汉字"}}
+      ],
+      "expect": {"timeline": [{"phase": "running", "taskId": "T9", "title": "解析", "runId": "run-汉字"}]}
+    },
+    {
+      "name": "progress-sticky-row",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent: running T2 - edit parser"},
+        {"event": "progress", "cursor": 2, "text": "Coding Agent: running T2 - edit parser"},
+        {"event": "progress", "cursor": 3, "text": "Coding Agent: running T2 - edit parser", "coding": {"phase": "running", "task_id": "T2", "title": "edit parser", "run_id": "run-2"}},
+        {"event": "progress", "cursor": 4, "text": "Coding Agent: done T2 - edit parser", "coding": {"phase": "done", "task_id": "T2", "title": "edit parser"}},
+        {"event": "progress", "cursor": 5, "text": "Coding Agent: running T3 - ship", "coding": {"phase": "running", "task_id": "T3", "title": "ship"}}
+      ],
+      "expect": {
+        "last": 5,
+        "timeline": [
+          {"phase": "running", "taskId": "T2", "title": "edit parser"},
+          {"phase": "done", "taskId": "T2", "title": "edit parser"},
+          {"phase": "running", "taskId": "T3", "title": "ship"}
+        ]
+      }
+    },
+    {
+      "name": "progress-sticky-row-taskless",
+      "events": [
+        {"event": "progress", "cursor": 1, "text": "Coding Agent: running - scan files"},
+        {"event": "progress", "cursor": 2, "text": "Coding Agent: running - scan files"},
+        {"event": "progress", "cursor": 3, "text": "Coding Agent: completed - scan files"}
+      ],
+      "expect": {
+        "last": 3,
+        "timeline": [
+          {"phase": "running", "taskId": "", "title": "scan files"},
+          {"phase": "completed", "taskId": "", "title": "scan files"}
+        ]
+      }
+    },
+    {
+      "name": "terminal-confirmation",
+      "events": [
+        {"event": "response", "cursor": 1, "request_id": "r1", "terminal": {"text": "完成", "confirmation": {"id": "c1"}}}
+      ],
+      "expect": {"visible": "完成", "timeline": [], "cards": [{"requestId": "r1", "kind": "confirmation", "expired": false, "confirmationId": "c1"}]}
+    },
+    {
+      "name": "credential-card-expires",
+      "events": [
+        {"event": "card", "cursor": 1, "kind": "confirmation", "request_id": "credential-card-9", "confirmation": {"id": "c9"}, "actions": [{"command": "__confirm_execution__"}]},
+        {"event": "card", "cursor": 2, "kind": "notice", "request_id": "credential-card-9", "text": "已取消"}
+      ],
+      "expect": {
+        "timeline": [],
+        "cards": [{"requestId": "credential-card-9", "expired": true, "confirmationId": "c9"}],
+        "notices": [{"text": "已取消", "asError": false}]
+      }
+    },
+    {
+      "name": "trial-reflect-summary",
+      "events": [
+        {"event": "response", "cursor": 1, "request_id": "r1", "terminal": {"text": "", "trial_reflect_summary": "反思摘要", "trial_reflect_status": "recovered", "trial_reflect_failures": 2}}
+      ],
+      "expect": {"visible": "反思摘要", "trialStatus": "recovered", "trialFailures": 2, "body": ""}
+    },
+    {
+      "name": "cursor-gap",
+      "events": [
+        {"event": "token", "cursor": 1, "text": "a"},
+        {"event": "token", "cursor": 3, "cursor_from": 3, "text": "b"}
+      ],
+      "expect": {"body": "a", "last": 1, "gap": true}
+    },
+    {
+      "name": "resync-replaces",
+      "events": [
+        {"event": "token", "cursor": 1, "request_id": "r1", "text": "old"},
+        {"event": "snapshot", "resync": true, "cursor": 5, "live": {"request_id": "r2", "text": "new"}}
+      ],
+      "expect": {"body": "new", "requestId": "r2", "last": 5, "gap": false}
+    },
+    {
+      "name": "snapshot-without-live-keeps-round",
+      "events": [
+        {"event": "token", "cursor": 1, "text": "keep"},
+        {"event": "snapshot", "resync": true, "cursor": 4}
+      ],
+      "expect": {"body": "keep", "last": 1, "gap": true}
+    },
+    {
+      "name": "unknown-ignored",
+      "events": [
+        {"event": "token", "cursor": 1, "text": "hi"},
+        {"event": "nope", "cursor": 2, "text": "no"}
+      ],
+      "expect": {"body": "hi", "last": 1}
+    },
+    {
+      "name": "progress-keeps-thinking-open",
+      "events": [
+        {"event": "thinking", "state": "delta", "cursor": 1, "text": "想"},
+        {"event": "progress", "cursor": 2, "text": "Coding Agent: running T1 - step"}
+      ],
+      "expect": {"thinking": [{"text": "想", "done": false}], "timeline": [{"phase": "running", "taskId": "T1", "title": "step"}]}
+    },
+    {
+      "name": "resync-wire-parts",
+      "events": [
+        {"event": "token", "cursor": 1, "request_id": "r1", "text": "old"},
+        {"event": "snapshot", "resync": true, "cursor": 10, "live": {
+          "request_id": "r9",
+          "display_text": "问",
+          "responded": true,
+          "cursor": 10,
+          "parts": [
+            {"kind": "thinking", "text": "想想"},
+            {"kind": "text", "text": "helloworld"},
+            {"kind": "progress", "text": "Coding Agent: running T2 - edit parser", "coding": {"phase": "running", "task_id": "T2", "title": "edit parser", "run_id": "run-1"}}
+          ]
+        }}
+      ],
+      "expect": {
+        "body": "helloworld",
+        "requestId": "r9",
+        "displayText": "问",
+        "last": 10,
+        "gap": false,
+        "responded": true,
+        "thinking": [{"text": "想想", "done": false}],
+        "timeline": [{"phase": "running", "taskId": "T2", "title": "edit parser", "runId": "run-1"}]
+      }
+    },
+    {
+      "name": "omitted-cursor-from",
+      "events": [
+        {"event": "token", "cursor": 1, "cursor_from": 1, "text": "a"},
+        {"event": "token", "cursor": 2, "text": "b"}
+      ],
+      "expect": {"body": "ab", "last": 2}
+    }
+  ]
+}

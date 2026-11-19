@@ -375,9 +375,16 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 				link = rep.ResultURL
 			}
 			desktopLedgerAdd(key, desktopLedgerEntry{Kind: "checked", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Found: found, Detail: "unconfirmed_recheck"})
-			if found {
-				desktopLedgerAdd(key, desktopLedgerEntry{Kind: "posted", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Detail: "found_in_list"})
-				return "publish skipped: 「" + spec.Title + "」 is already in the account's post list, link " + link + ". Nothing was filled or posted. Report that it is live.", true, nil
+			if pub, ok := desktopListProof(host, link); found && ok {
+				desktopLedgerAdd(key, desktopLedgerEntry{Kind: "posted", Host: host, Title: spec.Title, URL: pub, Run: scope.RunID, Detail: "found_in_list"})
+				desktopRecordConfirmedInList(scope, spec.Title, pub)
+				return "publish skipped: 「" + spec.Title + "」 is already in the account's post list, link " + pub + ". Nothing was filled or posted. Report that it is live.", true, nil
+			}
+			if desktopArgBool(args, "check_posted") {
+				// The list was read and the post is not there. Falling
+				// through would fill and submit again; this call asked only
+				// to look.
+				return "publish check_posted: 「" + spec.Title + "」 is not in the account's post list (read-only check). Nothing was filled or posted. Do not submit it again in this run.", true, nil
 			}
 			return "", false, nil
 		}
@@ -412,13 +419,10 @@ func desktopPublishLedgerGuard(scope agentruntime.Scope, session *browser.Browse
 		link = rep.ResultURL
 	}
 	desktopLedgerAdd(key, desktopLedgerEntry{Kind: "checked", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Found: found})
-	if found {
-		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "posted", Host: host, Title: spec.Title, URL: link, Run: scope.RunID, Detail: "found_in_list"})
-		out := "publish skipped: 「" + spec.Title + "」 is already in the account's post list (it went out earlier)"
-		if link != "" {
-			out += ", link " + link
-		}
-		return out + ". Nothing was filled or posted. Report that it is live.", true, nil
+	if pub, ok := desktopListProof(host, link); found && ok {
+		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "posted", Host: host, Title: spec.Title, URL: pub, Run: scope.RunID, Detail: "found_in_list"})
+		desktopRecordConfirmedInList(scope, spec.Title, pub)
+		return "publish skipped: 「" + spec.Title + "」 is already in the account's post list (it went out earlier), link " + pub + ". Nothing was filled or posted. Report that it is live.", true, nil
 	}
 	if err != nil && (pending || checkOnly) {
 		return "", true, fmt.Errorf("publish refused: could not read the post list to rule out a duplicate (%v); nothing was filled or posted", err)
@@ -497,13 +501,10 @@ func desktopPublishStoppedRecheck(scope agentruntime.Scope, session *browser.Bro
 			link = rep.ResultURL
 		}
 		desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "checked", Host: host, Title: t, URL: link, Run: scope.RunID, Found: found, Detail: "stopped_recheck"})
-		if found {
-			desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: host, Title: t, URL: link, Run: scope.RunID, Detail: "found_in_list"})
-			out := "publish skipped: the earlier submit 「" + t + "」 did go out — it is in the account's post list"
-			if link != "" {
-				out += ", link " + link
-			}
-			return out + ". Nothing was filled or posted. Report that it is live.", true, nil
+		if pub, ok := desktopListProof(host, link); found && ok {
+			desktopLedgerAdd(desktopLedgerKey(scope), desktopLedgerEntry{Kind: "posted", Host: host, Title: t, URL: pub, Run: scope.RunID, Detail: "found_in_list"})
+			desktopRecordConfirmedInList(scope, t, pub)
+			return "publish skipped: the earlier submit 「" + t + "」 did go out — it is in the account's post list, link " + pub + ". Nothing was filled or posted. Report that it is live.", true, nil
 		}
 	}
 	if desktopArgBool(args, "check_posted") {

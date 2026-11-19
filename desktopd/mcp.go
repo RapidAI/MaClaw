@@ -9,7 +9,6 @@ package desktopd
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,12 +58,36 @@ func (g *gateScreens) lookup(token string) (gateScreen, bool) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for known, screen := range g.m {
-		if subtle.ConstantTimeCompare([]byte(known), []byte(token)) == 1 {
-			return screen, true
+	screen, ok := g.m[token]
+	if !ok {
+		return gateScreen{}, false
+	}
+	return screen, true
+}
+
+// tokenForDesktopUser is the gate token of one screen. desktopUser is the
+// owner, or owner plus bot for that bot's own display. Another screen of
+// the same account is a different token: the container tunnel is shared,
+// and this token is what selects the display.
+func (g *gateScreens) tokenForDesktopUser(tenantID, desktopUser string) (string, bool) {
+	tenantID = strings.TrimSpace(tenantID)
+	owner, bot := desktop.SplitDesktopUser(desktopUser)
+	if owner == "" {
+		return "", false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var found string
+	var seen time.Time
+	for token, screen := range g.m {
+		if screen.TenantID != tenantID || screen.UserID != owner || screen.BotID != bot {
+			continue
+		}
+		if found == "" || screen.seen.After(seen) {
+			found, seen = token, screen.seen
 		}
 	}
-	return gateScreen{}, false
+	return found, found != ""
 }
 
 func (g *gateScreens) forget(tenantID, userID string) {

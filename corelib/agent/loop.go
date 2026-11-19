@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/permission"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
@@ -225,8 +226,18 @@ func adoptRefreshedLLMSelection(cb LoopCallbacks, cfg, agg *corelib.MaclawLLMCon
 	log.Printf("[agent-loop] model selection changed during retry from %q to %q", cfg.Model, next.Model)
 	*cfg = next
 	*agg = next
-	cb.OnProgress(llmRetryLiveStatus("已改用当前模型，继续当前任务。"))
 	return true
+}
+
+// rememberLLMSwitch records a route change the retry is about to send.
+// A failover or a settings refresh that does not change the endpoint is
+// not recorded, so the status row cannot claim a switch that did not happen.
+func rememberLLMSwitch(from, to corelib.MaclawLLMConfig, saved *corelib.MaclawLLMConfig, have *bool) {
+	if !LLMSelectionChanged(from, to) {
+		return
+	}
+	*saved = from
+	*have = true
 }
 
 type ToolExecutionOutcome string
@@ -483,7 +494,34 @@ func toolSurfaceInvocationPolicyForRequest(cb LoopCallbacks, cfg corelib.MaclawL
 			policy.ParallelToolCalls = ToolSurfaceOptionalBool{Present: true, Value: false}
 		}
 	}
-	return policy, nil
+	// DeepSeek Flash's chat builder rewrites required and named tool_choice to
+	// auto after this policy would otherwise be sealed. The receipt compares
+	// the sealed policy with that body and fails the desktop finish step with
+	// "invocation policy differs from manifest" before any byte is sent.
+	// Project the same rewrite here so the manifest records the choice the
+	// builder will actually emit. The finish-only tool list is unchanged.
+	return projectDeepSeekFlashInvocationPolicy(cfg, policy), nil
+}
+
+// projectDeepSeekFlashInvocationPolicy keeps the sealed invocation policy
+// identical to sanitizeOpenAIToolChoiceForProvider. Flash accepts none and
+// auto, and rejects required plus a named function. Other envelopes keep the
+// host policy: their builders do not apply this rewrite.
+func projectDeepSeekFlashInvocationPolicy(cfg corelib.MaclawLLMConfig, policy ToolSurfaceInvocationPolicy) ToolSurfaceInvocationPolicy {
+	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() || strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
+		return policy
+	}
+	if policy.Envelope != ToolSurfaceEnvelopeOpenAIChat && policy.Envelope != ToolSurfaceEnvelopeUnspecified {
+		return policy
+	}
+	if !corelib.IsDeepSeekFlashOpenAICompat(cfg) {
+		return policy
+	}
+	switch policy.ToolChoice.Mode {
+	case ToolSurfaceToolChoiceRequired, ToolSurfaceToolChoiceSpecific:
+		policy.ToolChoice = ToolSurfaceToolChoice{Mode: ToolSurfaceToolChoiceAuto}
+	}
+	return policy
 }
 
 func toolSurfacePolicyRequestOptions(policy ToolSurfaceInvocationPolicy) (interface{}, *bool) {
@@ -1602,13 +1640,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// replace it.
 	var iterationStreamed strings.Builder
 	streamOnToken := func(delta string) {
-		if delta == "" {
+		forwarded, ok := forwardVisibleStreamToken(delta, &iterationStreamed)
+		if !ok {
 			return
 		}
-		if !strings.HasPrefix(delta, "\x01") {
-			iterationStreamed.WriteString(delta)
-		}
-		cb.OnToken(delta)
+		cb.OnToken(forwarded)
 	}
 	// Latest desktop image from this turn. The finish check reads it; the
 	// worker's own report does not stand in for it.
@@ -2426,12 +2462,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// because that is a different service rather than another wait
 				// on the dead one.
 				switchedSelection := false
+				var switchedFrom corelib.MaclawLLMConfig
+				haveSwitch := false
 				if kind == llmContinueStop {
+					before := cfg
 					if !adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
 						break
 					}
 					rotated = true
 					switchedSelection = true
+					rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
 				}
 				if !rotated && !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
 					didAuthRefresh = true
@@ -2446,18 +2486,25 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				if !rotated && llmErrStatus(err) == http.StatusTooManyRequests {
 					if fo, ok := cb.(LLMProviderFailover); ok {
-						if next, ok := fo.FailoverLLMProvider(requestCtx, cfg, err); ok {
+						if next, changed := fo.FailoverLLMProvider(requestCtx, cfg, err); changed && LLMSelectionChanged(cfg, next) {
 							log.Printf("[agent-loop] HTTP 429 from provider %q, failing over to %q", cfg.ProviderName, next.ProviderName)
+							rememberLLMSwitch(cfg, next, &switchedFrom, &haveSwitch)
 							cfg = next
 							aggCFG = next
 							rotated = true
-							cb.OnProgress("当前模型服务限流，已切换到备用服务继续。")
+							switchedSelection = true
+						} else if changed {
+							log.Printf("[agent-loop] HTTP 429 failover from %q did not change the model endpoint", cfg.ProviderName)
 						}
 					}
 				}
-				if !rotated && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
-					rotated = true
-					switchedSelection = true
+				if !rotated {
+					before := cfg
+					if adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+						rotated = true
+						switchedSelection = true
+						rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
+					}
 				}
 				if rotated {
 					backoff = 0
@@ -2570,8 +2617,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// adopted the new selection, the send uses that. Otherwise read
 				// once here, which is also the read that covers a switch during
 				// the countdown.
-				if !switchedSelection && adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
-					rotated = true
+				if !switchedSelection {
+					before := cfg
+					if adoptRefreshedLLMSelection(cb, &cfg, &aggCFG) {
+						rotated = true
+						rememberLLMSwitch(before, cfg, &switchedFrom, &haveSwitch)
+					}
 				}
 				// A retry is a fresh HTTP operation, so it gets a fresh deadline from
 				// the active route. In particular, do not reuse an already-expired
@@ -2637,7 +2688,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					// request is in flight before this call, or a long route
 					// timeout keeps showing "32 秒后继续".
 					if backoff > 0 || rotated {
-						cb.OnProgress(LLMRetryInFlightStatus(continuationAttempt(continuation.fast, continuation.extra)))
+						attemptN := continuationAttempt(continuation.fast, continuation.extra)
+						if haveSwitch {
+							if text, ok := LLMRetrySwitchedInFlightStatus(attemptN, switchedFrom, cfg); ok {
+								cb.OnProgress(text)
+							} else {
+								cb.OnProgress(LLMRetryInFlightStatus(attemptN))
+							}
+						} else {
+							cb.OnProgress(LLMRetryInFlightStatus(attemptN))
+						}
 					}
 					// Replace the predecessor error here. Gating this call on
 					// err == nil skips the request, and every later attempt only sleeps.
@@ -6354,11 +6414,30 @@ func streamedDenialAfterSearch(answer string, history []ConversationEntry) bool 
 	if snippetLooksLikeForecast(answer) {
 		return false
 	}
-	if !historyHasSuccessfulTool(history, "web_search") && !strings.HasPrefix(lastSuccessfulToolBody(history), "Public web results for ") {
+	// A denial only hides results the search actually returned. An OK
+	// outcome with an empty body has nothing it could be hiding — "没有
+	// 实时数据" is then the honest report, and blanking it leaves only the
+	// generic stop line in place of a real answer (bot_69ee2c14
+	// run_a5797d27 2026-11-16).
+	if !webSearchResultsUsable(history) && !strings.HasPrefix(lastSuccessfulToolBody(history), "Public web results for ") {
 		return false
 	}
 	for _, cue := range []string{"没有可用", "没有实时", "拿不到准确", "不能凭空", "没有查询工具"} {
 		if strings.Contains(answer, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+// webSearchResultsUsable reports a web_search call that came back OK with a
+// body to show. An OK outcome alone does not mean usable results arrived.
+func webSearchResultsUsable(history []ConversationEntry) bool {
+	for _, entry := range history {
+		if entry.Role != "tool" || entry.ToolName != "web_search" || entry.ToolOutcome != string(ToolExecutionOutcomeOK) {
+			continue
+		}
+		if text, ok := entry.Content.(string); ok && strings.TrimSpace(text) != "" {
 			return true
 		}
 	}
@@ -6640,11 +6719,50 @@ func appendLoopDisplayReasoning(buf *strings.Builder, reasoning string) {
 	buf.WriteString(reasoning)
 }
 
+// forwardVisibleStreamToken prepares one model delta for the host.
+// A leading U+0002 is the rejected-round reset. It is forwarded unchanged
+// and is not reply text, so it is not written into streamed. Sanitizing it
+// drops the marker and leaves the cleared forecast in the bubble.
+// A leading U+0001 stays the reasoning lane. Interior sentinels are removed
+// so a joined token string cannot paint a square between words.
+func forwardVisibleStreamToken(delta string, streamed *strings.Builder) (string, bool) {
+	if delta == "" {
+		return "", false
+	}
+	if strings.HasPrefix(delta, "\x02") {
+		// The suffix is replacement text for viewers that keep it. Interior
+		// sentinels in that suffix are not text.
+		body := textutil.SanitizeVisibleChatText(delta[1:])
+		if body == "" {
+			return "\x02", true
+		}
+		return "\x02" + body, true
+	}
+	marker, body := textutil.SplitVisibleStreamDelta(delta)
+	if body == "" {
+		return "", false
+	}
+	if marker == "\x01" {
+		return "\x01" + body, true
+	}
+	if streamed != nil {
+		streamed.WriteString(body)
+	}
+	return body, true
+}
+
 func reasoningSentinelCallback(rawOnToken llm.TokenCallback) llm.TokenCallback {
 	return func(delta string) {
-		if rawOnToken != nil && delta != "" {
-			rawOnToken("\x01" + delta)
+		if rawOnToken == nil || delta == "" {
+			return
 		}
+		// The marker is the lane, not part of the thought. Strip any sentinel
+		// already inside this piece before prefixing one.
+		body := textutil.SanitizeVisibleChatText(delta)
+		if body == "" {
+			return
+		}
+		rawOnToken("\x01" + body)
 	}
 }
 

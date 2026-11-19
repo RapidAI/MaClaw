@@ -428,6 +428,9 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 			}
 			sseWriter.WriteChunk(delta)
 		}
+		// Done carries the raw settled answer. The viewer already painted the
+		// opening from chunks and folds this ending once. Folding here as well
+		// makes Hub fold the same answer a second time.
 	} else {
 		log.Printf("[VE-STREAMING] ===== NOT STREAMING: Hub did not send Accept: text/event-stream =====")
 	}

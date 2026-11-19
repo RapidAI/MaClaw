@@ -22,8 +22,8 @@ func TestApplyExpertMarketSnapshotCopiesAListingOntoAnEmptyPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := "2026-11-02T00:00:00.123456789Z"
-	_, err := origin.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"expert_listing-ha", "owner-1", "owner@example.test", "pkgexp-ha-peer", "长篇连载写手", "writes long chapters", "", "1", 0, "public", "listed", zipPath, len(archive), 3, 1, 0, "", now, now, 0)
+	_, err := origin.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"expert_listing-ha", "owner-1", "owner@example.test", "pkgexp-ha-peer", "长篇连载写手", "writes long chapters", "", "1", 0, "public", "listed", zipPath, len(archive), 3, 1, 0, "", now, now, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

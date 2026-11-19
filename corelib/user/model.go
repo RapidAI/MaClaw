@@ -1,10 +1,7 @@
 package user
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +10,7 @@ import (
 // Dimension represents a single profile dimension with confidence tracking.
 type Dimension struct {
 	Value         string     `json:"value"`
-	Confidence    float64    `json:"confidence"`     // [0, 1]
+	Confidence    float64    `json:"confidence"` // [0, 1]
 	Evidence      []Evidence `json:"evidence"`
 	UserConfirmed bool       `json:"user_confirmed"`
 }
@@ -39,31 +36,24 @@ type Profile struct {
 type Model struct {
 	profile  Profile
 	filePath string
+	store    *userModelStore
 	mu       sync.RWMutex
 }
 
-// NewModel loads or initializes the user profile from the given path.
-// If the file does not exist, an empty profile is initialized.
+// NewModel loads or initializes the user profile from SQLite next to filePath.
+// The legacy JSON file is imported once; a missing or corrupted file produces
+// an empty profile, matching the original file-backed behavior.
 func NewModel(filePath string) (*Model, error) {
-	m := &Model{
-		filePath: filePath,
-	}
-
-	data, err := os.ReadFile(filePath)
+	store, err := openUserModelStore(filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Initialize with empty profile
-			return m, nil
-		}
-		return nil, fmt.Errorf("read user model file: %w", err)
+		return nil, err
 	}
-
-	if err := json.Unmarshal(data, &m.profile); err != nil {
-		// Corrupted JSON — initialize fresh profile
-		return m, nil
+	profile, err := loadUserProfile(store.db)
+	if err != nil {
+		_ = store.db.Close()
+		return nil, err
 	}
-
-	return m, nil
+	return &Model{profile: profile, filePath: filePath, store: store}, nil
 }
 
 // GetProfile returns a snapshot of the current profile.
@@ -175,25 +165,26 @@ func (m *Model) ResetDimension(dimension string) error {
 	return nil
 }
 
-// Save persists the profile to disk as JSON.
+// Save persists dimensions and evidence rows in one transaction.
 func (m *Model) Save() error {
 	m.mu.RLock()
-	data, err := json.MarshalIndent(m.profile, "", "  ")
-	m.mu.RUnlock()
-	if err != nil {
-		return fmt.Errorf("marshal user profile: %w", err)
+	defer m.mu.RUnlock()
+	if m.store == nil || m.store.db == nil {
+		return fmt.Errorf("user model store is closed")
 	}
+	return saveUserProfile(m.store.db, m.profile)
+}
 
-	// Create directory if needed
-	dir := filepath.Dir(m.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create user model directory: %w", err)
+// Close releases the SQLite connection without changing the profile.
+func (m *Model) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.store == nil || m.store.db == nil {
+		return nil
 	}
-
-	if err := os.WriteFile(m.filePath, data, 0644); err != nil {
-		return fmt.Errorf("write user model file: %w", err)
-	}
-	return nil
+	err := m.store.db.Close()
+	m.store.db = nil
+	return err
 }
 
 // FormatForPrompt returns the profile formatted for system prompt injection.

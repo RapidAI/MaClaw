@@ -1,0 +1,905 @@
+{
+  "@@locale": "en",
+  "tabBots": "Bots",
+  "tabRemote": "Remote",
+  "tabAssistant": "Assistant",
+  "tabStatus": "Work status",
+  "tabMe": "Me",
+  "errorBotNotFound": "Bot not found",
+  "backToBots": "Back to list",
+  "errorRoomNotFound": "Room not found",
+  "backToRooms": "Back to room list",
+  "errorTaskNotFound": "Remote task not found",
+  "backToRemote": "Back to remote control",
+  "settingsLanguage": "Language / Language",
+  "languageSystem": "Follow system",
+  "composerAttach": "Send files",
+  "composerSend": "Send",
+  "composerMicStart": "Voice input",
+  "composerMicStop": "Stop voice input",
+  "composerSupplement": "Add details to the current task",
+  "composerStop": "Stop the current task",
+  "addAccountTitle": "Add account",
+  "reloginTitle": "Sign in again",
+  "loginTagline": "Manage and direct your desktop bots anytime, anywhere",
+  "loginTabEmail": "Sign in with email",
+  "loginTabPhone": "Sign in with phone",
+  "identityHintEmail": "Email address",
+  "identityHintPhone": "Phone number",
+  "identityLabelEmail": "Email",
+  "identityLabelPhone": "Phone number",
+  "identityRequiredEmail": "Enter your email",
+  "identityRequiredPhone": "Enter your phone number",
+  "codeLabel": "Verification code",
+  "codeRequired": "Enter the verification code",
+  "codeSentEmail": "Code sent — check your inbox",
+  "codeSentSms": "Code sent — check your messages",
+  "codeExpiryEmail": "The code is valid for 5 minutes",
+  "codeExpirySms": "The code is valid for 60 seconds",
+  "getCode": "Get code",
+  "resendCode": "Resend",
+  "resendIn": "{seconds}s",
+  "@resendIn": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "signIn": "Sign in",
+  "signingIn": "Signing in",
+  "confirmSignIn": "Confirm sign-in",
+  "scanToSignIn": "Scan to sign in",
+  "sessionExpired": "Session expired, please verify your identity again",
+  "loginFooter": "Signing in means you agree to use the desktop bot service under this account.\nUnregistered contacts get an account created automatically.",
+  "pendingApproval": "Registration submitted — usable once an admin approves it",
+  "verifyCodeInvalid": "The code is wrong or has expired",
+  "phoneFormatInvalid": "Invalid phone number format",
+  "phoneAlreadyRegistered": "This phone number is bound to another account",
+  "phoneRegistrationDisabled": "This Hub has phone registration disabled — use email instead",
+  "ipBlocked": "Request blocked, please try again later",
+  "invalidEmail": "Enter a valid email address",
+  "invalidPhone": "Enter a valid phone number",
+  "opFailedRetry": "Operation failed, please retry",
+  "qrScanTitle": "Scan the desktop's mobile-auth QR code",
+  "qrScanHint": "On the desktop MaClaw app open About → Hub identity → Mobile-auth QR code and scan within 5 minutes to sign in to the same account.",
+  "qrPasteLabel": "Or paste the QR code content",
+  "qrInvalid": "The QR code is invalid, already used, or expired — generate a new one on the desktop",
+  "qrOwnerUnavailable": "The account that generated this QR code is unavailable",
+  "qrPhoneRequired": "This account has no phone number bound — QR sign-in is unavailable",
+  "qrHubTooOld": "This Hub version does not support QR sign-in — update the Hub or use a verification code",
+  "botStatusTitle": "{bot} · Task status",
+  "@botStatusTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "notSignedIn": "Not signed in",
+  "retry": "Retry",
+  "cancel": "Cancel",
+  "resume": "Resume",
+  "pause": "Pause",
+  "stop": "Stop",
+  "start": "Start",
+  "stRunningCount": "Running ({count})",
+  "@stRunningCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stNoRunningTasks": "No tasks are running",
+  "stRecentCount": "Recent tasks ({count})",
+  "@stRecentCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stNoTaskHistory": "No task history yet",
+  "stPaused": "Paused",
+  "stCurrent": "Current: {step}",
+  "@stCurrent": {
+    "placeholders": {
+      "step": {
+        "type": "String"
+      }
+    }
+  },
+  "stNext": "Next: {step}",
+  "@stNext": {
+    "placeholders": {
+      "step": {
+        "type": "String"
+      }
+    }
+  },
+  "stStartedAt": "Started at {time}",
+  "@stStartedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "stWaitingForYou": "Waiting for you",
+  "stStopRunTitle": "Stop this task?",
+  "stStopRunBody": "“{name}” will be terminated and work in progress interrupted.",
+  "@stStopRunBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "stProgress": "Progress: {text}",
+  "@stProgress": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stError": "Error: {text}",
+  "@stError": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stLeftover": "Left over: {text}",
+  "@stLeftover": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stTitle": "Work status",
+  "stBotRooms": "Bot rooms",
+  "stSegmentTasks": "Tasks",
+  "stSegmentFeed": "Feed",
+  "stDownloadFailed": "Failed to download the attachment: {reason}",
+  "@stDownloadFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "stSystemName": "System",
+  "stEmptyFeed": "No bot-to-bot activity yet",
+  "stSaidHeader": "Bots said to you",
+  "stCollabHeader": "Collaboration tasks",
+  "stKindDelegate": "Delegated",
+  "stKindDone": "Done",
+  "stKindBlocked": "Blocked",
+  "stKindProgress": "Progress",
+  "stKindQuestion": "Question",
+  "stKindArtifact": "Artifact",
+  "stKindReply": "Reply",
+  "stKindDefault": "Activity",
+  "stStateQueued": "Queued",
+  "stStateRunning": "Running",
+  "stStateHeld": "Held",
+  "stStateWaitingHuman": "Waiting for a human",
+  "stStateBlocked": "Blocked",
+  "stStateCompleted": "Completed",
+  "stStateFailed": "Failed",
+  "stStateAccepted": "Accepted",
+  "stStateReturned": "Returned",
+  "stQuestion": "Question: {text}",
+  "@stQuestion": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stAllQuiet": "All quiet — no tasks are running",
+  "stDeliveriesCount": "Results to review ({count})",
+  "@stDeliveriesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "botsTitle": "My bots",
+  "botsCreate": "New bot",
+  "botsCreateAction": "Create",
+  "botsAccessDisabled": "Bot features are not enabled for this account",
+  "botsRetry": "Retry",
+  "botsEmptyTitle": "No bots yet",
+  "botsEmptyHint": "Tap the bottom-right button to create one",
+  "botsPrimaryMark": "Primary",
+  "botsDesktopTooltip": "Computer view",
+  "botsNameLabel": "Name",
+  "botsNameHint": "Name this bot",
+  "botsDescLabel": "Description (optional)",
+  "botsDescHint": "What does this bot do for you",
+  "botsNeedsComputer": "This bot needs a computer",
+  "botsNoComputerQuota": "No computer assigned to this account yet: only computer-less bots can be created",
+  "botsNameTaken": "A bot with this name already exists — pick another",
+  "botsNameRequired": "Enter a name",
+  "shapeBlob": "Blob",
+  "shapeCloud": "Cloud",
+  "shapeLeaf": "Leaf",
+  "shapeSquare": "Square",
+  "shapePill": "Capsule",
+  "shapeCircle": "Circle",
+  "desktopMarkNone": "No computer",
+  "desktopMarkIsolated": "Computer · dedicated",
+  "desktopMarkShared": "Computer · shared",
+  "quotaUsed": "Used {used}",
+  "@quotaUsed": {
+    "placeholders": {
+      "used": {
+        "type": "int"
+      }
+    }
+  },
+  "quotaUsedOf": "Used {used} / {limit}",
+  "@quotaUsedOf": {
+    "placeholders": {
+      "used": {
+        "type": "int"
+      },
+      "limit": {
+        "type": "int"
+      }
+    }
+  },
+  "workStateIdle": "Idle",
+  "workStateRunning": "Running",
+  "workStateWaitingUser": "Awaiting takeover",
+  "workStateAwaitingAnswer": "Awaiting an answer",
+  "workStateFailed": "Failed",
+  "fallbackFileName": "File",
+  "scheduleEveryMinutes": "Every {minutes} min",
+  "@scheduleEveryMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "scheduleEveryDay": "Daily",
+  "scheduleDowSun": "Sun",
+  "scheduleDowMon": "Mon",
+  "scheduleDowTue": "Tue",
+  "scheduleDowWed": "Wed",
+  "scheduleDowThu": "Thu",
+  "scheduleDowFri": "Fri",
+  "scheduleDowSat": "Sat",
+  "acCurrentModel": "Current models",
+  "acCurrentModelHint": "Model used at each stage",
+  "voiceTitle": "Voice engine",
+  "acVoiceEngineHint": "Read-out voice and recognition · downloads models locally",
+  "checkUpdate": "Check for updates",
+  "acCheckUpdateHint": "Fetch new versions from GitHub / Cloudflare R2",
+  "acAccountsCount": "Accounts ({count})",
+  "@acAccountsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acSignOut": "Sign out of the current account",
+  "acSignOutConfirm": "Sign out of the current account?",
+  "acSignOutAction": "Sign out",
+  "acRemoveBody": "This removes the sign-in information of “{account}” from this device.",
+  "@acRemoveBody": {
+    "placeholders": {
+      "account": {
+        "type": "String"
+      }
+    }
+  },
+  "acFooter": "MaclawGo · a mobile workbench for desktop bots",
+  "acCredits": "Bot credits",
+  "acCreditsUsedRemain": "Used {used} / {total}, {remain} left",
+  "@acCreditsUsedRemain": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      },
+      "remain": {
+        "type": "String"
+      }
+    }
+  },
+  "acCreditsUnlimited": "Unlimited",
+  "acCreditsUsed": "Used {used}",
+  "@acCreditsUsed": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      }
+    }
+  },
+  "acCurrent": "Current",
+  "acRemoveAccount": "Remove account",
+  "acRemoveConfirm": "Remove this account?",
+  "acRemove": "Remove",
+  "updCantReachServer": "Cannot reach the update server",
+  "updUpToDateVersion": "Already on the latest version ({version})",
+  "@updUpToDateVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updUpToDate": "Already on the latest version",
+  "updSignatureMismatch": "The update package is signed by a different key than the installed app, so the system refuses to install over it.\nUninstall the current version first (account data lives in the cloud and comes back after you sign in again), then install the new version from the download page.",
+  "updCantOpenInstaller": "Cannot open the installer",
+  "updCurrentVersion": "Current version {version}",
+  "@updCurrentVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updNewVersion": "New version available: {version}",
+  "@updNewVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updInstallHint": "{name} will be downloaded from GitHub / Cloudflare R2, verified, then installed by the system installer.",
+  "@updInstallHint": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "updDownloadInstall": "Download and install",
+  "updViewInBrowser": "View in browser",
+  "updDownloading": "Downloading {percent}%",
+  "@updDownloading": {
+    "placeholders": {
+      "percent": {
+        "type": "String"
+      }
+    }
+  },
+  "updOpeningInstaller": "Downloaded — opening the installer…",
+  "updCheckFailed": "Update check failed",
+  "updOpenDownloadPage": "Open the download page in a browser",
+  "vsTts": "Read-out (TTS)",
+  "vsTtsSystem": "System voices",
+  "vsDownloadKokoro": "Download the Kokoro model and voice pack",
+  "vsVoices": "Voice",
+  "vsAsr": "Speech recognition (ASR)",
+  "vsAsrSystem": "System recognition",
+  "vsAsrLocal": "Local SenseVoice",
+  "vsDownloadSenseVoice": "Download the SenseVoice model",
+  "vsSenseVoiceReady": "Model ready — used automatically when system recognition is unavailable",
+  "vsLocalNote": "The local models are the same as the desktop MaClaw ones (Kokoro-82M / SenseVoice-small) and work fully offline once downloaded.",
+  "rcTitle": "Remote control",
+  "rcManageDevices": "Devices and grants",
+  "rcInviteOthers": "Invite others",
+  "refresh": "Refresh",
+  "rcSectionInvites": "Invites to me",
+  "rcSectionMachines": "Remote machines",
+  "rcNoMachines": "No controllable machines yet.\nPair one under “My devices” below, or have another account invite you.",
+  "rcControlledByOthers": "Others controlling my computer",
+  "rcPendingOutgoing": "Waiting for the other side",
+  "rcICanControl": "I can control",
+  "rcMyDevices": "My devices",
+  "rcNoRecords": "No devices or grants yet",
+  "rcNoBindableMachine": "No computer to bind — accept on the desktop first",
+  "rcPickMachineTitle": "Which computer accepts this remote session?",
+  "rcOffline": "Offline",
+  "rcOnline": "Online",
+  "rcCounterparty": "Other side",
+  "rcWantsToControl": "{who} wants to control your computer ({permission})",
+  "@rcWantsToControl": {
+    "placeholders": {
+      "who": {
+        "type": "String"
+      },
+      "permission": {
+        "type": "String"
+      }
+    }
+  },
+  "rcAccept": "Accept",
+  "rcReject": "Reject",
+  "rcIgnore": "Ignore",
+  "rcEnd": "End",
+  "rcPendingPermission": "Waiting for the other side · {permission}",
+  "@rcPendingPermission": {
+    "placeholders": {
+      "permission": {
+        "type": "String"
+      }
+    }
+  },
+  "rcControlling": "Controlling {machine}",
+  "@rcControlling": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcMyMachine": "My computer",
+  "rcSameAccount": "Same account",
+  "rcRevoke": "Revoke grant",
+  "rcPairTitle": "Pair {machine}",
+  "@rcPairTitle": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcPairHint": "Once paired, this machine shows up under “Remote machines”.",
+  "rcViewOnly": "View only",
+  "rcOperate": "Can operate",
+  "rcPair": "Pair",
+  "rcIdentityRequired": "Enter the other account (email or phone)",
+  "rcIdentityLabel": "Other account (email or phone)",
+  "rcSendInvite": "Send invite",
+  "rcNewTask": "New task",
+  "rcViewOnlyTooltip": "This is a view-only grant — new tasks are not allowed",
+  "rcNoTasks": "No tasks on this machine yet",
+  "rcNewFirstTask": "Create the first task",
+  "rcStateRunning": "Running",
+  "rcStateCancelled": "Cancelled",
+  "rcStateInterrupted": "Interrupted",
+  "rcStateNotStarted": "Not started",
+  "rcPendingReview": "To review",
+  "rcNameRequired": "Enter a task name",
+  "rcCreateTaskOn": "New task on {machine}",
+  "@rcCreateTaskOn": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcTaskNameLabel": "Task name",
+  "rcModeChat": "Chat",
+  "rcModeCoding": "Coding",
+  "rcWorkDirLabel": "Working directory (optional)",
+  "rcWorkDirHint": "Leave empty to use their default directory",
+  "rcBrowseTheirDir": "Browse their directories",
+  "rcBrowseDir": "Browse directories",
+  "rcPickThis": "Pick this",
+  "rcHomeDir": "Home",
+  "rcParent": "Up one level",
+  "rcJumpDefault": "Jump to the default directory",
+  "rcTooManyDirs": "Too many subdirectories — showing only the first batch",
+  "rcNoSubdirs": "This directory has no subfolders",
+  "save": "Save",
+  "rtLocalCmdRejected": "Remote control only sends task messages — local commands are not allowed",
+  "rtRename": "Rename",
+  "rtStopTaskTitle": "Stop the task",
+  "rtStopTaskBody": "Stop the task running on this machine?",
+  "rtNoFileContent": "The remote side returned no file content",
+  "rtDownloadFailed": "Download failed: {reason}",
+  "@rtDownloadFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "rtNoAppToOpen": "No app can open this file",
+  "rtDefaultTaskName": "Remote task",
+  "rtUnpin": "Unpin",
+  "rtPin": "Pin",
+  "rtRunningWith": "Running · {phase}",
+  "@rtRunningWith": {
+    "placeholders": {
+      "phase": {
+        "type": "String"
+      }
+    }
+  },
+  "rtTimelineDegraded": "Timeline degraded",
+  "rtNoTranscript": "No conversation yet",
+  "rtComposerHint": "Message the tasks on this machine…",
+  "rtConfirmInvalid": "Confirmation expired",
+  "rtConfirmRequired": "Confirmation required",
+  "rtFailures": "{count} failures",
+  "@rtFailures": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "rtResuming": "Catching up on output interrupted earlier",
+  "rtArtifacts": "Deliverables",
+  "rtDownload": "Download",
+  "rtReasoning": "Reasoning",
+  "rtThinkingStreaming": "Thinking…",
+  "rtOpen": "Open",
+  "rcInviteHint": "Once they accept on one of their computers, you can control that machine remotely.",
+  "rcTasksTitle": "Tasks",
+  "chatVoiceInitFailed": "Failed to initialize read-out",
+  "chatVoiceAssistantOn": "Voice assistant",
+  "chatVoiceAssistantOff": "Turn off the voice assistant",
+  "chatVoiceAssistantStarted": "Voice assistant on: speak to send, replies are read aloud",
+  "chatMicPermissionDenied": "No microphone permission",
+  "chatMicOpenFailed": "Cannot open the microphone for recording",
+  "chatAsrUnavailableDownloading": "Speech recognition unavailable — downloading the local model in the background, try again later",
+  "chatNotHeard": "Didn't catch that, please try again",
+  "chatAsrFailed": "Speech recognition failed, please retry",
+  "chatSupplementHint": "e.g. only the first 5 results",
+  "chatSupplementAppend": "Append",
+  "chatSupplementFailed": "Failed to append",
+  "chatSupplementAccepted": "Appended to the current task",
+  "chatSupplementRejected": "The task already ended — the addition was not delivered",
+  "chatAttachCamera": "Camera",
+  "chatAttachGallery": "Gallery",
+  "chatAttachFile": "File",
+  "chatMaterialSent": "Material sent to {path}",
+  "@chatMaterialSent": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "chatUploadFailed": "Failed to upload {name}: {error}",
+  "@chatUploadFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "chatVoiceSpeaking": "Reading aloud…",
+  "chatVoiceListening": "Listening…",
+  "chatProcessing": "Working…",
+  "chatOnline": "Online",
+  "chatStatusTooltip": "Task status",
+  "chatSettingsTooltip": "Settings",
+  "chatAcknowledge": "Got it",
+  "chatUploading": "Uploading {name}…",
+  "@chatUploading": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatContinueThreadHint": "The next message continues this task thread",
+  "chatComposerHint": "Give the bot a task…",
+  "chatAttachTooltip": "Send files to the bot's computer",
+  "chatEmptyGreeting": "Say something to {bot} to get started",
+  "@chatEmptyGreeting": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "chatSending": "Sending…",
+  "chatSendFailed": "Failed to send",
+  "chatResend": "Resend",
+  "chatRunPlan": "Run this plan",
+  "chatContinueTask": "Continue this task",
+  "chatFileParseFailed": "Failed to parse the file",
+  "chatSecretRequired": "“{name}” is required",
+  "@chatSecretRequired": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatAnswerRequired": "Your answer is needed",
+  "chatSecretHint": "Enter the secret (never shown in chat)",
+  "chatAnswerHint": "Enter your answer",
+  "chatSubmit": "Submit",
+  "chatHandoffDefault": "The bot handed the computer to you",
+  "chatHandoffView": "Take a look",
+  "chatTakeover": "Take over",
+  "chatAttentionLoginWall": "You need to sign in",
+  "chatAttentionCaptcha": "You need to pass a human check",
+  "chatAttentionMfa": "You need a verification code",
+  "chatAttentionQr": "You need to scan a QR code to sign in",
+  "chatAttentionPayment": "You need to confirm the payment",
+  "chatAttentionTakeover": "You need to take over the computer",
+  "chatQueueHeld": "Held (you are currently taking over the computer)",
+  "chatQueuedPosition": "Queued · position {position}",
+  "@chatQueuedPosition": {
+    "placeholders": {
+      "position": {
+        "type": "int"
+      }
+    }
+  },
+  "chatQueuedBusy": "Queued — handled once the bot is free",
+  "dtWakeTimeout": "The computer did not come up within a minute — try again later",
+  "dtBusyOther": "Another device is operating this computer",
+  "dtHandedOver": "Control was handed to another device",
+  "dtProxyAlways": "Always proxy",
+  "dtProxyDirect": "Direct",
+  "dtProxySmart": "Smart (automatic)",
+  "dtSavedNextOpen": "Saved — takes effect the next time the view opens",
+  "dtResetWarning": "A reset restores the computer to its initial image — unsaved data is lost.",
+  "dtRestartWarning": "A restart interrupts the work in progress on the computer.",
+  "dtForceSkip": "Force (skip graceful stop)",
+  "dtActionDone": "{title} done",
+  "@dtActionDone": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "dtProxyMode": "Proxy mode",
+  "dtProxyLocked": "An admin locked the proxy mode — the tenant default applies.",
+  "dtProxyFollowTenant": "Follow tenant default ({label})",
+  "@dtProxyFollowTenant": {
+    "placeholders": {
+      "label": {
+        "type": "String"
+      }
+    }
+  },
+  "dtMaintenance": "Maintenance",
+  "dtRestart": "Restart computer",
+  "dtReset": "Reset computer",
+  "dtMaintenanceUnavailable": "This tenant has not enabled computer maintenance.",
+  "dtTitle": "{bot}'s computer",
+  "@dtTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "dtNoComputer": "This bot has no computer",
+  "dtBack": "Back",
+  "dtHandedBack": "The computer was handed back to the bot",
+  "dtSwitchToVnc": "Switch to the noVNC view",
+  "dtSwitchToH264": "Switch to the H.264 view",
+  "dtHandback": "Hand back the computer",
+  "dtComputerMaintenance": "Computer maintenance…",
+  "dtControlling": "Taking over: you can operate this computer",
+  "dtWatching": "Watch mode (not operating the computer)",
+  "dtWaking": "Waking the computer…",
+  "dtNoPicture": "No picture from the computer yet",
+  "dtWake": "Wake the computer",
+  "dtLoadFailed": "Failed to load the view ({code})",
+  "@dtLoadFailed": {
+    "placeholders": {
+      "code": {
+        "type": "int"
+      }
+    }
+  },
+  "dtReload": "Reload",
+  "delete": "Delete",
+  "stDeleteScheduleTitle": "Delete the schedule",
+  "stDeleteScheduleBody": "Delete the schedule “{name}”?",
+  "@stDeleteScheduleBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "stNameEmpty": "Name cannot be empty",
+  "stNameTaken": "A bot with this name already exists — pick another",
+  "stSaved": "Saved",
+  "stSetPrimaryDone": "Set as the primary bot",
+  "stLongTermPrefs": "Long-term preferences",
+  "stPrefsHint": "Preferences written here apply long term — every later task follows them (e.g. “present results as a table”, “attach screenshots of key steps”).",
+  "stPrefsFieldHint": "Record a preference…",
+  "stWithdrawPrefsTitle": "Withdraw all preferences?",
+  "stWithdrawPrefsBody": "This removes every long-term preference recorded for this bot. It cannot be undone.",
+  "stWithdraw": "Withdraw",
+  "stWithdrawDone": "All preferences withdrawn",
+  "stWithdrawAll": "Withdraw all preferences",
+  "stPrefRecorded": "Preference recorded",
+  "stRecord": "Record",
+  "stDeleteBotTitle": "Delete this bot?",
+  "stDeleteBotBody": "This deletes “{bot}” and its conversation history. It cannot be undone.",
+  "@stDeleteBotBody": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "stScreenTitle": "Bot settings",
+  "stNameLabel": "Name",
+  "stDescLabel": "Description",
+  "stScheduleTitle": "Schedules",
+  "stNoSchedule": "No schedules yet.",
+  "stAppearance": "Appearance",
+  "stComputerSection": "Computer",
+  "stModeShared": "Shared",
+  "stModeIsolated": "Dedicated",
+  "stModeNone": "No computer",
+  "stModeNoneHint": "This bot does not use a computer",
+  "stModeIsolatedHint": "The bot uses its own dedicated computer view",
+  "stModeSharedHint": "The bot uses the shared computer view of your account",
+  "stPersonaMemory": "Persona and memory",
+  "stPersonaMemoryHint": "Customize the bot's personality, tone and long-term memory",
+  "stLongTermPrefsHint": "Record preferences every task must follow",
+  "stDemoRecord": "Demo recording",
+  "stDemoRecordHint": "Record an operation and distill it into a skill for the bot (needs a dedicated computer)",
+  "stPrimaryTitle": "Primary bot",
+  "stIsPrimaryHint": "Already the primary bot — other bots' delegations are dispatched by it",
+  "stMakePrimaryHint": "Once primary, it can assign tasks to the other bots in the team",
+  "stMakePrimary": "Make primary",
+  "stDeleteBot": "Delete this bot",
+  "stRolledBack": "Rolled back to version {version}",
+  "@stRolledBack": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "stPersonaDisabled": "This Hub has persona settings disabled",
+  "stPersonaLabel": "Persona",
+  "stPersonaFieldHint": "Who this bot is and how it speaks",
+  "stMemoryLabel": "Long-term memory",
+  "stMemoryFieldHint": "What the bot should remember (preferences, agreements, background)",
+  "stHistoryTitle": "Version history",
+  "stVersion": "Version {version}",
+  "@stVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "stRollback": "Roll back",
+  "llmCustom": "Custom model service",
+  "llmPlatformDefault": "Platform default models",
+  "llmStages": "Effective per stage",
+  "llmForeground": "Foreground chat",
+  "llmBackground": "Background tasks",
+  "llmComputerUse": "Computer use",
+  "llmGrounder": "Screen grounding",
+  "llmNoConfig": "No effective configuration",
+  "llmNotEnabled": "Not enabled",
+  "llmOfficialModel": "Official model",
+  "demoMicDenied": "No microphone permission — grant it in system settings and retry",
+  "demoTitle": "{bot} · Demo recording",
+  "@demoTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoIntro": "Record an operation on {bot}'s computer with narration; when done, it can be distilled into a skill the bot reuses.\n\nThe bot needs a dedicated computer (desktop_mode=isolated).",
+  "@demoIntro": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoTitleLabel": "Demo title",
+  "demoTitleHint": "e.g. Build the weekly report in Excel",
+  "demoStart": "Start recording",
+  "demoRecording": "Recording — operate on {bot}'s computer",
+  "@demoRecording": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoWatch": "Watch the view",
+  "demoNarration": "Narration",
+  "demoNarrationHint": "What this step does…",
+  "demoStopRecord": "Stop recording",
+  "demoVoiceNarration": "Voice narration",
+  "demoFinish": "Finish recording",
+  "demoDone": "Recording finished · {count} events",
+  "@demoDone": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoExtraLabel": "Extra notes (optional)",
+  "demoExtraHint": "Extra hints for the distillation model, e.g. things to watch out for",
+  "demoDistill": "Distill into a skill",
+  "demoSkillReady": "Skill distilled",
+  "demoStepCount": "{count} steps",
+  "@demoStepCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoRecordAgain": "Record another",
+  "asstAnswerFailed": "Failed to answer, please retry",
+  "asstAnswerTimeout": "Answer timed out, please retry",
+  "asstAttached": "Attached: {name}",
+  "@asstAttached": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "asstAttachFailed": "Failed to process the attachment",
+  "asstAttachTimeout": "Attachment processing timed out, please retry",
+  "asstAttachUploadFailed": "Attachment upload failed: {error}",
+  "@asstAttachUploadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "asstReadOutDisable": "Turn off read-out",
+  "asstReadOutEnable": "Turn on read-out",
+  "asstNewChat": "New chat",
+  "asstComposerHint": "Ask something…",
+  "asstAttachTooltip": "Add an image or a file",
+  "asstEmptyTitle": "Just ask — no bot setup needed",
+  "asstEmptyHint": "Supports text, images, documents and voice",
+  "asstSuggestWeekly": "Draft a weekly-report outline for me",
+  "asstSuggestExplain": "Explain a technical concept",
+  "asstSuggestSummarize": "Summarize the document I sent",
+  "roomNew": "New room",
+  "roomEdit": "Edit room",
+  "roomEmptyTitle": "No rooms yet",
+  "roomEmptyHint": "Create one to group-chat with several bots",
+  "roomInitial": "R",
+  "roomUnnamed": "Unnamed room",
+  "roomNoMembers": "No members yet",
+  "roomDeleteTitle": "Delete this room?",
+  "roomDeleteBody": "“{name}” and its members' attention settings will be removed.",
+  "@roomDeleteBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "roomDelete": "Delete",
+  "roomNameLabel": "Room name",
+  "roomMembers": "Members",
+  "roomAttnAll": "All messages",
+  "roomAttnMentions": "Mentions only",
+  "roomAttnOff": "Muted",
+  "roomDefaultName": "Room",
+  "roomComposerHint": "Talk in the room; @BotName calls one out",
+  "roomWoken": "Woken: {names}",
+  "@roomWoken": {
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "roomEmptyTranscript": "Say something in the room and the bots will hear it",
+  "rcCreate": "Create"
+}

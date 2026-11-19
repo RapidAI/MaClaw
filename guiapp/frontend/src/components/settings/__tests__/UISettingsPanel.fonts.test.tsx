@@ -4,18 +4,21 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
+    GetChatBubblesEnabled: vi.fn().mockResolvedValue(true),
     GetChatFontFamily: vi.fn().mockResolvedValue("system"),
     GetChatFontSize: vi.fn().mockResolvedValue(14),
     GetCodingFontFamily: vi.fn().mockResolvedValue("system"),
+    SetChatBubblesEnabled: vi.fn().mockResolvedValue(undefined),
     SetChatFontFamily: vi.fn().mockResolvedValue(undefined),
     SetChatFontSize: vi.fn().mockResolvedValue(undefined),
     SetCodingFontFamily: vi.fn().mockResolvedValue(undefined),
     SetUIZoomFactor: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, SetChatFontFamily, SetChatFontSize, SetCodingFontFamily } from "../../../../wailsjs/go/main/App";
+import { GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, SetChatBubblesEnabled, SetChatFontFamily, SetChatFontSize, SetCodingFontFamily } from "../../../../wailsjs/go/main/App";
 import { ApiStorePage } from "../../pages/ApiStorePage";
 import { acceptDraftedValue, chatFontSizeSaveQueue, codingFontFamilySaveQueue, decideConfigChatFontSize, normalizeAssistantFontId, resetAssistantFontSaveQueues, serialNewestHasStarted, snapshotConfirmsDraft } from "../../ai/assistantFonts";
+import { resetChatBubblesSaveQueue } from "../../ai/chatBubblesSetting";
 import { CHAT_FONT_SIZE_PERSIST_DEBOUNCE_MS } from "../useChatFontSizeCommit";
 import { UISettingsPanel } from "../UISettingsPanel";
 
@@ -41,6 +44,7 @@ const props = {
 
 function restoreFontMocks() {
     resetAssistantFontSaveQueues();
+    resetChatBubblesSaveQueue();
     vi.mocked(GetChatFontSize).mockReset();
     vi.mocked(GetChatFontSize).mockResolvedValue(14);
     vi.mocked(GetChatFontFamily).mockReset();
@@ -53,11 +57,35 @@ function restoreFontMocks() {
     vi.mocked(SetChatFontFamily).mockResolvedValue(undefined);
     vi.mocked(SetCodingFontFamily).mockReset();
     vi.mocked(SetCodingFontFamily).mockResolvedValue(undefined);
+    vi.mocked(GetChatBubblesEnabled).mockReset();
+    vi.mocked(GetChatBubblesEnabled).mockResolvedValue(true);
+    vi.mocked(SetChatBubblesEnabled).mockReset();
+    vi.mocked(SetChatBubblesEnabled).mockResolvedValue(undefined);
 }
 
 function codingInput(id: string): HTMLInputElement {
     return screen.getByTestId(`assistant-font-coding-${id}`).querySelector("input") as HTMLInputElement;
 }
+
+describe("UISettingsPanel conversation bubbles", () => {
+    afterEach(() => {
+        cleanup();
+        restoreFontMocks();
+        vi.clearAllMocks();
+    });
+
+    it("defaults on and turns the assistant bubble frame off", () => {
+        const setChatBubblesEnabled = vi.fn();
+        render(<UISettingsPanel {...props} setChatBubblesEnabled={setChatBubblesEnabled} />);
+        const toggle = screen.getByTestId("chat-bubbles-toggle") as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+        expect(screen.getByText("对话气泡")).toBeTruthy();
+
+        fireEvent.click(toggle);
+        expect(setChatBubblesEnabled).toHaveBeenCalledWith(false);
+        expect(SetChatBubblesEnabled).toHaveBeenCalledWith(false);
+    });
+});
 
 describe("UISettingsPanel assistant fonts", () => {
     afterEach(() => {

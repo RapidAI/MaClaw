@@ -401,7 +401,8 @@ func (p *ForwardProxy) serveHTTPProxy(w http.ResponseWriter, r *http.Request) {
 	// key. Proxy authentication otherwise rides Proxy-Authorization.
 	if auth := out.Header.Get("Authorization"); auth != "" {
 		scheme, value, hasValue := strings.Cut(auth, " ")
-		if hasValue && strings.EqualFold(scheme, "Bearer") && tokenMatches(p.cfg.Token, strings.TrimSpace(value)) {
+		proxyKey, keyOK := p.currentKey()
+		if hasValue && keyOK && strings.EqualFold(scheme, "Bearer") && tokenMatches(proxyKey, strings.TrimSpace(value)) {
 			out.Header.Del("Authorization")
 		}
 	}

@@ -30,3 +30,24 @@ export function buildSidebarModelOptions(input: {
     for (const m of primary) add(m);
     return out;
 }
+
+/**
+ * A live catalog replaces cached ids. The configured name stays even when the
+ * catalog uses a different spelling, so a saved short key is not swapped for
+ * the first listed model.
+ */
+export function replaceCachedModelsWithLiveCatalog(input: {
+    configuredModel?: string | null;
+    cachedModels?: string[] | null;
+    fetchedModels?: string[] | null;
+}): string[] {
+    const fetched = (input.fetchedModels || []).map((m) => String(m || '').trim()).filter(Boolean);
+    if (fetched.length === 0) {
+        return buildSidebarModelOptions(input);
+    }
+    return buildSidebarModelOptions({
+        configuredModel: input.configuredModel,
+        cachedModels: [],
+        fetchedModels: fetched,
+    });
+}

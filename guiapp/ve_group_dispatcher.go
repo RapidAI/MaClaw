@@ -193,15 +193,26 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a2a.GroupDiscussionMessage, localDispatch bool) {
 	var hubSyncCh chan a2a.GroupDiscussionMessage
 	var hubSyncDone chan struct{}
+	var hubEndSent int32
 	finishHubSync := func() {}
 	stopLocalStream := func() {}
+	stopHubStream := func() {}
 	var streamedAny int32
+	var streamedText strings.Builder
+	sendHubStreamEnd := func(content string) {
+		if hubSyncCh == nil || !atomic.CompareAndSwapInt32(&hubEndSent, 0, 1) {
+			return
+		}
+		hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd, Content: content}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[group-dispatcher] panic in routeToMainAgent for session %s: %v", sess.SessionID, r)
 			stopLocalStream()
+			stopHubStream()
 			if atomic.LoadInt32(&streamedAny) != 0 {
 				d.emitStreamToFrontend(sess.SessionID, "")
+				sendHubStreamEnd("")
 			}
 			finishHubSync()
 		}
@@ -273,17 +284,39 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 			<-localStreamDone
 		})
 	}
+	var hubPending *pendingStreamText
+	var hubStreamDone chan struct{}
+	var stopHubOnce sync.Once
+	stopHubStream = func() {
+		if hubPending == nil {
+			return
+		}
+		stopHubOnce.Do(func() {
+			hubPending.close()
+			<-hubStreamDone
+		})
+	}
 	var onToken llm.TokenCallback
 	if localDispatch {
-		// Copy each token and return. Painting every token on the model
-		// callback stalls generation and rebuilds the transcript per character.
+		// Copy each token and return. Painting or uploading on the model
+		// callback stalls generation. Local paint is one frame; Hub sync is
+		// the shared 80ms / 2KB cadence. Remote viewers see the turn while
+		// it is still being written, not one blob after it finishes.
 		localPending = newPendingStreamText()
 		localStreamDone = make(chan struct{})
+		hubPending = newPendingStreamText()
+		hubStreamDone = make(chan struct{})
 		sessionID := sess.SessionID
 		go func() {
 			defer close(localStreamDone)
 			drainPendingStream(localPending, localStreamFlushInterval, localStreamMaxBytes, func(chunk string) {
 				d.emitStreamToFrontend(sessionID, chunk)
+			})
+		}()
+		go func() {
+			defer close(hubStreamDone)
+			drainPendingStream(hubPending, groupHubSyncChunkFlushInterval, groupHubSyncChunkMaxBytes, func(chunk string) {
+				hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}
 			})
 		}()
 		onToken = func(delta string) {
@@ -292,7 +325,9 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 				return
 			}
 			atomic.StoreInt32(&streamedAny, 1)
+			streamedText.WriteString(delta)
 			localPending.add(delta)
+			hubPending.add(delta)
 		}
 	}
 
@@ -310,46 +345,41 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 	}()
 
 	resp := handler.HandleIMMessageWithExistingLoop(imMsg, loopCtx, nil, onToken, nil, nil)
-	// Flush the on-screen tail before stream_end. The model callback only copies text.
+	// The model callback only copies text. Flush the local tail and close the
+	// on-screen turn before waiting on Hub. The loop does not repeat the
+	// settled answer through OnToken, so an empty stream_end would leave the
+	// screen on the opening. The Hub drain stops after that local close and
+	// before the Hub stream_end, so a late chunk cannot pass the end or
+	// send on a closed channel.
 	stopLocalStream()
 	if resp != nil {
-		chunk := strings.TrimSpace(textutil.SanitizeVisibleChatText(resp.Text))
-		if chunk != "" {
-			if localDispatch {
-				// Only send the final response as a chunk if streaming didn't already
-				// deliver it (e.g. non-streaming fallback or tool-only rounds).
-				if atomic.LoadInt32(&streamedAny) == 0 {
-					d.emitStreamToFrontend(sess.SessionID, chunk)
-				}
-				// Queue for ordered Hub sync (single goroutine, preserves order)
-				select {
-				case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}:
-				default:
-					// Channel full - drop chunk for Hub sync (frontend already has it).
-					log.Printf("[group-dispatcher] hub sync channel full, dropping chunk for session %s", sess.SessionID)
-				}
-			} else {
-				// Hub-routed message: send final response through Hub.
+		hubChunk, endContent := localGroupStreamDelivery(streamedText.String(), resp.Text)
+		if localDispatch {
+			if streamedText.Len() == 0 && hubChunk != "" {
+				d.emitStreamToFrontend(sess.SessionID, hubChunk)
+			}
+			d.forwardAgentResponseFiles(sess, resp, localDispatch)
+			d.emitStreamEndToFrontend(sess.SessionID, endContent)
+			stopHubStream()
+			// Opening tokens were already queued live. hubChunk is set only
+			// when nothing streamed, and it is the whole answer. A blocking
+			// send: dropping either half leaves Hub without that half.
+			if hubChunk != "" {
+				hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: hubChunk}
+			}
+			sendHubStreamEnd(endContent)
+			finishHubSync()
+		} else {
+			d.forwardAgentResponseFiles(sess, resp, localDispatch)
+			if hubChunk != "" {
 				d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
 					Kind:    a2a.MessageStreamChunk,
-					Content: chunk,
+					Content: hubChunk,
 				})
 			}
-		}
-	}
-
-	// Send stream end
-	if resp != nil {
-		d.forwardAgentResponseFiles(sess, resp, localDispatch)
-		if localDispatch {
-			d.emitStreamToFrontend(sess.SessionID, "")
-			// Always preserve stream_end so Hub history can collapse streamed chunks reliably.
-			hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd, Content: ""}
-			finishHubSync() // Wait for all Hub syncs to complete
-		} else {
 			d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
 				Kind:    a2a.MessageStreamEnd,
-				Content: "",
+				Content: endContent,
 			})
 		}
 	} else if localDispatch {
@@ -358,7 +388,10 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		if atomic.LoadInt32(&streamedAny) != 0 {
 			d.emitStreamToFrontend(sess.SessionID, "")
 		}
-		// Still need to close the sync channel.
+		stopHubStream()
+		if atomic.LoadInt32(&streamedAny) != 0 {
+			sendHubStreamEnd("")
+		}
 		finishHubSync()
 	}
 }
@@ -452,14 +485,7 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 		senderID = "local-maclaw"
 	}
 	if chunk == "" {
-		// Stream end
-		d.app.emitEvent("ve:stream_end", map[string]any{
-			"session_id":  sessionID,
-			"content":     "",
-			"chunk":       "",
-			"sender_name": "本机AI",
-			"sender_id":   senderID,
-		})
+		d.emitStreamEndToFrontend(sessionID, "")
 	} else {
 		// Stream chunk
 		d.app.emitEvent("ve:stream_chunk", map[string]any{
@@ -470,6 +496,39 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 			"sender_id":   senderID,
 		})
 	}
+}
+
+func (d *GroupChatDispatcher) emitStreamEndToFrontend(sessionID, content string) {
+	if d == nil || d.app == nil || d.app.ctx == nil {
+		return
+	}
+	senderID := d.getLocalMachineID()
+	if senderID == "" {
+		senderID = "local-maclaw"
+	}
+	d.app.emitEvent("ve:stream_end", map[string]any{
+		"session_id":  sessionID,
+		"content":     content,
+		"chunk":       content,
+		"sender_name": "本机AI",
+		"sender_id":   senderID,
+	})
+}
+
+// localGroupStreamDelivery is what a finished turn still has to persist.
+// A non-empty streamed opening was already pushed live, so it is not sent
+// again. hubChunk is the whole answer only when nothing streamed. endContent
+// is the settled slice the viewer still has to fold; empty when the opening
+// is already the answer.
+func localGroupStreamDelivery(streamed, final string) (hubChunk, endContent string) {
+	final = textutil.SanitizeVisibleChatText(final)
+	if streamed == "" {
+		if strings.TrimSpace(final) == "" {
+			return "", ""
+		}
+		return final, ""
+	}
+	return "", textutil.StreamEndContent(streamed, final)
 }
 
 func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages <-chan a2a.GroupDiscussionMessage) {
@@ -798,7 +857,7 @@ func groupExecutorRecentMessageLines(messages []a2a.Message, current a2a.GroupDi
 			if fromID == "" {
 				fromID = "unknown"
 			}
-			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupExecutorContextText(content, 1200)))
+			lines = append(lines, fmt.Sprintf("[%s] %s", fromID, textutil.ClipKeepTail(content, 1200)))
 		}
 		streamFrom = ""
 		streamContent.Reset()
@@ -807,7 +866,19 @@ func groupExecutorRecentMessageLines(messages []a2a.Message, current a2a.GroupDi
 		if i == currentIndex {
 			continue
 		}
+		fromID := strings.TrimSpace(msg.FromID)
 		if msg.Kind == a2a.MessageStreamEnd {
+			if streamFrom != "" && fromID != "" && !veGroupParticipantIdentityMatches(streamFrom, fromID) {
+				flushStream()
+			}
+			if msg.Content != "" {
+				if streamFrom == "" {
+					streamFrom = fromID
+				}
+				folded := textutil.ProjectAnswerSlices(streamContent.String(), msg.Content)
+				streamContent.Reset()
+				streamContent.WriteString(folded)
+			}
 			flushStream()
 			continue
 		}
@@ -819,7 +890,6 @@ func groupExecutorRecentMessageLines(messages []a2a.Message, current a2a.GroupDi
 		if currentID != "" && strings.EqualFold(strings.TrimSpace(msg.ID), currentID) {
 			continue
 		}
-		fromID := strings.TrimSpace(msg.FromID)
 		if fromID == "" {
 			fromID = "unknown"
 		}
@@ -841,7 +911,7 @@ func groupExecutorRecentMessageLines(messages []a2a.Message, current a2a.GroupDi
 			continue
 		}
 		flushStream()
-		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, truncateGroupExecutorContextText(content, 1200)))
+		lines = append(lines, fmt.Sprintf("[%s] %s", fromID, groupExecutorContextClip(content, msg.Kind)))
 	}
 	flushStream()
 	if len(lines) > 14 {
@@ -872,6 +942,13 @@ func groupExecutorCurrentMessageIndex(messages []a2a.Message, current a2a.GroupD
 		return i
 	}
 	return -1
+}
+
+func groupExecutorContextClip(content string, kind a2a.MessageKind) string {
+	if kind == a2a.MessageAnswer {
+		return textutil.ClipKeepTail(content, 1200)
+	}
+	return truncateGroupExecutorContextText(content, 1200)
 }
 
 func truncateGroupExecutorContextText(value string, maxRunes int) string {

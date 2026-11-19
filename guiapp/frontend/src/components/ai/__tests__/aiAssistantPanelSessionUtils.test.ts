@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, sessionKeysForExpert, goalChecklistOverlayBodyFromMessages, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, assistantSessionIsSending, buildProjectTabRecentMessages, busyTaskRunIdentities, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, expertIdFromSessionKey, expertSessionForProjectTask, expertTaskSessionKey, sessionKeysForExpert, goalChecklistOverlayBodyFromMessages, goalTerminalSessionKeysNext, projectTabOwnsExpertQueue, fileTerminalResponseWithoutRound, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, transcriptLiveWorkSessionKey, upsertGoalChecklistInHistory, visibleProjectTranscript } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -367,6 +367,29 @@ describe("aiAssistantPanelSessionUtils", () => {
             { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n✓ 1. 环境\n已完成", timestamp: 1 },
             { id: "ask", role: "user", content: "下一个任务", timestamp: 2 },
         ])).toBe("");
+    });
+
+    it("tracks terminal goal sessions for the float, independent of the transcript card", () => {
+        const key = normalizeAssistantSessionKey("desktop-user:E:/work/bird2");
+        let sessions: Set<string> = new Set();
+        // Complete/cleared mark the session; the float hides even when the
+        // transcript card still looks active.
+        sessions = goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "complete")!;
+        expect(sessions.has(key)).toBe(true);
+        // Repeated terminal reports change nothing (null = keep the set).
+        expect(goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "complete")).toBeNull();
+        expect(goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "cleared")).toBeNull();
+        expect(sessions.has(key)).toBe(true);
+        // Any non-terminal status (a new or resumed goal) returns the float.
+        sessions = goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "active")!;
+        expect(sessions.has(key)).toBe(false);
+        // Paused, failed, and budget stops are resumable — they do not mark.
+        expect(goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "paused")).toBeNull();
+        expect(goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "failed")).toBeNull();
+        expect(sessions.has(key)).toBe(false);
+        // Unknown sessions and blank statuses change nothing.
+        expect(goalTerminalSessionKeysNext(sessions, "", "complete")).toBeNull();
+        expect(goalTerminalSessionKeysNext(sessions, "desktop-user:E:/work/bird2", "")).toBeNull();
     });
 
     it("does not replay an injected guide as a later project-tab user turn", () => {

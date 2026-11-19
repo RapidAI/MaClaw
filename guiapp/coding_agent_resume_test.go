@@ -798,3 +798,60 @@ func TestGitIdentityLinesSkipHints(t *testing.T) {
 		t.Fatalf("top=%q common=%q", top, common)
 	}
 }
+
+func TestGitHubRepoMaintTurnLeavesAgentResume(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	recordCodingAgentResume(userID, dir, []agent.ConversationEntry{
+		{Role: "user", Content: "USER_RESUME_MARK"},
+		{Role: "assistant", Content: "window ready"},
+	}, nil)
+	recordCodingAgentResumeMemo(userID, dir, "USER_MEMO_MARK")
+
+	maint := &LoopContext{Platform: githubRepoMaintPlatform, UserID: userID}
+	resume, keep := codingAgentResumeForTurn(maint, 0, false, userID, dir)
+	if keep || len(resume.History) != 0 || strings.TrimSpace(resume.Memo) != "" {
+		t.Fatalf("maint turn resumed keep=%v history=%#v memo=%q", keep, resume.History, resume.Memo)
+	}
+
+	desktop := &LoopContext{Platform: "desktop", UserID: userID}
+	resume, keep = codingAgentResumeForTurn(desktop, 0, false, userID, dir)
+	if !keep || resume.Memo != "USER_MEMO_MARK" {
+		t.Fatalf("desktop keep=%v memo=%q", keep, resume.Memo)
+	}
+	found := false
+	for _, entry := range resume.History {
+		body, ok := entry.Content.(string)
+		if ok && strings.Contains(body, "USER_RESUME_MARK") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("desktop history = %#v", resume.History)
+	}
+
+	if _, keep = codingAgentResumeForTurn(nil, 0, false, userID, dir); !keep {
+		t.Fatal("nil loop dropped the resume")
+	}
+	if _, keep = codingAgentResumeForTurn(desktop, 1, false, userID, dir); keep {
+		t.Fatal("nested turn loaded the root transcript")
+	}
+	if _, keep = codingAgentResumeForTurn(desktop, 0, true, userID, dir); keep {
+		t.Fatal("horizon turn loaded the root transcript")
+	}
+
+	got := loadCodingAgentResume(userID, dir)
+	if got.Memo != "USER_MEMO_MARK" {
+		t.Fatalf("memo changed: %q", got.Memo)
+	}
+	still := false
+	for _, entry := range got.History {
+		body, ok := entry.Content.(string)
+		if ok && strings.Contains(body, "USER_RESUME_MARK") {
+			still = true
+		}
+	}
+	if !still {
+		t.Fatalf("stored history changed: %#v", got.History)
+	}
+}

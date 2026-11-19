@@ -299,7 +299,8 @@ func ReadLimitedHTTPBody(body io.Reader, contentLength, limit int64) ([]byte, er
 
 func IsSkillRuntimePackageFile(name string) bool {
 	base := strings.ToLower(filepath.Base(name))
-	return strings.HasSuffix(base, ".bak") ||
+	if strings.HasSuffix(base, ".bak") ||
+		strings.HasSuffix(base, ".tmp") ||
 		base == "upload_status.json" ||
 		base == "quality_status.json" ||
 		base == "skill_package_manifest.json" ||
@@ -308,7 +309,42 @@ func IsSkillRuntimePackageFile(name string) bool {
 		base == ".maclaw_deps_ok" ||
 		base == ".ds_store" ||
 		base == "thumbs.db" ||
-		base == "desktop.ini"
+		base == "desktop.ini" {
+		return true
+	}
+	// Skill-local scan state and stores are runtime artifacts, not package
+	// content (mirrors isInternalSkillStoreFile in the static scanner).
+	if base == ".maclaw_scan_status.db" || strings.HasPrefix(base, ".maclaw_scan_status.db-") ||
+		base == ".maclaw_scan_status.json" || base == ".state" {
+		return true
+	}
+	// skill.yaml.vN rotation backups written by the contract-patch versioner:
+	// they are created alongside a sanctioned mutation and may be pruned, so
+	// pinning them would fail closed on the next rotation.
+	return isSkillVersionBackupName(base)
+}
+
+// isSkillVersionBackupName reports whether base names a rotated skill
+// definition backup (skill.yaml.v1, skill.yml.v2, …).
+func isSkillVersionBackupName(base string) bool {
+	for _, stem := range []string{"skill.yaml.v", "skill.yml.v"} {
+		if !strings.HasPrefix(base, stem) {
+			continue
+		}
+		digits := base[len(stem):]
+		if digits == "" {
+			return false
+		}
+		ok := true
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				ok = false
+				break
+			}
+		}
+		return ok
+	}
+	return false
 }
 
 // IsSkillCredentialFile reports whether a path's base name looks like a
@@ -341,6 +377,8 @@ func IsSkillRuntimePackageDir(name string) bool {
 		"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
 		"node_modules",
 		".venv", "venv", ".tox", ".eggs",
+		// Skill-local store directory (runtime state, not package content).
+		".state",
 		// Local install / build debris should never ship in a market package.
 		".npm", ".yarn", ".pnpm-store",
 		// macOS zip clutter.

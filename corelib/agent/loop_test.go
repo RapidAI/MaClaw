@@ -2595,8 +2595,11 @@ func TestRunLoopRetryAdoptsModelSwitchedBeforeTheWait(t *testing.T) {
 	if strings.Contains(joined, "秒后") {
 		t.Fatalf("progress=%q, want no countdown once the current model is already the new one", cb.progress)
 	}
-	if !strings.Contains(joined, "已改用当前模型，继续当前任务。") {
-		t.Fatalf("progress=%q, want the switch sentence", cb.progress)
+	if !strings.Contains(joined, "已从「old-model」改用「live-model」") || strings.Contains(joined, "已改用当前模型") {
+		t.Fatalf("progress=%q, want the named switch and no unnamed claim", cb.progress)
+	}
+	if !strings.HasPrefix(joined, LLMRetryLiveStatusPrefix) && !strings.Contains(joined, LLMRetryLiveStatusPrefix) {
+		t.Fatalf("progress=%q, want the switch on the live-status row", cb.progress)
 	}
 }
 
@@ -2635,8 +2638,90 @@ func TestRunLoopRetryAdoptsModelSwitchedDuringTheWait(t *testing.T) {
 		t.Fatalf("result=%+v progress=%q", result, cb.progress)
 	}
 	joined := strings.Join(cb.progress, "\n")
-	if !strings.Contains(joined, "秒后") || !strings.Contains(joined, "已改用当前模型，继续当前任务。") {
-		t.Fatalf("progress=%q, want the countdown and then the switch on the retry send", cb.progress)
+	if !strings.Contains(joined, "秒后") || !strings.Contains(joined, "已从「old-model」改用「live-model」") || strings.Contains(joined, "已改用当前模型") {
+		t.Fatalf("progress=%q, want the countdown and then the named switch on the retry send", cb.progress)
+	}
+}
+
+type failoverProgressCallbacks struct {
+	retryProgressCallbacks
+	next corelib.MaclawLLMConfig
+	same bool
+}
+
+func (m *failoverProgressCallbacks) FailoverLLMProvider(context.Context, corelib.MaclawLLMConfig, error) (corelib.MaclawLLMConfig, bool) {
+	if m.same {
+		return m.config, true
+	}
+	return m.next, true
+}
+
+func TestRunLoopFailoverAnnouncesOnlyARealEndpointChange(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	live := corelib.MaclawLLMConfig{ProviderName: "Backup", Model: "live-model"}
+	var sawLive atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		if payload.Model == live.Model {
+			sawLive.Store(true)
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+			return
+		}
+		http.Error(w, "slow down", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	live.URL = server.URL
+	cb := &failoverProgressCallbacks{retryProgressCallbacks: retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, ProviderName: "Primary", Model: "old-model"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+		ctx: context.Background(),
+	}}, next: live}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" || !sawLive.Load() {
+		t.Fatalf("result=%+v sawLive=%v progress=%q", result, sawLive.Load(), cb.progress)
+	}
+	joined := strings.Join(cb.progress, "\n")
+	if !strings.Contains(joined, "已从「Primary/old-model」改用「Backup/live-model」") || !strings.Contains(joined, LLMRetryLiveStatusPrefix) {
+		t.Fatalf("progress=%q, want the named failover on the live-status row", cb.progress)
+	}
+	if strings.Contains(joined, "已切换到备用服务") || strings.Contains(joined, "已改用当前模型") {
+		t.Fatalf("progress=%q, want no unnamed switch claim", cb.progress)
+	}
+}
+
+func TestRunLoopFailoverSameEndpointDoesNotClaimASwitch(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	cb := &failoverProgressCallbacks{retryProgressCallbacks: retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, ProviderName: "Primary", Model: "same-model"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+		ctx: context.Background(),
+	}}, same: true}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	joined := strings.Join(cb.progress, "\n")
+	if !strings.Contains(joined, "秒后") || strings.Contains(joined, "改用") || strings.Contains(joined, "已切换") {
+		t.Fatalf("progress=%q, want a backoff and no switch claim", cb.progress)
 	}
 }
 
@@ -9878,6 +9963,10 @@ func TestStreamedVisibleAnswerKeepsForecastOutsideDetails(t *testing.T) {
 	}
 	if streamedDenialAfterSearch(denial, nil) {
 		t.Fatal("denial without a search was discarded")
+	}
+	emptySearch := []ConversationEntry{{Role: "tool", ToolName: "web_search", ToolOutcome: string(ToolExecutionOutcomeOK), Content: ""}}
+	if streamedDenialAfterSearch(denial, emptySearch) {
+		t.Fatal("denial after an empty search result was discarded: an honest '没查到' is not a false claim")
 	}
 	if streamedVisibleAnswer("根据公开检索，相关信息如下：\n\n1. 北京-天气预报\n今天小雨 18/23°C。") != "" {
 		t.Fatal("search digest must not be treated as the streamed answer")

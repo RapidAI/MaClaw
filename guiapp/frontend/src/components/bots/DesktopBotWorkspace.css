@@ -428,6 +428,21 @@
     min-width: 0;
 }
 
+.desktop-bot-workspace__who .desktop-bot-workspace__mode {
+    flex: 0 0 auto;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--mc-text-secondary, #5c6b7a);
+    background: color-mix(in srgb, var(--mc-text-secondary, #5c6b7a) 12%, transparent);
+}
+
 .desktop-bot-workspace__who .desktop-bot-workspace__primary {
     flex: 0 0 auto;
     overflow: visible;
@@ -619,6 +634,26 @@
     padding: 8px 12px;
     border-radius: 8px;
     font-size: 0.875rem;
+}
+
+.bot-edit-dialog__computer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.bot-edit-dialog__quota {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--mc-text-secondary, #5c6b7a);
+}
+
+.bot-edit-dialog__servers {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
 }
 
 .bot-edit-dialog__notice {
@@ -1606,10 +1641,12 @@
 .desktop-bot-chat__shot {
     display: block;
     box-sizing: border-box;
-    width: 100%;
+    width: auto;
     max-width: 100%;
+    max-height: 360px;
     height: auto;
     margin: 0;
+    object-fit: contain;
     border-radius: 8px;
     border: 1px solid var(--theme-border, #d9e1ec);
     background: var(--theme-page-bg, #f4f7fb);
@@ -1624,13 +1661,14 @@
     justify-content: center;
     box-sizing: border-box;
     padding: 56px 24px 24px;
+    overflow: auto;
     background: rgba(16, 24, 40, 0.72);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
 }
 
 .desktop-bot-shot-preview__close {
-    position: absolute;
+    position: fixed;
     top: 16px;
     right: 16px;
     width: 36px;
@@ -1659,15 +1697,34 @@
 
 .desktop-bot-shot-preview__image {
     display: block;
-    max-width: 100%;
-    max-height: 100%;
+    max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 96px);
     width: auto;
     height: auto;
     object-fit: contain;
+    cursor: zoom-in;
     border-radius: 8px;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
+}
+
+.desktop-bot-shot-preview.is-zoomed {
+    align-items: flex-start;
+    justify-content: flex-start;
+}
+
+.desktop-bot-shot-preview__image.is-zoomed {
+    max-width: none;
+    max-height: none;
+    width: calc(200vw - 96px);
+    height: auto;
+    cursor: zoom-out;
+}
+
+.desktop-bot-shot-preview__image:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 4px;
 }
 
 .desktop-bot-chat__entry:has(.desktop-bot-chat__choices) .desktop-bot-chat__bubble--assistant {
@@ -2450,6 +2507,63 @@
     opacity: 0.55;
 }
 
+.desktop-bot-chat__voice {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 38px;
+    border: 1px solid var(--theme-border, #e6e6e8);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--theme-text-secondary, #475569);
+    cursor: pointer;
+    touch-action: none;
+    overflow: hidden;
+}
+
+.desktop-bot-chat__voice:hover:not(:disabled) {
+    color: var(--mc-accent, #2f6fbc);
+    border-color: color-mix(in srgb, var(--mc-accent, #2f6fbc) 45%, var(--theme-border, #e6e6e8));
+}
+
+.desktop-bot-chat__voice.is-listening {
+    color: var(--mc-accent, #2f6fbc);
+    border-color: var(--mc-accent, #2f6fbc);
+    background: color-mix(in srgb, var(--mc-accent, #2f6fbc) 8%, transparent);
+}
+
+.desktop-bot-chat__voice:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+.desktop-bot-chat__voice-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--theme-text-muted, #98a2b3);
+    border-top-color: transparent;
+    animation: desktop-bot-voice-spin 0.8s linear infinite;
+}
+
+.desktop-bot-chat__voice-error {
+    align-self: center;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--mc-danger, #d92d20);
+    font-size: 11px;
+}
+
+@keyframes desktop-bot-voice-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 .desktop-bot-chat__continue {
     display: flex;
     align-items: center;
@@ -2586,7 +2700,7 @@
 
 .desktop-bot-panel__tabs {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 2px;
     padding: 3px;
     border-radius: 10px;
@@ -2622,6 +2736,7 @@
 
 .desktop-bot-panel__details,
 .desktop-bot-panel__schedules,
+.desktop-bot-panel__artifacts,
 .desktop-bot-panel__computer {
     display: flex;
     flex-direction: column;
@@ -2640,9 +2755,83 @@
 }
 
 .desktop-bot-panel__details,
-.desktop-bot-panel__schedules {
+.desktop-bot-panel__schedules,
+.desktop-bot-panel__artifacts {
     gap: 12px;
     padding-top: 4px;
+}
+
+.desktop-bot-artifacts {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 13px;
+}
+
+.desktop-bot-artifacts th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--theme-text-secondary, #667085);
+    padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+}
+
+.desktop-bot-artifacts th:nth-child(2),
+.desktop-bot-artifacts td:nth-child(2) {
+    width: 22%;
+}
+
+.desktop-bot-artifacts th:nth-child(3),
+.desktop-bot-artifacts td:nth-child(3) {
+    width: 38%;
+}
+
+.desktop-bot-artifacts td {
+    padding: 8px;
+    border-bottom: 1px solid var(--theme-border, #e4e7ec);
+    vertical-align: middle;
+}
+
+.desktop-bot-artifacts__row {
+    cursor: pointer;
+}
+
+.desktop-bot-artifacts__row:hover td,
+.desktop-bot-artifacts__row:focus-visible td {
+    background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 8%, var(--theme-surface, #fff));
+}
+
+.desktop-bot-artifacts__row:focus-visible {
+    outline: 2px solid var(--mc-accent, #2f6fbc);
+    outline-offset: -2px;
+}
+
+.desktop-bot-artifacts__name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--mc-accent, #2f6fbc);
+}
+
+.desktop-bot-artifacts__meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--theme-text-secondary, #667085);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bot-file-artifact__error {
+    margin: 0;
+    padding: 0 12px 8px;
+    color: var(--theme-danger, #a33b32);
+    font-size: 12px;
+    line-height: 1.4;
 }
 
 .desktop-bot-panel__empty {
@@ -2650,6 +2839,19 @@
     color: var(--theme-text-muted, #657384);
     font-size: 13px;
     line-height: 1.45;
+}
+
+.desktop-bot-panel__empty.is-error {
+    color: var(--theme-danger, #a33b32);
+}
+
+.desktop-bot-panel__artifacts > .desktop-bot-panel__empty {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: 0 0 8px;
+    padding: 8px 2px;
+    background: var(--theme-surface, #fff);
 }
 
 .desktop-bot-schedule-list {
@@ -3429,6 +3631,12 @@ button.desktop-bot-feed__file {
     outline: none;
 }
 
+/* 桌面页签（内网桌面）要放节点卡片、行内确认表单和部署网格，比其他页签
+   宽一档。修饰类只加在 BotDesktopNodesDialog 根元素上，别的页签不变。 */
+.modal-content.custom-dialog.bot-llm-dialog--nodes {
+    width: min(680px, calc(100vw - 40px));
+}
+
 /* 标题栏和标签条合成一块头部：一条分隔线落在标签下面，正文从干净的区域开始。
    否则标题栏自带的边线会把标签挤进正文，看起来像挂在标题下的两个按钮。 */
 .bot-llm-dialog__head {
@@ -3442,7 +3650,9 @@ button.desktop-bot-feed__file {
 }
 
 /* 标签页做成滑块：两枚按钮浮在浅槽上，选中的一枚抬成表面色。
-   槽收缩到内容宽，不横贯整个弹窗 —— 它是一组开关，不是一条分隔带。 */
+   槽收缩到内容宽，不横贯整个弹窗 —— 它是一组开关，不是一条分隔带。
+   七个页签在 560px 弹窗里放不下：槽允许横向滚动、滚动条藏起，
+   页签文字不再折成两行（折行的中文标签是之前的破相）。 */
 .bot-settings-tabs {
     display: flex;
     width: fit-content;
@@ -3454,12 +3664,19 @@ button.desktop-bot-feed__file {
     border: 1px solid var(--theme-border-subtle, #dde9fa);
     border-radius: 9px;
     background: color-mix(in srgb, var(--theme-text-muted, #667085) 7%, var(--theme-surface, #fff));
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.bot-settings-tabs::-webkit-scrollbar {
+    display: none;
 }
 
 .bot-settings-tabs__tab {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex: 0 0 auto;
     min-height: 28px;
     padding: 0 14px;
     border: none;
@@ -3468,6 +3685,7 @@ button.desktop-bot-feed__file {
     font-size: 13px;
     font-weight: 500;
     line-height: 1;
+    white-space: nowrap;
     color: var(--theme-text-muted, #667085);
     cursor: pointer;
     transition: background var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
@@ -3509,7 +3727,20 @@ button.desktop-bot-feed__file {
     padding: 16px 18px 18px;
 }
 
+.bot-llm-dialog__local {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle, #dde9fa);
+}
+
 .bot-llm-dialog__section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     margin: 0;
     font-size: 0.9375rem;
     font-weight: 600;
@@ -3587,6 +3818,119 @@ button.desktop-bot-feed__file {
     font-size: 12px;
     line-height: 1.6;
     color: var(--theme-text-muted, #667085);
+}
+
+/* ── 设置行：标题/说明居左，iOS 风格开关居右 ─────────────────────────
+   「语音播报」「自动朗读」这类布尔设置用一行卡片承载，说明跟着标题走，
+   开关永远在右缘 —— 不再是"复选框一行、说明又一行"的散排。开关样式
+   复用全局 tokens（00-tokens.css 的 --theme-switch-*），和安全策略页的
+   .sec-policy__switch 同源，光暗两套主题自动跟随。 */
+.bot-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.bot-setting-row__text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.bot-setting-row__title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-setting-row__hint {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    cursor: pointer;
+}
+
+/* 输入框视觉隐藏但保持可聚焦：Tab 落在开关上，focus 环画在滑轨上。 */
+.bot-switch input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.bot-switch__track {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-switch-track-off);
+    transition: background-color var(--transition-fast, 120ms ease), border-color var(--transition-fast, 120ms ease);
+}
+
+.bot-switch__track::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-switch-thumb, #fff);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast, 120ms ease);
+}
+
+.bot-switch input:checked + .bot-switch__track {
+    border-color: var(--theme-primary, #2e75cb);
+    background: var(--theme-primary, #2e75cb);
+}
+
+.bot-switch input:checked + .bot-switch__track::after {
+    transform: translateX(16px);
+}
+
+.bot-switch input:focus-visible + .bot-switch__track {
+    box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+}
+
+.bot-switch input:disabled + .bot-switch__track {
+    opacity: 0.55;
+}
+
+/* 试听行：文本框占满剩余宽，按钮同高一行 —— 不再整宽横贯。 */
+.bot-voice__preview-row {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.bot-voice__preview-row .form-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.bot-voice__preview-row .btn-secondary {
+    flex: 0 0 auto;
+    min-width: 76px;
 }
 
 .bot-llm-dialog__fields {
@@ -3673,6 +4017,10 @@ button.desktop-bot-feed__file {
 [data-ai-theme='dark'] .bot-llm-dialog__option {
     border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
     background: var(--theme-surface, #1c1c1c);
+}
+
+[data-ai-theme='dark'] .bot-setting-row {
+    border-color: color-mix(in srgb, var(--theme-text-primary, #c9c9c9) 16%, transparent);
 }
 
 [data-ai-theme='dark'] .bot-llm-dialog__option.is-selected {
@@ -4295,6 +4643,8 @@ button.desktop-bot-feed__file {
 .desktop-bot-chat__chip:hover { border-color: currentColor; }
 
 /* Local relay: Bot 管理 → 设置 → 本地访问, transfer chips, and the access question. */
+.bot-local-dialog__permission { display: flex; flex-direction: column; gap: 10px; }
+.bot-local-dialog__permission > .bot-llm-dialog__label { margin: 0; }
 .bot-local-dialog__group { margin: 4px 0 12px 24px; display: flex; flex-direction: column; gap: 6px; }
 .bot-local-dialog__group.is-disabled { opacity: 0.55; }
 .bot-local-dialog__roots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -4303,6 +4653,8 @@ button.desktop-bot-feed__file {
 .bot-local-dialog__write { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
 .bot-local-dialog__remove { padding: 2px 8px; font-size: 12px; }
 .bot-local-dialog__field { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+/* 标签不参与收缩：「音色」这类两字标签曾被压成竖排，一字一行。 */
+.bot-local-dialog__field > span { flex: 0 0 auto; white-space: nowrap; }
 .bot-local-dialog__field input[type="number"] { width: 90px; }
 .bot-local-dialog__field--block { flex-direction: column; align-items: stretch; }
 .desktop-bot-local-transfers { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
@@ -4317,4 +4669,556 @@ button.desktop-bot-feed__file {
     margin-top: 4px;
     font-size: 12px;
     opacity: 0.75;
+}
+
+.bot-cap__title {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-cap__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+/* MCP 与技能页的行内按钮统一成次级按钮观感，替代浏览器默认灰按钮。 */
+.bot-cap__actions button,
+.bot-cap__list button,
+.bot-cap__form > button,
+.bot-llm-dialog__section > button {
+    padding: 5px 12px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--theme-text-secondary, #475467);
+    cursor: pointer;
+    transition: border-color var(--transition-fast, 120ms ease), color var(--transition-fast, 120ms ease);
+}
+
+.bot-cap__actions button:hover:not(:disabled),
+.bot-cap__list button:hover:not(:disabled),
+.bot-cap__form > button:hover:not(:disabled),
+.bot-llm-dialog__section > button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border, #d5e0ef));
+    color: var(--theme-primary, #2e75cb);
+}
+
+.bot-llm-dialog__section > button {
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.bot-cap__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.bot-cap__list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+/* 技能行：复选框与多行文字顶端对齐，名称/说明/标记纵向排。 */
+.bot-cap__list label {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.bot-cap__list label > span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.bot-cap__list label input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 2px 0 0;
+    accent-color: var(--theme-primary, #2e75cb);
+}
+
+.bot-cap__list label input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+}
+
+.bot-cap__meta {
+    display: block;
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+.bot-cap__form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 8px 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: var(--theme-surface, #fff);
+}
+
+.bot-cap__form textarea,
+.bot-cap__form input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    border: 1px solid var(--theme-border, #d5e0ef);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font-family: inherit;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+.bot-cap__form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-cap__form button {
+    align-self: flex-start;
+}
+
+/* ── 内网桌面：desktopd 节点卡片 ─────────────────────────────────────
+   每个节点是一张卡片：首行 名称 + 目标 + 状态徽章，次行小标签药丸；
+   「上次结果」和行内确认表单各自 flex-basis 100% 独占一整行，不再和
+   右侧按钮挤同一行 —— 之前主列只有 min-width:0 没有 flex:1，会被
+   长报错压到 0 宽，中文逐字竖排（一字符一行）。 */
+.bot-desktop-nodes {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.bot-desktop-nodes__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 12px;
+    background: var(--theme-surface, #fff);
+    transition: border-color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease);
+}
+
+.bot-desktop-nodes__row:hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 26%, var(--theme-border-subtle, #dde9fa));
+}
+
+/* 进行中主色描边、失败危险描边加淡红底：红底只给真正的失败。 */
+.bot-desktop-nodes__row.is-busy {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 34%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 3%, var(--theme-surface, #fff));
+}
+
+.bot-desktop-nodes__row.is-failed {
+    border-color: color-mix(in srgb, var(--theme-danger, #d92d20) 30%, transparent);
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 3%, var(--theme-surface, #fff));
+}
+
+/* 主列可伸缩，报告/表单整行落地后首行只剩信息与按钮，不会再被压扁。 */
+.bot-desktop-nodes__main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.bot-desktop-nodes__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    min-width: 0;
+}
+
+.bot-desktop-nodes__name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--theme-text-primary, #101828);
+    overflow-wrap: anywhere;
+}
+
+.bot-desktop-nodes__target {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--theme-text-secondary, #475467);
+    overflow-wrap: anywhere;
+}
+
+/* 状态徽章：药丸加前置圆点，busy 的点做呼吸动画。 */
+.bot-desktop-nodes__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    padding: 2px 9px;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--theme-surface-muted, #eef5ff);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.6;
+    color: var(--theme-text-secondary, #546479);
+}
+
+.bot-desktop-nodes__badge::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+}
+
+.bot-desktop-nodes__badge--ready {
+    background: var(--theme-success-bg, rgba(22, 163, 74, 0.07));
+    color: var(--theme-success, #11813a);
+}
+
+.bot-desktop-nodes__badge--failed {
+    background: var(--theme-danger-bg, rgba(229, 72, 77, 0.06));
+    color: var(--theme-danger, #d92d20);
+}
+
+.bot-desktop-nodes__badge--busy {
+    background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+    color: var(--theme-primary-strong, #1e6bc5);
+}
+
+.bot-desktop-nodes__badge--busy::before {
+    opacity: 1;
+    animation: bot-desktop-node-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes bot-desktop-node-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bot-desktop-nodes__badge--busy::before {
+        animation: none;
+    }
+}
+
+/* 次级标签：在线/离线、使用中、令牌状态，弱化成描边小药丸。 */
+.bot-desktop-nodes__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.bot-desktop-nodes__tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: var(--radius-pill, 999px);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-desktop-nodes__tag.is-online::before,
+.bot-desktop-nodes__tag.is-offline::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.bot-desktop-nodes__tag.is-online::before {
+    background: var(--theme-success, #11813a);
+}
+
+.bot-desktop-nodes__tag.is-offline::before {
+    background: var(--theme-text-muted, #667085);
+    opacity: 0.5;
+}
+
+/* 部署进行中的实时消息：主色小字，不与结果块混排。 */
+.bot-desktop-nodes__live {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--theme-primary-strong, #1e6bc5);
+}
+
+.bot-desktop-nodes__actions {
+    flex: none;
+    display: flex;
+    gap: 6px;
+}
+
+/* 上次结果独占一行：小标题行加 mono 日志块，长报错滚动可读。 */
+.bot-desktop-nodes__report {
+    flex: 1 0 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px dashed color-mix(in srgb, var(--theme-border, #d5e0ef) 80%, transparent);
+}
+
+.bot-desktop-nodes__report-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.bot-desktop-nodes__report-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-desktop-nodes__clear {
+    flex: none;
+    padding: 2px 10px;
+    border: none;
+    border-radius: var(--radius-pill, 999px);
+    background: none;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--theme-text-muted, #667085);
+    cursor: pointer;
+    transition: color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease);
+}
+
+.bot-desktop-nodes__clear:hover {
+    background: var(--theme-surface-muted, #eef5ff);
+    color: var(--theme-text-primary, #101828);
+}
+
+.bot-desktop-nodes__log {
+    margin: 0;
+    max-height: 140px;
+    overflow: auto;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 8px;
+    background: var(--theme-surface-muted, #eef5ff);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--theme-text-secondary, #475467);
+}
+
+/* 无法从面板更新的说明：警示色小字，不抢错误横幅的戏。 */
+.bot-desktop-nodes__warn {
+    flex: 1 0 100%;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--theme-warning, #aa5d05);
+}
+
+/* 空态/加载说明：中性小字。25px 缩进的 __subhint 是网络页选项卡布局用的。 */
+.bot-desktop-nodes__note {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+/* 「已在后台进行」是进行中的事，用主色信息条，不是红也不是灰。 */
+.bot-desktop-nodes__bg {
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary, #2e75cb) 26%, transparent);
+    border-radius: 8px;
+    background: var(--theme-primary-soft, rgba(47, 120, 208, 0.10));
+    color: var(--theme-primary-strong, #1e6bc5);
+    font-size: 12.5px;
+    line-height: 1.55;
+}
+
+/* 行内确认表单（SSH 密码 / 安装内容）整行展开：浅底井内字段带可见标签。 */
+.bot-desktop-nodes__confirm {
+    flex: 1 0 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px 12px;
+    border-radius: 10px;
+    background: var(--theme-surface-muted, #eef5ff);
+}
+
+.bot-desktop-nodes__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.bot-desktop-nodes__label {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--theme-text-secondary, #475467);
+}
+
+/* App.css 把 .form-input 的 border/background 钉了 !important，这里只补
+   尺寸、间距、字号（同 .bot-llm-dialog__select 的分工）。 */
+.bot-desktop-nodes__field .form-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 34px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 0.875rem;
+}
+
+/* 安装内容：两张等宽单选卡，选中主色描边，规格对齐网络页的选项卡。 */
+.bot-desktop-nodes__choice {
+    margin: 0;
+    padding: 0;
+    border: none;
+    min-width: 0;
+}
+
+.bot-desktop-nodes__choice legend {
+    margin-bottom: 6px;
+    padding: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--theme-text-secondary, #475467);
+}
+
+.bot-desktop-nodes__choice-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.bot-desktop-nodes__choice-item {
+    flex: 1 1 200px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 11px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 8px;
+    background: var(--theme-surface, #fff);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--theme-text-primary, #101828);
+    cursor: pointer;
+    transition: border-color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease), box-shadow var(--transition-fast, 120ms ease);
+}
+
+.bot-desktop-nodes__choice-item:hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 38%, var(--theme-border-subtle, #dde9fa));
+}
+
+.bot-desktop-nodes__choice-item.is-selected {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 52%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 4%, var(--theme-surface, #fff));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-primary, #2e75cb) 16%, transparent);
+}
+
+.bot-desktop-nodes__choice-item input {
+    flex: 0 0 auto;
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--theme-primary, #2e75cb);
+}
+
+.bot-desktop-nodes__choice-hint {
+    margin: 6px 0 0;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--theme-text-muted, #667085);
+}
+
+.bot-desktop-nodes__confirm-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* 「部署一台」做成整宽虚线添加卡；表单展开后字段排成网格，窄容器自动换列。 */
+.bot-desktop-nodes__addtoggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    margin: 4px 0 0;
+    padding: 10px 12px;
+    border: 1px dashed color-mix(in srgb, var(--theme-primary, #2e75cb) 34%, var(--theme-border, #d5e0ef));
+    border-radius: 10px;
+    background: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--theme-primary, #2e75cb);
+    cursor: pointer;
+    transition: border-color var(--transition-fast, 120ms ease), background var(--transition-fast, 120ms ease);
+}
+
+.bot-desktop-nodes__addtoggle:hover:not(:disabled) {
+    border-color: var(--theme-primary, #2e75cb);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 4%, transparent);
+}
+
+.bot-desktop-nodes__addtoggle:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.bot-desktop-nodes__add {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle, #dde9fa);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 2%, var(--theme-surface, #fff));
+}
+
+.bot-desktop-nodes__addgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
 }

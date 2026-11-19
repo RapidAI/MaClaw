@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
     ChatBubbleFrame,
+    ChatBubblesProvider,
     CHAT_BUBBLE_SIDE_TAIL_HEIGHT,
     CHAT_BUBBLE_SIDE_TAIL_INSET,
     CHAT_BUBBLE_SIDE_TAIL_TOP,
@@ -107,6 +108,36 @@ describe("chatBubbleTailStyle", () => {
         expect(fill.width).toBe(CHAT_BUBBLE_SIDE_TAIL_WIDTH - 2);
         expect(fill.height).toBe(CHAT_BUBBLE_SIDE_TAIL_HEIGHT);
         expect(fill.clipPath).toBe("polygon(0 100%, 50% 0, 100% 100%)");
+    });
+});
+
+describe("ChatBubbleFrame conversation setting", () => {
+    it("hides the frame and tail when conversation bubbles are off", () => {
+        render(
+            <ChatBubblesProvider enabled={false}>
+                <ChatBubbleFrame side="left" background="#111" borderColor="#222" data-testid="bubble-off" showTail>
+                    hello
+                </ChatBubbleFrame>
+            </ChatBubblesProvider>,
+        );
+        const bubble = screen.getByTestId("bubble-off") as HTMLElement;
+        expect(bubble.getAttribute("data-chat-bubble")).toBe("off");
+        expect(bubble.style.background).toBe("transparent");
+        expect(bubble.style.borderStyle).toBe("none");
+        expect(bubble.style.borderWidth).toBe("0px");
+        expect(bubble.textContent).toContain("hello");
+        expect(screen.queryByTestId("bubble-off-tail")).toBeNull();
+    });
+
+    it("keeps the frame when the setting stays on", () => {
+        render(
+            <ChatBubblesProvider enabled>
+                <ChatBubbleFrame side="right" background="#111" borderColor="#222" data-testid="bubble-on" />
+            </ChatBubblesProvider>,
+        );
+        const bubble = screen.getByTestId("bubble-on") as HTMLElement;
+        expect(bubble.getAttribute("data-chat-bubble")).toBe("on");
+        expect(screen.getByTestId("bubble-on-tail")).toBeTruthy();
     });
 });
 

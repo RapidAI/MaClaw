@@ -1556,7 +1556,7 @@ func TestUpdateStickyCodingConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			h.updateStickyCodingStepStatus(userID, idx, codingStepPassed, "ok")
+			h.updateStickyCodingStepStatus(userID, idx, codingStepPassed, "ok", "")
 			h.accumulateStickyCodingUsage(userID, 1, 1, 0.001)
 		}(i)
 	}

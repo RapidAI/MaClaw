@@ -291,12 +291,18 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	host, _ := args["host"].(string)
 	user, _ := args["user"].(string)
 	label, _ := args["label"].(string)
+	password := sshStrArg(args, "password")
 
 	// Resolve pre-configured host by label.
 	if (host == "" || user == "") && label != "" {
 		if entry := h.resolveSSHHostByLabel(label); entry != nil {
 			host = entry.Host
 			user = entry.User
+			// The entry's secret is applied here and never written back into
+			// args: those are the model's tool call and may be replayed.
+			if password == "" {
+				password = entry.Password
+			}
 			if args["port"] == nil && entry.Port > 0 {
 				args["port"] = float64(entry.Port)
 			}
@@ -317,7 +323,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		Port:               port,
 		AuthMethod:         sshStrArg(args, "auth_method"),
 		KeyPath:            sshStrArg(args, "key_path"),
-		Password:           sshStrArg(args, "password"),
+		Password:           password,
 		Label:              label,
 		HostKeyFingerprint: sshStrArg(args, "host_key_fingerprint"),
 	}
@@ -364,6 +370,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
 					}
+					result += "\n\n如该会话 exec 持续无响应：ssh(action=close, session_id=该会话) 后重新 connect，或 connect 传 force_new=true 强制新建"
 					return
 				}
 				time.Sleep(2 * time.Second)
@@ -501,7 +508,7 @@ func sshSessionStatusOpen(status remote.SessionStatus) bool {
 // sshSessionLocallyOpen reports that the process still has a non-terminal PTY
 // for this session. It does not send a keepalive.
 func sshSessionLocallyOpen(session *remote.SSHManagedSession) bool {
-	if session == nil || session.Handle == nil {
+	if session == nil || session.PTY() == nil {
 		return false
 	}
 	return sshSessionStatusOpen(remote.SessionStatus(session.GetSummary().Status))
@@ -549,11 +556,15 @@ func sshSituationSessionAlive(session *remote.SSHManagedSession) bool {
 	if !sshSessionLocallyOpen(session) {
 		return false
 	}
-	if session.Handle.ObservedTransportFailure() {
-		rememberSSHSessionAlive(session.Handle, false)
+	handle := session.PTY()
+	if handle == nil {
 		return false
 	}
-	if alive, ok := cachedSSHSessionAlive(session.Handle); ok {
+	if handle.ObservedTransportFailure() {
+		rememberSSHSessionAlive(handle, false)
+		return false
+	}
+	if alive, ok := cachedSSHSessionAlive(handle); ok {
 		return alive
 	}
 	return true
@@ -643,6 +654,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	}
 
 	h.registerSSHBackgroundLoop(session, session.Spec.HostConfig)
+	handleBefore := session.PTY()
 	linesBefore := session.LineCount()
 
 	if sessionDead {
@@ -657,8 +669,12 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		if reconnected {
 			reconnectNote = "连接已断开并自动重连\n"
 			time.Sleep(2 * time.Second)
-			linesBefore = session.LineCount()
 		}
+	}
+	// A swapped PTY restarted the preview buffer at zero; a stale absolute
+	// baseline would silently hide the reply.
+	if session.PTY() != handleBefore {
+		linesBefore = session.LineCount()
 	}
 
 	if waitSec > 600 {
@@ -1388,6 +1404,9 @@ func (h *IMMessageHandler) bumpSSHLoopIteration(sessionID string) {
 
 // resolveSSHHostByLabel looks up a pre-configured SSH host by label.
 func (h *IMMessageHandler) resolveSSHHostByLabel(label string) *corelib.SSHHostEntry {
+	if entry, ok := ephemeralSSHHost(label); ok {
+		return &entry
+	}
 	hosts := h.loadSSHHosts()
 	label = strings.ToLower(strings.TrimSpace(label))
 	for i := range hosts {

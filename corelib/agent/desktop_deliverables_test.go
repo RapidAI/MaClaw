@@ -18,6 +18,17 @@ func TestDesktopDeliverablesParse(t *testing.T) {
 	if _, err := ParseDesktopDeliverables("no"); err == nil {
 		t.Fatal("not json accepted")
 	}
+	typed, err := ParseDesktopDeliverableContract(`{"items":[{"id":"d1","kind":"file","text":"报告"},{"kind":"post","text":"帖子"},{"id":"d1","kind":"text","text":"重复"}]}`)
+	if err == nil {
+		t.Fatal("repeated id accepted")
+	}
+	typed, err = ParseDesktopDeliverableContract(`{"items":[{"id":"report","kind":"file","text":"报告"},{"kind":"post","text":"帖子"}]}`)
+	if err != nil || len(typed) != 2 || typed[0].ID != "report" || typed[0].Kind != "file" || typed[1].ID != "d2" || typed[1].Kind != "post" {
+		t.Fatalf("typed = %#v %v", typed, err)
+	}
+	if _, err := ParseDesktopDeliverableContract(`{"items":[{"id":"d1","kind":"widget","text":"x"}]}`); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
 }
 
 func TestDesktopDeliverablesInJudgeAndNote(t *testing.T) {

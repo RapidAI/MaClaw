@@ -679,17 +679,7 @@ func getWindowsVersionHidden() string {
 	return ""
 }
 
-// isWindowsTerminalAvailable returns false on Linux (Windows Terminal is Windows-only)
 func (a *App) syncToSystemEnv(config corelib.AppConfig) {
-}
-
-func (a *App) isWindowsTerminalAvailable() bool {
-	return false
-}
-
-// IsWindowsTerminalAvailable is exported for frontend to check availability
-func (a *App) IsWindowsTerminalAvailable() bool {
-	return false
 }
 
 // findSh locates a Unix shell. On Linux, /bin/sh is always available.

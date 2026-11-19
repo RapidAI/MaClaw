@@ -2,8 +2,11 @@ package agent
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // LLM retry progress shares one chat row. The prefix is the row's identity.
@@ -74,6 +77,75 @@ func LLMRetryInFlightStatus(attempt int) string {
 		attempt = 1
 	}
 	return llmRetryLiveStatus(fmt.Sprintf("正在重新请求模型（第 %d 次）", attempt))
+}
+
+// LLMEndpointLabel is the person-facing name of a model route.
+// The URL, the key, and any query string stay out of it.
+func LLMEndpointLabel(cfg corelib.MaclawLLMConfig) string {
+	model := strings.TrimSpace(cfg.Model)
+	provider := strings.TrimSpace(cfg.ProviderName)
+	switch {
+	case provider != "" && model != "":
+		return provider + "/" + model
+	case model != "":
+		return model
+	default:
+		return provider
+	}
+}
+
+func llmEndpointHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+// LLMSwitchPhrase is the evidence sentence for a real route change.
+// ok is false when the saved selection did not change, or when the only
+// difference is an id or a token the person cannot see. The caller must
+// not claim a switch in that case.
+func LLMSwitchPhrase(from, to corelib.MaclawLLMConfig) (string, bool) {
+	if !LLMSelectionChanged(from, to) {
+		return "", false
+	}
+	fromLabel := LLMEndpointLabel(from)
+	toLabel := LLMEndpointLabel(to)
+	if fromLabel == "" || toLabel == "" {
+		return "", false
+	}
+	if fromLabel != toLabel {
+		return fmt.Sprintf("已从「%s」改用「%s」，", fromLabel, toLabel), true
+	}
+	fromHost := llmEndpointHost(from.URL)
+	toHost := llmEndpointHost(to.URL)
+	if fromHost != "" && toHost != "" && fromHost != toHost {
+		return fmt.Sprintf("已改用「%s」的另一个服务，", toLabel), true
+	}
+	return "", false
+}
+
+// LLMRetrySwitchedInFlightStatus is the one live-status row for a retry
+// that is about to be sent on a different model. It names both endpoints.
+// A selection that did not visibly change returns ok=false, and the caller
+// keeps the ordinary in-flight sentence.
+func LLMRetrySwitchedInFlightStatus(attempt int, from, to corelib.MaclawLLMConfig) (string, bool) {
+	phrase, ok := LLMSwitchPhrase(from, to)
+	if !ok {
+		return "", false
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	return llmRetryLiveStatus(phrase + fmt.Sprintf("正在重新请求（第 %d 次）。", attempt)), true
 }
 
 func continuationAttempt(fast, extra int) int {

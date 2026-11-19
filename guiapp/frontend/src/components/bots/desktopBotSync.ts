@@ -22,10 +22,12 @@ import { desktopBotIsPlaceholderAck } from './desktopBotAck';
 //    and run id, the delivery of a missed run, bot-to-bot feed lines);
 //  - a bubble that disappears here (a reading folded into the plan) is
 //    written as deleted, so the other clients drop it as well;
-//  - a bubble another client wrote is merged in by id, in time order. It is
-//    display only: it is never pending, queued or dispatched here, so this
-//    client never sends or recovers someone else's turn. Answering its ask
-//    card marks it answered for every client (a flag patch);
+//  - a bubble another client wrote is merged in by id, in the server's
+//    sequence (created_seq). A bubble that has no sequence yet is placed by
+//    the clock in its id. The bubble is display only: it is never pending,
+//    queued or dispatched here, so this client never sends or recovers
+//    someone else's turn. Answering its ask card marks it answered for every
+//    client (a flag patch);
 //  - the same run shown twice (this client's delivery and another client's
 //    reply) is recognised by its run id and kept once.
 //
@@ -41,6 +43,7 @@ export interface DesktopBotSyncEntry {
     created_seq: number;
     origin?: string;
     by?: string;
+    own?: boolean;
     data: Record<string, unknown> | null;
 }
 
@@ -48,7 +51,7 @@ type Write = { bot_id: string; id: string; kind?: string; patch?: boolean; data:
 
 const LOCAL_ONLY: Array<keyof DesktopBotMessage> = [
     'id', 'pending', 'dispatched', 'queued', 'images', 'files', 'shotPaths', 'localPaths',
-    'crossNoteId', 'noReading', 'syncSeq', 'syncOrigin',
+    'crossNoteId', 'noReading', 'syncSeq', 'syncOrigin', 'orderSeq',
 ];
 // Hub keeps one entry under 32 KB; a long reply is cut, not refused.
 const CONTENT_MAX = 6000;
@@ -86,8 +89,84 @@ function withFlags(message: DesktopBotMessage, data: Record<string, unknown>): D
     return next;
 }
 
+function messageOrderSeq(message: Pick<DesktopBotMessage, 'orderSeq' | 'syncSeq'>): number {
+    const order = message.orderSeq || 0;
+    const sync = message.syncSeq || 0;
+    if (order > 0 && sync > 0) return Math.min(order, sync);
+    return order || sync || 0;
+}
+
+// withEarlierSeq keeps the first Hub sequence. A second GUI publishes the
+// same server line under a new bubble id and a later number; that later
+// number must not pull the line down the chat. A line that only has syncSeq
+// already has a sequence, so a later copy must not replace it.
+function withEarlierSeq(message: DesktopBotMessage, seq: number): DesktopBotMessage {
+    if (!(seq > 0)) return message;
+    const current = messageOrderSeq(message);
+    if (current > 0 && current <= seq) return message;
+    return { ...message, orderSeq: seq };
+}
+
+// insertPos is where a bubble belongs. Two bubbles that both have a server
+// sequence are ordered by that sequence, so a later message from a GUI whose
+// clock is behind does not jump in front. A bubble with no sequence yet is
+// placed by the clock in its id, which is how a single GUI already showed it.
+function insertPos(list: DesktopBotMessage[], message: DesktopBotMessage): number {
+    const seq = messageOrderSeq(message);
+    const started = botMessageStartedAt(message.id);
+    let pos = list.length;
+    let anchored = false;
+    for (let i = 0; i < list.length; i++) {
+        const other = messageOrderSeq(list[i]);
+        if (seq > 0 && other > seq) {
+            pos = i;
+            break;
+        }
+        if (seq > 0 && other > 0) {
+            anchored = true;
+            pos = i + 1;
+            continue;
+        }
+        const t = botMessageStartedAt(list[i].id);
+        if (anchored) {
+            if (started > 0 && t > started) {
+                pos = i;
+                break;
+            }
+            if (t > 0 && (started <= 0 || started > t)) pos = i + 1;
+            continue;
+        }
+        if (started > 0 && t > started) {
+            pos = i;
+            break;
+        }
+    }
+    return pos;
+}
+
+// orderSequencedSlots puts every numbered bubble into sequence order, using
+// the slots those bubbles already occupy. Bubbles that Hub has not numbered
+// yet stay where they are.
+function orderSequencedSlots(list: DesktopBotMessage[]): boolean {
+    const slots: number[] = [];
+    for (let i = 0; i < list.length; i++) {
+        if (messageOrderSeq(list[i]) > 0) slots.push(i);
+    }
+    if (slots.length < 2) return false;
+    const sorted = slots.map(i => list[i]).sort((a, b) => messageOrderSeq(a) - messageOrderSeq(b));
+    let moved = false;
+    for (let i = 0; i < slots.length; i++) {
+        if (list[slots[i]] !== sorted[i]) {
+            list[slots[i]] = sorted[i];
+            moved = true;
+        }
+    }
+    return moved;
+}
+
 function remoteMessage(entry: DesktopBotSyncEntry, data: Record<string, unknown>): DesktopBotMessage {
-    const message = { ...data, id: entry.id, syncSeq: entry.created_seq || entry.seq, syncOrigin: entry.origin || '' } as DesktopBotMessage;
+    const seq = entry.created_seq || entry.seq;
+    const message = { ...data, id: entry.id, syncSeq: seq, orderSeq: seq, syncOrigin: entry.origin || '' } as DesktopBotMessage;
     delete message.pending;
     delete message.dispatched;
     delete message.queued;
@@ -112,13 +191,40 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
     let changed = false;
     const ordered = [...entries].sort((a, b) => (a.seq || 0) - (b.seq || 0));
     for (const entry of ordered) {
+        if (entry && entry.own) {
+            const seq = entry.created_seq || entry.seq || 0;
+            const at = entry.id ? list.findIndex(item => item.id === entry.id) : -1;
+            // A line synced earlier may still be sitting on the edit number.
+            // The own stamp carries the first-write sequence and must move
+            // it back up, without turning the bubble into someone else's.
+            if (at >= 0) {
+                const next = withEarlierSeq(list[at], seq);
+                if (next !== list[at]) {
+                    list[at] = next;
+                    changed = true;
+                }
+            }
+            continue;
+        }
         const data = entry && entry.data && typeof entry.data === 'object' ? entry.data : null;
         if (!data || !entry.id) continue;
         const at = list.findIndex(item => item.id === entry.id);
         if (data.deleted === true) {
-            if (at >= 0 && list[at].syncSeq && !list[at].pending) {
-                list.splice(at, 1);
-                changed = true;
+            const requestId = typeof data.requestId === 'string' ? data.requestId.trim() : '';
+            for (let i = list.length - 1; i >= 0; i--) {
+                const item = list[i];
+                if (item.pending) continue;
+                const sameRequest = requestId !== '' && item.requestId === requestId;
+                if (item.id === entry.id) {
+                    if (!item.syncSeq) continue;
+                    list.splice(i, 1);
+                    changed = true;
+                    continue;
+                }
+                if (sameRequest) {
+                    list.splice(i, 1);
+                    changed = true;
+                }
             }
             continue;
         }
@@ -127,12 +233,15 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
             const current = list[at];
             if (current.syncSeq) {
                 let next = remoteMessage(entry, data);
-                next = { ...next, syncSeq: current.syncSeq };
+                next = { ...next, syncSeq: current.syncSeq, orderSeq: current.orderSeq || current.syncSeq };
+                // The stored number may be a later edit. The journal's
+                // first-write sequence still has to pull the line back up.
+                next = withEarlierSeq(next, entry.created_seq || entry.seq || 0);
                 if (current.askResolved) next.askResolved = true;
                 // A written understanding must not be rolled back to the
                 // stock receipt if an older entry arrives out of order.
                 if (current.ack && !desktopBotIsPlaceholderAck(String(current.content || '')) && desktopBotIsPlaceholderAck(String(next.content || ''))) {
-                    const flagged = withFlags(current, data);
+                    const flagged = withEarlierSeq(withFlags(current, data), entry.created_seq || entry.seq || 0);
                     if (flagged !== current) {
                         list[at] = flagged;
                         changed = true;
@@ -145,8 +254,9 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
                 }
             } else {
                 // This client's own bubble, read back (an earlier run of this
-                // app): only an answer given elsewhere is taken.
-                const next = withFlags(current, data);
+                // app): only an answer given elsewhere is taken, plus the
+                // sequence Hub already assigned so this GUI can sort by it.
+                let next = withEarlierSeq(withFlags(current, data), entry.created_seq || entry.seq || 0);
                 if (next !== current) {
                     list[at] = next;
                     changed = true;
@@ -155,16 +265,18 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
             continue;
         }
         const runId = typeof data.runId === 'string' ? data.runId.trim() : '';
-        if (runId) {
-            const twin = list.findIndex(item => item.runId === runId || item.requestId === `desktop-bot-deliver-${runId}`);
-            if (twin >= 0) {
-                const next = withFlags(list[twin], data);
-                if (next !== list[twin]) {
-                    list[twin] = next;
-                    changed = true;
-                }
-                continue;
+        const requestId = typeof data.requestId === 'string' ? data.requestId.trim() : '';
+        // One server line is a new bubble id on every GUI (feed, schedule,
+        // cross-note). Match the run or the request id so the slower clock
+        // does not insert a second copy in front.
+        const twin = list.findIndex(item => (runId && (item.runId === runId || item.requestId === `desktop-bot-deliver-${runId}`)) || (requestId && item.requestId === requestId));
+        if (twin >= 0) {
+            const next = withEarlierSeq(withFlags(list[twin], data), entry.created_seq || entry.seq || 0);
+            if (next !== list[twin]) {
+                list[twin] = next;
+                changed = true;
             }
+            continue;
         }
         if ((entry.created_seq || entry.seq) <= clearedBefore) continue;
         const message = remoteMessage(entry, data);
@@ -179,24 +291,17 @@ export function mergeSyncEntries(stored: DesktopBotMessage[], entries: DesktopBo
                 continue;
             }
         }
-        const started = botMessageStartedAt(message.id);
-        let pos = list.length;
-        if (started > 0) {
-            const later = list.findIndex(item => {
-                const t = botMessageStartedAt(item.id);
-                return t > started;
-            });
-            if (later >= 0) pos = later;
-        }
-        list.splice(pos, 0, message);
+        list.splice(insertPos(list, message), 0, message);
         changed = true;
     }
+    if (orderSequencedSlots(list)) changed = true;
     return { messages: list, changed };
 }
 
 // ---- publisher -----------------------------------------------------------
 
 const published = new Map<string, string>();
+const requestByOwnId = new Map<string, string>();
 const ownIds = new Map<string, string[]>();
 const queued = new Map<string, { userId: string; botId: string; messages: DesktopBotMessage[] }>();
 const suppressTombstones = new Set<string>();
@@ -213,6 +318,10 @@ function messageKey(userId: string, botId: string, id: string) {
 }
 
 function offer(userId: string, botId: string, messages: DesktopBotMessage[]) {
+    for (const message of messages) {
+        const requestId = (message.requestId || '').trim();
+        if (message.id && requestId) requestByOwnId.set(messageKey(userId, botId, message.id), requestId);
+    }
     if (!started) return;
     if (desktopUserKey(userId) === 'local' || !botId) return;
     queued.set(botKey(userId, botId), { userId, botId, messages });
@@ -222,7 +331,7 @@ function offer(userId: string, botId: string, messages: DesktopBotMessage[]) {
 // syncWrites is what one transcript write needs to send: new or changed own
 // bubbles, flag patches on others' bubbles, and deletions of own bubbles.
 // It also returns the bookkeeping to apply once Hub has them.
-export function syncWrites(userId: string, botId: string, messages: DesktopBotMessage[], previousOwn: string[] | undefined, isPublished: (key: string, fp: string) => boolean, tombstones = true) {
+export function syncWrites(userId: string, botId: string, messages: DesktopBotMessage[], previousOwn: string[] | undefined, isPublished: (key: string, fp: string) => boolean, tombstones = true, requests?: ReadonlyMap<string, string>) {
     const writes: Write[] = [];
     const marks: Array<[string, string]> = [];
     const own: string[] = [];
@@ -251,14 +360,21 @@ export function syncWrites(userId: string, botId: string, messages: DesktopBotMe
     if (tombstones && previousOwn && messages.length > 0) {
         // A bubble older than the oldest one still kept fell off the
         // 80-bubble window; only a newer one was removed on purpose.
-        const floor = botMessageStartedAt(messages[0].id);
+        // The oldest kept time is not always messages[0]: the list is shown
+        // in server sequence, so a fast clock can sit first.
+        let floor = 0;
+        for (const message of messages) {
+            const at = botMessageStartedAt(message.id);
+            if (at > 0 && (floor === 0 || at < floor)) floor = at;
+        }
         for (const id of previousOwn) {
             if (ids.has(id)) continue;
             const at = botMessageStartedAt(id);
             if (floor <= 0 || at <= 0 || at < floor) continue;
             const key = messageKey(userId, botId, id);
             if (isPublished(key, 'deleted')) continue;
-            writes.push({ bot_id: botId, id, kind: 'message', data: { deleted: true } });
+            const requestId = requests?.get(messageKey(userId, botId, id)) || '';
+            writes.push({ bot_id: botId, id, kind: 'message', data: requestId ? { deleted: true, requestId } : { deleted: true } });
             marks.push([key, 'deleted']);
         }
     }
@@ -272,7 +388,7 @@ export async function flushDesktopBotSync() {
     for (const job of jobs) {
         const key = botKey(job.userId, job.botId);
         const quiet = suppressTombstones.delete(key);
-        const { writes, marks, own } = syncWrites(job.userId, job.botId, job.messages, ownIds.get(key), (k, fp) => published.get(k) === fp, !quiet);
+        const { writes, marks, own } = syncWrites(job.userId, job.botId, job.messages, ownIds.get(key), (k, fp) => published.get(k) === fp, !quiet, requestByOwnId);
         ownIds.set(key, own);
         if (writes.length === 0) continue;
         try {
@@ -380,6 +496,7 @@ export function startDesktopBotSync() {
 // Test seams.
 export function resetDesktopBotSyncForTest(publish?: (owner: string, writes: Write[]) => Promise<void>) {
     published.clear();
+    requestByOwnId.clear();
     ownIds.clear();
     queued.clear();
     suppressTombstones.clear();

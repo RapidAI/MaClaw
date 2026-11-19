@@ -122,6 +122,14 @@ func TestComputerCoordinatesUseTheScaledFrame(t *testing.T) {
 	if got := computeruse.CursorText("X=640\nY=400\nSCREEN=0\nWINDOW=1\n", frame); !strings.Contains(got, "(512, 320) in screenshot pixels") {
 		t.Fatalf("cursor = %s", got)
 	}
+	kept, changed, err := computeruse.ShotOptionsFromArgs(map[string]any{}, frame, desktop.ShotOptions{Window: "NEON SERPENT", MaxWidth: 800})
+	if err != nil || changed || kept.Window != "" || kept.MaxWidth != 800 {
+		t.Fatalf("window must not stick to the next shot: %+v changed=%v err=%v", kept, changed, err)
+	}
+	named, changed, err := computeruse.ShotOptionsFromArgs(map[string]any{"window": "NEON SERPENT"}, frame, desktop.ShotOptions{})
+	if err != nil || !changed || named.Window != "NEON SERPENT" {
+		t.Fatalf("window arg: %+v changed=%v err=%v", named, changed, err)
+	}
 	opts, _, err := computeruse.ShotOptionsFromArgs(map[string]any{"region": []any{0.0, 0.0, 512.0, 320.0}, "max_width": 1024.0}, frame, desktop.ShotOptions{})
 	if err != nil || opts.Region != (desktop.ShotRegion{X: 0, Y: 0, Width: 640, Height: 400}) || opts.MaxWidth != 1024 {
 		t.Fatalf("zoom region = %+v %v", opts, err)

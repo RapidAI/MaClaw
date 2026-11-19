@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"compress/flate"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,12 +93,31 @@ func shouldLogMachineHeartbeat(ctx *ConnContext, sessions, intervalSec int) bool
 }
 
 const (
+	webSocketAuthMessageLimit int64 = 64 << 10
+	webSocketMessageLimit     int64 = 48 << 20
+	webSocketAuthWait               = 15 * time.Second
+
 	// sendChSize is the per-connection outbound message buffer. If a client
 	// can't keep up and the buffer fills, the connection is dropped.
 	sendChSize = 256
-	// batchFlushInterval is the maximum time the writer goroutine waits to
-	// accumulate messages before flushing them in a single write cycle.
-	batchFlushInterval = 50 * time.Millisecond
+	// wsWriteBatchCap bounds how many already-queued frames one drain holds
+	// before a write. A producer that refills sendCh must not postpone the
+	// first frame until the channel is empty. There is no timer: a single
+	// live frame still goes out as soon as the channel is idle.
+	wsWriteBatchCap = 32
+	// wsCompressMinBytes is where permessage-deflate starts to shrink one
+	// live frame. The negotiated mode has no context takeover, so each frame
+	// is independent: acks under this size grow, and a discussion or
+	// remote-control envelope above it shrinks.
+	wsCompressMinBytes = 128
+	// wsCompressMaxBytes keeps BestSpeed off a fat frame. A multi-megabyte
+	// base64 image does not shrink enough to pay for the writer stall.
+	// Live text, including a full remote-control stream envelope, stays under it.
+	wsCompressMaxBytes = 512 << 10
+	// wsCloseFlushBudget is the absolute write budget for a tail flushed
+	// after the writer is asked to stop. One stalled peer must not pin
+	// cleanup on TCP retransmission. A live connection does not use it.
+	wsCloseFlushBudget = 3 * time.Second
 )
 
 // websocketWriteLocks serializes synchronous request responses with the
@@ -184,36 +204,47 @@ func (c *ConnContext) closeWriterLocked() {
 	}
 }
 
-// writeLoop drains sendCh and writes messages to the WebSocket. It batches
-// messages that arrive within batchFlushInterval into a single write cycle
-// to reduce syscall overhead for viewers receiving many events.
+// writeLoop drains sendCh and writes messages to the WebSocket. Already-queued
+// frames go out in caps of wsWriteBatchCap, and the remainder goes out as soon
+// as the channel is idle. A single live frame is not held for a timer:
+// remote-control mirrors and digital-employee chunks are already coalesced
+// before they reach this socket.
 func (c *ConnContext) writeLoop() {
 	// If a write fails, there is no remaining consumer for sendCh. Marking the
 	// connection closed stops later broadcasts from being accepted and stranded.
 	defer close(c.writerDone)
 	defer c.closeWriter()
-	batch := make([]any, 0, 16)
-	timer := time.NewTimer(batchFlushInterval)
-	defer timer.Stop()
 
-	flush := func() bool {
+	// Armed only after closeSend is closed. The deadline stays absolute, so
+	// later frames in the tail share the budget instead of each getting a new one.
+	closeFlushArmed := false
+	flush := func(batch []any) bool {
+		if len(batch) == 0 {
+			return true
+		}
 		if c.Conn == nil {
 			return false
 		}
+		if !closeFlushArmed {
+			select {
+			case <-c.closeSend:
+				closeFlushArmed = true
+				_ = c.Conn.SetWriteDeadline(time.Now().Add(wsCloseFlushBudget))
+			default:
+			}
+		}
 		for _, msg := range batch {
 			var err error
-			if framed, ok := msg.(preparedWSMessage); ok {
-				err = writeWSPrepared(c.Conn, framed.data)
+			if framed, ok := msg.(*preparedWSMessage); ok {
+				err = framed.writeTo(c.Conn)
 			} else {
 				err = writeWSJSON(c.Conn, msg)
 			}
 			if err != nil {
 				log.Printf("[ws] writeLoop: write error role=%s machine_id=%s: %v", c.Role, c.MachineID, err)
-				batch = batch[:0]
-				return false // connection broken
+				return false
 			}
 		}
-		batch = batch[:0]
 		return true
 	}
 
@@ -223,49 +254,85 @@ func (c *ConnContext) writeLoop() {
 			if !ok {
 				return
 			}
-			batch = append(batch, msg)
-			// Drain any additional queued messages without blocking.
-		drain:
-			for {
-				select {
-				case m, ok := <-c.sendCh:
-					if !ok {
-						flush()
-						return
-					}
-					batch = append(batch, m)
-					if len(batch) >= 32 {
-						if !flush() {
-							return
-						}
-					}
-				default:
-					break drain
-				}
+			if !c.writeAvailable(msg, flush) {
+				return
 			}
-			// Reset timer; if nothing else arrives within the interval, flush.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(batchFlushInterval)
-			// If batch is non-trivial, flush immediately.
-			if len(batch) >= 4 {
-				if !flush() {
-					return
-				}
-			}
-		case <-timer.C:
-			if len(batch) > 0 {
-				if !flush() {
-					return
-				}
-			}
-			timer.Reset(batchFlushInterval)
 		case <-c.closeSend:
-			flush()
+			// A graceful teardown still owes the frames already accepted into
+			// sendCh (a queued stream_end, for example). The drain does not
+			// wait for a producer: Send rejects once closeSend is closed.
+			// flush arms wsCloseFlushBudget so a peer that stopped reading
+			// cannot hold the tail open.
+			c.flushQueuedOnClose(flush)
+			return
+		}
+	}
+}
+
+// collectWriteBatch takes up to limit messages that are already queued behind
+// first. It does not wait. closed reports that ch itself was closed.
+func collectWriteBatch(first any, ch <-chan any, limit int) (batch []any, closed bool) {
+	if limit < 1 {
+		limit = 1
+	}
+	batch = make([]any, 1, limit)
+	batch[0] = first
+	for len(batch) < limit {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				return batch, true
+			}
+			batch = append(batch, m)
+		default:
+			return batch, false
+		}
+	}
+	return batch, false
+}
+
+// writeAvailable flushes first and anything already queued behind it.
+// A full batch is written before the next one is taken, so a producer that
+// keeps sendCh non-empty cannot grow the batch without a bound.
+func (c *ConnContext) writeAvailable(first any, flush func([]any) bool) bool {
+	msg := first
+	for {
+		batch, closed := collectWriteBatch(msg, c.sendCh, wsWriteBatchCap)
+		if !flush(batch) {
+			return false
+		}
+		if closed {
+			return false
+		}
+		if len(batch) < wsWriteBatchCap {
+			return true
+		}
+		select {
+		case next, ok := <-c.sendCh:
+			if !ok {
+				return false
+			}
+			msg = next
+		default:
+			return true
+		}
+	}
+}
+
+func (c *ConnContext) flushQueuedOnClose(flush func([]any) bool) {
+	for {
+		var msg any
+		select {
+		case m, ok := <-c.sendCh:
+			if !ok {
+				return
+			}
+			msg = m
+		default:
+			return
+		}
+		batch, closed := collectWriteBatch(msg, c.sendCh, wsWriteBatchCap)
+		if !flush(batch) || closed {
 			return
 		}
 	}
@@ -477,8 +544,11 @@ func (g *Gateway) SetNotificationService(svc NotificationMarkReader) {
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{
-		CheckOrigin:       func(r *http.Request) bool { return true },
-		EnableCompression: true, // permessage-deflate - reduces bandwidth 50-70% for text-heavy preview deltas
+		CheckOrigin: func(r *http.Request) bool { return true },
+		// permessage-deflate. A client that does not offer the extension stays
+		// uncompressed. Frames are compressed only once they clear
+		// wsCompressMinBytes, at BestSpeed, so a live token is not level-6 work.
+		EnableCompression: true,
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -486,12 +556,14 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Authentication messages are small. Raise the limit only after a valid
+	// machine/viewer identity; 48 MiB still covers base64-encoded 32 MiB files.
+	conn.SetReadLimit(webSocketAuthMessageLimit)
 
-	// Enable compression on outbound messages.
-	conn.EnableWriteCompression(true)
-	conn.SetCompressionLevel(6) // balanced speed/ratio
+	conn.EnableWriteCompression(false)
+	_ = conn.SetCompressionLevel(flate.BestSpeed)
 
-	log.Printf("[ws] HandleWS: new WebSocket connection from %s (compression=%v)", r.RemoteAddr, true)
+	log.Printf("[ws] HandleWS: new WebSocket connection from %s", r.RemoteAddr)
 
 	// Configure WebSocket-level ping-pong to keep the connection alive even
 	// when the application-level heartbeat is delayed by heavy workloads
@@ -502,7 +574,7 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		pongWait   = 90 * time.Second // must be > client heartbeat interval
 		pingPeriod = 30 * time.Second // must be < pongWait
 	)
-	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = conn.SetReadDeadline(time.Now().Add(webSocketAuthWait))
 	conn.SetPongHandler(func(string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
@@ -531,17 +603,35 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		close(pingDone)
 		ctx.closeWriter()
 		if ctx.writerDone != nil {
-			<-ctx.writerDone
+			// A write already inside the kernel does not observe the tail
+			// deadline. Bound the wait, then close the socket so cleanup
+			// cannot sit behind TCP retransmission.
+			timer := time.NewTimer(wsCloseFlushBudget)
+			select {
+			case <-ctx.writerDone:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-timer.C:
+				_ = conn.Close()
+				<-ctx.writerDone
+			}
 		}
 		releaseWebsocketWriteLock(conn)
 		g.cleanupConnection(ctx)
 	}()
 
 	for {
-		// Refresh read deadline on every incoming message so that machines
-		// sending frequent data (summaries, preview deltas) don't time out
-		// even if the pong is slightly delayed.
-		_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+		// Unauthenticated sockets cannot be held open indefinitely. Once
+		// authenticated, normal traffic refreshes the longer liveness deadline.
+		readWait := pongWait
+		if ctx.Role == "" {
+			readWait = webSocketAuthWait
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(readWait))
 
 		var msg Envelope
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -803,6 +893,10 @@ func (g *Gateway) broadcastMachineEvent(machineID string, payload map[string]any
 }
 
 func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "" {
+		_ = writeWSError(ctx.Conn, "ALREADY_AUTHENTICATED", "Connection is already authenticated")
+		return errors.New("websocket connection is already authenticated")
+	}
 	var payload struct {
 		MachineID    string `json:"machine_id"`
 		MachineToken string `json:"machine_token"`
@@ -819,6 +913,7 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 		return fmt.Errorf("machine auth failed: %w", err)
 	}
 	ctx.Role = "machine"
+	ctx.Conn.SetReadLimit(webSocketMessageLimit)
 	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.MachineID = principal.MachineID
@@ -831,7 +926,8 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 	// and uses it for LLM service API calls (redeem, status, chat completions).
 	// Issuing on every connect ensures the client always has a valid token
 	// (viewer tokens expire after 30 days; reconnects keep it fresh).
-	// Old tokens expire naturally - no accumulation concern for SQLite.
+	// Old tokens expire naturally; repeated authentication on one connection is
+	// rejected above so a client cannot turn token issuance into a write loop.
 	if viewerToken, err := g.Identity.IssueViewerTokenForUser(context.Background(), principal.UserID); err == nil {
 		authPayload["viewer_token"] = viewerToken
 	} else {
@@ -842,6 +938,10 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 }
 
 func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "" {
+		_ = writeWSError(ctx.Conn, "ALREADY_AUTHENTICATED", "Connection is already authenticated")
+		return errors.New("websocket connection is already authenticated")
+	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
 	}
@@ -853,6 +953,7 @@ func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "UNAUTHORIZED", "Viewer authentication failed")
 	}
 	ctx.Role = "viewer"
+	ctx.Conn.SetReadLimit(webSocketMessageLimit)
 	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.ViewerID = principal.Email
@@ -2091,6 +2192,58 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 	g.removeViewer(ctx)
 }
 
+// CloseTenantViewers closes every viewer subscription in one tenant. The read
+// loops perform their normal unregister cleanup after the socket closes.
+func (g *Gateway) CloseTenantViewers(tenantID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	seen := map[*ConnContext]struct{}{}
+	g.mu.RLock()
+	for _, watchers := range g.viewersByMachine {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	for _, watchers := range g.viewersBySession {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	g.mu.RUnlock()
+	for watcher := range seen {
+		_ = watcher.Conn.Close()
+	}
+}
+
+// CloseUserViewers closes every viewer subscription owned by one user.
+func (g *Gateway) CloseUserViewers(tenantID, userID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	seen := map[*ConnContext]struct{}{}
+	g.mu.RLock()
+	for _, watchers := range g.viewersByMachine {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID && watcher.UserID == userID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	for _, watchers := range g.viewersBySession {
+		for watcher := range watchers {
+			if watcher != nil && watcher.Conn != nil && store.NormalizeTenantID(watcher.TenantID) == tenantID && watcher.UserID == userID {
+				seen[watcher] = struct{}{}
+			}
+		}
+	}
+	g.mu.RUnlock()
+	for watcher := range seen {
+		_ = watcher.Conn.Close()
+	}
+}
+
 func (g *Gateway) removeViewer(ctx *ConnContext) {
 	if ctx == nil || ctx.Role != "viewer" {
 		return
@@ -2136,16 +2289,23 @@ func writeWSJSON(conn *websocket.Conn, v any) error {
 	if conn == nil {
 		return errors.New("WebSocket connection is unavailable")
 	}
-	lock := websocketWriteLock(conn)
-	lock.Lock()
-	defer lock.Unlock()
-	return conn.WriteJSON(v)
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	// WriteJSON appends a newline. Keep it so a decoder framed on that still works.
+	data = append(data, '\n')
+	return writeWSFrame(conn, data, wsPayloadUsesCompression(v, len(data)))
 }
 
-// preparedWSMessage is a JSON frame already serialized once for a broadcast so
-// the per-connection writer can write it verbatim instead of re-marshaling.
+// preparedWSMessage is one JSON frame shared by every watcher of a broadcast.
+// The pointer is shared on purpose: the compressed wire bytes are built once.
 type preparedWSMessage struct {
-	data []byte
+	data     []byte
+	compress bool
+	once     sync.Once
+	pm       *websocket.PreparedMessage
+	err      error
 }
 
 // marshalWSBroadcast serializes a broadcast frame once. The trailing newline
@@ -2156,16 +2316,82 @@ func marshalWSBroadcast(msg any) any {
 	if err != nil {
 		return msg
 	}
-	return preparedWSMessage{data: append(data, '\n')}
+	data = append(data, '\n')
+	return &preparedWSMessage{
+		data:     data,
+		compress: wsPayloadUsesCompression(msg, len(data)),
+	}
 }
 
-func writeWSPrepared(conn *websocket.Conn, data []byte) error {
+func (m *preparedWSMessage) writeTo(conn *websocket.Conn) error {
+	if m == nil {
+		return errors.New("WebSocket connection is unavailable")
+	}
+	if !m.compress {
+		return writeWSFrame(conn, m.data, false)
+	}
+	m.once.Do(func() {
+		m.pm, m.err = websocket.NewPreparedMessage(websocket.TextMessage, m.data)
+	})
+	if m.err != nil || m.pm == nil {
+		return writeWSFrame(conn, m.data, false)
+	}
 	if conn == nil {
 		return errors.New("WebSocket connection is unavailable")
 	}
 	lock := websocketWriteLock(conn)
 	lock.Lock()
 	defer lock.Unlock()
+	// The flag selects the cached compressed frame. A peer that did not
+	// negotiate permessage-deflate still gets the raw frame.
+	conn.EnableWriteCompression(true)
+	return conn.WritePreparedMessage(m.pm)
+}
+
+func wsPayloadUsesCompression(v any, n int) bool {
+	if n < wsCompressMinBytes || n > wsCompressMaxBytes {
+		return false
+	}
+	if t, ok := wsMessageType(v); ok && wsIncompressibleType(t) {
+		return false
+	}
+	return true
+}
+
+func wsMessageType(v any) (string, bool) {
+	switch msg := v.(type) {
+	case map[string]any:
+		t, ok := msg["type"].(string)
+		return t, ok
+	case map[string]string:
+		t, ok := msg["type"]
+		return t, ok
+	default:
+		return "", false
+	}
+}
+
+func wsIncompressibleType(messageType string) bool {
+	switch messageType {
+	case "session.image", "session.image_input", "im.proactive_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeWSPrepared(conn *websocket.Conn, data []byte) error {
+	return writeWSFrame(conn, data, wsPayloadUsesCompression(nil, len(data)))
+}
+
+func writeWSFrame(conn *websocket.Conn, data []byte, compress bool) error {
+	if conn == nil {
+		return errors.New("WebSocket connection is unavailable")
+	}
+	lock := websocketWriteLock(conn)
+	lock.Lock()
+	defer lock.Unlock()
+	conn.EnableWriteCompression(compress)
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 

@@ -1,8 +1,8 @@
 package guiapp
 
 import (
+	"compress/flate"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -89,10 +89,21 @@ type RemoteHubClient struct {
 	degradedAtStart atomic.Bool
 	watchOnce       sync.Once
 
-	// Preview delta batching: accumulate lines per session and flush periodically
-	// to reduce WebSocket message frequency for PWA viewers.
-	previewMu      sync.Mutex
-	previewPending map[string]*pendingPreviewDelta // sessionID -> accumulated delta
+	// Preview delta batching. The first line of a quiet session is sent
+	// immediately. Follow-ups that arrive inside previewBurstInterval share
+	// one frame. That burst is not restarted by later lines. The Hub viewer
+	// window is the same length and starts on the same lead, so the two
+	// holds overlap. previewTicker only retries a write the socket did not accept.
+	previewMu        sync.Mutex
+	previewPending   map[string]*pendingPreviewDelta // sessionID -> accumulated delta
+	previewWindow    map[string]bool                 // sessionID -> burst open
+	previewBurst     *time.Timer
+	previewBurstGen  uint64 // bumps when the burst is stopped so a late callback cannot re-arm
+	previewFlushing  bool
+	previewFlushCond *sync.Cond
+	// previewClosing is set while session.closed is waiting to take the wire.
+	// Lines that arrive then stay buffered so they cannot pass the close frame.
+	previewClosing map[string]bool
 	previewTicker  *time.Ticker
 	previewStopCh  chan struct{}
 
@@ -201,9 +212,18 @@ type pendingPreviewDelta struct {
 	UpdatedAt int64
 }
 
-// previewFlushInterval controls how often accumulated preview deltas are sent
-// to the hub. Lower values = more responsive but more network traffic.
+// previewBurstInterval collapses preview lines that arrive together. The Hub
+// viewer window is the same length and starts on the same lead, so a
+// follow-up is not held for a second period. It is not restarted by later lines.
+const previewBurstInterval = 16 * time.Millisecond
+
+// previewFlushInterval is how often a preview write that the socket rejected
+// is retried. It does not delay a line the socket can take.
 const previewFlushInterval = 150 * time.Millisecond
+
+// previewPendingLineCap matches the session preview ring. A disconnected
+// desktop keeps the tail instead of growing the unsent buffer without bound.
+const previewPendingLineCap = 500
 
 // hubPongWait is the maximum time the client waits for any incoming data or
 // pong from the hub before considering the connection dead. Must be greater
@@ -221,6 +241,7 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 		dial:             defaultHubDial,
 		reconnectCh:      make(chan struct{}, 1),
 		previewPending:   make(map[string]*pendingPreviewDelta),
+		previewWindow:    make(map[string]bool),
 		previewStopCh:    make(chan struct{}),
 		lastSummary:      make(map[string]string),
 		pendingProactive: make([]pendingIMProactiveMessage, 0),
@@ -399,14 +420,100 @@ func thirdPartyClientIDFromSessionUserID(userID string) string {
 	return normalizeThirdPartyID(parts[1])
 }
 
-func defaultHubDial(urlStr string) (*websocket.Conn, error) {
+func newHubWebsocketDialer(urlStr string) (websocket.Dialer, error) {
+	if err := remote.ValidateHubURL(urlStr); err != nil {
+		return websocket.Dialer{}, err
+	}
+	// DefaultDialer leaves EnableCompression false, so the Hub's
+	// permessage-deflate offer never completes. Asking for it lets a frame
+	// that clears hubWSCompressMinBytes shrink: remote-control mirrors,
+	// digital-employee discussion pushes, and preview deltas. Shorter frames
+	// stay raw. An older Hub that does not accept the extension simply stays
+	// uncompressed.
 	dialer := *websocket.DefaultDialer
-	// Support wss:// with self-signed certificates (Hub TLS mode).
-	if strings.HasPrefix(urlStr, "wss://") {
-		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	dialer.EnableCompression = true
+	if strings.HasPrefix(strings.ToLower(urlStr), "wss://") {
+		tlsConfig, err := remote.HubTLSConfig()
+		if err != nil {
+			return websocket.Dialer{}, fmt.Errorf("hub TLS configuration: %w", err)
+		}
+		dialer.TLSClientConfig = tlsConfig
+	}
+	return dialer, nil
+}
+
+func defaultHubDial(urlStr string) (*websocket.Conn, error) {
+	dialer, err := newHubWebsocketDialer(urlStr)
+	if err != nil {
+		return nil, err
 	}
 	conn, _, err := dialer.Dial(urlStr, nil)
-	return conn, err
+	if err != nil {
+		return nil, err
+	}
+	prepareHubWebsocketConn(conn)
+	return conn, nil
+}
+
+// hubWSCompressMinBytes matches the Hub writer. permessage-deflate here has no
+// context takeover, so each frame is independent and a short ack or heartbeat
+// grows. Discussion and remote-control envelopes above the threshold shrink.
+// hubWSCompressMaxBytes matches the Hub cap so a fat frame is not deflated
+// while c.mu is held. Image and file envelopes stay raw at any size: base64
+// does not shrink enough to pay for that stall.
+const (
+	hubWSCompressMinBytes = 128
+	hubWSCompressMaxBytes = 512 << 10
+)
+
+func hubWSFrameUsesCompression(v any, n int) bool {
+	if n < hubWSCompressMinBytes || n > hubWSCompressMaxBytes {
+		return false
+	}
+	switch msg := v.(type) {
+	case HubEnvelope:
+		if hubWSIncompressibleType(msg.Type) {
+			return false
+		}
+	case *HubEnvelope:
+		if msg != nil && hubWSIncompressibleType(msg.Type) {
+			return false
+		}
+	}
+	return true
+}
+
+func hubWSIncompressibleType(messageType string) bool {
+	switch messageType {
+	case "session.image", "session.image_input", "im.proactive_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareHubWebsocketConn(conn *websocket.Conn) {
+	// Leave the flag off until a frame clears the threshold. writeHubJSON
+	// turns it on for that frame only.
+	conn.EnableWriteCompression(false)
+	_ = conn.SetCompressionLevel(flate.BestSpeed)
+}
+
+// writeHubJSON writes one text frame. The caller must hold c.mu: the
+// compression flag is a plain field, and the following write is what reads
+// it. Every desktop hub write takes that lock, so a heartbeat cannot flip
+// the flag under a live frame. The trailing newline matches WriteJSON.
+func (c *RemoteHubClient) writeHubJSON(v any) error {
+	if c == nil || c.conn == nil {
+		return errors.New("hub websocket is unavailable")
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	c.conn.EnableWriteCompression(hubWSFrameUsesCompression(v, len(data)))
+	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
 func (c *RemoteHubClient) loadConfig() error {
@@ -494,6 +601,9 @@ func (c *RemoteHubClient) Connect() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// The pinned banner list rides the same reconnect refresh so a message
+	// published while offline shows on next open.
+	go c.app.PullPinnedNotifications()
 	// A reading-group invitation sent while offline rides the same reconnect, so
 	// check the pending list now instead of waiting out an idle poll interval.
 	go c.app.pollCompanionGroupInvites()
@@ -764,6 +874,9 @@ func (c *RemoteHubClient) connectLocked() error {
 		return err
 	}
 	log.Printf("[onboarding] RemoteHubClient.connectLocked send_hello=%s total=%s", time.Since(helloStart), time.Since(start))
+	if c.app != nil {
+		go c.app.pullRepoMaintDeliveries()
+	}
 	return nil
 }
 
@@ -846,6 +959,9 @@ func (c *RemoteHubClient) connectAuthOnlyLocked() error {
 	}
 
 	log.Printf("[asyncHubConnect] auth completed in %s", time.Since(start))
+	if c.app != nil {
+		go c.app.pullRepoMaintDeliveries()
+	}
 	return nil
 }
 
@@ -887,6 +1003,9 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	// Pull unread notifications on (re)connect so the client syncs any
 	// notifications that arrived while offline.
 	go c.app.PullUnreadNotifications()
+	// The pinned banner list rides the same reconnect refresh so a message
+	// published while offline shows on next open.
+	go c.app.PullPinnedNotifications()
 	// A reading-group invitation sent while offline rides the same reconnect, so
 	// check the pending list now instead of waiting out an idle poll interval.
 	go c.app.pollCompanionGroupInvites()
@@ -918,7 +1037,7 @@ func (c *RemoteHubClient) sendMachineAuthLocked() error {
 			"machine_token": c.machineToken,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 func (c *RemoteHubClient) sendMachineHelloLocked() error {
@@ -979,7 +1098,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 			},
 		},
 	}
-	err := c.conn.WriteJSON(msg)
+	err := c.writeHubJSON(msg)
 
 	// After sending hello, asynchronously refresh version cache for all tools.
 	// RefreshAllAsync skips fresh cached versions and only runs safe --version
@@ -1019,7 +1138,7 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 			"started_at":     s.CreatedAt.Unix(),
 		},
 	}
-	err := c.conn.WriteJSON(msg)
+	err := c.writeHubJSON(msg)
 	if err == nil {
 		c.app.emitEvent("remote-session-changed", "created", s.ID)
 	}
@@ -1045,20 +1164,30 @@ func (c *RemoteHubClient) summaryWithSessionTokenUsage(summary SessionSummary) S
 	return summary
 }
 
+// rememberSummary records the payload and reports whether it was already sent.
+// The map is created on first use. The lock is released before return: the
+// output loop recovers a panic, and a lock left held there blocks the exit
+// loop before it can write session.closed.
+func (c *RemoteHubClient) rememberSummary(sessionID, key string) bool {
+	c.summaryMu.Lock()
+	defer c.summaryMu.Unlock()
+	if c.lastSummary == nil {
+		c.lastSummary = make(map[string]string)
+	}
+	if c.lastSummary[sessionID] == key {
+		return true
+	}
+	c.lastSummary[sessionID] = key
+	return false
+}
+
 func (c *RemoteHubClient) SendSessionSummary(summary SessionSummary) error {
 	// Throttle: skip if the summary hasn't changed since last send.
 	summary.MachineID = c.machineID
 	summary = c.summaryWithSessionTokenUsage(summary)
 	data, err := json.Marshal(summary)
-	if err == nil {
-		key := string(data)
-		c.summaryMu.Lock()
-		if c.lastSummary[summary.SessionID] == key {
-			c.summaryMu.Unlock()
-			return nil
-		}
-		c.lastSummary[summary.SessionID] = key
-		c.summaryMu.Unlock()
+	if err == nil && c.rememberSummary(summary.SessionID, string(data)) {
+		return nil
 	}
 
 	c.mu.Lock()
@@ -1074,7 +1203,7 @@ func (c *RemoteHubClient) SendSessionSummary(summary SessionSummary) error {
 		SessionID: summary.SessionID,
 		Payload:   summary,
 	}
-	err = c.conn.WriteJSON(msg)
+	err = c.writeHubJSON(msg)
 	if err == nil {
 		c.app.emitEvent("remote-session-changed", "summary", summary.SessionID)
 	}
@@ -1096,7 +1225,7 @@ func (c *RemoteHubClient) SendImportantEvent(event ImportantEvent) error {
 		SessionID: event.SessionID,
 		Payload:   event,
 	}
-	err := c.conn.WriteJSON(msg)
+	err := c.writeHubJSON(msg)
 	if err == nil {
 		c.app.emitEvent("remote-session-changed", "important_event", event.SessionID)
 	}
@@ -1104,21 +1233,152 @@ func (c *RemoteHubClient) SendImportantEvent(event ImportantEvent) error {
 }
 
 func (c *RemoteHubClient) SendPreviewDelta(delta SessionPreviewDelta) error {
+	if c == nil || len(delta.AppendLines) == 0 {
+		return nil
+	}
 	c.previewMu.Lock()
-	pending, ok := c.previewPending[delta.SessionID]
-	if !ok {
+	c.ensurePreviewLocked()
+	c.appendPreviewLocked(delta)
+	// Close owns this session until session.closed is on the wire. A lead
+	// publish now would overtake that frame.
+	if c.previewClosing[delta.SessionID] {
+		c.previewMu.Unlock()
+		return nil
+	}
+	// A closed window is a quiet session: this line goes out now. The burst
+	// timer is armed with that lead and is not restarted by later lines, so
+	// a follow-up waits one short interval instead of the retry ticker.
+	// Another session's flush must not hide this arming — otherwise the line
+	// would sit until the next retry.
+	idle := !c.previewWindow[delta.SessionID]
+	if idle {
+		c.previewWindow[delta.SessionID] = true
+		c.armPreviewBurstLocked()
+	}
+	lead := idle && !c.previewFlushing
+	c.previewMu.Unlock()
+	if lead {
+		c.flushPreviewDeltas()
+	}
+	return nil
+}
+
+// armPreviewBurstLocked starts the one-shot follow-up flush. A timer that is
+// already armed is left alone so a stream of lines cannot stretch the wait.
+func (c *RemoteHubClient) armPreviewBurstLocked() {
+	if c.previewBurst != nil {
+		return
+	}
+	c.previewBurstGen++
+	gen := c.previewBurstGen
+	c.previewBurst = time.AfterFunc(previewBurstInterval, func() {
+		c.onPreviewBurst(gen)
+	})
+}
+
+func (c *RemoteHubClient) onPreviewBurst(gen uint64) {
+	_, failed := c.flushPreviewDeltas()
+	c.previewMu.Lock()
+	defer c.previewMu.Unlock()
+	if gen != c.previewBurstGen || c.previewBurst == nil {
+		return
+	}
+	c.previewBurst = nil
+	if failed {
+		// The socket rejected the batch. Leave the windows open so the next
+		// line is not written on its own, and let the retry ticker try again.
+		return
+	}
+	if c.previewFlushing {
+		if previewWindowOpen(c.previewWindow) {
+			c.armPreviewBurstLocked()
+		}
+		return
+	}
+	c.closeIdlePreviewWindowsLocked()
+	if len(c.previewPending) > 0 {
+		c.armPreviewBurstLocked()
+	}
+}
+
+func (c *RemoteHubClient) stopPreviewBurstLocked() {
+	c.previewBurstGen++
+	if c.previewBurst != nil {
+		c.previewBurst.Stop()
+		c.previewBurst = nil
+	}
+}
+
+func previewWindowOpen(windows map[string]bool) bool {
+	for _, open := range windows {
+		if open {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *RemoteHubClient) ensurePreviewLocked() {
+	if c.previewPending == nil {
+		c.previewPending = make(map[string]*pendingPreviewDelta)
+	}
+	if c.previewWindow == nil {
+		c.previewWindow = make(map[string]bool)
+	}
+	if c.previewClosing == nil {
+		c.previewClosing = make(map[string]bool)
+	}
+	if c.previewFlushCond == nil {
+		c.previewFlushCond = sync.NewCond(&c.previewMu)
+	}
+}
+
+func (c *RemoteHubClient) appendPreviewLocked(delta SessionPreviewDelta) {
+	pending := c.previewPending[delta.SessionID]
+	if pending == nil {
 		pending = &pendingPreviewDelta{SessionID: delta.SessionID}
 		c.previewPending[delta.SessionID] = pending
 	}
 	pending.Lines = append(pending.Lines, delta.AppendLines...)
 	pending.OutputSeq = delta.OutputSeq
 	pending.UpdatedAt = delta.UpdatedAt
-	c.previewMu.Unlock()
-	return nil
+	capPreviewPending(pending)
 }
 
-// startPreviewFlusher starts the background goroutine that periodically
-// flushes accumulated preview deltas to the hub.
+// stagePreviewSnapshot replaces any unsent delta with the session ring.
+// Reconnect sync is a full tail, not another append on top of a failed send.
+func (c *RemoteHubClient) stagePreviewSnapshot(delta SessionPreviewDelta) {
+	if c == nil || len(delta.AppendLines) == 0 {
+		return
+	}
+	c.previewMu.Lock()
+	c.ensurePreviewLocked()
+	lines := append([]string(nil), delta.AppendLines...)
+	if len(lines) > previewPendingLineCap {
+		lines = append([]string(nil), lines[len(lines)-previewPendingLineCap:]...)
+	}
+	c.previewPending[delta.SessionID] = &pendingPreviewDelta{
+		SessionID: delta.SessionID,
+		Lines:     lines,
+		OutputSeq: delta.OutputSeq,
+		UpdatedAt: delta.UpdatedAt,
+	}
+	// Hold the window so this snapshot waits for the single sync flush
+	// instead of going out once per session.
+	c.previewWindow[delta.SessionID] = true
+	c.previewMu.Unlock()
+}
+
+func capPreviewPending(pending *pendingPreviewDelta) {
+	if pending == nil || len(pending.Lines) <= previewPendingLineCap {
+		return
+	}
+	pending.Lines = append([]string(nil), pending.Lines[len(pending.Lines)-previewPendingLineCap:]...)
+}
+
+// startPreviewFlusher retries preview writes the socket rejected. It does not
+// hold a line that the socket can take: that wait is previewBurstInterval,
+// armed when the line arrives.
 func (c *RemoteHubClient) startPreviewFlusher() {
 	c.previewMu.Lock()
 	// Stop any existing flusher before starting a new one
@@ -1137,7 +1397,7 @@ func (c *RemoteHubClient) startPreviewFlusher() {
 		for {
 			select {
 			case <-ticker.C:
-				c.flushPreviewDeltas()
+				c.retryPreviewFlush()
 			case <-stopCh:
 				ticker.Stop()
 				// Final flush to avoid losing buffered data
@@ -1151,6 +1411,7 @@ func (c *RemoteHubClient) startPreviewFlusher() {
 // stopPreviewFlusher stops the background flush goroutine.
 func (c *RemoteHubClient) stopPreviewFlusher() {
 	c.previewMu.Lock()
+	c.stopPreviewBurstLocked()
 	if c.previewStopCh != nil {
 		select {
 		case c.previewStopCh <- struct{}{}:
@@ -1160,26 +1421,68 @@ func (c *RemoteHubClient) stopPreviewFlusher() {
 	c.previewMu.Unlock()
 }
 
-// flushPreviewDeltas sends all accumulated preview deltas to the hub in one pass.
-func (c *RemoteHubClient) flushPreviewDeltas() {
+// retryPreviewFlush is the 150ms path. A burst that is still open owns the
+// window; closing it here would bring back the ticker-phase race where a
+// follow-up became a lead a moment after it was armed.
+func (c *RemoteHubClient) retryPreviewFlush() {
+	_, failed := c.flushPreviewDeltas()
 	c.previewMu.Lock()
-	if len(c.previewPending) == 0 {
-		c.previewMu.Unlock()
+	defer c.previewMu.Unlock()
+	if c.previewBurst != nil || c.previewFlushing {
 		return
 	}
-	// Swap out the pending map
+	if failed {
+		return
+	}
+	c.closeIdlePreviewWindowsLocked()
+	if len(c.previewPending) > 0 {
+		c.armPreviewBurstLocked()
+	}
+}
+
+// flushPreviewDeltas sends accumulated preview deltas. A failed write puts
+// those lines back; the retry ticker sends them again. Lines that arrive
+// during the write stay in the new buffer and cannot pass the batch already
+// on the wire. attempted is false when another flush owns the batch or there
+// is nothing queued. failed is true when the socket rejected at least one
+// session in the batch that was taken.
+func (c *RemoteHubClient) flushPreviewDeltas() (attempted bool, failed bool) {
+	if c == nil {
+		return false, false
+	}
+	c.previewMu.Lock()
+	if c.previewFlushing || len(c.previewPending) == 0 {
+		c.previewMu.Unlock()
+		return false, false
+	}
 	toSend := c.previewPending
 	c.previewPending = make(map[string]*pendingPreviewDelta)
+	c.previewFlushing = true
 	c.previewMu.Unlock()
 
+	failedBatch := c.writePreviewBatch(toSend)
+
+	c.previewMu.Lock()
+	c.previewFlushing = false
+	c.restorePreviewLocked(failedBatch)
+	// session.closed waits on this cond so its frame cannot pass a batch
+	// that was already taken off the pending map.
+	if c.previewFlushCond != nil {
+		c.previewFlushCond.Broadcast()
+	}
+	c.previewMu.Unlock()
+	return true, len(failedBatch) > 0
+}
+
+func (c *RemoteHubClient) writePreviewBatch(toSend map[string]*pendingPreviewDelta) map[string]*pendingPreviewDelta {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
-		return
+		return toSend
 	}
-
-	for _, pending := range toSend {
-		if len(pending.Lines) == 0 {
+	var failed map[string]*pendingPreviewDelta
+	for id, pending := range toSend {
+		if pending == nil || len(pending.Lines) == 0 {
 			continue
 		}
 		delta := SessionPreviewDelta{
@@ -1195,35 +1498,131 @@ func (c *RemoteHubClient) flushPreviewDeltas() {
 			SessionID: delta.SessionID,
 			Payload:   delta,
 		}
-		if err := c.conn.WriteJSON(msg); err == nil {
+		if err := c.writeHubJSON(msg); err != nil {
+			if failed == nil {
+				failed = make(map[string]*pendingPreviewDelta)
+			}
+			failed[id] = pending
+			continue
+		}
+		if c.app != nil {
 			c.app.emitEvent("remote-session-changed", "preview_delta", delta.SessionID)
+		}
+	}
+	return failed
+}
+
+func (c *RemoteHubClient) restorePreviewLocked(failed map[string]*pendingPreviewDelta) {
+	if len(failed) == 0 {
+		return
+	}
+	c.ensurePreviewLocked()
+	for id, pending := range failed {
+		if pending == nil || len(pending.Lines) == 0 {
+			continue
+		}
+		current := c.previewPending[id]
+		if current == nil {
+			c.previewPending[id] = pending
+		} else {
+			merged := *pending
+			merged.Lines = append(append([]string(nil), pending.Lines...), current.Lines...)
+			if current.OutputSeq != 0 {
+				merged.OutputSeq = current.OutputSeq
+			}
+			if current.UpdatedAt != 0 {
+				merged.UpdatedAt = current.UpdatedAt
+			}
+			capPreviewPending(&merged)
+			c.previewPending[id] = &merged
+		}
+		// Keep the window open so a dead socket is not retried once per line.
+		c.previewWindow[id] = true
+	}
+}
+
+// closeIdlePreviewWindows ends burst windows that have nothing left to send.
+// The next line of that session is published immediately. A burst that has
+// not fired yet, or a flush still on the wire, keeps the window: the ticker
+// must not turn a follow-up into a lead.
+func (c *RemoteHubClient) closeIdlePreviewWindows() {
+	if c == nil {
+		return
+	}
+	c.previewMu.Lock()
+	defer c.previewMu.Unlock()
+	if c.previewFlushing || c.previewBurst != nil {
+		return
+	}
+	c.closeIdlePreviewWindowsLocked()
+}
+
+func (c *RemoteHubClient) closeIdlePreviewWindowsLocked() {
+	for id := range c.previewWindow {
+		if c.previewPending[id] == nil {
+			delete(c.previewWindow, id)
 		}
 	}
 }
 
 func (c *RemoteHubClient) SendSessionClosed(s *RemoteSession) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.connected || c.conn == nil {
+	if c == nil || s == nil {
 		return nil
 	}
-
-	msg := HubEnvelope{
-		Type:      "session.closed",
-		TS:        time.Now().Unix(),
-		MachineID: c.machineID,
-		SessionID: s.ID,
-		Payload: map[string]interface{}{
-			"status":    string(s.Status),
-			"exit_code": s.ExitCode,
-			"ended_at":  time.Now().Unix(),
-		},
+	// The burst can still be holding this session's tail. Write that tail,
+	// and any line that lands while it is being written, before session.closed.
+	// previewMu is acquired before c.mu, matching flushPreviewDeltas.
+	c.previewMu.Lock()
+	c.ensurePreviewLocked()
+	c.previewClosing[s.ID] = true
+	var writeErr error
+	for {
+		for c.previewFlushing {
+			c.previewFlushCond.Wait()
+		}
+		pending := c.previewPending[s.ID]
+		delete(c.previewPending, s.ID)
+		if pending == nil || len(pending.Lines) == 0 {
+			break
+		}
+		c.previewFlushing = true
+		c.previewMu.Unlock()
+		failed := c.writePreviewBatch(map[string]*pendingPreviewDelta{s.ID: pending})
+		c.previewMu.Lock()
+		c.previewFlushing = false
+		c.restorePreviewLocked(failed)
+		c.previewFlushCond.Broadcast()
+		if len(failed) > 0 {
+			break
+		}
 	}
-	err := c.conn.WriteJSON(msg)
-	if err == nil {
+	c.mu.Lock()
+	wrote := false
+	if c.connected && c.conn != nil {
+		msg := HubEnvelope{
+			Type:      "session.closed",
+			TS:        time.Now().Unix(),
+			MachineID: c.machineID,
+			SessionID: s.ID,
+			Payload: map[string]interface{}{
+				"status":    string(s.Status),
+				"exit_code": s.ExitCode,
+				"ended_at":  time.Now().Unix(),
+			},
+		}
+		writeErr = c.writeHubJSON(msg)
+		wrote = writeErr == nil
+	}
+	c.mu.Unlock()
+	delete(c.previewClosing, s.ID)
+	if c.previewPending[s.ID] == nil {
+		delete(c.previewWindow, s.ID)
+	}
+	c.previewMu.Unlock()
+	if wrote && c.app != nil {
 		c.app.emitEvent("remote-session-changed", "closed", s.ID)
 	}
-	return err
+	return writeErr
 }
 
 // SendSessionImage sends an image extracted from SDK output to the Hub for delivery to mobile clients.
@@ -1241,10 +1640,41 @@ func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
 		SessionID: img.SessionID,
 		Payload:   img,
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
+}
+
+// errRemoteDeviceConnectDisabled is the rejection controllers see when the
+// owner turned off 允许同账号设备远程连接 on this machine.
+var errRemoteDeviceConnectDisabled = errors.New("对方已关闭远程连接")
+
+// remoteDeviceControlBlocked reports whether the owner disabled inbound
+// control from same-account devices (the 允许同账号设备远程连接 switch). A
+// missing or unreadable config fails open: the field defaults to enabled, so
+// an unreadable value must not lock out control that predates the switch.
+func (c *RemoteHubClient) remoteDeviceControlBlocked() bool {
+	if c == nil || c.app == nil {
+		return false
+	}
+	// Peek the published snapshot first: session.input fires per keystroke
+	// and the full LoadConfig path copies skills on every call. The disk
+	// fingerprint check keeps hand-edited config.json changes visible —
+	// without it a stale snap would silently outlive external edits.
+	if snap := c.app.PeekConfig(); snap != nil && c.app.configCacheMatchesDisk() {
+		return !snap.IsRemoteDeviceConnectEnabled()
+	}
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		log.Printf("[hub-client] remote device connect check failed, allowing control: %v", err)
+		return false
+	}
+	return !cfg.IsRemoteDeviceConnectEnabled()
 }
 
 func (c *RemoteHubClient) handleRemoteControlExec(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		c.sendRemoteControlResult(msg.RequestID, nil, errRemoteDeviceConnectDisabled.Error())
+		return
+	}
 	var payload struct {
 		GrantID string          `json:"grant_id"`
 		Op      string          `json:"op"`
@@ -1301,7 +1731,7 @@ func (c *RemoteHubClient) sendRemoteControlStream(payload map[string]any) {
 	if c.conn == nil {
 		return
 	}
-	_ = c.conn.WriteJSON(HubEnvelope{
+	_ = c.writeHubJSON(HubEnvelope{
 		Type:      "remote_control.stream",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -1319,7 +1749,7 @@ func (c *RemoteHubClient) sendRemoteControlResult(requestID string, result any, 
 	if c.conn == nil {
 		return
 	}
-	_ = c.conn.WriteJSON(HubEnvelope{
+	_ = c.writeHubJSON(HubEnvelope{
 		Type:      "remote_control.result",
 		RequestID: requestID,
 		TS:        time.Now().Unix(),
@@ -1346,7 +1776,7 @@ func (c *RemoteHubClient) SyncSessions() {
 		}
 		_ = c.SendSessionSummary(s.Summary)
 		if len(s.Preview.PreviewLines) > 0 {
-			_ = c.SendPreviewDelta(SessionPreviewDelta{
+			c.stagePreviewSnapshot(SessionPreviewDelta{
 				SessionID:   s.ID,
 				OutputSeq:   s.Preview.OutputSeq,
 				AppendLines: append([]string{}, s.Preview.PreviewLines...),
@@ -1354,9 +1784,16 @@ func (c *RemoteHubClient) SyncSessions() {
 			})
 		}
 	}
-	// Flush batched preview deltas immediately after sync so viewers
-	// receive the full initial state without waiting for the next tick.
+	// One flush for every staged ring. A per-session lead would interleave
+	// with lines that are still being replaced by a later snapshot.
+	// Snapshots do not arm a burst; close the windows they opened once this
+	// flush has the wire, unless a live burst already owns the schedule.
 	c.flushPreviewDeltas()
+	c.previewMu.Lock()
+	if c.previewBurst == nil && !c.previewFlushing {
+		c.closeIdlePreviewWindowsLocked()
+	}
+	c.previewMu.Unlock()
 }
 
 func (c *RemoteHubClient) SyncLaunchProjects() {
@@ -1380,7 +1817,7 @@ func (c *RemoteHubClient) SyncLaunchProjects() {
 			"projects": projects,
 		},
 	}
-	_ = c.conn.WriteJSON(msg)
+	_ = c.writeHubJSON(msg)
 }
 
 // SyncTools sends the machine's available tools and their provider configs to Hub.
@@ -1441,7 +1878,7 @@ func (c *RemoteHubClient) SyncTools() {
 		return
 	}
 
-	_ = c.conn.WriteJSON(HubEnvelope{
+	_ = c.writeHubJSON(HubEnvelope{
 		Type:      "machine.tools",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -1547,7 +1984,7 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 			"sessions":               sessions,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // handleAck processes heartbeat ack messages from the Hub.
@@ -1654,6 +2091,10 @@ func (c *RemoteHubClient) readLoop() {
 		case hubInboundMessageAck:
 			c.completeHubRequest(msg.RequestID, nil)
 			c.handleAck(msg)
+		case hubInboundMessageGitHubRepoMaint:
+			if c.app != nil {
+				go c.app.acceptRepoMaintFrame(msg.Payload)
+			}
 		case hubInboundMessageDeviceGatewayPlaybackReceipt:
 			c.handleDeviceGatewayPlaybackReceipt(msg)
 		case hubInboundMessageDeviceGatewayDevices:
@@ -1831,6 +2272,10 @@ func (c *RemoteHubClient) completeHardwareDeviceList(requestID string, devices [
 }
 
 func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		c.replyStartError(msg.RequestID, errRemoteDeviceConnectDisabled)
+		return
+	}
 	var payload RemoteStartSessionRequest
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		c.replyStartError(msg.RequestID, err)
@@ -1852,7 +2297,7 @@ func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
 	if !c.connected || c.conn == nil {
 		return
 	}
-	_ = c.conn.WriteJSON(HubEnvelope{
+	_ = c.writeHubJSON(HubEnvelope{
 		Type:      "session.start.result",
 		RequestID: msg.RequestID,
 		TS:        time.Now().Unix(),
@@ -1869,6 +2314,10 @@ func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.input dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1889,6 +2338,10 @@ func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.interrupt dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1899,6 +2352,10 @@ func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.kill dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1909,6 +2366,10 @@ func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionImageInput(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.image_input dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -1929,6 +2390,10 @@ func (c *RemoteHubClient) handleSessionImageInput(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) handleSessionScreenshot(msg inboundHubEnvelope) {
+	if c.remoteDeviceControlBlocked() {
+		log.Printf("[hub-client] session.screenshot dropped: remote device connect disabled session=%s", msg.SessionID)
+		return
+	}
 	if c.manager == nil || msg.SessionID == "" {
 		return
 	}
@@ -2686,7 +3151,7 @@ func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentRes
 			"response": resp,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // sendIMAgentProgress sends an intermediate progress update to Hub while the
@@ -2709,7 +3174,7 @@ func (c *RemoteHubClient) sendIMAgentProgress(requestID string, text string) err
 			"text": text,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // SendSessionImageError sends an error response to the Hub when image input injection fails.
@@ -2729,7 +3194,7 @@ func (c *RemoteHubClient) SendSessionImageError(sessionID, errorMsg string) erro
 			"message": errorMsg,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // SendIMProactiveMessage sends a proactive (non-request-based) message to the
@@ -2787,7 +3252,7 @@ func (c *RemoteHubClient) writeIMProactiveMessage(pending pendingIMProactiveMess
 			"platform_uid": pending.platformUID,
 		},
 	}
-	if err := c.conn.WriteJSON(msg); err != nil {
+	if err := c.writeHubJSON(msg); err != nil {
 		log.Printf("[hub-client] IM proactive message write failed; queueing for reconnect: %v", err)
 		return err
 	}
@@ -2853,7 +3318,7 @@ func (c *RemoteHubClient) SendNicknameUpdate(nickname string) error {
 			"nickname": nickname,
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // SendIMProactiveFile sends a proactive file (non-request-based) to the Hub
@@ -2886,7 +3351,7 @@ func (c *RemoteHubClient) SendIMProactiveFileRequest(req agent.IMFileDeliveryReq
 	if target := req.Target.Normalize(); target.Active() {
 		msg.Payload.(map[string]interface{})["target"] = target
 	}
-	return c.conn.WriteJSON(msg)
+	return c.writeHubJSON(msg)
 }
 
 // SendIMGatewayClaim sends im.gateway_claim to Hub to register this machine
@@ -2897,7 +3362,7 @@ func (c *RemoteHubClient) SendIMGatewayClaim(platform imGatewayPlatformKind) err
 	if !c.connected || c.conn == nil {
 		return nil
 	}
-	return c.conn.WriteJSON(HubEnvelope{
+	return c.writeHubJSON(HubEnvelope{
 		Type:      "im.gateway_claim",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -2914,7 +3379,7 @@ func (c *RemoteHubClient) SendIMGatewayUnclaim(platform imGatewayPlatformKind) e
 	if !c.connected || c.conn == nil {
 		return nil
 	}
-	return c.conn.WriteJSON(HubEnvelope{
+	return c.writeHubJSON(HubEnvelope{
 		Type:      "im.gateway_unclaim",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -2934,7 +3399,7 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform imGatewayPlatformKind, d
 		}
 		return fmt.Errorf("hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{
+	err := c.writeHubJSON(HubEnvelope{
 		Type:      "im.gateway_message",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -2978,7 +3443,7 @@ func (c *RemoteHubClient) SendDeviceGatewayPairing(pairCode string) error {
 		return fmt.Errorf("Hub not connected")
 	}
 	profile := c.app.devicePetProfileForConfig(cfg)
-	err = c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_pairing", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
+	err = c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_pairing", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"pairCode": pairCode, "petSkin": profile["skin"], "motionEnabled": profile["motionEnabled"], "petAsset": profile["asset"]}})
 	c.mu.Unlock()
 	if err != nil {
 		return err
@@ -3005,7 +3470,7 @@ func (c *RemoteHubClient) ListHardwareDeviceBindings() (HardwareDeviceBindings, 
 		return HardwareDeviceBindings{}, fmt.Errorf("Hub not connected")
 	}
 	legacyMachineIDs := append([]string(nil), c.legacyMachineIDs...)
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_devices_list", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"legacyMachineIds": legacyMachineIDs}})
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_devices_list", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"legacyMachineIds": legacyMachineIDs}})
 	c.mu.Unlock()
 	if err != nil {
 		return HardwareDeviceBindings{}, err
@@ -3042,7 +3507,7 @@ func (c *RemoteHubClient) DeleteHardwareDevice(clientID string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_device_delete", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID}})
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_device_delete", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID}})
 	c.mu.Unlock()
 	if err != nil {
 		return err
@@ -3138,7 +3603,7 @@ func (c *RemoteHubClient) SendDeviceGatewayReply(clientID, conversationID string
 	if glyphs := deviceGlyphsForText(glyphText, glyphCaption); len(glyphs) > 0 {
 		payload["glyphs"] = glyphs
 	}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID, "conversationId": conversationID, "reply": payload}})
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": clientID, "conversationId": conversationID, "reply": payload}})
 }
 
 // SendDeviceGatewayToolMessage relays a protocol-native client tool lifecycle
@@ -3149,7 +3614,7 @@ func (c *RemoteHubClient) SendDeviceGatewayToolMessage(clientID, conversationID 
 	if !c.connected || c.conn == nil {
 		return fmt.Errorf("Hub not connected")
 	}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": clientID, "conversationId": firstNonEmpty(conversationID, "default"), "reply": reply,
 	}})
 }
@@ -3170,7 +3635,7 @@ func (c *RemoteHubClient) SendDeviceGatewayPetProfile(cfg corelib.AppConfig) err
 		"pet_motion_enabled": profile["motionEnabled"],
 		"pet_asset":          profile["asset"],
 	}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
 // SendDeviceGatewayPetProfileForClient sends an isolated pet-profile update
@@ -3194,7 +3659,7 @@ func (c *RemoteHubClient) SendDeviceGatewayPetProfileForClient(clientID string, 
 		"reply_type": "pet_profile", "pet_skin": profile["skin"],
 		"pet_motion_enabled": profile["motionEnabled"], "pet_asset": profile["asset"],
 	}
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": clientID, "conversationId": "system", "reply": reply,
 	}})
 	c.mu.Unlock()
@@ -3239,7 +3704,7 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareConfigForClient(clientID stri
 		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": clientID, "conversationId": "system",
 		"reply": map[string]any{"reply_type": "hardware_config", "extra": extra},
 	}})
@@ -3348,7 +3813,7 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareEnabled(enabled bool) error {
 		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{
+	err := c.writeHubJSON(HubEnvelope{
 		Type:      "im.device_gateway_reply",
 		RequestID: requestID,
 		TS:        time.Now().Unix(),
@@ -3385,7 +3850,7 @@ func (c *RemoteHubClient) SendDeviceGatewayAllowCustomPets(enabled bool) error {
 		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": "*", "conversationId": "system", "reply": map[string]any{"reply_type": "hardware_custom_pets", "enabled": enabled},
 	}})
 	c.mu.Unlock()
@@ -3408,7 +3873,7 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareReply(reply map[string]any) e
 	if !c.connected || c.conn == nil {
 		return fmt.Errorf("Hub not connected")
 	}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": "*", "conversationId": "system",
 		"reply": reply,
 	}})
@@ -3449,7 +3914,7 @@ func (c *RemoteHubClient) SendDeviceGatewayHardwareReplyConfirmed(clientID strin
 		c.mu.Unlock()
 		return fmt.Errorf("Hub not connected")
 	}
-	err := c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
+	err := c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", RequestID: requestID, TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{
 		"clientId": clientID, "conversationId": "system", "reply": confirmedReply,
 	}})
 	c.mu.Unlock()
@@ -3580,7 +4045,7 @@ func (c *RemoteHubClient) SendDeviceGatewayAmbient(summary string, temperatureC 
 		ambient["glyphs"] = glyphs
 	}
 	reply := map[string]any{"reply_type": "ambient", "ambient": ambient}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
 // SendDeviceGatewayEvent publishes one structured event to every hardware
@@ -3604,7 +4069,7 @@ func (c *RemoteHubClient) SendDeviceGatewayEvent(event map[string]any) error {
 		return fmt.Errorf("Hub not connected")
 	}
 	reply := map[string]any{"reply_type": "event", "event": event}
-	return c.conn.WriteJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
+	return c.writeHubJSON(HubEnvelope{Type: "im.device_gateway_reply", TS: time.Now().Unix(), MachineID: c.machineID, Payload: map[string]any{"clientId": "*", "conversationId": "system", "reply": reply}})
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {
@@ -3631,7 +4096,7 @@ func (c *RemoteHubClient) replyStartError(requestID string, err error) {
 	if !c.connected || c.conn == nil {
 		return
 	}
-	_ = c.conn.WriteJSON(HubEnvelope{
+	_ = c.writeHubJSON(HubEnvelope{
 		Type:      "error",
 		RequestID: requestID,
 		TS:        time.Now().Unix(),

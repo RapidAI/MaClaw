@@ -35,6 +35,7 @@ export function WebPreviewBrowser({
     absPath,
     content,
     url,
+    refreshSignal,
     theme,
     lang,
 }: {
@@ -42,12 +43,16 @@ export function WebPreviewBrowser({
     content?: string;
     /** http(s) page. Takes precedence over a local file. */
     url?: string;
+    /** Bumps when the underlying page was rewritten on disk. */
+    refreshSignal?: string;
     theme: CodePreviewTheme;
     lang: string;
 }) {
     const isZh = lang.startsWith('zh');
     const contentRef = useRef(content);
     contentRef.current = content;
+    const frameRef = useRef<HTMLIFrameElement | null>(null);
+    const appliedRefreshRef = useRef(refreshSignal);
     const sessionRef = useRef<WebPreviewInfo | null>(null);
     const historyRef = useRef<HistoryEntry[]>([]);
     const indexRef = useRef(0);
@@ -220,6 +225,21 @@ export function WebPreviewBrowser({
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
     }, []);
+
+    // A rewrite reloads the document inside the existing iframe element —
+    // remounting the element would drop the frame's keyboard focus each write.
+    useEffect(() => {
+        if (appliedRefreshRef.current === refreshSignal) return;
+        appliedRefreshRef.current = refreshSignal;
+        if (!refreshSignal) return;
+        const el = frameRef.current;
+        if (!el) return;
+        if (frame.mode === 'srcdoc') {
+            setFrame({ mode: 'srcdoc', src: '', srcDoc: String(contentRef.current || '') });
+            return;
+        }
+        if (frame.src) el.src = frame.src;
+    }, [refreshSignal, frame.mode, frame.src]);
 
     const submitAddress = (event: React.FormEvent) => {
         event.preventDefault();
@@ -435,6 +455,7 @@ export function WebPreviewBrowser({
             {hasFrame ? (
                 <iframe
                     key={`${frame.mode}:${frame.src}:${reloadNonce}`}
+                    ref={frameRef}
                     data-testid="html-preview-panel"
                     title={tailText(lang, 'Web preview', '网页预览')}
                     sandbox={webPreviewSandbox(frame.mode === 'srcdoc' ? 'srcdoc' : 'framed')}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 // intakeSrv is a MaClawSrv stand-in that answers bot-intake and records
@@ -18,6 +20,7 @@ type intakeSrv struct {
 	turnKeySrv
 	mu      sync.Mutex
 	intake  string
+	intakes []string
 	posts   []string
 	supps   []string
 	cancels int
@@ -28,8 +31,10 @@ type intakeSrv struct {
 func (s *intakeSrv) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/bot-intake"):
+		raw, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		body := s.intake
+		s.intakes = append(s.intakes, string(raw))
 		s.mu.Unlock()
 		if body == "" {
 			http.NotFound(w, r)
@@ -236,6 +241,29 @@ func TestHubHoldsWhileThePersonHasTheKeyboard(t *testing.T) {
 	}
 }
 
+func TestHubHoldKeepsTheDecidedOrder(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"目标：一份周报\n完成标准：老王收到文件","ack":"等你交还。","pace":"direct","phase":"execute"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	if err := svc.HoldDesktop(context.Background(), "tenant-a", "alice", "inst_alice"); err != nil {
+		t.Fatal(err)
+	}
+	held, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "发给老王", "execute", "turn-spec")
+	if err != nil || !held.Queued || !held.Held {
+		t.Fatalf("held=%+v %v", held, err)
+	}
+	if _, err := svc.AdmitDesktopMessageAct(context.Background(), "tenant-a", "alice", "bot_alice", "交还", "execute", "turn-back", "", "return"); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	joined := strings.Join(fake.posts, "\n")
+	if !strings.Contains(joined, "完成标准：老王收到文件") {
+		t.Fatalf("held run lost the decided order: %v", fake.posts)
+	}
+}
+
 func TestHubQueueDrainsWhenASlotFrees(t *testing.T) {
 	fake := &intakeSrv{}
 	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
@@ -268,6 +296,34 @@ func TestHubQueueDrainsWhenASlotFrees(t *testing.T) {
 	}
 }
 
+// A bot created with desktop_mode=none tells the intake its real surface
+// (no_desktop), and the posted turn keeps the same marker. Without the
+// first, a rewritten instruction can order a desktop the bot does not
+// have; without the second, MaClawSrv still gates and prompts for one.
+func TestHubNoDesktopBotMarksTheIntakeAndTheMessage(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"new","instruction":"查北京天气","ack":"我去查。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv,
+		Bot{ID: "bot_none", Name: "no-pc", InstanceID: "inst_alice", OwnerUserID: "alice", DesktopMode: desktop.BotDesktopModeNone})
+	adm, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_none", "北京天气", "execute", "turn-none")
+	if err != nil || adm.RunID == "" {
+		t.Fatalf("adm=%+v %v", adm, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.intakes) != 1 || !strings.Contains(fake.intakes[0], `"no_desktop":true`) {
+		t.Fatalf("intake bodies=%v", fake.intakes)
+	}
+	if len(fake.posts) != 1 {
+		t.Fatalf("posts=%v", fake.posts)
+	}
+	post := fake.posts[0]
+	if !strings.Contains(post, `"bot_desktop":"none"`) || strings.Contains(post, "computer_helper") {
+		t.Fatalf("post body=%s", post)
+	}
+}
+
 func TestHubContinueOnlyWhileARunIsLive(t *testing.T) {
 	fake := &intakeSrv{intake: `{"kind":"continue","run_id":"run_missing","ack":"接着。","pace":"direct"}`}
 	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
@@ -282,4 +338,30 @@ func TestHubContinueOnlyWhileARunIsLive(t *testing.T) {
 		t.Fatalf("posts=%v", fake.posts)
 	}
 	fake.mu.Unlock()
+}
+
+func TestHubSpecQuestionDoesNotStartARun(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"ask","instruction":"周报，收件人未定","ack":"发给谁？","told":"发给谁？","pace":"ask","phase":"plan","spec":true}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	asked, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "做一份周报", "", "turn-spec")
+	if err != nil || asked.Kind != "ask" || asked.RunID != "" || asked.Reply.Text != "发给谁？" || !asked.Settled {
+		t.Fatalf("ask = %+v %v", asked, err)
+	}
+	fake.mu.Lock()
+	if len(fake.posts) != 0 {
+		t.Fatalf("a specifying question started a run: %v", fake.posts)
+	}
+	fake.intake = `{"kind":"new","instruction":"把表格做成周报发给老王","ack":"我做成周报发给老王。","pace":"direct","phase":"execute","spec":true}`
+	fake.mu.Unlock()
+	ran, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "发给老王", "", "turn-go")
+	if err != nil || ran.RunID == "" || ran.Kind == "ask" {
+		t.Fatalf("settled = %+v %v", ran, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.posts) != 1 || !strings.Contains(fake.posts[0], "把表格做成周报发给老王") || strings.Contains(fake.posts[0], `"bot_phase":"plan"`) {
+		t.Fatalf("posts=%v", fake.posts)
+	}
 }

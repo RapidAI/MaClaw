@@ -47,6 +47,10 @@ type PromptPrefixMeta struct {
 	Model           string
 	Summarize       bool
 	SummarizeReason string
+	// DesktopMode is "desktop" or "none" for a Hub bot turn. A change drops
+	// the pinned system text so the next turn describes the computer this
+	// bot has now. Empty leaves an existing pin alone.
+	DesktopMode string
 }
 
 // PromptPrefixInput says which segments this call is supplying. A call that
@@ -109,6 +113,7 @@ type PromptPrefixPin struct {
 	MemoryPinned bool
 	FirstPinned  bool
 	HistorySeen  bool
+	DesktopMode  string
 }
 
 const (
@@ -399,6 +404,24 @@ func decidePromptPrefix(pin *PromptPrefixPin, meta PromptPrefixMeta, in PromptPr
 	}
 	if len(pin.Order) == 0 {
 		pin.Order = promptPrefixOrder()
+	}
+	if mode := strings.TrimSpace(meta.DesktopMode); mode != "" && pin.DesktopMode != "" && pin.DesktopMode != mode && prefixHasPin(pin) {
+		pin.Tools, pin.System, pin.MemorySnapshot, pin.FirstMessage, pin.History = "", "", "", "", ""
+		pin.ToolsPinned, pin.SystemPinned, pin.MemoryPinned, pin.FirstPinned, pin.HistorySeen = false, false, false, false, false
+		pin.ToolSchemaVersion, pin.PrefixHash = "", ""
+		pin.DesktopMode = mode
+		applyFirstWrite(pin, in)
+		var decision PromptPrefixDecision
+		decision.Fresh = true
+		decision.Send = pinnedSegments(pin)
+		fillPrefixHashes(&decision)
+		log.Printf("prompt_prefix_refresh reason=desktop_mode conversation_id=%s bot_id=%s mode=%s prefix=%s",
+			pin.ConversationID, pin.BotID, mode, decision.PrefixHash)
+		logPromptSegment(decision)
+		return decision
+	}
+	if mode := strings.TrimSpace(meta.DesktopMode); mode != "" && pin.DesktopMode == "" {
+		pin.DesktopMode = mode
 	}
 
 	var decision PromptPrefixDecision

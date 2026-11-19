@@ -125,6 +125,44 @@ func TestValidatePerformerRejectsUnachievableIdleRepeatRule(t *testing.T) {
 	}
 }
 
+func TestPinnedMoodFiltersIdleAndFallsBack(t *testing.T) {
+	p := performanceTestPerformer()
+	for name, behavior := range p.Behaviors {
+		behavior.Moods = []string{"calm"}
+		p.Behaviors[name] = behavior
+	}
+	for i := 0; i < 4; i++ {
+		name := fmt.Sprintf("idle_%d", i)
+		behavior := p.Behaviors[name]
+		behavior.Moods = []string{"calm", "tired"}
+		p.Behaviors[name] = behavior
+	}
+	d := NewPerformanceDirector(p, performanceTestRig(), 3)
+	d.SetPinnedMood("tired")
+	for i := 0; i < 6; i++ {
+		step := d.SelectState(StateIdle, int64(1000+i*5000))
+		if step.isZero() || d.currentMood != "tired" {
+			t.Fatalf("pinned tired idle %d: step=%+v mood=%q", i, step, d.currentMood)
+		}
+		name := d.lastBehaviors[len(d.lastBehaviors)-1]
+		if name != "idle_0" && name != "idle_1" && name != "idle_2" && name != "idle_3" {
+			t.Fatalf("tired idle picked %s", name)
+		}
+	}
+	d.SetPinnedMood("concerned")
+	if step := d.SelectState(StateIdle, 80000); step.isZero() || d.currentMood != "calm" {
+		t.Fatalf("unmatched pin did not fall back: %+v mood=%q", step, d.currentMood)
+	}
+	d.SetPinnedMood("")
+	if step := d.SelectState(StateIdle, 90000); step.isZero() || d.currentMood != "calm" {
+		t.Fatalf("cleared pin did not restore calm: %+v mood=%q", step, d.currentMood)
+	}
+	d.SetPinnedMood("not-a-mood")
+	if d.pinnedMood != "" {
+		t.Fatalf("unknown mood stuck: %q", d.pinnedMood)
+	}
+}
+
 func TestPerformanceDirectorResetsImplicitIdleMoodToCalm(t *testing.T) {
 	p := performanceTestPerformer()
 	for name, behavior := range p.Behaviors {
@@ -315,6 +353,27 @@ func TestCharacterRendererDefersFirstHostEventUntilInitialStateExists(t *testing
 	}
 }
 
+func TestCharacterRendererClipSupersedesDeferredHostEvent(t *testing.T) {
+	rig := performanceTestRig()
+	texture := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	texture.SetNRGBA(0, 0, color.NRGBA{R: 80, G: 140, B: 220, A: 255})
+	clips, fallback := rigClips(rig)
+	clips["gesture"] = &RigClip{DurationMS: 800}
+	renderer := &CharacterRenderer{
+		rig:      &RigRenderer{rig: rig, textures: map[string]*image.NRGBA{"rig/body.png": texture}, parentOrder: []int{0}, slots: rig.SortedSlots(), boneIndex: map[string]int{"root": 0}, clips: clips, fallbackClip: fallback},
+		director: NewPerformanceDirector(performanceTestPerformer(), rig, 43),
+	}
+	if !renderer.TriggerEvent("hover", 900) || renderer.deferredEvent != "hover" {
+		t.Fatal("hover was not waiting for the first pose")
+	}
+	if !renderer.TriggerClip("gesture", 950) || renderer.deferredEvent != "" || renderer.step.Body != "gesture" {
+		t.Fatalf("clip did not replace the deferred event: step=%+v deferred=%q", renderer.step, renderer.deferredEvent)
+	}
+	if renderer.RenderState(StateIdle, 1000, 16) == nil || renderer.step.Body != "gesture" || renderer.deferredEvent != "" {
+		t.Fatalf("next frame restored the deferred event: step=%+v deferred=%q", renderer.step, renderer.deferredEvent)
+	}
+}
+
 func TestCharacterRendererDeferredSoftEventDoesNotAdvanceImmediately(t *testing.T) {
 	rig := performanceTestRig()
 	texture := image.NewNRGBA(image.Rect(0, 0, 1, 1))
@@ -352,6 +411,111 @@ func TestCharacterRendererCompletesStateExitBeforeEnteringTarget(t *testing.T) {
 	}
 	if renderer.RenderState(StateIdle, 2200, 16) == nil || renderer.step.Body == "think_out" || renderer.pending != nil {
 		t.Fatalf("state transition did not enter idle after exit: step=%+v pending=%+v", renderer.step, renderer.pending)
+	}
+}
+
+func TestCharacterRendererLayersKeepTheirClock(t *testing.T) {
+	renderer := clockPhaseRenderer(t, 500, 1000, 30000, true)
+	if renderer.RenderState(StateIdle, 0, 256) == nil {
+		t.Fatal("idle frame is nil")
+	}
+	mid := renderer.RenderState(StateIdle, 400, 256)
+	afterEnter := renderer.RenderState(StateIdle, 600, 256)
+	midX, _, _, _, midN := opaqueBounds(mid)
+	enterX, _, _, _, enterN := opaqueBounds(afterEnter)
+	if midN == 0 || enterN == 0 || enterX <= midX {
+		t.Fatalf("gaze snapped when the body entered its loop: mid=%d loop=%d", midX, enterX)
+	}
+	if !renderer.TriggerClip("react", 600) {
+		t.Fatal("reaction clip was rejected")
+	}
+	resumed := renderer.RenderState(StateIdle, 900, 256)
+	resumedX, _, _, _, resumedN := opaqueBounds(resumed)
+	if resumedN == 0 || resumedX <= enterX {
+		t.Fatalf("gaze restarted after a body-only reaction: loop=%d resumed=%d", enterX, resumedX)
+	}
+}
+
+func TestCharacterRendererIdleDwellExitsOnLoopSeam(t *testing.T) {
+	renderer := clockPhaseRenderer(t, 1000, 1000, 1500, false)
+	if renderer.RenderState(StateIdle, 0, 32) == nil || renderer.RenderState(StateIdle, 1000, 32) == nil {
+		t.Fatal("could not enter the idle loop")
+	}
+	if renderer.step.Body != "idle_loop" || !renderer.looping {
+		t.Fatalf("expected the idle loop, got %+v looping=%v", renderer.step, renderer.looping)
+	}
+	if renderer.RenderState(StateIdle, 2500, 32) == nil || renderer.step.Body != "idle_loop" || !renderer.looping {
+		t.Fatalf("dwell cut the loop before its seam: %+v", renderer.step)
+	}
+	if renderer.RenderState(StateIdle, 3000, 32) == nil || renderer.step.Body != "idle_out" || !renderer.exiting {
+		t.Fatalf("dwell did not exit on the loop seam: %+v exiting=%v", renderer.step, renderer.exiting)
+	}
+
+	missed := clockPhaseRenderer(t, 1000, 1000, 1500, false)
+	if missed.RenderState(StateIdle, 0, 32) == nil || missed.RenderState(StateIdle, 1000, 32) == nil {
+		t.Fatal("could not enter the second idle loop")
+	}
+	if missed.RenderState(StateIdle, 3600, 32) == nil || missed.step.Body != "idle_out" || !missed.exiting {
+		t.Fatalf("a missed seam held the loop for another cycle: %+v", missed.step)
+	}
+}
+
+func clockPhaseRenderer(t *testing.T, enterMS, loopMS, dwell int, gaze bool) *CharacterRenderer {
+	t.Helper()
+	texture := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for i := range texture.Pix {
+		texture.Pix[i] = 255
+	}
+	clips := map[string]RigClip{
+		"idle_in":   {DurationMS: enterMS},
+		"idle_loop": {DurationMS: loopMS, Loop: true},
+		"idle_out":  {DurationMS: 400},
+		"react":     {DurationMS: 300},
+	}
+	gazeName := ""
+	if gaze {
+		gazeName = "gaze_wander"
+		clips[gazeName] = RigClip{
+			DurationMS: 4000,
+			Loop:       true,
+			Tracks: map[string][]RigKeyframe{
+				"root": {{AtMS: 0}, {AtMS: 4000, X: 80}},
+			},
+		}
+	}
+	behaviors := map[string]PerformerBehavior{}
+	pool := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		name := fmt.Sprintf("idle_%d", i)
+		pool = append(pool, name)
+		behaviors[name] = PerformerBehavior{Enter: "idle_in", Loop: "idle_loop", Exit: "idle_out", Weight: 1, MinMS: dwell, MaxMS: dwell}
+	}
+	performer := &Performer{
+		Version:   1,
+		Behaviors: behaviors,
+		States: map[string]PerformerState{
+			"idle": {BehaviorPool: pool, Gaze: gazeName},
+		},
+		Rules: PerformerRules{NoRepeatLast: 3},
+	}
+	rig := &Rig{
+		Version: 1,
+		Bones:   []RigBone{{Name: "root", X: 64, Y: 128}},
+		Slots:   []RigSlot{{Name: "body", Bone: "root", Texture: "rig/body.png"}},
+		Clips:   clips,
+	}
+	loaded, fallback := rigClips(rig)
+	return &CharacterRenderer{
+		rig: &RigRenderer{
+			rig:          rig,
+			textures:     map[string]*image.NRGBA{"rig/body.png": texture},
+			parentOrder:  []int{0},
+			slots:        rig.SortedSlots(),
+			boneIndex:    map[string]int{"root": 0},
+			clips:        loaded,
+			fallbackClip: fallback,
+		},
+		director: NewPerformanceDirector(performer, rig, 11),
 	}
 }
 

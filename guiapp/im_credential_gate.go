@@ -342,7 +342,7 @@ func (h *IMMessageHandler) credentialGateBlock(execCtx context.Context, policyUs
 	}
 	fence.register(item.ID, waiter)
 
-	payload, _ := json.Marshal(AIContinuationEvent{
+	h.app.emitAIContinuationEvent(AIContinuationEvent{
 		RequestID:    fmt.Sprintf("credential-card-%s", item.ID),
 		SessionKey:   userID,
 		Kind:         "confirmation",
@@ -353,7 +353,6 @@ func (h *IMMessageHandler) credentialGateBlock(execCtx context.Context, policyUs
 			{Label: i18n.T(i18n.MsgExecConfirmBtnCancel, lang), Command: buildConfirmationActionCommand(confirmationActionCancel, item.ID), Style: "secondary"},
 		},
 	})
-	h.app.emitEvent("ai-continuation", string(payload))
 	log.Printf("[credential-gate] suspended %s card=%s user=%q matches=%v", toolName, item.ID, userID, credentialMatchCategories(matches))
 
 	finish := func(approved bool, outcome toolOutcome, failure toolFailureKind, text string) (bool, toolExecutionResult) {

@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -496,6 +497,9 @@ func TestCodingExecCheckpointUsableWithoutEngine(t *testing.T) {
 }
 
 func TestCodingExecResumeActions(t *testing.T) {
+	prevLang, _ := agentViewCurrentLang.Load().(string)
+	agentViewCurrentLang.Store("zh-Hans")
+	t.Cleanup(func() { agentViewCurrentLang.Store(prevLang) })
 	cp := codingExecCheckpoint{
 		Tasks: []*v2.TaskItem{{Index: 1}, {Index: 2}, {Index: 3}},
 		Results: []v2.TaskRunResult{
@@ -648,5 +652,159 @@ func TestHandleWorkflowV2ExecutionPhaseWithProgressConsumesOrphanRetry(t *testin
 	}
 	if _, ok := h.pendingCodingExecRetryAction.Load(userID); ok {
 		t.Fatal("pending retry action must be consumed even when phase is wrong")
+	}
+}
+
+func TestCodingChildReviewTargetsReady(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	now := time.Now().UTC()
+	parent, err := store.CreateTask(codingruntime.Task{TaskID: "child-review-ready", ProjectRef: "repo", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(parent.TaskID, "gui:test", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := codingruntime.ChildTaskService{Store: store}
+	handles, err := service.AdmitReadOnlyChildren(attempt.AttemptID, "gui:test", []codingruntime.ChildTaskSpec{
+		{Name: "explorer", RequestedWork: "map code", ProjectRef: "repo", Mode: "local"},
+		{Name: "reviewer", RequestedWork: "audit diff", ProjectRef: "repo", Mode: "local"},
+	}, codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local", ReadOnly: true})
+	if err != nil || len(handles) != 2 {
+		t.Fatalf("handles=%#v err=%v", handles, err)
+	}
+	cp := codingExecCheckpoint{
+		Tasks: []*v2.TaskItem{{Index: 1, Title: "main task"}},
+		Results: []v2.TaskRunResult{{
+			TaskIndex: 1, Status: v2.TaskSkipped,
+			RuntimeTaskID: parent.TaskID, RuntimeHandoff: true,
+		}},
+	}
+	if codingChildReviewTargetsReady(store, cp) {
+		t.Fatal("targets must not be ready before any child delivers")
+	}
+	runChild := func(handle codingruntime.ChildTaskHandle, summary string) {
+		t.Helper()
+		runner := codingruntime.Runner{Store: store, LeaseOwner: "gui:child:" + handle.TaskID}
+		_, _, _, err := service.RunReadOnlyChild(context.Background(), runner, handle.TaskID,
+			codingruntime.PolicySnapshot{ProjectRoot: "repo", Mode: "local", ReadOnly: true},
+			testReadOnlyChildExecutorFunc(func(context.Context, codingruntime.ExecutionRequest) codingruntime.ChildTaskResult {
+				return codingruntime.ChildTaskResult{Status: codingruntime.TaskCompleted, Summary: summary, EvidenceDigest: "digest-" + handle.TaskID}
+			}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runChild(handles[0], "mapped")
+	if codingChildReviewTargetsReady(store, cp) {
+		t.Fatal("targets must not be ready while a sibling is still running")
+	}
+	runChild(handles[1], "audited")
+	if !codingChildReviewTargetsReady(store, cp) {
+		t.Fatal("all delivered children should mark the handoff ready")
+	}
+	if codingChildReviewTargetsReady(nil, cp) {
+		t.Fatal("nil store is never ready")
+	}
+}
+
+func TestAutoResumeCodingChildReviewIfReadyGuards(t *testing.T) {
+	// Nil/absent host surfaces return immediately; no panic, no review.
+	autoResumeCodingChildReviewIfReady(nil, "user-1", "parent-task", nil)
+	autoResumeCodingChildReviewIfReady(&IMMessageHandler{}, "user-1", "parent-task", nil)
+	autoResumeCodingChildReviewIfReady(&IMMessageHandler{app: &App{}}, "", "parent-task", nil)
+	autoResumeCodingChildReviewIfReady(&IMMessageHandler{app: &App{}}, "user-1", "", nil)
+}
+
+type testReadOnlyChildExecutorFunc func(context.Context, codingruntime.ExecutionRequest) codingruntime.ChildTaskResult
+
+func (f testReadOnlyChildExecutorFunc) ExecuteReadOnlyChild(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ChildTaskResult {
+	return f(ctx, request)
+}
+
+func TestCodingExecCheckpointLineageGuard(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := projectSessionOwnerID(t.TempDir())
+	base := codingExecCheckpoint{Tasks: []*v2.TaskItem{{Index: 1}}}
+	h.storeCodingExecCheckpoint(userID, base)
+	stored, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok {
+		t.Fatal("base checkpoint must load")
+	}
+
+	// A lineage write over its own base succeeds.
+	lineage := stored
+	lineage.reviewEpoch, lineage.reviewBaseStamp = 7, stored.UpdatedAt
+	lineage.Results = []v2.TaskRunResult{{TaskIndex: 1, Status: v2.TaskSkipped, RuntimeHandoff: true, RuntimeTaskID: "rt-1"}}
+	h.storeCodingExecCheckpoint(userID, lineage)
+
+	// A foreign write (no epoch) after the base wins; later writes from the
+	// old lineage must be dropped instead of clobbering it.
+	foreign, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok {
+		t.Fatal("lineage checkpoint must load")
+	}
+	foreign.reviewEpoch, foreign.reviewBaseStamp = 0, time.Time{}
+	foreign.Results = []v2.TaskRunResult{{TaskIndex: 1, Status: v2.TaskPassed}}
+	h.storeCodingExecCheckpoint(userID, foreign)
+
+	stale := foreign
+	stale.reviewEpoch, stale.reviewBaseStamp = 7, stored.UpdatedAt
+	stale.Results = []v2.TaskRunResult{{TaskIndex: 1, Status: v2.TaskFailed}}
+	h.storeCodingExecCheckpoint(userID, stale)
+
+	cur, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok || len(cur.Results) != 1 || cur.Results[0].Status != v2.TaskPassed {
+		t.Fatalf("stale lineage write clobbered checkpoint: %#v", cur.Results)
+	}
+	if h.codingExecCheckpointLineageCurrent(userID, stale) {
+		t.Fatal("superseded lineage must report not-current")
+	}
+	fresh := cur
+	fresh.reviewEpoch, fresh.reviewBaseStamp = 9, cur.UpdatedAt
+	if !h.codingExecCheckpointLineageCurrent(userID, fresh) {
+		t.Fatal("lineage at the latest base must report current")
+	}
+
+	// A superseded lineage's clear must not wipe the foreign checkpoint.
+	h.clearCodingExecCheckpointIfLineage(userID, stale)
+	if _, ok := h.loadCodingExecCheckpoint(userID); !ok {
+		t.Fatal("superseded lineage clear must not delete the foreign checkpoint")
+	}
+
+	// A lineage clear over its own write deletes normally.
+	h.storeCodingExecCheckpoint(userID, fresh)
+	h.clearCodingExecCheckpointIfLineage(userID, fresh)
+	if _, ok := h.loadCodingExecCheckpoint(userID); ok {
+		t.Fatal("lineage clear over its own checkpoint must delete it")
+	}
+
+	// Epoch zero keeps unconditional clear semantics.
+	h.storeCodingExecCheckpoint(userID, base)
+	h.clearCodingExecCheckpointIfLineage(userID, codingExecCheckpoint{})
+	if _, ok := h.loadCodingExecCheckpoint(userID); ok {
+		t.Fatal("epoch-zero clear must remain unconditional")
+	}
+}
+
+func TestCodingChildReviewIMChannel(t *testing.T) {
+	cases := []struct {
+		scope   string
+		channel string
+		ok      bool
+	}{
+		{string(imMessagePlatformLansenger.ChannelScope()), "lansenger", true},
+		{string(imMessagePlatformTelegram.ChannelScope()), "telegram", true},
+		{string(imMessagePlatformWeixin.ChannelScope()), "weixin", true},
+		{string(imMessagePlatformQQBot.ChannelScope()), "qq", true},
+		{string(imMessagePlatformDesktop.ChannelScope()), "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		channel, ok := codingChildReviewIMChannel(tc.scope)
+		if ok != tc.ok || channel != tc.channel {
+			t.Fatalf("scope %q: got (%q,%v), want (%q,%v)", tc.scope, channel, ok, tc.channel, tc.ok)
+		}
 	}
 }

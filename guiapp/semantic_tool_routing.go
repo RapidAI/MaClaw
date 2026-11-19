@@ -5443,6 +5443,13 @@ func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Conte
 	if err := validatePreparedSemanticToolScope(prepared); err != nil {
 		return nil, nil, err
 	}
+	// A superseded surface must not re-grab the lineage: CurrentRevision
+	// returns whoever is current, and publishing a child on top of another
+	// turn's revision would revive this dead surface while superseding the
+	// turn that legitimately took over.
+	if err := surface.routeState.IsCurrent(surface.scope); err != nil {
+		return nil, nil, fmt.Errorf("semantic surface lost route authority: %w", err)
+	}
 	current, err := surface.routeState.CurrentRevision(surface.scope)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load semantic replan parent: %w", err)

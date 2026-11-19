@@ -4604,6 +4604,9 @@ func (r *SkillRunner) persistRepairResultWithContextLegacy(ctx context.Context, 
 			return fmt.Errorf("write repaired skill.yaml: %w", err)
 		}
 		yamlWritten = true
+		if err := cskill.RepinPackageManifestIfPresent(entry.SkillDir); err != nil {
+			log.Printf("[skill-repair-gui] repin integrity manifest for %q failed: %v", entry.Name, err)
+		}
 	}
 
 	r.executor.skillListMutateMu.Lock()

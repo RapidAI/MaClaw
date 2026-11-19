@@ -19,7 +19,7 @@ func TestDesktopPetStillPNGUsesPackFrame(t *testing.T) {
 	petpack.SetGlobalForTest(reg)
 
 	logo := []byte("app-icon-logo")
-	got := desktopPetStillPNG("clawmate", "default", "idle", 88, petpack.NewFrameCache(), logo)
+	got := desktopPetStillPNG(petpack.DefaultPackID, "default", "idle", 88, petpack.NewFrameCache(), logo)
 	if bytes.Equal(got, logo) {
 		t.Fatal("desktop pet still fell back to the app icon")
 	}
@@ -54,7 +54,7 @@ func TestDesktopPetStillPNGUsesRequestedPixelSize(t *testing.T) {
 	}
 	petpack.SetGlobalForTest(reg)
 
-	got := desktopPetStillPNG("clawmate", "default", "idle", 176, petpack.NewFrameCache(), nil)
+	got := desktopPetStillPNG(petpack.DefaultPackID, "default", "idle", 176, petpack.NewFrameCache(), nil)
 	img, err := png.Decode(bytes.NewReader(got))
 	if err != nil {
 		t.Fatalf("decode pack still: %v", err)

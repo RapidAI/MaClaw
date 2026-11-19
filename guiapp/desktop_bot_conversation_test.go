@@ -37,20 +37,32 @@ func (h *fakeConvHub) exchange(t *testing.T) func(context.Context, string, strin
 				Entries  []DesktopBotConversationWrite `json:"entries"`
 			}
 			_ = json.Unmarshal(raw, &in)
+			assigned := make([]map[string]any, 0, len(in.Entries))
 			for _, w := range in.Entries {
+				kind := w.Kind
+				if kind == "" {
+					kind = "message"
+				}
 				found := -1
 				for i, e := range h.entries {
-					if e.BotID == w.BotID && e.ID == w.ID && e.Kind == w.Kind {
+					if e.BotID == w.BotID && e.ID == w.ID && e.Kind == kind {
 						found = i
 					}
 				}
 				h.head++
-				e := desktopBotConversationEntry{Seq: h.head, CreatedSeq: h.head, BotID: w.BotID, ID: w.ID, Kind: w.Kind, Origin: in.ClientID, By: in.ClientID, Data: w.Data, At: time.Now().UTC().Format(time.RFC3339Nano)}
+				e := desktopBotConversationEntry{Seq: h.head, CreatedSeq: h.head, BotID: w.BotID, ID: w.ID, Kind: kind, Origin: in.ClientID, By: in.ClientID, Data: w.Data, At: time.Now().UTC().Format(time.RFC3339Nano)}
 				if found >= 0 {
 					e.CreatedSeq, e.Origin = h.entries[found].CreatedSeq, h.entries[found].Origin
 					h.entries = append(h.entries[:found], h.entries[found+1:]...)
 				}
 				h.entries = append(h.entries, e)
+				if kind == "message" {
+					assigned = append(assigned, map[string]any{"bot_id": e.BotID, "id": e.ID, "seq": e.Seq, "created_seq": e.CreatedSeq})
+				}
+			}
+			if dest != nil {
+				raw, _ = json.Marshal(map[string]any{"head": h.head, "assigned": assigned})
+				_ = json.Unmarshal(raw, dest)
 			}
 			return http.StatusOK, nil
 		case method == http.MethodGet && strings.HasPrefix(path, "/api/v1/bots/conversation?"):
@@ -146,13 +158,26 @@ func syncedIDs(events *convEvents) []string {
 	return out
 }
 
-// A message another client wrote reaches this page once; this client's own
-// writes do not come back; a second read with the same cursor is empty.
+// A message another client wrote reaches this page once. This client's own
+// write comes back only as the sequence Hub assigned it. A second read with
+// the same cursor is empty.
 func TestDesktopConvOtherClientMessageArrivesOnce(t *testing.T) {
 	hub, events := setupConvTest(t, "alice")
 	a := &App{}
 	if err := a.PublishDesktopBotConversation("alice", []DesktopBotConversationWrite{convWrite("bot_1", "m-own", "", `{"role":"user","content":"我发的"}`)}); err != nil {
 		t.Fatal(err)
+	}
+	events.mu.Lock()
+	var own map[string]any
+	if len(events.sync) == 1 {
+		if list, _ := events.sync[0]["entries"].([]map[string]any); len(list) == 1 {
+			own = list[0]
+		}
+	}
+	events.mu.Unlock()
+	created, _ := own["created_seq"].(int64)
+	if own["id"] != "m-own" || own["own"] != true || created != 1 {
+		t.Fatalf("own stamp %#v", own)
 	}
 	hub.writeAs("client-B",
 		convWrite("bot_1", "m-b1", "message", `{"role":"user","content":"B 发的"}`),
@@ -161,19 +186,32 @@ func TestDesktopConvOtherClientMessageArrivesOnce(t *testing.T) {
 	if _, err := a.desktopConvSyncOnce(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-b1,bot_1/m-b2" {
+	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-own,bot_1/m-own,bot_1/m-b1,bot_1/m-b2" {
 		t.Fatalf("synced %s", got)
+	}
+	events.mu.Lock()
+	var replay map[string]any
+	if len(events.sync) >= 2 {
+		if list, _ := events.sync[1]["entries"].([]map[string]any); len(list) > 0 {
+			replay = list[0]
+		}
+	}
+	events.mu.Unlock()
+	replaySeq, _ := replay["created_seq"].(int64)
+	if replay["id"] != "m-own" || replay["own"] != true || replay["data"] != nil || replaySeq != 1 {
+		t.Fatalf("read-back stamp %#v", replay)
 	}
 	if _, err := a.desktopConvSyncOnce(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-b1,bot_1/m-b2" {
+	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-own,bot_1/m-own,bot_1/m-b1,bot_1/m-b2" {
 		t.Fatalf("second read repeated: %s", got)
 	}
 	// The page reloaded: the next read starts over, so it can rebuild.
+	// Own lines come back as a sequence stamp, not as a second copy of the text.
 	desktopConv.reset = true
 	_, _ = a.desktopConvSyncOnce(context.Background(), 0)
-	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-b1,bot_1/m-b2,bot_1/m-b1,bot_1/m-b2" {
+	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-own,bot_1/m-own,bot_1/m-b1,bot_1/m-b2,bot_1/m-own,bot_1/m-b1,bot_1/m-b2" {
 		t.Fatalf("backfill after reload: %s", got)
 	}
 }
@@ -285,8 +323,8 @@ func TestDesktopConvAccountSwitchResetsCursor(t *testing.T) {
 	}
 }
 
-// Another client answering this client's card comes back here; this
-// client's own unchanged writes do not.
+// Another client answering this client's card comes back here. This
+// client's own line comes back only as its sequence, not as a new bubble.
 func TestDesktopConvPatchOnOwnMessageArrives(t *testing.T) {
 	hub, events := setupConvTest(t, "alice")
 	a := &App{}
@@ -299,7 +337,13 @@ func TestDesktopConvPatchOnOwnMessageArrives(t *testing.T) {
 	)
 	hub.mu.Unlock()
 	_, _ = a.desktopConvSyncOnce(context.Background(), 0)
-	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-card" {
+	if got := strings.Join(syncedIDs(events), ","); got != "bot_1/m-mine,bot_1/m-card" {
 		t.Fatalf("synced %s", got)
+	}
+	events.mu.Lock()
+	mine := events.sync[0]["entries"].([]map[string]any)[0]
+	events.mu.Unlock()
+	if mine["own"] != true || mine["data"] != nil {
+		t.Fatalf("own line replayed as a bubble: %#v", mine)
 	}
 }

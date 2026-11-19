@@ -119,7 +119,7 @@ func (s *Service) ListBotsForUser(ctx context.Context, tenantID, userID string) 
 	primary := primaryBotID(rec, userID)
 	out := make([]BotListItem, 0, len(bots))
 	for _, bot := range bots {
-		out = append(out, BotListItem{Bot: bot, Primary: primary != "" && bot.ID == primary})
+		out = append(out, BotListItem{Bot: withDesktopModeView(bot), Primary: primary != "" && bot.ID == primary})
 	}
 	return out, nil
 }
@@ -288,7 +288,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			note.Reviewer = assignmentReviewer(rec, userID, fromBotID, target, firstNonEmptyString(note.Order, note.Text), in.Reviewer)
 		}
 		rec.CrossNotes = append(rec.CrossNotes, note)
-		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+		rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
 		}
@@ -322,7 +322,7 @@ func (s *Service) PostBotCrossTalk(ctx context.Context, tenantID, userID, fromBo
 			ReplyTo:   parent.ID,
 		}
 		rec.CrossNotes = append(rec.CrossNotes, note)
-		rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+		rec.CrossNotes = capCrossNotes(rec.CrossNotes, rec, userID)
 		if err := s.save(ctx, tenantID, rec); err != nil {
 			return BotCrossNote{}, err
 		}
@@ -448,7 +448,7 @@ func (s *Service) reportLocked(rec *record, userID, fromBotID string, in BotCros
 	proto.apply(&note)
 	rec.CrossNotes = append(rec.CrossNotes, note)
 	rec.CrossNotes = capReportNotes(rec.CrossNotes, userID)
-	rec.CrossNotes = capCrossNotes(rec.CrossNotes, userID)
+	rec.CrossNotes = capCrossNotes(rec.CrossNotes, *rec, userID)
 	s.requestPeerReviewLocked(rec, userID, note)
 	return note, true, nil
 }
@@ -632,7 +632,8 @@ func pruneCrossNotes(notes []BotCrossNote, now time.Time) []BotCrossNote {
 	return out
 }
 
-func capCrossNotes(notes []BotCrossNote, userID string) []BotCrossNote {
+func capCrossNotes(notes []BotCrossNote, rec record, userID string) []BotCrossNote {
+	notes = dropOrphanSays(notes, rec, userID)
 	userID = strings.TrimSpace(userID)
 	owned := 0
 	for _, note := range notes {
@@ -802,6 +803,11 @@ func newCrossNoteID() string {
 	return "note_" + hex.EncodeToString(buf[:])
 }
 
+// ReportDelegateRunEnd is the watcher entry a finished delegated run uses.
+func (s *Service) ReportDelegateRunEnd(tenantID, userID, botID, runID, status string, reply Reply, runErr error) {
+	s.reportDelegateRunEnd(tenantID, userID, botID, runID, status, reply, runErr)
+}
+
 // reportDelegateRunEnd is Hub's own "teammate finished" message: when a run
 // that the primary delegated (a delegate note carries its run id) ends, Hub
 // puts a done/blocked report in the primary's mailbox. It runs on Hub's run
@@ -843,6 +849,9 @@ func (s *Service) reportDelegateRunEnd(tenantID, userID, botID, runID, status st
 		return
 	}
 	topic, text := "done", strings.TrimSpace(reply.Text)
+	if runErr == nil && status != "failed" && status != "error" && desktopTaskOutcome(reply.TaskOutcome) == "" {
+		reply.TaskOutcome = "unverified"
+	}
 	switch {
 	case runErr != nil || status == "failed" || status == "error":
 		topic = "blocked"

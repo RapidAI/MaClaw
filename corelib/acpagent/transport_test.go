@@ -101,3 +101,24 @@ func TestReadRequestEOF(t *testing.T) {
 		t.Fatalf("err = %v, want EOF", err)
 	}
 }
+
+func TestConnReadMessageHandlesFragmentedLargeMessage(t *testing.T) {
+	payload := strings.Repeat("x", 2<<20)
+	input := `{"jsonrpc":"2.0","id":1,"result":"` + payload + `"}` + "\n"
+	conn := NewConn(strings.NewReader(input), io.Discard)
+	msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Response == nil {
+		t.Fatal("fragmented response was not decoded")
+	}
+}
+
+func TestConnReadMessageRejectsOversizedMessage(t *testing.T) {
+	conn := NewConn(strings.NewReader(strings.Repeat("x", (16<<20)+1)), io.Discard)
+	_, err := conn.ReadMessage()
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized message error = %v", err)
+	}
+}

@@ -83,6 +83,12 @@ type Service struct {
 	// ProxyModes holds each desktop's egress mode (proxy/direct/smart), read
 	// by the bridge listener per connection. nil disables per-user modes.
 	ProxyModes *ProxyModeStore
+	// Intranet marks a desktopd the user installed from the GUI. It has no
+	// public name; published tunnel URLs use the hub link's loopback origin.
+	Intranet bool
+	// HubLink is this desktopd's own tunnel to Hub (self-registered intranet
+	// desktops). nil leaves /v1/hub/link unregistered.
+	HubLink *HubLink
 	// ImageSources maps a local image name to the registry ref it is pulled
 	// from when missing (image_source.go); ImagePullTimeout bounds that pull.
 	ImageSources     map[string]string
@@ -919,6 +925,9 @@ func (s *Service) withUserInstall(tenantID, userID string, fn func() error) erro
 }
 
 func (s *Service) advertiseHost() (string, error) {
+	if s != nil && s.Intranet {
+		return "", fmt.Errorf("%w: intranet desktop has no public host", ErrInvalid)
+	}
 	host := ""
 	if s != nil {
 		host = strings.TrimSpace(s.AdvertiseHost)
@@ -1307,6 +1316,11 @@ func normalize(spec Spec) (Spec, error) {
 	}
 	if !desktop.ValidUserID(spec.UserID) {
 		return Spec{}, fmt.Errorf("%w: %s", ErrInvalid, desktopbot.MissingIdentityNextStep("user"))
+	}
+	if choice := panelResourceChoice(); choice != nil {
+		spec.Memory = choice.Memory
+		spec.CPUs = choice.CPUs
+		spec.ShmSize = choice.ShmSize
 	}
 	resources, err := desktop.NormalizeResources(spec.Image, spec.Memory, spec.CPUs, spec.ShmSize)
 	if err != nil {

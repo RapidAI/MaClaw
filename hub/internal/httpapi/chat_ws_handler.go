@@ -23,7 +23,14 @@ type chatWSConn struct {
 func (c *chatWSConn) SendJSON(v any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_ = c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return c.ws.WriteJSON(v)
+}
+
+func (c *chatWSConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ws.Close()
 }
 
 var chatUpgrader = websocket.Upgrader{
@@ -44,6 +51,7 @@ func ChatWSHandler(identity *auth.IdentityService, chSvc *chat.ChannelService, n
 			return
 		}
 		defer conn.Close()
+		conn.SetReadLimit(64 << 10)
 
 		// Auth timeout.
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -101,7 +109,7 @@ func ChatWSHandler(identity *auth.IdentityService, chSvc *chat.ChannelService, n
 			}
 			switch peek.Type {
 			case "ping":
-				_ = conn.WriteJSON(map[string]string{"type": "pong"})
+				_ = sender.SendJSON(map[string]string{"type": "pong"})
 			case "typing":
 				var t struct {
 					ChannelID string `json:"channel_id"`

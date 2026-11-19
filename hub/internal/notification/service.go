@@ -28,6 +28,34 @@ func NewService(store *Store, wsBroadcaster WSBroadcaster, imPusher IMPusher) *S
 	}
 }
 
+// validatePinnedFields validates the pinned-card extras and applies defaults:
+// an empty button label falls back to DefaultPinnedButtonText, the link must
+// be http(s) so BrowserOpenURL has a real target, and both stay within caps.
+func validatePinnedFields(req *CreateRequest) error {
+	req.LinkURL = strings.TrimSpace(req.LinkURL)
+	if req.LinkURL != "" {
+		lower := strings.ToLower(req.LinkURL)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			return fmt.Errorf("link_url must start with http:// or https://")
+		}
+		if utf8.RuneCountInString(req.LinkURL) > 500 {
+			return fmt.Errorf("link_url exceeds 500 characters")
+		}
+	}
+	req.ButtonText = strings.TrimSpace(req.ButtonText)
+	if req.ButtonText == "" && (req.Pinned || req.PinnedForever) {
+		req.ButtonText = DefaultPinnedButtonText
+	}
+	if utf8.RuneCountInString(req.ButtonText) > 20 {
+		return fmt.Errorf("button_text exceeds 20 characters")
+	}
+	if req.PinnedForever {
+		// A permanent pin is still a pin; keep the flag pair consistent.
+		req.Pinned = true
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // CreateNotification
 // ---------------------------------------------------------------------------
@@ -68,28 +96,36 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 		return nil, fmt.Errorf("invalid priority: %s", req.Priority)
 	}
 
+	if err := validatePinnedFields(&req); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		source = "hub"
 	}
 	n := &Notification{
-		ID:           uuid.New().String(),
-		Title:        req.Title,
-		Content:      req.Content,
-		Category:     req.Category,
-		Priority:     req.Priority,
-		AudienceType: req.AudienceType,
-		AudienceIDs:  req.AudienceIDs,
-		Status:       StatusDraft,
-		IMPush:       req.IMPush,
-		Source:       source,
-		SourceID:     strings.TrimSpace(req.SourceID),
-		CreatedBy:    req.CreatedBy,
-		PublishAt:    req.PublishAt,
-		ExpireAt:     req.ExpireAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            uuid.New().String(),
+		Title:         req.Title,
+		Content:       req.Content,
+		Category:      req.Category,
+		Priority:      req.Priority,
+		AudienceType:  req.AudienceType,
+		AudienceIDs:   req.AudienceIDs,
+		Status:        StatusDraft,
+		IMPush:        req.IMPush,
+		Pinned:        req.Pinned,
+		PinnedForever: req.PinnedForever,
+		LinkURL:       req.LinkURL,
+		ButtonText:    req.ButtonText,
+		Source:        source,
+		SourceID:      strings.TrimSpace(req.SourceID),
+		CreatedBy:     req.CreatedBy,
+		PublishAt:     req.PublishAt,
+		ExpireAt:      req.ExpireAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if n.AudienceIDs == nil {
@@ -233,6 +269,25 @@ func (s *Service) DeleteNotification(ctx context.Context, id string) error {
 // GetUnreadForMachine
 // ---------------------------------------------------------------------------
 
+// clientNotificationFrom builds the GUI view of a stored notification.
+func clientNotificationFrom(n *Notification, isRead bool) ClientNotification {
+	return ClientNotification{
+		ID:            n.ID,
+		Title:         n.Title,
+		Content:       n.Content,
+		Category:      string(n.Category),
+		Priority:      string(n.Priority),
+		IsRead:        isRead,
+		CreatedAt:     n.CreatedAt.UTC().Format(time.RFC3339),
+		Pinned:        n.Pinned,
+		PinnedForever: n.PinnedForever,
+		LinkURL:       n.LinkURL,
+		ButtonText:    n.ButtonText,
+		Source:        n.Source,
+		SourceID:      n.SourceID,
+	}
+}
+
 // GetUnreadForMachine returns unread notifications for a machine as client views.
 func (s *Service) GetUnreadForMachine(ctx context.Context, machineID string, limit int) ([]ClientNotification, error) {
 	notifications, err := s.store.GetUnreadForMachine(ctx, machineID)
@@ -247,17 +302,21 @@ func (s *Service) GetUnreadForMachine(ctx context.Context, machineID string, lim
 
 	result := make([]ClientNotification, 0, len(notifications))
 	for _, n := range notifications {
-		result = append(result, ClientNotification{
-			ID:        n.ID,
-			Title:     n.Title,
-			Content:   n.Content,
-			Category:  string(n.Category),
-			Priority:  string(n.Priority),
-			IsRead:    false,
-			CreatedAt: n.CreatedAt.UTC().Format(time.RFC3339),
-			Source:    n.Source,
-			SourceID:  n.SourceID,
-		})
+		result = append(result, clientNotificationFrom(n, false))
+	}
+	return result, nil
+}
+
+// GetPinnedForMachine returns the pinned messages for a machine as client
+// views: the permanent pin first, then the latest regular pinned messages.
+func (s *Service) GetPinnedForMachine(ctx context.Context, machineID string) ([]ClientNotification, error) {
+	notifications, err := s.store.GetPinnedForMachine(ctx, machineID)
+	if err != nil {
+		return nil, fmt.Errorf("get pinned: %w", err)
+	}
+	result := make([]ClientNotification, 0, len(notifications))
+	for _, n := range notifications {
+		result = append(result, clientNotificationFrom(n, false))
 	}
 	return result, nil
 }
@@ -394,22 +453,26 @@ func (s *Service) CreateFromCascade(ctx context.Context, req CascadeRequest) err
 
 	// Create new notification from cascade
 	n := &Notification{
-		ID:           uuid.New().String(),
-		Title:        incoming.Title,
-		Content:      incoming.Content,
-		Category:     incoming.Category,
-		Priority:     incoming.Priority,
-		AudienceType: incoming.AudienceType,
-		AudienceIDs:  incoming.AudienceIDs,
-		Status:       StatusPublished,
-		IMPush:       incoming.IMPush,
-		Source:       "hubcenter",
-		SourceID:     incoming.ID,
-		CreatedBy:    incoming.CreatedBy,
-		PublishAt:    incoming.PublishAt,
-		ExpireAt:     incoming.ExpireAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            uuid.New().String(),
+		Title:         incoming.Title,
+		Content:       incoming.Content,
+		Category:      incoming.Category,
+		Priority:      incoming.Priority,
+		AudienceType:  incoming.AudienceType,
+		AudienceIDs:   incoming.AudienceIDs,
+		Status:        StatusPublished,
+		IMPush:        incoming.IMPush,
+		Pinned:        incoming.Pinned,
+		PinnedForever: incoming.PinnedForever,
+		LinkURL:       incoming.LinkURL,
+		ButtonText:    incoming.ButtonText,
+		Source:        "hubcenter",
+		SourceID:      incoming.ID,
+		CreatedBy:     incoming.CreatedBy,
+		PublishAt:     incoming.PublishAt,
+		ExpireAt:      incoming.ExpireAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if n.AudienceIDs == nil {

@@ -185,6 +185,9 @@ func (h *IMMessageHandler) executeTrustedShell(principalID, command string, time
 	if h.semanticTrustedShell != nil {
 		return h.semanticTrustedShell(principalID, command, timeout)
 	}
+	if err := repoMaintRejectShell(h, principalID, "", command); err != nil {
+		return "", err
+	}
 	workspace := trustedPrincipalBoundWorkspace(h, principalID)
 	if strings.TrimSpace(workspace) == "" {
 		return "", effectNotStarted(fmt.Errorf("trusted_shell_workspace_unavailable"))

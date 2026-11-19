@@ -183,7 +183,8 @@ func (h *IMMessageHandler) listTrustedAuditEvents(principalID, query string) ([]
 }
 
 func (h *IMMessageHandler) listTrustedAuditConversations(principalID, query string) ([]trustedAuditConversationHit, error) {
-	store := h.getSessionStore()
+	store, release := h.app.acquireSessionStore()
+	defer release()
 	if store == nil {
 		return nil, errTrustedAuditStoreAbsent
 	}

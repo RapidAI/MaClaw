@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
 import { EventsOn, BrowserOpenURL, ClipboardSetText } from '../../../wailsjs/runtime';
+import { ClearBotNodeResult, ClearHubDeployResult, DeployBotNode, DeployHub, ListBotNodes, ListHubDeploys, RegisterBotNode } from '../../../wailsjs/go/main/App';
 import { EVENT_EXPERTS_CHANGED, EVENT_SURVEY_UPDATED } from '../../constants/events';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { useDialog } from '../CustomDialog';
@@ -50,11 +51,68 @@ import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, expertDefinitionFromInstallResult, expertPageForIndex, overlayInstalledItems, parseExpertListJSON, withInstalledExpert } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
+import { MCPServerPanel } from './MCPServerPanel';
+import { GitHubRepoMaintWorkspace } from './GitHubRepoMaintWorkspace';
 import { tailText } from '../../i18n/mnTail'
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'virtual-repository' | 'browser-extension' | 'hub-deploy' | 'bot-node' | 'mcp-server' | 'github-repo-maint';
+
+type HubDeployRow = {
+    id: string;
+    host: string;
+    port?: number;
+    user?: string;
+    email?: string;
+    public_url?: string;
+    admin_user?: string;
+    admin_password?: string;
+    hub_id?: string;
+    pending?: boolean;
+    status: string;
+    message?: string;
+};
+
+function hubDeployStatusText(row: HubDeployRow): string {
+    if (row.status === 'ready' && row.pending) return '等待确认';
+    switch (row.status) {
+        case 'deploying': return '正在安装';
+        case 'registering': return '正在注册';
+        case 'ready': return '已完成';
+        case 'failed': return '失败';
+        default: return row.status;
+    }
+}
+
+/** Badge color bucket for a Hub deploy row; waiting-for-confirm is its own state. */
+function hubDeployStatusKind(row: HubDeployRow): string {
+    return row.status === 'ready' && row.pending ? 'pending' : row.status;
+}
+
+type BotNodeRow = {
+    id: string;
+    name?: string;
+    host: string;
+    port?: number;
+    user?: string;
+    can_sudo?: boolean;
+    with_srv?: boolean;
+    hub_url?: string;
+    node_id?: string;
+    status: string;
+    message?: string;
+};
+
+function botNodeStatusText(row: BotNodeRow): string {
+    switch (row.status) {
+        case 'deploying': return '正在安装';
+        case 'registering': return '正在向 Hub 注册';
+        case 'ready': return '已注册';
+        case 'failed': return '失败';
+        default: return row.status;
+    }
+}
 
 type BrowserExtensionRow = {
     browser: string;
@@ -179,7 +237,7 @@ function getApp(): Promise<any | null> {
 }
 
 /** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
-const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' }) => {
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' | 'mcp' }) => {
     const common = {
         viewBox: '0 0 24 24',
         fill: 'none',
@@ -226,6 +284,31 @@ const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' | 'repos
                     <path d="M7 13h4" />
                 </svg>
             );
+        case 'hub':
+            return (
+                <svg {...common}>
+                    <rect x="3" y="4" width="18" height="6" rx="1.5" />
+                    <rect x="3" y="14" width="18" height="6" rx="1.5" />
+                    <path d="M7 7h.01M7 17h.01" />
+                </svg>
+            );
+        case 'node':
+            return (
+                <svg {...common}>
+                    <circle cx="6" cy="12" r="2.2" />
+                    <circle cx="18" cy="7" r="2.2" />
+                    <circle cx="18" cy="17" r="2.2" />
+                    <path d="M8.2 11.2 15.8 8M8.2 12.8 15.8 16" />
+                </svg>
+            );
+        case 'mcp':
+            return (
+                <svg {...common}>
+                    <rect x="3" y="4" width="18" height="6" rx="1.5" />
+                    <path d="M7 7h.01M12 7h5" />
+                    <path d="M8 14h8M10 14v4M14 14v4" />
+                </svg>
+            );
     }
 };
 
@@ -266,6 +349,24 @@ const ExpertSearchIcon = () => (
 /** Capability chips shown on a marketplace-style expert card (capped to keep card heights even). */
 const EXPERT_CARD_TAG_LIMIT = 3;
 
+/** Chip key of the catch-all 其它 bucket in the category filter row. */
+const EXPERT_CATEGORY_OTHER = 'other';
+/** Display label of the catch-all chip. A taxonomy entry with this name is
+ * folded into the catch-all chip so the row never renders two 其它 chips. */
+const EXPERT_CATEGORY_OTHER_LABEL = '其它';
+
+/**
+ * Chip key a card belongs to: its own market category when that name is still
+ * part of the current HubCenter taxonomy, otherwise the 其它 catch-all (empty
+ * tag, unshared local experts, builtins, a name the administrator removed, or
+ * an explicit 其它 tag — one chip always holds the untagged remainder).
+ */
+const expertCategoryFor = (expert: ExpertDefinition, names: string[]): string => {
+    const tag = String(expert?.category || '').trim();
+    if (tag && tag !== EXPERT_CATEGORY_OTHER_LABEL && names.includes(tag)) return tag;
+    return EXPERT_CATEGORY_OTHER;
+};
+
 const expertCardTagChips = (expert: ExpertDefinition): { visible: string[]; overflow: number } => {
     const labels = expert.managed_industry
         ? (expert.industry_names || [])
@@ -303,6 +404,7 @@ const ExpertCardSummary = ({ expert, badge, lineage }: {
                     ) : (
                         <span className="utilities-expert-card__badge">{badge}</span>
                     )}
+                    {expert.category ? <span className="utilities-expert-card__badge utilities-expert-card__badge--category" data-testid={`utilities-expert-category-badge-${expert.id}`}>{expert.category}</span> : null}
                 </div>
             </div>
         </div>
@@ -447,6 +549,26 @@ export const UtilitiesPage = ({
     const showExpertSurface = mode !== 'tools';
     const { showConfirm } = useDialog();
     const [view, setView] = useState<View>('home');
+    const [hubHost, setHubHost] = useState('');
+    const [hubPort, setHubPort] = useState('22');
+    const [hubUser, setHubUser] = useState('');
+    const [hubPassword, setHubPassword] = useState('');
+    const [hubEmail, setHubEmail] = useState('');
+    const [hubBusy, setHubBusy] = useState(false);
+    const [hubError, setHubError] = useState('');
+    const [hubRows, setHubRows] = useState<HubDeployRow[]>([]);
+    const [botName, setBotName] = useState('');
+    const [botHost, setBotHost] = useState('');
+    const [botPort, setBotPort] = useState('22');
+    const [botUser, setBotUser] = useState('');
+    const [botPassword, setBotPassword] = useState('');
+    const [botSudo, setBotSudo] = useState(false);
+    const [botWithSrv, setBotWithSrv] = useState(false);
+    const [botCode, setBotCode] = useState('');
+    const [botBusy, setBotBusy] = useState(false);
+    const [botError, setBotError] = useState('');
+    const [botRows, setBotRows] = useState<BotNodeRow[]>([]);
+    const [botRetry, setBotRetry] = useState<Record<string, { password: string; code: string }>>({});
     // The tools and AI expert entries share the same lazy page instance. A
     // sub-page (for example, the survey editor) must never leak into the
     // other entry when the user switches the left rail button.
@@ -536,6 +658,12 @@ export const UtilitiesPage = ({
     // Library toolbar: local search + marketplace-style source filter chips.
     const [expertSearch, setExpertSearch] = useState('');
     const [expertFilter, setExpertFilter] = useState<'all' | 'system' | 'custom'>('all');
+    // HubCenter's administrator-curated category taxonomy drives the topmost
+    // chip row ('all' / each name / 'other' catch-all). An empty list keeps the
+    // row hidden so the library looks unchanged before the admin configures
+    // categories or while HubCenter is unreachable.
+    const [expertCategoryNames, setExpertCategoryNames] = useState<string[]>([]);
+    const [expertCategoryFilter, setExpertCategoryFilter] = useState('all');
     const [expertPage, setExpertPage] = useState(1);
     const [expertColumns, setExpertColumns] = useState(4);
     const expertGridRef = useRef<HTMLDivElement | null>(null);
@@ -632,6 +760,21 @@ export const UtilitiesPage = ({
             const overlaid = overlayInstalledItems(parsed, pendingInstalledExpertRef.current ? [pendingInstalledExpertRef.current] : [], requestID);
             pendingInstalledExpertRef.current = overlaid.pending[0] ?? null;
 			setExperts(overlaid.list);
+			// Best-effort taxonomy fetch alongside the card list. A failure
+			// keeps the last-good chips on screen: a transient HubCenter error
+			// must not make the category row flicker away mid-session.
+			if (mod?.ListExpertMarketCategories) {
+				try {
+					const names = await mod.ListExpertMarketCategories();
+					// Same staleness guard as the card list: a superseded request
+					// must not overwrite a newer load's taxonomy.
+					if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
+					const list = Array.isArray(names) ? names.map(String).map(name => name.trim()).filter(Boolean) : [];
+					setExpertCategoryNames(current => current.join('\u0000') === list.join('\u0000') ? current : list);
+				} catch {
+					// Keep the last-good taxonomy.
+				}
+			}
 			if (mod?.ListManagedIndustryExperts) {
 				const managedRaw = await mod.ListManagedIndustryExperts();
 				if (!mountedRef.current || !activeRef.current || requestID !== expertsRequestRef.current) return;
@@ -667,9 +810,14 @@ export const UtilitiesPage = ({
         // Only drop a search or source filter that would hide this card.
         if (!matchesQuery) setExpertSearch('');
         if (expertFilter === 'system') setExpertFilter('all');
+        // A categorized install must not stay hidden behind its own category
+        // chip, and an uncategorized one must not hide behind 其它.
+        if (expertCategoryFilter !== 'all' && expertCategoryFor(expert, expertCategoryNames) !== expertCategoryFilter) {
+            setExpertCategoryFilter('all');
+        }
         setExperts(current => withInstalledExpert(current, expert));
         setRevealInstalledExpertId(expert.id);
-    }, [expertFilter, expertSearch]);
+    }, [expertFilter, expertSearch, expertCategoryFilter, expertCategoryNames]);
 
 	const handlePurchaseAndInstallManagedIndustryExpert = useCallback(async (expert: ExpertDefinition) => {
 		if (!expert.industry_asset_id || !expert.industry_listing_id || expertActionBusy) return;
@@ -713,9 +861,10 @@ export const UtilitiesPage = ({
         return map;
     }, [experts]);
 
-    // Library toolbar filtering: search across name/description/industry names
-    // and split by source (system defaults vs user-created). Managed industry
-    // entries count as system, matching the read-only badge on their cards.
+    // Library toolbar filtering: search across name/description/industry names,
+    // split by source (system defaults vs user-created) and narrow by the
+    // HubCenter category chips. Managed industry entries count as system,
+    // matching the read-only badge on their cards.
     const visibleExperts = useMemo(() => {
         const query = expertSearch.trim().toLowerCase();
         const matchesQuery = (expert: ExpertDefinition) => !query
@@ -728,18 +877,27 @@ export const UtilitiesPage = ({
             || (expertFilter === 'system'
                 ? !!expert.builtin || !!expert.managed_industry
                 : !expert.builtin && !expert.managed_industry);
-        const keep = (expert: ExpertDefinition) => matchesQuery(expert) && matchesFilter(expert);
+        const matchesCategory = (expert: ExpertDefinition) => expertCategoryFilter === 'all'
+            || expertCategoryFor(expert, expertCategoryNames) === expertCategoryFilter;
+        const keep = (expert: ExpertDefinition) => matchesQuery(expert) && matchesFilter(expert) && matchesCategory(expert);
         return {
             industry: managedIndustryExperts.filter(keep),
             // Everything not managed by HubCenter industry: builtin + user-created.
             local: experts.filter(keep),
         };
-    }, [experts, managedIndustryExperts, expertSearch, expertFilter]);
+    }, [experts, managedIndustryExperts, expertSearch, expertFilter, expertCategoryFilter, expertCategoryNames]);
     // Empty-state hint only when a filter/search actively hid everything;
     // a genuinely empty library still shows the new/import entry cards.
     const expertLibraryEmpty = visibleExperts.industry.length === 0
         && visibleExperts.local.length === 0
-        && (expertSearch.trim() !== '' || expertFilter !== 'all');
+        && (expertSearch.trim() !== '' || expertFilter !== 'all' || expertCategoryFilter !== 'all');
+    // An administrator removing the selected category must not strand the
+    // library on a chip that no longer exists.
+    useEffect(() => {
+        if (expertCategoryFilter !== 'all' && expertCategoryFilter !== EXPERT_CATEGORY_OTHER && !expertCategoryNames.includes(expertCategoryFilter)) {
+            setExpertCategoryFilter('all');
+        }
+    }, [expertCategoryNames, expertCategoryFilter]);
     // Four rows per page. Column count follows the same auto-fill grid, so a
     // narrower window pages fewer cards instead of showing more than four rows.
     const expertPageSize = Math.max(1, expertColumns) * 4;
@@ -756,8 +914,8 @@ export const UtilitiesPage = ({
     // jumping to a different slice.
     const expertPageAnchorRef = useRef(0);
     const [trackedExpertPageSize, setTrackedExpertPageSize] = useState(expertPageSize);
-    const [trackedExpertQuery, setTrackedExpertQuery] = useState({ search: expertSearch, filter: expertFilter });
-    const expertQueryChanged = trackedExpertQuery.search !== expertSearch || trackedExpertQuery.filter !== expertFilter;
+    const [trackedExpertQuery, setTrackedExpertQuery] = useState({ search: expertSearch, filter: expertFilter, category: expertCategoryFilter });
+    const expertQueryChanged = trackedExpertQuery.search !== expertSearch || trackedExpertQuery.filter !== expertFilter || trackedExpertQuery.category !== expertCategoryFilter;
     if (trackedExpertPageSize !== expertPageSize || expertQueryChanged) {
         if (trackedExpertPageSize !== expertPageSize) {
             setTrackedExpertPageSize(expertPageSize);
@@ -770,7 +928,7 @@ export const UtilitiesPage = ({
             }
         }
         if (expertQueryChanged) {
-            setTrackedExpertQuery({ search: expertSearch, filter: expertFilter });
+            setTrackedExpertQuery({ search: expertSearch, filter: expertFilter, category: expertCategoryFilter });
             // A just-installed card chooses its own page below. Resetting to
             // page 1 here would hide it again.
             if (!revealPage) {
@@ -1265,6 +1423,39 @@ export const UtilitiesPage = ({
         vscodeExtCard: tailText(lang ?? "", 'Launch VS Code (Extension)', '启动 VS Code（扩展）'),
         vscodeExtDesc: tailText(lang ?? "", 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer', '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'),
         virtualRepositoryCard: tailText(lang ?? "", 'Virtual Repository', '虚拟仓库'),
+        githubRepoMaintCard: tailText(lang ?? "", 'GitHub repository maintenance', 'GitHub 仓库自动维护', 'GitHub 倉庫自動維護'),
+        githubRepoMaintDesc: tailText(lang ?? "", 'Start a coding task in a local checkout when GitHub reports an issue, pull request, push, or failed check', '仓库出现议题、拉取请求、推送或检查失败时，在本地检出里自动开工', '倉庫出現議題、拉取請求、推送或檢查失敗時，在本機檢出裡自動開工'),
+        githubRepoMaintOpen: tailText(lang ?? "", 'Open', '进入', '進入'),
+        hubDeployCard: tailText(lang ?? "", 'Deploy Hub', 'HUB部署工具'),
+        hubDeployDesc: tailText(lang ?? "", 'Install a Hub from source over SSH and register it with Hub Center', '填写 IP、SSH 账号后，从源码安装 Hub 并向 Hub Center 注册'),
+        hubDeployEmail: tailText(lang ?? "", 'Owner email', '注册邮箱'),
+        hubDeployEmailHint: tailText(lang ?? "", 'Hub Center uses this address as the owner of the new Hub', 'Hub Center 用这个邮箱作为新 Hub 的主人'),
+        hubDeployConfirm: tailText(lang ?? "", 'Install', '确认安装'),
+        hubDeployWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
+        hubDeployEmpty: tailText(lang ?? "", 'No Hub installs yet', '还没有部署记录'),
+        mcpServerCard: tailText(lang ?? "", 'MCP server', 'MCP服务器'),
+        mcpServerDesc: tailText(lang ?? "", 'Let Cursor, Claude, and Codex create tasks on this computer and read the results', '让 Cursor、Claude、Codex 在这台电脑上创建任务并取回结果'),
+        botNodeCard: tailText(lang ?? "", 'Private bot node', '私有Bot节点'),
+        botNodeDesc: tailText(lang ?? "", 'Install desktopd and a bot node, then register it to this Hub with an enroll code', '安装 desktopd 与 bot 节点，并用注册码注册到当前 Hub'),
+        botNodeName: tailText(lang ?? "", 'Name (optional)', '名称（可选）'),
+        botNodeSudo: tailText(lang ?? "", 'This account can sudo', '这个账号可以 sudo'),
+        botNodeWithSrv: tailText(lang ?? "", 'Also install MaClawSrv', '同时安装 MaClawSrv'),
+        botNodeCode: tailText(lang ?? "", 'Enroll code', '注册码'),
+        botNodeCodeHint: tailText(lang ?? "", 'Ask the Hub admin: Bot management, Bot nodes, Generate intranet enroll code. 16 hex digits, valid for 3 hours, one use. The install waits until desktopd is healthy, then botnode exchanges this code with this Hub.', '向已连接 Hub 的管理员要：Bot 管理 → Bot 节点 → 生成内网注册码。16 位，3 小时内有效，只能用一次。安装会等 desktopd 健康后，再用这个码向这台 Hub 注册。'),
+        botNodeConfirm: tailText(lang ?? "", 'Install and register', '确认安装并注册'),
+        botNodeWorking: tailText(lang ?? "", 'Installing…', '正在安装…'),
+        botNodeEmpty: tailText(lang ?? "", 'No private nodes yet', '还没有私有节点'),
+        botNodeRegister: tailText(lang ?? "", 'Register with a new code', '用新码注册'),
+        botNodeRegisterHint: tailText(lang ?? "", 'The previous code was not reused. Ask the admin for a new one after desktopd is healthy.', '不会重试旧码。desktopd 已经健康时，向管理员要一张新码再注册。'),
+        deploySectionHub: tailText(lang ?? "", 'Deploy a new Hub', '部署新 Hub'),
+        deploySectionBot: tailText(lang ?? "", 'Deploy a new node', '部署新节点'),
+        deployRecords: tailText(lang ?? "", 'Deployment records', '部署记录'),
+        deployAccessUrl: tailText(lang ?? "", 'Access URL', '访问地址'),
+        deployAdminAccount: tailText(lang ?? "", 'Admin account', '管理员账号'),
+        deployAdminPassword: tailText(lang ?? "", 'Admin password', '管理员密码'),
+        deployHubId: 'Hub ID',
+        deployBotHubUrl: tailText(lang ?? "", 'Hub address', 'Hub 地址'),
+        deployBotNodeId: tailText(lang ?? "", 'Node ID', '节点 ID'),
         browserExtensionCard: tailText(lang ?? "", 'Browser extension', '浏览器插件', '瀏覽器外掛'),
         browserExtensionDesc: tailText(lang ?? "", 'Download a paper from Chrome, Edge, or Safari into Companion.', '从 Chrome、Edge 或 Safari 把论文下载到伴读。', '從 Chrome、Edge 或 Safari 把論文下載到伴讀。'),
         browserExtensionRemove: tailText(lang ?? "", 'Remove registration', '移除登记', '移除登記'),
@@ -1386,6 +1577,8 @@ export const UtilitiesPage = ({
         expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : tailText(lang ?? "", 'Optimized from: deleted expert', '优化自：已删除专家'),
         expertSearchPlaceholder: lang === 'zh-Hant' ? '搜尋專家' : tailText(lang ?? "", 'Search experts', '搜索专家'),
         expertFilterLabel: lang === 'zh-Hant' ? '篩選專家' : tailText(lang ?? "", 'Filter experts', '筛选专家'),
+        expertCategoryLabel: lang === 'zh-Hant' ? '篩選分類' : tailText(lang ?? "", 'Filter categories', '筛选分类'),
+        expertCategoryOther: lang === 'zh-Hant' ? '其它' : tailText(lang ?? "", 'Other', '其它'),
         expertFilterAll: lang === 'zh-Hant' ? '全部' : tailText(lang ?? "", 'All', '全部'),
         expertFilterSystem: lang === 'zh-Hant' ? '系統預設' : tailText(lang ?? "", 'System', '系统默认'),
         expertFilterCustom: lang === 'zh-Hant' ? '我的專家' : tailText(lang ?? "", 'My experts', '我的专家'),
@@ -2287,6 +2480,396 @@ export const UtilitiesPage = ({
         return () => window.clearInterval(timer);
     }, [active, view, browserExtWaitsForLoad, refreshBrowserExtensionStatus]);
 
+    const refreshHubDeploys = useCallback(async () => {
+        try {
+            const rows = await ListHubDeploys();
+            if (!mountedRef.current) return;
+            setHubRows(Array.isArray(rows) ? rows as HubDeployRow[] : []);
+        } catch (err) {
+            if (!mountedRef.current) return;
+            setHubError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+    useEffect(() => {
+        if (!active || view !== 'hub-deploy') return;
+        void refreshHubDeploys();
+        const off = EventsOn('hub-deploys-changed', () => { void refreshHubDeploys(); });
+        return () => { if (typeof off === 'function') off(); };
+    }, [active, view, refreshHubDeploys]);
+    const submitHubDeploy = async () => {
+        setHubError('');
+        setHubBusy(true);
+        try {
+            await DeployHub({
+                host: hubHost.trim(),
+                port: Number(hubPort) || 22,
+                user: hubUser.trim(),
+                password: hubPassword,
+                email: hubEmail.trim(),
+            });
+            setHubPassword('');
+            await refreshHubDeploys();
+        } catch (err) {
+            if (mountedRef.current) setHubError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setHubBusy(false);
+        }
+    };
+    const refreshBotNodes = useCallback(async () => {
+        try {
+            const rows = await ListBotNodes();
+            if (!mountedRef.current) return;
+            setBotRows(Array.isArray(rows) ? rows as BotNodeRow[] : []);
+        } catch (err) {
+            if (!mountedRef.current) return;
+            setBotError(err instanceof Error ? err.message : String(err));
+        }
+    }, []);
+    useEffect(() => {
+        if (!active || view !== 'bot-node') return;
+        void refreshBotNodes();
+        const off = EventsOn('bot-nodes-changed', () => { void refreshBotNodes(); });
+        return () => { if (typeof off === 'function') off(); };
+    }, [active, view, refreshBotNodes]);
+    const submitBotNode = async () => {
+        setBotError('');
+        setBotBusy(true);
+        try {
+            await DeployBotNode({
+                name: botName.trim(),
+                host: botHost.trim(),
+                port: Number(botPort) || 22,
+                user: botUser.trim(),
+                password: botPassword,
+                can_sudo: botSudo,
+                with_srv: botWithSrv,
+                enroll_code: botCode.trim(),
+            });
+            setBotPassword('');
+            setBotCode('');
+            await refreshBotNodes();
+        } catch (err) {
+            if (mountedRef.current) setBotError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setBotBusy(false);
+        }
+    };
+    const submitBotNodeEnroll = async (id: string) => {
+        const draft = botRetry[id] ?? { password: '', code: '' };
+        setBotError('');
+        setBotBusy(true);
+        try {
+            await RegisterBotNode({ id, password: draft.password, enroll_code: draft.code.trim() });
+            setBotRetry((prev) => ({ ...prev, [id]: { password: '', code: '' } }));
+            await refreshBotNodes();
+        } catch (err) {
+            if (mountedRef.current) setBotError(err instanceof Error ? err.message : String(err));
+        } finally {
+            if (mountedRef.current) setBotBusy(false);
+        }
+    };
+    /** Key of the deploy-record value currently showing the copied feedback. */
+    const [deployCopiedKey, setDeployCopiedKey] = useState('');
+    const deployCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => {
+        if (deployCopyTimer.current) clearTimeout(deployCopyTimer.current);
+    }, []);
+    const copyDeployText = async (key: string, text: string) => {
+        let copied = false;
+        try {
+            copied = await ClipboardSetText(text) !== false;
+        } catch {
+            copied = false;
+        }
+        if (!copied || !mountedRef.current) return;
+        setDeployCopiedKey(key);
+        if (deployCopyTimer.current) clearTimeout(deployCopyTimer.current);
+        deployCopyTimer.current = setTimeout(() => {
+            if (mountedRef.current) setDeployCopiedKey('');
+        }, 2000);
+    };
+    /** Trailing copy affordance for a deploy-record value (URL / ID / credentials). */
+    const deployCopyButton = (key: string, text: string) => (
+        <button
+            type="button"
+            className="utilities-deploy-copy"
+            data-copied={deployCopiedKey === key ? 'true' : undefined}
+            onClick={() => { void copyDeployText(key, text); }}
+        >
+            {deployCopiedKey === key ? t.browserExtensionCopied : t.browserExtensionCopy}
+        </button>
+    );
+    if (view === 'bot-node') {
+        return (
+            <div className="utilities-page utilities-deploy" data-testid="bot-node-panel" data-mode={mode}>
+                <div className="utilities-page__header utilities-deploy__header">
+                    <button type="button" className="utilities-deploy__back" onClick={() => setView('home')} disabled={botBusy}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6" /></svg>
+                        {t.back}
+                    </button>
+                    <div className="utilities-deploy__hero">
+                        <span className="utilities-deploy__hero-icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                        <div className="utilities-deploy__hero-text">
+                            <h2 className="utilities-page__title">{t.botNodeCard}</h2>
+                            <p className="utilities-page__subtitle">{t.botNodeDesc}</p>
+                        </div>
+                    </div>
+                </div>
+                {botError ? <p className="utilities-error" role="alert">{botError}</p> : null}
+                <form className="utilities-deploy-card" onSubmit={(event) => { event.preventDefault(); void submitBotNode(); }}>
+                    <div className="utilities-deploy-card__head">
+                        <span className="utilities-deploy-card__head-icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                        <h3 className="utilities-deploy-card__title">{t.deploySectionBot}</h3>
+                    </div>
+                    <div className="utilities-deploy-card__grid">
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>IP</span>
+                            <input className="utilities-input" value={botHost} onChange={(event) => setBotHost(event.target.value)} autoComplete="off" required placeholder={tailText(lang ?? '', 'e.g. 192.168.1.20', '例如 192.168.1.20')} />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH port', 'SSH 端口')}</span>
+                            <input className="utilities-input" value={botPort} onChange={(event) => setBotPort(event.target.value)} inputMode="numeric" placeholder="22" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH user', 'SSH 用户')}</span>
+                            <input className="utilities-input" value={botUser} onChange={(event) => setBotUser(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                            <input className="utilities-input" type="password" value={botPassword} onChange={(event) => setBotPassword(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{t.botNodeName}</span>
+                            <input className="utilities-input" value={botName} onChange={(event) => setBotName(event.target.value)} autoComplete="off" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{t.botNodeCode}</span>
+                            <input className="utilities-input" value={botCode} onChange={(event) => setBotCode(event.target.value)} autoComplete="off" spellCheck={false} required />
+                        </label>
+                        <div className="utilities-deploy-checks utilities-deploy-field--full">
+                            <label className="utilities-deploy-check">
+                                <input type="checkbox" checked={botSudo} onChange={(event) => setBotSudo(event.target.checked)} />
+                                {t.botNodeSudo}
+                            </label>
+                            <label className="utilities-deploy-check">
+                                <input type="checkbox" checked={botWithSrv} onChange={(event) => setBotWithSrv(event.target.checked)} />
+                                {t.botNodeWithSrv}
+                            </label>
+                        </div>
+                    </div>
+                    <p className="utilities-deploy-note">{t.botNodeCodeHint}</p>
+                    <div className="utilities-deploy-card__actions">
+                        <button type="submit" aria-busy={botBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={botBusy}>{botBusy ? t.botNodeWorking : t.botNodeConfirm}</button>
+                    </div>
+                </form>
+                <section className="utilities-deploy-records">
+                    <div className="utilities-deploy-records__head">
+                        <h3 className="utilities-deploy-records__title">{t.deployRecords}</h3>
+                        {botRows.length ? <span className="utilities-deploy-records__count">{botRows.length}</span> : null}
+                    </div>
+                    {botRows.length === 0 ? (
+                        <div className="utilities-deploy-empty">
+                            <span className="utilities-deploy-empty__icon" aria-hidden="true"><ToolCardIcon kind="node" /></span>
+                            <p>{t.botNodeEmpty}</p>
+                        </div>
+                    ) : (
+                        <ul className="utilities-deploy-records__list" data-testid="bot-node-list">
+                            {botRows.map((row) => {
+                                const retry = botRetry[row.id] ?? { password: '', code: '' };
+                                const canRetry = row.status === 'failed' && !row.node_id;
+                                const busyRow = row.status === 'deploying' || row.status === 'registering';
+                                return (
+                                    <li key={row.id} className="utilities-deploy-record" data-status={row.status}>
+                                        <div className="utilities-deploy-record__head">
+                                            <div className="utilities-deploy-record__target">
+                                                {row.name ? (
+                                                    <>
+                                                        <span className="utilities-deploy-record__name">{row.name}</span>
+                                                        <span className="utilities-deploy-record__addr">{row.user}@{row.host}:{row.port || 22}</span>
+                                                    </>
+                                                ) : (
+                                                    <span className="utilities-deploy-record__name utilities-deploy-record__name--mono">{row.user}@{row.host}:{row.port || 22}</span>
+                                                )}
+                                                {row.with_srv ? <span className="utilities-deploy-record__chip">MaClawSrv</span> : null}
+                                            </div>
+                                            <span className="utilities-deploy-record__badge" data-status={row.status}>
+                                                <span className="utilities-deploy-record__badge-dot" aria-hidden="true" />
+                                                {botNodeStatusText(row)}
+                                            </span>
+                                        </div>
+                                        {row.hub_url || row.node_id ? (
+                                            <dl className="utilities-deploy-record__fields">
+                                                {row.hub_url ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployBotHubUrl}</dt>
+                                                        <dd><code>{row.hub_url}</code>{deployCopyButton(`bot-hub-${row.id}`, row.hub_url)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.node_id ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployBotNodeId}</dt>
+                                                        <dd><code>{row.node_id}</code>{deployCopyButton(`bot-id-${row.id}`, row.node_id)}</dd>
+                                                    </div>
+                                                ) : null}
+                                            </dl>
+                                        ) : null}
+                                        {row.message ? <p className="utilities-deploy-record__message">{row.message}</p> : null}
+                                        {canRetry ? (
+                                            <form className="utilities-deploy-record__retry" onSubmit={(event) => { event.preventDefault(); void submitBotNodeEnroll(row.id); }}>
+                                                <p className="utilities-deploy-record__retry-note">{t.botNodeRegisterHint}</p>
+                                                <div className="utilities-deploy-record__retry-grid">
+                                                    <label className="utilities-deploy-field">
+                                                        <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                                                        <input className="utilities-input" type="password" value={retry.password} autoComplete="off" onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            setBotRetry((prev) => ({ ...prev, [row.id]: { password: value, code: prev[row.id]?.code ?? '' } }));
+                                                        }} required />
+                                                    </label>
+                                                    <label className="utilities-deploy-field">
+                                                        <span>{t.botNodeCode}</span>
+                                                        <input className="utilities-input" value={retry.code} autoComplete="off" spellCheck={false} onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            setBotRetry((prev) => ({ ...prev, [row.id]: { password: prev[row.id]?.password ?? '', code: value } }));
+                                                        }} required />
+                                                    </label>
+                                                </div>
+                                                <div className="utilities-deploy-record__retry-actions">
+                                                    <button type="submit" aria-busy={botBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={botBusy}>{t.botNodeRegister}</button>
+                                                </div>
+                                            </form>
+                                        ) : null}
+                                        {!busyRow ? (
+                                            <div className="utilities-deploy-record__footer">
+                                                <button type="button" className="utilities-btn utilities-btn--quiet-danger utilities-deploy-record__remove" onClick={() => { void ClearBotNodeResult(row.id).then(() => refreshBotNodes()); }}>{t.delete}</button>
+                                            </div>
+                                        ) : null}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </section>
+            </div>
+        );
+    }
+    if (view === 'hub-deploy') {
+        return (
+            <div className="utilities-page utilities-deploy" data-testid="hub-deploy-panel" data-mode={mode}>
+                <div className="utilities-page__header utilities-deploy__header">
+                    <button type="button" className="utilities-deploy__back" onClick={() => setView('home')} disabled={hubBusy}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6" /></svg>
+                        {t.back}
+                    </button>
+                    <div className="utilities-deploy__hero">
+                        <span className="utilities-deploy__hero-icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                        <div className="utilities-deploy__hero-text">
+                            <h2 className="utilities-page__title">{t.hubDeployCard}</h2>
+                            <p className="utilities-page__subtitle">{t.hubDeployDesc}</p>
+                        </div>
+                    </div>
+                </div>
+                {hubError ? <p className="utilities-error" role="alert">{hubError}</p> : null}
+                <form className="utilities-deploy-card" onSubmit={(event) => { event.preventDefault(); void submitHubDeploy(); }}>
+                    <div className="utilities-deploy-card__head">
+                        <span className="utilities-deploy-card__head-icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                        <h3 className="utilities-deploy-card__title">{t.deploySectionHub}</h3>
+                    </div>
+                    <div className="utilities-deploy-card__grid">
+                        <label className="utilities-deploy-field">
+                            <span>IP</span>
+                            <input className="utilities-input" value={hubHost} onChange={(event) => setHubHost(event.target.value)} autoComplete="off" required placeholder={tailText(lang ?? '', 'e.g. 192.168.1.20', '例如 192.168.1.20')} />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH port', 'SSH 端口')}</span>
+                            <input className="utilities-input" value={hubPort} onChange={(event) => setHubPort(event.target.value)} inputMode="numeric" placeholder="22" />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH user', 'SSH 用户')}</span>
+                            <input className="utilities-input" value={hubUser} onChange={(event) => setHubUser(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field">
+                            <span>{tailText(lang ?? '', 'SSH password', 'SSH 密码')}</span>
+                            <input className="utilities-input" type="password" value={hubPassword} onChange={(event) => setHubPassword(event.target.value)} autoComplete="off" required />
+                        </label>
+                        <label className="utilities-deploy-field utilities-deploy-field--full">
+                            <span>{t.hubDeployEmail}</span>
+                            <input className="utilities-input" type="email" value={hubEmail} onChange={(event) => setHubEmail(event.target.value)} autoComplete="off" required />
+                        </label>
+                    </div>
+                    <p className="utilities-deploy-note">{t.hubDeployEmailHint}</p>
+                    <div className="utilities-deploy-card__actions">
+                        <button type="submit" aria-busy={hubBusy || undefined} className="utilities-btn utilities-btn--primary utilities-deploy-card__submit" disabled={hubBusy}>{hubBusy ? t.hubDeployWorking : t.hubDeployConfirm}</button>
+                    </div>
+                </form>
+                <section className="utilities-deploy-records">
+                    <div className="utilities-deploy-records__head">
+                        <h3 className="utilities-deploy-records__title">{t.deployRecords}</h3>
+                        {hubRows.length ? <span className="utilities-deploy-records__count">{hubRows.length}</span> : null}
+                    </div>
+                    {hubRows.length === 0 ? (
+                        <div className="utilities-deploy-empty">
+                            <span className="utilities-deploy-empty__icon" aria-hidden="true"><ToolCardIcon kind="hub" /></span>
+                            <p>{t.hubDeployEmpty}</p>
+                        </div>
+                    ) : (
+                        <ul className="utilities-deploy-records__list" data-testid="hub-deploy-list">
+                            {hubRows.map((row) => {
+                                const busyRow = row.status === 'deploying' || row.status === 'registering';
+                                const kind = hubDeployStatusKind(row);
+                                return (
+                                    <li key={row.id} className="utilities-deploy-record" data-status={kind}>
+                                        <div className="utilities-deploy-record__head">
+                                            <div className="utilities-deploy-record__target">
+                                                <span className="utilities-deploy-record__name utilities-deploy-record__name--mono">{row.user}@{row.host}:{row.port || 22}</span>
+                                            </div>
+                                            <span className="utilities-deploy-record__badge" data-status={kind}>
+                                                <span className="utilities-deploy-record__badge-dot" aria-hidden="true" />
+                                                {hubDeployStatusText(row)}
+                                            </span>
+                                        </div>
+                                        {row.public_url || row.hub_id || (row.admin_user && row.admin_password) ? (
+                                            <dl className="utilities-deploy-record__fields">
+                                                {row.public_url ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployAccessUrl}</dt>
+                                                        <dd><code>{row.public_url}</code>{deployCopyButton(`hub-url-${row.id}`, row.public_url)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.hub_id ? (
+                                                    <div className="utilities-deploy-record__field">
+                                                        <dt>{t.deployHubId}</dt>
+                                                        <dd><code>{row.hub_id}</code>{deployCopyButton(`hub-id-${row.id}`, row.hub_id)}</dd>
+                                                    </div>
+                                                ) : null}
+                                                {row.admin_user && row.admin_password ? (
+                                                    <>
+                                                        <div className="utilities-deploy-record__field">
+                                                            <dt>{t.deployAdminAccount}</dt>
+                                                            <dd><code>{row.admin_user}</code>{deployCopyButton(`hub-admin-${row.id}`, row.admin_user)}</dd>
+                                                        </div>
+                                                        <div className="utilities-deploy-record__field">
+                                                            <dt>{t.deployAdminPassword}</dt>
+                                                            <dd><code>{row.admin_password}</code>{deployCopyButton(`hub-admin-pass-${row.id}`, row.admin_password)}</dd>
+                                                        </div>
+                                                    </>
+                                                ) : null}
+                                            </dl>
+                                        ) : null}
+                                        {row.message ? <p className="utilities-deploy-record__message">{row.message}</p> : null}
+                                        {!busyRow ? (
+                                            <div className="utilities-deploy-record__footer">
+                                                <button type="button" className="utilities-btn utilities-btn--quiet-danger utilities-deploy-record__remove" onClick={() => { void ClearHubDeployResult(row.id).then(() => refreshHubDeploys()); }}>{t.delete}</button>
+                                            </div>
+                                        ) : null}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </section>
+            </div>
+        );
+    }
     if (view === 'browser-extension') {
         return (
             <div className="utilities-page browser-ext" data-testid="browser-extension-panel" data-mode={mode}>
@@ -2372,10 +2955,18 @@ export const UtilitiesPage = ({
         return <VirtualRepositoryWorkspace isZh={lang || (isZh ? "zh-Hans" : "en")} onBack={() => setView('home')} onOpenCodingTask={onOpenVirtualRepositoryTask} />;
     }
 
+    if (view === 'github-repo-maint') {
+        return <GitHubRepoMaintWorkspace lang={lang ?? ''} onBack={() => setView('home')} />;
+    }
+
+    if (view === 'mcp-server') {
+        return <MCPServerPanel lang={lang ?? ''} onBack={() => setView('home')} />;
+    }
+
     if (view === 'home') {
         const toolCards: Array<{
             key: string;
-            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension';
+            icon: 'survey' | 'meeting' | 'vscode' | 'repository' | 'extension' | 'hub' | 'node' | 'mcp';
             title: string;
             desc: string;
             cta: string;
@@ -2384,12 +2975,36 @@ export const UtilitiesPage = ({
             onClick: () => void;
         }> = [
             {
+                key: 'mcp-server',
+                icon: 'mcp',
+                title: t.mcpServerCard,
+                desc: t.mcpServerDesc,
+                cta: t.open,
+                onClick: () => setView('mcp-server'),
+            },
+            {
+                key: 'hub-deploy',
+                icon: 'hub',
+                title: t.hubDeployCard,
+                desc: t.hubDeployDesc,
+                cta: t.open,
+                onClick: () => setView('hub-deploy'),
+            },
+            {
                 key: 'virtual-repository',
                 icon: 'repository',
                 title: t.virtualRepositoryCard,
                 desc: t.virtualRepositoryDesc,
                 cta: t.open,
                 onClick: () => setView('virtual-repository'),
+            },
+            {
+                key: 'github-repo-maint',
+                icon: 'repository',
+                title: t.githubRepoMaintCard,
+                desc: t.githubRepoMaintDesc,
+                cta: t.githubRepoMaintOpen,
+                onClick: () => setView('github-repo-maint'),
             },
             {
                 key: 'survey',
@@ -2437,6 +3052,14 @@ export const UtilitiesPage = ({
                 starting: vscodeExtStarting,
                 disabled: vscodeStarting || vscodeExtStarting,
                 onClick: () => { void handleLaunchVSCodeExt(); },
+            },
+            {
+                key: 'bot-node',
+                icon: 'node',
+                title: t.botNodeCard,
+                desc: t.botNodeDesc,
+                cta: t.open,
+                onClick: () => setView('bot-node'),
             },
         ];
         // Shared search + market toolbar for both expert surfaces: the
@@ -2561,6 +3184,36 @@ export const UtilitiesPage = ({
                         </div>
                         <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
                         <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
+                    </div> : null}
+                    {/* Topmost row: the HubCenter-administered category chips
+                        (全部 / taxonomy names / 其它). Hidden entirely until the
+                        taxonomy loads so an unconfigured deployment keeps today's
+                        single source-filter row. */}
+                    {expertCategoryNames.length > 0 ? <div className="utilities-experts__filters utilities-experts__filters--category" role="group" aria-label={t.expertCategoryLabel}>
+                        <button
+                            type="button"
+                            className={`utilities-experts__filter${expertCategoryFilter === 'all' ? ' is-active' : ''}`}
+                            data-testid="utilities-expert-category-all"
+                            aria-pressed={expertCategoryFilter === 'all'}
+                            onClick={() => setExpertCategoryFilter('all')}
+                        >{t.expertFilterAll}</button>
+                        {expertCategoryNames.filter(name => name !== EXPERT_CATEGORY_OTHER_LABEL).map(name => (
+                            <button
+                                key={name}
+                                type="button"
+                                className={`utilities-experts__filter${expertCategoryFilter === name ? ' is-active' : ''}`}
+                                data-testid={`utilities-expert-category-${name}`}
+                                aria-pressed={expertCategoryFilter === name}
+                                onClick={() => setExpertCategoryFilter(name)}
+                            >{name}</button>
+                        ))}
+                        <button
+                            type="button"
+                            className={`utilities-experts__filter${expertCategoryFilter === EXPERT_CATEGORY_OTHER ? ' is-active' : ''}`}
+                            data-testid="utilities-expert-category-other"
+                            aria-pressed={expertCategoryFilter === EXPERT_CATEGORY_OTHER}
+                            onClick={() => setExpertCategoryFilter(EXPERT_CATEGORY_OTHER)}
+                        >{t.expertCategoryOther}</button>
                     </div> : null}
                     <div className="utilities-experts__filters" role="group" aria-label={t.expertFilterLabel}>
                         {([

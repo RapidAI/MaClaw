@@ -1446,10 +1446,10 @@ func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query str
 	if cb == nil || cb.semanticSurface == nil {
 		return
 	}
-	userDeclaresSSH, userRejectsSSH := semanticUserTextSSHDirectives(cb.userText)
-	if userRejectsSSH {
+	if semanticUserTextBansSSH(cb.userText) {
 		return
 	}
+	userDeclaresSSH := semanticUserTextDeclaresSSH(cb.userText)
 	queryDeclaresSSH, _ := semanticUserTextSSHDirectives(query)
 	if !userDeclaresSSH && !queryDeclaresSSH {
 		return
@@ -1476,6 +1476,15 @@ func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query str
 func semanticUserTextDeclaresSSH(text string) bool {
 	declared, _ := semanticUserTextSSHDirectives(text)
 	return declared
+}
+
+// semanticUserTextBansSSH is a request that tells the model not to use ssh
+// and never asks for it. A later constraint such as "不要修改 SSH 配置"
+// still marks a mention as rejected, but it must not cancel an earlier
+// "调用 ssh".
+func semanticUserTextBansSSH(text string) bool {
+	declared, rejected := semanticUserTextSSHDirectives(text)
+	return rejected && !declared
 }
 
 func semanticUserTextSSHDirectives(text string) (declared, rejected bool) {

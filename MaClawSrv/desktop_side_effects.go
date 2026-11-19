@@ -126,15 +126,91 @@ func desktopSideNotePublish(runID string, spec browser.PublishSpec, rep *browser
 	desktopSideNote(runID, b.String())
 }
 
+// desktopSideConfirmed is host -> titles this run later proved published.
+// A failed click is retired only when it is that same article. Another
+// title left on the same host stays.
+func desktopSideConfirmed(runID string) map[string][]string {
+	out := map[string][]string{}
+	for _, key := range desktopLedgerKeysForRun(runID) {
+		for _, e := range desktopLedgerEntries(key) {
+			if e.Kind != "posted" || e.Run != runID || e.Host == "" || e.URL == "" || e.Detail == string(browser.PublishSubmitted) {
+				continue
+			}
+			out[e.Host] = append(out[e.Host], e.Title)
+		}
+	}
+	return out
+}
+
+func desktopSideNoteTitle(line string) string {
+	i := strings.Index(line, "《")
+	j := strings.Index(line, "》")
+	if i < 0 || j <= i {
+		return ""
+	}
+	return line[i+len("《") : j]
+}
+
+// desktopSideTitleSame: the note keeps only the first 30 runes of the title.
+func desktopSideTitleSame(note, confirmed string) bool {
+	raw := strings.Join(strings.Fields(note), "")
+	truncated := strings.HasSuffix(raw, "…")
+	note = strings.TrimRight(raw, "…")
+	confirmed = strings.Join(strings.Fields(confirmed), "")
+	if note == "" || confirmed == "" {
+		return false
+	}
+	if note == confirmed {
+		return true
+	}
+	// Only a truncated note is a prefix of the full title. A short title
+	// such as "能力" must not retire "能力榜第一".
+	return truncated && strings.HasPrefix(confirmed, note)
+}
+
+func desktopSideNoteRetired(line string, confirmed map[string][]string) bool {
+	host := line
+	if i := strings.Index(line, "："); i >= 0 {
+		host = line[:i]
+	}
+	titles, ok := confirmed[host]
+	if !ok {
+		return false
+	}
+	note := desktopSideNoteTitle(line)
+	if note == "" {
+		return true
+	}
+	named := false
+	for _, title := range titles {
+		if strings.TrimSpace(title) == "" {
+			continue
+		}
+		named = true
+		if desktopSideTitleSame(note, title) {
+			return true
+		}
+	}
+	return !named
+}
+
 // desktopSideNotice is the extra notice lines for a run that is not done.
 func desktopSideNotice(runID string) string {
 	cause, list := desktopSideTake(runID)
+	confirmed := desktopSideConfirmed(runID)
+	var kept []string
+	for _, line := range list {
+		if desktopSideNoteRetired(line, confirmed) {
+			continue
+		}
+		kept = append(kept, line)
+	}
 	var lines []string
 	if cause != "" {
 		lines = append(lines, "原因："+cause)
 	}
-	if len(list) > 0 {
-		lines = append(lines, "留下的痕迹："+strings.Join(list, "；"))
+	if len(kept) > 0 {
+		lines = append(lines, "留下的痕迹："+strings.Join(kept, "；"))
 	}
 	return strings.Join(lines, "\n")
 }

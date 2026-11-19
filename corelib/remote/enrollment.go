@@ -3,7 +3,6 @@ package remote
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,26 +94,15 @@ type HubCenterResolveHub struct {
 // EnrollmentClient performs the full HubCenter discovery → Hub resolve → Enroll flow.
 // Both GUI and TUI share this implementation.
 type EnrollmentClient struct {
-	HTTPClient    *http.Client  // if nil, a default TLS-skip client is created
+	HTTPClient    *http.Client  // if nil, a verified-TLS client is created
 	EnrollTimeout time.Duration // if zero, EnrollTimeout is used
 }
 
-// NewEnrollmentClient creates an EnrollmentClient with a default HTTP client
-// that skips TLS certificate verification (hub servers commonly use self-signed certs).
+// NewEnrollmentClient creates an EnrollmentClient with verified TLS and
+// connection pooling shared with the other Hub clients.
 func NewEnrollmentClient() *EnrollmentClient {
 	return &EnrollmentClient{
 		HTTPClient: NewHubHTTPClient(),
-	}
-}
-
-// NewHubHTTPClient creates an HTTP client suitable for hub/hubcenter communication.
-// It skips TLS certificate verification because hub servers commonly use self-signed certs.
-func NewHubHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
 	}
 }
 

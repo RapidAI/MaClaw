@@ -27,16 +27,24 @@ func memoryPressured(used, limit int64, fraction float64) bool {
 }
 
 func (s *Service) desktopMemoryPressured(ctx context.Context, tenantID, userID string) bool {
+	pressed, _ := s.desktopMemoryState(ctx, tenantID, userID)
+	return pressed
+}
+
+// desktopMemoryState reports whether the container is over the line.
+// A read that fails is not pressure. The error is kept so a dead tunnel
+// can queue the message instead of being read as free memory.
+func (s *Service) desktopMemoryState(ctx context.Context, tenantID, userID string) (bool, error) {
 	if s == nil || s.Desktop == nil {
-		return false
+		return false, nil
 	}
 	src, ok := s.Desktop.(desktopMemorySource)
 	if !ok {
-		return false
+		return false, nil
 	}
 	used, limit, err := src.ContainerMemory(ctx, tenantID, userID)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return desktop.MemoryPressured(used, limit)
+	return desktop.MemoryPressured(used, limit), nil
 }

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
-import { AnswerBotLocalAccessPrompt, GetPendingBotLocalAccessPrompts } from '../../../wailsjs/go/main/App';
+import { AnswerBotLocalAccessPrompt, GetBotLocalAccess, GetPendingBotLocalAccessPrompts, SaveBotLocalAccess } from '../../../wailsjs/go/main/App';
 import { localizeText } from '../../i18n';
-import { formatBytes, type BotLocalAccessPrompt as Prompt } from './botLocalAccess';
+import { formatBytes, type BotLocalAccessPrompt as Prompt, type BotLocalAccessState } from './botLocalAccess';
 
 /**
  * The question a cloud bot raises before it touches something new on this
@@ -13,6 +13,8 @@ export function BotLocalAccessPrompt({ lang }: { lang: string }) {
     const [queue, setQueue] = useState<Prompt[]>([]);
     const [now, setNow] = useState(() => Date.now());
     const [seen] = useState(() => new Map<string, number>());
+    const [fullBusy, setFullBusy] = useState(false);
+    const [fullError, setFullError] = useState('');
 
     useEffect(() => {
         const add = (p: Prompt) => {
@@ -26,6 +28,9 @@ export function BotLocalAccessPrompt({ lang }: { lang: string }) {
         const tick = window.setInterval(() => setNow(Date.now()), 1000);
         return () => { offAsk(); offDone(); window.clearInterval(tick); };
     }, [seen]);
+
+    const currentID = queue[0]?.id;
+    useEffect(() => { setFullError(''); }, [currentID]);
 
     const p = queue[0];
     if (!p) return null;
@@ -45,8 +50,24 @@ export function BotLocalAccessPrompt({ lang }: { lang: string }) {
     if (p.size) notes.push(formatBytes(p.size));
     const left = Math.max(0, Math.ceil(((seen.get(p.id) || now) + (p.seconds || 120) * 1000 - now) / 1000));
     const answer = (a: 'deny' | 'once' | 'always') => {
+        if (fullBusy) return;
         setQueue(q => q.filter(x => x.id !== p.id));
         void AnswerBotLocalAccessPrompt(p.id, a).catch(() => {});
+    };
+    const allowFull = async () => {
+        if (fullBusy) return;
+        setFullBusy(true);
+        setFullError('');
+        try {
+            const state: BotLocalAccessState = await GetBotLocalAccess();
+            if (!state?.settings) throw new Error(L('Could not read the current permission.', '读不到当前权限。', '讀不到目前權限。'));
+            await SaveBotLocalAccess({ ...state.settings, permission: 'full' });
+            setQueue(q => q.filter(x => x.id !== p.id));
+        } catch (error) {
+            setFullError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setFullBusy(false);
+        }
     };
     return (
         <div className="modal-backdrop custom-dialog-backdrop bot-local-prompt-backdrop" data-testid="bot-local-prompt">
@@ -59,11 +80,16 @@ export function BotLocalAccessPrompt({ lang }: { lang: string }) {
                     {p.remote ? <p className="bot-llm-dialog__subhint">{L('Cloud side:', '云端位置：', '雲端位置：')} {p.remote}</p> : null}
                     {notes.length ? <p className="bot-llm-dialog__subhint">{notes.join(' · ')}</p> : null}
                     <p className="bot-llm-dialog__subhint">{L(`No answer in ${left}s counts as no.`, `${left} 秒内不回答视为拒绝。`, `${left} 秒內不回答視為拒絕。`)}{queue.length > 1 ? ` (+${queue.length - 1})` : ''}</p>
+                    <p className="bot-llm-dialog__subhint">
+                        <button type="button" className="btn-link" data-testid="bot-local-full" disabled={fullBusy} onClick={() => { void allowFull(); }}>{L('Switch to full access', '改为完全权限', '改為完全權限')}</button>
+                        {L(' Later writes and local access will not ask.', ' 之后写入和访问本地资源都不再询问。', ' 之後寫入和存取本機資源都不再詢問。')}
+                    </p>
+                    {fullError ? <p className="bot-llm-dialog__notice" role="status">{fullError}</p> : null}
                 </div>
                 <div className="modal-footer custom-dialog__footer">
-                    <button type="button" className="btn-secondary" data-testid="bot-local-deny" onClick={() => answer('deny')}>{L('Deny', '拒绝', '拒絕')}</button>
-                    <button type="button" className="btn-secondary" data-testid="bot-local-once" onClick={() => answer('once')}>{L('Allow once', '允许本次', '允許本次')}</button>
-                    <button type="button" className="btn-primary" data-testid="bot-local-always" onClick={() => answer('always')}>{L('Always allow', '始终允许', '始終允許')}</button>
+                    <button type="button" className="btn-secondary" data-testid="bot-local-deny" disabled={fullBusy} onClick={() => answer('deny')}>{L('Deny', '拒绝', '拒絕')}</button>
+                    <button type="button" className="btn-secondary" data-testid="bot-local-once" disabled={fullBusy} onClick={() => answer('once')}>{L('Allow once', '允许本次', '允許本次')}</button>
+                    <button type="button" className="btn-primary" data-testid="bot-local-always" disabled={fullBusy} onClick={() => answer('always')}>{L('Always allow', '始终允许', '始終允許')}</button>
                 </div>
             </div>
         </div>

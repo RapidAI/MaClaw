@@ -2,7 +2,6 @@ package botmgmt
 
 import (
 	"context"
-	"errors"
 	"os"
 	"regexp"
 	"strings"
@@ -164,12 +163,14 @@ func (s *Service) dispatchLoop(tenantID, userID string) {
 		} else {
 			s.dispatch.retries[key] = 0
 		}
-		if s.dispatch.again[key] && !busy {
+		// A kick that arrived during this pass, including one that arrived
+		// because the desktop just freed, runs now. Waiting for the busy
+		// timer dropped that kick and left the next bot idle for 45s.
+		if s.dispatch.again[key] {
 			s.dispatch.again[key] = false
 			s.dispatch.mu.Unlock()
 			continue
 		}
-		s.dispatch.again[key] = false
 		s.dispatch.running[key] = false
 		s.dispatch.mu.Unlock()
 		return
@@ -182,6 +183,9 @@ type dispatchJob struct {
 	noteIDs []string
 	content string
 	key     string
+	// wakeAt is the hourly-cap slot this wake took. A refund removes this
+	// instant, not whichever slot was recorded last.
+	wakeAt time.Time
 }
 
 // dispatchDestructive mirrors the GUI's desktopBotDestructive: such orders
@@ -289,9 +293,10 @@ func (s *Service) runDispatchJob(tenantID, userID string, job dispatchJob) (bool
 		admit = s.AdmitDesktopMessage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dispatchAdmitWait)
+	ctx = withDispatchNotes(ctx, job.noteIDs)
 	adm, err := admit(ctx, tenantID, userID, job.botID, job.content, "execute", job.key)
 	cancel()
-	if errors.Is(err, ErrDesktopBusy) {
+	if turnBusy(err) {
 		// A busy target waits in Hub's queue. The dispatch retry still
 		// runs; the same turn key makes a second admit a replay.
 		_, _ = s.enqueueDesktopMessage(tenantID, userID, job.botID, desktopQueueItem{
@@ -303,6 +308,16 @@ func (s *Service) runDispatchJob(tenantID, userID string, job dispatchJob) (bool
 		})
 		s.undoDispatchMark(tenantID, userID, job)
 		return false, true
+	}
+	if err == nil && adm.Queued {
+		// The node queue holds this turn. A run id stamped here would be the
+		// client key, and the real run could not replace it. A wake that
+		// only waited does not spend the hourly cap; the cap counts a wake
+		// that actually starts.
+		if job.kind == "wake" {
+			s.refundWake(tenantID, userID, job.botID, job.wakeAt)
+		}
+		return true, false
 	}
 	traceBot(job.botID, "hub_dispatch_"+job.kind, err, "key", job.key, "run", adm.RunID)
 	if job.kind != "delegate" {
@@ -458,7 +473,8 @@ func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool)
 		if bot == primary && s.guiReading(tenantID, userID, bot) {
 			continue
 		}
-		if !s.takeWake(tenantID, userID, bot) {
+		ok, at := s.takeWake(tenantID, userID, bot)
+		if !ok {
 			continue
 		}
 		ids := []string{}
@@ -467,7 +483,7 @@ func (s *Service) pickDispatchJob(tenantID, userID string, skip map[string]bool)
 			ids = append(ids, rec.CrossNotes[i].ID)
 		}
 		changed = true
-		return dispatchJob{kind: "wake", botID: bot, noteIDs: ids, content: dispatchWakePrompt, key: "xwake-" + ids[0]}, true
+		return dispatchJob{kind: "wake", botID: bot, noteIDs: ids, content: dispatchWakePrompt, key: "xwake-" + ids[0], wakeAt: at}, true
 	}
 	return dispatchJob{}, false
 }
@@ -491,7 +507,7 @@ func answersOwnReport(notes []BotCrossNote, n BotCrossNote) bool {
 
 // takeWake bounds server-side wakes per bot, so two bots answering each
 // other cannot loop the desktop.
-func (s *Service) takeWake(tenantID, userID, botID string) bool {
+func (s *Service) takeWake(tenantID, userID, botID string) (bool, time.Time) {
 	s.dispatch.mu.Lock()
 	defer s.dispatch.mu.Unlock()
 	s.dispatch.init()
@@ -504,10 +520,35 @@ func (s *Service) takeWake(tenantID, userID, botID string) bool {
 	}
 	if len(keep) >= wakePerHour {
 		s.dispatch.wakes[k] = keep
-		return false
+		return false, time.Time{}
 	}
-	s.dispatch.wakes[k] = append(keep, time.Now())
-	return true
+	at := time.Now()
+	s.dispatch.wakes[k] = append(keep, at)
+	return true, at
+}
+
+// refundWake returns the slot this wake took. A later wake's slot stays.
+func (s *Service) refundWake(tenantID, userID, botID string, at time.Time) {
+	if s == nil || at.IsZero() {
+		return
+	}
+	s.dispatch.mu.Lock()
+	defer s.dispatch.mu.Unlock()
+	if s.dispatch.wakes == nil {
+		return
+	}
+	k := dispatchUserKey(tenantID, userID) + "|" + botID
+	slots := s.dispatch.wakes[k]
+	kept := make([]time.Time, 0, len(slots))
+	removed := false
+	for _, slot := range slots {
+		if !removed && slot.Equal(at) {
+			removed = true
+			continue
+		}
+		kept = append(kept, slot)
+	}
+	s.dispatch.wakes[k] = kept
 }
 
 // PostBotDelegateFromInstance is the server-side main bot handing work to a

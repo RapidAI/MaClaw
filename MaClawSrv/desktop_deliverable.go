@@ -110,6 +110,39 @@ var desktopCaptureFinal = func(ctx context.Context, scope agentruntime.Scope, di
 	return desktopCapture(ctx, scope, display, false, "")
 }
 
+// desktopAttachHandoffShot puts one picture of the current screen on a reply
+// that hands the desktop to a person (a login wall, a payment, a captcha).
+// The person acts on the screen, not in the chat, so the phone renders the
+// wall itself with a takeover button instead of an answer field. The round's
+// desktop is still bound here (the browser is still open), so the shot shows
+// exactly the page the bot stopped on. A reply that already carries an image
+// — the person asked for one, or the model delivered a file — is left alone.
+func desktopAttachHandoffShot(msg *agentservice.Message, runID string) int {
+	if msg == nil || desktopMessageHasImage(msg) {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), desktopFinalShotTimeout)
+	defer cancel()
+	slotCtx, slot := withDesktopShotSlot(ctx)
+	if missing := desktopFinalShot(slotCtx, runID); missing != "" {
+		return 0
+	}
+	return attachDesktopShot(msg, slot)
+}
+
+// desktopMessageHasImage reports whether the reply already carries a picture.
+func desktopMessageHasImage(msg *agentservice.Message) bool {
+	if msg == nil {
+		return false
+	}
+	for _, a := range msg.Attachments {
+		if strings.HasPrefix(strings.ToLower(a.MimeType), "image/") {
+			return true
+		}
+	}
+	return false
+}
+
 // desktopPictureNote is the honest line a reply gets when a picture was
 // asked for and none rides on it.
 func desktopPictureNote(slot *desktopShotSlot, msg *agentservice.Message, images, files int) {

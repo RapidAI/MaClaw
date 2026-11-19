@@ -156,6 +156,64 @@ describe('WebPreviewBrowser', () => {
         expect((screen.getByTestId('web-preview-address') as HTMLInputElement).value).not.toContain('about');
     });
 
+    it('keeps the iframe mounted when a rewrite bumps refreshSignal', async () => {
+        const { rerender } = render(
+            <WebPreviewBrowser
+                absPath="D:/site/index.html"
+                content="<h1>Hello</h1>"
+                refreshSignal="1:11"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        await waitFor(() => expect(screen.getByTestId('html-preview-panel').getAttribute('src')).toBe('http://127.0.0.1:9/web-preview/v1/abc/index.html'));
+        const mounted = screen.getByTestId('html-preview-panel');
+        rerender(
+            <WebPreviewBrowser
+                absPath="D:/site/index.html"
+                content="<h1>Hello v2</h1>"
+                refreshSignal="2:14"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        // A remount would destroy the frame element and drop keyboard focus.
+        expect(screen.getByTestId('html-preview-panel')).toBe(mounted);
+        expect(mounted.getAttribute('src')).toBe('http://127.0.0.1:9/web-preview/v1/abc/index.html');
+    });
+
+    it('updates the srcdoc fallback when a rewrite bumps refreshSignal', async () => {
+        const open = vi.mocked(OpenWebPreview);
+        const original = open.getMockImplementation();
+        open.mockRejectedValue(new Error('cannot open'));
+        try {
+            const { rerender } = render(
+                <WebPreviewBrowser
+                    absPath="D:/site/index.html"
+                    content="<h1>Hello</h1>"
+                    refreshSignal="1:11"
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(screen.getByTestId('web-preview-notice').textContent).toContain('文件内容'));
+            const mounted = screen.getByTestId('html-preview-panel');
+            rerender(
+                <WebPreviewBrowser
+                    absPath="D:/site/index.html"
+                    content="<h1>Hello v2</h1>"
+                    refreshSignal="2:14"
+                    theme={lightCodePreviewTheme}
+                    lang="zh"
+                />,
+            );
+            await waitFor(() => expect(screen.getByTestId('html-preview-panel').getAttribute('srcdoc')).toContain('Hello v2'));
+            expect(screen.getByTestId('html-preview-panel')).toBe(mounted);
+        } finally {
+            if (original) open.mockImplementation(original);
+        }
+    });
+
     it('drops a file open that finishes after a newer address', async () => {
         const open = vi.mocked(OpenWebPreview);
         const original = open.getMockImplementation();

@@ -88,3 +88,32 @@ func TestDesktopBotMemoryCases(t *testing.T) {
 		t.Fatal("helper write entered the pinned excerpt")
 	}
 }
+
+func TestNoneBotMemoryIgnoresALeftoverComputerHelper(t *testing.T) {
+	memory.ResetDesktopBooks()
+	t.Cleanup(memory.ResetDesktopBooks)
+	cb := &coreAgentCallbacks{
+		botID:     "bot-none",
+		user:      User{ID: "user-none"},
+		principal: Principal{UserID: "user-none"},
+		instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1", "hub_bot_desktop": "none",
+		}},
+		messageMetadata: map[string]string{
+			"computer_helper": "1", "helper_id": "bot-none", "bot_desktop": "none",
+		},
+	}
+	got := cb.desktopMemoryCall("memory_write", map[string]interface{}{
+		"layer": "note", "content": "无电脑记下", "source": "user",
+	})
+	if !strings.HasPrefix(got, "已写入") {
+		t.Fatalf("none write = %q", got)
+	}
+	owner := memory.DesktopBook("user-none")
+	if !strings.Contains(owner.Render(), "无电脑记下") {
+		t.Fatalf("owner book = %q", owner.Render())
+	}
+	if strings.Contains(owner.Helper("bot-none").Render(), "无电脑记下") {
+		t.Fatal("the note was filed on the computer helper book")
+	}
+}

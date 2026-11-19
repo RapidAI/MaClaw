@@ -1741,7 +1741,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             const confirmTitle = eventLocalizeText("Security Risk", "安全风险", "安全風險");
             const confirmButton = typeof labels.confirm === "string" ? labels.confirm : eventLocalizeText("Confirm install", "确认安装", "確認安裝");
             const rejectButton = typeof labels.reject === "string" ? labels.reject : eventLocalizeText("Reject install", "拒绝安装", "拒絕安裝");
-            const confirmed = await showConfirm(message, confirmTitle, { confirmText: confirmButton, cancelText: rejectButton });
+            const confirmed = await showConfirm(message, confirmTitle, { confirmText: confirmButton, cancelText: rejectButton, dialogKey: confirmID });
             try {
                 await ResolveCriticalConfirm(confirmID, confirmed);
             } catch {

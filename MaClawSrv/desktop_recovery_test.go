@@ -569,7 +569,7 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 		t.Fatalf("a new task was blocked by the old one: %v", err)
 	}
 	msg := &agentservice.Message{Content: "已经发好了", Metadata: map[string]string{"response_source": "ask_user"}}
-	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "tenant-b", UserID: "dave"}, &agentservice.Run{ID: ridB2, Status: agentservice.RunStatusSucceeded}, msg, nil, false)
+	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "tenant-b", UserID: "dave"}, &agentservice.Run{ID: ridB2, Status: agentservice.RunStatusSucceeded}, msg, nil, false, false)
 	if o := msg.Metadata["task_outcome"]; o != "partial" && o != "blocked" {
 		t.Fatalf("outcome %q", o)
 	}
@@ -592,12 +592,12 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 	if _, err := invoke(t, req3, pub(map[string]any{"insert_settle_ms": 500})); err == nil || calls != before {
 		t.Fatalf("submit repeated after unconfirmed: %v", err)
 	}
-	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "tenant-b", UserID: "erin"}, &agentservice.Run{ID: ridE1, Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "好了"}, nil, false)
+	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "tenant-b", UserID: "erin"}, &agentservice.Run{ID: ridE1, Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "好了"}, nil, false, false)
 	if msg.Metadata["task_outcome"] != "unconfirmed" {
 		t.Fatalf("outcome %q", msg.Metadata["task_outcome"])
 	}
 	// A question-only chat (no desktop step) has no task outcome ...
-	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-question", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "你想发到哪个网站？", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false)
+	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-question", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "你想发到哪个网站？", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false, false)
 	if msg.Metadata["task_outcome"] != "" {
 		t.Fatalf("question-only outcome %q", msg.Metadata["task_outcome"])
 	}
@@ -605,7 +605,7 @@ func TestRecoveryBudgetResumeUnconfirmedAndReceipt(t *testing.T) {
 	desktopRecStateMu.Lock()
 	desktopRecRunSteps["run-none"] = true
 	desktopRecStateMu.Unlock()
-	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-none", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "请你点一下发布", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false)
+	msg = desktopEnsureReceipt(agentruntime.Scope{TenantID: "x", UserID: "y"}, &agentservice.Run{ID: "run-none", Status: agentservice.RunStatusSucceeded}, &agentservice.Message{Content: "请你点一下发布", Metadata: map[string]string{"response_source": "ask_user"}}, nil, false, false)
 	if msg.Metadata["task_outcome"] != "awaiting_user" {
 		t.Fatalf("ask_user outcome %q", msg.Metadata["task_outcome"])
 	}
@@ -738,5 +738,23 @@ func TestRecoveryTaskOutcomeMetadataForTheService(t *testing.T) {
 	m := desktopTaskOutcomeMetadata(rid, agentservice.Message{Content: "发好了！"})
 	if m[agentservice.TaskOutcomeKey] != "unconfirmed" || !strings.Contains(m[agentservice.TaskOutcomeNoticeKey], "没能确认") {
 		t.Fatalf("%v", m)
+	}
+}
+
+func TestScheduleFiringDoesNotShareTheSessionRecoveryTask(t *testing.T) {
+	scope := agentruntime.Scope{RunID: "run_weather_2"}
+	req := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Session: agentservice.Session{ID: "sess_long"},
+		Message: agentservice.Message{Metadata: map[string]string{"bot_origin": "schedule"}},
+	}}
+	if got := desktopRecConversation(req, scope); got != "sched:run_weather_2" {
+		t.Fatalf("schedule conversation=%q", got)
+	}
+	again := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
+		Session: agentservice.Session{ID: "sess_long"},
+		Message: agentservice.Message{Content: "再查一次天气"},
+	}}
+	if got := desktopRecConversation(again, scope); got != "s:sess_long" {
+		t.Fatalf("chat conversation=%q", got)
 	}
 }

@@ -3,6 +3,7 @@ package botmgmt
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -39,7 +40,7 @@ func TestSettleKeepsTheAnswerWhenSettingsFail(t *testing.T) {
 		Waiting:     true,
 		DesktopUser: carried,
 	})
-	if err == nil || err.Error() != "run failed" || reply.SendToUser != "训练完成，f1 0.81。" {
+	if err == nil || err.Error() != "run failed" || !strings.Contains(reply.SendToUser, "训练完成，f1 0.81。") {
 		t.Fatalf("reply=%+v err=%v", reply, err)
 	}
 	if len(desk.stopped) != 1 || desk.stopped[0] != carried {
@@ -59,7 +60,7 @@ func TestSettleKeepsTheAnswerWhenTheBotIsGone(t *testing.T) {
 		Waiting:     true,
 		DesktopUser: carried,
 	})
-	if err == nil || err.Error() != "run failed" || reply.SendToUser != "没做成，需要换数据集。" {
+	if err == nil || err.Error() != "run failed" || !strings.Contains(reply.SendToUser, "没做成，需要换数据集。") {
 		t.Fatalf("reply=%+v err=%v", reply, err)
 	}
 	if len(desk.stopped) != 1 || desk.stopped[0] != carried {

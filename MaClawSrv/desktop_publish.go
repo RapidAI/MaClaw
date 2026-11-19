@@ -37,6 +37,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		Files:          desktopUploadFiles(args),
 		UploadSelector: desktopArg(args, "upload_selector"),
 		UploadTrigger:  desktopArg(args, "upload_trigger"),
+		ItemID:         desktopArg(args, "item_id"),
 		Title:          desktopArg(args, "title"),
 		TitleSelector:  desktopArg(args, "title_selector"),
 		Body:           desktopArg(args, "body"),
@@ -99,6 +100,11 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 		prof = browser.ProfileForURL(session.CurrentURL())
 	}
 	prof.Apply(&spec)
+	// Learned experience has dropped CSDN's post_url, user_cookie and the
+	// success_url capture, and a model verify_url of https://blog.csdn.net/
+	// replaced the account's article list. The embedded profile wins those
+	// back so the public link can be built.
+	browser.RestorePublishIdentity(prof, &spec)
 	if desktopArgBool(args, "explore") {
 		probe, perr := browser.ExplorePublish(session.PublishDriver(), spec)
 		if exp != nil {
@@ -116,7 +122,7 @@ func desktopPublish(scope agentruntime.Scope, session *browser.BrowserAgentSessi
 	if desktopPlaceholderText(spec.Title) || desktopPlaceholderText(spec.Body) {
 		return "", fmt.Errorf("publish refused: title or body is a placeholder (%q / %q); pass the full finished title and body text (nothing was filled or posted)", desktopRuneHead(spec.Title, 20), desktopRuneHead(spec.Body, 20))
 	}
-	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() {
+	if r, ok := desktopPublishRecordOf(scope.RunID); ok && r.posted() && !desktopPublishListMayResolve(r, args) {
 		text := desktopPublishStepText(scope, r)
 		// Already on the site with pictures missing: do not post again,
 		// and do not report the repeat as a success.
@@ -246,13 +252,28 @@ func desktopPublishStepText(scope agentruntime.Scope, r desktopPublishRecord) st
 }
 
 // desktopPostURLFor builds a listed post's public URL from its id through
-// the profile of the site the list is on (site data, not code).
-func desktopPostURLFor(spec browser.PublishSpec, id string) string {
+// the profile of the site the list is on (site data, not code). user fills
+// a {user} template; "" leaves those templates unresolved.
+func desktopPostURLTemplate(spec browser.PublishSpec) string {
 	p := browser.ProfileForURL(spec.VerifyURL)
 	if p == nil {
 		p = browser.ProfileForURL(spec.EditorURL)
 	}
-	return p.PostURLFor(id)
+	if p != nil && p.PostURL != "" {
+		return p.PostURL
+	}
+	return spec.PostURL
+}
+
+func desktopPostURLFor(spec browser.PublishSpec, id, user string) string {
+	return browser.PostURLFrom(desktopPostURLTemplate(spec), id, user)
+}
+
+// desktopPublishListMayResolve: an unconfirmed submit still has to be
+// looked up. check_posted is that lookup. Returning the stored
+// "没能确认" here skips the post list, which is the only proof.
+func desktopPublishListMayResolve(r desktopPublishRecord, args map[string]any) bool {
+	return r.State == browser.PublishSubmitted && desktopArgBool(args, "check_posted")
 }
 
 func desktopArgBool(args map[string]any, key string) bool {

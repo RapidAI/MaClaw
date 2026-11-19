@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 type materialSettings map[string]string
@@ -20,19 +22,26 @@ func (m materialSettings) Get(_ context.Context, k string) (string, error) { ret
 
 type materialDesktop struct {
 	user, path string
+	node       string
+	pinned     bool
 	got        []byte
 	fail       int
+	down       error
 	before     func()
 }
 
 func (d *materialDesktop) Open(context.Context, string, string) (string, error) { return "", nil }
 func (d *materialDesktop) Stop(context.Context, string, string) error           { return nil }
-func (d *materialDesktop) UploadFile(_ context.Context, _, user, path string, body io.Reader, size int64) (string, error) {
+func (d *materialDesktop) UploadFile(ctx context.Context, _, user, path string, body io.Reader, size int64) (string, error) {
+	d.node, d.pinned = desktoppool.PinnedComputer(ctx)
 	if d.before != nil {
 		d.before()
 	}
 	if d.fail > 0 {
 		d.fail--
+		if d.down != nil {
+			return "", d.down
+		}
 		return "", errors.New("desktop down")
 	}
 	d.user, d.path = user, path
@@ -51,9 +60,38 @@ func materialService(t *testing.T, bots []Bot) (*Service, *materialDesktop) {
 	return &Service{System: settings, Desktop: d, MaterialStageDir: t.TempDir()}, d
 }
 
+func TestNoneBotMaterialUploadDoesNotTouchTheDesktop(t *testing.T) {
+	svc, d := materialService(t, []Bot{
+		{ID: "bot_none", Name: "值班", OwnerUserID: "alice", DesktopMode: "none"},
+	})
+	_, err := svc.UploadMaterialChunk(context.Background(), "t1", "alice", "bot_none", MaterialChunk{
+		UploadID: "up-12345678", Name: "a.txt", Offset: 0, Total: 1, Data: []byte("a"),
+	})
+	if !errors.Is(err, ErrNoDesktop) {
+		t.Fatalf("err %v", err)
+	}
+	if d.user != "" || d.path != "" || len(d.got) != 0 {
+		t.Fatalf("desktop upload user=%q path=%q bytes=%d", d.user, d.path, len(d.got))
+	}
+}
+
+func TestMaterialUploadSaysTheNodeIsOffline(t *testing.T) {
+	svc, d := materialService(t, []Bot{
+		{ID: "bot_a", Name: "值班", OwnerUserID: "alice"},
+	})
+	d.fail = 1
+	d.down = errors.New("desktop service: node is offline")
+	_, err := svc.UploadMaterialChunk(context.Background(), "t1", "alice", "bot_a", MaterialChunk{
+		UploadID: "up-12345678", Name: "a.txt", Offset: 0, Total: 1, Data: []byte("a"),
+	})
+	if !errors.Is(err, ErrNodeOffline) {
+		t.Fatalf("upload %v", err)
+	}
+}
+
 func TestUploadMaterialChunksLandInTheBotFolder(t *testing.T) {
 	svc, d := materialService(t, []Bot{
-		{ID: "bot_a", Name: "小红书助手", OwnerUserID: "alice"},
+		{ID: "bot_a", Name: "小红书助手", OwnerUserID: "alice", NodeID: "dn_lab"},
 		{ID: "bot_b", Name: "写作", OwnerUserID: "alice"},
 	})
 	ctx := context.Background()
@@ -71,6 +109,9 @@ func TestUploadMaterialChunksLandInTheBotFolder(t *testing.T) {
 	}
 	if !bytes.Equal(d.got, data) || d.user != "alice" || d.path != "/home/desktop/素材/小红书助手/封面-up-12345678.png" {
 		t.Fatalf("desktop got %q user=%s path=%s", d.got, d.user, d.path)
+	}
+	if !d.pinned || d.node != "dn_lab" {
+		t.Fatalf("upload computer pinned=%v node=%q", d.pinned, d.node)
 	}
 }
 

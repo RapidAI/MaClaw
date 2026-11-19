@@ -45,12 +45,16 @@ const (
 	EntityPetStoreMetrics       = "pet_store_metrics"
 	EntityExpertMarketSnapshot  = "expert_market_snapshot"
 	EntityExpertMarketMetrics   = "expert_market_metrics"
-	EntityLLMCardType           = "llm_card_type"
-	EntityLLMTenantAuth         = "llm_tenant_authorization"
-	EntityLLMCardOrder          = "llm_card_order"
-	EntityLLMNodeBinding        = "llm_node_binding"
-	EntityLLMUsageBatch         = "llm_usage_batch"
-	EntityTokenBankLedgerBatch  = "token_bank_ledger_batch"
+	// EntityExpertMarketCategories replicates the AI Expert Market category
+	// taxonomy as one full-list upsert keyed "categories". A full list keeps
+	// deletes and reorders convergent; the payload is tiny and deduplicated.
+	EntityExpertMarketCategories = "expert_market_categories"
+	EntityLLMCardType            = "llm_card_type"
+	EntityLLMTenantAuth          = "llm_tenant_authorization"
+	EntityLLMCardOrder           = "llm_card_order"
+	EntityLLMNodeBinding         = "llm_node_binding"
+	EntityLLMUsageBatch          = "llm_usage_batch"
+	EntityTokenBankLedgerBatch   = "token_bank_ledger_batch"
 	// EntityTokenBankPriceBook replicates the price rules an admin edits.
 	//
 	// Unlike the ledger, this table is read on the hot path: every proxied
@@ -113,41 +117,42 @@ type Service struct {
 	// enable after every peer has been confirmed to send V2.
 	requireSignatureV2 atomic.Bool
 
-	ops                          store.HASyncOpRepository
-	cursors                      store.HAPeerCursorRepository
-	versions                     store.HAEntityVersionRepository
-	blockedEmails                store.BlockedEmailRepository
-	blockedIPs                   store.BlockedIPRepository
-	news                         store.NewsRepository
-	hubs                         store.HubRepository
-	routes                       store.HubDomainRouteRepository
-	links                        store.HubUserLinkRepository
-	invitationRoutes             store.InvitationCodeRouteRepository
-	settings                     store.SystemSettingsRepository
-	gossip                       store.GossipRepository
-	skillStore                   *skill.SkillStore
-	skillMarket                  *skillmarket.Store
-	latexTemplateSnapshotApplier func(context.Context, json.RawMessage) error
-	latexTemplateSnapshotDumper  func(context.Context) (any, int, error)
-	latexTemplateRecordCounter   func(context.Context) (int64, error)
-	petStoreSnapshotApplier      func(context.Context, json.RawMessage) error
-	petStoreMetricsApplier       func(context.Context, json.RawMessage) error
-	expertMarketSnapshotApplier  func(context.Context, string, json.RawMessage) error
-	expertMarketMetricsApplier   func(context.Context, json.RawMessage) error
-	llmRegistryCacheInvalidator  func()
-	officialClassHeadAck         func(string)
-	cardTypes                    cardstore.CardTypeRepository
-	cardOrders                   cardstore.PurchaseOrderRepository
-	llmAuthorizations            llmservice.TenantAuthorizationRepository
-	llmBindings                  store.LLMNodeBindingRepository
-	llmUsage                     llmservice.UsageBatchRepository
-	tokenBankLedger              TokenBankLedgerRepository
-	tokenBankPriceBook           TokenBankPriceBookRepository
-	notifications                notification.Store
-	heartbeatSync                store.HAHeartbeatSyncStateRepository
-	heartbeatSyncMinInterval     time.Duration
-	peerLagGrace                 time.Duration
-	heartbeatLastSynced          sync.Map
+	ops                           store.HASyncOpRepository
+	cursors                       store.HAPeerCursorRepository
+	versions                      store.HAEntityVersionRepository
+	blockedEmails                 store.BlockedEmailRepository
+	blockedIPs                    store.BlockedIPRepository
+	news                          store.NewsRepository
+	hubs                          store.HubRepository
+	routes                        store.HubDomainRouteRepository
+	links                         store.HubUserLinkRepository
+	invitationRoutes              store.InvitationCodeRouteRepository
+	settings                      store.SystemSettingsRepository
+	gossip                        store.GossipRepository
+	skillStore                    *skill.SkillStore
+	skillMarket                   *skillmarket.Store
+	latexTemplateSnapshotApplier  func(context.Context, json.RawMessage) error
+	latexTemplateSnapshotDumper   func(context.Context) (any, int, error)
+	latexTemplateRecordCounter    func(context.Context) (int64, error)
+	petStoreSnapshotApplier       func(context.Context, json.RawMessage) error
+	petStoreMetricsApplier        func(context.Context, json.RawMessage) error
+	expertMarketSnapshotApplier   func(context.Context, string, json.RawMessage) error
+	expertMarketMetricsApplier    func(context.Context, json.RawMessage) error
+	expertMarketCategoriesApplier func(context.Context, string, json.RawMessage) error
+	llmRegistryCacheInvalidator   func()
+	officialClassHeadAck          func(string)
+	cardTypes                     cardstore.CardTypeRepository
+	cardOrders                    cardstore.PurchaseOrderRepository
+	llmAuthorizations             llmservice.TenantAuthorizationRepository
+	llmBindings                   store.LLMNodeBindingRepository
+	llmUsage                      llmservice.UsageBatchRepository
+	tokenBankLedger               TokenBankLedgerRepository
+	tokenBankPriceBook            TokenBankPriceBookRepository
+	notifications                 notification.Store
+	heartbeatSync                 store.HAHeartbeatSyncStateRepository
+	heartbeatSyncMinInterval      time.Duration
+	peerLagGrace                  time.Duration
+	heartbeatLastSynced           sync.Map
 
 	mu             sync.RWMutex
 	opMu           sync.Mutex
@@ -435,6 +440,13 @@ func (s *Service) SetExpertMarketMetricsApplier(fn func(context.Context, json.Ra
 		return
 	}
 	s.expertMarketMetricsApplier = fn
+}
+
+func (s *Service) SetExpertMarketCategoriesApplier(fn func(context.Context, string, json.RawMessage) error) {
+	if s == nil {
+		return
+	}
+	s.expertMarketCategoriesApplier = fn
 }
 
 // SetLLMRegistryCacheInvalidator drops the HubCenter LLM registry memory cache
@@ -1021,7 +1033,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
 		{Key: "latex_templates", Label: "LaTeX Templates", EntityTypes: map[string]struct{}{EntityLatexTemplateSnapshot: {}}},
-		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}, EntityExpertMarketSnapshot: {}, EntityExpertMarketMetrics: {}}},
+		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}, EntityExpertMarketSnapshot: {}, EntityExpertMarketMetrics: {}, EntityExpertMarketCategories: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
 		{Key: "token_bank", Label: "Token Bank Ledger", EntityTypes: map[string]struct{}{EntityTokenBankLedgerBatch: {}, EntityTokenBankPriceBook: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
@@ -2116,7 +2128,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityExpertMarketSnapshot, EntityExpertMarketMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityExpertMarketSnapshot, EntityExpertMarketMetrics, EntityExpertMarketCategories, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
 		return true
 	default:
 		return false
@@ -2268,7 +2280,7 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "packs[0].id", "", nil
 		}
 		return "packs[0].id", payload.Packs[0].ID, nil
-	case EntityPetStoreMetrics, EntityExpertMarketMetrics:
+	case EntityPetStoreMetrics, EntityExpertMarketMetrics, EntityExpertMarketCategories:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -2402,6 +2414,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyExpertMarketSnapshotOp(ctx, op)
 	case EntityExpertMarketMetrics:
 		return s.applyExpertMarketMetricsOp(ctx, op)
+	case EntityExpertMarketCategories:
+		return s.applyExpertMarketCategoriesOp(ctx, op)
 	case EntityLLMCardType:
 		return s.applyLLMCardTypeOp(ctx, op)
 	case EntityLLMTenantAuth:
@@ -2778,6 +2792,13 @@ func (s *Service) applyExpertMarketMetricsOp(ctx context.Context, op *store.HASy
 		return nil
 	}
 	return s.expertMarketMetricsApplier(ctx, json.RawMessage(op.PayloadJSON))
+}
+
+func (s *Service) applyExpertMarketCategoriesOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.expertMarketCategoriesApplier == nil {
+		return nil
+	}
+	return s.expertMarketCategoriesApplier(ctx, op.OpType, json.RawMessage(op.PayloadJSON))
 }
 
 func (s *Service) applyLLMCardTypeOp(ctx context.Context, op *store.HASyncOp) error {
@@ -3404,6 +3425,19 @@ func (s *Service) AppendExpertMarketMetrics(ctx context.Context, listingID strin
 	}{ID: listingID, Downloads: downloads}
 	if err := s.AppendUpsert(ctx, EntityExpertMarketMetrics, listingID, payload, time.Now().UTC()); err != nil {
 		log.Printf("[hubcenter][ha] append expert market metrics: %v", err)
+	}
+}
+
+// AppendExpertMarketCategoriesSnapshot replicates the whole AI Expert Market
+// category taxonomy under the fixed key "categories". Unchanged payloads are
+// deduplicated by the op log, so repeated emits after unrelated mutations stay
+// quiet.
+func (s *Service) AppendExpertMarketCategoriesSnapshot(ctx context.Context, snap any) {
+	if s == nil || snap == nil {
+		return
+	}
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntityExpertMarketCategories, "categories", snap); err != nil {
+		log.Printf("[hubcenter][ha] append expert market categories snapshot: %v", err)
 	}
 }
 

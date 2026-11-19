@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
@@ -128,7 +129,29 @@ func PostDesktopToolHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
 			return
 		}
-		text, attachmentID, err := dispatchDesktopTool(r.Context(), pool, call)
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
+		if route, routeErr := desktopToolRoute(call.Action); routeErr == nil && route == "file" {
+			direct, directErr := issueLocalDataURL(ctx, pool, call.Tenant, call.User, "file")
+			if directErr != nil {
+				writeDesktopError(w, directErr)
+				return
+			}
+			if direct != "" {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"direct_url":  direct,
+					"output":      "",
+					"executor_id": "assigned",
+					"volumes":     "desktops,home,opt,usr-local",
+					"replaced":    false,
+				})
+				return
+			}
+			if localProbe(r) {
+				writeError(w, http.StatusConflict, "LOCAL_UNAVAILABLE", "local desktop path is not available")
+				return
+			}
+		}
+		text, attachmentID, err := dispatchDesktopTool(ctx, pool, call)
 		noteDesktopToolUse(r.Context(), pool, call, err)
 		if err != nil {
 			writeDesktopError(w, err)
@@ -162,7 +185,12 @@ func noteDesktopToolUse(ctx context.Context, pool *desktoppool.Pool, call deskto
 	case "screenshot", "app", "open", "ctl":
 		noteDesktopScreenUse(ctx, pool, call.Tenant, call.User)
 	case "stop":
-		pool.ForgetBotGUIUse(call.Tenant, call.User)
+		// An owner desktop's record is dropped by StopDesktop once the
+		// screen has stopped. An isolated bot display stays up, so a stop
+		// of that user must not clear the picture.
+		if _, bot := desktop.SplitDesktopUser(call.User); bot == "" {
+			pool.ForgetBotGUIUse(call.Tenant, call.User)
+		}
 	}
 }
 
@@ -228,11 +256,19 @@ func dispatchDesktopTool(ctx context.Context, pool *desktoppool.Pool, call deskt
 		// The worker gets only display and cdp_url; the noVNC page stays in
 		// Hub for the 电脑 tab of this bot step.
 		pool.NoteBotGUIUse(call.Tenant, call.User, session.Novnc)
-		raw, err := json.Marshal(map[string]string{"display": session.Display, "cdp_url": session.CDP})
+		cdp, err := cdpURLForSession(ctx, call.Tenant, call.User, session)
+		if err != nil {
+			return "", "", err
+		}
+		raw, err := json.Marshal(map[string]string{"display": session.Display, "cdp_url": cdp})
 		return string(raw), "", err
 	case "stop":
-		if _, err := pool.StopDesktop(ctx, call.Tenant, call.User); err != nil {
+		out, err := pool.StopDesktop(ctx, call.Tenant, call.User)
+		if err != nil {
 			return "", "", err
+		}
+		if status := strings.TrimSpace(out.Status); status != "" {
+			return status, "", nil
 		}
 		return "stopped", "", nil
 	case "ctl":

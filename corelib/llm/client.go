@@ -2290,6 +2290,11 @@ func sanitizeOpenAIToolChoiceMapForSDK(mm map[string]interface{}) interface{} {
 	}
 }
 
+// sanitizeOpenAIToolChoiceForProvider is the wire half of the DeepSeek Flash
+// tool_choice projection. agent.projectDeepSeekFlashInvocationPolicy must
+// apply the same required/named → auto rewrite before the tool-surface
+// manifest is sealed. If only this function changes, the receipt rejects the
+// desktop finish step as an invocation-policy mismatch.
 func sanitizeOpenAIToolChoiceForProvider(cfg corelib.MaclawLLMConfig, raw interface{}) interface{} {
 	toolChoice := sanitizeOpenAIToolChoiceForSDK(raw)
 	if toolChoice == nil {

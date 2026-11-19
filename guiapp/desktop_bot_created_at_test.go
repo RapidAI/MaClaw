@@ -43,3 +43,32 @@ func TestDesktopBotInfoKeepsHubCreatedAt(t *testing.T) {
 		t.Fatalf("wire created_at = %#v", wire["created_at"])
 	}
 }
+
+func TestDesktopBotInfoKeepsTheComputerNode(t *testing.T) {
+	var listed struct {
+		Items []hubBot `json:"items"`
+	}
+	raw := []byte(`{"items":[{"id":"bot_local","name":"实验室","instance_id":"inst_l","node_id":"dn_lab"},{"id":"bot_cloud","name":"云端","instance_id":"inst_c"}]}`)
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatal(err)
+	}
+	local := desktopBotInfo(listed.Items[0])
+	cloud := desktopBotInfo(listed.Items[1])
+	if local.NodeID != "dn_lab" {
+		t.Fatalf("local node = %q", local.NodeID)
+	}
+	if cloud.NodeID != "" {
+		t.Fatalf("cloud node = %q", cloud.NodeID)
+	}
+	wire, err := json.Marshal(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["node_id"] != "dn_lab" {
+		t.Fatalf("wire node_id = %#v", got["node_id"])
+	}
+}

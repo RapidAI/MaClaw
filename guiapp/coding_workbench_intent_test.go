@@ -115,7 +115,7 @@ func TestPublishCodingRequestUnderstandingEmitsBeforeRefine(t *testing.T) {
 	var tokens []string
 	got := h.publishCodingRequestUnderstanding("", "\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248", stickyCodingWorkbenchMemory{
 		SessionPlan: "\u63a7\u5236\u53f0\u8d2a\u5403\u86c7",
-	}, func(s string) { tokens = append(tokens, s) })
+	}, codingRequestDecision{Kind: codingRequestImplementation}, func(s string) { tokens = append(tokens, s) })
 	if got == "" || len(tokens) != 1 || tokens[0] != got {
 		t.Fatalf("publish tokens=%q got=%q", tokens, got)
 	}
@@ -143,19 +143,120 @@ func TestCodingSessionContextLooksGeneric(t *testing.T) {
 	}
 }
 
-func TestCodingTextMentionsGUIWordBoundary(t *testing.T) {
-	if codingTextMentionsGUI("follow the guidelines") {
-		t.Fatal("guidelines must not count as a GUI rewrite")
-	}
-	if !codingTextMentionsGUI("port to GUI") || !codingTextMentionsGUI("\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248") {
-		t.Fatal("explicit GUI asks must match")
+func TestFallbackDoesNotTreatGuidelinesAsGUI(t *testing.T) {
+	got := fallbackCodingRequestRestatement("follow the guidelines", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "图形界面") || strings.Contains(got, "重新构建") || !strings.Contains(got, "follow the guidelines") {
+		t.Fatalf("guidelines leaked into a GUI restatement: %q", got)
 	}
 }
 
-func TestFallbackDoesNotTreatGuidelinesAsGUI(t *testing.T) {
-	got := fallbackCodingRequestRestatement("follow the guidelines", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "\u56fe\u5f62\u754c\u9762") || strings.Contains(strings.ToLower(got), "gui") {
-		t.Fatalf("guidelines leaked into a GUI restatement: %q", got)
+func TestFallbackNewAskWithoutContextStillNamesWork(t *testing.T) {
+	got := fallbackCodingRequestRestatement("分析前后端项目都有哪些功能", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("context-free ask still got the process filler: %q", got)
+	}
+	if !strings.Contains(got, "分析前后端项目都有哪些功能") {
+		t.Fatalf("restatement should name the ask: %q", got)
+	}
+}
+
+func TestFallbackLongAskLeadsWithFirstRequirement(t *testing.T) {
+	got := fallbackCodingRequestRestatement("帮我梳理一下这个项目里各个模块的职责和相互依赖关系，然后写一份完整的结构说明文档并且放到docs目录下面存档", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("long ask still got the process filler: %q", got)
+	}
+	if !strings.Contains(got, "梳理一下这个项目里各个模块") {
+		t.Fatalf("long ask should lead with its first requirement: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("remaining requirements should stay acknowledged: %q", got)
+	}
+}
+
+func TestFallbackAskKeepsWorkNameContext(t *testing.T) {
+	got := fallbackCodingRequestRestatement("帮我把导出功能加上水印记录，再补一组回归测试", stickyCodingWorkbenchMemory{SessionPlan: "数据导出工具"})
+	if !strings.Contains(got, "「数据导出工具」") || !strings.Contains(got, "导出功能加上水印记录") {
+		t.Fatalf("new ask should keep the work name and the ask itself: %q", got)
+	}
+}
+
+func TestFallbackLongAskSkipsLeadingInterjection(t *testing.T) {
+	got := fallbackCodingRequestRestatement("太好了！帮我把导出功能加上水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "太好了") {
+		t.Fatalf("interjection leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "帮我把导出功能加上水印记录") {
+		t.Fatalf("lead requirement dropped: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("帮我，把导出功能加上水印记录并且支持一键回填到原始表格里面去，顺便把错误提示文案也统一成中文规范显示", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "「帮我，") {
+		t.Fatalf("politeness opener leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "把导出功能加上水印记录") {
+		t.Fatalf("lead requirement dropped after opener: %q", got)
+	}
+}
+
+func TestFallbackLongAskTruncationKeepsParensBalanced(t *testing.T) {
+	got := fallbackCodingRequestRestatement("先把左侧导航栏的菜单项（icon1、icon2、icon3、icon4、icon5、icon6）重新整理为线性风格并更新样式", stickyCodingWorkbenchMemory{})
+	if strings.Count(got, "（") != strings.Count(got, "）") || strings.Count(got, "(") != strings.Count(got, ")") {
+		t.Fatalf("truncated head left unbalanced parens: %q", got)
+	}
+	if !strings.Contains(got, "菜单项") {
+		t.Fatalf("head lost the lead requirement: %q", got)
+	}
+}
+
+func TestFallbackLongAskNamesGoalBeforeList(t *testing.T) {
+	got := fallbackCodingRequestRestatement("请完成下面这几件事：（1）梳理一下各个模块的职责划分和相互依赖关系（2）写一份完整的结构说明文档放到docs目录", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("list marker leaked into the headline: %q", got)
+	}
+	if !strings.Contains(got, "完成下面这几件事") {
+		t.Fatalf("goal head dropped: %q", got)
+	}
+}
+
+func TestFallbackLongAskBareListNamesFirstItem(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）把导出功能加上水印记录并支持一键回填到原始表格里面去、（2）把错误提示文案统一成中文规范显示样式", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("list marker leaked: %q", got)
+	}
+	if !strings.Contains(got, "把导出功能加上水印记录") {
+		t.Fatalf("first list item dropped: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("later items should stay acknowledged: %q", got)
+	}
+}
+
+func TestFallbackShortListAskNamesItems(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）改标题、（2）改图标", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "（1）") || strings.Contains(got, "（2）") {
+		t.Fatalf("short list kept the markers: %q", got)
+	}
+	if !strings.Contains(got, "改标题") || !strings.Contains(got, "改图标") {
+		t.Fatalf("short list dropped an item: %q", got)
+	}
+}
+
+func TestFallbackListAskKeepsTrailingRequirement(t *testing.T) {
+	got := fallbackCodingRequestRestatement("（1）改标题、（2）改图标，周三前交付", stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "改标题") || !strings.Contains(got, "改图标") {
+		t.Fatalf("list items dropped: %q", got)
+	}
+	if !strings.Contains(got, "其余要求") {
+		t.Fatalf("the requirement after the list must stay acknowledged: %q", got)
+	}
+}
+
+func TestFallbackBareContinueWithoutContextKeepsProcessLine(t *testing.T) {
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{})
+	if !strings.Contains(got, "先看清当前项目") {
+		t.Fatalf("context-free continue must not quote the continue token itself: %q", got)
+	}
+	if strings.Contains(got, "「继续」") {
+		t.Fatalf("continue token leaked into the headline: %q", got)
 	}
 }
 
@@ -210,16 +311,24 @@ func TestResolveCodingWorkbenchTasksSeedsRestatementNotShortCommand(t *testing.T
 	}
 }
 
-func TestCodingRequestLooksRunOnly(t *testing.T) {
-	if !codingRequestLooksRunOnly("\u8fd0\u884c\u4e00\u4e0b") {
-		t.Fatal("short run request must stay operational")
+func TestOperationalDecisionNamesALaunch(t *testing.T) {
+	launch := codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}
+	got := fallbackCodingRequestRestatementFor("运行一下", stickyCodingWorkbenchMemory{}, launch)
+	if !strings.Contains(got, "不改源代码") {
+		t.Fatalf("a launch decision should say the program will be run: %q", got)
 	}
-	if codingRequestLooksRunOnly("\u8fd0\u884c\u5e76\u52a0\u4e0a\u65e5\u5fd7") {
-		t.Fatal("run-and-edit must not be treated as run-only")
+	// The same words are not a launch when the decision says otherwise.
+	got = fallbackCodingRequestRestatementFor("运行一下", stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestInquiry})
+	if strings.Contains(got, "不改源代码") || !strings.Contains(got, "不改文件") {
+		t.Fatalf("an inquiry that mentions 运行 is still an answer: %q", got)
 	}
-	got := fallbackCodingRequestRestatement("\u8fd0\u884c\u5e76\u52a0\u4e0a\u65e5\u5fd7", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "\u4e0d\u6539\u6e90\u4ee3\u7801") {
-		t.Fatalf("edit request restated as run-only: %q", got)
+	got = fallbackCodingRequestRestatement("运行并加上日志", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改源代码") {
+		t.Fatalf("wording alone must not become a launch: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("运行一下", stickyCodingWorkbenchMemory{SessionPlan: "qmobjdet"}, launch)
+	if !strings.Contains(got, "「qmobjdet」") || !strings.Contains(got, "不改源代码") {
+		t.Fatalf("a launch should keep the work name: %q", got)
 	}
 }
 
@@ -237,6 +346,33 @@ func TestFallbackUsesCMakeProjectIdentity(t *testing.T) {
 	got := fallbackCodingRequestRestatement("\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248", stickyCodingWorkbenchMemory{ProjectPath: dir})
 	if !strings.Contains(strings.ToLower(got), "snake") {
 		t.Fatalf("cmake project identity missing: %q", got)
+	}
+
+	commented := t.TempDir()
+	if err := os.WriteFile(filepath.Join(commented, "CMakeLists.txt"), []byte("# project(draft)\nproject(${PROJECT_NAME})\nproject(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commented, "det.cpp"), []byte("int d(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commented, "util.cpp"), []byte("int u(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = fallbackCodingRequestRestatement("\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248", stickyCodingWorkbenchMemory{ProjectPath: commented})
+	if strings.Contains(got, "draft") || strings.Contains(got, "PROJECT_NAME") || !strings.Contains(got, "qmobjdet") {
+		t.Fatalf("a commented or variable project() must not hide the literal name: %q", got)
+	}
+
+	variableOnly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(variableOnly, "CMakeLists.txt"), []byte("project(${PROJECT_NAME})\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(variableOnly, "snake.cpp"), []byte("int main(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = fallbackCodingRequestRestatement("\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248", stickyCodingWorkbenchMemory{ProjectPath: variableOnly})
+	if strings.Contains(got, "PROJECT_NAME") || !strings.Contains(strings.ToLower(got), "snake") {
+		t.Fatalf("a variable project() must fall through to the source stem: %q", got)
 	}
 }
 
@@ -302,16 +438,17 @@ func TestFallbackFindsExeAfterManyBuildFiles(t *testing.T) {
 	}
 }
 
-func TestCodingRequestLooksRunOnlyRejectsQuestions(t *testing.T) {
-	if codingRequestLooksRunOnly("\u600e\u4e48\u8fd0\u884c") {
-		t.Fatal("how-to-run questions must not look run-only")
-	}
-	got := fallbackCodingRequestRestatement("\u600e\u4e48\u8fd0\u884c", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "\u4e0d\u6539\u6e90\u4ee3\u7801") {
-		t.Fatalf("question restated as a run: %q", got)
-	}
-	if !strings.Contains(got, "\u4e0d\u6539\u6587\u4ef6") {
-		t.Fatalf("question should stay inquiry: %q", got)
+func TestInquiryDecisionAnswersWithoutReadingTheWording(t *testing.T) {
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	for _, ask := range []string{"怎么运行", "how to run this", "指令集支持情况帮我讲讲", "本程序现在支持哪些指令集"} {
+		got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{}, inquiry)
+		if strings.Contains(got, "不改源代码") || !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") {
+			t.Fatalf("inquiry %q should be answered from the current code: %q", ask, got)
+		}
+		plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{})
+		if strings.Contains(plain, "不改文件") || strings.Contains(plain, "不改源代码") {
+			t.Fatalf("the same words without an inquiry decision must not pick a read-only sentence: %q -> %q", ask, plain)
+		}
 	}
 }
 
@@ -323,45 +460,26 @@ func TestAttachCodingWorkRootOverridesStalePath(t *testing.T) {
 	}
 }
 
-func TestFallbackKeepsEnglishHowToAsInquiry(t *testing.T) {
-	if codingRequestLooksRunOnly("how to run this") {
-		t.Fatal("how-to questions must not look run-only")
-	}
-	got := fallbackCodingRequestRestatement("how to run this", stickyCodingWorkbenchMemory{})
-	if strings.Contains(got, "\u4e0d\u6539\u6e90\u4ee3\u7801") {
-		t.Fatalf("english how-to restated as a run: %q", got)
-	}
-	if !strings.Contains(got, "\u4e0d\u6539\u6587\u4ef6") {
-		t.Fatalf("english how-to should stay inquiry: %q", got)
-	}
-}
-
 func TestFallbackDoesNotTreatRunFailureAsRunOnly(t *testing.T) {
-	if codingRequestLooksRunOnly("\u8fd0\u884c\u5931\u8d25\u4e86") {
-		t.Fatal("a failed run must not look run-only")
-	}
 	got := fallbackCodingRequestRestatement("\u8fd0\u884c\u5931\u8d25\u4e86", stickyCodingWorkbenchMemory{})
 	if strings.Contains(got, "\u4e0d\u6539\u6e90\u4ee3\u7801") {
 		t.Fatalf("failed run restated as a no-edit launch: %q", got)
 	}
 }
 
-func TestCodingRequestLooksLikeFailureWordBoundary(t *testing.T) {
-	if codingRequestLooksLikeFailure("run the debug build") {
-		t.Fatal("debug must not count as a failure restatement")
-	}
-	if !codingRequestLooksLikeFailure("crash on start") {
-		t.Fatal("crash should count as a failure")
-	}
-}
-
-func TestFallbackRewriteUsesRewriteWordBoundary(t *testing.T) {
-	got, ok := fallbackRewriteRestatement("please review the rewriter comments", "")
-	if ok {
-		t.Fatalf("rewriter must not count as rewrite: %q", got)
-	}
-	if _, ok := fallbackRewriteRestatement("rewrite the parser", ""); !ok {
-		t.Fatal("rewrite as a word must still match")
+func TestRestatementDoesNotPickARewriteFromWording(t *testing.T) {
+	for _, text := range []string{
+		"please review the rewriter comments",
+		"rewrite the parser",
+		"改为图形界面版",
+		"介绍一下图形界面",
+		"在图形界面里把按钮改成蓝色",
+		"不要改成图形界面",
+	} {
+		got := fallbackCodingRequestRestatement(text, stickyCodingWorkbenchMemory{})
+		if strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") || strings.Contains(got, "重写后的实现") {
+			t.Fatalf("wording selected a rewrite template: %q -> %q", text, got)
+		}
 	}
 }
 
@@ -384,25 +502,34 @@ func TestUnderstandingPromptCarriesWrittenSessionRecord(t *testing.T) {
 
 func TestRunOnlyRestatementIsNotReplaced(t *testing.T) {
 	written := stickyCodingWorkbenchMemory{FilesModified: []string{"/home/prj8/src/ui.cpp"}}
-	if !codingRequestUnderstandingKeepsHostFallback("编译并运行", written) {
-		t.Fatal("a run/build follow-up must keep the host restatement")
+	launch := codingRequestDecision{Kind: codingRequestOperational, Acceptance: codingOperationalAcceptanceLaunch}
+	if !codingRequestUnderstandingKeepsHostFallback("编译并运行", written, launch) {
+		t.Fatal("a launch decision must keep the host restatement")
 	}
-	if codingRequestUnderstandingKeepsHostFallback("怎么运行", written) {
-		t.Fatal("a how-to question must still be open to restatement")
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	if !codingRequestUnderstandingKeepsHostFallback("怎么运行", written, inquiry) {
+		t.Fatal("an inquiry must keep the host answer")
+	}
+	if codingRequestUnderstandingKeepsHostFallback("编译并运行", stickyCodingWorkbenchMemory{}, codingRequestDecision{}) {
+		t.Fatal("wording alone must not lock the host sentence")
 	}
 	writtenPlan := stickyCodingWorkbenchMemory{
 		FilesModified: []string{"/home/prj8/src/ui.cpp"},
 		SessionPlan:   "系统信息查看",
 	}
-	if !codingRequestUnderstandingKeepsHostFallback("继续", writtenPlan) {
+	impl := codingRequestDecision{Kind: codingRequestImplementation}
+	if !codingRequestUnderstandingKeepsHostFallback("继续", writtenPlan, impl) {
 		t.Fatal("a short follow-up in a session that already wrote files must keep the host restatement")
 	}
 	long := strings.Repeat("继续完善当前进程列表的展示 ", 6)
 	if utf8.RuneCountInString(long) <= 48 {
 		t.Fatalf("fixture is not a long request: %d", utf8.RuneCountInString(long))
 	}
-	if codingRequestUnderstandingKeepsHostFallback(long, writtenPlan) {
+	if codingRequestUnderstandingKeepsHostFallback(long, writtenPlan, impl) {
 		t.Fatal("a longer change request must still be open to restatement")
+	}
+	if !codingRequestUnderstandingKeepsHostFallback(long, writtenPlan, inquiry) {
+		t.Fatal("a long inquiry must keep the host answer")
 	}
 }
 
@@ -411,34 +538,65 @@ func TestWrittenSessionRestatementDoesNotAnnounceReadOnly(t *testing.T) {
 		SessionPlan:   "系统信息查看",
 		FilesModified: []string{"/home/prj8/src/ui.cpp"},
 	}
-	got := fallbackCodingRequestRestatement("这段 CPU% 为什么乘了核心数？", mem)
-	if strings.Contains(got, "不改文件") {
+	ask := "这段 CPU% 为什么乘了核心数？"
+	plain := fallbackCodingRequestRestatement(ask, mem)
+	if strings.Contains(plain, "不改文件") || strings.Contains(plain, "不改源代码") {
+		t.Fatalf("wording alone must not announce a read-only turn: %q", plain)
+	}
+	got := fallbackCodingRequestRestatementFor(ask, mem, codingRequestDecision{Kind: codingRequestInquiry})
+	if strings.Contains(got, "不改文件") || strings.Contains(got, "其它先不动") {
 		t.Fatalf("a session that already wrote files must not be restated as read-only: %q", got)
 	}
-	if !strings.Contains(got, "为什么乘了核心数") {
-		t.Fatalf("question dropped: %q", got)
+	if !strings.Contains(got, "为什么乘了核心数") || !strings.Contains(got, "对照现有实现") || !strings.Contains(got, "回答「") {
+		t.Fatalf("written-session inquiry should still name the answer: %q", got)
 	}
 	if strings.Contains(got, "？。") || strings.Contains(got, "按你这次说的做") || strings.Contains(got, "再动手") {
 		t.Fatalf("question restated as an edit: %q", got)
 	}
 }
 
-func TestFallbackKeepsHowToGUIAsInquiry(t *testing.T) {
-	got := fallbackCodingRequestRestatement("\u600e\u4e48\u6539\u6210\u56fe\u5f62\u754c\u9762", stickyCodingWorkbenchMemory{
-		SessionPlan: "\u63a7\u5236\u53f0\u8d2a\u5403\u86c7",
+func TestRestatementFollowsTheDecisionNotTheWording(t *testing.T) {
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	impl := codingRequestDecision{Kind: codingRequestImplementation}
+	for _, text := range []string{
+		"怎么改成图形界面",
+		"改为图形界面版？",
+		"不要改成图形界面",
+		"不小心改成图形界面",
+		"port to GUI",
+		"don't port to GUI",
+		"图形界面支持哪些指令集",
+		"介绍一下图形界面",
+		"在图形界面里把按钮改成蓝色",
+		"给图形界面加一个按钮",
+	} {
+		got := fallbackCodingRequestRestatement(text, stickyCodingWorkbenchMemory{})
+		if strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") || strings.Contains(got, "不改文件") || strings.Contains(got, "不改源代码") {
+			t.Fatalf("wording selected a special sentence: %q -> %q", text, got)
+		}
+	}
+	got := fallbackCodingRequestRestatementFor("怎么改成图形界面", stickyCodingWorkbenchMemory{SessionPlan: "控制台贪吃蛇"}, inquiry)
+	if !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") || strings.Contains(got, "图形界面版本") {
+		t.Fatalf("inquiry should be an answer: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{}, impl)
+	if !strings.Contains(got, "这次改为图形界面版") || !strings.Contains(got, "其它先不动") || strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") {
+		t.Fatalf("implementation should echo the edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("在图形界面里把按钮改成蓝色", stickyCodingWorkbenchMemory{}, impl)
+	if !strings.Contains(got, "蓝色") || !strings.Contains(got, "其它先不动") || strings.Contains(got, "图形界面版本") {
+		t.Fatalf("an implementation edit should stay that edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("继续", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}, inquiry)
+	if !strings.Contains(got, "继续做「系统信息查看」") || strings.Contains(got, "不改文件") {
+		t.Fatalf("a continue cue stays a resume: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("安装 gcc", stickyCodingWorkbenchMemory{}, codingRequestDecision{
+		Kind:       codingRequestOperational,
+		Acceptance: codingOperationalAcceptanceCommand,
 	})
-	if strings.Contains(got, "\u6539\u6210\u56fe\u5f62\u754c\u9762\u7248\u672c") && !strings.Contains(got, "\u4e0d\u6539\u6587\u4ef6") {
-		t.Fatalf("how-to GUI ask restated as an implementation rewrite: %q", got)
-	}
-	if !strings.Contains(got, "\u4e0d\u6539\u6587\u4ef6") {
-		t.Fatalf("how-to GUI ask should stay inquiry: %q", got)
-	}
-	if codingRestatementFallbackIsSpecific("\u600e\u4e48\u6539\u6210\u56fe\u5f62\u754c\u9762", stickyCodingWorkbenchMemory{}) {
-		t.Fatal("how-to GUI ask must not take the host rewrite plan")
-	}
-	got = fallbackCodingRequestRestatement("\u6539\u4e3a\u56fe\u5f62\u754c\u9762\u7248\uff1f", stickyCodingWorkbenchMemory{})
-	if !strings.Contains(got, "\u56fe\u5f62\u754c\u9762") || strings.Contains(got, "\u4e0d\u6539\u6587\u4ef6") {
-		t.Fatalf("imperative GUI ask with a question mark should still rewrite: %q", got)
+	if strings.Contains(got, "不改源代码") || !strings.Contains(got, "安装 gcc") {
+		t.Fatalf("a host command is not a project launch: %q", got)
 	}
 }
 
@@ -450,7 +608,7 @@ func TestFallbackShortFollowUpKeepsWorkName(t *testing.T) {
 	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") {
 		t.Fatalf("new ask must not use the bare-continue template: %q", got)
 	}
-	if !codingRequestUnderstandingKeepsHostFallback("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}) {
+	if !codingRequestUnderstandingKeepsHostFallback("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"}, codingRequestDecision{Kind: codingRequestImplementation}) {
 		t.Fatal("quoted short ask must stay on the checklist")
 	}
 }
@@ -642,5 +800,275 @@ func TestFallbackDoesNotUseRequirementClauseAsWorkName(t *testing.T) {
 	got := fallbackCodingRequestRestatement("继续核对", stickyCodingWorkbenchMemory{LastSummary: summary})
 	if strings.Contains(got, "在已有工作（") {
 		t.Fatalf("a sentence must not become the work name: %q", got)
+	}
+}
+
+func TestFallbackQuestionNamesTheAnswerInsteadOfEchoing(t *testing.T) {
+	const ask = "本程序现在支持哪些指令集"
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{SessionPlan: ask})
+	if strings.Contains(plain, "不改文件") || strings.Contains(plain, "回答「") {
+		t.Fatalf("the words alone must not become an answer: %q", plain)
+	}
+	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{SessionPlan: ask}, inquiry)
+	if strings.Contains(got, "其它先不动") || strings.Contains(got, "这次"+ask) {
+		t.Fatalf("question was echoed as an edit: %q", got)
+	}
+	if strings.Contains(got, "在「"+ask+"」里") {
+		t.Fatalf("task title repeated the question: %q", got)
+	}
+	if !strings.Contains(got, "回答「"+ask+"」") || !strings.Contains(got, "不改文件") || !strings.Contains(got, "对照当前实现") {
+		t.Fatalf("question should say it will be answered from the current code: %q", got)
+	}
+	if !codingRequestUnderstandingKeepsHostFallback(ask, stickyCodingWorkbenchMemory{SessionPlan: ask}, inquiry) {
+		t.Fatal("an inquiry must keep the host answer")
+	}
+
+	written := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{
+		SessionPlan:   ask,
+		FilesModified: []string{"src/simd.cpp"},
+	}, inquiry)
+	if strings.Contains(written, "不改文件") || strings.Contains(written, "其它先不动") {
+		t.Fatalf("a session that already wrote files must not be restated as read-only: %q", written)
+	}
+	if !strings.Contains(written, "回答「"+ask+"」") || !strings.Contains(written, "对照现有实现") {
+		t.Fatalf("written session should still answer the question: %q", written)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte("int main(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{
+		SessionPlan: ask,
+		ProjectPath: dir,
+	}, inquiry)
+	if strings.Contains(named, "在「"+ask+"」里") || !strings.Contains(strings.ToLower(named), "snake") || !strings.Contains(named, "回答「"+ask+"」") {
+		t.Fatalf("a task titled with the question should still name the project: %q", named)
+	}
+}
+
+func TestFallbackWorkNameFallsThroughATitleThatIsTheAsk(t *testing.T) {
+	ask := "控制台贪吃蛇, ANSI"
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{
+		SessionPlan: ask,
+		LastSummary: "qmobjdet",
+	}, inquiry)
+	if strings.Contains(got, "在「控制台贪吃蛇」里") || !strings.Contains(got, "「qmobjdet」") || !strings.Contains(got, "回答「"+ask+"」") {
+		t.Fatalf("a comma note on the same sentence must not hide the next name: %q", got)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# 请针对刚编译并刷入最新版本的 buddy 固件，确认设备是否又一次出现黑屏。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CMakeLists.txt"), []byte("project(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "det.cpp"), []byte("int d(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "util.cpp"), []byte("int u(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{
+		SessionPlan: ask,
+		ProjectPath: dir,
+	}, inquiry)
+	if strings.Contains(named, "在「控制台贪吃蛇」里") || strings.Contains(named, "buddy") || !strings.Contains(named, "「qmobjdet」") {
+		t.Fatalf("a prose readme must not hide the project name: %q", named)
+	}
+
+	readmeDir := t.TempDir()
+	const titled = "本程序现在支持哪些指令集"
+	if err := os.WriteFile(filepath.Join(readmeDir, "README.md"), []byte("# "+titled+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readmeDir, "CMakeLists.txt"), []byte("project(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fromReadme := fallbackCodingRequestRestatementFor(titled, stickyCodingWorkbenchMemory{
+		SessionPlan: titled,
+		ProjectPath: readmeDir,
+	}, inquiry)
+	if strings.Contains(fromReadme, "在「"+titled+"」里") || !strings.Contains(fromReadme, "「qmobjdet」") || !strings.Contains(fromReadme, "回答「"+titled+"」") {
+		t.Fatalf("a readme titled with the question must not hide the project: %q", fromReadme)
+	}
+
+	sentenceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sentenceDir, "README.md"), []byte("# 编译已经完成。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sentenceDir, "CMakeLists.txt"), []byte("project(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fromSentence := fallbackCodingRequestRestatementFor(titled, stickyCodingWorkbenchMemory{
+		SessionPlan: titled,
+		LastSummary: "已完成编译。",
+		ProjectPath: sentenceDir,
+	}, inquiry)
+	if strings.Contains(fromSentence, "已完成编译") || strings.Contains(fromSentence, "编译已经完成") || !strings.Contains(fromSentence, "「qmobjdet」") {
+		t.Fatalf("a status sentence must not hide the project: %q", fromSentence)
+	}
+
+	dotted := fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{
+		LastSummary: "done snake.cpp console",
+	}, inquiry)
+	if !strings.Contains(dotted, "done snake.cpp console") || !strings.Contains(dotted, "回答「改为图形界面版」") {
+		t.Fatalf("a dotted file name is still a title: %q", dotted)
+	}
+	versioned := fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{
+		LastSummary: "v1.2",
+	}, inquiry)
+	if !strings.Contains(versioned, "v1.2") || !strings.Contains(versioned, "回答「改为图形界面版」") {
+		t.Fatalf("a version dot is still a title: %q", versioned)
+	}
+
+	mid := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mid, "README.md"), []byte("# 编译已经完成。详见 simd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mid, "CMakeLists.txt"), []byte("project(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fromMid := fallbackCodingRequestRestatementFor(titled, stickyCodingWorkbenchMemory{
+		SessionPlan: titled,
+		LastSummary: "Done. See simd",
+		ProjectPath: mid,
+	}, inquiry)
+	if strings.Contains(fromMid, "编译已经完成") || strings.Contains(fromMid, "Done. See simd") || !strings.Contains(fromMid, "「qmobjdet」") {
+		t.Fatalf("a sentence that continues on the same line must not hide the project: %q", fromMid)
+	}
+
+	laterTitle := t.TempDir()
+	if err := os.WriteFile(filepath.Join(laterTitle, "README.md"), []byte("# 编译已经完成。详见 simd\n\nConsole Snake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(laterTitle, "CMakeLists.txt"), []byte("project(qmobjdet CXX)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fromLater := fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{
+		ProjectPath: laterTitle,
+	}, inquiry)
+	if !strings.Contains(fromLater, "Console Snake") || strings.Contains(fromLater, "编译已经完成") || strings.Contains(fromLater, "qmobjdet") {
+		t.Fatalf("a later readme title should still name the work: %q", fromLater)
+	}
+}
+
+func TestFallbackQuestionKeepsADistinctWorkName(t *testing.T) {
+	got := fallbackCodingRequestRestatementFor("现在支持哪些指令集", stickyCodingWorkbenchMemory{SessionPlan: "qmobjdet"}, codingRequestDecision{Kind: codingRequestInquiry})
+	if !strings.Contains(got, "「qmobjdet」") || !strings.Contains(got, "回答「现在支持哪些指令集」") || !strings.Contains(got, "不改文件") {
+		t.Fatalf("distinct work name should stay around the answer: %q", got)
+	}
+}
+
+func TestFallbackEditThatMentionsWhichStaysAnEdit(t *testing.T) {
+	got := fallbackCodingRequestRestatement("删掉哪些临时文件", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if strings.Contains(got, "不改文件") || strings.Contains(got, "回答「") {
+		t.Fatalf("an edit that mentions 哪些 was restated as a question: %q", got)
+	}
+	if !strings.Contains(got, "删掉哪些临时文件") || !strings.Contains(got, "系统信息查看") {
+		t.Fatalf("edit dropped: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("改哪些按钮", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "改哪些按钮") {
+		t.Fatalf("改哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("请帮我实现哪些接口", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "请帮我实现哪些接口") {
+		t.Fatalf("请帮我实现哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("修改哪些按钮", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "修改哪些按钮") {
+		t.Fatalf("修改哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("删除哪些临时文件", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "删除哪些临时文件") {
+		t.Fatalf("删除哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("写哪些配置", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "写哪些配置") {
+		t.Fatalf("写哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("改好哪些按钮", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "改好哪些按钮") {
+		t.Fatalf("改好哪些 should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("运行几个测试", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || strings.Contains(got, "不改源代码") || !strings.Contains(got, "运行几个测试") {
+		t.Fatalf("wording alone must not become a launch: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("运行几个测试", stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestOperational})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "不改源代码") {
+		t.Fatalf("a launch decision should say the program will be run: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("删掉临时文件？", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "删掉临时文件") {
+		t.Fatalf("an order with a question mark should stay an edit: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("继续？", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if strings.Contains(got, "不改文件") || !strings.Contains(got, "继续做") {
+		t.Fatalf("继续？ should stay a continue: %q", got)
+	}
+	got = fallbackCodingRequestRestatement("支持哪些指令集？", stickyCodingWorkbenchMemory{})
+	if strings.Contains(got, "不改文件") || strings.Contains(got, "回答「") || !strings.Contains(got, "支持哪些指令集") {
+		t.Fatalf("a question mark alone must not become an answer: %q", got)
+	}
+	got = fallbackCodingRequestRestatementFor("支持哪些指令集？", stickyCodingWorkbenchMemory{}, codingRequestDecision{Kind: codingRequestInquiry})
+	if !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") {
+		t.Fatalf("an inquiry decision should be answered: %q", got)
+	}
+}
+
+func TestFallbackCompletedAspectQuestionIsNotAnEdit(t *testing.T) {
+	inquiry := codingRequestDecision{Kind: codingRequestInquiry}
+	for _, ask := range []string{
+		"实现了哪些接口", "修复了哪些崩溃", "不要改成蓝色，现在支持哪些指令集",
+		"删除了哪些文件", "修改了哪些接口", "改变了哪些行为", "修改过哪些接口",
+		"参加哪些评审", "删减了哪些功能", "读写哪些文件", "有几个指令集", "支持几个指令集",
+		"写完哪些文件", "实现完了吗", "改好了吗",
+	} {
+		plain := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{})
+		if strings.Contains(plain, "不改文件") || strings.Contains(plain, "回答「") {
+			t.Fatalf("%q was answered from its wording: %q", ask, plain)
+		}
+		got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{}, inquiry)
+		if strings.Contains(got, "其它先不动") || !strings.Contains(got, "不改文件") || !strings.Contains(got, "回答「") {
+			t.Fatalf("%q should be answered once the decision is inquiry: %q", ask, got)
+		}
+	}
+}
+
+func TestFallbackSoftenerNeeIsNotAQuestion(t *testing.T) {
+	for _, ask := range []string{"再收紧阈值呢", "没什么要改的", "多少有点慢"} {
+		got := fallbackCodingRequestRestatement(ask, stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+		if strings.Contains(got, "不改文件") || strings.Contains(got, "回答「") {
+			t.Fatalf("wording became an answer: %q -> %q", ask, got)
+		}
+	}
+	got := fallbackCodingRequestRestatement("再收紧阈值呢", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if !strings.Contains(got, "再收紧阈值呢") || !strings.Contains(got, "系统信息查看") {
+		t.Fatalf("soft follow-up dropped the ask: %q", got)
+	}
+}
+
+func TestFallbackLongQuestionIsCutOnAClause(t *testing.T) {
+	ask := "本程序现在支持哪些指令集，请按编译目标分别说明 x86 AVX2、AVX-512、ARM NEON、LoongArch LSX 和 LASX 在当前构建里有没有打开，以及运行时实际选了哪一档"
+	if utf8.RuneCountInString(ask) <= 80 {
+		t.Fatalf("fixture is not long: %d", utf8.RuneCountInString(ask))
+	}
+	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{SessionPlan: ask}, codingRequestDecision{Kind: codingRequestInquiry})
+	if strings.Contains(got, "其它先不动") || strings.Contains(got, "在「"+ask+"」") {
+		t.Fatalf("long question was echoed: %q", got)
+	}
+	if !strings.Contains(got, "…") || !strings.Contains(got, "不改文件") || !strings.Contains(got, "哪些指令集") {
+		t.Fatalf("long question should be a cut answer: %q", got)
+	}
+	if strings.Count(got, "「") != strings.Count(got, "」") {
+		t.Fatalf("quotes unbalanced: %q", got)
+	}
+	if strings.Contains(got, ask) {
+		t.Fatalf("full question was pasted into the bubble: %q", got)
 	}
 }

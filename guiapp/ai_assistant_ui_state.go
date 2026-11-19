@@ -1,9 +1,7 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,8 +11,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const (
@@ -57,37 +55,28 @@ func (a *App) aiAssistantUIArchivePath() string {
 }
 
 func (a *App) LoadAIAssistantUIState() (AIAssistantUIState, error) {
+	path := a.aiAssistantUIStateDBPath()
 	aiAssistantUIStateMu.Lock()
-	defer aiAssistantUIStateMu.Unlock()
-
-	path := a.aiAssistantUIStatePath()
-	state := AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}
-	data, err := os.ReadFile(path)
+	state, err := a.loadAIAssistantUIStateLocked()
+	aiAssistantUIStateMu.Unlock()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			a.injectStartupRecoveryCard(&state)
-			log.Printf("[paths] ai_assistant_ui_state load missing path=%q", path)
-			return state, nil
-		}
-		return state, err
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
 		return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
 	}
-	normalizeAIAssistantUIState(&state)
-	if aiAssistantUIStateNeedsSanitizedRewrite(data, state) {
-		state.StoragePath = ""
-		if err := configfile.AtomicWriteJSON(path, state); err != nil {
-			return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
-		}
-		log.Printf("[paths] ai_assistant_ui_state sanitized path=%q messages=%d prompts=%d boundary=%q", path, len(state.Messages), len(state.Prompts), state.ContextBoundaryMessageID)
-	}
+	// Bootstrapping conversation memory can apply a data-directory change.
+	// Keep that work outside aiAssistantUIStateMu, which the reset path also uses.
 	a.injectStartupRecoveryCard(&state)
+	aiAssistantUIStateMu.Lock()
+	if currentPath := a.aiAssistantUIStateDBPath(); currentPath != path {
+		aiAssistantUIStateMu.Unlock()
+		return a.LoadAIAssistantUIState()
+	}
 	if err := a.windowAIAssistantUIStateLocked(&state, false); err != nil {
+		aiAssistantUIStateMu.Unlock()
 		return AIAssistantUIState{Messages: []map[string]interface{}{}, Prompts: []string{}, StoragePath: path}, err
 	}
 	state.StoragePath = path
 	log.Printf("[paths] ai_assistant_ui_state load path=%q messages=%d archived=%d prompts=%d boundary=%q", path, len(state.Messages), state.ArchivedCount, len(state.Prompts), state.ContextBoundaryMessageID)
+	aiAssistantUIStateMu.Unlock()
 	return state, nil
 }
 
@@ -174,14 +163,14 @@ func (a *App) SaveAIAssistantUIState(state AIAssistantUIState) error {
 	aiAssistantUIStateMu.Lock()
 	defer aiAssistantUIStateMu.Unlock()
 
-	path := a.aiAssistantUIStatePath()
+	path := a.aiAssistantUIStateDBPath()
 	state.StoragePath = ""
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	normalizeAIAssistantUIState(&state)
 	if err := a.windowAIAssistantUIStateLocked(&state, true); err != nil {
 		return err
 	}
-	if err := configfile.AtomicWriteJSON(path, state); err != nil {
+	if err := a.saveAIAssistantUIStateLocked(state); err != nil {
 		return err
 	}
 	log.Printf("[paths] ai_assistant_ui_state save path=%q messages=%d archived=%d prompts=%d boundary=%q", path, len(state.Messages), state.ArchivedCount, len(state.Prompts), state.ContextBoundaryMessageID)
@@ -192,15 +181,15 @@ func (a *App) ClearAIAssistantUIState() error {
 	aiAssistantUIStateMu.Lock()
 	defer aiAssistantUIStateMu.Unlock()
 
-	path := a.aiAssistantUIStatePath()
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := a.clearAIAssistantUIStateLocked(); err != nil {
 		return err
 	}
-	archivePath := a.aiAssistantUIArchivePath()
-	if err := os.Remove(archivePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	for _, path := range []string{a.aiAssistantUIStatePath(), a.aiAssistantUIArchivePath()} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
-	log.Printf("[paths] ai_assistant_ui_state clear path=%q", path)
+	log.Printf("[paths] ai_assistant_ui_state clear path=%q", a.aiAssistantUIStateDBPath())
 	return nil
 }
 
@@ -317,49 +306,9 @@ func normalizeAIAssistantUIMessage(message map[string]interface{}) {
 }
 
 func sanitizeAIAssistantUIPersistedText(value string) string {
-	value = strings.TrimPrefix(value, "\x01")
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t':
-			return r
-		}
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		return r
-	}, value)
-}
-
-func aiAssistantUIStateNeedsSanitizedRewrite(data []byte, state AIAssistantUIState) bool {
-	lower := strings.ToLower(string(data))
-	if strings.Contains(lower, "<details") ||
-		strings.Contains(lower, "<think>") ||
-		strings.Contains(lower, "<tool_call") ||
-		strings.Contains(lower, "<turn: tool_call") ||
-		strings.Contains(lower, "<|functioncallbegin|>") {
-		return true
-	}
-	for r := rune(0); r <= 0x9f; r++ {
-		if r == '\n' || r == '\r' || r == '\t' || (r > 0x1f && r < 0x7f) {
-			continue
-		}
-		if strings.Contains(lower, fmt.Sprintf(`\u%04x`, r)) {
-			return true
-		}
-	}
-	return aiAssistantUIStateContainsForbiddenControls(state)
-}
-
-func aiAssistantUIStateContainsForbiddenControls(state AIAssistantUIState) bool {
-	for _, message := range state.Messages {
-		for _, field := range []string{"content", "reasoning"} {
-			value, _ := message[field].(string)
-			if value != sanitizeAIAssistantUIPersistedText(value) {
-				return true
-			}
-		}
-	}
-	return false
+	// Same tofu set as the live bubble. A transcript reopened from disk must
+	// not bring per-token U+0001 markers back as squares.
+	return textutil.SanitizeVisibleChatText(value)
 }
 
 func isPersistableAIAssistantUIMessage(message map[string]interface{}) bool {

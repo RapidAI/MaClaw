@@ -2,6 +2,7 @@ package computeruse
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,11 +19,23 @@ type Session struct {
 	// windowResolver attributes elements to their owning window title at
 	// observe time (injected by the host; nil disables attribution).
 	windowResolver func(x, y int) string
+	// windowIDResolver is the stable id for that same point (Windows HWND).
+	// Nil leaves WindowID zero and the title comparison stays in force.
+	windowIDResolver func(x, y int) uint64
 
 	// Last observation (ref table valid until next action or new observe).
 	last        *ObserveResult
 	refsValid   bool
 	screenshotN int
+	// actuated is the control the agent last clicked or typed into.
+	// Observe does not clear it: a later screenshot does not move the caret.
+	// actuatedWindow is the window that received that click. A key goes to the
+	// foreground window, so a control from another window is not the caret.
+	// actuatedWindowID is that window's stable id. Zero falls back to the title.
+	actuated         string
+	actuatedWindow   string
+	actuatedWindowID uint64
+	actuatedKind     string
 
 	audit []ActionRecord
 }
@@ -114,6 +127,14 @@ func (s *Session) SetWindowResolver(fn func(x, y int) string) {
 	s.windowResolver = fn
 }
 
+// SetWindowIDResolver injects a point→window-id resolver. The id, not the
+// title, decides which window a later key talks to.
+func (s *Session) SetWindowIDResolver(fn func(x, y int) uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.windowIDResolver = fn
+}
+
 // Policy exposes pause/resume controls.
 func (s *Session) Policy() *Policy {
 	return s.policy
@@ -165,6 +186,10 @@ func (s *Session) ResetControl() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.policy.Reset(false)
+	s.actuated = ""
+	s.actuatedWindow = ""
+	s.actuatedWindowID = 0
+	s.actuatedKind = ""
 	s.audit = append(s.audit, ActionRecord{At: time.Now(), Action: "reset", Detail: "operator", OK: true})
 }
 
@@ -207,10 +232,15 @@ func (s *Session) CommitObserve(
 		meta.ScaleFactor = 1.0
 	}
 	marks := BuildMarks(elements, ocr)
-	if s.windowResolver != nil {
+	if s.windowResolver != nil || s.windowIDResolver != nil {
 		for i := range marks {
 			sx, sy := MapCaptureToScreen(meta, marks[i].CenterX, marks[i].CenterY)
-			marks[i].Window = s.windowResolver(sx, sy)
+			if s.windowResolver != nil {
+				marks[i].Window = s.windowResolver(sx, sy)
+			}
+			if s.windowIDResolver != nil {
+				marks[i].WindowID = s.windowIDResolver(sx, sy)
+			}
 		}
 	}
 	excerpt := FormatOCRExcerpt(ocr, s.cfg.OCRMaxChars)
@@ -317,6 +347,374 @@ func (s *Session) AppendElements(els []MarkedElement) []string {
 	}
 	s.last.Elements = merged
 	return refs
+}
+
+// ElementNameAtScreen returns the smallest observed control that contains
+// a virtual-desktop point. Vision clicks have no ref, so the pay guard uses
+// this name. An empty string means nothing labeled covers the point.
+func (s *Session) ElementNameAtScreen(x, y int) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return ""
+	}
+	cx, cy := MapScreenToCapture(s.last.Meta, x, y)
+	best := ""
+	bestArea := int(^uint(0) >> 1)
+	for i := range s.last.Elements {
+		el := s.last.Elements[i]
+		name := strings.TrimSpace(el.Name)
+		if name == "" {
+			continue
+		}
+		x0, y0, w, h := el.BBox[0], el.BBox[1], el.BBox[2], el.BBox[3]
+		if w <= 0 || h <= 0 {
+			continue
+		}
+		if cx < x0 || cy < y0 || cx >= x0+w || cy >= y0+h {
+			continue
+		}
+		area := w * h
+		if area < bestArea {
+			bestArea = area
+			best = name
+		}
+	}
+	return best
+}
+
+// OCRTextAtScreen returns the smallest short OCR line that contains a
+// virtual-desktop point. A line longer than 80 runes is a paragraph, not a
+// control, so it is ignored. An empty string means no short line covers the point.
+func (s *Session) OCRTextAtScreen(x, y int) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return ""
+	}
+	cx, cy := MapScreenToCapture(s.last.Meta, x, y)
+	best := ""
+	bestArea := int(^uint(0) >> 1)
+	for i := range s.last.OCRLines {
+		line := s.last.OCRLines[i]
+		text := strings.TrimSpace(line.Text)
+		if text == "" || len([]rune(text)) > 80 {
+			continue
+		}
+		x0, y0, w, h := line.BBox[0], line.BBox[1], line.BBox[2], line.BBox[3]
+		if w <= 0 || h <= 0 {
+			continue
+		}
+		if cx < x0 || cy < y0 || cx >= x0+w || cy >= y0+h {
+			continue
+		}
+		area := w * h
+		if area < bestArea {
+			bestArea = area
+			best = text
+		}
+	}
+	return best
+}
+
+// NoteActuated records the control the agent just clicked or typed into.
+// window is the window that received the click. kind is the control type
+// (button, edit, …). An empty name means the click landed on nothing labeled,
+// so the previous control is no longer the one a later Enter would submit.
+func (s *Session) NoteActuated(name, window, kind string) {
+	s.NoteActuatedID(name, window, kind, 0)
+}
+
+// NoteActuatedID records the control and the stable id of the window that
+// received it. A later title change on that same window keeps the caret.
+func (s *Session) NoteActuatedID(name, window, kind string, windowID uint64) {
+	if s == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		window = ""
+		kind = ""
+		windowID = 0
+	}
+	s.mu.Lock()
+	s.actuated = name
+	s.actuatedWindow = strings.TrimSpace(window)
+	s.actuatedWindowID = windowID
+	s.actuatedKind = strings.TrimSpace(kind)
+	s.mu.Unlock()
+}
+
+// ActuatedName returns the control recorded by NoteActuated.
+func (s *Session) ActuatedName() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.actuated
+}
+
+// ActuatedInWindow returns the recorded control when it still belongs to the
+// window that will receive the key. Another window drops it, including a
+// second window of the same application. An empty recorded window matches,
+// because the click could not be attributed.
+func (s *Session) ActuatedInWindow(foreground string) (name, kind string) {
+	return s.ActuatedInWindowID(foreground, 0)
+}
+
+// ActuatedInWindowID is ActuatedInWindow with the foreground window's stable
+// id. Matching ids win over the title, so a browser title that gains a count
+// stays the same window, and two windows with the same title stay apart.
+// A zero id falls back to the title.
+func (s *Session) ActuatedInWindowID(foreground string, windowID uint64) (name, kind string) {
+	if s == nil {
+		return "", ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.actuated == "" {
+		return "", ""
+	}
+	if s.actuatedWindowID != 0 && windowID != 0 {
+		if s.actuatedWindowID != windowID {
+			return "", ""
+		}
+		return s.actuated, s.actuatedKind
+	}
+	win := strings.TrimSpace(s.actuatedWindow)
+	fg := strings.TrimSpace(foreground)
+	if win != "" && fg != "" && !sameControlWindow(win, fg) {
+		return "", ""
+	}
+	return s.actuated, s.actuatedKind
+}
+
+// ActuatedDocumentCurrent reports that the recorded control's document title
+// still describes the foreground window. An empty recorded title stays current.
+// An unread count stays current. Navigation to another page does not, so a
+// search, note, or password caret does not follow the new page.
+func (s *Session) ActuatedDocumentCurrent(foreground string) bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	win := strings.TrimSpace(s.actuatedWindow)
+	if s.actuated == "" || win == "" {
+		return true
+	}
+	return sameDocumentWindow(win, foreground)
+}
+
+// ActuatedForKey returns the caret a key or untargeted type should trust.
+// A different window drops it. The same window on a new document drops it
+// too, including a password field left on the previous page. An unread count
+// in the title is still the same document.
+func (s *Session) ActuatedForKey(foreground string, windowID uint64) (string, string) {
+	name, kind := s.ActuatedInWindowID(foreground, windowID)
+	if name == "" || s.ActuatedDocumentCurrent(foreground) {
+		return name, kind
+	}
+	return "", ""
+}
+
+// ObserveDocumentStale reports that the cropped window is showing a different
+// document than the one just observed. Submit keys and typing must not use
+// that crop: its labels describe the previous page. A different window, even
+// one that appeared in the shot, is not stale. The returned crop is the
+// observed title.
+func (s *Session) ObserveDocumentStale(foreground string, windowID uint64) (crop string, stale bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return "", false
+	}
+	crop = strings.TrimSpace(s.last.Meta.CropTitle)
+	fg := strings.TrimSpace(foreground)
+	if crop == "" || fg == "" || sameDocumentWindow(crop, fg) {
+		return crop, false
+	}
+	// The crop's own window, not every window that happened to be in the shot.
+	// Another window's controls can sit in the margin; those keys stay usable.
+	if windowID == 0 || windowID != cropWindowID(s.last.Elements, crop) {
+		return crop, false
+	}
+	return crop, true
+}
+
+// KeySurfaceLabels returns names in the window that will receive a key.
+// Names from another window are left out, including another window of the
+// same application. When no element carries a window, the whole observe is
+// one surface. A short OCR line counts only when it is not text inside a
+// larger control, so a chat word is not a button.
+func (s *Session) KeySurfaceLabels(foreground string) []string {
+	return s.KeySurfaceLabelsFor(foreground, 0)
+}
+
+// KeySurfaceLabelsFor is KeySurfaceLabels with the foreground window's stable
+// id. The id keeps labels when that window's title text changes, and splits
+// two windows that happen to share a title.
+func (s *Session) KeySurfaceLabelsFor(foreground string, windowID uint64) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return nil
+	}
+	fg := strings.TrimSpace(foreground)
+	crop := strings.TrimSpace(s.last.Meta.CropTitle)
+	sameID := windowID != 0 && elementsIncludeWindowID(s.last.Elements, windowID)
+	if crop != "" && fg != "" && !sameControlWindow(crop, fg) && !sameID {
+		return nil
+	}
+	attributed := false
+	for i := range s.last.Elements {
+		if strings.TrimSpace(s.last.Elements[i].Window) != "" {
+			attributed = true
+			break
+		}
+	}
+	if attributed && fg == "" && !sameID {
+		return nil
+	}
+	boxes := make([][4]int, 0, len(s.last.Elements))
+	labels := make([]string, 0, len(s.last.Elements)+len(s.last.OCRLines))
+	for i := range s.last.Elements {
+		el := s.last.Elements[i]
+		win := strings.TrimSpace(el.Window)
+		if sameID {
+			if el.WindowID != windowID {
+				continue
+			}
+		} else if attributed && (win == "" || !sameControlWindow(win, fg)) {
+			continue
+		}
+		if name := strings.TrimSpace(el.Name); name != "" {
+			labels = append(labels, name)
+		}
+		if el.BBox[2] > 0 && el.BBox[3] > 0 {
+			boxes = append(boxes, el.BBox)
+		}
+	}
+	for i := range s.last.OCRLines {
+		line := s.last.OCRLines[i]
+		text := strings.TrimSpace(line.Text)
+		if text == "" || len([]rune(text)) > 80 || line.BBox[2] <= 0 || line.BBox[3] <= 0 {
+			continue
+		}
+		if (attributed || sameID) && !centerInsideAny(line.BBox, boxes) {
+			continue
+		}
+		if ocrInsideLargerControl(line.BBox, boxes) {
+			continue
+		}
+		labels = append(labels, text)
+	}
+	return labels
+}
+
+// cropWindowID is the top-level window the crop was taken from.
+// Titled elements that name that document decide. One untitled id is the
+// whole shot. Two different ids and no title that names the crop do not guess.
+func cropWindowID(elements []MarkedElement, crop string) uint64 {
+	var titled uint64
+	titledSet := false
+	var only uint64
+	onlySet := false
+	mixed := false
+	for i := range elements {
+		id := elements[i].WindowID
+		if id == 0 {
+			continue
+		}
+		if !onlySet {
+			only = id
+			onlySet = true
+		} else if only != id {
+			mixed = true
+		}
+		win := strings.TrimSpace(elements[i].Window)
+		if win == "" || !sameDocumentWindow(win, crop) {
+			continue
+		}
+		if !titledSet {
+			titled = id
+			titledSet = true
+			continue
+		}
+		if titled != id {
+			return 0
+		}
+	}
+	if titledSet {
+		return titled
+	}
+	if onlySet && !mixed {
+		return only
+	}
+	return 0
+}
+
+func elementsIncludeWindowID(elements []MarkedElement, windowID uint64) bool {
+	if windowID == 0 {
+		return false
+	}
+	for i := range elements {
+		if elements[i].WindowID == windowID {
+			return true
+		}
+	}
+	return false
+}
+
+func centerInsideAny(inner [4]int, boxes [][4]int) bool {
+	cx := inner[0] + inner[2]/2
+	cy := inner[1] + inner[3]/2
+	for _, box := range boxes {
+		if cx >= box[0] && cy >= box[1] && cx < box[0]+box[2] && cy < box[1]+box[3] {
+			return true
+		}
+	}
+	return false
+}
+
+// ocrInsideLargerControl reports that a text line sits inside a control
+// several times its size. That line is the control's content, not a button.
+func ocrInsideLargerControl(line [4]int, boxes [][4]int) bool {
+	cx := line[0] + line[2]/2
+	cy := line[1] + line[3]/2
+	lineArea := int64(line[2]) * int64(line[3])
+	if lineArea <= 0 {
+		return false
+	}
+	best := int64(1 << 62)
+	hit := false
+	for _, box := range boxes {
+		if box[2] <= 0 || box[3] <= 0 {
+			continue
+		}
+		if cx < box[0] || cy < box[1] || cx >= box[0]+box[2] || cy >= box[1]+box[3] {
+			continue
+		}
+		area := int64(box[2]) * int64(box[3])
+		if area < best {
+			best = area
+			hit = true
+		}
+	}
+	return hit && best > 4*lineArea
 }
 
 // AllowPixelClick checks policy for raw coordinates.
@@ -429,7 +827,9 @@ func PlaybookFor(mode ObserveMode) string {
 - Use computer_focus with a window title substring before interacting with a specific app.
 - To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name, re-observe).
 - Prefer computer_key for shortcuts (enter, ctrl+c, alt+tab). Use computer_select for list/tab items and computer_scroll_into_view before clicking off-screen chrome.
-- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
+- Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
+- Do not computer_type a password, payment password, or verification code, and do not ask for it in chat. The person types it on the screen. The tool waits. Then computer_observe.`
 	}
 	return `Computer Use (text-primary):
 - You may be a text-only model. Screenshots are NOT sent to you. Local OmniParser/OCR provide eN refs.
@@ -443,5 +843,7 @@ func PlaybookFor(mode ObserveMode) string {
 - After every click/type/key/scroll/focus, call computer_observe again (refs become stale).
 - Prefer computer_key / computer_scroll for navigation when labels are missing.
 - If elements are empty, report that local detection failed; do not guess clicks.
-- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
+- Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
+- Do not computer_type a password, payment password, or verification code, and do not ask for it in chat. The person types it on the screen. The tool waits. Then computer_observe.`
 }

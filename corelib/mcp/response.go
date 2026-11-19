@@ -189,7 +189,44 @@ func projectMCPToolResult(raw json.RawMessage) (string, error) {
 	if len(texts) > 0 {
 		return strings.Join(texts, "\n"), nil
 	}
-	return string(raw), nil
+	return string(slimMCPBinary(raw)), nil
+}
+
+// slimMCPBinary drops long image and audio payloads. A short value stays so
+// the caller can still see the content type. A multi-megabyte data URL does
+// not go back to the bot.
+func slimMCPBinary(raw json.RawMessage) json.RawMessage {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return raw
+	}
+	slimmed := slimMCPValue(value)
+	out, err := json.Marshal(slimmed)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func slimMCPValue(value any) any {
+	switch item := value.(type) {
+	case map[string]any:
+		kind, _ := item["type"].(string)
+		if data, ok := item["data"].(string); ok && (kind == "image" || kind == "audio") && len(data) > 200 {
+			item["data"] = ""
+		}
+		for key, child := range item {
+			item[key] = slimMCPValue(child)
+		}
+		return item
+	case []any:
+		for i, child := range item {
+			item[i] = slimMCPValue(child)
+		}
+		return item
+	default:
+		return value
+	}
 }
 
 func mcpTextContent(raw json.RawMessage) []string {
@@ -204,14 +241,26 @@ func mcpTextContent(raw json.RawMessage) []string {
 		return []string{text}
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Resource struct {
+			URI  string `json:"uri"`
+			Text string `json:"text"`
+		} `json:"resource"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
 		return nil
 	}
 	texts := make([]string, 0, len(parts))
 	for _, part := range parts {
+		if part.Type == "resource" {
+			if text := strings.TrimSpace(part.Resource.Text); text != "" {
+				texts = append(texts, text)
+			} else if uri := strings.TrimSpace(part.Resource.URI); uri != "" {
+				texts = append(texts, uri)
+			}
+			continue
+		}
 		if strings.TrimSpace(part.Text) == "" {
 			continue
 		}

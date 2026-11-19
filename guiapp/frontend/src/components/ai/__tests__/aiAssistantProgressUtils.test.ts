@@ -40,6 +40,7 @@ describe('aiAssistantProgressUtils', () => {
         expect(prepareChatBodyForDisplay('$$ x```\n\u{1F680} gone\n$$\n```\n\u{1F680} keep\n```')).toBe('$$ x```\ngone\n$$\n```\n\u{1F680} keep\n```');
         expect(prepareChatBodyForDisplay('\\[\nx + y```\n\\]\n\u{1F680} gone\n```\n\u{1F680} keep\n```')).toBe('\\[\nx + y```\n\\]\ngone\n```\n\u{1F680} keep\n```');
         expect(prepareChatBodyForDisplay('')).toBe('');
+        expect(prepareChatBodyForDisplay('The\x01 user\x01 wants desktop\x01d')).toBe('The user wants desktopd');
         expect(stripLeadingEmojiCluster('\u{1F50D} **/btw**')).toBe('**/btw**');
         // Idempotent + line-array form matches string form.
         const multi = '### \u{1F3AF} Goals\n- \u{1F4CC} note';
@@ -121,6 +122,8 @@ describe('aiAssistantProgressUtils', () => {
     it('hides a goal continuation header without rewriting the stored sentence', () => {
         const header = '[系统续接][execute] 按步骤执行目标：开发 c++ 贪吃蛇游戏';
         expect(prepareChatBodyForDisplay(`${header}\n\n本轮只能提交步骤 4。`)).toBe('本轮只能提交步骤 4。');
+        expect(prepareChatBodyForDisplay(`\x01${header}\n\n正文`)).toBe('正文');
+        expect(prepareChatBodyForDisplay(`\x01${header}\n\nGood job \u2705 keep going`)).toBe('Good job \u2705 keep going');
         expect(prepareChatBodyForDisplay('普通回复')).toBe('普通回复');
     });
 });

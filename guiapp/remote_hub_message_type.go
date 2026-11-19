@@ -30,6 +30,7 @@ const (
 	hubInboundMessageRemoteControlStream       hubInboundMessageType = "remote_control.stream"
 	hubInboundMessageMobileDigitalEmployeeTask hubInboundMessageType = "mobile.digital_employee_task"
 	hubInboundMessageAck                       hubInboundMessageType = "ack"
+	hubInboundMessageGitHubRepoMaint           hubInboundMessageType = "github.repo_maint"
 	hubInboundMessageVEEvent                   hubInboundMessageType = "ve_event" // sentinel for all ve:* events
 )
 
@@ -82,6 +83,8 @@ func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
 		return hubInboundMessageMobileDigitalEmployeeTask
 	case hubInboundMessageAck:
 		return hubInboundMessageAck
+	case hubInboundMessageGitHubRepoMaint:
+		return hubInboundMessageGitHubRepoMaint
 	default:
 		return hubInboundMessageUnknown
 	}

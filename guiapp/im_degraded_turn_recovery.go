@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // P0-1 (0b-i) degraded-turn capability-gap self-recovery.
@@ -62,6 +63,13 @@ type AIContinuationEvent struct {
 func (a *App) emitAIContinuationEvent(event AIContinuationEvent) {
 	if a == nil {
 		return
+	}
+	// Token and final text are concatenated into the transcript. A U+0001
+	// between tokens survives that join and paints as a hollow square.
+	event.Text = textutil.SanitizeVisibleChatText(event.Text)
+	for _, ev := range viewerEventsFromContinuation(event) {
+		ev.CursorFrom = ev.Cursor
+		a.publishViewerEvent(ev)
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {

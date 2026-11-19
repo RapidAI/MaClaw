@@ -62,6 +62,7 @@ type AppSpies = {
     SubmitExpertMarketListing: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListingWithDistribution: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListingToUsers: ReturnType<typeof vi.fn>;
+    ListExpertMarketCategories: ReturnType<typeof vi.fn>;
 };
 
 function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppSpies {
@@ -86,6 +87,7 @@ function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppS
         SubmitExpertMarketListing: vi.fn().mockResolvedValue({ id: 'listing-new' }),
         SubmitExpertMarketListingWithDistribution: vi.fn().mockResolvedValue({ id: 'listing-new' }),
         SubmitExpertMarketListingToUsers: vi.fn().mockResolvedValue({ id: 'listing-shared', visibility: 'users', status: 'shared' }),
+        ListExpertMarketCategories: vi.fn().mockRejectedValue(new Error('no hubcenter')),
     };
     (window as any).go = { main: { App: spies } };
     return spies;
@@ -269,7 +271,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect(dialog.textContent).toContain(userExpert.name);
         expect(screen.queryByRole('dialog', { name: 'AI Expert Market' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
-        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, ''));
     });
 
     it('enables platform distribution by default for a public share', async () => {
@@ -279,7 +281,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).checked).toBe(true);
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, ''));
         expect(spies.SubmitExpertMarketListing).not.toHaveBeenCalled();
     });
 
@@ -335,7 +337,7 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(screen.getByRole('radio', { name: '指定用户（无需审核，可填写多个手机号或邮箱）' }));
         fireEvent.change(screen.getByRole('textbox', { name: '指定用户的手机号或邮箱' }), { target: { value: '13800138000\nfriend@example.com, +86 13800138000, 0086 13800138000, 13900139000' } });
         fireEvent.click(screen.getByRole('button', { name: '分享给指定用户' }));
-        await waitFor(() => expect(spies.SubmitExpertMarketListingToUsers).toHaveBeenCalledWith('user-exp-1', '1.0.0', '13800138000\nfriend@example.com\n13900139000'));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingToUsers).toHaveBeenCalledWith('user-exp-1', '1.0.0', '13800138000\nfriend@example.com\n13900139000', ''));
         expect(spies.SubmitExpertMarketListing).not.toHaveBeenCalled();
         expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
     });
@@ -372,7 +374,7 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
         fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
-        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private'));
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private', ''));
     });
 
     it('clears platform distribution before submitting a private share', async () => {
@@ -383,7 +385,7 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private'));
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private', ''));
         expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
     });
 
@@ -397,7 +399,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).checked).toBe(true);
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, ''));
     });
 
     it('preserves an explicit public distribution opt-out while briefly private', async () => {
@@ -412,7 +414,7 @@ describe('UtilitiesPage AI expert section', () => {
         expect((distribution as HTMLInputElement).checked).toBe(false);
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', ''));
         expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
     });
 
@@ -524,7 +526,7 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(share);
         fireEvent.click(await screen.findByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, ''));
         expect(await screen.findByTestId('utilities-expert-unlist-user-exp-1')).toBeTruthy();
         expect(screen.queryByTestId('utilities-expert-share-user-exp-1')).toBeNull();
     });
@@ -690,5 +692,62 @@ describe('UtilitiesPage AI expert section', () => {
         await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy());
         const card = screen.getByTestId('utilities-expert-card-user-exp-1');
         expect(within(card).getAllByText('fs read')).toHaveLength(1);
+    });
+    it('renders HubCenter category chips and filters the library by them', async () => {
+        const spies = installAppSpies([
+            builtinExpert,
+            { ...userExpert, category: '办公' },
+        ]);
+        spies.ListExpertMarketCategories.mockResolvedValue(['科研', '办公']);
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-category-办公')).toBeTruthy());
+        // 全部 shows every card; the category badge names its market category.
+        expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy();
+        expect(screen.getByTestId('utilities-expert-category-badge-user-exp-1').textContent).toBe('办公');
+
+        fireEvent.click(screen.getByTestId('utilities-expert-category-办公'));
+        expect(screen.queryByTestId('utilities-expert-card-builtin-paper-polish')).toBeNull();
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+
+        // Builtins carry no market category, so they live in the 其它 bucket.
+        fireEvent.click(screen.getByTestId('utilities-expert-category-other'));
+        expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-expert-card-user-exp-1')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('utilities-expert-category-all'));
+        expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy();
+    });
+
+    it('hides the category row and keeps the library unfiltered without a taxonomy', async () => {
+        installAppSpies();
+        render(<UtilitiesPage lang="zh-Hans" />);
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-user-exp-1')).toBeTruthy());
+        expect(screen.queryByTestId('utilities-expert-category-all')).toBeNull();
+        expect(screen.getByTestId('utilities-expert-filter-all')).toBeTruthy();
+    });
+
+    it('requires a category pick in the share dialog when HubCenter defines a taxonomy', async () => {
+        const spies = installAppSpies();
+        spies.ListExpertMarketCategories.mockResolvedValue(['科研', '办公', '其它']);
+        render(<UtilitiesPage lang="zh-Hans" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        const dialog = await screen.findByRole('dialog', { name: '分享 AI 专家' });
+        expect(within(dialog).getByRole('radio', { name: '科研' })).toBeTruthy();
+        // Submitting without a choice is blocked with a validation alert.
+        fireEvent.click(within(dialog).getByRole('button', { name: '提交到 AI 专家市场' }));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled());
+        fireEvent.click(within(dialog).getByRole('radio', { name: '办公' }));
+        fireEvent.click(within(dialog).getByRole('button', { name: '提交到 AI 专家市场' }));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, '办公'));
+    });
+
+    it('submits an untagged share when the taxonomy is unavailable', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        const dialog = await screen.findByRole('dialog', { name: 'Share AI expert' });
+        expect(within(dialog).queryByRole('radio', { name: '科研' })).toBeNull();
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Submit to AI Expert Market' }));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true, ''));
     });
 });

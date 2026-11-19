@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
 import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, layoutWorkdirEntries, moveTaskKeysToFront, newTaskSeedForWorkdirFolder, placeTaskOrderKeyAmong, TASK_WORKDIR_PIN_RESTORE_STORAGE_KEY, TASK_WORKDIR_PIN_STORAGE_KEY, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_ARCHIVE_EXPANDED_STORAGE_KEY, TASK_ARCHIVE_STORAGE_KEY, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskHomeFolderKind, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkdirCollapseKey, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow, workdirFolderTaskType } from '../SidebarTaskManagement';
+import { listedTaskTitle } from '../../ai/describeTaskTitle';
 import { draftFromWizardSeed } from '../../ai/task-config/taskDraft';
-import type { ComponentProps, ReactElement } from 'react';
+import { useState, type ComponentProps, type ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_OPEN_NEW_TASK_WIZARD } from '../../../constants/events';
@@ -145,6 +146,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     DuplicateTask: duplicateTaskMock,
     ChooseFileCompanionFiles: (...args: unknown[]) => chooseFileCompanionFilesMock(...args),
     ShowFileCompanion: (...args: unknown[]) => showFileCompanionMock(...args),
+    LoadConfig: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -199,6 +201,47 @@ function renderTaskManagement(overrides: Partial<ComponentProps<typeof SidebarTa
 async function confirmRemoveDialog(labelText = 'Remove') {
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: labelText }));
+}
+
+function reactPropHandler(el: Element, name: string): ((event: { detail?: number; relatedTarget?: EventTarget | null; currentTarget?: { value?: string } }) => void) | null {
+    const key = Object.keys(el).find(item => item.startsWith('__reactProps$'));
+    const props = key ? (el as unknown as Record<string, Record<string, unknown>>)[key] : null;
+    const handler = props?.[name];
+    return typeof handler === 'function'
+        ? handler as (event: { detail?: number; relatedTarget?: EventTarget | null; currentTarget?: { value?: string } }) => void
+        : null;
+}
+
+function TaskRenameHarness({
+    tasks,
+    renameTask,
+    resumeTask = vi.fn(),
+}: {
+    tasks: ComponentProps<typeof SidebarTaskManagement>['tasks'];
+    renameTask: ComponentProps<typeof SidebarTaskManagement>['renameTask'];
+    resumeTask?: ComponentProps<typeof SidebarTaskManagement>['resumeTask'];
+}) {
+    const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState('');
+    const [taskContextMenu, setTaskContextMenu] = useState<ComponentProps<typeof SidebarTaskManagement>['taskContextMenu']>(null);
+    return (
+        <SidebarTaskManagement
+            lang="zh"
+            tasks={tasks}
+            renamingTaskPath={renamingTaskPath}
+            setRenamingTaskPath={setRenamingTaskPath}
+            renameValue={renameValue}
+            setRenameValue={setRenameValue}
+            resumeTask={resumeTask}
+            createTask={vi.fn()}
+            refreshTasks={vi.fn()}
+            taskContextMenu={taskContextMenu}
+            setTaskContextMenu={setTaskContextMenu}
+            renameTask={renameTask}
+            pinTask={vi.fn()}
+            hideTask={vi.fn()}
+        />
+    );
 }
 
 /**
@@ -950,6 +993,18 @@ describe('SidebarTaskManagement', () => {
         expect(idleMark.closest('[data-testid="sidebar-task-row"]')?.getAttribute('data-status')).toBeNull();
     });
 
+    it('keeps task cards compact with a hairline so neighbors stay distinct', () => {
+        const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        const row = css.match(/\.mc-task-pane \.sidebar-task-row \{\s*position: relative;[\s\S]*?\n\}/)?.[0] ?? '';
+        expect(row).toMatch(/min-height:\s*0;/);
+        expect(row).toMatch(/margin:\s*1px 4px;/);
+        expect(row).toMatch(/padding:\s*3px 8px !important;/);
+        expect(row).toMatch(/border:\s*1px solid var\(--theme-border\);/);
+        expect(row).not.toMatch(/padding:\s*7px/);
+        // Bold CJK ellipsis clips when the title line box drops to 1.2.
+        expect(css).toMatch(/\.mc-task-pane \.sidebar-task-row \.stsm-row-title \{\s*line-height: 1\.35;/);
+    });
+
     it('does not let the status-mark layout rule override paused, cancelled, and idle colors', () => {
         const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
         const layout = css.match(/\.mc-task-pane \.sidebar-task-row > \.mc-task-status \{[^}]+\}/)?.[0] ?? '';
@@ -1193,7 +1248,11 @@ describe('SidebarTaskManagement', () => {
         const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
         const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
         const view = renderTaskManagement({ tasks: [older, newer] });
-        const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        // Both tasks carry last_activity, so the 最近任务 band mirrors them on
+        // top; order assertions only care about the real folder's rows.
+        const names = () => screen.getAllByTestId('sidebar-task-row')
+            .filter(row => !row.closest('[data-testid="task-folder-recent"]'))
+            .map(row => row.textContent || '');
 
         expect(names()[0]).toContain('Newer task');
         expect(names()[1]).toContain('Older task');
@@ -1204,20 +1263,61 @@ describe('SidebarTaskManagement', () => {
         expect(names()[1]).toContain('Older task');
     });
 
+    it('lists recently opened tasks in a 最近任务 band above the folders', () => {
+        const groupedA = { ...baseProject, id: 'ga', name: 'Grouped A', project_path: 'D:/work/tasks/ga', working_dir: 'D:/work/proj', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-02T00:00:00Z' };
+        const groupedB = { ...baseProject, id: 'gb', name: 'Grouped B', project_path: 'D:/work/tasks/gb', working_dir: 'D:/work/proj', created_at: '2026-01-02T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
+        const solo = { ...baseProject, id: 'solo', name: 'Solo task', project_path: 'D:/work/tasks/solo', working_dir: 'D:/work/other', created_at: '2026-01-03T00:00:00Z', last_activity: '2026-08-01T00:00:00Z' };
+        const untouched = { ...baseProject, id: 'untouched', name: 'Untouched task', project_path: 'D:/work/tasks/untouched', created_at: '2026-09-01T00:00:00Z' };
+        renderTaskManagement({ tasks: [groupedA, groupedB, solo, untouched] });
+
+        const band = screen.getByTestId('task-folder-recent');
+        const rows = within(band).getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        // groupedA/groupedB share a directory so the whole group lands in the
+        // band as one folder entry; a task that was never opened does not count.
+        expect(rows.filter(text => text.includes('Grouped'))).toHaveLength(2);
+        expect(rows.some(text => text.includes('Solo task'))).toBe(true);
+        expect(rows.some(text => text.includes('Untouched task'))).toBe(false);
+        const bandGroup = within(band).getByTestId('task-workdir-folder');
+        expect(within(bandGroup).getAllByTestId('sidebar-task-row')).toHaveLength(2);
+    });
+
+    it('keeps the 最近任务 band count at the configured entry cap', () => {
+        const tasks = Array.from({ length: 7 }, (_, i) => ({
+            ...baseProject,
+            id: `recent-${i}`,
+            name: `Recent ${i}`,
+            project_path: `D:/work/tasks/recent-${i}`,
+            working_dir: `D:/work/dir-${i}`,
+            created_at: `2026-01-0${i + 1}T00:00:00Z`,
+            last_activity: `2026-09-0${i + 1}T00:00:00Z`,
+        }));
+        renderTaskManagement({ tasks });
+        const band = screen.getByTestId('task-folder-recent');
+        // Default is five entries, newest activity first.
+        const rows = within(band).getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+        expect(rows).toHaveLength(5);
+        expect(rows[0]).toContain('Recent 6');
+        expect(rows[4]).toContain('Recent 2');
+    });
+
     it('reorders tasks by dragging a row and keeps that order when activity changes', () => {
         localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
         try {
             const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
             const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
             const view = renderTaskManagement({ tasks: [older, newer] });
-            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            // The 最近任务 band mirrors these rows; drag/drop and order
+            // assertions must target the real folder's copies.
+            const realRows = () => screen.getAllByTestId('sidebar-task-row')
+                .filter(row => !row.closest('[data-testid="task-folder-recent"]'));
+            const rowOf = (name: string) => realRows().find(item => (item.textContent || '').includes(name)) as HTMLElement;
             const handleOf = (name: string) => rowOf(name).querySelector('[data-testid="task-drag-handle"]') as HTMLElement;
 
             fireEvent.dragStart(rowOf('Newer task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.dragOver(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
 
-            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+            const names = () => realRows().map(row => row.textContent || '');
             expect(names()[0]).toContain('Older task');
             expect(names()[1]).toContain('Newer task');
 
@@ -3545,6 +3645,283 @@ describe('SidebarTaskManagement', () => {
         expect(Number.parseFloat(menu.style.top)).toBeLessThan(window.innerHeight);
         expect(Number.parseFloat(menu.style.left)).toBeGreaterThanOrEqual(8);
         expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
+    });
+
+    it('opens rename on the clicked row when that task is also listed under recent', async () => {
+        localStorage.removeItem('maclaw.sidebar-recent-folder-collapsed.v1');
+        const renameTask = vi.fn().mockResolvedValue('Detector task');
+        const task = {
+            ...baseProject,
+            id: 'dup-rename',
+            name: 'Detector task',
+            project_path: 'D:/work/tasks/qmobjdetv26',
+            working_dir: 'D:/work/qmobjdetv26',
+            tags: ['coding_dev', 'task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+            last_activity: '2026-11-18T02:36:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[task]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        const coding = await screen.findByTestId('task-folder-coding');
+        const recent = screen.getByTestId('task-folder-recent');
+        expect(within(recent).getAllByTestId('sidebar-task-row')).toHaveLength(1);
+        expect(within(coding).getAllByTestId('sidebar-task-row')).toHaveLength(1);
+
+        fireEvent.contextMenu(within(coding).getByText('Detector task'));
+        const renameItem = screen.getByTestId('task-context-rename');
+        fireEvent.mouseDown(renameItem);
+        fireEvent.click(renameItem);
+
+        const input = await screen.findByTestId('task-rename-input');
+        expect(within(coding).getByTestId('task-rename-input')).toBe(input);
+        expect(within(recent).queryByTestId('task-rename-input')).toBeNull();
+        expect((input as HTMLInputElement).value).toBe('Detector task');
+
+        await act(async () => {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        expect(screen.getByTestId('task-rename-input')).toBeTruthy();
+        expect(screen.queryByTestId('task-context-menu')).toBeNull();
+
+        fireEvent.change(screen.getByTestId('task-rename-input'), { target: { value: '检测指令' } });
+        fireEvent.blur(screen.getByTestId('task-rename-input'));
+        await waitFor(() => expect(renameTask).toHaveBeenCalledWith(task.project_path, '检测指令'));
+    });
+
+    it('renames from the stored name and lets the field take Space and Escape', async () => {
+        const renameTask = vi.fn().mockResolvedValue('ok');
+        const stored = '检测程序输出说明'.repeat(5);
+        expect(listedTaskTitle({ name: stored })).not.toBe(stored);
+        const task = {
+            ...baseProject,
+            id: 'raw-rename',
+            name: stored,
+            project_path: 'D:/work/tasks/raw-rename',
+            working_dir: 'D:/work/raw-rename',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[task]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        fireEvent.contextMenu(await screen.findByText(listedTaskTitle({ name: stored })));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const input = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        expect(input.value).toBe(stored);
+
+        expect(fireEvent.keyDown(input, { key: ' ' })).toBe(true);
+        fireEvent.keyDown(input, { key: 'Escape' });
+        expect(screen.queryByTestId('task-rename-input')).toBeNull();
+        expect(renameTask).not.toHaveBeenCalled();
+    });
+
+    it('saves a stored command edited down to its shortened title', async () => {
+        const renameTask = vi.fn().mockResolvedValue('ok');
+        const stored = '检测程序输出说明'.repeat(5);
+        const shortened = listedTaskTitle({ name: stored });
+        expect(shortened).not.toBe(stored);
+        const task = {
+            ...baseProject,
+            id: 'short-rename',
+            name: stored,
+            project_path: 'D:/work/tasks/short-rename',
+            working_dir: 'D:/work/short-rename',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[task]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        fireEvent.contextMenu(await screen.findByText(shortened));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const input = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        expect(input.value).toBe(stored);
+        fireEvent.change(input, { target: { value: shortened } });
+        fireEvent.blur(input);
+        await waitFor(() => expect(renameTask).toHaveBeenCalledWith(task.project_path, shortened));
+    });
+
+    it('saves the field text when composition is ahead of rename state', async () => {
+        const renameTask = vi.fn().mockResolvedValue('合成名');
+        const task = {
+            ...baseProject,
+            id: 'ime-rename',
+            name: 'Alpha task',
+            project_path: 'D:/work/tasks/ime-rename',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[task]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        fireEvent.contextMenu(await screen.findByText('Alpha task'));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const input = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        expect(input.value).toBe('Alpha task');
+        const saveBlur = reactPropHandler(input, 'onBlur');
+        expect(saveBlur).toBeTypeOf('function');
+        await act(async () => {
+            saveBlur?.({ relatedTarget: null, currentTarget: { value: '合成名' } });
+            await Promise.resolve();
+        });
+        expect(renameTask).toHaveBeenCalledWith(task.project_path, '合成名');
+    });
+
+    it('keeps the next rename open when the previous field blurs as it unmounts', async () => {
+        const renameTask = vi.fn().mockResolvedValue('ok');
+        const alpha = {
+            ...baseProject,
+            id: 'rename-a',
+            name: 'Alpha task',
+            project_path: 'D:/work/tasks/rename-a',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        const beta = {
+            ...baseProject,
+            id: 'rename-b',
+            name: 'Beta task',
+            project_path: 'D:/work/tasks/rename-b',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:01:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[alpha, beta]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        const folder = await screen.findByTestId('task-folder-session');
+        fireEvent.contextMenu(within(folder).getByText('Alpha task'));
+        fireEvent.mouseDown(screen.getByTestId('task-context-rename'));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const first = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        expect(first.value).toBe('Alpha task');
+        fireEvent.change(first, { target: { value: 'Alpha edited' } });
+        const staleBlur = reactPropHandler(first, 'onBlur');
+        expect(staleBlur).toBeTypeOf('function');
+
+        fireEvent.contextMenu(within(folder).getByText('Beta task'));
+        const renameItem = screen.getByTestId('task-context-rename');
+        fireEvent.mouseDown(renameItem);
+        fireEvent.click(renameItem);
+
+        const input = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        expect(input.value).toBe('Beta task');
+        await act(async () => {
+            staleBlur?.({ relatedTarget: null });
+            await Promise.resolve();
+        });
+        expect(renameTask).not.toHaveBeenCalled();
+        expect((screen.getByTestId('task-rename-input') as HTMLInputElement).value).toBe('Beta task');
+    });
+
+    it('does not close a newer rename when an earlier save finishes', async () => {
+        let finishSave: (value: string) => void = () => {};
+        const renameTask = vi.fn().mockImplementation(() => new Promise<string>(resolve => {
+            finishSave = resolve;
+        }));
+        const alpha = {
+            ...baseProject,
+            id: 'rename-save-a',
+            name: 'Alpha task',
+            project_path: 'D:/work/tasks/rename-save-a',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        const beta = {
+            ...baseProject,
+            id: 'rename-save-b',
+            name: 'Beta task',
+            project_path: 'D:/work/tasks/rename-save-b',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:01:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[alpha, beta]} renameTask={renameTask} />
+            </DialogProvider>,
+        );
+        const folder = await screen.findByTestId('task-folder-session');
+        fireEvent.contextMenu(within(folder).getByText('Alpha task'));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const first = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        fireEvent.change(first, { target: { value: 'Alpha edited' } });
+        fireEvent.blur(first);
+        expect(renameTask).toHaveBeenCalledWith(alpha.project_path, 'Alpha edited');
+
+        fireEvent.contextMenu(within(folder).getByText('Beta task'));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        expect((await screen.findByTestId('task-rename-input') as HTMLInputElement).value).toBe('Beta task');
+
+        await act(async () => {
+            finishSave('Alpha edited');
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect((screen.getByTestId('task-rename-input') as HTMLInputElement).value).toBe('Beta task');
+        expect(renameTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens the task clicked as a rename field loses focus', async () => {
+        const renameTask = vi.fn().mockResolvedValue('ok');
+        const resumeTask = vi.fn().mockResolvedValue(true);
+        const alpha = {
+            ...baseProject,
+            id: 'rename-open-a',
+            name: 'Alpha task',
+            project_path: 'D:/work/tasks/rename-open-a',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:00:00Z',
+        };
+        const beta = {
+            ...baseProject,
+            id: 'rename-open-b',
+            name: 'Beta task',
+            project_path: 'D:/work/tasks/rename-open-b',
+            tags: ['task_management'],
+            created_at: '2026-11-18T02:01:00Z',
+        };
+        render(
+            <DialogProvider>
+                <TaskRenameHarness tasks={[alpha, beta]} renameTask={renameTask} resumeTask={resumeTask} />
+            </DialogProvider>,
+        );
+        const folder = await screen.findByTestId('task-folder-session');
+        fireEvent.contextMenu(within(folder).getByText('Alpha task'));
+        fireEvent.click(screen.getByTestId('task-context-rename'));
+        const input = await screen.findByTestId('task-rename-input') as HTMLInputElement;
+        input.focus();
+        expect(document.activeElement).toBe(input);
+
+        const betaRow = within(folder).getAllByTestId('sidebar-task-row').find(row => row.getAttribute('data-task-path') === beta.project_path);
+        const betaButton = betaRow?.querySelector('.sidebar-task-row');
+        expect(betaButton).toBeTruthy();
+        const openClick = reactPropHandler(betaButton as Element, 'onClick');
+        expect(openClick).toBeTypeOf('function');
+
+        act(() => {
+            openClick?.({ detail: 1 });
+        });
+        expect(resumeTask).not.toHaveBeenCalled();
+
+        act(() => {
+            input.blur();
+        });
+        await act(async () => {
+            openClick?.({ detail: 1 });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(resumeTask).toHaveBeenCalledWith(beta.project_path, expect.objectContaining({ project_path: beta.project_path }));
     });
 
     it('closes the task context menu on Escape', () => {

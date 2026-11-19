@@ -36,10 +36,14 @@ var desktopPublishPlan = map[desktopPublishPhase]struct {
 	allowed map[string]bool
 	next    string
 }{
-	phaseResearch: {allow("probe", "script", "navigate", "bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open"),
-		"read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files in this run's scratch folder ($TMPDIR in bash), then call action=publish; it opens the site's editor itself"},
-	phaseCompose: {allow("bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open"),
-		"the editor is open: put everything in with action=publish (title=, body=, files=, verify_url=); it uploads, fills, submits and reads the post back"},
+	// open_screen is required before navigate/probe/publish (BOT_SCREEN_CLOSED).
+	// Leaving it off the list made Bot 2 run_5d1e7700 (2026-11-14) refuse the
+	// only call that could open the screen, then fail every publish as
+	// "the desktop will not start".
+	phaseResearch: {allow("probe", "script", "navigate", "bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "wait", "request_takeover", "publish", "check_inbox", "batch", "app_open", "open_screen"),
+		"call action=open_screen once, then read pages as text (probe/script/fetch with bash), prepare the title, the full body with [[img:N]] anchors and the picture files in this run's scratch folder ($TMPDIR in bash), then call action=publish"},
+	phaseCompose: {allow("bash", "job_status", "job_list", "file_read", "file_write", "file_edit", "file_list", "navigate", "probe", "request_takeover", "publish", "app_open", "open_screen"),
+		"if the screen is closed, call action=open_screen once. The editor is open: put everything in with action=publish (title=, body=, files=, verify_url=); it uploads, fills, submits and reads the post back"},
 	phaseSubmitted:  {allow(), "the submit was clicked but publish found no sign of the post, not even in the post list: the run is over; answer that it was submitted but not confirmed, do not publish again"},
 	phaseLive:       {allow(), "the post is published and verified: give the final answer now with the link"},
 	phaseIncomplete: {allow(), "the post is live but incomplete: give the final answer now with the link and say exactly what is missing"},

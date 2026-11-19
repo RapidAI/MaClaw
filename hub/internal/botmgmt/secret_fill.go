@@ -28,10 +28,16 @@ func (s *Service) FillBotSecret(ctx context.Context, tenantID, userID, botID, na
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", ErrNotFound
 	}
-	if err := configured(rec); err != nil {
+	gate := rec
+	if id := strings.TrimSpace(rec.Bots[index].NodeID); id != "" {
+		if view, ok := nodeView(rec, id); ok {
+			gate = view
+		}
+	}
+	if err := configured(gate); err != nil {
 		return "", err
 	}
-	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, tokenErr := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if tokenErr != nil {
 		return "", tokenErr
 	}

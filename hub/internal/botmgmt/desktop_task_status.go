@@ -432,72 +432,12 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 			defer func() { <-sem }()
 			refreshCtx, cancel := context.WithTimeout(budget, 3*time.Second)
 			defer cancel()
-			view, err := s.readDesktopRunFromSrv(refreshCtx, tenantID, userID, need.instanceID, need.runID)
-			if err != nil || !desktopRunTerminal(view.Status) {
-				need.state.mu.Lock()
-				if err != nil && errors.Is(err, ErrSrvNotFound) {
-					need.state.mediaFetched = true
-				} else {
-					need.state.mediaNext = s.now().Add(desktopTaskMediaRetry)
-				}
-				need.state.mu.Unlock()
-				return
+			if s.refillDesktopRunMedia(refreshCtx, tenantID, userID, need.state, need.instanceID, need.runID) {
+				persistMu.Lock()
+				persistSentence = true
+				persistMu.Unlock()
 			}
 			need.state.mu.Lock()
-			need.state.mediaFetched = true
-			if images := replyImages(view.Message.Attachments); len(images) > 0 && len(need.state.reply.Images) == 0 {
-				need.state.reply.Images = images
-			}
-			if files := replyFiles(view.Message.Attachments); len(files) > 0 && len(need.state.reply.Files) == 0 {
-				need.state.reply.Files = files
-			}
-			if len(need.state.reply.Images) > 0 || len(need.state.reply.Files) > 0 {
-				if err := s.keepDesktopRunMedia(tenantID, userID, need.state.botID, need.runID, need.state.reply.Images, need.state.reply.Files); err != nil {
-					log.Printf("[desktop-run-media] keep run=%s: %v", need.runID, err)
-				}
-			}
-			if strings.TrimSpace(need.state.reply.Text) == "" {
-				if text := strings.TrimSpace(view.Message.Content); text != "" {
-					need.state.reply.Text = text
-				}
-			}
-			if strings.TrimSpace(need.state.reply.SendToUser) == "" {
-				send := ""
-				if view.Message.Metadata != nil {
-					send = strings.TrimSpace(view.Message.Metadata["send_to_user"])
-				}
-				visible := desktopbot.Visible(desktopbot.Turn{Prose: need.state.reply.Text, SendToUser: send})
-				if visible.Bubble && !visible.Failed {
-					need.state.reply.SendToUser = visible.Sentence
-					persistMu.Lock()
-					persistSentence = true
-					persistMu.Unlock()
-				}
-			}
-			if meta := view.Message.Metadata; meta != nil {
-				filledAsk := false
-				if strings.TrimSpace(need.state.reply.AskUserQuestion) == "" && strings.TrimSpace(meta["ask_user_question"]) != "" {
-					need.state.reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
-					filledAsk = true
-				}
-				if strings.TrimSpace(need.state.reply.AskUserInputType) == "" && strings.TrimSpace(meta["ask_user_input_type"]) != "" {
-					need.state.reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
-					filledAsk = true
-				}
-				if strings.TrimSpace(need.state.reply.AskUserSecretName) == "" && strings.TrimSpace(meta["ask_user_secret_name"]) != "" {
-					need.state.reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
-					filledAsk = true
-				}
-				if strings.TrimSpace(need.state.reply.AskUserOptionsJSON) == "" && strings.TrimSpace(meta["ask_user_options_json"]) != "" {
-					need.state.reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
-					filledAsk = true
-				}
-				if filledAsk {
-					persistMu.Lock()
-					persistSentence = true
-					persistMu.Unlock()
-				}
-			}
 			if need.index >= 0 && need.index < len(out) {
 				out[need.index].Reply = need.state.reply
 			}
@@ -511,6 +451,75 @@ func (s *Service) fillPendingMedia(ctx context.Context, tenantID, userID string,
 	if save {
 		s.persistDesktopTasks(tenantID)
 	}
+}
+
+// refillDesktopRunMedia asks MaClawSrv for one finished run's result and
+// folds what the text pin dropped — media bytes, an unsent sentence, the
+// ask fields — into the ledger reply. True means a field worth persisting
+// was filled. A run that is gone stops being asked; any other failure waits
+// two minutes so a down worker does not tax every read.
+func (s *Service) refillDesktopRunMedia(ctx context.Context, tenantID, userID string, state *desktopAdmitState, instanceID, runID string) bool {
+	view, err := s.readDesktopRunFromSrv(ctx, tenantID, userID, state.botID, instanceID, runID)
+	if err != nil || !desktopRunTerminal(view.Status) {
+		state.mu.Lock()
+		if err != nil && errors.Is(err, ErrSrvNotFound) {
+			state.mediaFetched = true
+		} else {
+			state.mediaNext = s.now().Add(desktopTaskMediaRetry)
+		}
+		state.mu.Unlock()
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.mediaFetched = true
+	persist := false
+	if images := replyImages(view.Message.Attachments); len(images) > 0 && len(state.reply.Images) == 0 {
+		state.reply.Images = images
+	}
+	if files := replyFiles(view.Message.Attachments); len(files) > 0 && len(state.reply.Files) == 0 {
+		state.reply.Files = files
+	}
+	if len(state.reply.Images) > 0 || len(state.reply.Files) > 0 {
+		if err := s.keepDesktopRunMedia(tenantID, userID, state.botID, runID, state.reply.Images, state.reply.Files); err != nil {
+			log.Printf("[desktop-run-media] keep run=%s: %v", runID, err)
+		}
+	}
+	if strings.TrimSpace(state.reply.Text) == "" {
+		if text := strings.TrimSpace(view.Message.Content); text != "" {
+			state.reply.Text = text
+		}
+	}
+	if strings.TrimSpace(state.reply.SendToUser) == "" {
+		send := ""
+		if view.Message.Metadata != nil {
+			send = strings.TrimSpace(view.Message.Metadata["send_to_user"])
+		}
+		visible := desktopbot.Visible(desktopbot.Turn{Prose: state.reply.Text, SendToUser: send})
+		if visible.Bubble && !visible.Failed {
+			state.reply.SendToUser = visible.Sentence
+			persist = true
+		}
+	}
+	if meta := view.Message.Metadata; meta != nil {
+		if strings.TrimSpace(state.reply.AskUserQuestion) == "" && strings.TrimSpace(meta["ask_user_question"]) != "" {
+			state.reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
+			persist = true
+		}
+		if strings.TrimSpace(state.reply.AskUserInputType) == "" && strings.TrimSpace(meta["ask_user_input_type"]) != "" {
+			state.reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
+			persist = true
+		}
+		if strings.TrimSpace(state.reply.AskUserSecretName) == "" && strings.TrimSpace(meta["ask_user_secret_name"]) != "" {
+			state.reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
+			persist = true
+		}
+		if strings.TrimSpace(state.reply.AskUserOptionsJSON) == "" && strings.TrimSpace(meta["ask_user_options_json"]) != "" {
+			state.reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
+			persist = true
+		}
+	}
+	return persist
 }
 
 // AckDesktopTask marks one run's result as shown. A second ack is a no-op,
@@ -1102,6 +1111,10 @@ func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, show
 	default:
 		if not := desktopOutcomeStatusLine(item.TaskOutcome, hant, en); not != "" {
 			line = not
+			break
+		}
+		if desktopTaskOutcome(item.TaskOutcome) == "" {
+			line = desktopOutcomeStatusLine("unverified", hant, en)
 			break
 		}
 		if en {

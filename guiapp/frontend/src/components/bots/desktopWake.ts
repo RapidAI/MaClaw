@@ -8,6 +8,7 @@ export function wakeFailureReason(err: unknown): string {
     if (low.includes('no free desktop display')) return '没有空闲的屏幕，请稍后再试';
     if (low.includes('deadline exceeded') || low.includes('timeout') || low.includes('timed out')) return '等了一分钟电脑仍没有起来';
     if (low.includes('not open yet')) return '电脑还没有打开';
+    if (low.includes('node_offline') || raw.includes('这台内网电脑暂时连不上')) return '这台内网电脑暂时连不上';
     if (low.includes('connection refused') || low.includes('unreachable') || low.includes('502') || low.includes('503')) return '电脑服务暂时连不上';
     const clipped = raw.replace(/\s+/g, ' ');
     return clipped.length > 120 ? clipped.slice(0, 120) + '…' : clipped;

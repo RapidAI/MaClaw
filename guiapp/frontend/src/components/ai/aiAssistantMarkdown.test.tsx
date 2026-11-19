@@ -11,6 +11,7 @@ import {
     renderContentWithCodeBlocks,
     renderMessage,
 } from "./aiAssistantMarkdown";
+import { ChatBubblesProvider } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { MarkdownImagePreviewProvider } from "./markdownMedia";
@@ -3911,5 +3912,38 @@ describe("renderMessage assistant display guard", () => {
 
         expect(screen.getByTestId("assistant-reasoning-panel")).toBeTruthy();
         expect(screen.getByText(/英文版 Reviewer Report/)).toBeTruthy();
+    });
+
+    it("hides assistant conversation bubbles when the setting is off", () => {
+        render(
+            <ChatBubblesProvider enabled={false}>
+                <div>
+                    {renderMessage({
+                        id: "plain-user",
+                        role: "user",
+                        content: "请看一下",
+                        timestamp: 1,
+                    }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}
+                    {renderMessage({
+                        id: "plain-ai",
+                        role: "assistant",
+                        content: "看过了。",
+                        timestamp: 2,
+                    }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}
+                </div>
+            </ChatBubblesProvider>,
+        );
+
+        expect(screen.getByText("请看一下")).toBeTruthy();
+        expect(screen.getByText("看过了。")).toBeTruthy();
+        const userBubble = screen.getByTestId("assistant-chat-user-bubble-plain-user") as HTMLElement;
+        const aiBubble = screen.getByTestId("assistant-chat-ai-bubble-plain-ai") as HTMLElement;
+        expect(userBubble.getAttribute("data-chat-bubble")).toBe("off");
+        expect(aiBubble.getAttribute("data-chat-bubble")).toBe("off");
+        expect(userBubble.style.background).toBe("transparent");
+        expect(aiBubble.style.borderStyle).toBe("none");
+        expect(aiBubble.style.borderWidth).toBe("0px");
+        expect(screen.queryByTestId("assistant-chat-tail-user-plain-user")).toBeNull();
+        expect(screen.queryByTestId("assistant-chat-tail-ai-plain-ai")).toBeNull();
     });
 });

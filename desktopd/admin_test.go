@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -83,6 +84,21 @@ func adminJSON(t *testing.T, srv *httptest.Server, client *http.Client, method, 
 	var payload map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&payload)
 	return resp.StatusCode, payload
+}
+
+func TestAdminHubLinkReportsDisabledWithoutALink(t *testing.T) {
+	srv, client := newAdminTestServer(t)
+	if code, _ := adminJSON(t, srv, client, http.MethodGet, "/admin/api/hub-link", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("hub link must require login, got %d", code)
+	}
+	code, _ := adminJSON(t, srv, client, http.MethodPost, "/admin/api/setup", `{"username":"ops","password":"correct horse battery"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("setup failed: %d", code)
+	}
+	code, view := adminJSON(t, srv, client, http.MethodGet, "/admin/api/hub-link", "", nil)
+	if code != http.StatusOK || view["enabled"] != false {
+		t.Fatalf("hub link view: %d %v", code, view)
+	}
 }
 
 func TestAdminSetupLoginAndTokenLifecycle(t *testing.T) {
@@ -268,5 +284,29 @@ func TestAdminClientIPParsesIPv6Loopback(t *testing.T) {
 	req.RemoteAddr = "[2001:db8::1]:443"
 	if isLoopbackRemote(req) {
 		t.Fatal("public IPv6 peer treated as loopback")
+	}
+}
+
+func TestSrvAdminFromPanelReadsAFileAndKeepsAPastedSecret(t *testing.T) {
+	if got, err := srvAdminFromPanel("pasted-secret"); err != nil || got != "pasted-secret" {
+		t.Fatalf("pasted secret = %q %v", got, err)
+	}
+	if got, err := srvAdminFromPanel("abc/def+secret"); err != nil || got != "abc/def+secret" {
+		t.Fatalf("secret with a slash = %q %v", got, err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "admin.secret")
+	if err := os.WriteFile(path, []byte("  from-disk \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := srvAdminFromPanel(path)
+	if err != nil || got != "from-disk" {
+		t.Fatalf("file secret = %q %v", got, err)
+	}
+	if _, err := srvAdminFromPanel(filepath.Join(dir, "missing.secret")); err == nil {
+		t.Fatal("a missing secret file was sent as the secret")
+	}
+	if _, err := srvAdminFromPanel(dir); err == nil {
+		t.Fatal("a directory was read as the secret")
 	}
 }

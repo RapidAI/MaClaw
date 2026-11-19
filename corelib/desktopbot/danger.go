@@ -124,6 +124,22 @@ func installAsks() bool {
 // shows its package names; any other command is named by its kind so a secret
 // in the command line never reaches the chat.
 func dangerLabel(label string, call DangerCall) string {
+	if label == "发版" {
+		command := strings.Join(strings.Fields(call.Command), " ")
+		if command == "" {
+			return label
+		}
+		if runes := []rune(command); len(runes) > 160 {
+			command = string(runes[:160]) + "…"
+		}
+		return "发版 " + command
+	}
+	if label == "git push" {
+		if branch := gitPushBranch(call.Command); branch != "" {
+			return "git push " + branch
+		}
+		return label
+	}
 	if label == "rm -rf" {
 		if targets := rmTargets(call.Command); len(targets) > 0 {
 			return "rm:" + strings.Join(targets, "、")
@@ -400,6 +416,14 @@ func classifyDanger(call DangerCall) (label string, always, listed, readonly boo
 	switch {
 	case action == "install":
 		return "install", true, true, false
+	case action == "release":
+		return "发版", true, true, false
+	case action == "pr":
+		return "提交合并请求", true, true, false
+	case action == "merge":
+		return "合并", true, true, false
+	case action == "dispatch":
+		return "触发流水线", true, true, false
 	case sqlDrop(command):
 		return "DROP", true, true, false
 	case hasGitPush(command):
@@ -442,6 +466,18 @@ func readonlyShell(command string) bool {
 func sqlDrop(command string) bool {
 	folded := strings.Join(strings.Fields(strings.ToLower(command)), " ")
 	return strings.Contains(folded, "drop database") || strings.Contains(folded, "drop table")
+}
+
+func gitPushBranch(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) != 4 || fields[0] != "git" || fields[1] != "push" || fields[2] != "origin" {
+		return ""
+	}
+	branch := fields[3]
+	if branch == "" || branch == "HEAD" || strings.HasPrefix(branch, "-") || len(branch) > 200 || strings.Contains(branch, "..") || strings.ContainsAny(branch, "\r\n'\"\\$`;|&<>") {
+		return ""
+	}
+	return branch
 }
 
 func hasGitPush(command string) bool {

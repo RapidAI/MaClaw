@@ -38,6 +38,7 @@ func unauthenticated(w http.ResponseWriter) {
 // credential creation and revocation guarded by the admin secret. created
 // counts minted credentials; revoked counts their deletions.
 func renewalStub(created, revoked *int) *httptest.Server {
+	credUser := "u1"
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/instances":
@@ -50,16 +51,46 @@ func renewalStub(created, revoked *int) *httptest.Server {
 			var in map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			if in["api_key"] == "ak_conn" && in["api_secret"] == "sk_conn" {
-				_, _ = w.Write([]byte(`{"access_token":"fresh-token","token_type":"Bearer","principal":{"user_id":"u1"}}`))
+				_, _ = w.Write([]byte(`{"access_token":"fresh-token","token_type":"Bearer","principal":{"user_id":"` + credUser + `"}}`))
 				return
 			}
 			unauthenticated(w)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/tenants":
+			if r.Header.Get("X-MaClaw-Admin-Secret") != "admin-key" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"admin owner is required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[{"id":"t1"}]}`))
+		case r.Method == http.MethodGet &&
+			strings.HasPrefix(r.URL.Path, "/api/v1/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/users"):
+			if r.Header.Get("X-MaClaw-Admin-Secret") != "admin-key" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"admin owner is required"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		case r.Method == http.MethodPost &&
+			strings.HasPrefix(r.URL.Path, "/api/v1/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/users"):
+			if r.Header.Get("X-MaClaw-Admin-Secret") != "admin-key" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"admin owner is required"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"u_hub"}`))
 		case r.Method == http.MethodPost &&
 			strings.HasPrefix(r.URL.Path, "/api/v1/admin/tenants/") && strings.HasSuffix(r.URL.Path, "/credentials"):
 			if r.Header.Get("X-MaClaw-Admin-Secret") != "admin-key" {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"error":"admin owner is required"}`))
 				return
+			}
+			// The credential belongs to the user named in the path, and the
+			// token exchange below answers for that same user.
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 9 {
+				credUser = parts[7]
 			}
 			*created++
 			w.WriteHeader(http.StatusCreated)
@@ -233,7 +264,7 @@ func TestConnectionMatchesToken(t *testing.T) {
 	}
 }
 
-func TestTestConnectionKeeps401WhenTokenUndecodable(t *testing.T) {
+func TestTestConnectionProvisionsUserWhenTokenUndecodable(t *testing.T) {
 	created, revoked := 0, 0
 	srv := renewalStub(&created, &revoked)
 	defer srv.Close()
@@ -244,15 +275,52 @@ func TestTestConnectionKeeps401WhenTokenUndecodable(t *testing.T) {
 		AdminSecret: "admin-key",
 	})
 
-	// The hub cannot tell which user the connection belongs to, so renewal
-	// refuses; the token-rejected 401 stays the answer the admin sees.
-	_, err := svc.TestConnection(context.Background(), "tenant-a")
-	var statusErr *upstream.StatusError
-	if !errors.As(err, &statusErr) || statusErr.Status != http.StatusUnauthorized {
-		t.Fatalf("TestConnection error = %v want the original 401", err)
+	// The hub cannot read a user out of the token, so the admin secret
+	// provisions a dedicated connection user instead of failing the test.
+	count, err := svc.TestConnection(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("TestConnection: %v", err)
 	}
-	if created != 0 || revoked != 0 {
-		t.Fatalf("credentials created = %d revoked = %d, want none", created, revoked)
+	if count != 1 {
+		t.Fatalf("count = %d want 1", count)
+	}
+	if created != 1 || revoked != 0 {
+		t.Fatalf("credentials created = %d revoked = %d, want 1 and 0", created, revoked)
+	}
+	stored := storedRecord(t, settings, "tenant-a")
+	if stored.Connection == nil || stored.Connection.UserID != "u_hub" || stored.Connection.TenantID != "t1" {
+		t.Fatalf("stored connection credential = %+v", stored.Connection)
+	}
+}
+
+func TestTestConnectionProvisionsWithAdminSecretOnly(t *testing.T) {
+	created, revoked := 0, 0
+	srv := renewalStub(&created, &revoked)
+	defer srv.Close()
+	svc, settings := newStubService(srv)
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL:     srv.URL,
+		AdminSecret: "admin-key",
+	})
+
+	// No access token at all: the admin secret provisions the dedicated
+	// connection user and the credential that answers the probe.
+	count, err := svc.TestConnection(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("TestConnection: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d want 1", count)
+	}
+	if created != 1 {
+		t.Fatalf("credentials created = %d want 1", created)
+	}
+	stored := storedRecord(t, settings, "tenant-a")
+	if stored.Connection == nil || stored.Connection.UserID != "u_hub" {
+		t.Fatalf("stored connection credential = %+v", stored.Connection)
+	}
+	if stored.MaClawTenantID != "t1" {
+		t.Fatalf("stored maclaw tenant = %q want t1", stored.MaClawTenantID)
 	}
 }
 

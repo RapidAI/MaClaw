@@ -1,7 +1,8 @@
 package browser
 
-// Checkout hard stop. Clicking an order-submit or payment control, opening a
-// cashier page, or running a page script that names one is refused unless the
+// Checkout hard stop. Clicking an order-submit or payment control, pressing
+// Enter or Space that would submit one, opening a cashier page, or running a
+// page script that names one is refused unless the
 // user explicitly confirmed this purchase in their own message, with the
 // amount. The confirmation is bound to that amount (it must be visible on the
 // page at click time), is single-use and expires. Nothing the model writes can
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,15 @@ const CheckoutConfirmTTL = 10 * time.Minute
 
 // MsgCheckoutBlocked is the refusal the model sees. It must ask the user.
 const MsgCheckoutBlocked = "已在下单/支付前停下：这一步会提交订单或付款，必须由用户本人确认。请把商品、数量、收货地址和应付总额（含运费）告诉用户，并请用户回复「确认支付 金额」（例如「确认支付 ¥128.50」）。不要自己点击，也不要换一种方式绕过。"
+
+// checkoutNeedsPersonMessage is the refusal while the preview can show a card.
+// The chat phrase remains the path when there is no preview.
+func checkoutNeedsPersonMessage() string {
+	if previewHandoffEnabled() {
+		return "已在下单/支付前停下。不要自己点击。调用 browser(action=\"confirm_order\", item, shop, address, amount)，等用户在确认卡上确认后再 probe 并点击一次。不要在对话里索要支付密码。"
+	}
+	return MsgCheckoutBlocked
+}
 
 var checkoutLabelMarkers = []string{
 	"提交订单", "确认订单并支付", "确认付款", "确认支付", "立即付款", "立即支付", "去付款", "去支付", "马上付款", "付款", "支付",
@@ -38,21 +49,17 @@ var checkoutLabelSafe = []string{
 // IsCheckoutControl reports an order-submit or payment control by its label
 // or selector.
 func IsCheckoutControl(label, selector string) bool {
-	l := normalizeCheckoutText(label)
-	sel := strings.ToLower(selector)
-	if l != "" {
-		for _, safe := range checkoutLabelSafe {
-			if strings.Contains(l, safe) && !strings.Contains(l, "提交") && !strings.Contains(l, "立即") {
-				return false
-			}
-		}
-		compact := strings.ReplaceAll(l, " ", "")
-		for _, m := range checkoutLabelMarkers {
-			if strings.Contains(l, m) || strings.Contains(compact, strings.ReplaceAll(m, " ", "")) {
-				return true
-			}
-		}
+	// A pay selector commits even when the visible name is 支付方式.
+	if selectorHasCheckout(selector) {
+		return true
 	}
+	return labelHasCheckoutMarker(prepareCheckoutLabel(label))
+}
+
+// selectorHasCheckout reports a CSS or id fragment that is the pay button
+// even when the script never writes the visible label.
+func selectorHasCheckout(selector string) bool {
+	sel := strings.ToLower(selector)
 	for _, m := range []string{"placeyourorder", "place-order", "placeorder", "submitorder", "submit-order", "go-pay", "gopay", "buy-now", "buynow", "pay-btn", "paybtn", "btn-pay"} {
 		if strings.Contains(strings.ReplaceAll(sel, "_", "-"), m) || strings.Contains(sel, m) {
 			return true
@@ -87,17 +94,91 @@ func IsCashierURL(raw string) bool {
 	return false
 }
 
+// stripCheckoutSafePhrases drops labels that only open a chooser or a
+// cart. Longer ones go first so 去结算 does not leave 结算 behind.
+func stripCheckoutSafePhrases(s string) string {
+	phrases := append([]string(nil), checkoutLabelSafe...)
+	sort.Slice(phrases, func(i, j int) bool {
+		return len([]rune(phrases[i])) > len([]rune(phrases[j]))
+	})
+	for _, phrase := range phrases {
+		s = strings.ReplaceAll(s, phrase, " ")
+	}
+	return s
+}
+
+// stripSecretPhrases removes password and code wording before the pay-button
+// check. Longer phrases go first so 支付密码 does not leave a bare 支付.
+func stripSecretPhrases(label string) string {
+	for _, phrase := range []string{"支付密码", "请输入密码", "密码", "password", "passcode", "验证码"} {
+		label = strings.ReplaceAll(label, phrase, " ")
+	}
+	return label
+}
+
 // pageScriptNamesCheckout reports a script that would click a checkout
 // control: it names one of the labels or a cashier host.
 func pageScriptNamesCheckout(script string) bool {
+	// Same label rules as a click. 立即 elsewhere in the script must not
+	// keep 支付方式, and "提交 订单" still matches with the space removed.
+	if labelHasCheckoutMarker(prepareCheckoutLabel(script)) {
+		return true
+	}
 	s := normalizeCheckoutText(script)
-	for _, m := range checkoutLabelMarkers {
-		if strings.Contains(s, m) {
+	for _, h := range []string{"alipay.com", "tenpay.com", "pay.weixin", "cashier.", "/gp/buy/", "placeyourorder", "place-order", "submitorder", "buy-now", "buynow"} {
+		if strings.Contains(s, h) {
 			return true
 		}
 	}
-	for _, h := range []string{"alipay.com", "tenpay.com", "pay.weixin", "cashier.", "/gp/buy/", "placeyourorder", "place-order", "submitorder", "buy-now", "buynow"} {
-		if strings.Contains(s, h) {
+	return selectorHasCheckout(s)
+}
+
+// prepareCheckoutLabel removes password wording and safe phrases. A pay
+// marker that contains 立即 or 提交 is masked first, so 立即支付方式 keeps
+// 立即支付 while 确认支付方式 does not.
+func prepareCheckoutLabel(label string) string {
+	s := stripSecretPhrases(normalizeCheckoutText(label))
+	s, saved := maskCommitPayMarkers(s)
+	s = stripCheckoutSafePhrases(s)
+	return strings.TrimSpace(restoreCommitPayMarkers(s, saved))
+}
+
+func maskCommitPayMarkers(s string) (string, []string) {
+	markers := make([]string, 0, 4)
+	for _, m := range checkoutLabelMarkers {
+		if strings.Contains(m, "立即") || strings.Contains(m, "提交") {
+			markers = append(markers, m)
+		}
+	}
+	sort.Slice(markers, func(i, j int) bool {
+		return len([]rune(markers[i])) > len([]rune(markers[j]))
+	})
+	var saved []string
+	for _, m := range markers {
+		if !strings.Contains(s, m) {
+			continue
+		}
+		saved = append(saved, m)
+		s = strings.ReplaceAll(s, m, string(rune(0xE000+len(saved)-1)))
+	}
+	return s, saved
+}
+
+func restoreCommitPayMarkers(s string, saved []string) string {
+	for i, m := range saved {
+		s = strings.ReplaceAll(s, string(rune(0xE000+i)), m)
+	}
+	return s
+}
+
+func labelHasCheckoutMarker(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	compact := strings.ReplaceAll(s, " ", "")
+	for _, m := range checkoutLabelMarkers {
+		if strings.Contains(s, m) || strings.Contains(compact, strings.ReplaceAll(m, " ", "")) {
 			return true
 		}
 	}
@@ -196,6 +277,12 @@ func consumeCheckoutConfirmation(owner, pageText string) error {
 		delete(checkoutStore, owner)
 		return policyDenied("%s", MsgCheckoutBlocked+"（之前的确认已过期）")
 	}
+	// A strikethrough price or a shipping fee is also on the page. The
+	// confirmation has to be the payable total, or a smaller number that
+	// happens to be visible would approve the whole order.
+	if payable := payableAmount(pageText); payable != "" && payable != c.amount {
+		return policyDenied("%s", fmt.Sprintf("已在下单/支付前停下：用户确认的金额 %s 不是页面应付总额 %s。请按应付总额重新确认。", c.amount, payable))
+	}
 	if !pageAmounts(pageText)[c.amount] {
 		return policyDenied("%s", fmt.Sprintf("已在下单/支付前停下：用户确认的金额 %s 不在当前页面上，页面金额可能已变化。请把页面上的实际应付总额告诉用户并重新确认。", c.amount))
 	}
@@ -254,7 +341,7 @@ func (s *BrowserAgentSession) guardCheckoutClick(ref *BrowserElementRef, selecto
 	if !IsCheckoutControl(label, selector) && !(onCashier && label != "") {
 		return nil
 	}
-	return consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText())
+	return s.stopForCheckout(consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText()))
 }
 
 // guardCheckoutNavigate refuses opening a cashier page without confirmation.
@@ -262,11 +349,24 @@ func (s *BrowserAgentSession) guardCheckoutNavigate(target string) error {
 	if !IsCashierURL(target) {
 		return nil
 	}
-	return consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText())
+	return s.stopForCheckout(consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText()))
 }
 
-// guardCheckoutScript refuses a script that names a checkout control or runs
-// on a cashier page.
+// guardCheckoutPress refuses Enter or Space that would submit the order.
+// The key is not sent. A confirmation that matches the payable total is spent
+// and the key then goes through.
+func (s *BrowserAgentSession) guardCheckoutPress(key string) error {
+	if s == nil || (!checkoutKeySubmits(key) && !pressActivatesFocusedControl(key)) {
+		return nil
+	}
+	if !checkoutPressWouldCommit(key, s.ReadCheckoutPage()) {
+		return nil
+	}
+	return s.stopForCheckout(consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText()))
+}
+
+// guardCheckoutScript refuses a script that names a checkout control, runs
+// on a cashier page, or presses Enter or Space on the order.
 func (s *BrowserAgentSession) guardCheckoutScript(script string) error {
 	onCashier := false
 	if s != nil && s.session != nil {
@@ -275,9 +375,30 @@ func (s *BrowserAgentSession) guardCheckoutScript(script string) error {
 		}
 	}
 	if !pageScriptNamesCheckout(script) && !onCashier {
-		return nil
+		if s == nil || s.session == nil || !scriptPressCommits(script, s.ReadCheckoutPage()) {
+			return nil
+		}
 	}
-	return consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText())
+	return s.stopForCheckout(consumeCheckoutConfirmation(s.ownerKey(), s.checkoutPageText()))
+}
+
+// scriptPressCommits reports a page-script press() that would submit the order.
+// press("Enter") calls form.requestSubmit, so focus can be a field, not the button.
+var pageScriptPressRe = regexp.MustCompile(`(?i)\bpress\s*\(\s*['"]([^'"]+)['"]`)
+
+func scriptPressCommits(script string, page CheckoutPage) bool {
+	for _, m := range pageScriptPressRe.FindAllStringSubmatch(script, -1) {
+		key := strings.TrimSpace(m[1])
+		if strings.TrimSpace(key) == "" && strings.Contains(m[1], " ") {
+			key = "space"
+		} else if strings.ContainsAny(key, " \t+") {
+			continue
+		}
+		if checkoutScriptPressWouldCommit(key, page) {
+			return true
+		}
+	}
+	return false
 }
 
 // PendingCheckoutConfirmation reports the live confirmed amount for owner.

@@ -20,6 +20,7 @@ export {
     codingStepsClockIsCurrent,
     codingStepsSnapshotRegresses,
     codingWorkbenchStepsAreCurrent,
+    codingSharedExecutionStatus,
     codingWorkbenchStepsFromPayload,
     codingWorkbenchStepsRevision,
     codingStepIsActive,
@@ -157,6 +158,12 @@ export function codingStepStatusLabel(lang: string | undefined, status: string):
     if (codingStepIsActive(s)) {
         return localizeText(lang, "In progress", "进行中", "進行中");
     }
+    if (s === "waiting_review") {
+        return localizeText(lang, "Waiting for review", "等待审阅", "等待審閱");
+    }
+    if (s === "interrupted") {
+        return localizeText(lang, "Interrupted", "已中断", "已中斷");
+    }
     if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
         return localizeText(lang, "Pending", "待确认", "待確認");
     }
@@ -188,6 +195,9 @@ export type CodingStepStatus = {
     summary?: string;
     verify_cmd?: string;
     verify_ok?: boolean;
+    blocked_by?: string[];
+    block_reason?: string;
+    child_task_id?: string;
 };
 
 export type CodingWorkbenchControlPanelProps = {

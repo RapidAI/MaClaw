@@ -24,10 +24,11 @@ export function materialErrorText(code: string | undefined, lang: string): strin
 }
 
 // The attach button and the files waiting to go with the next message.
-export function DesktopBotMaterialStrip({ items, lang, disabled, onAttach, onRemove }: {
+export function DesktopBotMaterialStrip({ items, lang, disabled, allowAttach = true, onAttach, onRemove }: {
     items: MaterialItem[];
     lang: string;
     disabled?: boolean;
+    allowAttach?: boolean;
     onAttach: (files: File[]) => void;
     onRemove: (id: string) => void;
 }) {
@@ -57,31 +58,35 @@ export function DesktopBotMaterialStrip({ items, lang, disabled, onAttach, onRem
                     })}
                 </div>
             )}
-            <button
-                type="button"
-                className="desktop-bot-materials__attach"
-                data-testid="desktop-bot-attach"
-                disabled={disabled}
-                aria-label={w.attach}
-                title={w.attach}
-                onClick={() => input.current?.click()}
-            >
-                <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                </svg>
-            </button>
-            <input
-                ref={input}
-                type="file"
-                multiple
-                hidden
-                data-testid="desktop-bot-attach-input"
-                onChange={event => {
-                    const files = Array.from(event.target.files || []);
-                    event.target.value = '';
-                    if (files.length) onAttach(files);
-                }}
-            />
+            {allowAttach ? (
+                <>
+                    <button
+                        type="button"
+                        className="desktop-bot-materials__attach"
+                        data-testid="desktop-bot-attach"
+                        disabled={disabled}
+                        aria-label={w.attach}
+                        title={w.attach}
+                        onClick={() => input.current?.click()}
+                    >
+                        <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                        </svg>
+                    </button>
+                    <input
+                        ref={input}
+                        type="file"
+                        multiple
+                        hidden
+                        data-testid="desktop-bot-attach-input"
+                        onChange={event => {
+                            const files = Array.from(event.target.files || []);
+                            event.target.value = '';
+                            if (files.length) onAttach(files);
+                        }}
+                    />
+                </>
+            ) : null}
         </div>
     );
 }

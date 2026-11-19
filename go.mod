@@ -6,8 +6,8 @@ require (
 	github.com/RapidAI/OfficeRead v0.0.0-20260809051355-9682f0878d08
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20261110213740-d7496429564d
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20261107035633-bbd33747e5b9
-	github.com/Vantagics/GoPPT v0.0.0-20261111231545-296b21989382
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20261116212019-6cf95d076670
+	github.com/Vantagics/GoPPT v0.0.0-20261116233510-e450fdec985e
 	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
@@ -80,7 +80,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.3.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/klauspost/compress v1.17.4
 	github.com/richardlehane/mscfb v1.0.7
@@ -170,6 +170,3 @@ replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
 // Patched Darwin launch-file batch hook. Do not point this at the module cache.
 replace github.com/wailsapp/wails/v2 => ./third_party/wails
-
-// TEMP validation harness - remove after upstream fix lands
-replace github.com/VantageDataChat/GoPDF2 => ./third_party/gopdf2

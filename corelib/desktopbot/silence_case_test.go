@@ -21,6 +21,13 @@ func TestDesktopBotSilenceCases(t *testing.T) {
 	if pinned != "系统规则\n\n"+desktopbot.WorthSayingPrompt || desktopbot.PinWorthSaying(pinned) != pinned {
 		t.Fatalf("pin = %q", pinned)
 	}
+	if strings.Contains(desktopbot.RecurringWorkPrompt, "没有变化就结束") {
+		t.Fatal("the routine line is in the timer rule")
+	}
+	recurring := desktopbot.PinRecurringWork(pinned)
+	if !strings.Contains(recurring, desktopbot.RecurringWorkPrompt) || desktopbot.PinRecurringWork(recurring) != recurring {
+		t.Fatal("timer rule did not pin once")
+	}
 	for _, id := range []string{
 		"no_bubble_per_step",
 		"done_sends_once",

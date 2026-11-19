@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { currentBotAccessEnabled, subscribeBotGrant } from '../bots/botOpenGate';
-import { BOT_TRANSCRIPT_EVENT, currentInProgressBotTasks } from '../bots/desktopBots';
+import { BOT_TRANSCRIPT_EVENT } from '../bots/desktopBots';
+import { currentLocalManagementTasks, subscribeLocalManagementTasks, tasksForBotMonitor } from '../bots/localManagementTasks';
 import { startVisibleInterval } from '../../utils/visibleInterval';
 
 // Mirrors the rail's Bot grant. Starts from the last noted value so the
@@ -31,7 +32,7 @@ type BotTaskSlot = {
 const botTaskSlots = new Map<string, BotTaskSlot>();
 
 function publishBotTaskCount(slot: BotTaskSlot, userId: string) {
-    const next = currentInProgressBotTasks(userId).length;
+    const next = tasksForBotMonitor(userId).length;
     if (slot.count === next) return;
     slot.count = next;
     slot.listeners.forEach(listener => listener(next));
@@ -41,7 +42,7 @@ function subscribeBotTaskCount(userId: string, listener: (count: number) => void
     let slot = botTaskSlots.get(userId);
     if (!slot) {
         const created: BotTaskSlot = {
-            count: currentInProgressBotTasks(userId).length,
+            count: tasksForBotMonitor(userId).length,
             listeners: new Set(),
             stop: () => {},
         };
@@ -51,16 +52,18 @@ function subscribeBotTaskCount(userId: string, listener: (count: number) => void
             publishBotTaskCount(created, userId);
         };
         const stopInterval = startVisibleInterval(() => publishBotTaskCount(created, userId), BOT_TASK_COUNT_POLL_MS);
+        const stopLocal = subscribeLocalManagementTasks(() => publishBotTaskCount(created, userId));
         window.addEventListener(BOT_TRANSCRIPT_EVENT, onTranscript);
         created.stop = () => {
             stopInterval();
+            stopLocal();
             window.removeEventListener(BOT_TRANSCRIPT_EVENT, onTranscript);
         };
         slot = created;
         botTaskSlots.set(userId, slot);
     }
     slot.listeners.add(listener);
-    const next = currentInProgressBotTasks(userId).length;
+    const next = tasksForBotMonitor(userId).length;
     if (next !== slot.count) publishBotTaskCount(slot, userId);
     else listener(slot.count);
     return () => {
@@ -74,15 +77,18 @@ function subscribeBotTaskCount(userId: string, listener: (count: number) => void
     };
 }
 
-// In-progress bot tasks for the rail badge and the taskbar overlay. The
-// count stays at 0 until Hub has granted Bot access, matching the Bot tab
-// on the task monitor.
+// In-progress bot tasks for the rail badge and the taskbar overlay. Without
+// a Bot grant the badge still counts a desktop install or update running
+// on this computer.
 export function useInProgressBotTaskCount(userId: string, enabled: boolean): number {
     const [count, setCount] = useState(0);
     useEffect(() => {
         if (!enabled) {
-            setCount(current => current === 0 ? current : 0);
-            return;
+            const publishLocal = () => {
+                const next = currentLocalManagementTasks().length;
+                setCount(current => current === next ? current : next);
+            };
+            return subscribeLocalManagementTasks(publishLocal);
         }
         return subscribeBotTaskCount(userId, next => {
             setCount(current => current === next ? current : next);

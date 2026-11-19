@@ -82,7 +82,7 @@ describe('ExpertMarketDialog', () => {
         render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} /></DialogProvider>);
         const install = await screen.findByRole('button', { name: 'Install' });
         await act(async () => { fireEvent.click(install); });
-        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned'));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned', ''));
         expect(AppAPI.PurchaseExpertMarketListing).not.toHaveBeenCalled();
     });
 
@@ -177,7 +177,7 @@ describe('ExpertMarketDialog', () => {
         const confirm = await screen.findByRole('dialog', { name: 'Get AI Expert' });
         await act(async () => { fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!); });
         await waitFor(() => expect(AppAPI.PurchaseExpertMarketListing).toHaveBeenCalledWith('expert-owned'));
-        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned'));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned', ''));
     });
 
     it('prevents duplicate get requests while its confirmation is open', async () => {
@@ -213,7 +213,7 @@ describe('ExpertMarketDialog', () => {
         await act(async () => { fireEvent.click(get); });
         const confirm = await screen.findByRole('dialog', { name: 'Get AI Expert' });
         await act(async () => { fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!); });
-        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned'));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-owned', ''));
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
         expect(await screen.findByRole('button', { name: 'Install' })).toBeTruthy();
     });
@@ -338,7 +338,7 @@ describe('ExpertMarketDialog', () => {
         expect(shared?.textContent).toMatch(/来自 13800138000/);
         expect(shared?.closest('.expert-market-grid')).toBeTruthy();
         fireEvent.click(within(shared as HTMLElement).getByRole('button', { name: '安装' }));
-        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-shared'));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-shared', ''));
         expect(AppAPI.PurchaseExpertMarketListing).not.toHaveBeenCalled();
     });
 
@@ -374,7 +374,7 @@ describe('ExpertMarketDialog', () => {
         render(<DialogProvider><ExpertMarketDialog lang="en" initialTab="library" onClose={vi.fn()} /></DialogProvider>);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
-        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-submitted'));
+        await waitFor(() => expect(AppAPI.InstallExpertMarketListing).toHaveBeenCalledWith('expert-submitted', ''));
         expect(within(screen.getByRole('group', { name: 'Actions for My private expert' })).queryByRole('button', { name: 'Install' })).toBeNull();
     });
 

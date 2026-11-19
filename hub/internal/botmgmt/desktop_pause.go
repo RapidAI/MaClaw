@@ -86,7 +86,7 @@ func (s *Service) runPauseCall(ctx context.Context, tenantID, userID, botID, run
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
 	if err != nil {
 		return nil, "", err
 	}

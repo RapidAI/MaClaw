@@ -261,49 +261,235 @@ func ParseSteps(raw interface{}) ([]Step, error) {
 		if text == "" {
 			return nil, fmt.Errorf("steps cannot be empty")
 		}
-		var asObjects []map[string]interface{}
-		if json.Unmarshal([]byte(text), &asObjects) == nil {
-			return stepsFromObjects(asObjects)
+		if steps, handled, err := stepsFromEncodedJSON(text, 0); handled {
+			return steps, err
 		}
-		var asStrings []string
-		if json.Unmarshal([]byte(text), &asStrings) == nil {
-			return stepsFromStrings(asStrings)
+		// Not a document: split into lines and give each one the same
+		// element semantics an array element gets — a JSON-document line
+		// expands, a plain line stays a title.
+		lines := strings.Split(text, "\n")
+		values := make([]interface{}, len(lines))
+		for i, line := range lines {
+			values[i] = line
 		}
-		return stepsFromStrings(strings.Split(text, "\n"))
+		return stepsFromValues(values, 0)
 	case []string:
-		return stepsFromStrings(v)
-	case []interface{}:
-		steps := make([]Step, 0, len(v))
-		for _, item := range v {
-			switch step := item.(type) {
-			case string:
-				steps = append(steps, Step{Title: step})
-			case map[string]interface{}:
-				steps = append(steps, stepFromMap(step))
-			default:
-				return nil, fmt.Errorf("invalid step")
-			}
+		values := make([]interface{}, len(v))
+		for i, item := range v {
+			values[i] = item
 		}
-		return normalizeSteps(steps)
+		return stepsFromValues(values, 0)
+	case map[string]interface{}:
+		return normalizeSteps([]Step{stepFromMap(v)})
+	case []interface{}:
+		return stepsFromValues(v, 0)
 	default:
 		return nil, fmt.Errorf("invalid steps")
 	}
 }
 
-func stepsFromStrings(values []string) ([]Step, error) {
+// stepsJSONDepth bounds JSON-in-JSON unwrapping: a model that double-encodes
+// the steps array expands once, deeper nesting stays a title.
+const stepsJSONDepth = 3
+
+// stepsFromEncodedJSON decodes a steps document the model sent as text. The
+// whole steps argument, or one list element, can arrive as a JSON string —
+// sometimes fenced or double-encoded — instead of a decoded array. handled is
+// false when the text is not a JSON document so the caller keeps it as a
+// plain step title; handled with err set surfaces the same "no usable steps"
+// error the object form would have produced.
+func stepsFromEncodedJSON(text string, depth int) (steps []Step, handled bool, err error) {
+	if depth >= stepsJSONDepth {
+		return nil, false, nil
+	}
+	text = stripStepsCodeFence(strings.TrimSpace(strings.TrimPrefix(text, "\uFEFF")))
+	// Only documents can unwrap; a scalar decode ("42", "true") never is a
+	// steps list anyway, so skip the unmarshal attempt on plain titles.
+	if !strings.HasPrefix(text, "[") && !strings.HasPrefix(text, "{") && !strings.HasPrefix(text, "\"") {
+		return nil, false, nil
+	}
+	for _, candidate := range stepsDecodeCandidates(text) {
+		var decoded interface{}
+		if jsonErr := json.Unmarshal([]byte(candidate), &decoded); jsonErr != nil {
+			continue
+		}
+		return stepsFromDecodedJSON(decoded, depth)
+	}
+	return nil, false, nil
+}
+
+// stepsDecodeCandidates lists the text plus tolerant completions for a
+// truncated document: a missing closer and a trailing partial element cut to
+// the last complete object. A candidate that decodes to a non-steps shape is
+// still filtered by stepsFromDecodedJSON, so plain titles stay untouched.
+func stepsDecodeCandidates(text string) []string {
+	candidates := []string{text}
+	if text == "" {
+		return candidates
+	}
+	var open, close byte
+	switch text[0] {
+	case '[':
+		open, close = '[', ']'
+	case '{':
+		open, close = '{', '}'
+	}
+	// A lone opener ("[", "{") is a title character, not a document: it needs
+	// at least one content byte before any completion is plausible.
+	if open == 0 || len(text) < 2 || text[len(text)-1] == close {
+		return candidates
+	}
+	// Missing closer: "[{...},{...}" -> append it.
+	candidates = append(candidates, text+string(close))
+	if open == '[' {
+		// Trailing partial element: "[{...},{..." -> cut to the last complete
+		// object and close the array.
+		if last := strings.LastIndex(text, "}"); last >= 0 {
+			candidates = append(candidates, text[:last+1]+"]")
+		}
+	}
+	return candidates
+}
+
+// stepsFromDecodedJSON interprets one decoded JSON value: a step object, a
+// {"steps": [...]} wrapper, an array of either, or a string holding another
+// document. Scalar values are not steps.
+func stepsFromDecodedJSON(decoded interface{}, depth int) (steps []Step, handled bool, err error) {
+	if depth >= stepsJSONDepth {
+		return nil, false, nil
+	}
+	switch v := decoded.(type) {
+	case string:
+		return stepsFromEncodedJSON(v, depth+1)
+	case map[string]interface{}:
+		// A "steps" member means the object wraps the list; stepFromMap never
+		// reads that key, so it cannot be a step's own field. A scalar or
+		// missing member decodes to nothing and falls through to stepFromMap.
+		if inner, handled, err := stepsFromDecodedJSON(v["steps"], depth+1); handled {
+			return inner, true, err
+		}
+		steps, err := normalizeSteps([]Step{stepFromMap(v)})
+		return steps, true, err
+	case []interface{}:
+		// A document that decodes to non-step elements — "[1,2,3]" — was a
+		// title before, so it is not a steps document here either.
+		for _, item := range v {
+			switch item.(type) {
+			case string, map[string]interface{}:
+			default:
+				return nil, false, nil
+			}
+		}
+		steps, err := stepsFromValues(v, depth+1)
+		return steps, true, err
+	default:
+		// Numbers, bools, and null decode fine but are not steps; keep the
+		// text as a title the way the split-lines fallback always did.
+		return nil, false, nil
+	}
+}
+
+func stepsFromValues(values []interface{}, depth int) ([]Step, error) {
 	steps := make([]Step, 0, len(values))
-	for _, value := range values {
-		steps = append(steps, Step{Title: value})
+	for _, item := range values {
+		switch step := item.(type) {
+		case string:
+			if expanded, handled, err := stepsFromEncodedJSON(step, depth+1); handled {
+				if err != nil {
+					return nil, err
+				}
+				steps = append(steps, expanded...)
+				continue
+			}
+			steps = append(steps, Step{Title: step})
+		case map[string]interface{}:
+			s := stepFromMap(step)
+			if strings.TrimSpace(s.Title) == "" {
+				// An untitled object may be a {"steps": [...]} wrapper. A
+				// failed unwrap keeps the empty-title element, which
+				// normalizeSteps drops like it always did.
+				if expanded, handled, err := stepsFromDecodedJSON(step, depth+1); handled && err == nil && len(expanded) > 0 {
+					steps = append(steps, expanded...)
+					continue
+				}
+			} else if expanded, handled, err := stepsFromEncodedJSON(s.Title, depth+1); handled {
+				if err != nil {
+					return nil, err
+				}
+				if s.Detail != "" && len(expanded) > 0 && expanded[0].Detail == "" {
+					expanded[0].Detail = s.Detail
+				}
+				steps = append(steps, expanded...)
+				continue
+			}
+			steps = append(steps, s)
+		default:
+			return nil, fmt.Errorf("invalid step")
+		}
 	}
 	return normalizeSteps(steps)
 }
 
-func stepsFromObjects(values []map[string]interface{}) ([]Step, error) {
-	steps := make([]Step, 0, len(values))
-	for _, value := range values {
-		steps = append(steps, stepFromMap(value))
+// repairEncodedStepTitles expands a stored step whose title is itself a steps
+// document. SavePlan parses every encoding the model sends; rows written by a
+// build without that kept the JSON document as the title — the whole plan
+// collapsed into one step and marking it done closed the goal early. The
+// first decoded step keeps the recorded status and result, because that is
+// the work the model actually reported; the rest come back pending so the
+// goal resumes on the step after it.
+func repairEncodedStepTitles(steps []Step) ([]Step, bool) {
+	changed := false
+	out := make([]Step, 0, len(steps))
+	for _, step := range steps {
+		expanded, handled, err := stepsFromEncodedJSON(step.Title, 0)
+		if !handled || err != nil || len(expanded) == 0 {
+			out = append(out, step)
+			continue
+		}
+		changed = true
+		for i, item := range expanded {
+			if i == 0 {
+				item.Status = step.Status
+				item.Result = step.Result
+				if item.Detail == "" {
+					item.Detail = step.Detail
+				}
+			}
+			if item.Status == "" {
+				item.Status = StepPending
+			}
+			out = append(out, item)
+		}
 	}
-	return normalizeSteps(steps)
+	if !changed {
+		return steps, false
+	}
+	for i := range out {
+		out[i].Index = i + 1
+	}
+	return out, true
+}
+
+// stripStepsCodeFence removes one ``` / ```json wrapper. Unfenced text is
+// returned unchanged.
+func stripStepsCodeFence(text string) string {
+	if !strings.HasPrefix(text, "```") {
+		return text
+	}
+	body := text[3:]
+	if lineEnd := strings.IndexByte(body, '\n'); lineEnd >= 0 {
+		// The info string ("json", nothing, or a word) ends at the newline.
+		body = body[lineEnd+1:]
+	} else if idx := strings.IndexAny(body, `[{"`); idx > 0 {
+		// Single-line fence: drop a "json"-style info token only up to the
+		// first JSON document marker — a later space may be inside the doc.
+		body = body[idx:]
+	}
+	body = strings.TrimSpace(body)
+	if rest, ok := strings.CutSuffix(body, "```"); ok {
+		body = strings.TrimSpace(rest)
+	}
+	return body
 }
 
 func stepFromMap(raw map[string]interface{}) Step {

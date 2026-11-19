@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -185,7 +186,7 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 		if method == http.MethodGet && strings.HasSuffix(path, "/pending") {
 			fillDesktopBotDest(t, dest, map[string]any{
 				"items": []map[string]any{
-					{"bot_id": "bot_1", "run_id": "run_shot", "task": "截个图", "status": "succeeded", "reply": map[string]any{
+					{"bot_id": "bot_test_shot", "run_id": "run_shot", "task": "截个图", "status": "succeeded", "reply": map[string]any{
 						"text":   "",
 						"images": []map[string]any{{"mime": "image/png", "data": shot, "attachment_id": "shot-1"}},
 					}},
@@ -203,8 +204,8 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 		desktopBotReportSink = nil
 		desktopBotExchangeOverride = nil
 		activeDesktopRunsMu.Lock()
-		delete(shownDesktopRuns, desktopRunKey("bot_1", "run_shot"))
-		delete(ackedDesktopRuns, desktopRunKey("bot_1", "run_shot"))
+		delete(shownDesktopRuns, desktopRunKey("bot_test_shot", "run_shot"))
+		delete(ackedDesktopRuns, desktopRunKey("bot_test_shot", "run_shot"))
 		activeDesktopRunsMu.Unlock()
 	})
 	if err := app.PullDesktopBotDeliveries(); err != nil {
@@ -213,13 +214,14 @@ func TestPullDesktopBotDeliveryKeepsAScreenshotWithoutCaption(t *testing.T) {
 	if len(payloads) != 1 || strings.Contains(payloads[0], `"send_to_user":"截个图`) || strings.Contains(payloads[0], `"error"`) || strings.Contains(payloads[0], `"send_to_user"`) || strings.Contains(payloads[0], `"text"`) {
 		t.Fatalf("payload = %#v", payloads)
 	}
-	if !strings.Contains(payloads[0], `"desktop_attachment_ids"`) || !strings.Contains(payloads[0], "shot-1") || !strings.Contains(payloads[0], `"desktop_shot_paths"`) || strings.Contains(payloads[0], shot) {
-		t.Fatalf("screenshot id dropped: %s", payloads[0])
+	shotPath := desktopBotPayloadPath(t, payloads[0], "desktop_shot_paths")
+	if !strings.HasSuffix(shotPath, "screenshot.png") || strings.Contains(payloads[0], shot) {
+		t.Fatalf("screenshot was not saved locally: %s", payloads[0])
 	}
-	shotFile := filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "shots", "shot-1.png")
-	if _, err := os.Stat(shotFile); err != nil {
-		t.Fatalf("screenshot was not kept under the test data dir %s: %v", shotFile, err)
+	if _, err := os.Stat(shotPath); err != nil {
+		t.Fatalf("screenshot file: %v", err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(shotPath)) })
 }
 
 func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.T) {
@@ -236,7 +238,7 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 		if method == http.MethodGet && strings.HasSuffix(path, "/pending") {
 			fillDesktopBotDest(t, dest, map[string]any{
 				"items": []map[string]any{
-					{"bot_id": "bot_1", "run_id": "run_both", "task": "截个图", "status": "succeeded", "reply": map[string]any{
+					{"bot_id": "bot_test_both", "run_id": "run_both", "task": "截个图", "status": "succeeded", "reply": map[string]any{
 						"text":         "过程记录",
 						"send_to_user": "文件和截图都在。",
 						"images":       []map[string]any{{"mime": "image/png", "data": shot, "attachment_id": "shot-1"}},
@@ -256,8 +258,8 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 		desktopBotReportSink = nil
 		desktopBotExchangeOverride = nil
 		activeDesktopRunsMu.Lock()
-		delete(shownDesktopRuns, desktopRunKey("bot_1", "run_both"))
-		delete(ackedDesktopRuns, desktopRunKey("bot_1", "run_both"))
+		delete(shownDesktopRuns, desktopRunKey("bot_test_both", "run_both"))
+		delete(ackedDesktopRuns, desktopRunKey("bot_test_both", "run_both"))
 		activeDesktopRunsMu.Unlock()
 	})
 	if err := app.PullDesktopBotDeliveries(); err != nil {
@@ -267,19 +269,38 @@ func TestPullDesktopBotDeliveryKeepsFileAndScreenshotWithTheSentence(t *testing.
 		t.Fatalf("payloads = %#v", payloads)
 	}
 	raw := payloads[0]
-	if !strings.Contains(raw, `"send_to_user":"文件和截图都在。"`) || !strings.Contains(raw, `"desktop_attachment_ids"`) || !strings.Contains(raw, "shot-1") || !strings.Contains(raw, "file-1") || !strings.Contains(raw, `"desktop_shot_paths"`) || strings.Contains(raw, `"local_file_paths"`) || strings.Contains(raw, shot) || strings.Contains(raw, doc) {
+	shotPath := desktopBotPayloadPath(t, raw, "desktop_shot_paths")
+	docPath := desktopBotPayloadPath(t, raw, "local_file_paths")
+	if !strings.Contains(raw, `"send_to_user":"文件和截图都在。"`) || !strings.HasSuffix(shotPath, "screenshot.png") || filepath.Base(docPath) != "note.docx" || strings.Contains(raw, shot) || strings.Contains(raw, doc) {
 		t.Fatalf("payload = %s", raw)
 	}
-	shotFile := filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "shots", "shot-1.png")
-	if _, err := os.Stat(shotFile); err != nil {
-		t.Fatalf("screenshot was not kept under the test data dir %s: %v", shotFile, err)
+	if _, err := os.Stat(shotPath); err != nil {
+		t.Fatalf("screenshot file: %v", err)
 	}
-	if matches, _ := filepath.Glob(filepath.Join(base, ".maclaw", "data", "bot-files", "bot_1", "*.docx")); len(matches) != 0 {
-		t.Fatalf("the document was written beside the picture: %v", matches)
+	if _, err := os.Stat(docPath); err != nil {
+		t.Fatalf("document file: %v", err)
 	}
 	if strings.Contains(raw, `"send_to_user":"截个图`) || strings.Contains(raw, `"error"`) || strings.Contains(raw, "过程记录") || strings.Contains(raw, `"text"`) {
 		t.Fatalf("payload = %s", raw)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(shotPath)) })
+}
+
+func desktopBotPayloadPath(t *testing.T, raw, key string) string {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	items, _ := payload[key].([]any)
+	if len(items) == 0 {
+		t.Fatalf("no %s in %s", key, raw)
+	}
+	path, _ := items[0].(string)
+	if path == "" {
+		t.Fatalf("empty %s in %s", key, raw)
+	}
+	return path
 }
 
 func TestDesktopBotDeliveryCarriesItsOwnTask(t *testing.T) {

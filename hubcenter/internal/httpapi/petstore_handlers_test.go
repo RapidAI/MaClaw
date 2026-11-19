@@ -429,7 +429,7 @@ assets:
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	id, err := petStoreArchiveSourcePackID(buf.Bytes())
+	id, _, err := petStoreArchiveSourcePackID(buf.Bytes())
 	if err != nil {
 		t.Fatalf("v2 skeleton pack should be accepted: %v", err)
 	}
@@ -440,7 +440,7 @@ assets:
 
 func TestPetStoreArchiveValidatesV3CharacterPerformancePack(t *testing.T) {
 	valid := petStoreV3CharacterArchive(t, false)
-	id, err := petStoreArchiveSourcePackID(valid)
+	id, _, err := petStoreArchiveSourcePackID(valid)
 	if err != nil {
 		t.Fatalf("v3 character pack should be accepted: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestPetStoreArchiveValidatesV3CharacterPerformancePack(t *testing.T) {
 	}
 
 	invalid := petStoreV3CharacterArchive(t, true)
-	if _, err := petStoreArchiveSourcePackID(invalid); err == nil {
+	if _, _, err := petStoreArchiveSourcePackID(invalid); err == nil {
 		t.Fatal("v3 character pack with an unknown reaction clip was accepted")
 	}
 }
@@ -593,23 +593,25 @@ func TestPetStorePackPreviewDataURLDecodesPNGAndCachesResult(t *testing.T) {
 	}
 
 	preview := petStorePackPreviewDataURL(path)
-	if !strings.HasPrefix(preview, "data:image/jpeg;base64,") {
+	if !strings.HasPrefix(preview, "data:image/png;base64,") {
 		t.Fatalf("preview=%q", preview)
 	}
 	if cached := petStorePackPreviewDataURL(path); cached != preview {
 		t.Fatalf("cached preview differs")
 	}
-	encoded := strings.TrimPrefix(preview, "data:image/jpeg;base64,")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decodedImage, _, err := image.Decode(bytes.NewReader(decoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := decodedImage.Bounds().Size(); got.X != 192 || got.Y != 112 {
+	decodedImage := decodePetStorePreviewImage(t, preview)
+	if got := decodedImage.Bounds().Size(); got.X != petStorePreviewSide || got.Y != petStorePreviewSide {
 		t.Fatalf("preview dimensions=%v", got)
+	}
+	// The transparent half of the source must not stay in the frame. The
+	// opaque pixel is scaled up and the card padding stays clear.
+	cr, cg, cb, ca := decodedImage.At(petStorePreviewSide/2, petStorePreviewSide/2).RGBA()
+	if ca == 0 || cr <= cg || cr <= cb {
+		t.Fatalf("subject pixel r=%d g=%d b=%d a=%d", cr, cg, cb, ca)
+	}
+	_, _, _, cornerA := decodedImage.At(0, 0).RGBA()
+	if cornerA != 0 {
+		t.Fatalf("padding alpha=%d, want transparent", cornerA)
 	}
 }
 
@@ -651,19 +653,95 @@ func TestPetStorePreviewUsesManifestPreviewBeforeArchiveOrder(t *testing.T) {
 	if err := os.WriteFile(path, archive.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	preview := petStorePackPreviewDataURL(path)
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(preview, "data:image/jpeg;base64,"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, _, err := image.Decode(bytes.NewReader(decoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, g, b, _ := result.At(96, 56).RGBA()
+	result := decodePetStorePreviewImage(t, petStorePackPreviewDataURL(path))
+	r, g, b, _ := result.At(petStorePreviewSide/2, petStorePreviewSide/2).RGBA()
 	if g <= r || g <= b {
 		t.Fatalf("preview did not use declared cover: r=%d g=%d b=%d", r, g, b)
 	}
+}
+
+func TestPetStorePreviewTrimsTransparentMarginsSoTheSubjectFillsTheFrame(t *testing.T) {
+	resetPetStorePreviewCache()
+	// A tall idle frame with the character standing in the bottom corner.
+	// Fitting the whole canvas into a short strip used to leave a sliver.
+	const canvasW, canvasH = 64, 160
+	src := image.NewNRGBA(image.Rect(0, 0, canvasW, canvasH))
+	for y := 120; y < 148; y++ {
+		for x := 22; x < 42; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{R: 220, G: 40, B: 40, A: 255})
+		}
+	}
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, src); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	w, err := zw.Create("native/idle.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(imageData.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "tall-idle.zip")
+	if err := os.WriteFile(path, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	preview := decodePetStorePreviewImage(t, petStorePackPreviewDataURL(path))
+	minX, minY := preview.Bounds().Max.X, preview.Bounds().Max.Y
+	maxX, maxY := -1, -1
+	for y := preview.Bounds().Min.Y; y < preview.Bounds().Max.Y; y++ {
+		for x := preview.Bounds().Min.X; x < preview.Bounds().Max.X; x++ {
+			r, _, _, a := preview.At(x, y).RGBA()
+			if a > 0x4000 && r > 0x8000 {
+				if x < minX {
+					minX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
+		}
+	}
+	if maxX < minX || maxY < minY {
+		t.Fatal("trimmed preview lost the subject")
+	}
+	subjectW, subjectH := maxX-minX+1, maxY-minY+1
+	if subjectW < petStorePreviewSide/2 || subjectH < petStorePreviewSide/2 {
+		t.Fatalf("subject still a sliver: %dx%d in %d square", subjectW, subjectH, petStorePreviewSide)
+	}
+	pad := 8
+	if minX < pad || minY < pad || preview.Bounds().Max.X-1-maxX < pad || preview.Bounds().Max.Y-1-maxY < pad {
+		t.Fatalf("subject touches the frame: (%d,%d)-(%d,%d)", minX, minY, maxX, maxY)
+	}
+}
+
+func decodePetStorePreviewImage(t *testing.T, dataURL string) image.Image {
+	t.Helper()
+	comma := strings.Index(dataURL, ",")
+	if comma < 0 || !strings.HasPrefix(dataURL, "data:image/") {
+		t.Fatalf("preview=%q", dataURL)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(dataURL[comma+1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
 }
 
 func TestAdminListPetStorePacksIncludesPreviewDataURL(t *testing.T) {
@@ -706,7 +784,7 @@ func TestAdminListPetStorePacksIncludesPreviewDataURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Packs) != 1 || !strings.HasPrefix(payload.Packs[0].PreviewDataURL, "data:image/jpeg;base64,") {
+	if len(payload.Packs) != 1 || !strings.HasPrefix(payload.Packs[0].PreviewDataURL, "data:image/png;base64,") {
 		t.Fatalf("admin preview=%q", payload.Packs[0].PreviewDataURL)
 	}
 	if payload.Packs[0].OwnerEmail != "owner@example.test" {
@@ -940,7 +1018,7 @@ assets:
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
+	if _, _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
 		t.Fatal("expected missing v2 rig texture rejection")
 	}
 }
@@ -963,7 +1041,7 @@ func TestPetStoreArchiveRejectsDuplicatePath(t *testing.T) {
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
+	if _, _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
 		t.Fatal("expected duplicate archive path rejection")
 	}
 }
@@ -1006,7 +1084,7 @@ variants:
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
+	if _, _, err := petStoreArchiveSourcePackID(buf.Bytes()); err == nil {
 		t.Fatal("expected inherited skeleton variant texture rejection")
 	}
 }
@@ -1054,6 +1132,9 @@ func TestSubmitPetStorePackPersistsSourcePackID(t *testing.T) {
 	if err := mw.WriteField("source_pack_id", "creator-pet"); err != nil {
 		t.Fatal(err)
 	}
+	if err := mw.WriteField("version", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
 	part, err := mw.CreateFormFile("zip", "creator-pet.zip")
 	if err != nil {
 		t.Fatal(err)
@@ -1088,11 +1169,209 @@ func TestSubmitPetStorePackPersistsSourcePackID(t *testing.T) {
 		t.Fatalf("stored source_pack_id=%q", stored)
 	}
 
+	// Re-submitting the same source_pack_id is an upgrade of the existing
+	// listing, not a conflict: the listing keeps its stable ID.
 	duplicateReq := newPetStoreSubmitRequest(t, session.Token, "creator-pet")
 	duplicateRec := httptest.NewRecorder()
 	h.SubmitPetStorePack(duplicateRec, duplicateReq)
-	if duplicateRec.Code != http.StatusConflict {
-		t.Fatalf("duplicate submit status=%d body=%s, want conflict", duplicateRec.Code, duplicateRec.Body.String())
+	if duplicateRec.Code != http.StatusOK {
+		t.Fatalf("duplicate submit status=%d body=%s, want in-place update", duplicateRec.Code, duplicateRec.Body.String())
+	}
+	var duplicate struct {
+		ID      string `json:"id"`
+		Updated bool   `json:"updated"`
+	}
+	if err := json.Unmarshal(duplicateRec.Body.Bytes(), &duplicate); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if !duplicate.Updated || duplicate.ID != response.ID {
+		t.Fatalf("update response id=%q updated=%v, want same listing %q", duplicate.ID, duplicate.Updated, response.ID)
+	}
+	var listingCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sm_pet_store_packs WHERE source_pack_id='creator-pet'`).Scan(&listingCount); err != nil {
+		t.Fatal(err)
+	}
+	if listingCount != 1 {
+		t.Fatalf("listings for source_pack_id=%d, want 1", listingCount)
+	}
+}
+
+func TestSubmitPetStorePackUpdatesOwnedListingInPlace(t *testing.T) {
+	for _, status := range []string{"active", "paused"} {
+		t.Run(status, func(t *testing.T) {
+			db, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("open sqlite: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			store, err := skillmarket.NewStore(db, db)
+			if err != nil {
+				t.Fatalf("new skillmarket store: %v", err)
+			}
+			userSvc := skillmarket.NewUserService(store, nil)
+			authSvc := skillmarket.NewAuthService(store, nil, "")
+			h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(store), DataDir: t.TempDir()})
+			owner, err := userSvc.EnsureAccountWithID(context.Background(), "upgrade-owner", "upgrade-owner@example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := authSvc.CreateSessionForUser(context.Background(), owner.ID, owner.Email)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.ensurePetStoreSchema()
+			oldArchive := validPetStoreTestArchiveWithMarker(t, "upgrade-pet", "old")
+			newArchive := validPetStoreTestArchiveWithVersion(t, "upgrade-pet", "new", "2.0.0")
+			if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			zipPath := filepath.Join(h.petStoreDir(), "pet_upgrade_"+status+".zip")
+			if err := os.WriteFile(zipPath, oldArchive, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			older := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+			if _, err := db.Exec(`INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "pet_upgrade_"+status, owner.ID, owner.Email, "upgrade-pet", "Old name", "old description", "1.0.0", 5, status, zipPath, int64(len(oldArchive)), 3, 2, 9, older, older); err != nil {
+				t.Fatal(err)
+			}
+
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			for name, value := range map[string]string{
+				"name":           "New name",
+				"description":    "new description",
+				"version":        "2.0.0",
+				"price":          "7",
+				"source_pack_id": "upgrade-pet",
+			} {
+				if err := mw.WriteField(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			part, err := mw.CreateFormFile("zip", "upgrade-pet.zip")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(newArchive); err != nil {
+				t.Fatal(err)
+			}
+			if err := mw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &body)
+			req.Header.Set("Authorization", "Bearer "+session.Token)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			rec := httptest.NewRecorder()
+			h.SubmitPetStorePack(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("update submit status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				petStorePack
+				Updated bool `json:"updated"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode update response: %v", err)
+			}
+			if !response.Updated || response.ID != "pet_upgrade_"+status {
+				t.Fatalf("update response id=%q updated=%v", response.ID, response.Updated)
+			}
+
+			p, err := scanPetStorePack(db.QueryRow(`SELECT `+petStorePackColumns+` FROM sm_pet_store_packs WHERE id=?`, response.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Status != status || p.Name != "New name" || p.Description != "new description" || p.Version != "2.0.0" || p.Price != 7 || p.PackageSize != int64(len(newArchive)) {
+				t.Fatalf("updated row: %+v", p)
+			}
+			if p.CreatedAt != older {
+				t.Fatalf("update must keep created_at, got %q", p.CreatedAt)
+			}
+			if p.DownloadCount != 3 || p.PurchaseCount != 2 || p.SalesAmount != 9 {
+				t.Fatalf("update must keep counters, got downloads=%d purchases=%d sales=%d", p.DownloadCount, p.PurchaseCount, p.SalesAmount)
+			}
+			served, err := os.ReadFile(zipPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(served, newArchive) {
+				t.Fatal("existing archive was not replaced by the new upload")
+			}
+		})
+	}
+}
+
+func TestSubmitPetStorePackSkipsRewriteForIdenticalArchive(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSvc := skillmarket.NewUserService(store, nil)
+	authSvc := skillmarket.NewAuthService(store, nil, "")
+	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(store), DataDir: t.TempDir()})
+	owner, err := userSvc.EnsureAccountWithID(context.Background(), "identical-owner", "identical-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := authSvc.CreateSessionForUser(context.Background(), owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensurePetStoreSchema()
+	archive := validPetStoreTestArchiveWithVersion(t, "identical-pet", "", "1.0.0")
+	if err := os.MkdirAll(h.petStoreDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(h.petStoreDir(), "pet_identical.zip")
+	if err := os.WriteFile(zipPath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleModTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(zipPath, staleModTime, staleModTime); err != nil {
+		t.Fatal(err)
+	}
+	now := petStoreNow()
+	if _, err := db.Exec(`INSERT INTO sm_pet_store_packs (`+petStorePackColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "pet_identical", owner.ID, owner.Email, "identical-pet", "Identical pet", "", "1.0.0", 0, "active", zipPath, int64(len(archive)), 0, 0, 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Submit the exact same bytes so the test does not depend on the DOS-time
+	// granularity of independently generated test archives.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for name, value := range map[string]string{"name": "Identical pet", "price": "0", "source_pack_id": "identical-pet"} {
+		if err := mw.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part, err := mw.CreateFormFile("zip", "identical-pet.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &body)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.SubmitPetStorePack(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("identical re-submit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(staleModTime) {
+		t.Fatal("byte-identical archive was rewritten instead of left in place")
 	}
 }
 
@@ -2100,7 +2379,7 @@ func TestSubmitPetStorePackRejectsMismatchedManifestID(t *testing.T) {
 	// the submitted source_pack_id unchanged.
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	for name, value := range map[string]string{"name": "Creator pet", "price": "0", "source_pack_id": "claimed-pack"} {
+	for name, value := range map[string]string{"name": "Creator pet", "price": "0", "version": "1.0.0", "source_pack_id": "claimed-pack"} {
 		if err := mw.WriteField(name, value); err != nil {
 			t.Fatal(err)
 		}
@@ -2132,6 +2411,7 @@ func newPetStoreSubmitRequest(t *testing.T, token, sourcePackID string) *http.Re
 	for name, value := range map[string]string{
 		"name":           "Creator pet",
 		"price":          "0",
+		"version":        "1.0.0",
 		"source_pack_id": sourcePackID,
 	} {
 		if err := mw.WriteField(name, value); err != nil {
@@ -2167,6 +2447,10 @@ func firstPetStoreTestArchiveID(sourcePackID []string) string {
 }
 
 func validPetStoreTestArchiveWithMarker(t *testing.T, id, marker string) []byte {
+	return validPetStoreTestArchiveWithVersion(t, id, marker, "")
+}
+
+func validPetStoreTestArchiveWithVersion(t *testing.T, id, marker, version string) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pet.zip")
 	f, err := os.Create(path)
@@ -2178,7 +2462,12 @@ func validPetStoreTestArchiveWithMarker(t *testing.T, id, marker string) []byte 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := io.WriteString(entry, "schema_version: 1\nid: "+id+"\nname: Creator pet\nrenderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n"); err != nil {
+	manifest := "schema_version: 1\nid: " + id + "\nname: Creator pet\n"
+	if version != "" {
+		manifest += "version: " + version + "\n"
+	}
+	manifest += "renderer: native-raster\nassets:\n  native:\n    idle: native/idle.png\n"
+	if _, err := io.WriteString(entry, manifest); err != nil {
 		t.Fatal(err)
 	}
 	idle, err := zw.Create("native/idle.png")
@@ -2236,7 +2525,7 @@ func TestSubmitPetStorePackFallsBackToManifestID(t *testing.T) {
 	// the field must fall back to the manifest ID inside the archive.
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	for name, value := range map[string]string{"name": "Web pet", "price": "0"} {
+	for name, value := range map[string]string{"name": "Web pet", "price": "0", "version": "1.2.0"} {
 		if err := mw.WriteField(name, value); err != nil {
 			t.Fatal(err)
 		}
@@ -2265,6 +2554,243 @@ func TestSubmitPetStorePackFallsBackToManifestID(t *testing.T) {
 	}
 	if created.SourcePackID != "web-fallback-pet" {
 		t.Fatalf("source_pack_id=%q, want manifest fallback web-fallback-pet", created.SourcePackID)
+	}
+	if created.Version != "1.2.0" {
+		t.Fatalf("version=%q, want the submitted version", created.Version)
+	}
+}
+
+func TestSubmitPetStorePackRequiresVersion(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSvc := skillmarket.NewUserService(store, nil)
+	authSvc := skillmarket.NewAuthService(store, nil, "")
+	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, CreditsSvc: skillmarket.NewCreditsService(store), DataDir: t.TempDir()})
+	user, err := userSvc.EnsureAccountWithID(context.Background(), "version-owner", "version-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := authSvc.CreateSessionForUser(context.Background(), user.ID, user.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submit := func(version, sourcePackID string, archive []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fields := map[string]string{"name": "Version pet", "price": "0", "source_pack_id": sourcePackID}
+		if version != "" {
+			fields["version"] = version
+		}
+		for name, value := range fields {
+			if err := mw.WriteField(name, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		part, err := mw.CreateFormFile("zip", "version-pet.zip")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(archive); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &body)
+		req.Header.Set("Authorization", "Bearer "+session.Token)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.SubmitPetStorePack(rec, req)
+		return rec
+	}
+
+	missing := submit("", "version-pet", validPetStoreTestArchive(t, "version-pet"))
+	if missing.Code != http.StatusBadRequest || !bytes.Contains(missing.Body.Bytes(), []byte("version is required")) {
+		t.Fatalf("missing version status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	bogus := submit("beta", "version-pet", validPetStoreTestArchive(t, "version-pet"))
+	if bogus.Code != http.StatusBadRequest || !bytes.Contains(bogus.Body.Bytes(), []byte("version is required")) {
+		t.Fatalf("non-numeric version status=%d body=%s", bogus.Code, bogus.Body.String())
+	}
+
+	fromManifest := submit("", "version-pet", validPetStoreTestArchiveWithVersion(t, "version-pet", "", "3.1.0"))
+	if fromManifest.Code != http.StatusCreated {
+		t.Fatalf("manifest version status=%d body=%s", fromManifest.Code, fromManifest.Body.String())
+	}
+	var created petStorePack
+	if err := json.Unmarshal(fromManifest.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Version != "3.1.0" {
+		t.Fatalf("version=%q, want manifest version 3.1.0", created.Version)
+	}
+
+	// The form version replaces the manifest version in the stored archive.
+	// Buyers then install 9.0.0 even though the uploaded yaml said 3.1.0.
+	mismatch := submit("9.0.0", "version-pet", validPetStoreTestArchiveWithVersion(t, "version-pet", "", "3.1.0"))
+	if mismatch.Code != http.StatusOK || !bytes.Contains(mismatch.Body.Bytes(), []byte(`"updated":true`)) {
+		t.Fatalf("higher version status=%d body=%s", mismatch.Code, mismatch.Body.String())
+	}
+	var updated petStorePack
+	if err := json.Unmarshal(mismatch.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != "9.0.0" || updated.ID != created.ID {
+		t.Fatalf("updated listing id=%q version=%q, want %q at 9.0.0", updated.ID, updated.Version, created.ID)
+	}
+	replaced := readPetStoreTestManifest(t, db, updated.ID)
+	if !bytes.Contains(replaced, []byte("\nversion: 9.0.0\n")) || bytes.Contains(replaced, []byte("3.1.0")) || countRootVersionLines(replaced) != 1 {
+		t.Fatalf("stored manifest did not replace the version:\n%s", replaced)
+	}
+
+	older := submit("1.0.0", "version-pet", validPetStoreTestArchiveWithVersion(t, "version-pet", "", "1.0.0"))
+	if older.Code != http.StatusBadRequest || !bytes.Contains(older.Body.Bytes(), []byte("version is older than the published version")) {
+		t.Fatalf("older version status=%d body=%s", older.Code, older.Body.String())
+	}
+
+	// A form version with no manifest version is stored, and the archive the
+	// buyer installs carries that same version.
+	stamped := submit("1.4.0", "version-pet-stamped", validPetStoreTestArchive(t, "version-pet-stamped"))
+	if stamped.Code != http.StatusCreated {
+		t.Fatalf("stamp status=%d body=%s", stamped.Code, stamped.Body.String())
+	}
+	var stampedPack petStorePack
+	if err := json.Unmarshal(stamped.Body.Bytes(), &stampedPack); err != nil {
+		t.Fatal(err)
+	}
+	if stampedPack.Version != "1.4.0" || stampedPack.SourcePackID != "version-pet-stamped" {
+		t.Fatalf("stamped listing version=%q source=%q", stampedPack.Version, stampedPack.SourcePackID)
+	}
+	manifest := readPetStoreTestManifest(t, db, stampedPack.ID)
+	if !bytes.Contains(manifest, []byte("\nversion: 1.4.0\n")) || countRootVersionLines(manifest) != 1 {
+		t.Fatalf("stored manifest missing version:\n%s", manifest)
+	}
+
+	// The same ID already belongs to this user, so another account cannot
+	// publish a newer version of it.
+	other, err := userSvc.EnsureAccountWithID(context.Background(), "version-other", "version-other@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSession, err := authSvc.CreateSessionForUser(context.Background(), other.ID, other.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var otherBody bytes.Buffer
+	mw := multipart.NewWriter(&otherBody)
+	for name, value := range map[string]string{"name": "Taken", "price": "0", "version": "3.2.0", "source_pack_id": "version-pet"} {
+		if err := mw.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part, err := mw.CreateFormFile("zip", "version-pet.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(validPetStoreTestArchiveWithVersion(t, "version-pet", "", "3.2.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	otherReq := httptest.NewRequest(http.MethodPost, "/api/v1/pet-store/packs", &otherBody)
+	otherReq.Header.Set("Authorization", "Bearer "+otherSession.Token)
+	otherReq.Header.Set("Content-Type", mw.FormDataContentType())
+	otherRec := httptest.NewRecorder()
+	h.SubmitPetStorePack(otherRec, otherReq)
+	if otherRec.Code != http.StatusConflict {
+		t.Fatalf("other creator status=%d body=%s, want conflict", otherRec.Code, otherRec.Body.String())
+	}
+}
+
+func countRootVersionLines(manifest []byte) int {
+	n := 0
+	for _, line := range strings.Split(string(manifest), "\n") {
+		if strings.HasPrefix(strings.TrimRight(line, "\r"), "version:") {
+			n++
+		}
+	}
+	return n
+}
+
+func readPetStoreTestManifest(t *testing.T, db *sql.DB, packID string) []byte {
+	t.Helper()
+	var zipPath string
+	if err := db.QueryRow(`SELECT zip_path FROM sm_pet_store_packs WHERE id=?`, packID).Scan(&zipPath); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(stored), int64(len(stored)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		if f == nil || f.Name != "pet-pack.yaml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+	t.Fatal("stored archive has no pet-pack.yaml")
+	return nil
+}
+
+func TestPetStoreYAMLWithVersionReplacesRootLine(t *testing.T) {
+	same, changed, err := petStoreYAMLWithVersion([]byte("id: pet\nversion: v1.2.0\n"), "1.2.0")
+	if err != nil || changed || string(same) != "id: pet\nversion: v1.2.0\n" {
+		t.Fatalf("matching version changed=%v err=%v body=%q", changed, err, same)
+	}
+
+	empty, changed, err := petStoreYAMLWithVersion([]byte("id: pet\nversion:\nname: Pet\n"), "1.4.0")
+	if err != nil || !changed || string(empty) != "id: pet\nversion: 1.4.0\nname: Pet\n" {
+		t.Fatalf("empty version line body=%q changed=%v err=%v", empty, changed, err)
+	}
+	quoted, changed, err := petStoreYAMLWithVersion([]byte("id: pet\nversion: \"\"\n"), "1.4.0")
+	if err != nil || !changed || strings.Count(string(quoted), "version:") != 1 || !bytes.Contains(quoted, []byte("version: 1.4.0")) {
+		t.Fatalf("quoted empty version body=%q", quoted)
+	}
+
+	// yaml.v3 rejects a repeated root key, so a duplicate version is an
+	// invalid manifest rather than a second line the installer might keep.
+	if _, _, err := petStoreYAMLWithVersion([]byte("id: pet\nversion: 3.1.0\nname: Pet\nversion:\n"), "9.0.0"); err == nil {
+		t.Fatal("duplicate version keys must stay invalid")
+	}
+
+	nested, changed, err := petStoreYAMLWithVersion([]byte("id: pet\nvariants:\n  -\n    id: other\nname: Pet\n"), "2.0.0")
+	if err != nil || !changed || string(nested) != "id: pet\nversion: 2.0.0\nvariants:\n  -\n    id: other\nname: Pet\n" {
+		t.Fatalf("nested id insert changed=%v err=%v body=%q", changed, err, nested)
+	}
+
+	crlf, changed, err := petStoreYAMLWithVersion([]byte("id: pet\r\nname: Pet\r\n"), "1.0.0")
+	if err != nil || !changed || string(crlf) != "id: pet\r\nversion: 1.0.0\r\nname: Pet\r\n" {
+		t.Fatalf("crlf body=%q", crlf)
+	}
+
+	nullish, changed, err := petStoreYAMLWithVersion([]byte("id: pet\nversion: ~\n"), "1.4.0")
+	if err != nil || !changed || string(nullish) != "id: pet\nversion: 1.4.0\n" {
+		t.Fatalf("null version body=%q changed=%v err=%v", nullish, changed, err)
+	}
+	if _, _, err := petStoreYAMLWithVersion([]byte("{id: pet, version: 1.0.0}\n"), "2.0.0"); err == nil {
+		t.Fatal("flow-style manifest must not be rewritten into a broken document")
 	}
 }
 

@@ -33,7 +33,7 @@ func TestFilterToolsForSkillPreference_RemovesFallbackHeavyTools(t *testing.T) {
 		toolDef("create_session", "create coding session", nil, nil),
 		toolDef("send_file", "send file", nil, nil),
 	}
-	filtered := filterToolsForSkillPreference(tools)
+	filtered := filterToolsForSkillPreference(tools, nil)
 	resultNames := make(map[string]bool)
 	for _, tool := range filtered {
 		resultNames[extractToolName(tool)] = true

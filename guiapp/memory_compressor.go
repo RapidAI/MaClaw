@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"log"
+
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -45,7 +47,9 @@ func (a *App) configureMemoryCompressor(compressor *MemoryCompressor) {
 	}
 	if appCfg, err := a.LoadConfig(); err == nil {
 		if appCfg.MemoryMaxBackups > 0 {
-			compressor.SetMaxBackups(appCfg.MemoryMaxBackups)
+			if err := compressor.SetMaxBackups(appCfg.MemoryMaxBackups); err != nil {
+				log.Printf("[memory_compress] configure backup retention: %v", err)
+			}
 		}
 		if pipeline := a.currentMemoryPipeline(); pipeline != nil {
 			pipeline.SetAutoCompressEnabled(appCfg.MemoryAutoCompress)

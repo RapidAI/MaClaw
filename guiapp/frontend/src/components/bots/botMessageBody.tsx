@@ -29,13 +29,17 @@ function listKind(line: string): 'ol' | 'ul' | null {
 export function botMessageIsStructured(text: string): boolean {
     return botMessageHasChips(text)
         || text.includes('```')
+        || /\[[^\]\n]+\]\([^)\n]+\)/.test(text)
+        || /https?:\/\/\S+/.test(text)
         || /\*\*[^*\n]+\*\*/.test(text)
+        || /~~[^~\n]+~~/.test(text)
+        || /\*[^*\n]+\*/.test(text)
         || /`[^`\n]+`/.test(text)
         || /(^|\n)\s*(?:[-*]|\d+\.)\s+\S/.test(text)
         || /(^|\n)\s*#{1,6}[ \t]+\S/.test(text)
         || /(^|\n)\s*>\s*\S/.test(text)
         || /(^|\n)\s*([-*_])\2{2,}\s*(?:\n|$)/.test(text)
-        || /(^|\n)\s*[\|\uFF5C\u2502]?\s*:?[\-\uFF0D\u2014\u2013\u2500]{3,}:?\s*[\|\uFF5C\u2502]/.test(text)
+        || /(^|\n)\s*[\|\uFF5C\u2502]?\s*:?[-\uFF0D\u2014\u2013\u2500]{3,}:?\s*[\|\uFF5C\u2502]/.test(text)
         || /(^|\n)\s*[\|\uFF5C\u2502][^\n]*\n[^\n]*[\|\uFF5C\u2502]/.test(text);
 }
 
@@ -299,6 +303,43 @@ function parseInline(text: string, keyPrefix: string): ReactNode[] {
                 nodes.push(<strong key={innerKey}>{parseInline(text.slice(index + 2, end), innerKey)}</strong>);
                 serial += 1;
                 index = end + 2;
+                start = index;
+                continue;
+            }
+        }
+        if (text.startsWith('~~', index)) {
+            const end = text.indexOf('~~', index + 2);
+            if (end > index + 2) {
+                flush(index);
+                const innerKey = `${keyPrefix}-d${serial}`;
+                nodes.push(<del key={innerKey}>{parseInline(text.slice(index + 2, end), innerKey)}</del>);
+                serial += 1;
+                index = end + 2;
+                start = index;
+                continue;
+            }
+        }
+        if (text[index] === '*' && !text.startsWith('**', index)) {
+            // Single-star italics: skip ** pairs while hunting the closer so
+            // *a **b** c* does not end inside the bold run.
+            let cursor = index + 1;
+            let end = -1;
+            while (cursor < text.length) {
+                if (text[cursor] === '`') {
+                    const codeEnd = text.indexOf('`', cursor + 1);
+                    if (codeEnd > cursor + 1) { cursor = codeEnd + 1; continue; }
+                }
+                if (text.startsWith('**', cursor)) { cursor += 2; continue; }
+                if (text[cursor] === '*') { end = cursor; break; }
+                if (text[cursor] === '\n') break;
+                cursor += 1;
+            }
+            if (end > index + 1 && text[end - 1] !== ' ') {
+                flush(index);
+                const innerKey = `${keyPrefix}-i${serial}`;
+                nodes.push(<em key={innerKey}>{parseInline(text.slice(index + 1, end), innerKey)}</em>);
+                serial += 1;
+                index = end + 1;
                 start = index;
                 continue;
             }

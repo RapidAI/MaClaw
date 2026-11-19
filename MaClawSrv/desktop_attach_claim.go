@@ -13,9 +13,22 @@ var desktopAttachClaimRe = regexp.MustCompile(`(?i)(附在(这条|本条|此)?(�
 
 const desktopAttachCorrection = "（更正：这条消息实际没有带附件，文件留在电脑上，路径见上文。）"
 
+// noDesktopAttachCorrection is the same claim fix without the computer: a
+// computerless bot's undelivered file did not stay anywhere.
+const noDesktopAttachCorrection = "（更正：这条消息实际没有带附件。）"
+
 func correctDesktopAttachClaim(text string, attached int) string {
-	if attached > 0 || !desktopAttachClaimRe.MatchString(text) || strings.Contains(text, desktopAttachCorrection) {
+	return correctAttachClaim(text, attached, desktopAttachCorrection)
+}
+
+func correctNoDesktopAttachClaim(text string, attached int) string {
+	return correctAttachClaim(text, attached, noDesktopAttachCorrection)
+}
+
+func correctAttachClaim(text string, attached int, correction string) string {
+	if attached > 0 || !desktopAttachClaimRe.MatchString(text) ||
+		strings.Contains(text, desktopAttachCorrection) || strings.Contains(text, noDesktopAttachCorrection) {
 		return text
 	}
-	return strings.TrimRight(text, "\n ") + "\n" + desktopAttachCorrection
+	return strings.TrimRight(text, "\n ") + "\n" + correction
 }

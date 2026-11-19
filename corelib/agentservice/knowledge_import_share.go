@@ -3,7 +3,6 @@ package agentservice
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 const (
@@ -30,16 +30,14 @@ type knowledgeSourceNodeReader interface {
 	ListNodesBySource(ctx context.Context, sourceID string, limit int) ([]knowledge.DocumentNode, error)
 }
 
-// shareImportHTTPClient is a shared HTTP client for Hub knowledge share operations.
-// Uses TLS-skip transport because Hub servers commonly use self-signed certificates.
-// No client-level Timeout — we rely on per-request context.WithTimeout to control
-// deadlines, because package downloads for large knowledge bases may take much
-// longer than the 30s default in remote.NewHubHTTPClient().
-var shareImportHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
-}
+// shareImportHTTPClient keeps verified TLS and connection pooling. The client
+// timeout is disabled because the caller's context covers the whole download
+// and large packages can legitimately exceed the normal 30-second Hub timeout.
+var shareImportHTTPClient = func() *http.Client {
+	client := remote.NewHubHTTPClient()
+	client.Timeout = 0
+	return client
+}()
 
 const maxSharePackageJSONBytes int64 = 50 << 20
 

@@ -5,12 +5,17 @@
  * Continue re-runs the same goal
  * after any other stop. Pause and delete also stop the live turn. Edit writes
  * the new command into that turn when one is still running.
+ * While the bar is up in a pure-coding session it also hosts the changed-files
+ * chip in its right half (the plan checklist hands it over via
+ * onVisibilityChange).
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { localizeText } from "../../i18n";
 import { startVisibleInterval } from "../../utils/visibleInterval";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { CodingAgentFileChanges, type CodingAgentFileChangesChrome } from "./CodingAgentFileChanges";
+import type { CodingAgentFileChange } from "./CodingAgentProgressStatus";
 import { goalBarView, goalElapsedFrozen, goalElapsedText, type GoalBarSnapshot } from "./goalQuickBarModel";
 import { normalizeAssistantSessionKey } from "./aiAssistantPanelSessionUtils";
 
@@ -18,6 +23,16 @@ type Props = {
     lang: string;
     theme: Theme;
     sessionKey: string;
+    /**
+     * Coding-agent changed files, hosted as a hover chip in the bar's right
+     * half. Only passed for pure-coding sessions; the plan checklist drops
+     * its own copy while this bar is visible (see onVisibilityChange).
+     */
+    fileChanges?: CodingAgentFileChange[];
+    fileChangesChrome?: CodingAgentFileChangesChrome;
+    onOpenFile?: (path: string) => void;
+    /** Reports bar visibility so the plan checklist can hand the files chip over. */
+    onVisibilityChange?: (visible: boolean) => void;
 };
 
 type GoalCall = (...args: string[]) => Promise<GoalBarSnapshot>;
@@ -94,7 +109,7 @@ function sameGoalSession(eventUser: unknown, sessionKey: string): boolean {
     return !!left && !!right && left === right;
 }
 
-export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
+export function GoalQuickBar({ lang, theme: t, sessionKey, fileChanges, fileChangesChrome, onOpenFile, onVisibilityChange }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang],
@@ -176,6 +191,13 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
     }, [notice]);
 
     const view = goalBarView(snap);
+    // Layout effect: the parent suppresses the checklist's files chip in the
+    // same commit the bar appears in, so the chip is never painted twice.
+    // The cleanup also covers unmount (wizard / remote view takes over).
+    useLayoutEffect(() => {
+        onVisibilityChange?.(view.visible);
+        return () => onVisibilityChange?.(false);
+    }, [view.visible, onVisibilityChange]);
     if (!view.visible || !snap) return null;
 
     const failedNotice = () => tr("That action did not take effect. Try again.", "操作未生效，请重试。", "操作未生效，請重試。");
@@ -350,6 +372,19 @@ export function GoalQuickBar({ lang, theme: t, sessionKey }: Props) {
                     {view.objective}
                 </span>
             )}
+            {fileChanges && fileChanges.length > 0 ? (
+                <CodingAgentFileChanges
+                    lang={lang}
+                    theme={t}
+                    chrome={fileChangesChrome ?? {
+                        border: t.inputBarBorder || t.divider,
+                        surface: t.inputBarBg || t.bg,
+                        accentStrong: t.headingColor || t.text,
+                    }}
+                    fileChanges={fileChanges}
+                    onOpenFile={onOpenFile}
+                />
+            ) : null}
             <GoalBarClock snap={snap} />
             {notice ? (
                 <span data-testid="goal-bar-notice" style={{ flex: "0 1 140px", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#d4534b" }}>

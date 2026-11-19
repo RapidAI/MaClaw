@@ -31,6 +31,7 @@ func (c *desktopHubClient) screenshotWith(ctx context.Context, tenantID, userID,
 		Scale        float64            `json:"scale"`
 		Region       desktop.ShotRegion `json:"region"`
 		Cursor       []int              `json:"cursor"`
+		DirectURL    string             `json:"direct_url"`
 	}
 	body := map[string]any{
 		"tenant_id": tenantID, "user_id": userID, "display": display,
@@ -40,11 +41,19 @@ func (c *desktopHubClient) screenshotWith(ctx context.Context, tenantID, userID,
 	if !opts.Region.Empty() {
 		body["region"] = opts.Region
 	}
+	if opts.Window != "" {
+		body["window"] = opts.Window
+	}
 	if strings.TrimSpace(name) != "" {
 		body["name"] = strings.TrimSpace(name)
 	}
 	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", body, &out, desktop.MaxScreenshotBytes*2); err != nil {
 		return desktop.Shot{}, "", err
+	}
+	if strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Image) == "" {
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/screenshot", body, body, &out, desktop.MaxScreenshotBytes*2, out.DirectURL); err != nil {
+			return desktop.Shot{}, "", err
+		}
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out.Image))
 	if err != nil || len(data) > desktop.MaxScreenshotBytes || desktop.SniffImageMIME(data) == "" {

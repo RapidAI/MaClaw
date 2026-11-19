@@ -65,7 +65,7 @@ func windowClassName(class string) string {
 
 func handoffPage(pageNeed string) bool {
 	switch strings.TrimSpace(pageNeed) {
-	case "captcha_widget", "login_qr", "payment_confirm":
+	case "captcha_widget", "login_qr", "login_wall", "mfa", "payment_confirm":
 		return true
 	default:
 		return false

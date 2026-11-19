@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,14 +44,19 @@ var (
 )
 
 type expertMarketListing struct {
-	ID                   string `json:"id"`
-	OwnerID              string `json:"-"`
-	OwnerEmail           string `json:"-"`
-	SourceExpertID       string `json:"source_expert_id"`
-	Name                 string `json:"name"`
-	Description          string `json:"description"`
-	Icon                 string `json:"icon"`
-	Version              string `json:"version"`
+	ID             string `json:"id"`
+	OwnerID        string `json:"-"`
+	OwnerEmail     string `json:"-"`
+	SourceExpertID string `json:"source_expert_id"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	Icon           string `json:"icon"`
+	Version        string `json:"version"`
+	// Category is one of the administrator-curated market categories, stored
+	// by NAME. An unknown or empty name renders as the catch-all "其它" bucket
+	// on every consumer surface, so a later rename/delete never strands a
+	// listing outside "全部".
+	Category             string `json:"category,omitempty"`
 	Price                int64  `json:"price"`
 	Visibility           string `json:"visibility"`
 	Status               string `json:"status"`
@@ -72,6 +78,7 @@ type expertMarketPublicListing struct {
 	Description          string `json:"description"`
 	Icon                 string `json:"icon"`
 	Version              string `json:"version"`
+	Category             string `json:"category,omitempty"`
 	Price                int64  `json:"price"`
 	PackageSize          int64  `json:"package_size"`
 	DownloadCount        int64  `json:"download_count"`
@@ -94,9 +101,10 @@ type expertMarketAdminListing struct {
 }
 
 // Keep the legacy test and administration INSERT column sequence stable. The
-// distribution bit was added later, so reads use the explicit SELECT constant
-// below while historical fixtures and maintenance SQL retain this sequence.
-const expertMarketListingColumns = "id, owner_user_id, owner_email, source_expert_id, name, description, icon, version, price, visibility, status, zip_path, package_size, download_count, purchase_count, sales_amount, review_note, created_at, updated_at"
+// distribution bit and the category tag were added later, so reads use the
+// explicit SELECT constant below while historical fixtures and maintenance SQL
+// retain the leading sequence.
+const expertMarketListingColumns = "id, owner_user_id, owner_email, source_expert_id, name, description, icon, version, price, visibility, status, zip_path, package_size, download_count, purchase_count, sales_amount, review_note, created_at, updated_at, category"
 const expertMarketListingSelectColumns = expertMarketListingColumns + ", platform_distribution"
 
 func qualifiedExpertMarketListingSelectColumns(alias string) string {
@@ -132,8 +140,12 @@ func (h *SkillMarketHandlers) ensureExpertMarketSchema() {
 		// an individual while still being ineligible for tenant-wide industry
 		// distribution until its author gives this separate permission.
 		_, _ = db.Exec(`ALTER TABLE sm_expert_market_listings ADD COLUMN platform_distribution INTEGER NOT NULL DEFAULT 0`)
+		// The market category is an administrator-curated taxonomy name. Older
+		// rows predate the taxonomy and read as the catch-all "其它" bucket.
+		_, _ = db.Exec(`ALTER TABLE sm_expert_market_listings ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
 		_, _ = db.Exec(`UPDATE sm_expert_market_listings SET visibility='public' WHERE visibility IS NULL OR visibility NOT IN ('public', 'private', 'users')`)
 		h.ensureExpertShareSchema(db)
+		h.ensureExpertMarketCategorySchema(db)
 		// The stable package identity is global. Without this guard a buyer could
 		// download an expert package and re-submit it as their own listing.
 		_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_expert_market_source_global ON sm_expert_market_listings(source_expert_id)`)
@@ -301,7 +313,7 @@ func expertMarketNow() string { return time.Now().UTC().Format(time.RFC3339Nano)
 
 func scanExpertMarketListing(row interface{ Scan(...any) error }) (*expertMarketListing, error) {
 	var item expertMarketListing
-	err := row.Scan(&item.ID, &item.OwnerID, &item.OwnerEmail, &item.SourceExpertID, &item.Name, &item.Description, &item.Icon, &item.Version, &item.Price, &item.Visibility, &item.Status, &item.ZipPath, &item.PackageSize, &item.DownloadCount, &item.PurchaseCount, &item.SalesAmount, &item.ReviewNote, &item.CreatedAt, &item.UpdatedAt, &item.PlatformDistribution)
+	err := row.Scan(&item.ID, &item.OwnerID, &item.OwnerEmail, &item.SourceExpertID, &item.Name, &item.Description, &item.Icon, &item.Version, &item.Price, &item.Visibility, &item.Status, &item.ZipPath, &item.PackageSize, &item.DownloadCount, &item.PurchaseCount, &item.SalesAmount, &item.ReviewNote, &item.CreatedAt, &item.UpdatedAt, &item.Category, &item.PlatformDistribution)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +321,7 @@ func scanExpertMarketListing(row interface{ Scan(...any) error }) (*expertMarket
 }
 
 func publicExpertMarketListing(item *expertMarketListing) expertMarketPublicListing {
-	return expertMarketPublicListing{ID: item.ID, SourceExpertID: item.SourceExpertID, Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Price: item.Price, PackageSize: item.PackageSize, DownloadCount: item.DownloadCount, PurchaseCount: item.PurchaseCount, PlatformDistribution: item.PlatformDistribution, CreatedAt: item.CreatedAt}
+	return expertMarketPublicListing{ID: item.ID, SourceExpertID: item.SourceExpertID, Name: item.Name, Description: item.Description, Icon: item.Icon, Version: item.Version, Category: item.Category, Price: item.Price, PackageSize: item.PackageSize, DownloadCount: item.DownloadCount, PurchaseCount: item.PurchaseCount, PlatformDistribution: item.PlatformDistribution, CreatedAt: item.CreatedAt}
 }
 
 // expertMarketOwnedListings resolves all of one page's entitlement flags in a
@@ -693,6 +705,25 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 		smError(w, http.StatusBadRequest, "version is too long")
 		return
 	}
+	// A share should carry one of the administrator-curated categories. An
+	// empty value stays legal so older desktop builds (which predate the
+	// category picker) keep submitting; they surface as the catch-all 其它.
+	category := strings.TrimSpace(r.FormValue("category"))
+	if category != "" {
+		if len([]rune(category)) > expertMarketCategoryMaxRunes {
+			smError(w, http.StatusBadRequest, "category name is too long")
+			return
+		}
+		allowed, err := h.expertMarketCategoryNames(r.Context())
+		if err != nil {
+			smError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !slices.Contains(allowed, category) {
+			smError(w, http.StatusBadRequest, "category is not available; refresh categories and try again")
+			return
+		}
+	}
 	f, _, err := r.FormFile("package")
 	if err != nil {
 		smError(w, http.StatusBadRequest, "expert package is required")
@@ -744,9 +775,9 @@ func (h *SkillMarketHandlers) SubmitExpertMarketListing(w http.ResponseWriter, r
 	case "users":
 		status = "shared"
 	}
-	item := &expertMarketListing{ID: id, OwnerID: userID, OwnerEmail: email, SourceExpertID: sourceID, Name: name, Description: description, Icon: icon, Version: version, Price: price, Visibility: visibility, Status: status, ZipPath: path, PackageSize: int64(len(data)), PlatformDistribution: platformDistribution, CreatedAt: now, UpdatedAt: now}
+	item := &expertMarketListing{ID: id, OwnerID: userID, OwnerEmail: email, SourceExpertID: sourceID, Name: name, Description: description, Icon: icon, Version: version, Category: category, Price: price, Visibility: visibility, Status: status, ZipPath: path, PackageSize: int64(len(data)), PlatformDistribution: platformDistribution, CreatedAt: now, UpdatedAt: now}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), "INSERT INTO sm_expert_market_listings ("+expertMarketListingColumns+", platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, ?, ?)", item.ID, item.OwnerID, item.OwnerEmail, item.SourceExpertID, item.Name, item.Description, item.Icon, item.Version, item.Price, item.Visibility, item.Status, item.ZipPath, item.PackageSize, item.CreatedAt, item.UpdatedAt, item.PlatformDistribution)
+		_, err = tx.ExecContext(r.Context(), "INSERT INTO sm_expert_market_listings ("+expertMarketListingColumns+", platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '', ?, ?, ?, ?)", item.ID, item.OwnerID, item.OwnerEmail, item.SourceExpertID, item.Name, item.Description, item.Icon, item.Version, item.Price, item.Visibility, item.Status, item.ZipPath, item.PackageSize, item.CreatedAt, item.UpdatedAt, item.Category, item.PlatformDistribution)
 	}
 	if err == nil && visibility == "users" {
 		for _, target := range shareTargets {

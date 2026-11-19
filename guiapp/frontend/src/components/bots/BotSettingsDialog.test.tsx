@@ -149,6 +149,16 @@ describe('Bot settings tabs', () => {
         fireEvent.keyDown(screen.getByTestId('bot-settings-tabs'), { key: 'ArrowRight' });
         expect(onSelect).not.toHaveBeenCalled();
     });
+
+    it('shows the voice tab only when a label is supplied', () => {
+        const onSelect = vi.fn();
+        const view = render(<BotSettingsTabs active="model" labels={{ model: '模型', network: '网络', computer: '电脑' }} onSelect={onSelect} />);
+        expect(screen.queryByTestId('bot-settings-tab-voice')).toBeNull();
+        view.rerender(<BotSettingsTabs active="voice" labels={{ model: '模型', network: '网络', computer: '电脑', voice: '语音' }} onSelect={onSelect} />);
+        expect(screen.getByTestId('bot-settings-tab-voice').getAttribute('aria-selected')).toBe('true');
+        fireEvent.click(screen.getByTestId('bot-settings-tab-model'));
+        expect(onSelect).toHaveBeenCalledWith('model');
+    });
 });
 
 describe('Bot model settings dialog', () => {
@@ -184,6 +194,40 @@ describe('Bot model settings dialog', () => {
 
     // The card is the control: clicking the description selects it, not just
     // the 16px radio. The selected card also has to look selected.
+    it('saves MaClaw official for each local stage without changing the cloud default', () => {
+        const { onSubmit } = renderDialog({ localDesktop: true });
+        expect(screen.getByTestId('bot-llm-local')).toBeTruthy();
+        expect(screen.getByTestId('bot-local-role-foreground-provider')).toHaveProperty('value', 'MaClaw 官方');
+        expect(screen.getByTestId('bot-llm-mode-default')).toHaveProperty('checked', true);
+        fireEvent.click(screen.getByTestId('bot-llm-save'));
+        expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+            mode: 'default',
+            localRoles: expect.objectContaining({
+                foreground: { official: true, model: 'auto' },
+                background: { official: true, model: 'auto' },
+                computer_use: { official: true, model: 'auto' },
+                grounder: { official: true, model: 'auto' },
+            }),
+        }));
+    });
+
+    it('keeps a cloud-only provider out of the local stage list', () => {
+        renderDialog({
+            localDesktop: true,
+            initialMode: 'custom',
+            initialRoles: {
+                foreground: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                background: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                computer_use: { name: 'CloudOnly', model: 'cloud-model', url: 'https://cloud.example/v1' },
+                grounder: { unused: true },
+            },
+        });
+        const local = screen.getByTestId('bot-local-role-foreground-provider') as HTMLSelectElement;
+        expect([...local.options].map(option => option.value)).toEqual(['MaClaw 官方', 'DeepSeek']);
+        const cloud = screen.getByTestId('bot-role-foreground-provider') as HTMLSelectElement;
+        expect([...cloud.options].map(option => option.value)).toContain('CloudOnly');
+    });
+
     it('selects the custom card from anywhere on the card and shows the state', () => {
         renderDialog();
         const defaultCard = screen.getByTestId('bot-llm-mode-default').closest('.bot-llm-dialog__option') as HTMLElement;
@@ -268,10 +312,25 @@ describe('Bot model settings dialog', () => {
         expect(saveProfiles).not.toHaveBeenCalled();
     });
 
+    it('does not submit when Enter is pressed in a local stage row', () => {
+        const { onSubmit } = renderDialog({ localDesktop: true });
+        fireEvent.keyDown(screen.getByTestId('bot-local-role-foreground-provider'), { key: 'Enter' });
+        expect(onSubmit).not.toHaveBeenCalled();
+    });
+
     it('does not submit when Enter is pressed in a role row', () => {
         const { onSubmit } = renderDialog({ initialMode: 'custom', initialName: 'DeepSeek', initialModel: 'deepseek-chat' });
         fireEvent.keyDown(screen.getByTestId('bot-role-foreground-provider'), { key: 'Enter' });
         expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('reports the add-provider button on the section title row', () => {
+        const onAddProvider = vi.fn();
+        renderDialog({ onAddProvider });
+        const button = screen.getByTestId('bot-llm-add-provider');
+        expect(button.closest('.bot-llm-dialog__section')?.textContent).toContain(llmLabels.title);
+        fireEvent.click(button);
+        expect(onAddProvider).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -322,6 +381,14 @@ describe('Bot network settings dialog', () => {
     });
 
     // A lock is a fact about the account, not a failure: it reads as a note.
+    it('hides the cloud choices on an intranet desktop', () => {
+        renderDialog({ mode: 'direct', intranet: true, locked: true });
+        expect(screen.queryByTestId('bot-network-mode-proxy')).toBeNull();
+        expect(screen.queryByTestId('bot-network-mode-smart')).toBeNull();
+        expect(screen.getByTestId('bot-network-locked')).toBeTruthy();
+        expect(screen.getByTestId('bot-network-save')).toHaveProperty('disabled', true);
+    });
+
     it('states the lock as a note instead of an error', () => {
         renderDialog({ mode: 'direct', locked: true });
         const locked = screen.getByTestId('bot-network-locked');

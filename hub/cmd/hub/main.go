@@ -85,8 +85,13 @@ func runServer(args []string) error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: a.HTTPHandler,
+		Addr:              addr,
+		Handler:           a.HTTPHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+		// WriteTimeout and ReadTimeout stay unset: upgraded WebSockets and
+		// legitimate long-running relay calls outlive ordinary HTTP requests.
 	}
 
 	if cfg.TLS.Enabled {

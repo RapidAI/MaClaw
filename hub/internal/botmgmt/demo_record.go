@@ -126,7 +126,7 @@ func (s *Service) DemoRecordDistill(ctx context.Context, tenantID, userID, botID
 		}
 		shots[e.Ref] = data
 	}
-	fresh, token, err := s.ownerToken(ctx, tenantID, userID)
+	fresh, token, err := s.ownerTokenOn(ctx, tenantID, userID, bot.NodeID)
 	if err != nil {
 		return nil, err
 	}

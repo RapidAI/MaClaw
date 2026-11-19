@@ -1536,7 +1536,11 @@ func (c *remoteCodingCallbacks) openRemoteCodegraphPipe() (codegraphMCPPipe, err
 		return codegraphMCPPipe{}, fmt.Errorf("ssh manager unavailable")
 	}
 	session, ok := mgr.Get(c.agent.sessionID)
-	if !ok || session == nil || session.Handle == nil {
+	var pty *remote.SSHPTYSession
+	if ok && session != nil {
+		pty = session.PTY()
+	}
+	if pty == nil {
 		return codegraphMCPPipe{}, fmt.Errorf("ssh session unavailable")
 	}
 	if c.agent.runtimeAttempt != nil {
@@ -1545,7 +1549,7 @@ func (c *remoteCodingCallbacks) openRemoteCodegraphPipe() (codegraphMCPPipe, err
 			return codegraphMCPPipe{}, fmt.Errorf("verified remote session unavailable")
 		}
 	}
-	client := session.Handle.Client()
+	client := pty.Client()
 	if client == nil {
 		return codegraphMCPPipe{}, fmt.Errorf("ssh client unavailable")
 	}

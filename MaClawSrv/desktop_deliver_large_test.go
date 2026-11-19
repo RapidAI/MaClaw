@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,8 +11,10 @@ import (
 )
 
 func TestDeliverLargeSendsThePiecesAsOneMessage(t *testing.T) {
-	pb, pbytes, psay := desktopDeliverLargeBash, desktopDeliverLargeBytes, desktopDeliverLargeSay
-	defer func() { desktopDeliverLargeBash, desktopDeliverLargeBytes, desktopDeliverLargeSay = pb, pbytes, psay }()
+	pb, pbytes, psay, pup := desktopDeliverLargeBash, desktopDeliverLargeBytes, desktopDeliverLargeSay, desktopSayUploadBytes
+	defer func() {
+		desktopDeliverLargeBash, desktopDeliverLargeBytes, desktopDeliverLargeSay, desktopSayUploadBytes = pb, pbytes, psay, pup
+	}()
 	var cmds []string
 	desktopDeliverLargeBash = func(_ context.Context, _ agentruntime.Scope, c string) (string, error) {
 		cmds = append(cmds, c)
@@ -28,6 +31,11 @@ func TestDeliverLargeSendsThePiecesAsOneMessage(t *testing.T) {
 		return base64.StdEncoding.EncodeToString(make([]byte, n)), nil
 	}
 	var said map[string]any
+	var uploaded int
+	desktopSayUploadBytes = func(_ context.Context, _ agentruntime.Scope, _, _ string, raw []byte) (string, error) {
+		uploaded = len(raw)
+		return "bf_00000000000000000000001", nil
+	}
 	desktopDeliverLargeSay = func(_ context.Context, b map[string]any) error { said = b; return nil }
 	scope := agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst_1", RunID: "run_1"}
 	out, err := deliverDesktopLarge(context.Background(), scope, "/tmp/a b'c.pdf", "a.pdf")
@@ -35,9 +43,68 @@ func TestDeliverLargeSendsThePiecesAsOneMessage(t *testing.T) {
 		t.Fatalf("%q %v", out, err)
 	}
 	files, _ := said["files"].([]map[string]string)
+	if uploaded != 900000 || files[0]["ref"] == "" || files[0]["data"] != "" || said["instance_id"] != "inst_1" || !strings.Contains(cmds[0], `'/tmp/a b'\''c.pdf'`) || !strings.HasPrefix(cmds[len(cmds)-1], "rm -rf -- ") {
+		t.Fatalf("said %v uploaded=%d files=%v cmds=%v", said["text"], uploaded, files, cmds)
+	}
+}
+
+func TestDeliverWithoutReplySlotSendsTheFileOnItsOwn(t *testing.T) {
+	oldRemote, oldUpload, oldSay := desktopRemoteFile, desktopSayUploadBytes, desktopDeliverLargeSay
+	defer func() {
+		desktopRemoteFile, desktopSayUploadBytes, desktopDeliverLargeSay = oldRemote, oldUpload, oldSay
+	}()
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		return base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 weather")), nil
+	}
+	var uploaded []byte
+	var said map[string]any
+	desktopDeliverLargeSay = func(_ context.Context, body map[string]any) error { said = body; return nil }
+	desktopSayUploadBytes = func(_ context.Context, _ agentruntime.Scope, name, mime string, raw []byte) (string, error) {
+		if name != "weather-report.pdf" || mime != "application/pdf" {
+			t.Fatalf("upload name %q mime %q", name, mime)
+		}
+		uploaded = append([]byte(nil), raw...)
+		return "bf_weather", nil
+	}
+	out, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
+	files, _ := said["files"].([]map[string]string)
+	if err != nil || len(files) != 1 || files[0]["ref"] != "bf_weather" || files[0]["data"] != "" || string(uploaded) != "%PDF-1.4 weather" {
+		t.Fatalf("out %q said %v uploaded %q err %v", out, said, uploaded, err)
+	}
+	if strings.Contains(out, "/home/desktop") || strings.Contains(out, "larger than one reply") || strings.Contains(out, "give the file's path") || !strings.Contains(out, "own chat message") || !strings.Contains(out, "cloud path") {
+		t.Fatalf("tool result %q", out)
+	}
+
+	desktopSayUploadBytes = func(context.Context, agentruntime.Scope, string, string, []byte) (string, error) {
+		return "", fmt.Errorf("no bot file store yet")
+	}
+	said = nil
+	out, err = deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u::desk::bot_x", InstanceID: "inst", RunID: "run"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
+	files, _ = said["files"].([]map[string]string)
+	if err != nil || len(files) != 1 || said["instance_id"] != "inst" || files[0]["ref"] != "" {
+		t.Fatalf("fallback out %q said %v err %v", out, said, err)
+	}
 	raw, _ := base64.StdEncoding.DecodeString(files[0]["data"])
-	if len(raw) != 900000 || said["instance_id"] != "inst_1" || !strings.Contains(cmds[0], `'/tmp/a b'\''c.pdf'`) || !strings.HasPrefix(cmds[len(cmds)-1], "rm -rf -- ") {
-		t.Fatalf("said %v len=%d cmds=%v", said["text"], len(raw), cmds)
+	if string(raw) != "%PDF-1.4 weather" {
+		t.Fatalf("fallback out %q said %v err %v", out, said, err)
+	}
+	if strings.Contains(out, "/home/desktop") || strings.Contains(out, "larger than one reply") || strings.Contains(out, "give the file's path") || !strings.Contains(out, "own chat message") || !strings.Contains(out, "cloud path") {
+		t.Fatalf("fallback tool result %q", out)
+	}
+}
+
+func TestDeliverWithoutReplySlotDoesNotOfferTheCloudPath(t *testing.T) {
+	oldRemote, oldBash := desktopRemoteFile, desktopDeliverLargeBash
+	defer func() { desktopRemoteFile, desktopDeliverLargeBash = oldRemote, oldBash }()
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		return "", fmt.Errorf("file is too large")
+	}
+	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
+		return "MCLDL_BIG 9999999\n", nil
+	}
+	_, err := deliverDesktopPath(context.Background(), agentruntime.Scope{TenantID: "t", UserID: "u", InstanceID: "inst"}, "/home/desktop/work/main/run/weather-report.pdf", "", "")
+	if err == nil || strings.Contains(err.Error(), "path on the computer") || strings.Contains(err.Error(), "give the file's path") || !strings.Contains(err.Error(), "cloud path") {
+		t.Fatalf("%v", err)
 	}
 }
 

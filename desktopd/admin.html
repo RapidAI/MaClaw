@@ -80,6 +80,52 @@ code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
     </div>
 
     <div class="card">
+      <h2>桌面大小</h2>
+      <p class="muted" style="font-size:13px">安装时按这台机器自动确定。保存后的大小会固定下来，下一台桌面按它打开。恢复自动则重新按这台机器确定。</p>
+      <form id="resourceForm">
+        <div class="row">
+          <div><label for="resMemory">内存（例如 4g）</label><input id="resMemory" class="mono" autocomplete="off"></div>
+          <div><label for="resCPUs">CPU（例如 2）</label><input id="resCPUs" class="mono" autocomplete="off"></div>
+          <div><label for="resShm">共享内存（例如 1g）</label><input id="resShm" class="mono" autocomplete="off"></div>
+        </div>
+        <p class="err" id="resourceErr"></p>
+        <div class="row">
+          <button type="submit">保存大小</button>
+          <button type="button" class="ghost" id="resourceReset">恢复自动</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card" id="hubLinkCard">
+      <h2>Hub 连接</h2>
+      <p class="muted" id="hubLinkStatus" style="font-size:13px">正在读取…</p>
+      <dl class="kv" id="hubLinkInfo"></dl>
+      <form id="hubLinkForm">
+        <label for="hubLinkURL">Hub 地址</label>
+        <input id="hubLinkURL" class="mono" placeholder="https://hub.example" autocomplete="off">
+        <label for="hubLinkCode">注册码</label>
+        <input id="hubLinkCode" class="mono" autocomplete="off">
+        <label for="hubLinkDirect">内网访问地址（同一内网里的客户端用来直连画面，例如 http://10.0.0.8:18081）</label>
+        <input id="hubLinkDirect" class="mono" placeholder="http://10.0.0.8:18081" autocomplete="off">
+        <div class="row">
+          <button type="button" class="ghost" id="hubLinkDirectSave">保存内网地址</button>
+        </div>
+        <label style="margin:8px 0 0"><input type="checkbox" id="hubLinkSrv" style="width:auto"> 同机 srv</label>
+        <label for="hubLinkSrvAddr">srv 本地地址</label>
+        <input id="hubLinkSrvAddr" class="mono" placeholder="127.0.0.1:18080" autocomplete="off">
+        <label for="hubLinkSrvAdmin">srv 管理密钥文件（这台机器上的路径；也可以直接粘贴密钥。只在注册时使用，不保存在这张卡片里）</label>
+        <input id="hubLinkSrvAdmin" type="password" autocomplete="new-password">
+        <p class="err" id="hubLinkErr"></p>
+        <div class="row">
+          <button type="submit" id="hubLinkRegister">注册</button>
+          <button type="button" class="ghost" id="hubLinkConnect">重新连接</button>
+          <button type="button" class="ghost" id="hubLinkDisconnect">断开</button>
+          <button type="button" class="danger" id="hubLinkLeave">解除注册</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
       <h2>API Key（Hub 接入凭据）</h2>
       <p class="muted" style="font-size:13px">Hub 桌面服务配置中的 access token 使用以下任意一个即可。主 key 来自 DESKTOPD_TOKEN 环境变量，不可在此删除。</p>
       <table>
@@ -203,8 +249,14 @@ async function loadDash() {
       const state = {idle: '本地已有或未触发', pulling: '拉取中', pulled: '已拉取', failed: '拉取失败'}[x.state] || x.state;
       return esc(x.image) + ' ← ' + esc(x.source) + ' (' + esc(state) + (x.message ? ': ' + esc(x.message) : '') + ')';
     }).join('<br>') || '<span class="muted">未配置(DESKTOPD_IMAGE_SOURCE=off),镜像需在主机上构建</span>') + '</dd>' +
-    '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + '</dd>' +
+    '<dt>默认资源</dt><dd class="mono">' + esc(o.memory) + ' / ' + esc(o.cpus) + ' CPU / shm ' + esc(o.shm_size) + (o.resources_source === 'panel' ? '（手工）' : '（自动）') + '</dd>' +
     '<dt>出网代理</dt><dd>' + proxyParts.join('<br>') + '</dd>';
+  const editingSize = document.activeElement && document.activeElement.closest && document.activeElement.closest('#resourceForm');
+  if (!editingSize) {
+    $('resMemory').value = o.memory || '';
+    $('resCPUs').value = o.cpus || '';
+    $('resShm').value = o.shm_size || '';
+  }
 
   const rows = [];
   rows.push('<tr><td>主 key（DESKTOPD_TOKEN）</td><td class="mono">' + esc(o.primary_token || '(未设置)') + '</td><td class="muted">环境变量</td><td></td></tr>');
@@ -253,7 +305,94 @@ async function loadDash() {
     '<tr><td class="mono">' + esc(d.container) + '</td><td class="mono">' + esc(d.tenant_id) + '</td><td class="mono">' + esc(d.user_id) + '</td><td>' + esc(d.status) + '</td></tr>');
   $('desktopRows').innerHTML = rows2.join('');
   $('desktopEmpty').textContent = rows2.length ? '' : '当前没有运行中的桌面容器。';
+  loadHubLink();
 }
+
+$('resourceForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('resourceErr').textContent = '';
+  try {
+    const saved = await api('resources', { method: 'POST', body: { memory: $('resMemory').value.trim(), cpus: $('resCPUs').value.trim(), shm_size: $('resShm').value.trim() } });
+    toast(saved.hub_saved === false ? '已保存在这台机器，Hub 还未记下' : '桌面大小已保存');
+    await loadDash();
+  } catch (err) { $('resourceErr').textContent = err.message; }
+};
+$('resourceReset').onclick = async () => {
+  $('resourceErr').textContent = '';
+  try {
+    await api('resources', { method: 'POST', body: { restore_auto: true } });
+    $('resMemory').value = '';
+    $('resCPUs').value = '';
+    $('resShm').value = '';
+    toast('已恢复按这台机器自动确定');
+    await loadDash();
+  } catch (err) { $('resourceErr').textContent = err.message; }
+};
+
+async function loadHubLink() {
+  try {
+    const st = await api('hub-link');
+    const status = !st.enabled ? '这台 desktopd 没有 Hub 连接'
+      : !st.enrolled ? '未注册'
+      : st.online ? '在线' : '已断开';
+    $('hubLinkStatus').textContent = status + (st.error ? ' — ' + st.error : '');
+    $('hubLinkForm').style.display = st.enabled ? '' : 'none';
+    $('hubLinkInfo').innerHTML =
+      '<dt>Hub 地址</dt><dd class="mono">' + (esc(st.hub_url) || '<span class="muted">未登记</span>') + '</dd>' +
+      '<dt>节点</dt><dd class="mono">' + (esc(st.node_id) || '<span class="muted">未登记</span>') + '</dd>' +
+      '<dt>内网访问地址</dt><dd class="mono">' + (esc(st.direct_base || (st.self ? 'http://' + st.self : '')) || '<span class="muted">未设置</span>') + '</dd>' +
+      '<dt>同机 srv</dt><dd class="mono">' + (esc(st.srv_addr) || '<span class="muted">无</span>') + '</dd>';
+    if (st.hub_url && !$('hubLinkURL').value) $('hubLinkURL').value = st.hub_url;
+    if (!$('hubLinkDirect').value) $('hubLinkDirect').value = st.direct_base || (st.self ? 'http://' + st.self : '');
+    if (st.srv_addr) $('hubLinkSrvAddr').value = st.srv_addr;
+    $('hubLinkSrv').checked = !!st.srv_addr;
+  } catch (err) {
+    $('hubLinkStatus').textContent = err.message;
+  }
+}
+
+$('hubLinkForm').onsubmit = async (e) => {
+  e.preventDefault();
+  $('hubLinkErr').textContent = '';
+  try {
+    await api('hub-link', { method: 'POST', body: {
+      hub_url: $('hubLinkURL').value.trim(),
+      code: $('hubLinkCode').value.trim(),
+      direct_base: $('hubLinkDirect').value.trim(),
+      has_srv: $('hubLinkSrv').checked,
+      srv_addr: $('hubLinkSrvAddr').value.trim(),
+      srv_admin_secret: $('hubLinkSrvAdmin').value
+    }});
+    $('hubLinkCode').value = '';
+    $('hubLinkSrvAdmin').value = '';
+    toast('已注册');
+    loadHubLink();
+  } catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkDirectSave').onclick = async () => {
+  $('hubLinkErr').textContent = '';
+  try {
+    const out = await api('hub-link/direct', { method: 'POST', body: { direct_base: $('hubLinkDirect').value.trim() } });
+    toast(out.hub_saved ? '已保存' : '已记在这台机器，Hub 还未记下');
+    loadHubLink();
+  } catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkDisconnect').onclick = async () => {
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link/disconnect', { method: 'POST', body: {} }); toast('已断开'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkConnect').onclick = async () => {
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link/connect', { method: 'POST', body: {} }); toast('正在重新连接'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
+$('hubLinkLeave').onclick = async () => {
+  if (!confirm('解除注册会删除这台机器上的 Hub 连接。')) return;
+  $('hubLinkErr').textContent = '';
+  try { await api('hub-link', { method: 'DELETE' }); toast('已解除注册'); loadHubLink(); }
+  catch (err) { $('hubLinkErr').textContent = err.message; }
+};
 
 $('setupForm').onsubmit = async (e) => {
   e.preventDefault();

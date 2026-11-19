@@ -813,8 +813,12 @@ func (m *SSHBackgroundTaskManager) EnsureSudoToken(sessionID string) (ok bool, m
 	prompt := make([]byte, 0, len(password)+1)
 	prompt = append(prompt, password...)
 	prompt = append(prompt, '\n')
-	if err := session.Handle.Write(prompt); err != nil {
-		return false, fmt.Sprintf("写入密码失败: %v", err)
+	writeErr := fmt.Errorf("ssh session %s has no handle", sessionID)
+	if h := session.PTY(); h != nil {
+		writeErr = h.Write(prompt)
+	}
+	if writeErr != nil {
+		return false, fmt.Sprintf("写入密码失败: %v", writeErr)
 	}
 	SecureZeroPassword(prompt)
 
@@ -838,7 +842,9 @@ func (m *SSHBackgroundTaskManager) EnsureSudoToken(sessionID string) (ok bool, m
 
 	if passwordWrong {
 		// 发送 Ctrl+C 中断 sudo 的重试循环
-		_ = session.Handle.Write([]byte{0x03}) // Ctrl+C
+		if h := session.PTY(); h != nil {
+			_ = h.Write([]byte{0x03}) // Ctrl+C
+		}
 		time.Sleep(500 * time.Millisecond)
 		return false, "sudo 密码验证失败，请检查密码是否正确"
 	}

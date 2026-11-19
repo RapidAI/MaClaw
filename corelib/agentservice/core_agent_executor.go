@@ -69,6 +69,10 @@ type CoreAgentExecutor struct {
 	// ScheduleHandler hosts manage_schedule (create/list/update/delete/list_targets).
 	// Nil keeps the tool visible but returns "not initialized".
 	ScheduleHandler func(args map[string]interface{}) string
+	// DesktopBotSchedule hosts bot_schedule for one desktop bot. The desktop
+	// clock runs without MACLAW_ENABLE_SCHEDULER, so this tool does too.
+	// The bot id comes from the turn, not from the model's arguments.
+	DesktopBotSchedule func(ctx context.Context, principal Principal, instanceID, botID string, args map[string]interface{}) string
 	// ScheduleHandlerContext is the request-scoped variant. The instance id
 	// is the caller that owns the task; model arguments cannot choose another
 	// instance. Hosts should prefer it so one user's instances stay separate.
@@ -520,6 +524,8 @@ type coreAgentCallbacks struct {
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
+	// botScheduleHandler registers this desktop bot's own timer.
+	botScheduleHandler func(args map[string]interface{}) string
 	// Host-injected proactive IM message tool.
 	imMessageHandler func(args map[string]interface{}) string
 	imFileHandler    func(args map[string]interface{}) string
@@ -717,6 +723,20 @@ func contextWithDatabaseApproval(ctx context.Context, approval *database.Approva
 	return database.WithApprovalContext(ctx, copy)
 }
 
+// withDesktopBotScheduleArg marks manage_schedule with the bot that is
+// speaking. A value the model sent is replaced by this turn's own id.
+func withDesktopBotScheduleArg(args map[string]interface{}, botID string) map[string]interface{} {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return args
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	args["desktop_bot_id"] = botID
+	return args
+}
+
 func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
 	return e.executeDirectWithRuntimeBinding(ctx, req, nil, nil, nil)
 }
@@ -751,8 +771,25 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if e.ScheduleHandlerContext != nil {
 		principal := req.Principal
 		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
 		scheduleHandler = func(args map[string]interface{}) string {
+			if text := scheduleFiringMustNotRearm(req.Message.Metadata, args); text != "" {
+				return text
+			}
+			args = withDesktopBotScheduleArg(args, botID)
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
+		}
+	}
+	var botScheduleHandler func(args map[string]interface{}) string
+	if e.DesktopBotSchedule != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
+		botScheduleHandler = func(args map[string]interface{}) string {
+			if text := scheduleFiringMustNotRearm(req.Message.Metadata, args); text != "" {
+				return text
+			}
+			return e.DesktopBotSchedule(ctx, principal, instanceID, botID, args)
 		}
 	}
 	imFileHandler := e.IMFileHandler
@@ -809,6 +846,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
 		scheduleHandler:          scheduleHandler,
+		botScheduleHandler:       botScheduleHandler,
 		imMessageHandler:         imMessageHandler,
 		imFileHandler:            imFileHandler,
 		messageMetadata:          cloneMap(req.Message.Metadata),
@@ -1813,7 +1851,8 @@ Specified IM file delivery:
 		prompt = agentruntime.EnsureSemanticGrantPromptFence(prompt)
 	}
 	if c.promptPrefixActive() {
-		prompt = desktopbot.PinWorthSaying(prompt)
+		prompt = desktopbot.PinWorthSayingFor(prompt, c.botHasNoDesktop())
+		prompt = desktopbot.PinRecurringWork(prompt)
 	}
 	return c.pinDesktopSystemPrompt(prompt)
 }
@@ -1846,11 +1885,19 @@ func (c *coreAgentCallbacks) promptPrefixActive() bool {
 }
 
 func (c *coreAgentCallbacks) promptPrefixMeta() agent.PromptPrefixMeta {
+	mode := ""
+	if c.hubBotInstance() || c.botHasNoDesktop() {
+		mode = "desktop"
+		if c.botHasNoDesktop() {
+			mode = "none"
+		}
+	}
 	return agent.PromptPrefixMeta{
 		ConversationID: c.session.ID,
 		BotID:          c.botID,
 		Provider:       c.llmCfg.ProviderName,
 		Model:          c.llmCfg.Model,
+		DesktopMode:    mode,
 	}
 }
 
@@ -1882,7 +1929,10 @@ func (c *coreAgentCallbacks) desktopMemoryCall(name string, args map[string]inte
 		if owner == "" {
 			owner = strings.TrimSpace(c.user.ID)
 		}
-		if strings.TrimSpace(c.messageMetadata["computer_helper"]) == "1" {
+		// A bot with no computer keeps the person's own book. A leftover
+		// computer_helper mark would file the note on the desktop helper
+		// book, which refuses a profile write.
+		if !c.botHasNoDesktop() && strings.TrimSpace(c.messageMetadata["computer_helper"]) == "1" {
 			helper = true
 			helperID = strings.TrimSpace(c.messageMetadata["helper_id"])
 			if helperID == "" {
@@ -2153,7 +2203,9 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 	if e.ScheduleHandlerContext != nil {
 		principal := req.Principal
 		instanceID := strings.TrimSpace(req.Instance.ID)
+		botID := botlog.FromMeta(req.Message.Metadata)
 		cb.scheduleHandler = func(args map[string]interface{}) string {
+			args = withDesktopBotScheduleArg(args, botID)
 			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
 	}
@@ -2942,10 +2994,24 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	// still how that bot does the work, so the module tool stays visible even
 	// when a semantic grant uses the same name. ssh stays for the same reason
 	// when this account can open a remote host.
-	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) {
+	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) && !c.botHasNoDesktop() {
+		return true
+	}
+	// PDF delivery is a bot runtime capability, not a host filesystem tool.
+	// Short "make a PDF" requests still need its executable module in view.
+	if c != nil && strings.TrimSpace(name) == "bot_generate_pdf" && c.hubBotInstance() && c.runtimeToolExposed(name) {
 		return true
 	}
 	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
+		return true
+	}
+	// Registering this bot's own timer is how a short message becomes a
+	// repeated job. A light turn must still be able to call it.
+	if c != nil && strings.TrimSpace(name) == "bot_schedule" && c.botScheduleHandler != nil && strings.TrimSpace(c.botID) != "" {
+		return true
+	}
+	// A short "look at the issues" message is still a development turn.
+	if c != nil && strings.TrimSpace(name) == "repo" && c.botUsesContainer() && DesktopRepo != nil {
 		return true
 	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
@@ -2993,6 +3059,12 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.hubBotDropsInProcessDelegate(name) {
+		return false, "这个 bot 不在本机另开一个子任务"
+	}
+	if c != nil && c.botHasNoDesktop() && noneDesktopDropsTool(name) {
+		return false, "这个 bot 没有电脑"
+	}
 	if c != nil && c.botMissesContainer(name) {
 		return false, botContainerToolReason
 	}
@@ -3105,8 +3177,17 @@ func (c *coreAgentCallbacks) mergeConnectorAsk(metadata map[string]string) {
 func connectorCallURL(args map[string]interface{}) string {
 	for _, key := range []string{"url", "site", "host"} {
 		if value := stringArg(args, key); value != "" {
+			switch strings.ToLower(value) {
+			case "github":
+				return "https://github.com"
+			case "gitlab":
+				return "https://gitlab.com"
+			}
 			return value
 		}
+	}
+	if repo := stringArg(args, "repo"); strings.Contains(repo, "://") {
+		return repo
 	}
 	return ""
 }
@@ -3319,6 +3400,13 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 			return agent.ToolExecutionResult{Result: "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		return toolTextResult(c.scheduleHandler(args))
+	case "bot_schedule":
+		if c.botScheduleHandler == nil || strings.TrimSpace(c.botID) == "" {
+			return agent.ToolExecutionResult{Result: "Error: this turn has no desktop bot timer", Outcome: agent.ToolExecutionOutcomeError}
+		}
+		return toolTextResult(c.botScheduleHandler(args))
+	case "repo":
+		return toolTextResult(c.executeRepo(args))
 	case "im_message":
 		if c.imMessageHandler == nil {
 			return agent.ToolExecutionResult{Result: "IM message tool is not initialized", Outcome: agent.ToolExecutionOutcomeError}
@@ -3553,18 +3641,37 @@ func readDocumentToolResult(result string) agent.ToolExecutionResult {
 	return agent.ToolExecutionResult{Result: result, Outcome: outcome}
 }
 func (c *coreAgentCallbacks) OnToken(delta string) {
+	if c != nil {
+		// A token means the model answered. The retry notice is over.
+		ClearRunRuntimeStatus(c.runID)
+	}
 	if c.onToken != nil {
 		c.onToken(delta)
 	}
 }
 func (c *coreAgentCallbacks) OnProgress(text string) {
+	if c == nil {
+		return
+	}
 	text = strings.TrimSpace(text)
-	if text == "" || c == nil || c.botID == "" {
+	if text == "" {
+		return
+	}
+	// Only the live-status row is a status-area notice. An ordinary
+	// progress sentence is not promoted into the status line, and a
+	// sentence that merely says "switched" is not one of those rows.
+	if visible, ok := agent.LLMRetryLiveStatusText(text); ok {
+		SetRunRuntimeStatus(c.runID, visible)
+	}
+	if c.botID == "" {
 		return
 	}
 	botlog.Write(c.botID, "srv.progress", nil, "text", text)
 }
 func (c *coreAgentCallbacks) OnToolCall(name string) {
+	if c != nil {
+		ClearRunRuntimeStatus(c.runID)
+	}
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
 	if c != nil && c.botID != "" {
 		botlog.Write(c.botID, "srv.tool_start", nil, "tool", name, "loop", c.loopID)

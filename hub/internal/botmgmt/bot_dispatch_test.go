@@ -201,3 +201,35 @@ func TestHubBootScanResumesPendingDelegate(t *testing.T) {
 		t.Fatalf("admit = %q", got)
 	}
 }
+
+func TestRefundWakeKeepsANewerSlot(t *testing.T) {
+	svc := NewService(nil)
+	svc.dispatch.init()
+	first := time.Unix(10, 0)
+	second := time.Unix(20, 0)
+	third := time.Unix(30, 0)
+	svc.dispatch.wakes["tenant-a|alice|bot_a"] = []time.Time{first, second, third}
+	svc.refundWake("tenant-a", "alice", "bot_a", second)
+	slots := svc.dispatch.wakes["tenant-a|alice|bot_a"]
+	if len(slots) != 2 || !slots[0].Equal(first) || !slots[1].Equal(third) {
+		t.Fatalf("slots = %v", slots)
+	}
+}
+
+// A bot with no computer answers ErrNoDesktopTurn, not ErrDesktopBusy, but a
+// server-started job must still wait in the queue instead of being dropped.
+func TestDispatchNoDesktopTurnWaitsInQueue(t *testing.T) {
+	svc, _ := dispatchFixture(t)
+	svc.dispatchAdmit = func(ctx context.Context, tenantID, userID, botID, content, phase, key string) (BotAdmission, error) {
+		return BotAdmission{}, ErrNoDesktopTurn
+	}
+	started, busy := svc.runDispatchJob("tenant-a", "alice", dispatchJob{
+		kind: "wake", botID: "bot_pub", content: "检查收件箱", key: "xwake-nodesk",
+	})
+	if started || !busy {
+		t.Fatalf("started=%v busy=%v", started, busy)
+	}
+	if view := svc.DesktopQueueStatus("tenant-a", "alice", "bot_pub", "xwake-nodesk"); view.State != "queued" {
+		t.Fatalf("queue = %+v", view)
+	}
+}

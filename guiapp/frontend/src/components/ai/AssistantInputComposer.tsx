@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo } from "react";
 import { imageCountsForHistoryMatches } from "./promptHistory";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
 import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
 import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
 import type { AssistantInputComposerProps } from "./AssistantInputComposerTypes";
 import { InputHistoryAutocomplete } from "./InputHistoryAutocomplete";
+import { useBufferedComposerValue } from "./useBufferedComposerValue";
 import { useInputHistoryAutocomplete } from "./useInputHistoryAutocomplete";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
@@ -32,8 +33,13 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const submittedPrompts = submittedPromptsProp ?? EMPTY_SUBMITTED_PROMPTS;
 
     const textComposition = useTextCompositionGuard();
+    const buffered = useBufferedComposerValue(inputValue, useCallback((next: string) => {
+        rememberHistoryEdit(next);
+        updateInputValue(next, { deferParent: true });
+    }, [rememberHistoryEdit, updateInputValue]));
     // State (not ref) so IME start/end re-renders and keeps matches closed during composition.
-    const [isComposing, setIsComposing] = useState(false);
+    const isComposing = buffered.isComposing;
+    const displayedInputValue = buffered.value;
     const listboxDomId = useId();
     const historyListboxId = `ai-input-history-listbox-${listboxDomId}`;
     const isExpandedInput = inputAreaHeight !== null;
@@ -56,7 +62,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const inputHardDisabled = !ready || cancelPending || hardLockInput;
     const autocompleteDisabled = inputHardDisabled || isComposing;
     const autocomplete = useInputHistoryAutocomplete({
-        inputValue,
+        inputValue: displayedInputValue,
         submittedPrompts,
         applyInputValue: applyAutocompleteValue,
         inputRef: textareaRef,
@@ -84,7 +90,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
 
     useEffect(() => {
         resizeInput(textareaRef.current ?? undefined);
-    }, [inputValue, resizeInput, textareaRef]);
+    }, [displayedInputValue, resizeInput, textareaRef]);
 
     return (
         <div data-testid={inputBarTestId} className="ai-composer" style={inputBarStyle} onDragOver={handleDragOver} onDrop={handleDrop}>
@@ -105,7 +111,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     open={autocompleteOpen}
                     matches={autocomplete.matches}
                     selectedIndex={autocomplete.selectedIndex}
-                    prefix={inputValue}
+                    prefix={displayedInputValue}
                     imageCounts={historyImageCounts}
                     listboxId={historyListboxId}
                     onSelectIndex={autocomplete.setSelectedIndex}
@@ -126,21 +132,18 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     aria-activedescendant={autocompleteOpen ? `${historyListboxId}-option-${autocomplete.selectedIndex}` : undefined}
                     style={{ ...textareaStyle, boxSizing: "border-box" }}
                     rows={1}
-                    value={inputValue}
-                    onChange={(e) => {
-                        rememberHistoryEdit(e.target.value);
-                        updateInputValue(e.target.value, { deferParent: true });
-                    }}
+                    value={displayedInputValue}
+                    onChange={buffered.onChange}
                     onPaste={handlePaste}
                     onClick={handleTextareaClick}
                     onKeyUp={handleTextareaKeyUp}
-                    onCompositionStart={() => {
+                    onCompositionStart={(e) => {
                         // Hide suggestions while composing; sticky Esc-dismiss is preserved.
-                        setIsComposing(true);
+                        buffered.onCompositionStart(e);
                         textComposition.onCompositionStart();
                     }}
-                    onCompositionEnd={() => {
-                        setIsComposing(false);
+                    onCompositionEnd={(e) => {
+                        buffered.onCompositionEnd(e);
                         textComposition.onCompositionEnd();
                     }}
                     onKeyDown={(e) => {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,17 +32,26 @@ func main() {
 		AdvertiseHost: strings.TrimSpace(os.Getenv("DESKTOPD_ADVERTISE_HOST")),
 		ComputerDir:   desktopd.ComputerDirFromEnv(os.Getenv("DESKTOPD_COMPUTER_DIR")),
 	}
+	// Installed from the desktop bot settings: this machine is an intranet
+	// desktop. A leftover advertise host must not make it look public.
+	if desktopd.IntranetEnv(os.Getenv("DESKTOPD_INTRANET")) {
+		svc.Intranet = true
+		svc.AdvertiseHost = ""
+		log.Printf("[desktopd] intranet desktop: advertise host and public URL are ignored")
+	}
 	publishBind, err := desktopd.ParsePublishBind(os.Getenv("DESKTOPD_PUBLISH_BIND"))
 	if err != nil {
 		log.Fatalf("[desktopd] %v", err)
 	}
 	svc.PublishBind = publishBind
-	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_PUBLIC_URL")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("DESKTOPD_PUBLIC_URL")); raw != "" && !svc.Intranet {
 		canonical, err := desktopd.ParsePublicURL(raw)
 		if err != nil {
 			log.Fatalf("[desktopd] %v", err)
 		}
 		svc.PublicURL = canonical
+	} else if raw != "" {
+		log.Printf("[desktopd] intranet desktop ignores DESKTOPD_PUBLIC_URL")
 	}
 	// DESKTOPD_IMAGE_SOURCE: where a missing maclaw-gui:2 comes from. Empty
 	// means the public ghcr.io/rapidai/maclaw-gui:2; "off" disables pulls
@@ -203,9 +213,35 @@ func main() {
 	if adminDisabled {
 		panelDir = ""
 	}
+	// The Hub link lets a desktopd with no public address serve Hub through a
+	// tunnel it dials itself. It stays idle until the GUI posts an enrollment
+	// code, or DESKTOPD_HUB_URL and DESKTOPD_HUB_ENROLL_CODE are both set.
+	// DESKTOPD_HUB_LINK=off removes the routes.
+	if !adminDisabled && !strings.EqualFold(strings.TrimSpace(os.Getenv("DESKTOPD_HUB_LINK")), "off") {
+		svc.HubLink = &desktopd.HubLink{
+			StatePath: filepath.Join(stateDir, "hub_link.json"),
+			Self:      desktopd.SelfAddr(addr),
+			Key:       token,
+		}
+		if err := svc.HubLink.Start(ctx); err != nil {
+			log.Printf("[desktopd] hub link state unreadable: %v", err)
+		}
+	}
+	handler := desktopd.Handler(svc, token, panelDir, proxyKeys, egress)
+	if svc.HubLink != nil {
+		svc.HubLink.EnrollFromEnv(ctx)
+		go svc.HubLink.SyncDesktopSize(context.Background())
+	}
+	if svc.Intranet {
+		if svc.HubLink != nil {
+			log.Printf("[desktopd] intranet desktop: session URLs use the hub link after enrollment")
+		} else {
+			log.Printf("[desktopd] intranet desktop: session URLs use http://%s", desktopd.SelfAddr(addr))
+		}
+	}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           desktopd.Handler(svc, token, panelDir, proxyKeys, egress),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,

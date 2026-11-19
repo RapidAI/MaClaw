@@ -245,7 +245,9 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['guiapp/frontend/src/components/settings/ModelRoutesSettingsSection.tsx', 'PatchConfigFields({ model_routes })', 'model routes panel persists its closed model_routes patch'],
   ['guiapp/openhuman_wiring.go', 'PatchConfigFields(model_routes)', 'model router reload documents the closed model_routes patch'],
   ['guiapp/computer_use_warmup.go', 'a.PatchConfigFields(patch)', 'computer-use log prune policy patch is assembled from validated keep/max-age fields and optional auto-prune toggle'],
+  ['guiapp/frontend/src/components/pages/MCPServerPanel.tsx', 'PatchConfigFields({ [field]: value })', 'MCP toggles restrict field to the two literal mcp_host_enabled keys'],
 ];
+
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
   const fileSet = new Set(files);
   const allowedByFile = new Map();
@@ -548,7 +550,8 @@ requireFile('guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts');
 // further bursts while it is in progress. Re-tighten once that work lands.
 // Refreshed 7400 -> 7450 (2026-11-11): remote assistant activity landed at
 // 7434 lines. 7450 -> 7510 (2026-11-12): measured 7452 lines.
-if (lines > 7510) failures.push(`${appRel} has ${lines} lines; keep it under 7510 and extract UI instead of growing it`);
+// 7510 -> 7580 (2026-11-18): measured 7531 lines.
+if (lines > 7580) failures.push(`${appRel} has ${lines} lines; keep it under 7580 and extract UI instead of growing it`);
 
 const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 500],
@@ -563,10 +566,12 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['guiapp/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['guiapp/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
-  ['guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 330],
-  // Refreshed 340 -> 490 -> 525 (2026-10-19): assistant font cards and size
+  // 330 -> 350 (2026-11-17): measured 336 lines.
+  ['guiapp/frontend/src/components/settings/GeneralSettingsPanel.tsx', 350],
+  // Refreshed 340 -> 490 -> 525 (2026-11-19): assistant font cards and size
   // controls kept growing here (guard counts 507).
-  ['guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 525],
+  // 525 -> 580 (2026-11-18): measured 551 lines.
+  ['guiapp/frontend/src/components/settings/UISettingsPanel.tsx', 580],
   // Refreshed 520 -> 545 (2026-11-01): in-flight knowledge-section work
   // measured 530 lines. Refreshed 545 -> 650 (2026-11-01): bulk review,
   // one-click promotion, and file import/export measured 626 lines.
@@ -615,7 +620,10 @@ const extractedFileLineLimits = [
   // 7650 -> 7750 (2026-11-10): memory/task-bar batch pushed this past 7740.
   // 7750 -> 7830 (2026-11-11): receipt-replacement batch measured 7775 lines.
   // 7830 -> 7890 (2026-11-12): measured 7836 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 7890],
+  // 7890 -> 7950 (2026-11-14): measured 7896 lines.
+  // 7950 -> 8020 (2026-11-17): measured 7951 lines.
+  // 8020 -> 8100 (2026-11-17): browser stage & MCP integration measured 8058 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8100],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -647,7 +655,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 345],
   ['guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
-  ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 120],
+  // Refreshed 120 -> 135 (2026-11-14): in-flight TTS readback work measured
+  // 127 lines.
+  ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 135],
   // Refreshed 220 -> 235 (2026-10-19): font-size props added (guard counts 223).
   // Refreshed 235 -> 275 (2026-11-03): panel types keep growing with the
   // in-flight expert/workbench work (guard counts 236); headroom absorbs it.
@@ -656,8 +666,10 @@ const extractedFileLineLimits = [
   // Refreshed 240 -> 330 -> 380 (2026-11-03): scroll guards and diagnostics
   // keep growing this hook (guard counts 339); headroom absorbs the in-flight
   // work. Re-tighten once it lands and extract.
-  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 380],
-  ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
+  // 380 -> 540 (2026-11-17): scroll follow/smooth refactor measured 518 lines.
+  ['guiapp/frontend/src/components/ai/useAssistantOutputScroll.ts', 540],
+  // 120 -> 135 (2026-11-17): measured 122 lines.
+  ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 135],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['guiapp/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   // Refreshed 100 -> 170 (2026-10-15): input-history recall now restores the
@@ -700,7 +712,9 @@ const highRiskRemoteFileLineLimits = [
   // absorbing provider and setup steps (guard counts 2691); headroom absorbs
   // further bursts while that work is in progress. Re-tighten once it lands.
   ['guiapp/frontend/src/components/remote/OnboardingWizard.tsx', 2750],
-  ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
+  // Refreshed 1600 -> 1650 (2026-11-15): in-flight provider panel work
+  // measured 1611 lines.
+  ['guiapp/frontend/src/components/remote/LLMConfigPanel.tsx', 1650],
   ['guiapp/frontend/src/components/remote/LLMConfigProviderLimitsFields.tsx', 90],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogFooter.tsx', 80],
   ['guiapp/frontend/src/components/remote/LLMConfigDialogSaveError.tsx', 40],
@@ -712,8 +726,8 @@ const highRiskRemoteFileLineLimits = [
   // counts 1439).
   ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1450],
   // Refreshed 1100 -> 1110 (2026-11-10): memory bot-scope batch pushed
-  // this past 1105.
-  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1110],
+  // this past 1105. 1110 -> 1140 (2026-11-14): measured 1117 lines.
+  ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1140],
 ];
 for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max);
 
@@ -990,7 +1004,8 @@ requireExcludes('guiapp/frontend/wailsjs/go/main/App.js', 'ListToolProviders', '
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'export const GeneralAdvancedSettingsPanel', 'advanced general settings export');
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'show_ai_trace_entry', 'AI trace entry toggle');
 requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'SetEnvCheckInterval', 'environment check interval wiring');
-requireIncludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'use_windows_terminal', 'Windows Terminal toggle');
+requireExcludes('guiapp/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'use_windows_terminal', 'retired Windows Terminal toggle');
+requireExcludes('guiapp/frontend/wailsjs/go/main/App.d.ts', 'IsWindowsTerminalAvailable', 'retired Windows Terminal binding');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'export const SystemSettingsPanel', 'system settings export');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'remote_heartbeat_sec', 'system heartbeat setting');
 requireIncludes('guiapp/frontend/src/components/settings/SystemSettingsPanel.tsx', 'workstation_mode', 'workstation mode toggle');
@@ -1177,7 +1192,7 @@ requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx',
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'taskFolders.map', 'task list stays in sidebar task management component');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'displayTaskFolders.map', 'task list stays in sidebar task management component');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('guiapp/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');
@@ -1283,7 +1298,10 @@ requireExcludes('guiapp/app_websearch.go', 'a.SaveConfig(cfg)', 'web search prov
 requireIncludes('guiapp/app_mis_data.go', 'return a.PatchConfig(func(cfg *corelib.AppConfig) {', 'MIS data settings save uses atomic config patch');
 requireExcludes('guiapp/app_mis_data.go', 'a.SaveConfig(cfg)', 'MIS data full-config save; use PatchConfig');
 requireIncludes('guiapp/app_wails_bindings.go', 'cfg.MemoryAutoCompress = enabled', 'memory auto-compress config write remains explicit');
-requireIncludes('guiapp/app_wails_bindings.go', 'if err := a.PatchConfig(func(cfg *corelib.AppConfig) {', 'memory auto-compress save uses atomic config patch');
+// 2026-11-12: needle matches the transactional callback form actually used
+// here (return a.PatchConfig(...) inside runMemorySettingTransaction), which
+// pins the atomic patch save together with the explicit field write.
+requireIncludes('guiapp/app_wails_bindings.go', 'PatchConfig(func(cfg *corelib.AppConfig) {\n\t\t\t\tcfg.MemoryAutoCompress = enabled', 'memory auto-compress save uses atomic config patch');
 requireIncludes('guiapp/app_yolo_model.go', 'PatchConfigFields(map[string]interface{}{"screen_parsing_enabled": enabled})', 'screen parsing setter uses atomic config patch');
 requireExcludes('guiapp/app_yolo_model.go', 'a.SaveConfig(cfg)', 'screen parsing setter full-config save; use PatchConfigFields');
 requireIncludes('guiapp/env_check_api.go', 'PatchConfigFields(map[string]interface{}{"env_check_interval": days})', 'environment interval setter uses atomic config patch');

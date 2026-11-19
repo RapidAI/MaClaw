@@ -362,6 +362,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		if entry.tryResolve() {
 			a.skillInstallConfirm.Delete(confirmID)
 			close(entry.Ch)
+			a.emitCriticalConfirmResolved(confirmID)
 			log.Printf("[skill-install-confirm] cleanup: confirmID=%s expired after %v", confirmID, confirmTimeout)
 		}
 	}()
@@ -371,6 +372,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		emitFactors = []string{}
 	}
 	lang := a.skillConfirmLang()
+	entry.Prompt = buildSkillRiskPromptForLang(lang, skillName, source, level, factors)
 	confirmLabel, rejectLabel := localizedSkillInstallActionLabels(lang)
 	payload := map[string]interface{}{
 		"confirm_id": confirmID,
@@ -398,6 +400,7 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 	case <-ctx.Done():
 		if entry.tryResolve() {
 			a.skillInstallConfirm.Delete(confirmID)
+			a.emitCriticalConfirmResolved(confirmID)
 			log.Printf("[skill-install-confirm] context cancelled confirm_id=%s skill=%q", confirmID, skillName)
 			return false
 		}
@@ -428,6 +431,7 @@ func (a *App) resolveSkillInstallConfirm(confirmID string, confirmed bool) error
 	}
 	a.skillInstallConfirm.Delete(confirmID)
 	entry.Ch <- criticalRiskConfirmResponse{Confirmed: confirmed}
+	a.emitCriticalConfirmResolved(confirmID)
 	return nil
 }
 

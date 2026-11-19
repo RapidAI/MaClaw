@@ -2490,6 +2490,8 @@ describe('CodingAgentProgressStatus', () => {
                 openThoughtIndex={-1}
             />,
         );
+        // A settled turn mounts folded. Open it to inspect the rows.
+        fireEvent.click(screen.getByTestId('coding-agent-process-summary'));
 
         const lines = screen.getAllByTestId('coding-agent-tool-line');
         const text = lines.map((line) => line.textContent || '').join('\n');
@@ -2565,6 +2567,7 @@ describe('CodingAgentProgressStatus', () => {
                 openThoughtIndex={-1}
             />,
         );
+        fireEvent.click(screen.getByTestId('coding-agent-process-summary'));
 
         const lines = screen.getAllByTestId('coding-agent-tool-line');
         expect(lines).toHaveLength(1);
@@ -2651,6 +2654,65 @@ describe('CodingAgentProgressStatus', () => {
         expect(queryByTestId('coding-agent-tool-line')).toBeNull();
     });
 
+    it('keeps the process list open while the turn is in flight and folds it when the summary settles', () => {
+        const items = [{
+            id: 'run-1',
+            sequence: 1,
+            kind: 'progress' as const,
+            content: 'Coding Agent Event: {"agent":"coding","event":"tool_finished","phase":"running","detail":"bash","outcome":"success","command":"go test"}',
+            timestamp: 1_000,
+        }];
+        const props = {
+            items,
+            theme: { text: '#111827', fieldLabel: '#6b7280' } as never,
+            lang: 'zh-Hans',
+            lastThinkingIndex: -1,
+            openThoughtIndex: -1,
+        };
+        const { rerender } = render(<CodingAgentProcessTimeline {...props} live />);
+        const timeline = screen.getByTestId('coding-agent-interleaved-timeline');
+        expect(timeline.getAttribute('data-process-open')).toBe('true');
+        expect(screen.getByTestId('coding-agent-tool-line').textContent).toContain('go test');
+
+        rerender(<CodingAgentProcessTimeline {...props} live={false} />);
+        expect(timeline.getAttribute('data-process-open')).toBe('false');
+        expect(screen.getByTestId('coding-agent-process-summary').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.queryByTestId('coding-agent-tool-line')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('coding-agent-process-summary'));
+        expect(screen.getByTestId('coding-agent-tool-line').textContent).toContain('go test');
+
+        rerender(<CodingAgentProcessTimeline {...props} live={false} />);
+        expect(screen.getByTestId('coding-agent-interleaved-timeline').getAttribute('data-process-open')).toBe('true');
+
+        rerender(<CodingAgentProcessTimeline {...props} live />);
+        expect(screen.getByTestId('coding-agent-interleaved-timeline').getAttribute('data-process-open')).toBe('true');
+        expect(screen.getByTestId('coding-agent-tool-line')).toBeTruthy();
+    });
+
+    it('starts a finished turn with the process list folded', () => {
+        render(
+            <CodingAgentProcessTimeline
+                items={[{
+                    id: 'run-1',
+                    sequence: 1,
+                    kind: 'progress',
+                    content: 'Coding Agent Event: {"agent":"coding","event":"tool_finished","phase":"running","detail":"bash","outcome":"success","command":"go test"}',
+                    timestamp: 1_000,
+                }]}
+                theme={{ text: '#111827', fieldLabel: '#6b7280' } as never}
+                lang="zh-Hans"
+                lastThinkingIndex={-1}
+                openThoughtIndex={-1}
+            />,
+        );
+        expect(screen.getByTestId('coding-agent-interleaved-timeline').getAttribute('data-process-open')).toBe('false');
+        expect(screen.getByTestId('coding-agent-process-summary').textContent).toContain('已运行了 1 条命令');
+        expect(screen.queryByTestId('coding-agent-tool-line')).toBeNull();
+        fireEvent.click(screen.getByTestId('coding-agent-process-summary'));
+        expect(screen.getByTestId('coding-agent-tool-line').textContent).toContain('go test');
+    });
+
     it('names the summary thinking only while that thought is the live step', () => {
         const now = Date.now();
         const thought = {
@@ -2735,6 +2797,7 @@ describe('CodingAgentProgressStatus', () => {
                 openThoughtIndex={-1}
             />,
         );
+        fireEvent.click(screen.getByTestId('coding-agent-process-summary'));
         const thought = screen.getByTestId('coding-agent-thought');
         const thoughtSummary = thought.querySelector('summary');
         expect(thoughtSummary?.className).toContain('assistant-reasoning-summary--plain');

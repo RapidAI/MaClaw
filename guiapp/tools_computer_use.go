@@ -3,6 +3,7 @@ package guiapp
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -524,6 +525,13 @@ func cuPolicyWindowTitle(x, y int) string {
 	return accessibility.ForegroundWindowTitle()
 }
 
+func cuPolicyWindowID(x, y int) uint64 {
+	if id := accessibility.WindowIDAtPoint(x, y); id != 0 {
+		return id
+	}
+	return accessibility.ForegroundWindowID()
+}
+
 // cuObserveResult returns the observation text together with whether the
 // observation actually succeeded.
 //
@@ -959,6 +967,17 @@ func cuPostActionSettle() {
 	_ = obs.WaitForIdle(300*time.Millisecond, 80*time.Millisecond)
 }
 
+// cuPersonHandoff waits while the person finishes a pay or secret step.
+// The fallback is the immediate refusal used when the desktop has no handoff UI.
+// Neither string contains the text the model tried to type.
+func cuPersonHandoff(reason, title, fallback string) string {
+	err := computeruse.OfferDesktopHandoff(reason, title)
+	if err == nil || errors.Is(err, computeruse.ErrDesktopHandoffOff) {
+		return fallback
+	}
+	return err.Error()
+}
+
 func cuHandleFocus(args map[string]interface{}) string {
 	if msg := cuGuardDisabled("computer_focus"); msg != "" {
 		return msg
@@ -1133,6 +1152,39 @@ func cuMarkSemantic(mark *computeruse.MarkedElement) bool {
 	return false
 }
 
+// cuNoteClickTarget remembers the control a click landed on so a later
+// Enter or untargeted type knows which field has the caret.
+func cuNoteClickTarget(sess *computeruse.Session, mark *computeruse.MarkedElement, x, y int, window string, windowID uint64) {
+	if sess == nil {
+		return
+	}
+	name := ""
+	kind := ""
+	// A ref already knows its window from observe. Do not replace an empty
+	// one with the live title under the point: that point can sit in another
+	// window while the control itself was not attributed.
+	win := ""
+	id := uint64(0)
+	if mark != nil {
+		name = mark.Name
+		kind = mark.Type
+		win = mark.Window
+		id = mark.WindowID
+	} else {
+		win = window
+		id = windowID
+	}
+	if strings.TrimSpace(name) == "" {
+		name = sess.ElementNameAtScreen(x, y)
+		kind = ""
+	}
+	if strings.TrimSpace(name) == "" {
+		name = sess.OCRTextAtScreen(x, y)
+		kind = ""
+	}
+	sess.NoteActuatedID(name, win, kind, id)
+}
+
 func cuMarkToA11y(mark *computeruse.MarkedElement, screenX, screenY int) *accessibility.Element {
 	return &accessibility.Element{
 		Role:         mark.Type,
@@ -1210,6 +1262,28 @@ func cuHandleClick(args map[string]interface{}) string {
 	if policyTitle == "" {
 		policyTitle = cuPolicyWindowTitle(x, y)
 	}
+	payNames := make([]string, 0, 3)
+	if mark != nil && strings.TrimSpace(mark.Name) != "" {
+		payNames = append(payNames, mark.Name)
+	}
+	if target := strings.TrimSpace(guiStrArg(args, "target", "")); target != "" {
+		payNames = append(payNames, target)
+	}
+	if hit := sess.ElementNameAtScreen(x, y); hit != "" {
+		payNames = append(payNames, hit)
+	}
+	if hit := sess.OCRTextAtScreen(x, y); hit != "" {
+		payNames = append(payNames, hit)
+	}
+	for _, payName := range payNames {
+		refusal := browser.DesktopPayClickRefusal(payName)
+		if refusal == "" {
+			continue
+		}
+		sess.RecordAction("click", detail, false, "checkout", false)
+		emitComputerUseActionUI("click", detail, false, "checkout")
+		return "computer_click blocked: " + cuPersonHandoff("checkout", payName, refusal)
+	}
 	// Policy before BeginAction: a blocked click must not consume step budget.
 	if err := sess.CheckClickPolicy(x, y, policyTitle); err != nil {
 		sess.RecordAction("click", detail, false, err.Error(), false)
@@ -1240,6 +1314,11 @@ func cuHandleClick(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_click failed: %v", err)
 	}
 	sess.RecordAction("click", detail+" via "+strategy, true, "", true)
+	policyID := uint64(0)
+	if mark == nil {
+		policyID = cuPolicyWindowID(x, y)
+	}
+	cuNoteClickTarget(sess, mark, x, y, policyTitle, policyID)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("click", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
@@ -1270,22 +1349,56 @@ func cuHandleType(args map[string]interface{}) string {
 	// Typing sends keystrokes to whatever window is foreground — gate it with
 	// the same blocked-window/target-app policy as clicks. Policy before
 	// BeginAction so a blocked type must not consume step budget.
-	if err := sess.CheckClickPolicy(0, 0, accessibility.ForegroundWindowTitle()); err != nil {
+	foreground := accessibility.ForegroundWindowTitle()
+	if err := sess.CheckClickPolicy(0, 0, foreground); err != nil {
 		sess.RecordAction("type", detail, false, err.Error(), false)
 		emitComputerUseActionUI("type", detail, false, err.Error())
 		return fmt.Sprintf("computer_type blocked: %v", err)
 	}
-	if err := sess.BeginAction("type", detail); err != nil {
-		return fmt.Sprintf("computer_type: %v", err)
+	if crop, stale := sess.ObserveDocumentStale(foreground, accessibility.ForegroundWindowID()); stale {
+		sess.RecordAction("type", "stale-document", false, "stale-document", false)
+		emitComputerUseActionUI("type", "stale-document", false, "stale-document")
+		return fmt.Sprintf("computer_type: foreground document changed (observed %q, now %q); call computer_observe again", crop, foreground)
 	}
-	strategy := "pixel"
+	var typeEl *computeruse.MarkedElement
+	var typeX, typeY int
 	if ref != "" {
 		x, y, el, err := sess.ResolveClickRef(ref)
 		if err != nil {
 			sess.RecordAction("type", detail, false, err.Error(), false)
 			return fmt.Sprintf("computer_type: %v", err)
 		}
+		typeEl, typeX, typeY = el, x, y
 		detail = fmt.Sprintf("ref=%s name=%q chars=%d", el.Ref, el.Name, len([]rune(text)))
+		if refusal := browser.DesktopSecretTypeRefusal(el.Name); refusal != "" {
+			sess.RecordAction("type", detail, false, "secret", false)
+			emitComputerUseActionUI("type", detail, false, "secret")
+			return "computer_type blocked: " + cuPersonHandoff("secret", el.Name, refusal)
+		}
+	} else {
+		// Untargeted typing goes to the caret. The last control the agent
+		// clicked is that caret when the window title is not itself a dialog.
+		if name, _ := sess.ActuatedForKey(foreground, accessibility.ForegroundWindowID()); name != "" {
+			if refusal := browser.DesktopSecretTypeRefusal(name); refusal != "" {
+				sess.RecordAction("type", "secret", false, "secret", false)
+				emitComputerUseActionUI("type", "secret", false, "secret")
+				return "computer_type blocked: " + cuPersonHandoff("secret", name, refusal)
+			}
+		}
+		if computeruse.DesktopHandoffEnabled() {
+			if refusal := browser.DesktopSecretSurfaceRefusal(foreground); refusal != "" {
+				sess.RecordAction("type", "secret", false, "secret", false)
+				emitComputerUseActionUI("type", "secret", false, "secret")
+				return "computer_type blocked: " + cuPersonHandoff("secret", foreground, refusal)
+			}
+		}
+	}
+	if err := sess.BeginAction("type", detail); err != nil {
+		return fmt.Sprintf("computer_type: %v", err)
+	}
+	strategy := "pixel"
+	if typeEl != nil {
+		x, y, el := typeX, typeY, typeEl
 		// Gate the focus click itself: the element may live in a blocked window
 		// that is not the current foreground.
 		focusTitle := el.Window
@@ -1321,6 +1434,9 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
+	if typeEl != nil {
+		sess.NoteActuatedID(typeEl.Name, typeEl.Window, typeEl.Type, typeEl.WindowID)
+	}
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("type", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
@@ -1351,10 +1467,34 @@ func cuHandleKey(args map[string]interface{}) string {
 	// Keys go to the foreground window (enter/space can confirm dialogs) — gate
 	// with the same blocked-window/target-app policy as clicks. Policy before
 	// BeginAction so a blocked key press must not consume step budget.
-	if err := sess.CheckClickPolicy(0, 0, accessibility.ForegroundWindowTitle()); err != nil {
+	foreground := accessibility.ForegroundWindowTitle()
+	if err := sess.CheckClickPolicy(0, 0, foreground); err != nil {
 		sess.RecordAction("key", detail, false, err.Error(), false)
 		emitComputerUseActionUI("key", detail, false, err.Error())
 		return fmt.Sprintf("computer_key blocked: %v", err)
+	}
+	if computeruse.DesktopHandoffEnabled() {
+		if refusal := browser.DesktopSecretSurfaceRefusal(foreground); refusal != "" {
+			sess.RecordAction("key", "secret", false, "secret", false)
+			emitComputerUseActionUI("key", "secret", false, "secret")
+			return "computer_key blocked: " + cuPersonHandoff("secret", foreground, refusal)
+		}
+	}
+	fgID := accessibility.ForegroundWindowID()
+	// The same window can navigate. Enter and Space must not use the previous
+	// page's labels, which often have no pay button yet.
+	if browser.DesktopSubmitKey(detail) {
+		if crop, stale := sess.ObserveDocumentStale(foreground, fgID); stale {
+			sess.RecordAction("key", "stale-document", false, "stale-document", false)
+			emitComputerUseActionUI("key", "stale-document", false, "stale-document")
+			return fmt.Sprintf("computer_key: foreground document changed (observed %q, now %q); call computer_observe again", crop, foreground)
+		}
+	}
+	focused, kind := sess.ActuatedForKey(foreground, fgID)
+	if reason, title, refusal := browser.DesktopPayKeyRefusal(detail, focused, kind, sess.KeySurfaceLabelsFor(foreground, fgID)); refusal != "" {
+		sess.RecordAction("key", reason, false, reason, false)
+		emitComputerUseActionUI("key", reason, false, reason)
+		return "computer_key blocked: " + cuPersonHandoff(reason, title, refusal)
 	}
 	if err := sess.BeginAction("key", detail); err != nil {
 		return fmt.Sprintf("computer_key: %v", err)

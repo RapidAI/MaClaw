@@ -23,6 +23,10 @@ const (
 // ErrProxyModeLocked is returned when a user changes a mode the tenant locked.
 var ErrProxyModeLocked = errors.New("desktop proxy mode is locked by the tenant administrator")
 
+// ErrIntranetProxyDirect is returned when a user changes the mode of a
+// desktopd they installed. That desktop connects from their own machine.
+var ErrIntranetProxyDirect = errors.New("intranet desktop connects directly from that machine")
+
 // NormalizeProxyMode accepts "", proxy (alias always), direct and smart.
 func NormalizeProxyMode(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -47,7 +51,11 @@ type ProxyModeView struct {
 	// TenantDefault is the tenant default ("" = smart).
 	TenantDefault string `json:"tenant_default"`
 	// Locked means the tenant forces TenantDefault and users cannot change it.
+	// An intranet desktop also locks the mode: it is always direct.
 	Locked bool `json:"locked"`
+	// Intranet means this user's desktop is a desktopd they installed from
+	// the GUI. Its traffic leaves from that machine, not the cloud proxy.
+	Intranet bool `json:"intranet,omitempty"`
 	// Applied is false when the choice was stored but the desktop host could
 	// not be told yet (it picks the mode up on the next desktop open).
 	Applied bool   `json:"applied"`
@@ -96,6 +104,65 @@ func (p *Pool) effectiveProxyMode(ctx context.Context, tenantID, userID string) 
 	return resolveProxyMode(rec, userID).Mode
 }
 
+// desktopEgressMode is the mode sent to the desktopd we actually resolved.
+// An intranet machine always dials from itself, even when a department
+// assignment landed on it. A cloud machine keeps the user's mode.
+func (p *Pool) desktopEgressMode(ctx context.Context, tenantID, userID string, server Server) string {
+	if serverIntranet(server) {
+		return ProxyModeDirect
+	}
+	return p.effectiveProxyMode(ctx, tenantID, userID)
+}
+
+// serverIntranet reports a desktopd the user installed from the GUI.
+// OwnerUserID is the older mark; Intranet is set on attach now.
+func serverIntranet(server Server) bool {
+	return server.Intranet || strings.TrimSpace(server.OwnerUserID) != ""
+}
+
+// intranetDesktop reports whether the user's own assignment is a desktopd
+// they installed. Department and global assignments are the tenant's
+// desktops and stay on the cloud proxy policy.
+func intranetDesktop(rec record, userID string) bool {
+	id := matchAssignment(rec.Assignments, ScopeUser, proxyModeUser(userID))
+	if id == "" {
+		return false
+	}
+	for _, server := range rec.Servers {
+		if server.ID == id && serverIntranet(server) {
+			return true
+		}
+	}
+	return false
+}
+
+// UserDesktopIntranet reports whether this user's own desktop assignment is
+// a desktopd they installed. Switching that assignment back to the cloud
+// desktop reports false. Opening a desktop uses the same rule on the
+// resolved machine.
+func (p *Pool) UserDesktopIntranet(ctx context.Context, tenantID, userID string) bool {
+	if p == nil || proxyModeUser(userID) == "" {
+		return false
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return false
+	}
+	return intranetDesktop(rec, userID)
+}
+
+func applyIntranetProxy(rec record, userID string, view ProxyModeView) ProxyModeView {
+	if !intranetDesktop(rec, userID) {
+		return view
+	}
+	view.Intranet = true
+	view.Mode = ProxyModeDirect
+	view.Locked = true
+	return view
+}
+
 // ProxyMode reports one user's desktop proxy setting.
 func (p *Pool) ProxyMode(ctx context.Context, tenantID, userID string) (ProxyModeView, error) {
 	if proxyModeUser(userID) == "" {
@@ -107,7 +174,7 @@ func (p *Pool) ProxyMode(ctx context.Context, tenantID, userID string) (ProxyMod
 	if err != nil {
 		return ProxyModeView{}, err
 	}
-	return resolveProxyMode(rec, userID), nil
+	return applyIntranetProxy(rec, userID, resolveProxyMode(rec, userID)), nil
 }
 
 // SetUserProxyMode stores the user's desktop_proxy_mode ("" = follow the
@@ -127,6 +194,11 @@ func (p *Pool) SetUserProxyMode(ctx context.Context, tenantID, userID, mode stri
 	if err != nil {
 		p.mu.Unlock()
 		return ProxyModeView{}, err
+	}
+	if intranetDesktop(rec, user) {
+		view := applyIntranetProxy(rec, user, resolveProxyMode(rec, user))
+		p.mu.Unlock()
+		return view, ErrIntranetProxyDirect
 	}
 	if rec.ProxyModeLocked {
 		p.mu.Unlock()

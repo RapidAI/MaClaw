@@ -23,7 +23,7 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./attachmentClassification";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
-import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+import { firstVEStreamText, projectAnswerSlices, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 import { applyUserScrollFollow, isAwayFromBottom, tryPinAssistantOutput } from "./assistantOutputScrollLogic";
 import { localizeAIAssistantError } from "./aiAssistantI18n";
 import { createStreamCoalescer, type StreamCoalescer } from "./streamCoalescer";
@@ -1569,14 +1569,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             hideAwaitingReply();
             streamChunkCoalescerRef.current?.flush("ve");
             setState((prev) => {
-                // A MaClawSrv delivery failure is transported as the content
-                // of the terminal stream_end envelope.  Include that payload
-                // in the transcript instead of dropping it (normal successful
-                // stream_end events carry an empty content string).
-                const terminalContent = String(data?.content ?? data?.chunk ?? "");
-                const finalContent = prev.streamContent
-                    ? (terminalContent ? `${prev.streamContent}\n\n${terminalContent}` : prev.streamContent)
-                    : terminalContent;
+                // stream_end carries the settled ending. Fold it onto the opening
+                // already on screen. A delivery failure stays a separate notice.
+                const terminalContent = visibleVEStreamContent(firstVEStreamText(data?.content, data?.chunk));
+                const finalContent = projectAnswerSlices(prev.streamContent, terminalContent);
                 const endAttachments = normalizeVEMessageAttachments(data?.attachments);
                 const attachments = endAttachments.length ? mergeVEMessageAttachments(prev.streamAttachments, endAttachments) : prev.streamAttachments;
                 if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [], activityPhase: "", activityName: "" };
@@ -2880,7 +2876,7 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         if (kind === "stream_end") {
             if (streamIndex >= 0 && (!fromId || sameHistorySender(streamFromId, fromId))) {
                 const existing = out[streamIndex];
-                if (content) existing.content += content;
+                if (content) existing.content = projectAnswerSlices(existing.content, content);
                 existing.attachments = mergeVEMessageAttachments(existing.attachments || [], attachments);
                 streamIndex = -1;
                 streamFromId = "";

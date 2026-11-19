@@ -5,19 +5,23 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	contract "github.com/RapidAI/CodeClaw/corelib/structureddata"
 )
 
+var maclawAppApprovalRegistryMu sync.Mutex
+
 // RecordMaclawAppApprovalInstance persists one approval instance snapshot for a
 // MaClaw approval app. It is the GUI-facing approval instance cache; DataSrv or
 // workflow sync can later write the same shape.
 func (a *App) RecordMaclawAppApprovalInstance(instance maclawAppApprovalInstance) (maclawAppApprovalInstance, error) {
+	maclawAppApprovalRegistryMu.Lock()
+	defer maclawAppApprovalRegistryMu.Unlock()
 	instance = normalizeMaclawAppApprovalInstanceFields(instance)
 	if instance.AppID == "" {
 		return maclawAppApprovalInstance{}, fmt.Errorf("app_id is required")
@@ -2315,41 +2319,11 @@ func (a *App) maclawAppApprovalRegistryPath() string {
 }
 
 func (a *App) readMaclawAppApprovalRegistry() (maclawAppApprovalRegistry, error) {
-	path := a.maclawAppApprovalRegistryPath()
-	registry := maclawAppApprovalRegistry{Schema: "maclaw.app.approvals.v1"}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return registry, nil
-	}
-	if err != nil {
-		return registry, err
-	}
-	if len(data) == 0 {
-		return registry, nil
-	}
-	if err := json.Unmarshal(data, &registry); err != nil {
-		return registry, fmt.Errorf("decode maclaw app approval registry: %w", err)
-	}
-	if registry.Schema == "" {
-		registry.Schema = "maclaw.app.approvals.v1"
-	}
-	return registry, nil
+	return a.readMaclawAppApprovalRegistryDB()
 }
 
 func (a *App) writeMaclawAppApprovalRegistry(registry maclawAppApprovalRegistry) error {
-	path := a.maclawAppApprovalRegistryPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(registry, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return a.writeMaclawAppApprovalRegistryDB(registry)
 }
 
 func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance) maclawAppApprovalInstance {

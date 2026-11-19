@@ -2,13 +2,13 @@
 package commands
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,13 +41,16 @@ func (c *HubClient) Connect() error {
 	if err != nil {
 		return fmt.Errorf("invalid hub URL: %w", err)
 	}
-	q := u.Query()
-	q.Set("token", c.token)
-	u.RawQuery = q.Encode()
-
+	if err := remote.ValidateHubURL(u.String()); err != nil {
+		return err
+	}
 	dialer := websocket.Dialer{HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout}
-	if strings.HasPrefix(u.Scheme, "wss") {
-		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	if u.Scheme == "wss" {
+		tlsConfig, err := remote.HubTLSConfig()
+		if err != nil {
+			return fmt.Errorf("invalid Hub TLS configuration: %w", err)
+		}
+		dialer.TLSClientConfig = tlsConfig
 	}
 	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {

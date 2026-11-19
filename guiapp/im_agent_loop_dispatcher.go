@@ -34,6 +34,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Earlier pre-loop phases may still short-circuit and therefore must not
 	// advertise steering acceptance.
 	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
+	h.noteDesktopPetTurnStart(userID, ctx)
+	defer func() { h.noteDesktopPetTurnEnd(userID, ctx, result) }()
 	if h.app != nil {
 		defer h.app.noteMainBotTurn(userText)()
 	}

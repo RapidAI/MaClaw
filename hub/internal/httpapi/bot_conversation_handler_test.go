@@ -70,8 +70,12 @@ func TestBotConversationRouteSyncsClientsOfOnePerson(t *testing.T) {
 		"client_id": "client-A",
 		"entries": []map[string]any{{"bot_id": "bot_a", "id": "m-1", "kind": "message", "data": map[string]any{"role": "user", "content": "你好"}}},
 	})
-	if code != http.StatusOK || out["head"] != float64(1) {
+	assigned, _ := out["assigned"].([]any)
+	if code != http.StatusOK || out["head"] != float64(1) || len(assigned) != 1 {
 		t.Fatalf("write %d %v", code, out)
+	}
+	if assigned[0].(map[string]any)["id"] != "m-1" || assigned[0].(map[string]any)["created_seq"] != float64(1) {
+		t.Fatalf("assigned %v", assigned)
 	}
 	code, out = call(http.MethodGet, "/api/v1/bots/conversation?after=0", "tok-alice", "m2", nil)
 	entries, _ := out["entries"].([]any)

@@ -4,6 +4,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
     PostDesktopBotCross: vi.fn(async () => ({ posted: false, notes: [] })),
+    // Named bindings the workspace's voice input and voice settings modules
+    // import at module level; never called while these tests run.
+    SpeakDesktopBotReply: vi.fn(async () => undefined),
+    SpeakPlainText: vi.fn(async () => undefined),
+    LoadConfig: vi.fn(async () => ({})),
+    PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => patch),
+    DiarizeAndTranscribeAudioBase64: vi.fn(async () => []),
+    TranscribeAudioBase64: vi.fn(async () => ''),
+    IsASRReady: vi.fn(async () => false),
+    NormalizeVoiceCommand: vi.fn(async () => ({})),
+    CorrectASRText: vi.fn(async (text: string) => text),
+    SetDesktopPetState: vi.fn(async () => undefined),
+    NotifyDesktopPetMicBusy: vi.fn(async () => undefined),
+    GetTTSEnabled: vi.fn(async () => false),
+    SetTTSEnabled: vi.fn(async () => undefined),
+    GetTTSVoiceID: vi.fn(async () => 'zf_xiaoyi'),
+    SetTTSVoiceID: vi.fn(async () => undefined),
+    SynthesizeTTSPreview: vi.fn(async () => 'data:audio/wav;base64,'),
 }));
 
 import { desktopBotBubbleBody, handleDesktopBotReport, handleDesktopBotResult } from './DesktopBotWorkspace';

@@ -10,7 +10,8 @@ import { DesktopBotAccess, ListBackgroundLoops, ListDesktopBots, StopBackgroundL
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { resolveSessionTab, visibleSessionTabs, type SessionTab } from "./sessionTabs";
 import { startVisibleInterval } from "../../utils/visibleInterval";
-import { currentInProgressBotTasks, type InProgressBotTask } from "../bots/desktopBots";
+import { type InProgressBotTask } from "../bots/desktopBots";
+import { currentLocalManagementTasks, subscribeLocalManagementTasks, tasksForBotMonitor } from "../bots/localManagementTasks";
 import { subscribeBotAccess } from "../bots/botOpenGate";
 
 // Strip ANSI escape sequences and non-printable control characters from terminal output
@@ -81,7 +82,7 @@ function sameBotTasks(current: InProgressBotTask[], next: InProgressBotTask[]): 
     for (let index = 0; index < current.length; index++) {
         const left = current[index];
         const right = next[index];
-        if (left.id !== right.id || left.botId !== right.botId || left.status !== right.status || left.phase !== right.phase || left.text !== right.text || left.startedAt !== right.startedAt) return false;
+        if (left.id !== right.id || left.botId !== right.botId || left.status !== right.status || left.phase !== right.phase || left.text !== right.text || left.startedAt !== right.startedAt || left.local !== right.local || left.localKind !== right.localKind) return false;
     }
     return true;
 }
@@ -127,6 +128,7 @@ export function RemoteSessionList(props: Props) {
     const [botAllowed, setBotAllowed] = useState(false);
     const [botAccessKnown, setBotAccessKnown] = useState(false);
     const [botTasks, setBotTasks] = useState<InProgressBotTask[]>([]);
+    const [localTaskCount, setLocalTaskCount] = useState(0);
     const [botNames, setBotNames] = useState<Record<string, string>>({});
     const botAccessSeq = useRef(0);
     const botGrantedRef = useRef(false);
@@ -186,27 +188,29 @@ export function RemoteSessionList(props: Props) {
         };
     }, []);
 
-    useEffect(() => {
-        if (!botAccessKnown || botAllowed || sessionTab !== "bot") return;
-        setSessionTab("background");
-        onSessionTabChange?.("background");
-    }, [botAccessKnown, botAllowed, sessionTab, onSessionTabChange]);
+    const showBotTab = botAllowed || localTaskCount > 0;
 
     useEffect(() => {
-        if (!botAllowed) {
-            setBotTasks(current => current.length === 0 ? current : []);
-            return;
-        }
+        if (!botAccessKnown || showBotTab || sessionTab !== "bot") return;
+        setSessionTab("background");
+        onSessionTabChange?.("background");
+    }, [botAccessKnown, showBotTab, sessionTab, onSessionTabChange]);
+
+    useEffect(() => {
         let cancelled = false;
         const loadTasks = () => {
             if (cancelled) return;
-            const next = currentInProgressBotTasks(botUserId, Date.now());
+            const next = botAllowed ? tasksForBotMonitor(botUserId, Date.now()) : currentLocalManagementTasks();
             setBotTasks(current => current === next || sameBotTasks(current, next) ? current : next);
+            const localCount = currentLocalManagementTasks().length;
+            setLocalTaskCount(current => current === localCount ? current : localCount);
         };
         loadTasks();
-        const stopTasks = startVisibleInterval(loadTasks, 2000);
+        const stopLocal = subscribeLocalManagementTasks(loadTasks);
+        const stopTasks = botAllowed ? startVisibleInterval(loadTasks, 2000) : () => {};
         return () => {
             cancelled = true;
+            stopLocal();
             stopTasks();
         };
     }, [botAllowed, botUserId]);
@@ -672,8 +676,8 @@ export function RemoteSessionList(props: Props) {
         );
     };
 
-    const tabs = useMemo(() => visibleSessionTabs(botAllowed), [botAllowed]);
-    const shownTab: SessionTab = sessionTab === "bot" && !botAllowed ? "background" : sessionTab;
+    const tabs = useMemo(() => visibleSessionTabs(showBotTab), [showBotTab]);
+    const shownTab: SessionTab = sessionTab === "bot" && !showBotTab ? "background" : sessionTab;
     const isBackgroundTab = shownTab === "background";
     const isScheduledTab = shownTab === "scheduled";
     const isPassthroughTab = shownTab === "passthrough";
@@ -755,7 +759,7 @@ export function RemoteSessionList(props: Props) {
                     >
                         {localizeText("Passthrough Tasks", "直通任务", "直通任務")}
                     </button>
-                    {botAllowed && (
+                    {showBotTab && (
                     <button
                         id="remote-session-tab-bot"
                         className="remote-session-tab"

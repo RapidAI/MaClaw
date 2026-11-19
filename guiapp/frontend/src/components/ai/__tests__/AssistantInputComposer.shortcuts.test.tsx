@@ -185,3 +185,75 @@ describe("AssistantInputComposer keyboard shortcuts", () => {
         expect(updateInputValue).toHaveBeenLastCalledWith("lat\nest");
     });
 });
+
+describe("AssistantInputComposer IME composition", () => {
+    it("buffers composing keystrokes locally and syncs upstream once on compositionend", () => {
+        const { updateInputValue, rememberHistoryEdit } = renderComposer("");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: "w" } });
+        fireEvent.change(input, { target: { value: "wtt" } });
+        expect(updateInputValue).not.toHaveBeenCalled();
+        expect(rememberHistoryEdit).not.toHaveBeenCalled();
+        // The controlled value tracks the DOM mid-composition so React's
+        // controlled-input restore never writes a stale value back.
+        expect(input.value).toBe("wtt");
+
+        input.value = "汉";
+        fireEvent.compositionEnd(input);
+
+        expect(updateInputValue).toHaveBeenCalledTimes(1);
+        expect(updateInputValue).toHaveBeenLastCalledWith("汉", { deferParent: true });
+        expect(rememberHistoryEdit).toHaveBeenLastCalledWith("汉");
+    });
+
+    it("flushes through the normal path when a non-composing input arrives without compositionend", () => {
+        const { updateInputValue } = renderComposer("");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: "wt" } });
+        expect(updateInputValue).not.toHaveBeenCalled();
+
+        // A committed (non-composing) input after a dropped compositionend.
+        // setNativeValue keeps React's value tracker stale so the input event
+        // actually dispatches onChange, like a real DOM mutation.
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        nativeSetter.call(input, "汉");
+        const committed = new Event("input", { bubbles: true });
+        Object.defineProperty(committed, "isComposing", { value: false });
+        fireEvent(input, committed);
+
+        expect(updateInputValue).toHaveBeenLastCalledWith("汉", { deferParent: true });
+    });
+
+    it("buffers when the first composing input arrives before compositionstart", () => {
+        const { updateInputValue } = renderComposer("");
+        const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+        // Some WebViews deliver the first composing input before
+        // compositionstart; it must seed the buffer, not flush upstream.
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+        nativeSetter.call(input, "w");
+        const composing = new Event("input", { bubbles: true });
+        Object.defineProperty(composing, "isComposing", { value: true });
+        fireEvent(input, composing);
+
+        expect(updateInputValue).not.toHaveBeenCalled();
+        expect(input.value).toBe("w");
+
+        nativeSetter.call(input, "汉");
+        fireEvent.compositionEnd(input);
+        expect(updateInputValue).toHaveBeenLastCalledWith("汉", { deferParent: true });
+    });
+
+    it("does not send on Enter while composing", () => {
+        const { handleSend } = renderComposer("");
+        const input = screen.getByRole("textbox");
+
+        fireEvent.compositionStart(input);
+        expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(true);
+        expect(handleSend).not.toHaveBeenCalled();
+    });
+});

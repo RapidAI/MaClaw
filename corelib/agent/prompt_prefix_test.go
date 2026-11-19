@@ -173,6 +173,29 @@ func TestPromptPrefixIdlePinExpiresAndRebuilds(t *testing.T) {
 	}
 }
 
+func TestDesktopModeChangeRewritesThePinnedPrompt(t *testing.T) {
+	ResetPromptPrefixPins()
+	t.Cleanup(ResetPromptPrefixPins)
+	meta := PromptPrefixMeta{ConversationID: "conv-desk", BotID: "bot-1", Provider: "openai", Model: "m", DesktopMode: "desktop"}
+	first := PrepareConversationPrefix(meta, fullPrefixInput("desktop-tools", "you have a desktop", "memory", "第一句", "user:旧"))
+	if !first.Fresh || first.Send.System != "you have a desktop" {
+		t.Fatalf("first = fresh %v system %q", first.Fresh, first.Send.System)
+	}
+	same := PrepareConversationPrefix(meta, fullPrefixInput("other-tools", "a different desktop prompt", "memory", "第一句", "user:旧"))
+	if same.Fresh || same.Send.System != "you have a desktop" {
+		t.Fatalf("same mode rebuilt the pin: fresh=%v system=%q", same.Fresh, same.Send.System)
+	}
+	meta.DesktopMode = "none"
+	next := PrepareConversationPrefix(meta, fullPrefixInput("chat-tools", "you have no computer", "memory", "第一句", "user:旧"))
+	if !next.Fresh || next.Send.System != "you have no computer" || next.Send.Tools != "chat-tools" {
+		t.Fatalf("mode change kept the desktop prompt: fresh=%v send=%#v", next.Fresh, next.Send)
+	}
+	again := PrepareConversationPrefix(meta, fullPrefixInput("chat-tools", "you have no computer", "memory", "第一句", "user:旧"))
+	if again.Fresh || again.Send.System != "you have no computer" {
+		t.Fatalf("none pin did not stick: fresh=%v system=%q", again.Fresh, again.Send.System)
+	}
+}
+
 func fullPrefixInput(tools, system, memorySnapshot, first, history string) PromptPrefixInput {
 	return PromptPrefixInput{
 		Segments: PromptPrefixSegments{

@@ -1362,6 +1362,8 @@ func (h *IMMessageHandler) clearWorkflowReviewCarry(userID string) {
 	h.workflowAgentLoopMarker.Delete(userID)
 	h.stashedPhasePrompt.Delete(userID)
 	h.pendingV2SubAgentExecution.Delete(userID)
+	// Review starts on messages that are not the retry command. Directed
+	// step ids stay until that command takes them.
 	h.pendingCodingExecRetryAction.Delete(userID)
 }
 

@@ -32,6 +32,24 @@ import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } f
 export type VoiceInputState = "idle" | "listening" | "transcribing";
 export type VoiceInputSource = "hold" | "continuous";
 
+export interface VoiceInputOptions {
+    /** Desktop-pet integration: state emissions, mic-busy flag, and the TTS
+     *  "didn't hear" retry prompt. Default true. Surfaces that are not the
+     *  assistant (e.g. the desktop-bot chat) pass false so recording there
+     *  does not animate or speak through the pet. */
+    petIntegration?: boolean;
+    /** Subscribe to START_VOICE_INPUT_EVENT (desktop pet click). Default true.
+     *  Only one mounted consumer should enable this or every listener opens
+     *  its own microphone on a single pet click. */
+    externalStartEvent?: boolean;
+    /** Continuous listening runs NormalizeVoiceCommand and drops speech the
+     *  LLM judges "not a command". Default true — the assistant ignores
+     *  chatter between commands. Consumers that must send every recognized
+     *  utterance verbatim (desktop-bot chat) pass false: continuous then
+     *  takes the same CorrectASRText cleanup path as hold-to-talk. */
+    commandFilter?: boolean;
+}
+
 /** Window event that asks the assistant panel to start voice input (e.g. desktop pet click). */
 export const START_VOICE_INPUT_EVENT = "maclaw:start-voice-input";
 
@@ -614,6 +632,7 @@ function isStableContinuousSpeech(segment: Pick<PendingSpeechSegment, "sampleRat
 export function useVoiceInput(
     onTranscribed: (text: string, source: VoiceInputSource) => void | Promise<void>,
     inputDeviceId?: string,
+    options?: VoiceInputOptions,
 ): UseVoiceInputResult {
     const [state, setState] = useState<VoiceInputState>("idle");
     const [asrReady, setAsrReady] = useState(false);
@@ -663,6 +682,18 @@ export function useVoiceInput(
     inputDeviceIdRef.current = inputDeviceId;
     const onTranscribedRef = useRef(onTranscribed);
     onTranscribedRef.current = onTranscribed;
+    const petIntegrationRef = useRef(options?.petIntegration !== false);
+    petIntegrationRef.current = options?.petIntegration !== false;
+    const externalStartRef = useRef(options?.externalStartEvent !== false);
+    externalStartRef.current = options?.externalStartEvent !== false;
+    const commandFilterRef = useRef(options?.commandFilter !== false);
+    commandFilterRef.current = options?.commandFilter !== false;
+    const petSignal = useCallback((...args: Parameters<typeof emitPetState>) => {
+        if (petIntegrationRef.current) emitPetState(...args);
+    }, []);
+    const petMicBusy = useCallback((busy: boolean) => {
+        if (petIntegrationRef.current) void NotifyDesktopPetMicBusy(busy).catch(() => {});
+    }, []);
 
     // Adaptive noise floor state
     const noiseFloorRef = useRef(NOISE_FLOOR_DEFAULT); // start with headset default, refined by calibration
@@ -724,6 +755,7 @@ export function useVoiceInput(
     }, []);
 
     const promptPetRetryOnNoHear = useCallback((reason: string) => {
+        if (!petIntegrationRef.current) return;
         if (!petAutoRetryOnNoHearRef.current || !petVoiceReadbackEnabledRef.current) return;
         const now = Date.now();
         if (now - lastPetRetryPromptAtRef.current < 5000) return;
@@ -838,7 +870,7 @@ export function useVoiceInput(
         pendingTranscriptionsRef.current++;
         if (!activeRef.current) {
             setState("transcribing");
-            emitPetState("thinking", `asr:${source}`, 15000);
+            petSignal("thinking", `asr:${source}`, 15000);
         }
 
         const runTranscription = async () => {
@@ -909,12 +941,16 @@ export function useVoiceInput(
                     let dispatchText = labelled.text;
                     if (voiceCorrectionEnabledRef.current) {
                         try {
-                            if (source === "hold") {
+                            // Consumers without the command filter (desktop
+                            // bot) take the CorrectASRText path even for
+                            // continuous speech — every utterance must reach
+                            // them, not just LLM-judged "commands".
+                            if (source === "hold" || !commandFilterRef.current) {
                                 const corrected = normalizeASRText(await CorrectASRText(labelled.text));
                                 if (corrected && shouldDispatchASRText(corrected)) {
                                     dispatchText = corrected;
                                 }
-                                voiceDebug("hold ASR corrected", { input: labelled.text, corrected: dispatchText });
+                                voiceDebug("ASR corrected", { source, input: labelled.text, corrected: dispatchText });
                             } else {
                                 const normResult = await NormalizeVoiceCommand(labelled.text) as {
                                     is_command?: boolean;
@@ -970,17 +1006,17 @@ export function useVoiceInput(
                     pendingTranscriptionsRef.current = 0;
                     if (activeRef.current) {
                         setState("listening");
-                        emitPetState("listening", source === "hold" ? "asr:hold-resume" : "asr:continuous-resume");
+                        petSignal("listening", source === "hold" ? "asr:hold-resume" : "asr:continuous-resume");
                     } else {
                         setState("idle");
-                        emitPetState("idle", "asr:done");
+                        petSignal("idle", "asr:done");
                     }
                 }
             }
         };
 
         transcriptionQueueRef.current = transcriptionQueueRef.current.then(runTranscription, runTranscription);
-    }, [promptPetRetryOnNoHear, setErrorAuto]);
+    }, [petSignal, promptPetRetryOnNoHear, setErrorAuto]);
 
     const resetFallbackBuffer = useCallback(() => {
         fallbackChunksRef.current = [];
@@ -1241,8 +1277,8 @@ export function useVoiceInput(
         if (sourceRef.current) { sourceRef.current.disconnect(); sourceRef.current = null; }
         if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
         if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
-        void NotifyDesktopPetMicBusy(false).catch(() => {});
-    }, []);
+        petMicBusy(false);
+    }, [petMicBusy]);
 
     useEffect(() => () => {
         cleanup();
@@ -1263,12 +1299,12 @@ export function useVoiceInput(
         cleanup();
         if (pendingTranscriptionsRef.current <= 0) {
             setState("idle");
-            emitPetState("idle", "asr:hold-stop");
+            petSignal("idle", "asr:hold-stop");
         } else {
-            emitPetState("thinking", "asr:hold-transcribing", 15000);
+            petSignal("thinking", "asr:hold-transcribing", 15000);
         }
         setDuration(0);
-    }, [cleanup, flushHoldBuffer]);
+    }, [cleanup, flushHoldBuffer, petSignal]);
 
     /** Open microphone and start continuous listening. */
     const startListening = useCallback(async () => {
@@ -1339,8 +1375,8 @@ export function useVoiceInput(
             }, 500);
 
             setState("listening");
-            void NotifyDesktopPetMicBusy(true).catch(() => {});
-            emitPetState("listening", holdModeRef.current ? "asr:hold" : "asr:continuous");
+            petMicBusy(true);
+            petSignal("listening", holdModeRef.current ? "asr:hold" : "asr:continuous");
             voiceDebug("listening started", {
                 sampleRate: ctx.sampleRate,
                 trackSampleRate: trackSettings?.sampleRate,
@@ -1361,7 +1397,7 @@ export function useVoiceInput(
         } finally {
             startingRef.current = false;
         }
-    }, [cleanup, processChunk, resetContinuousPreroll, resetFallbackBuffer, setErrorAuto]);
+    }, [cleanup, petMicBusy, petSignal, processChunk, resetContinuousPreroll, resetFallbackBuffer, setErrorAuto]);
 
     const startHold = useCallback(async () => {
         if (state !== "idle" || startingRef.current || activeRef.current) {
@@ -1460,13 +1496,13 @@ export function useVoiceInput(
         cleanup();
         if (pendingTranscriptionsRef.current > 0) {
             setState("transcribing");
-            emitPetState("thinking", "asr:continuous-transcribing", 15000);
+            petSignal("thinking", "asr:continuous-transcribing", 15000);
         } else {
             setState("idle");
-            emitPetState("idle", "asr:continuous-stop");
+            petSignal("idle", "asr:continuous-stop");
         }
         setDuration(0);
-    }, [cleanup, flushFallbackBuffer, stopHold, transcribeSegment]);
+    }, [cleanup, flushFallbackBuffer, petSignal, stopHold, transcribeSegment]);
 
     const toggle = useCallback(async () => {
         if (state === "listening") {
@@ -1482,7 +1518,10 @@ export function useVoiceInput(
 
     // External triggers (desktop pet click with voice conversation enabled)
     // start continuous listening without touching the mic toggle button.
+    // Consumers that are not the assistant (e.g. the desktop-bot composer)
+    // opt out, or a single pet click would open every mounted microphone.
     useEffect(() => {
+        if (!externalStartRef.current) return;
         const onExternalStart = () => {
             if (stateRef.current !== "idle" || startingRef.current || activeRef.current) {
                 voiceDebug("skip external voice start", { state: stateRef.current });

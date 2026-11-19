@@ -78,6 +78,11 @@ const SourceCompanionGroupInvite = "companion_group_invite"
 // person or a reading group. SourceID is the share token.
 const SourceCompanionShare = "companion_share"
 
+// SourceCompanionGroupDigest is the one merged notice a new reading-group
+// member gets for the documents shared before they joined. SourceID is
+// "<group id>:<user id>".
+const SourceCompanionGroupDigest = "companion_group_digest"
+
 // SourceCompanionHostTransfer is the actionable request to the nominated host.
 // SourceCompanionHostTransferNotice is the informational copy for participants.
 const SourceCompanionHostTransfer = "companion_host_transfer"
@@ -102,14 +107,25 @@ type Notification struct {
 	AudienceIDs  []string     `json:"audience_ids"`
 	Status       Status       `json:"status"`
 	IMPush       bool         `json:"im_push"`
-	Source       string       `json:"source"`
-	SourceID     string       `json:"source_id"`
-	CreatedBy    string       `json:"created_by"`
-	PublishAt    *time.Time   `json:"publish_at,omitempty"`
-	ExpireAt     *time.Time   `json:"expire_at,omitempty"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	// Pinned marks a 置顶消息 that the GUI shows as a floating card above the
+	// sidebar status row. PinnedForever marks the ONE permanent pin that stays
+	// leftmost in that card; a pinned message is implied.
+	Pinned        bool       `json:"pinned"`
+	PinnedForever bool       `json:"pinned_forever"`
+	LinkURL       string     `json:"link_url"`
+	ButtonText    string     `json:"button_text"`
+	Source        string     `json:"source"`
+	SourceID      string     `json:"source_id"`
+	CreatedBy     string     `json:"created_by"`
+	PublishAt     *time.Time `json:"publish_at,omitempty"`
+	ExpireAt      *time.Time `json:"expire_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
+
+// DefaultPinnedButtonText is the label used when an admin publishes a pinned
+// message without naming its action button.
+const DefaultPinnedButtonText = "查看详情"
 
 // CreateRequest is the input for creating a new notification.
 type CreateRequest struct {
@@ -120,9 +136,15 @@ type CreateRequest struct {
 	AudienceType AudienceType `json:"audience_type"`
 	AudienceIDs  []string     `json:"audience_ids"`
 	IMPush       bool         `json:"im_push"`
-	CreatedBy    string       `json:"created_by"`
-	PublishAt    *time.Time   `json:"publish_at,omitempty"`
-	ExpireAt     *time.Time   `json:"expire_at,omitempty"`
+	// Pinned / PinnedForever / LinkURL / ButtonText carry the pinned-message
+	// card fields. ButtonText defaults to DefaultPinnedButtonText when pinned.
+	Pinned        bool       `json:"pinned"`
+	PinnedForever bool       `json:"pinned_forever"`
+	LinkURL       string     `json:"link_url"`
+	ButtonText    string     `json:"button_text"`
+	CreatedBy     string     `json:"created_by"`
+	PublishAt     *time.Time `json:"publish_at,omitempty"`
+	ExpireAt      *time.Time `json:"expire_at,omitempty"`
 	// Source and SourceID tag a notice raised by another Hub subsystem instead
 	// of by an admin. They default to "hub" and "" for admin notices.
 	Source   string `json:"source,omitempty"`
@@ -145,6 +167,12 @@ type ClientNotification struct {
 	Priority  string `json:"priority"`
 	IsRead    bool   `json:"is_read"`
 	CreatedAt string `json:"created_at"`
+	// Pinned-card fields. LinkURL/ButtonText drive the floating banner's
+	// action button; a pinned row keeps them even when already read.
+	Pinned        bool   `json:"pinned,omitempty"`
+	PinnedForever bool   `json:"pinned_forever,omitempty"`
+	LinkURL       string `json:"link_url,omitempty"`
+	ButtonText    string `json:"button_text,omitempty"`
 	// Source and SourceID let a client recognize a notice raised by a Hub
 	// subsystem, such as a reading-group invitation, and act on it.
 	Source   string `json:"source,omitempty"`

@@ -248,6 +248,67 @@ func TestBuildGroupExecutorDiscussionContextPreservesStreamChunkSpacing(t *testi
 	}
 }
 
+func TestLocalGroupStreamDeliveryCarriesTheSettledEnding(t *testing.T) {
+	chunk, end := localGroupStreamDelivery("", "只有终稿")
+	if chunk != "只有终稿" || end != "" {
+		t.Fatalf("unstreamed delivery = %q / %q", chunk, end)
+	}
+	chunk, end = localGroupStreamDelivery("Hello", "Hello world")
+	if chunk != "" || end != "Hello world" {
+		t.Fatalf("extension delivery = %q / %q", chunk, end)
+	}
+	chunk, end = localGroupStreamDelivery("Hello world", "Hello world")
+	if chunk != "" || end != "" {
+		t.Fatalf("unchanged delivery = %q / %q", chunk, end)
+	}
+	chunk, end = localGroupStreamDelivery("body\n", "body")
+	if chunk != "" || end != "body" {
+		t.Fatalf("newline delivery = %q / %q", chunk, end)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextFoldsSettledEnding(t *testing.T) {
+	shared := strings.Repeat("重叠", 40)
+	opening := strings.Repeat("甲", 20) + shared
+	rest := strings.Repeat("乙", 20)
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "anna", Kind: a2a.MessageStreamChunk, Content: opening},
+			{ID: "m2", FromID: "anna", Kind: a2a.MessageStreamEnd, Content: shared + rest},
+			{ID: "m3", FromID: "anna", Kind: a2a.MessageStreamChunk, Content: "Hello"},
+			{ID: "m4", FromID: "anna", Kind: a2a.MessageStreamEnd, Content: " world"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{}, "machine-1")
+	if !strings.Contains(got, opening+rest) || strings.Contains(got, shared+shared) {
+		t.Fatalf("settled ending was not folded once: %q", got)
+	}
+	if !strings.Contains(got, "[anna] Hello world") {
+		t.Fatalf("short fragment = %q", got)
+	}
+}
+
+func TestBuildGroupExecutorDiscussionContextKeepsSettledTail(t *testing.T) {
+	opening := strings.Repeat("甲", 1300)
+	ending := strings.Repeat("乙", 40)
+	detail := a2a.HubDiscussionDetail{
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "anna", Kind: a2a.MessageStreamChunk, Content: opening},
+			{ID: "m2", FromID: "anna", Kind: a2a.MessageStreamEnd, Content: ending},
+			{ID: "m3", FromID: "machine-1", Kind: a2a.MessageStatement, Content: opening + "请看开头"},
+		},
+	}
+
+	got := buildGroupExecutorDiscussionContext(detail, a2a.GroupDiscussionMessage{}, "machine-1")
+	if !strings.Contains(got, ending) {
+		t.Fatalf("stream ending was clipped off: %q", got)
+	}
+	if strings.Contains(got, "请看开头") {
+		t.Fatalf("a request should keep its start, got %q", got)
+	}
+}
+
 func TestBuildGroupExecutorDiscussionContextIncludesCompressedMemory(t *testing.T) {
 	detail := a2a.HubDiscussionDetail{
 		Session: &a2a.Session{ContextSummary: "[compressed shared group memory]\n- [anna] earlier important fact"},

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -138,7 +139,9 @@ func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) er
 	if c.pool == nil {
 		return nil
 	}
-	c.pool.ForgetBotGUIUse(tenantID, userID)
+	// StopDesktop forgets the screen-use record only after an owner desktop
+	// actually stops. Forgetting here first paints sleep while the stop is
+	// still in flight, and on a bot display that desktopd does not stop.
 	_, err := c.pool.StopDesktop(ctx, tenantID, userID)
 	return err
 }
@@ -160,6 +163,8 @@ func writeDesktopError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "DOCKER_SERVICE_NOT_ASSIGNED", "no docker service is assigned to this user")
 	case errors.Is(err, desktoppool.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", err.Error())
+	case errors.Is(err, desktoppool.ErrService) && strings.Contains(err.Error(), "node is offline"):
+		writeError(w, http.StatusBadGateway, "NODE_OFFLINE", botmgmt.ErrNodeOffline.Error())
 	case errors.Is(err, desktoppool.ErrService):
 		writeError(w, http.StatusBadGateway, "DOCKER_SERVICE_REQUEST_FAILED", desktoppool.ServiceFailureMessage(err))
 	case desktoppool.IsDesktopWake(err):
@@ -299,6 +304,10 @@ func PatchDesktopServiceAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
 		}
+		if strings.TrimSpace(in.Memory) == "" || strings.TrimSpace(in.CPUs) == "" || strings.TrimSpace(in.ShmSize) == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "memory, cpus, and shm_size are required")
+			return
+		}
 		token := ""
 		if in.AccessToken != nil {
 			token = *in.AccessToken
@@ -329,7 +338,23 @@ func DeleteDesktopServiceAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
 	}
 }
 
-func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool) http.HandlerFunc {
+func assignedServerNode(ctx context.Context, pool *desktoppool.Pool, tenantID, serverID string) string {
+	if pool == nil || strings.TrimSpace(serverID) == "" {
+		return ""
+	}
+	view, err := pool.View(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	for _, server := range view.Servers {
+		if server.ID == serverID {
+			return strings.TrimSpace(server.NodeID)
+		}
+	}
+	return ""
+}
+
+func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pool == nil {
 			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
@@ -344,6 +369,19 @@ func PostDesktopAssignmentAdminHandler(pool *desktoppool.Pool) http.HandlerFunc 
 		if err != nil {
 			writeDesktopError(w, err)
 			return
+		}
+		if bots != nil && item.Scope == desktoppool.ScopeUser {
+			if nodeID := assignedServerNode(r.Context(), pool, desktopTenantID(r), item.ServerID); nodeID != "" {
+				// A node with srv is where this user's new bots run. If that
+				// pin is not stored, drop the assignment instead of leaving
+				// the desktop and the bots on different machines. A desktop
+				// without srv stays assigned; bots keep their current srv.
+				if err := bots.PinOwnerNode(r.Context(), desktopTenantID(r), item.TargetID, nodeID); err != nil && !errors.Is(err, botmgmt.ErrSrv) {
+					_ = pool.DeleteAssignment(r.Context(), desktopTenantID(r), item.ID)
+					writeError(w, http.StatusBadGateway, "NODE_PIN", "the user was not pinned to this node's srv")
+					return
+				}
+			}
 		}
 		writeJSON(w, http.StatusCreated, item)
 	}
@@ -400,7 +438,8 @@ func desktopUserAction(pool *desktoppool.Pool, bots *botmgmt.Service, create boo
 		}
 		// The desktop is gone, so the noVNC picture an admin may have opened
 		// is gone too. Leaving it behind would hand the chat a dead page.
-		if bots != nil && !create {
+		// "idle" is an isolated bot display that was left running.
+		if bots != nil && !create && desktop.Status != "idle" {
 			bots.ForgetDesktopView(tenantID, in.UserID)
 		}
 		writeJSON(w, http.StatusOK, desktop)
@@ -446,7 +485,11 @@ func PostDesktopViewAdminHandler(pool *desktoppool.Pool, bots *botmgmt.Service) 
 			writeError(w, http.StatusBadGateway, "DESKTOP_NOVNC_UNAVAILABLE", "hub could not publish a vnc address")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"novnc_url": gated})
+		body := map[string]string{"novnc_url": gated}
+		if direct := edgeDirectURL(tenantID, in.UserID, novnc, true); direct != "" {
+			body["direct_url"] = direct
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 
@@ -457,11 +500,214 @@ func desktopAPIToken() string {
 func authorizeDesktopAPI(w http.ResponseWriter, r *http.Request) bool {
 	token := desktopAPIToken()
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token == "" || len(got) != len(token) || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-		writeError(w, http.StatusUnauthorized, "DESKTOP_API_UNAUTHORIZED", "desktop api token is required")
+	// The global token is compared exactly as before. A node token is a
+	// second branch and never replaces this one.
+	if token != "" && len(got) == len(token) && subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+		return true
+	}
+	if edgeRegistry != nil && got != "" {
+		if tenant := edgeRegistry.TenantForHubToken(got); tenant != "" {
+			if !edgeBodyTenantAllowed(w, r, tenant) {
+				return false
+			}
+			return true
+		}
+	}
+	writeError(w, http.StatusUnauthorized, "DESKTOP_API_UNAUTHORIZED", "desktop api token is required")
+	return false
+}
+
+// edgeBodyTenantAllowed rejects a node token whose tenant_id names another
+// tenant. The query is checked too, because uploads put tenant_id there.
+// A JSON body larger than 1MB is read up to the notify limit and every
+// tenant field in it must name this node. The handler still receives the
+// whole body.
+func edgeBodyTenantAllowed(w http.ResponseWriter, r *http.Request, tenant string) bool {
+	queryTenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if queryTenant != "" && edgeTenantMismatch(queryTenant, tenant) {
+		writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+		return false
+	}
+	if r.Body == nil || r.ContentLength == 0 {
+		if queryTenant == "" {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	const max = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+		return false
+	}
+	if len(raw) > max {
+		// Notify carries a few files and is the largest JSON a node posts.
+		const ceiling = 36 << 20
+		rest, readErr := io.ReadAll(io.LimitReader(r.Body, int64(ceiling-max)+1))
+		closer := r.Body
+		if readErr != nil {
+			_ = closer.Close()
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return false
+		}
+		if len(raw)+len(rest) > ceiling {
+			_ = closer.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		_ = closer.Close()
+		full := make([]byte, 0, len(raw)+len(rest))
+		full = append(full, raw...)
+		full = append(full, rest...)
+		r.Body = io.NopCloser(bytes.NewReader(full))
+		r.ContentLength = int64(len(full))
+		if !edgeLargeBodyTenantOK(r, full, queryTenant, tenant) {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	if edgeBodyIsJSON(r, raw) {
+		named, ok := edgeJSONTenant(raw)
+		if !ok || named == "" || edgeTenantMismatch(named, tenant) {
+			writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
+			return false
+		}
+		return true
+	}
+	if queryTenant == "" {
+		writeError(w, http.StatusForbidden, "EDGE_TENANT", "this node cannot act for that tenant")
 		return false
 	}
 	return true
+}
+
+// edgeLargeBodyTenantOK checks a body that was too big to unmarshal. Every
+// tenant_id and tenant value must name this node. A file sitting in front
+// of the tenant is still checked. A non-JSON upload keeps using the query.
+func edgeLargeBodyTenantOK(r *http.Request, raw []byte, queryTenant, tenant string) bool {
+	if !edgeBodyIsJSON(r, raw) {
+		return queryTenant != ""
+	}
+	found := false
+	for _, id := range append(jsonStringFields(raw, "tenant_id"), jsonStringFields(raw, "tenant")...) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		found = true
+		if edgeTenantMismatch(id, tenant) {
+			return false
+		}
+	}
+	return found
+}
+
+// edgeJSONTenant reads the tenant a desktop call names. Session and file
+// bodies use tenant_id. A machine tool call uses tenant. Both must name
+// this node, and they must not name two different tenants.
+func edgeJSONTenant(raw []byte) (string, bool) {
+	var probe struct {
+		TenantID string `json:"tenant_id"`
+		Tenant   string `json:"tenant"`
+	}
+	if json.Unmarshal(raw, &probe) == nil {
+		id := strings.TrimSpace(probe.TenantID)
+		alias := strings.TrimSpace(probe.Tenant)
+		if id != "" && alias != "" && edgeTenantMismatch(id, alias) {
+			return "", false
+		}
+		if id == "" {
+			id = alias
+		}
+		return id, true
+	}
+	id := strings.TrimSpace(jsonStringField(raw, "tenant_id"))
+	alias := strings.TrimSpace(jsonStringField(raw, "tenant"))
+	if id != "" && alias != "" && edgeTenantMismatch(id, alias) {
+		return "", false
+	}
+	if id == "" {
+		id = alias
+	}
+	return id, true
+}
+
+func edgeBodyIsJSON(r *http.Request, raw []byte) bool {
+	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	if strings.Contains(ct, "json") {
+		return true
+	}
+	if strings.Contains(ct, "octet-stream") {
+		return false
+	}
+	return bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{"))
+}
+
+func edgeTenantMismatch(got, want string) bool {
+	got = strings.TrimSpace(got)
+	if got == "" {
+		return false
+	}
+	return store.NormalizeTenantID(got) != store.NormalizeTenantID(want)
+}
+
+func jsonStringField(raw []byte, key string) string {
+	fields := jsonStringFields(raw, key)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func jsonStringFields(raw []byte, key string) []string {
+	needle := []byte(`"` + key + `"`)
+	var out []string
+	for len(raw) > 0 {
+		i := bytes.Index(raw, needle)
+		if i < 0 {
+			return out
+		}
+		rest := raw[i+len(needle):]
+		trimmed := bytes.TrimLeft(rest, " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != ':' {
+			raw = rest
+			continue
+		}
+		trimmed = bytes.TrimLeft(trimmed[1:], " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != '"' {
+			raw = rest
+			continue
+		}
+		trimmed = trimmed[1:]
+		end := bytes.IndexByte(trimmed, '"')
+		if end < 0 {
+			return out
+		}
+		out = append(out, string(trimmed[:end]))
+		raw = trimmed[end+1:]
+	}
+	return out
+}
+
+// botComputerContext pins the call to that bot's computer. An empty node is
+// the cloud computer. A bot that is not this user's leaves the context alone.
+func botComputerContext(ctx context.Context, bots *botmgmt.Service, tenantID, userID, botID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if bots == nil || strings.TrimSpace(botID) == "" {
+		return ctx
+	}
+	owner, _ := desktop.SplitDesktopUser(userID)
+	nodeID, ok := bots.DesktopComputerNode(ctx, tenantID, owner, botID)
+	if !ok {
+		return ctx
+	}
+	return desktoppool.WithComputer(ctx, nodeID)
 }
 
 // PostDesktopSessionHandler is called by MaClawSrv. It resolves the user's
@@ -487,7 +733,12 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 			return
 		}
 		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			if bots.BotHasNoDesktop(r.Context(), in.TenantID, in.UserID, in.BotID) {
+				writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
+				return
+			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
+			r = r.WithContext(botComputerContext(r.Context(), bots, in.TenantID, in.UserID, in.BotID))
 		}
 		session, err := pool.OpenDesktop(r.Context(), in.TenantID, in.UserID)
 		if err != nil {
@@ -501,7 +752,13 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 		// screen step). Its browser work then goes straight over CDP, so this
 		// is the step the 电脑 tab learns the run is on the screen from.
 		pool.NoteBotGUIUse(in.TenantID, in.UserID, session.Novnc)
-		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": session.CDP, "display": session.Display})
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
+		cdp, cdpErr := cdpURLForSession(ctx, in.TenantID, in.UserID, session)
+		if cdpErr != nil {
+			writeError(w, http.StatusBadGateway, "DESKTOP_CDP_UNAVAILABLE", "desktop cdp relay is unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"cdp_url": cdp, "display": session.Display})
 	}
 }
 
@@ -526,7 +783,12 @@ func PostDesktopMemoryHandler(pool *desktoppool.Pool, bots *botmgmt.Service) htt
 			return
 		}
 		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			if bots.BotHasNoDesktop(r.Context(), in.TenantID, in.UserID, in.BotID) {
+				writeError(w, http.StatusConflict, "NO_DESKTOP", botmgmt.ErrNoDesktop.Error())
+				return
+			}
 			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
+			r = r.WithContext(botComputerContext(r.Context(), bots, in.TenantID, in.UserID, in.BotID))
 		}
 		used, limit, err := pool.ContainerMemory(r.Context(), in.TenantID, in.UserID)
 		if err != nil {
@@ -566,7 +828,14 @@ func PostDesktopStopHandler(pool *desktoppool.Pool, bots *botmgmt.Service) http.
 				writeJSON(w, http.StatusOK, map[string]string{"status": "kept"})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+			// An isolated bot display stays up. "idle" is that screen;
+			// "stopped" is an owner desktop that actually exited.
+			// "kept" is a login still in progress.
+			status := "stopped"
+			if _, bot := desktop.SplitDesktopUser(in.UserID); bot != "" {
+				status = "idle"
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": status})
 			return
 		}
 		desktop, err := pool.StopDesktop(r.Context(), in.TenantID, in.UserID)
@@ -860,6 +1129,7 @@ func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		if !authorizeDesktopAPI(w, r) {
 			return
 		}
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
 		var in struct {
 			TenantID  string `json:"tenant_id"`
 			UserID    string `json:"user_id"`
@@ -871,6 +1141,19 @@ func PostDesktopFileHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "file")
+		if directErr != nil {
+			writeDesktopError(w, directErr)
+			return
+		}
+		if direct != "" {
+			writeJSON(w, http.StatusOK, map[string]string{"direct_url": direct})
+			return
+		}
+		if localProbe(r) {
+			writeError(w, http.StatusConflict, "LOCAL_UNAVAILABLE", "local desktop path is not available")
 			return
 		}
 		output, err := pool.RunFile(r.Context(), in.TenantID, in.UserID, in.Action, in.Path, in.Content, in.OldString, in.NewString)
@@ -950,6 +1233,7 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		if !authorizeDesktopAPI(w, r) {
 			return
 		}
+		ctx := withEdgeCaller(withEdgeOrigin(r.Context(), r), r)
 		var in struct {
 			TenantID string `json:"tenant_id"`
 			UserID   string `json:"user_id"`
@@ -959,6 +1243,15 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
+			return
+		}
+		if direct, directErr := issueLocalDataURL(ctx, pool, in.TenantID, in.UserID, "screenshot"); directErr != nil || direct != "" {
+			if directErr != nil {
+				writeDesktopError(w, directErr)
+				return
+			}
+			noteDesktopScreenUse(ctx, pool, in.TenantID, in.UserID)
+			writeJSON(w, http.StatusOK, map[string]any{"direct_url": direct})
 			return
 		}
 		shot, saved, err := pool.ScreenshotWith(r.Context(), in.TenantID, in.UserID, in.Display, in.Name, in.ShotOptions)

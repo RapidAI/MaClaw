@@ -2,29 +2,73 @@ package guiapp
 
 import (
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type remoteStreamCapture struct {
+	mu       sync.Mutex
 	payloads []map[string]any
 }
 
 func (c *remoteStreamCapture) sink(payload map[string]any) {
+	c.mu.Lock()
 	c.payloads = append(c.payloads, payload)
+	c.mu.Unlock()
+}
+
+func (c *remoteStreamCapture) snapshot() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]map[string]any, len(c.payloads))
+	copy(out, c.payloads)
+	return out
 }
 
 func (c *remoteStreamCapture) events() []string {
-	out := make([]string, 0, len(c.payloads))
-	for _, p := range c.payloads {
+	got := c.snapshot()
+	out := make([]string, 0, len(got))
+	for _, p := range got {
 		name, _ := p["event"].(string)
 		out = append(out, name)
 	}
 	return out
 }
 
+func (c *remoteStreamCapture) waitN(n int, d time.Duration) []map[string]any {
+	deadline := time.Now().Add(d)
+	for {
+		got := c.snapshot()
+		if len(got) >= n || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitLiveSnapshot(t *testing.T, reg *remoteWatchRegistry, session string, ok func(*remoteLiveSnapshot) bool) *remoteLiveSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var snap *remoteLiveSnapshot
+	for {
+		snap = reg.liveSnapshot(session)
+		if ok(snap) || time.Now().After(deadline) {
+			return snap
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func streamSessionKey() string {
-	return projectSessionOwnerID("D:\\proj\\demo")
+	key := projectSessionOwnerID("D:\\proj\\demo")
+	// Thinking lane state is process-global per session. These tests share
+	// one key, so a previous case's open thought would seal the next token.
+	viewerThinkOpen.Delete(key)
+	viewerThinkText.Delete(key)
+	viewerProgressTail.Delete(key)
+	return key
 }
 
 func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
@@ -48,6 +92,7 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Sequence: 4,
 	})
 
+	payloads := cap.waitN(6, 2*time.Second)
 	got := cap.events()
 	want := []string{"round_started", "thinking", "thinking", "thinking", "token", "stream_done"}
 	if len(got) != len(want) {
@@ -61,18 +106,18 @@ func TestRemoteStreamRelayMirrorsLanesAndSettles(t *testing.T) {
 	// Reasoning streams while the block is open: the first token opens the
 	// box, the collected text rides a delta, and the close (triggered here by
 	// the first content delta) carries the same text as ground truth.
-	thinkDelta := cap.payloads[2]
+	thinkDelta := payloads[2]
 	if thinkDelta["state"] != "delta" || thinkDelta["text"] != "先想想" {
 		t.Fatalf("thinking delta payload = %v", thinkDelta)
 	}
-	thinkDone := cap.payloads[3]
+	thinkDone := payloads[3]
 	if thinkDone["state"] != "done" || thinkDone["text"] != "先想想" {
 		t.Fatalf("thinking done payload = %v", thinkDone)
 	}
-	if cap.payloads[4]["text"] != "答案" {
-		t.Fatalf("token payload = %v", cap.payloads[4])
+	if payloads[4]["text"] != "答案" {
+		t.Fatalf("token payload = %v", payloads[4])
 	}
-	for _, p := range cap.payloads {
+	for _, p := range payloads {
 		if p["grant_id"] != "g1" {
 			t.Fatalf("payload missing grant_id: %v", p)
 		}
@@ -105,6 +150,7 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: imHeartbeatMsg, Sequence: 2,
 	})
 
+	payloads := cap.waitN(3, 2*time.Second)
 	got := cap.events()
 	want := []string{"thinking", "thinking", "heartbeat"}
 	if len(got) != len(want) {
@@ -116,8 +162,8 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 		}
 	}
 	// The keepalive is liveness only: no reasoning text, no state change.
-	if _, ok := cap.payloads[2]["text"]; ok {
-		t.Fatalf("heartbeat carried text: %v", cap.payloads[2])
+	if _, ok := payloads[2]["text"]; ok {
+		t.Fatalf("heartbeat carried text: %v", payloads[2])
 	}
 	snap := reg.liveSnapshot(session)
 	if snap == nil || len(snap.Parts) != 1 || snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done {
@@ -125,7 +171,69 @@ func TestRemoteStreamHeartbeatKeepsThinkingOpen(t *testing.T) {
 	}
 }
 
-func TestRemoteWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
+// The relay collapses a repeated progress delivery (same step republished
+// while it runs) before cursor allocation: one wire frame per distinct
+// text, the frames around it keep contiguous cursors, a heartbeat does not
+// reset the tail, and the live turn folds one progress part — not one per
+// publish. Older phone builds render one row per delivery, so this relay
+// dedup is what keeps them from stacking "running · <step>" rows.
+func TestRemoteStreamDuplicateProgressRelayedOnce(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watchWithProto("g1", session, 2)
+
+	const step = "Coding Agent: running T2 - edit parser"
+	relay := func(text string, seq uint64) {
+		app.relayRemoteStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
+			SessionKey: session, RequestID: "r1", Text: text, Sequence: seq,
+		})
+	}
+	relay(step, 1)
+	relay(step, 2)
+	relay(imHeartbeatMsg, 3)
+	relay(step, 4)
+	relay("Coding Agent: running T3 - ship", 5)
+
+	got := cap.waitN(3, 2*time.Second)
+	events := cap.events()
+	want := []string{"progress", "heartbeat", "progress"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	}
+	// Every delivered frame allocates exactly one cursor; a collapsed
+	// delivery allocates none. The heartbeat between the two progress frames
+	// legitimately takes one, so the pair steps by two — a dedup-induced
+	// hole would show up as a larger jump.
+	first, beat, second := viewerNum(got[0]["cursor"]), viewerNum(got[1]["cursor"]), viewerNum(got[2]["cursor"])
+	if first == 0 || beat != first+1 || second != first+2 {
+		t.Fatalf("cursors = %d,%d,%d; collapsed frames must not open a hole", first, beat, second)
+	}
+	snap := reg.liveSnapshot(session)
+	if snap == nil {
+		t.Fatal("live snapshot missing")
+	}
+	parts := 0
+	for _, part := range snap.Parts {
+		if part.Kind == "progress" {
+			parts++
+		}
+	}
+	// T2 and T3 are distinct steps — the fold keeps one part per distinct
+	// text; the collapsed duplicates never reach the turn.
+	if parts != 2 {
+		t.Fatalf("live turn kept %d progress parts, want 2", parts)
+	}
+}
+
+func TestRemoteStreamWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
 	app := &App{}
 	reg := app.ensureRemoteWatchRegistry()
 	cap := &remoteStreamCapture{}
@@ -141,13 +249,81 @@ func TestRemoteWorkbenchStepsRelayMirrorsSnapshot(t *testing.T) {
 		},
 	})
 
+	payloads := cap.waitN(1, 2*time.Second)
 	got := cap.events()
 	if len(got) != 1 || got[0] != "workbench_steps" {
 		t.Fatalf("events = %v", got)
 	}
-	wb, ok := cap.payloads[0]["workbench"].(map[string]interface{})
-	if !ok || wb["steps_revision"] != 3 {
-		t.Fatalf("workbench payload = %v", cap.payloads[0])
+	raw, _ := json.Marshal(payloads[0]["workbench"])
+	var wb map[string]any
+	if err := json.Unmarshal(raw, &wb); err != nil || wb["steps_revision"] != float64(3) {
+		t.Fatalf("workbench payload = %v err=%v", payloads[0], err)
+	}
+}
+
+func TestRemoteStreamReasoningStaysInThinkingLaneAfterReset(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01想想", Sequence: 1,
+	})
+	// A rejected draft appends a fresh text part while reasoning continues —
+	// the next \x01 delta must land in the open thinking part, not the text tail.
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x02重写", Sequence: 2,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01再想", Sequence: 3,
+	})
+
+	snap := waitLiveSnapshot(t, reg, session, func(snap *remoteLiveSnapshot) bool {
+		return snap != nil && len(snap.Parts) == 2 && snap.Parts[0].Text == "想想再想"
+	})
+	if snap == nil || len(snap.Parts) != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done || snap.Parts[0].Text != "想想再想" {
+		t.Fatalf("thinking part = %+v", snap.Parts[0])
+	}
+	if snap.Parts[1].Kind != "text" || snap.Parts[1].Text != "重写" {
+		t.Fatalf("text part = %+v", snap.Parts[1])
+	}
+}
+
+func TestRemoteStreamRejectSuffixDropsInteriorSentinel(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01想想", Sequence: 1,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x02ke\x01pt", Sequence: 2,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r1", Text: "\x01再想", Sequence: 3,
+	})
+
+	snap := waitLiveSnapshot(t, reg, session, func(snap *remoteLiveSnapshot) bool {
+		return snap != nil && len(snap.Parts) == 2 && snap.Parts[0].Text == "想想再想"
+	})
+	if snap == nil || len(snap.Parts) != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if snap.Parts[0].Kind != "thinking" || snap.Parts[0].Done || snap.Parts[0].Text != "想想再想" {
+		t.Fatalf("thinking part = %+v", snap.Parts[0])
+	}
+	if snap.Parts[1].Kind != "text" || snap.Parts[1].Text != "kept" {
+		t.Fatalf("text part = %+v", snap.Parts[1])
 	}
 }
 
@@ -161,8 +337,9 @@ func TestRemoteStreamRelayIgnoresUnwatchedSessions(t *testing.T) {
 	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
 		SessionKey: "desktop-user:elsewhere", RequestID: "rX", Text: "nope",
 	})
-	if len(cap.payloads) != 0 {
-		t.Fatalf("unwatched session leaked %d events", len(cap.payloads))
+	time.Sleep(100 * time.Millisecond)
+	if len(cap.snapshot()) != 0 {
+		t.Fatalf("unwatched session leaked %d events", len(cap.snapshot()))
 	}
 }
 
@@ -178,15 +355,12 @@ func TestRemoteStreamCoalesceFlushAndUnwatch(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: "hello", Sequence: 1,
 	})
 	// Content deltas ride the coalesce window: nothing on the wire yet.
-	if len(cap.payloads) != 0 {
+	if len(cap.snapshot()) != 0 {
 		t.Fatalf("content delta escaped the coalesce window")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(cap.payloads) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(cap.payloads) != 1 || cap.payloads[0]["event"] != "token" || cap.payloads[0]["text"] != "hello" {
-		t.Fatalf("flushed payloads = %v", cap.payloads)
+	payloads := cap.waitN(1, 2*time.Second)
+	if len(payloads) != 1 || payloads[0]["event"] != "token" || payloads[0]["text"] != "hello" {
+		t.Fatalf("flushed payloads = %v", payloads)
 	}
 
 	reg.unwatch("g1", session)
@@ -194,12 +368,113 @@ func TestRemoteStreamCoalesceFlushAndUnwatch(t *testing.T) {
 		SessionKey: session, RequestID: "r1", Text: "after", Sequence: 2,
 	})
 	time.Sleep(200 * time.Millisecond)
-	if len(cap.payloads) != 1 {
-		t.Fatalf("unwatched session still relays: %v", cap.payloads)
+	if len(cap.snapshot()) != 1 {
+		t.Fatalf("unwatched session still relays: %v", cap.snapshot())
 	}
 }
 
-func TestRemoteControlWatchOps(t *testing.T) {
+func TestRemoteStreamResponseStripsMediaAndSettles(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	app.relayRemoteAssistantResponse("r1", &IMAgentResponse{
+		SessionKey:      session,
+		Text:            "完成",
+		VoiceData:       strings.Repeat("A", 300<<10),
+		ThumbnailBase64: strings.Repeat("B", 300<<10),
+		FileData:        strings.Repeat("C", 300<<10),
+		VoiceParts:      []IMVoicePart{{Data: strings.Repeat("D", 100<<10), FileName: "a.ogg"}},
+		LocalFilePaths:  []string{"out/report.md"},
+		ResponseSource:  "test",
+	})
+
+	payloads := cap.waitN(1, 2*time.Second)
+	got := cap.events()
+	if len(got) != 1 || got[0] != "response" {
+		t.Fatalf("events = %v", got)
+	}
+	raw, _ := payloads[0]["response"].(json.RawMessage)
+	var resp IMAgentResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("response payload unmarshal: %v", err)
+	}
+	if resp.Text != "完成" || resp.VoiceData != "" || resp.FileData != "" || resp.ThumbnailBase64 != "" || len(resp.VoiceParts) != 0 {
+		t.Fatalf("media leaked into mirror: %+v", resp)
+	}
+	if len(resp.LocalFilePaths) != 1 || resp.LocalFilePaths[0] != "out/report.md" {
+		t.Fatalf("file paths lost: %+v", resp.LocalFilePaths)
+	}
+	snap := reg.liveSnapshot(session)
+	// A responded turn is settled — the snapshot is gone for the next watcher.
+	if snap != nil {
+		t.Fatalf("settled turn still snapshots: %+v", snap)
+	}
+}
+
+func TestRemoteStreamStaleResponseKeepsLiveTurn(t *testing.T) {
+	app := &App{}
+	reg := app.ensureRemoteWatchRegistry()
+	cap := &remoteStreamCapture{}
+	reg.sink = cap.sink
+	session := streamSessionKey()
+	reg.watch("g1", session)
+
+	// Round r2 is live and has accumulated state when a late response for the
+	// previous round r1 lands. The response event still relays — the
+	// controller folds by request_id — but it must not wipe r2's snapshot.
+	app.relayRemoteStreamEvent("ai-assistant-foreground-round-started", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r2", DisplayText: "第二轮", Sequence: 1,
+	})
+	app.relayRemoteStreamEvent("ai-assistant-token", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r2", Text: "进展中", Sequence: 2,
+	})
+	// A non-token event commits the pending text run into the snapshot parts.
+	app.relayRemoteStreamEvent("ai-assistant-progress", AIAssistantStreamEvent{
+		SessionKey: session, RequestID: "r2", Text: "执行工具", Sequence: 3,
+	})
+	app.relayRemoteAssistantResponse("r1", &IMAgentResponse{
+		SessionKey: session,
+		Text:       "上一轮完成",
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	var payloads []map[string]any
+	var got []string
+	for time.Now().Before(deadline) {
+		payloads = cap.snapshot()
+		got = cap.events()
+		if len(got) > 0 && got[len(got)-1] == "response" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) == 0 || got[len(got)-1] != "response" {
+		t.Fatalf("last event = %v, want response", got)
+	}
+	last := payloads[len(payloads)-1]
+	if last["request_id"] != "r1" {
+		t.Fatalf("response request_id = %v, want r1", last["request_id"])
+	}
+	snap := reg.liveSnapshot(session)
+	if snap == nil || snap.RequestID != "r2" || snap.Responded {
+		t.Fatalf("live turn lost to stale response: %+v", snap)
+	}
+	found := false
+	for _, part := range snap.Parts {
+		if part.Kind == "text" && part.Text == "进展中" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("live parts wiped: %+v", snap.Parts)
+	}
+}
+
+func TestRemoteStreamWatchOps(t *testing.T) {
 	app := &App{}
 	// watch_task without a grant id is the version-skew path: the Hub that
 	// cannot name a grant cannot route its stream either.
@@ -210,4 +485,3 @@ func TestRemoteControlWatchOps(t *testing.T) {
 		t.Fatalf("unwatch must be idempotent: %v", err)
 	}
 }
-

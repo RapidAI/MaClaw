@@ -62,6 +62,49 @@ func (n *Notifier) UnregisterForTenant(tenantID, userID string) {
 	_ = n.store.SetPresenceForTenant(tenantID, userID, false)
 }
 
+// CloseUserForTenant closes one user's realtime connection and clears presence.
+func (n *Notifier) CloseUserForTenant(tenantID, userID string) {
+	key := tenantUserKey(tenantID, userID)
+	n.mu.Lock()
+	conn := n.conns[key]
+	delete(n.conns, key)
+	n.mu.Unlock()
+	_ = n.store.SetPresenceForTenant(tenantID, userID, false)
+	closeNotifierConn(conn)
+}
+
+// CloseTenant closes every realtime connection in one tenant.
+func (n *Notifier) CloseTenant(tenantID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	prefix := tenantID + "\x00"
+	n.mu.Lock()
+	connections := make([]struct {
+		userID string
+		conn   ConnSender
+	}, 0)
+	for key, conn := range n.conns {
+		if strings.HasPrefix(key, prefix) {
+			userID := strings.TrimPrefix(key, prefix)
+			connections = append(connections, struct {
+				userID string
+				conn   ConnSender
+			}{userID: userID, conn: conn})
+			delete(n.conns, key)
+		}
+	}
+	n.mu.Unlock()
+	for _, item := range connections {
+		_ = n.store.SetPresenceForTenant(tenantID, item.userID, false)
+		closeNotifierConn(item.conn)
+	}
+}
+
+func closeNotifierConn(conn ConnSender) {
+	if closer, ok := conn.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
 // IsOnline checks if a user has an active WS connection.
 func (n *Notifier) IsOnline(userID string) bool {
 	return n.IsOnlineForTenant(store.DefaultTenantID, userID)

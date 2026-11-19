@@ -288,7 +288,28 @@ func looksLikeEditName(n string) bool {
 			return true
 		}
 	}
-	return false
+	return looksLikeSecretField(n)
+}
+
+// looksLikeSecretField reports a password or code box. A control that only
+// asks the person to fetch or send a code stays a button.
+func looksLikeSecretField(n string) bool {
+	field := false
+	for _, k := range []string{"支付密码", "密码", "password", "passcode", "验证码", "otp"} {
+		if strings.Contains(n, k) {
+			field = true
+			break
+		}
+	}
+	if !field {
+		return false
+	}
+	for _, k := range []string{"获取", "发送", "重发", "重新发送", "重新获取", "点击", "按钮", "resend", "get code", "send code"} {
+		if strings.Contains(n, k) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasPattern(el taskengine.UIElement, want string) bool {

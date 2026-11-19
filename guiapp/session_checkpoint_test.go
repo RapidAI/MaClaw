@@ -253,7 +253,7 @@ func TestTaskOrchestrator2_Persistence(t *testing.T) {
 	defer o.Close()
 	plan, err := o.CreatePlan("persistent plan", []PlanSubTask{
 		{Description: "task 1", Tool: "claude"},
-		{Description: "task 2", Tool: "codex"},
+		{Description: "task 2", Tool: "codex", DependsOn: []string{"task_1"}},
 	})
 	if err != nil {
 		t.Fatalf("CreatePlan: %v", err)
@@ -276,6 +276,30 @@ func TestTaskOrchestrator2_Persistence(t *testing.T) {
 	}
 	if len(got.SubTasks) != 2 {
 		t.Errorf("subtasks = %d, want 2", len(got.SubTasks))
+	}
+	if len(got.SubTasks[1].DependsOn) != 1 || got.SubTasks[1].DependsOn[0] != "task_1" {
+		t.Fatalf("dependencies were not restored: %#v", got.SubTasks[1].DependsOn)
+	}
+	var description string
+	if err := o2.db.QueryRow(`SELECT description FROM task_plans WHERE id=?`, plan.ID).Scan(&description); err != nil {
+		t.Fatal(err)
+	}
+	if description != "persistent plan" {
+		t.Fatalf("description column = %q", description)
+	}
+	var dependencies int
+	if err := o2.db.QueryRow(`SELECT COUNT(*) FROM task_plan_dependencies WHERE plan_id=?`, plan.ID).Scan(&dependencies); err != nil {
+		t.Fatal(err)
+	}
+	if dependencies != 1 {
+		t.Fatalf("dependency rows = %d", dependencies)
+	}
+	var jsonColumns int
+	if err := o2.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%payload_json%'`).Scan(&jsonColumns); err != nil {
+		t.Fatal(err)
+	}
+	if jsonColumns != 0 {
+		t.Fatalf("plan schema still contains payload_json")
 	}
 }
 

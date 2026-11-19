@@ -731,6 +731,17 @@ function Write-InventoryFile {
     Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
 }
 
+function Get-DeployEdgeNodesValue {
+    $value = [Environment]::GetEnvironmentVariable('HUB_EDGE_NODES')
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return 'on'
+    }
+    switch ($value.Trim().ToLowerInvariant()) {
+        { $_ -in @('1', 'on', 'true', 'yes', '0', 'off', 'false', 'no') } { return $_ }
+        default { return 'on' }
+    }
+}
+
 function Write-RemoteScript {
     param([string]$Path)
 
@@ -1096,6 +1107,20 @@ function Write-RemoteScript {
         '    sed -i "s/maclaw-hub/$HUB_BINARY_NAME/g" "$REMOTE_HUB_DIR/run-systemd.sh"',
         '    chmod +x "$REMOTE_HUB_DIR/run-systemd.sh"',
         '  fi',
+        '  edge_file="$REMOTE_HUB_DIR/edge.env"',
+        '  edge_tmp="$edge_file.tmp"',
+        '  : > "$edge_tmp"',
+        '  if [ -f "$edge_file" ]; then',
+        '    while IFS= read -r edge_line || [ -n "$edge_line" ]; do',
+        '      case "$edge_line" in',
+        '        HUB_EDGE_NODES=*|export\ HUB_EDGE_NODES=*) ;;',
+        '        *) printf "%s\n" "$edge_line" >> "$edge_tmp" ;;',
+        '      esac',
+        '    done < "$edge_file"',
+        '  fi',
+        ('  printf "%s\n" "HUB_EDGE_NODES={0}" >> "$edge_tmp"' -f (Get-DeployEdgeNodesValue)),
+        '  mv -f "$edge_tmp" "$edge_file"',
+        '  chmod 600 "$edge_file"',
         '  if [ -f "$SRC_ROOT/hub/configs/config.example.yaml" ]; then',
         '    cp -f "$SRC_ROOT/hub/configs/config.example.yaml" "$REMOTE_HUB_DIR/configs/config.example.yaml"',
         '  fi',
@@ -1545,7 +1570,7 @@ function Assert-HubCenterProblemReportAdminAsset {
         if ($null -eq $curlExe) {
             throw 'curl.exe is required for the problem reports admin asset check'
         }
-        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --output $pagePath ($baseUrl + '/admin')
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --retry 2 --retry-delay 1 --output $pagePath ($baseUrl + '/admin')
         if ($LASTEXITCODE -ne 0) { throw 'could not fetch admin HTML' }
         $adminPage = Get-Content -LiteralPath $pagePath -Raw
         if ($adminPage -notmatch '/admin/assets/js/problem-reports-tab\.js') {
@@ -1565,7 +1590,7 @@ function Assert-HubCenterProblemReportAdminAsset {
         # nonce also prevents an intermediary cache from making a stale asset
         # appear healthy immediately after a deployment.
         $scriptURL += ($separator + 'deploy_check=' + [guid]::NewGuid().ToString('N'))
-        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --header 'Cache-Control: no-cache' --output $scriptPath $scriptURL
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --retry 2 --retry-delay 1 --header 'Cache-Control: no-cache' --output $scriptPath $scriptURL
         if ($LASTEXITCODE -ne 0) { throw 'could not fetch the problem reports script' }
         $script = Get-Content -LiteralPath $scriptPath -Raw
         if ($script -notmatch 'installWhenAdminShellReady') {
@@ -1599,7 +1624,7 @@ function Assert-HubCenterPetStoreAdminAssets {
         if ($null -eq $curlExe) {
             throw 'curl.exe is required for the Pet Store admin asset check'
         }
-        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --output $pagePath ($baseUrl + '/admin')
+        & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --retry 2 --retry-delay 1 --output $pagePath ($baseUrl + '/admin')
         if ($LASTEXITCODE -ne 0) { throw 'could not fetch admin HTML' }
         $adminPage = Get-Content -LiteralPath $pagePath -Raw
         $cssMatch = [regex]::Match($adminPage, '<link\s+rel="stylesheet"\s+href="(?<src>/admin/assets/css/admin-shell\.css[^\"]*)"')
@@ -1619,7 +1644,7 @@ function Assert-HubCenterPetStoreAdminAssets {
             $assetURL = $baseUrl + $asset.Src
             $separator = if ($assetURL.Contains('?')) { '&' } else { '?' }
             $assetURL += ($separator + 'deploy_check=' + [guid]::NewGuid().ToString('N'))
-            & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --header 'Cache-Control: no-cache' --output $asset.Path $assetURL
+            & $curlExe.Source --silent --show-error --fail --insecure --max-time $TimeoutSec --retry 2 --retry-delay 1 --header 'Cache-Control: no-cache' --output $asset.Path $assetURL
             if ($LASTEXITCODE -ne 0) { throw ("could not fetch Pet Store {0}" -f $asset.Label) }
             $content = Get-Content -LiteralPath $asset.Path -Raw
             if (-not $content.Contains($asset.Marker)) {
@@ -1684,6 +1709,8 @@ function Invoke-PostDeploySmokeCheck {
             $checks += [pscustomobject]@{ Label = 'hub card store page'; Url = ("{0}/card_store?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store public api'; Url = ("{0}/api/card-store/products?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store admin api'; Url = ("{0}/api/admin/card-store/config" -f $target.HubPublicUrl.TrimEnd('/')); Want = 401 }
+            $edgeWant = if ((Get-DeployEdgeNodesValue) -in @('1', 'on', 'true', 'yes')) { 401 } else { 404 }
+            $checks += [pscustomobject]@{ Label = 'hub intranet node route'; Url = ("{0}/api/v1/bots/desktop-node" -f $target.HubPublicUrl.TrimEnd('/')); Want = $edgeWant }
         }
 
         if ($target.DeployHubCenter) {

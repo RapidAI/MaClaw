@@ -9,12 +9,8 @@
       navDesc: '\u5bf9\u63a5 MaClawSrv\u3001Docker \u670d\u52a1\u4e0e LLM',
       connection: '\u5bf9\u63a5 MaClawSrv',
       url: 'MaClawSrv \u5730\u5740',
-      token: '\u8bbf\u95ee\u4ee4\u724c',
-      tokenHint: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u4ee4\u724c',
-      tokenSet: '\u4ee4\u724c\u5df2\u4fdd\u5b58',
-      tokenMissing: '\u5c1a\u672a\u4fdd\u5b58\u4ee4\u724c',
       adminSecret: '\u7ba1\u7406\u5bc6\u94a5',
-      adminHint: '\u7528\u4e8e\u6309\u7528\u6237\u521b\u5efa MaClawSrv \u8d26\u53f7\u3002\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u3002',
+      adminHint: '粘贴 MaClawSrv 的 Root Admin API Secret，保存后自动创建连接账号。留空则不修改。',
       adminSet: '\u7ba1\u7406\u5bc6\u94a5\u5df2\u4fdd\u5b58',
       adminMissing: '\u5c1a\u672a\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5',
       save: '\u4fdd\u5b58\u5bf9\u63a5\u8bbe\u7f6e',
@@ -22,11 +18,11 @@
       saved: '\u5df2\u4fdd\u5b58',
       connected: '\u8fde\u63a5\u6210\u529f\uff0c\u5f53\u524d\u5b9e\u4f8b {count} \u4e2a',
       testing: '\u6b63\u5728\u6d4b\u8bd5...',
-      needConfig: '\u8bf7\u5148\u4fdd\u5b58 MaClawSrv \u5730\u5740\u548c\u8bbf\u95ee\u4ee4\u724c',
-      saveBeforeTest: '\u5730\u5740\u6216\u4ee4\u724c\u8fd8\u6ca1\u4fdd\u5b58\uff0c\u8bf7\u5148\u4fdd\u5b58\u518d\u6d4b\u8bd5',
+      needConfig: '请先保存 MaClawSrv 地址和管理密钥',
+      saveBeforeTest: '地址或管理密钥还没保存，请先保存再测试',
       srvRejected: 'MaClawSrv \u62d2\u7edd\u4e86\u672c\u6b21\u8bf7\u6c42',
-      srvTokenRejected: '\u8bbf\u95ee\u4ee4\u724c\u88ab MaClawSrv \u62d2\u7edd\uff08HTTP 401\uff09\u3002\u4ee4\u724c\u6709\u65f6\u6548\uff1a\u4fdd\u5b58\u65b0\u4ee4\u724c\u6216\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5\u540e\u6d4b\u8bd5\u8fde\u63a5\u53ef\u81ea\u52a8\u7eed\u671f',
-      srvTokenForbidden: '\u8bbf\u95ee\u4ee4\u724c\u65e0\u6743\u6267\u884c\u8be5\u64cd\u4f5c\uff08HTTP 403\uff09',
+      srvTokenRejected: '凭证被 MaClawSrv 拒绝（HTTP 401）。保存管理密钥后测试连接可自动续期',
+      srvTokenForbidden: '凭证无权执行该操作（HTTP 403），请检查管理密钥是否正确',
       srvNotFound: '\u627e\u4e0d\u5230\u5b9e\u4f8b\u6216\u63a5\u53e3\uff08HTTP 404\uff09\uff0c\u8bf7\u68c0\u67e5\u5730\u5740\u662f\u5426\u6b63\u786e\u8f6c\u53d1 /api',
       bots: '\u7528\u6237\u521b\u5efa\u7684 Bot',
       botsHint: '\u5728 MaClaw \u5ba2\u6237\u7aef\u7684 Bot \u7ba1\u7406\u91cc\u521b\u5efa\uff0c\u8fd9\u91cc\u53ea\u67e5\u770b\u3002',
@@ -35,7 +31,17 @@
       badUrl: 'MaClawSrv \u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934',
       owner: '\u7528\u6237',
       access: '\u5f00\u901a\u8303\u56f4',
-      accessHint: '\u9ed8\u8ba4\u5173\u95ed\u3002\u53ea\u6709\u8fd9\u91cc\u5f00\u901a\u7684\u7528\u6237\uff0c\u684c\u9762\u5de6\u4e0b\u89d2\u624d\u4f1a\u51fa\u73b0 Bot\u3002',
+      accessHint: '\u9ed8\u8ba4\u5bf9\u5168\u4f53\u6210\u5458\u5f00\u901a\u3002\u5173\u95ed\u5168\u5c40\u5f00\u5173\u5e76\u6dfb\u52a0\u90e8\u95e8\u6216\u7528\u6237\u540e\uff0c\u53ea\u6709\u6388\u6743\u8303\u56f4\u5185\u7684\u4eba\u53ef\u4ee5\u4f7f\u7528\u3002',
+      groupRuntime: '\u670d\u52a1\u63a5\u5165',
+      groupAccess: '\u6388\u6743\u4e0e\u914d\u989d',
+      groupDesktop: '\u684c\u9762\u8d44\u6e90',
+      groupBots: '\u5b9e\u4f8b',
+      statConn: 'MaClawSrv',
+      statLLM: 'LLM \u670d\u52a1\u5546',
+      statAccess: '\u5f00\u901a\u8303\u56f4',
+      statBots: 'Bot \u5b9e\u4f8b',
+      statLLMEmpty: '\u672a\u8bbe\u7f6e',
+      statWithDesktop: '{n} \u53f0\u6709\u7535\u8111',
       global: '\u5168\u5c40\u5f00\u901a',
       department: '\u90e8\u95e8',
       user: '\u7528\u6237',
@@ -59,34 +65,50 @@
       orgSearching: '\u6b63\u5728\u641c\u7d22...',
       orgMatchUsers: '\u5339\u914d\u7684\u8d26\u53f7',
       orgMatchLimited: '\u53ea\u663e\u793a\u4e86\u524d 50 \u4e2a\u8d26\u53f7\u3002\u518d\u591a\u8f93\u5165\u51e0\u4e2a\u5b57\u3002',
-      grantEmpty: '\u5f53\u524d\u6ca1\u6709\u5f00\u901a\u3002',
+      grantEmpty: '\u5f53\u524d\u6ca1\u6709\u4efb\u4f55\u9650\u5236\uff1a\u5168\u5458\u9ed8\u8ba4\u53ef\u7528\u3002',
       instance: '\u5b9e\u4f8b',
       configured: '\u5df2\u914d\u7f6e',
       unconfigured: '\u672a\u914d\u7f6e',
       online: '\u5df2\u8fde\u901a',
-      connectionHint: '\u586b\u5199 MaClawSrv \u7684\u5730\u5740\u4e0e\u8bbf\u95ee\u4ee4\u724c\uff0c\u4fdd\u5b58\u540e\u53ef\u6d4b\u8bd5\u8fde\u63a5\u3002',
+      connectionHint: '填写 MaClawSrv 的地址与管理密钥，保存后可测试连接。',
       globalHint: '\u5168\u4f53\u6210\u5458\u90fd\u80fd\u4f7f\u7528 Bot',
       enableList: '\u5f00\u901a\u6e05\u5355',
       everyoneNote: '\u5df2\u5bf9\u5168\u4f53\u6210\u5458\u5f00\u653e\u3002\u5173\u95ed\u4e0a\u65b9\u5f00\u5173\uff0c\u5373\u53ef\u6309\u90e8\u95e8\u6216\u7528\u6237\u5f00\u901a\u3002',
       countUnit: '\u9879',
       botColumn: 'Bot',
       created: '\u521b\u5efa\u65f6\u95f4',
+      desktopBots: '\u53ef\u7528\u7535\u8111\u7684 bot \u6570',
+      desktopBotsShort: '\u7535\u8111\u6570',
+      desktopUnlimited: '\u4e0d\u9650',
+      desktopColumn: '\u7535\u8111',
+      desktopShared: '\u5171\u7528',
+      desktopIsolated: '\u72ec\u7acb',
+      desktopNone: '\u65e0',
+      desktopOver: '\u8d85\u989d',
+      desktopLimitBad: '\u8bf7\u586b\u5199\u4e0d\u5c0f\u4e8e 0 \u7684\u6574\u6570\uff0c\u6216\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7',
+      desktopCascade: '\u9650\u989d\u6309 \u7528\u6237 \u2192 \u90e8\u95e8 \u2192 \u5168\u5c40 \u2192 \u9ed8\u8ba4 \u9010\u7ea7\u751f\u6548\uff0c\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7',
+      desktopInherit: '\u8ddf\u968f\u4e0a\u7ea7',
+      desktopDefault: '\u9ed8\u8ba4\u7535\u8111\u6570',
+      desktopDefaultHint: '\u5f00\u901a\u8303\u56f4\u5404\u5c42\u90fd\u6ca1\u586b\u9650\u989d\u65f6\u7528\u5b83\u515c\u5e95\uff1b\u7559\u7a7a\u8868\u793a\u4e0d\u9650',
+      desktopDefaultOf: '\u9ed8\u8ba4 {n}',
       readOnly: '\u53ea\u8bfb',
       remove: '\u5220\u9664',
       failed: '\u64cd\u4f5c\u5931\u8d25',
       llmTitle: 'LLM \u8bbe\u7f6e',
-      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff0c\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
-      llmDefaultHint: '\u6309\u5173\u8054\u7528\u6237\u7684\u5b98\u65b9\u989d\u5ea6\u6263\u8d39',
+      llmHint: '\u5148\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0c\u518d\u4e3a\u524d\u53f0\u4ea4\u4e92\u3001\u540e\u53f0\u6267\u884c\u3001\u7535\u8111\u64cd\u4f5c\u548c\u5b9a\u4f4d\u6a21\u578b\u5206\u522b\u6307\u5b9a\u670d\u52a1\u5546\u4e0e\u6a21\u578b\u3002\u524d\u53f0\u4ea4\u4e92\u9ed8\u8ba4\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff0c\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\uff1b\u5176\u4f59\u89d2\u8272\u9ed8\u8ba4\u8ddf\u968f\u524d\u53f0\uff0c\u6a21\u578b\u7559\u7a7a\u5219\u4f7f\u7528\u670d\u52a1\u5546\u9ed8\u8ba4\u6a21\u578b\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
+      llmDefaultNote: '\u524d\u53f0\u4ea4\u4e92\u672a\u9009\u5176\u5b83\u670d\u52a1\u5546\u65f6\uff0c\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff08\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\uff09\u3002',
       llmOfficialName: 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4',
-      llmUse: '\u4f7f\u7528',
       llmAdd: '\u6dfb\u52a0\u670d\u52a1\u5546',
+      llmEdit: '\u7f16\u8f91',
+      llmEditProvider: '\u7f16\u8f91\u670d\u52a1\u5546',
+      llmCancel: '\u53d6\u6d88',
+      llmDialogSave: '\u4fdd\u5b58',
       llmName: '\u540d\u79f0',
       llmProtocol: '\u534f\u8bae',
       llmURL: '\u63a5\u53e3\u5730\u5740',
       llmKey: 'API Key',
       llmModel: '\u6a21\u578b',
       llmSave: '\u4fdd\u5b58 LLM \u8bbe\u7f6e',
-      llmEmpty: '\u8fd8\u6ca1\u6709\u5176\u5b83\u670d\u52a1\u5546\u3002\u5f53\u524d\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\u3002',
       llmRemove: '\u79fb\u9664',
       llmSaved: '\u5df2\u4fdd\u5b58 LLM \u8bbe\u7f6e',
       llmSavedStale: '\u5df2\u4fdd\u5b58\u3002\u4e4b\u540e\u7684\u4fee\u6539\u5c1a\u672a\u5199\u5165\uff0c\u8bf7\u518d\u4fdd\u5b58\u4e00\u6b21\u3002',
@@ -101,7 +123,38 @@
       llmReservedName: '\u8fd9\u4e2a\u540d\u79f0\u5df2\u4fdd\u7559',
       llmKeyKeep: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5',
       llmBadCurrent: '\u8bf7\u9009\u62e9 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\u6216\u4e00\u4e2a\u5df2\u6dfb\u52a0\u7684\u670d\u52a1\u5546',
-      llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58'
+      llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58',
+      llmRolesTitle: '\u6a21\u578b\u914d\u7f6e',
+      llmRolesHint: '\u4e3a\u56db\u79cd\u64cd\u4f5c\u5206\u522b\u6307\u5b9a\u670d\u52a1\u5546\u4e0e\u6a21\u578b\u3002\u540e\u53f0\u6267\u884c\u3001\u7535\u8111\u64cd\u4f5c\u548c\u5b9a\u4f4d\u6a21\u578b\u9ed8\u8ba4\u8ddf\u968f\u524d\u53f0\u4ea4\u4e92\uff1b\u6a21\u578b\u7559\u7a7a\u4f7f\u7528\u670d\u52a1\u5546\u9ed8\u8ba4\u6a21\u578b\u3002',
+      llmRoleForeground: '\u524d\u53f0\u4ea4\u4e92',
+      llmRoleBackground: '\u540e\u53f0\u6267\u884c',
+      llmRoleComputerUse: '\u7535\u8111\u64cd\u4f5c',
+      llmRoleGrounder: '\u5b9a\u4f4d\u6a21\u578b',
+      llmRoleInherit: '\u8ddf\u968f\u524d\u53f0\u4ea4\u4e92',
+      llmRoleUnused: '\u4e0d\u4f7f\u7528',
+      llmRoleModelOfficial: '\u5b98\u65b9\u9ed8\u8ba4\uff08auto\uff09',
+      llmRoleModelDefault: '\u9ed8\u8ba4 {m}\uff0c\u53ef\u8986\u76d6',
+      llmRoleModelEmpty: '\u670d\u52a1\u5546\u9ed8\u8ba4\u6a21\u578b',
+      llmRoleModelBad: '\u89d2\u8272\u6a21\u578b\u540d\u65e0\u6548',
+      llmVision: '\u56fe\u50cf\u8f93\u5165',
+      llmVisionAuto: '\u81ea\u52a8',
+      llmVisionOn: '\u5f00',
+      llmVisionOff: '\u5173',
+      llmVisionYes: '\u652f\u6301\u56fe\u50cf',
+      llmVisionNo: '\u4e0d\u652f\u6301\u56fe\u50cf',
+      llmVisionUnknown: '\u5c1a\u672a\u68c0\u6d4b',
+      llmVisionDetect: '\u68c0\u6d4b',
+      llmVisionProbing: '\u6b63\u5728\u68c0\u6d4b\u2026',
+      llmVisionInconclusive: '\u672a\u80fd\u786e\u8ba4\u8be5\u6a21\u578b\u662f\u5426\u652f\u6301\u56fe\u50cf\uff0c\u8bf7\u68c0\u67e5\u63a5\u53e3\u6216\u7a0d\u540e\u91cd\u8bd5',
+      llmFetchModels: '\u83b7\u53d6\u6a21\u578b\u5217\u8868',
+      llmFetching: '\u6b63\u5728\u83b7\u53d6...',
+      llmModelsLoaded: '\u5df2\u83b7\u53d6 {n} \u4e2a\u6a21\u578b\uff0c\u70b9\u51fb\u8f93\u5165\u6846\u53ef\u76f4\u63a5\u9009\u62e9',
+      llmModelsEmpty: '\u670d\u52a1\u5546\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868',
+      llmFetchNeedURL: '\u8bf7\u5148\u586b\u5199\u63a5\u53e3\u5730\u5740\u548c API Key',
+      llmProviderGone: '\u670d\u52a1\u5546\u5df2\u4e0d\u5b58\u5728\uff0c\u5237\u65b0\u9875\u9762\u540e\u91cd\u8bd5',
+      llmTagInUse: '\u524d\u53f0\u4f7f\u7528\u4e2d',
+      llmRolesColRole: '\u89d2\u8272',
+      llmRolesColProvider: '\u670d\u52a1\u5546'
     },
     en: {
       title: 'Bot management',
@@ -110,12 +163,8 @@
       navDesc: 'MaClawSrv connection, Docker service, and LLM',
       connection: 'MaClawSrv connection',
       url: 'MaClawSrv URL',
-      token: 'Access token',
-      tokenHint: 'Leave blank to keep the saved token',
-      tokenSet: 'Token saved',
-      tokenMissing: 'No token saved',
       adminSecret: 'Admin secret',
-      adminHint: 'Creates one MaClawSrv user per Hub user. Leave blank to keep the saved secret.',
+      adminHint: 'Paste the MaClawSrv Root Admin API Secret. Saving it provisions the connection account automatically. Leave blank to keep the saved secret.',
       adminSet: 'Admin secret saved',
       adminMissing: 'No admin secret saved',
       save: 'Save connection',
@@ -123,11 +172,11 @@
       saved: 'Saved',
       connected: 'Connected, {count} instances',
       testing: 'Testing...',
-      needConfig: 'Save the MaClawSrv URL and access token first',
-      saveBeforeTest: 'Save the URL and token before testing',
+      needConfig: 'Save the MaClawSrv URL and admin secret first',
+      saveBeforeTest: 'Save the URL and admin secret before testing',
       srvRejected: 'MaClawSrv rejected the request',
-      srvTokenRejected: 'MaClawSrv rejected the access token (HTTP 401). Tokens expire: save a fresh one, or keep the admin secret saved and test again to renew automatically',
-      srvTokenForbidden: 'The access token lacks permission (HTTP 403)',
+      srvTokenRejected: 'MaClawSrv rejected the credential (HTTP 401). Keep the admin secret saved and test again to renew automatically',
+      srvTokenForbidden: 'The credential lacks permission (HTTP 403); check the admin secret',
       srvNotFound: 'Instance or endpoint not found (HTTP 404); check that the URL forwards /api',
       bots: 'Bots created by users',
       botsHint: 'Created in the MaClaw app. This page only lists them.',
@@ -136,7 +185,17 @@
       badUrl: 'The MaClawSrv URL must start with http:// or https://',
       owner: 'User',
       access: 'Who can use bots',
-      accessHint: 'Off by default. The desktop Bot entry appears only for users switched on here.',
+      accessHint: 'On for everyone by default. Turn the switch off and add departments or users to restrict access.',
+      groupRuntime: 'Service',
+      groupAccess: 'Access & quotas',
+      groupDesktop: 'Desktop resources',
+      groupBots: 'Instances',
+      statConn: 'MaClawSrv',
+      statLLM: 'LLM providers',
+      statAccess: 'Access',
+      statBots: 'Bot instances',
+      statLLMEmpty: 'Not set',
+      statWithDesktop: '{n} with a computer',
       global: 'Everyone',
       department: 'Department',
       user: 'User',
@@ -160,34 +219,49 @@
       orgSearching: 'Searching...',
       orgMatchUsers: 'Matching accounts',
       orgMatchLimited: 'Showing the first 50 accounts. Type a few more letters.',
-      grantEmpty: 'Nobody is enabled.',
+      grantEmpty: 'No restrictions: everyone can use bots by default.',
       instance: 'Instance',
       configured: 'Configured',
       unconfigured: 'Not configured',
       online: 'Connected',
-      connectionHint: 'Enter the MaClawSrv URL and access token, then save and test.',
+      connectionHint: 'Enter the MaClawSrv URL and admin secret, then save and test.',
       globalHint: 'Everyone in this tenant can use bots',
       enableList: 'Enabled',
       everyoneNote: 'Everyone already has access. Turn the switch off to enable specific departments or users.',
       countUnit: 'entries',
       botColumn: 'Bot',
       created: 'Created',
+      desktopBots: 'Desktop bots allowed',
+      desktopBotsShort: 'Desktops',
+      desktopUnlimited: 'Unlimited',
+      desktopColumn: 'Computer',
+      desktopShared: 'Shared',
+      desktopIsolated: 'Own',
+      desktopNone: 'None',
+      desktopOver: 'Over limit',
+      desktopLimitBad: 'Enter a whole number, or leave it blank to inherit',
+      desktopCascade: 'Caps resolve user → department → global → default. Blank inherits the next level.',
+      desktopInherit: 'Inherit',
+      desktopDefault: 'Default desktops',
+      desktopDefaultHint: 'The fallback when every grant level is blank; leave empty for no limit',
+      desktopDefaultOf: 'Default {n}',
       readOnly: 'Read-only',
       remove: 'Delete',
       failed: 'Request failed',
       llmTitle: 'LLM settings',
-      llmHint: 'MaClawSrv uses the MaClaw official service group by default and deducts the associated user redeemed allowance. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings.',
-      llmDefaultHint: 'Deducted from the associated user official allowance',
+      llmHint: 'Add an OpenAI or Anthropic provider, then set the provider and model for each of the four roles: chat, background jobs, computer use, and the grounding model. The foreground role defaults to the MaClaw official service group, which deducts the associated user redeemed allowance; the other roles follow the foreground by default, and an empty model keeps the provider default. The next bot action writes the saved settings.',
       llmOfficialName: 'MaClaw official service group',
-      llmUse: 'Use',
       llmAdd: 'Add provider',
+      llmEdit: 'Edit',
+      llmEditProvider: 'Edit provider',
+      llmCancel: 'Cancel',
+      llmDialogSave: 'Save',
       llmName: 'Name',
       llmProtocol: 'Protocol',
       llmURL: 'API URL',
       llmKey: 'API key',
       llmModel: 'Model',
       llmSave: 'Save LLM settings',
-      llmEmpty: 'No other providers. The MaClaw official service group is in use.',
       llmRemove: 'Remove',
       llmSaved: 'LLM settings saved',
       llmSavedStale: 'Saved. Later edits are not stored yet. Save again.',
@@ -202,12 +276,49 @@
       llmReservedName: 'This name is reserved',
       llmKeyKeep: 'Leave blank to keep the saved key',
       llmBadCurrent: 'Choose the MaClaw official service group or a provider you added',
-      llmKeySet: 'Key saved'
+      llmKeySet: 'Key saved',
+      llmRolesTitle: 'Model settings',
+      llmRolesHint: 'Set the provider and model for each of the four roles. Background jobs, computer use, and the grounding model follow the foreground by default; an empty model keeps the provider default.',
+      llmRoleForeground: 'Chat',
+      llmRoleBackground: 'Background jobs',
+      llmRoleComputerUse: 'Computer use',
+      llmRoleGrounder: 'Grounding model',
+      llmRoleInherit: 'Follow foreground',
+      llmRoleUnused: 'Do not use',
+      llmRoleModelOfficial: 'Official default (auto)',
+      llmRoleModelDefault: 'Default {m}; override here',
+      llmRoleModelEmpty: 'Provider default model',
+      llmRoleModelBad: 'The role model is invalid',
+      llmVision: 'Image input',
+      llmVisionAuto: 'Auto',
+      llmVisionOn: 'On',
+      llmVisionOff: 'Off',
+      llmVisionYes: 'Accepts images',
+      llmVisionNo: 'No image input',
+      llmVisionUnknown: 'Not detected yet',
+      llmVisionDetect: 'Detect',
+      llmVisionProbing: 'Probing...',
+      llmVisionInconclusive: 'Could not tell whether this model accepts images; check the endpoint or retry later',
+      llmDefaultNote: 'When no other provider is pinned for the foreground role, bots use the MaClaw official service group and deduct the associated user official allowance.',
+      llmFetchModels: 'Fetch models',
+      llmFetching: 'Fetching...',
+      llmModelsLoaded: '{n} models fetched; click the input to pick one',
+      llmModelsEmpty: 'The provider returned no models',
+      llmFetchNeedURL: 'Enter the API URL and API key first',
+      llmProviderGone: 'The provider no longer exists; reload the page and retry',
+      llmTagInUse: 'Used by chat',
+      llmRolesColRole: 'Role',
+      llmRolesColProvider: 'Provider'
     }
   };
 
   function text() {
-    return copy[global.currentLang === 'zh' ? 'zh' : 'en'];
+    var lang = global.hubAdminLang ? global.hubAdminLang() : (global.currentLang === 'zh' ? 'zh' : 'en');
+    if (lang === 'mn') {
+      var mn = global.HUB_ADMIN_DICT_MN && global.HUB_ADMIN_DICT_MN.BOT;
+      return Object.assign({}, copy.en, mn || {});
+    }
+    return copy[lang] || copy.en;
   }
 
   function byID(id) {
@@ -254,9 +365,26 @@
     if (raw.indexOf('llm provider key is invalid') !== -1) return t.llmBadKey;
     if (raw.indexOf('llm provider key') !== -1) return t.llmNeedKey;
     if (raw.indexOf('llm provider model') !== -1) return t.llmNeedModel;
+    if (raw.indexOf('llm models provider') !== -1) return t.llmProviderGone;
     if (raw.indexOf('llm current') !== -1) return t.llmBadCurrent;
     return raw || t.failed;
   }
+
+  /* Small stroke icons lead each card head; desktop-tab reuses them via global.botSecIcon. */
+  var secIcons = {
+    conn: '<path d="M9 7V3.5M15 7V3.5M7 7h10v3.5a5 5 0 01-10 0V7zm5 9.5v4.5"/>',
+    llm: '<path d="M12 3l1.7 4.6L18.5 9l-4.8 1.4L12 15l-1.7-4.6L5.5 9l4.8-1.4z"/><path d="M18 15l.9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9z"/>',
+    access: '<path d="M12 3l7 2.6v5.1c0 4.6-3 8.6-7 10.3-4-1.7-7-5.7-7-10.3V5.6z"/><path d="M9.5 11.5l1.8 1.8 3.4-3.4"/>',
+    bots: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 8V4.5"/><circle cx="9" cy="12.5" r=".9" fill="currentColor" stroke="none"/><circle cx="15" cy="12.5" r=".9" fill="currentColor" stroke="none"/><path d="M9.5 16h5"/>',
+    nodes: '<circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="18" r="2.4"/><path d="M12 7.4L5.6 15.9M12 7.4l6.4 8.5M7.4 18h9.2"/>',
+    services: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/>',
+    assign: '<circle cx="9" cy="8" r="3"/><path d="M4 19c0-3 2.2-5 5-5s5 2 5 5"/><path d="M16 8.5a3 3 0 010 5.5M17.5 14.5c2 .7 3.2 2.4 3.2 4.5"/>',
+    run: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M10 8.5l4.5 3.5-4.5 3.5z"/><path d="M9 20h6"/>'
+  };
+  function secIcon(name) {
+    return '<span class="bot-sec-icon"><svg viewBox="0 0 24 24" aria-hidden="true">' + (secIcons[name] || '') + '</svg></span>';
+  }
+  global.botSecIcon = secIcon;
 
   function applyBotI18n() {
     var t = text();
@@ -269,8 +397,6 @@
     setLabel('botConnectionTitle', t.connection);
     setLabel('botConnectionHint', t.connectionHint);
     setLabel('botUrlLabel', t.url);
-    setLabel('botTokenLabel', t.token);
-    setLabel('botTokenHint', t.tokenHint);
     setLabel('botAdminLabel', t.adminSecret);
     setLabel('botAdminHint', t.adminHint);
     setLabel('botSave', t.save);
@@ -279,12 +405,25 @@
     setLabel('botLLMHint', t.llmHint);
     setLabel('botLLMAdd', t.llmAdd);
     setLabel('botLLMSave', t.llmSave);
+    llmDialogLabels();
     if (panel._botView) renderLLM(panel._botView);
+    setLabel('botGroupRuntime', t.groupRuntime);
+    setLabel('botGroupAccess', t.groupAccess);
+    setLabel('botGroupDesktop', t.groupDesktop);
+    setLabel('botGroupBots', t.groupBots);
+    setLabel('botStatConnLabel', t.statConn);
+    setLabel('botStatLLMLabel', t.statLLM);
+    setLabel('botStatAccessLabel', t.statAccess);
+    setLabel('botStatBotsLabel', t.statBots);
     setLabel('botAccessTitle', t.access);
     setLabel('botAccessHint', t.accessHint);
     setLabel('botGlobalLabel', t.global);
     setLabel('botGlobalHint', t.globalHint);
+    setLabel('botGlobalLimitLabel', t.desktopBots);
     setLabel('botGlobalOn', t.everyoneNote);
+    setLabel('botDefaultLimitLabel', t.desktopDefault);
+    setLabel('botDefaultLimitHint', t.desktopDefaultHint);
+    setLabel('botGrantsHint', t.desktopCascade);
     setLabel('botGrantsTitle', t.enableList);
     setLabel('botOrgTitle', t.orgTitle);
     setLabel('botOrgHint', t.orgHint);
@@ -329,13 +468,64 @@
       + '#tab-bots input:not([type=checkbox]):not([type=radio]),#tab-bots select{display:block;width:100%;height:36px;margin:0}'
       + '#tab-bots input[type=radio]{width:16px;height:16px;min-height:16px;margin:2px 0 0;flex:0 0 auto;accent-color:#2563eb}'
       + '#tab-bots .bot-llm-list{display:grid;gap:8px}'
-      + '#tab-bots .bot-llm-choice{display:flex;align-items:flex-start;gap:10px;margin:0;padding:10px 12px;border:1px solid #dbe7ff;border-radius:10px;background:#f8fbff;text-transform:none;letter-spacing:0;font-size:13px;font-weight:400;color:inherit}'
-      + '#tab-bots .bot-llm-choice strong{display:block;font-size:13px;font-weight:650;color:#172033}'
-      + '#tab-bots .bot-llm-choice small{display:block;margin-top:2px;font-size:11px;line-height:1.45;color:#64748b}'
-      + '#tab-bots .bot-llm-provider{display:grid;gap:8px;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff}'
+      /* Provider cards: identity block, state pills, then the row actions. */
+      + '#tab-bots .bot-llm-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px 14px;align-items:center;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}'
+      + '#tab-bots .bot-llm-row:hover{border-color:#c9d5e8;box-shadow:0 3px 10px rgba(23,34,54,.06)}'
+      + '#tab-bots .bot-llm-row-active{border-color:#c7dbfb;background:linear-gradient(180deg,#fdfeff,#f8fbff)}'
+      + '#tab-bots .bot-llm-avatar{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex:0 0 32px;border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.02em;background:#eef5ff;border:1px solid #dbe7ff;color:#1d4ed8}'
+      + '#tab-bots .bot-llm-avatar[data-protocol="anthropic"]{background:#fff4e0;border-color:#f3ddba;color:#9a5b00}'
+      + '#tab-bots .bot-llm-row-main{display:grid;gap:2px;min-width:0}'
+      + '#tab-bots .bot-llm-row-name{min-width:0;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-row-url{min-width:0;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-row-actions{display:flex;gap:6px;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-row-actions .btn-secondary,#tab-bots .bot-llm-row-actions .btn-danger{height:28px;min-height:28px;padding:0 10px;font-size:12px;box-shadow:none}'
+      + '#tab-bots .bot-llm-tags{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}'
+      + '#tab-bots .bot-llm-tag{padding:2px 9px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:10px;font-weight:700;letter-spacing:.02em;white-space:nowrap}'
+      + '#tab-bots .bot-llm-tag-ok{background:#e8f7ef;color:#15803d}'
+      + '#tab-bots .bot-llm-tag-use{background:#2563eb;color:#fff}'
+      /* Role table: one shared grid for the header and the four role rows. */
+      + '#tab-bots .bot-llm-roles{display:grid;margin-top:2px;padding:0;border:1px solid #e4e9f2;border-radius:10px;background:#fff;overflow:hidden}'
+      + '#tab-bots .bot-llm-roles-title{margin:0;padding:11px 13px 3px;font-size:13px;font-weight:650;color:#172033}'
+      + '#tab-bots .bot-llm-roles-hint{margin:0;padding:0 13px 10px;font-size:11px;line-height:1.5;color:#64748b;border-bottom:1px solid #eef2f7}'
+      + '#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{display:grid;grid-template-columns:minmax(6.5em,.6fr) minmax(0,.9fr) minmax(0,1.2fr) minmax(0,1.15fr);gap:6px 12px;align-items:center}'
+      + '#tab-bots .bot-llm-roles-head{padding:6px 13px;background:#f8fafc;border-bottom:1px solid #eef2f7;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b}'
+      + '#tab-bots .bot-llm-roles-head span:last-child{text-align:right}'
+      + '#tab-bots .bot-llm-role{padding:8px 13px;border-bottom:1px solid #f1f5f9;transition:background .12s ease}'
+      + '#tab-bots .bot-llm-role:last-child{border-bottom:0}'
+      + '#tab-bots .bot-llm-role:hover{background:#fafcff}'
+      + '#tab-bots .bot-llm-role-name{display:flex;align-items:center;gap:7px;margin:0;min-width:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:#172033}'
+      + '#tab-bots .bot-llm-role-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-llm-role-dot{width:7px;height:7px;border-radius:999px;flex:0 0 auto;background:#94a3b8}'
+      + '#tab-bots .bot-llm-role-dot[data-role="foreground"]{background:#2563eb}'
+      + '#tab-bots .bot-llm-role-dot[data-role="background"]{background:#0f9f8f}'
+      + '#tab-bots .bot-llm-role-dot[data-role="computer_use"]{background:#8b5cf6}'
+      + '#tab-bots .bot-llm-role-dot[data-role="grounder"]{background:#d99012}'
+      + '#tab-bots .bot-llm-role select,#tab-bots .bot-llm-role-model input{height:34px;min-height:34px}'
+      + '#tab-bots .bot-llm-role-model{display:flex;gap:6px;align-items:center;min-width:0}'
+      + '#tab-bots .bot-llm-role-model input{min-width:0;flex:1 1 auto}'
+      + '#tab-bots .bot-llm-role-model input:disabled{background:#f4f6fa;color:#94a3b8;cursor:default}'
+      + '#tab-bots .bot-llm-role-blank{color:#cbd5e1;font-size:12px;user-select:none}'
+      + '#tab-bots .bot-llm-role-vision{display:flex;gap:6px;align-items:center;justify-content:flex-end;min-width:0;flex-wrap:nowrap}'
+      + '#tab-bots .bot-llm-role-vision select{width:auto;min-width:78px;height:30px;min-height:30px;font-size:12px;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-vision-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;height:24px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+      + '#tab-bots .bot-llm-vision-chip::before{content:"";width:6px;height:6px;border-radius:999px;background:currentColor;opacity:.75;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-vision-unknown{background:#f1f5f9;color:#64748b}'
+      + '#tab-bots .bot-llm-vision-yes{background:#e8f7ef;color:#15803d}'
+      + '#tab-bots .bot-llm-vision-no{background:#fff7e6;color:#9a6700}'
+      + '#tab-bots .bot-llm-vision-detect{height:30px;min-height:30px;padding:0 10px;font-size:12px;box-shadow:none;flex:0 0 auto}'
+      + '#tab-bots .bot-llm-default-note{margin:0;padding:9px 12px;border:1px dashed #d7e3f8;border-radius:10px;background:#f8fbff;color:#475569;font-size:11px;line-height:1.5}'
+      + '#tab-bots .bot-llm-fetch{height:26px;min-height:26px;padding:0 10px;font-size:11px;border-radius:8px;background:#fff;color:#3b414d;border:1px solid #d9e1ec;box-shadow:none;white-space:nowrap}'
+      + '#tab-bots .bot-llm-fetch:disabled,#tab-bots .bot-llm-fetch:disabled:hover{opacity:.55;cursor:default;transform:none}'
+      + '#tab-bots .bot-modal-overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:8vh 16px 16px;background:rgba(15,23,42,.42)}'
+      + '#tab-bots .bot-modal-overlay[hidden]{display:none}'
+      + '#tab-bots .bot-modal{display:grid;gap:12px;width:min(680px,100%);max-height:82vh;overflow:auto;padding:16px 18px;border-radius:14px;background:#fff;box-shadow:0 24px 60px rgba(15,23,42,.25)}'
+      + '#tab-bots .bot-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:10px;border-bottom:1px solid #eef2f7}'
+      + '#tab-bots .bot-modal-head h4{margin:0;font-size:14px;font-weight:700;color:#172033}'
+      + '#tab-bots .bot-modal-close{width:30px;height:30px;min-height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:#64748b;font-size:16px;cursor:pointer}'
+      + '#tab-bots .bot-modal-close:hover{background:#eef2f7;color:#172033}'
+      + '#tab-bots .bot-modal-body{display:grid;gap:10px}'
+      + '#tab-bots .bot-modal-foot{display:flex;justify-content:flex-end;gap:8px;padding-top:10px;border-top:1px solid #eef2f7}'
       + '#tab-bots .bot-llm-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;align-items:end}'
-      + '#tab-bots .bot-llm-remove{grid-column:1 / -1;justify-self:start}'
-      + '#tab-bots .bot-llm-remove{height:36px;min-height:36px;padding:0 10px;font-size:12px}'
       + '#tab-bots .bot-field-note{margin:6px 0 0;font-size:11px;line-height:1.5;color:#64748b}'
       + '#tab-bots .bot-status{margin:0;font-size:12px;line-height:1.45;color:#64748b}'
       + '#tab-bots .bot-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap}'
@@ -361,9 +551,14 @@
       + '#tab-bots .bot-hint{margin:0;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fbfcfe;color:#64748b;font-size:11px;line-height:1.5}'
       + '#tab-bots .bot-empty{margin:0;padding:14px;border:1px dashed #dbe3ee;border-radius:10px;background:#fbfcfe;color:#64748b;font-size:11px;line-height:1.5;text-align:center}'
       + '#tab-bots .bot-grant-list{display:grid;gap:6px}'
-      + '#tab-bots .bot-grant{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 8px 8px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
+      + '#tab-bots .bot-grant{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 8px 8px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
       + '#tab-bots .bot-grant-kind{flex:0 0 auto;padding:2px 7px;border-radius:999px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:800;letter-spacing:.03em}'
       + '#tab-bots .bot-grant-name{min-width:0;flex:1;font-size:12px;color:#243244;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-grant-limit{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-size:11px;color:#64748b}'
+      + '#tab-bots .bot-limit-hint{font-size:10px;color:#94a3b8}'
+      + '#tab-bots .bot-grant-limit input,#tab-bots .bot-global-limit input{width:88px;height:28px;min-height:28px;margin:0;padding:0 8px}'
+      + '#tab-bots .bot-global-limit{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0 0;padding:8px 13px;border:1px solid #e4e9f2;border-radius:9px;background:#fff;font-size:12px;color:#475569}'
+      + '#tab-bots .bot-global-limit[hidden]{display:none}'
       /* Organization tree. */
       + '#tab-bots .bot-org-tree{max-height:340px;overflow:auto;border:1px solid #e4e9f2;border-radius:10px;padding:6px;background:#fbfcfe}'
       + '#tab-bots .bot-org-row{display:flex;align-items:center;gap:8px;min-height:32px;padding:3px 8px;border-radius:8px;cursor:pointer}'
@@ -379,7 +574,7 @@
       + '#tab-bots .bot-org-add{height:28px;min-height:28px;padding:0 10px;font-size:12px;box-shadow:none}'
       /* Bot list table. */
       + '#tab-bots .bot-table{display:grid;gap:6px}'
-      + '#tab-bots .bot-tr{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1.2fr) minmax(0,1.1fr) minmax(0,1fr);gap:10px;align-items:center;padding:9px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
+      + '#tab-bots .bot-tr{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1.2fr) minmax(0,.8fr) minmax(0,1.1fr) minmax(0,1fr);gap:10px;align-items:center;padding:9px 11px;border:1px solid #e4e9f2;border-radius:9px;background:#fff}'
       + '#tab-bots .bot-th{padding:0 11px;border:0;background:transparent;box-shadow:none;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}'
       + '#tab-bots .bot-td{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#475569}'
       + '#tab-bots .bot-td strong{display:block;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
@@ -391,6 +586,30 @@
       + '#tab-bots .bot-row small{display:block;color:#64748b;font-size:11px}'
       + '#tab-bots .bot-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 12px}'
       + '#tab-bots .bot-fields input{width:100%;margin:0}'
+      /* Intranet Bot nodes: one card row per node. */
+      + '#tab-bots .bot-node-list{display:grid;gap:8px}'
+      + '#tab-bots .bot-node-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:10px 12px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;transition:border-color .15s ease,box-shadow .15s ease}'
+      + '#tab-bots .bot-node-row:hover{border-color:#c9d5e8;box-shadow:0 3px 10px rgba(23,34,54,.06)}'
+      + '#tab-bots .bot-node-row[data-online="1"]{border-color:#d8ecdf;background:linear-gradient(180deg,#fdfffe,#f6fbf9)}'
+      + '#tab-bots .bot-node-avatar{position:relative;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;flex:0 0 34px;border-radius:10px;background:#f1f5f9;border:1px solid #e2e8f0;color:#64748b;font-size:13px;font-weight:800;letter-spacing:.02em;text-transform:uppercase}'
+      + '#tab-bots .bot-node-avatar::after{content:"";position:absolute;right:-2px;bottom:-2px;width:9px;height:9px;border-radius:999px;background:#94a3b8;border:2px solid #fff}'
+      + '#tab-bots .bot-node-row[data-online="1"] .bot-node-avatar{background:#e8f7ef;border-color:#c9eadb;color:#15803d}'
+      + '#tab-bots .bot-node-row[data-online="1"] .bot-node-avatar::after{background:#22b573}'
+      + '#tab-bots .bot-node-main{display:grid;gap:3px;min-width:0}'
+      + '#tab-bots .bot-node-title{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}'
+      + '#tab-bots .bot-node-name{min-width:0;font-size:13px;font-weight:650;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-node-state{display:inline-flex;align-items:center;gap:5px;padding:1px 9px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.03em;white-space:nowrap}'
+      + '#tab-bots .bot-node-state::before{content:"";width:6px;height:6px;border-radius:999px;background:currentColor}'
+      + '#tab-bots .bot-node-state-on{background:#e8f7ef;color:#15803d}'
+      + '#tab-bots .bot-node-tag{padding:1px 8px;border-radius:6px;background:#eef5ff;color:#1d4ed8;font-size:10px;font-weight:700;letter-spacing:.02em;white-space:nowrap}'
+      + '#tab-bots .bot-node-tag-own{background:#fff2e4;color:#9a5b00}'
+      + '#tab-bots .bot-node-tag-dim{background:#f1f5f9;color:#475569}'
+      + '#tab-bots .bot-node-sub{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;font-size:11px;line-height:1.5;color:#64748b}'
+      + '#tab-bots .bot-node-sub strong{font-weight:650;color:#243244}'
+      + '#tab-bots .bot-node-sep{color:#cbd5e1}'
+      + '#tab-bots .bot-node-enroll{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}'
+      + '#tab-bots .bot-node-enroll button{height:36px;min-height:36px;padding:0 14px;font-size:12px;white-space:nowrap}'
+      + '#tab-bots #desktopNodeCodeOut code{padding:2px 8px;border-radius:6px;background:#eef5ff;color:#1d4ed8;font:700 13px/1.4 Consolas,monospace;letter-spacing:.08em;user-select:all}'
       /* Docker service sections mount here as cards that match the rest of the page. */
       + '#tab-bots #botDesktopHost{display:grid;gap:14px}'
       + '#tab-bots #botDesktopHost > section{display:grid;gap:12px;align-content:start;padding:15px 17px;border:1px solid #e4e9f2;border-radius:10px;background:#fff;box-shadow:0 6px 18px rgba(23,34,54,.035)}'
@@ -398,20 +617,40 @@
       + '#tab-bots #botDesktopHost > section > h3::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#2563eb;vertical-align:middle}'
       + '#tab-bots #botDesktopHost > section > h3 + p{padding-bottom:11px;border-bottom:1px solid #eef2f7}'
       + '#tab-bots #desktopHint,#tab-bots #desktopAssignHint,#tab-bots #desktopRunHint{margin:0;font-size:11px;line-height:1.5;color:#64748b}'
-      + '@media (max-width:860px){#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}}'
-      + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}}'
+      /* Status strip: the four numbers an admin checks first. */
+      + '#tab-bots .bot-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}'
+      + '#tab-bots .bot-stat{display:grid;gap:2px;align-content:start;min-width:0;padding:11px 13px;border:1px solid #e4e9f2;border-radius:10px;background:linear-gradient(180deg,#fff,#fbfcfe)}'
+      + '#tab-bots .bot-stat-label{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b}'
+      + '#tab-bots .bot-stat-value{min-height:1.3em;font-size:15px;font-weight:700;color:#172033;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#tab-bots .bot-stat-value.bot-stat-ok{color:#15803d}'
+      + '#tab-bots .bot-stat-value.bot-stat-warn{color:#9a6700}'
+      + '#tab-bots .bot-stat-value.bot-stat-info{color:#1d4ed8}'
+      + '#tab-bots .bot-stat-sub{font-size:10px;color:#94a3b8;min-height:1.2em}'
+      /* Section groups and the icon that leads each card head. */
+      + '#tab-bots .bot-group{margin:4px 2px -4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8}'
+      + '#tab-bots .bot-sec-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#eef5ff;border:1px solid #dbe7ff;color:#1d4ed8}'
+      + '#tab-bots .bot-sec-icon svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}'
+      + '#tab-bots .bot-section > .item-head{align-items:center}'
+      + '#tab-bots .bot-section > .item-head > div{min-width:0;flex:1}'
+      + '#tab-bots .bot-form-3{grid-template-columns:repeat(3,minmax(0,1fr))}'
+      + '@media (max-width:1080px){#tab-bots .bot-llm-roles-head,#tab-bots .bot-llm-role{grid-template-columns:minmax(6em,.7fr) minmax(0,1fr) minmax(0,1.3fr)}#tab-bots .bot-llm-roles-head span:last-child{display:none}#tab-bots .bot-llm-role .bot-llm-role-blank{display:none}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:2;justify-content:flex-start}}'
+      + '@media (max-width:860px){#tab-bots .bot-stats{grid-template-columns:repeat(2,minmax(0,1fr))}#tab-bots .bot-form-3{grid-template-columns:1fr}#tab-bots .bot-form,#tab-bots .bot-split,#tab-bots .bot-llm-grid,#tab-bots .bot-llm-role{grid-template-columns:1fr}#tab-bots .bot-fields{grid-template-columns:1fr 1fr}#tab-bots .bot-llm-roles-head{display:none}#tab-bots .bot-llm-role .bot-llm-role-name{grid-column:1/-1}#tab-bots .bot-llm-role .bot-llm-role-vision{grid-column:1/-1;grid-row:auto;justify-content:flex-start}#tab-bots .bot-llm-row{grid-template-columns:auto minmax(0,1fr) auto}#tab-bots .bot-llm-tags{grid-column:2;grid-row:2;margin-left:0;flex-wrap:wrap}}'
+      + '@media (max-width:760px){#tab-bots .bot-tr{grid-template-columns:1fr;gap:6px}#tab-bots .bot-th{display:none}#tab-bots .bot-td{white-space:normal;overflow:visible}#tab-bots .bot-td-main{padding-bottom:6px;border-bottom:1px solid #eef2f7}#tab-bots .bot-td-labelled{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;align-items:baseline}#tab-bots .bot-td-labelled::before{content:attr(data-label);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b;overflow:visible;text-overflow:clip}#tab-bots .bot-fields{grid-template-columns:1fr}#tab-bots .bot-node-row{grid-template-columns:auto minmax(0,1fr)}#tab-bots .bot-node-row>.bot-actions{grid-column:2;justify-content:flex-start}#tab-bots .bot-node-enroll{grid-template-columns:1fr}#tab-bots .bot-node-enroll button{justify-self:start}}'
       + '</style>'
       + '<div class="bot-page">'
+      + '<div class="bot-stats">'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatConnLabel"></span><span class="bot-stat-value" id="botStatConn"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatLLMLabel"></span><span class="bot-stat-value" id="botStatLLM"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatAccessLabel"></span><span class="bot-stat-value" id="botStatAccess"></span></div>'
+      + '<div class="bot-stat"><span class="bot-stat-label" id="botStatBotsLabel"></span><span class="bot-stat-value" id="botStatBots"></span><span class="bot-stat-sub" id="botStatBotsSub"></span></div>'
+      + '</div>'
+      + '<p class="bot-group" id="botGroupRuntime"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botConnectionTitle"></h3>'
+      + '<div class="item-head">' + secIcon('conn') + '<div><h3 class="item-title" id="botConnectionTitle"></h3>'
       + '<p class="item-meta" id="botConnectionHint"></p></div><span class="badge" id="botConnBadge"></span></div>'
       + '<div class="bot-form">'
       + '<div class="bot-field bot-field-wide"><label id="botUrlLabel" for="botBaseUrl"></label>'
       + '<input id="botBaseUrl" autocomplete="off" spellcheck="false"></div>'
-      + '<div class="bot-field"><div class="bot-field-head"><label id="botTokenLabel" for="botAccessToken"></label>'
-      + '<span class="badge" id="botTokenState"></span></div>'
-      + '<input id="botAccessToken" type="password" autocomplete="new-password">'
-      + '<p class="bot-field-note" id="botTokenHint"></p></div>'
       + '<div class="bot-field"><div class="bot-field-head"><label id="botAdminLabel" for="botAdminSecret"></label>'
       + '<span class="badge" id="botAdminState"></span></div>'
       + '<input id="botAdminSecret" type="password" autocomplete="new-password">'
@@ -423,33 +662,66 @@
       + '<p class="bot-status" id="botConnStatus"></p></div>'
       + '</section>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botLLMTitle"></h3>'
+      + '<div class="item-head">' + secIcon('llm') + '<div><h3 class="item-title" id="botLLMTitle"></h3>'
       + '<p class="item-meta" id="botLLMHint"></p></div><span class="badge" id="botLLMBadge"></span></div>'
       + '<div id="botLLMList" class="bot-llm-list"></div>'
+      + '<div id="botLLMRoles" class="bot-llm-roles"></div>'
+      + '<div id="botLLMPModal" class="bot-modal-overlay" hidden>'
+      + '<div class="bot-modal" role="dialog" aria-modal="true" aria-labelledby="botLLMPModalTitle">'
+      + '<div class="bot-modal-head"><h4 id="botLLMPModalTitle"></h4>'
+      + '<button type="button" class="bot-modal-close" id="botLLMPClose" aria-label="close">\u00d7</button></div>'
+      + '<div class="bot-modal-body"><div class="bot-llm-grid">'
+      + '<div class="bot-field"><label id="botLLMPNameLabel" for="botLLMPName"></label><input id="botLLMPName" autocomplete="off"></div>'
+      + '<div class="bot-field"><label id="botLLMPProtocolLabel" for="botLLMPProtocol"></label><select id="botLLMPProtocol">'
+      + '<option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></div>'
+      + '<div class="bot-field bot-field-wide"><label id="botLLMPUrlLabel" for="botLLMPUrl"></label><input id="botLLMPUrl" autocomplete="off" spellcheck="false"></div>'
+      + '<div class="bot-field"><div class="bot-field-head"><label id="botLLMPModelLabel" for="botLLMPModel"></label>'
+      + '<button type="button" class="bot-llm-fetch" id="botLLMPFetch"></button></div>'
+      + '<input id="botLLMPModel" list="botLLMPModelList" autocomplete="off" spellcheck="false">'
+      + '<datalist id="botLLMPModelList"></datalist>'
+      + '<p class="bot-field-note" id="botLLMPModelsStatus"></p></div>'
+      + '<div class="bot-field"><label id="botLLMPKeyLabel" for="botLLMPKey"></label><input id="botLLMPKey" type="password" autocomplete="new-password">'
+      + '<p class="bot-field-note" id="botLLMPKeyHint"></p></div>'
+      + '</div></div>'
+      + '<div class="bot-modal-foot">'
+      + '<button type="button" class="btn-secondary" id="botLLMPCancel"></button>'
+      + '<button type="button" class="btn-primary" id="botLLMPSave"></button></div>'
+      + '</div></div>'
       + '<div class="bot-foot"><div class="bot-actions">'
       + '<button type="button" class="btn-secondary" id="botLLMAdd"></button>'
       + '<button type="button" class="btn-primary" id="botLLMSave"></button></div>'
       + '<p class="bot-status" id="botLLMStatus"></p></div>'
       + '</section>'
+      + '<p class="bot-group" id="botGroupAccess"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botAccessTitle"></h3>'
+      + '<div class="item-head">' + secIcon('access') + '<div><h3 class="item-title" id="botAccessTitle"></h3>'
       + '<p class="item-meta" id="botAccessHint"></p></div><span class="badge" id="botAccessBadge"></span></div>'
       + '<label class="bot-toggle" for="botGlobal"><span class="bot-toggle-copy">'
       + '<span class="bot-toggle-title" id="botGlobalLabel"></span>'
       + '<span class="bot-toggle-desc" id="botGlobalHint"></span></span>'
       + '<input id="botGlobal" type="checkbox"></label>'
+      + '<div class="bot-global-limit" id="botGlobalLimitRow" hidden>'
+      + '<label id="botGlobalLimitLabel" for="botGlobalLimit"></label>'
+      + '<input id="botGlobalLimit" type="number" min="0" step="1" inputmode="numeric"></div>'
+      + '<div class="bot-global-limit" id="botDefaultLimitRow">'
+      + '<label id="botDefaultLimitLabel" for="botDefaultLimit"></label>'
+      + '<input id="botDefaultLimit" type="number" min="0" step="1" inputmode="numeric">'
+      + '<span class="bot-limit-hint" id="botDefaultLimitHint"></span></div>'
       + '<p class="bot-hint" id="botGlobalOn" hidden></p>'
       + '<div class="bot-split" id="botAccessBody">'
-      + '<div class="bot-pane"><span class="bot-pane-title" id="botOrgTitle"></span>'
+      + '<div class="bot-pane" id="botOrgPane"><span class="bot-pane-title" id="botOrgTitle"></span>'
       + '<p class="bot-pane-desc" id="botOrgHint"></p>'
       + '<input id="botOrgFilter" type="search" autocomplete="off">'
       + '<div id="botOrgTree" class="bot-org-tree" role="tree"></div></div>'
       + '<div class="bot-pane"><span class="bot-pane-title" id="botGrantsTitle"></span>'
+      + '<p class="bot-pane-desc" id="botGrantsHint"></p>'
       + '<div id="botGrants" class="bot-grant-list"></div></div>'
       + '</div></section>'
+      + '<p class="bot-group" id="botGroupDesktop"></p>'
       + '<div id="botDesktopHost"></div>'
+      + '<p class="bot-group" id="botGroupBots"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head"><div><h3 class="item-title" id="botListTitle"></h3>'
+      + '<div class="item-head">' + secIcon('bots') + '<div><h3 class="item-title" id="botListTitle"></h3>'
       + '<p class="item-meta" id="botListHint"></p></div><span class="badge" id="botListBadge"></span></div>'
       + '<div id="botList" class="bot-table"></div></section>'
       + '</div>';
@@ -457,10 +729,22 @@
     byID('botTest').addEventListener('click', testConnection);
     byID('botLLMAdd').addEventListener('click', addLLMProvider);
     byID('botLLMSave').addEventListener('click', saveLLM);
-    byID('botLLMList').addEventListener('input', onLLMListEdit);
-    byID('botLLMList').addEventListener('change', onLLMListEdit);
     byID('botLLMList').addEventListener('click', onLLMListClick);
+    byID('botLLMRoles').addEventListener('change', onLLMRoleChange);
+    byID('botLLMRoles').addEventListener('input', onLLMRoleModelEdit);
+    byID('botLLMRoles').addEventListener('click', onLLMRoleClick);
+    byID('botLLMPClose').addEventListener('click', closeLLMProviderDialog);
+    byID('botLLMPCancel').addEventListener('click', closeLLMProviderDialog);
+    byID('botLLMPSave').addEventListener('click', saveLLMProviderDialog);
+    byID('botLLMPFetch').addEventListener('click', fetchLLMDialogModels);
+    byID('botLLMPModal').addEventListener('input', onLLMPDialogEdit);
+    byID('botLLMPModal').addEventListener('change', onLLMPDialogEdit);
+    byID('botLLMPModal').addEventListener('click', onBotLLMPModalOverlayClick);
+    document.addEventListener('keydown', onBotLLMPModalKeydown);
     byID('botGlobal').addEventListener('change', toggleGlobal);
+    byID('botGlobalLimit').addEventListener('change', function () { saveGrantLimit(byID('botGlobalLimit')); });
+    byID('botDefaultLimit').addEventListener('change', function () { saveDefaultLimit(byID('botDefaultLimit')); });
+    byID('botGrants').addEventListener('change', function (event) { saveGrantLimit(event && event.target); });
     byID('botOrgFilter').addEventListener('compositionstart', function () { orgState().composing = true; });
     byID('botOrgFilter').addEventListener('compositionend', function () {
       orgState().composing = false;
@@ -471,6 +755,7 @@
       onOrgFilter();
     });
     byID('botOrgTree').addEventListener('click', onOrgClick);
+    byID('botOrgTree').addEventListener('change', function (event) { saveGrantLimit(event && event.target); });
     if (typeof global.mountBotDesktop === 'function') global.mountBotDesktop();
     applyBotI18n();
   }
@@ -510,14 +795,14 @@
     var panel = byID('tab-bots');
     if (panel) panel._botView = view;
     showServerUrl(byID('botBaseUrl'), view.base_url || '');
-    setCredState(byID('botTokenState'), !!view.token_set, text().tokenSet, text().tokenMissing);
     setCredState(byID('botAdminState'), !!view.admin_secret_set, text().adminSet, text().adminMissing);
     var access = grantSummary(view);
     renderConnBadge(view);
     renderLLM(view);
-    renderAccess(access);
+    renderAccess(view);
     renderBots(view);
     renderGrants(view, access);
+    renderSummary(view);
     renderOrgTree();
   }
 
@@ -534,10 +819,21 @@
     return { grants: grants, specific: specific, everyone: specific.length !== grants.length };
   }
 
+  /* Effective "everyone": a stored global grant, or the default-open state
+     when nothing is granted. _botEveryoneOff keeps the admin's local intent
+     to restrict while the store still holds no grant. */
+  function effectiveEveryone(view) {
+    var summary = grantSummary(view || {});
+    if (summary.everyone) return true;
+    var panel = byID('tab-bots');
+    if (panel && panel._botEveryoneOff) return false;
+    return summary.grants.length === 0;
+  }
+
   function connState(view) {
     var v = view || {};
     var base = String(v.base_url || '').trim();
-    if (!base || !v.token_set) return { level: 'warn', label: text().unconfigured };
+    if (!base || !(v.token_set || v.admin_secret_set)) return { level: 'warn', label: text().unconfigured };
     var panel = byID('tab-bots');
     if (panel && panel._botConnOk) return { level: 'ok', label: text().online };
     return { level: 'info', label: text().configured };
@@ -557,23 +853,161 @@
   }
 
   /* Everyone switch wins: hide the picker rather than offering redundant choices. */
-  function renderAccess(access) {
+  function renderAccess(view) {
+    var everyone = effectiveEveryone(view);
+    var specific = grantSummary(view).specific;
     var body = byID('botAccessBody');
     var note = byID('botGlobalOn');
-    if (body) body.hidden = access.everyone;
-    if (note) note.hidden = !access.everyone;
+    var orgPane = byID('botOrgPane');
+    if (orgPane) orgPane.hidden = everyone;
+    else if (body) body.hidden = everyone;
+    if (note) note.hidden = !everyone;
     var t = text();
-    setBadge('botAccessBadge', access.everyone ? t.global : access.specific.length + ' ' + t.countUnit,
-      access.everyone ? 'ok' : 'info');
+    setBadge('botAccessBadge', everyone ? t.global : specific.length + ' ' + t.countUnit,
+      everyone ? 'ok' : 'info');
+  }
+
+  /* The strip up top: connection, providers, access scope, bot count. */
+  function renderSummary(view) {
+    var conn = connState(view);
+    var connEl = byID('botStatConn');
+    if (connEl) { connEl.textContent = conn.label; connEl.className = 'bot-stat-value bot-stat-' + conn.level; }
+    var providers = view && view.llm && Array.isArray(view.llm.providers) ? view.llm.providers.length : 0;
+    setLabel('botStatLLM', providers ? String(providers) : text().statLLMEmpty);
+    var specific = grantSummary(view).specific;
+    setLabel('botStatAccess', effectiveEveryone(view) ? text().global : specific.length + ' ' + text().countUnit);
+    var bots = view && Array.isArray(view.bots) ? view.bots : [];
+    setLabel('botStatBots', String(bots.length));
+    var withDesktop = 0;
+    bots.forEach(function (bot) { if (String(bot.desktop_mode || '') !== 'none') withDesktop += 1; });
+    setLabel('botStatBotsSub', text().statWithDesktop.replace('{n}', String(withDesktop)));
+  }
+
+  function isWholeLimit(n) {
+    return typeof n === 'number' && isFinite(n) && Math.floor(n) === n && n <= 9007199254740991;
+  }
+
+  function grantLimitInput(item) {
+    var value = item.desktop_bot_limit == null || item.desktop_bot_limit === '' ? '' : String(item.desktop_bot_limit);
+    return '<label class="bot-grant-limit" title="' + escapeHtml(text().desktopCascade) + '"><span>' + escapeHtml(text().desktopBotsShort) + '</span>'
+      + '<input type="number" min="0" step="1" inputmode="numeric" data-grant-limit="' + escapeHtml(item.id) + '"'
+      + ' placeholder="' + escapeHtml(text().desktopInherit) + '"'
+      + (value !== '' ? ' value="' + escapeHtml(value) + '"' : '')
+      + (grantLocked() ? ' disabled' : '')
+      + '></label>';
+  }
+
+  function renderGlobalLimit(view) {
+    var row = byID('botGlobalLimitRow');
+    var input = byID('botGlobalLimit');
+    if (!row || !input) return;
+    var grants = view && Array.isArray(view.grants) ? view.grants : [];
+    var current = null;
+    grants.forEach(function (item) { if (item.scope === 'global') current = item; });
+    row.hidden = !current;
+    if (!current) return;
+    input.setAttribute('data-grant-limit', current.id);
+    var def = view && view.default_desktop_bot_limit;
+    input.placeholder = def == null ? text().desktopUnlimited : text().desktopDefaultOf.replace('{n}', String(def));
+    input.disabled = grantLocked();
+    if (document.activeElement !== input) {
+      input.value = current.desktop_bot_limit == null || current.desktop_bot_limit === '' ? '' : String(current.desktop_bot_limit);
+    }
+  }
+
+  function saveGrantLimit(input) {
+    if (!input || !input.getAttribute || grantLocked()) return;
+    var id = String(input.getAttribute('data-grant-limit') || '').trim();
+    if (!id) return;
+    var raw = String(input.value || '').trim();
+    var panel = byID('tab-bots');
+    var view = panel && panel._botView;
+    var current = null;
+    (view && Array.isArray(view.grants) ? view.grants : []).forEach(function (item) {
+      if (item.id === id) current = item;
+    });
+    var prev = current && current.desktop_bot_limit != null && current.desktop_bot_limit !== '' ? String(current.desktop_bot_limit) : '';
+    var body;
+    if (raw === '') body = { desktop_bot_limit: null };
+    else if (!/^\d+$/.test(raw) || !isWholeLimit(Number(raw))) {
+      input.value = prev;
+      showToast(text().desktopLimitBad, 'error');
+      return;
+    } else body = { desktop_bot_limit: Number(raw) };
+    if (raw === '' && prev === '') return;
+    if (raw !== '' && String(body.desktop_bot_limit) === prev) {
+      if (raw !== prev) input.value = prev;
+      return;
+    }
+    // Show the typed cap immediately. The busy redraw reads this view, and
+    // putting the old number back makes a saved cap look discarded.
+    var previousLimit = current ? current.desktop_bot_limit : null;
+    if (current) current.desktop_bot_limit = body.desktop_bot_limit;
+    setGrantBusy(true);
+    return api('/api/admin/bots/grants/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    }).then(function () {
+      return load();
+    }, function (err) {
+      if (current) current.desktop_bot_limit = previousLimit;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
+  }
+
+  function renderDefaultLimit(view) {
+    var input = byID('botDefaultLimit');
+    if (!input) return;
+    input.placeholder = text().desktopUnlimited;
+    input.disabled = grantLocked();
+    if (document.activeElement !== input) {
+      var value = view && view.default_desktop_bot_limit;
+      input.value = value == null || value === '' ? '' : String(value);
+    }
+  }
+
+  /* Blank means inherit: the cascade ends at this default, then unlimited. */
+  function saveDefaultLimit(input) {
+    if (!input || grantLocked()) return;
+    var raw = String(input.value || '').trim();
+    var panel = byID('tab-bots');
+    var view = panel && panel._botView;
+    var prev = view && view.default_desktop_bot_limit != null && view.default_desktop_bot_limit !== '' ? String(view.default_desktop_bot_limit) : '';
+    var body;
+    if (raw === '') body = { default_desktop_bot_limit: null };
+    else if (!/^\d+$/.test(raw) || !isWholeLimit(Number(raw))) {
+      input.value = prev;
+      showToast(text().desktopLimitBad, 'error');
+      return;
+    } else body = { default_desktop_bot_limit: Number(raw) };
+    if (raw === '' && prev === '') return;
+    if (raw !== '' && String(body.default_desktop_bot_limit) === prev) {
+      if (raw !== prev) input.value = prev;
+      return;
+    }
+    var previousLimit = view ? view.default_desktop_bot_limit : null;
+    if (view) view.default_desktop_bot_limit = body.default_desktop_bot_limit;
+    setGrantBusy(true);
+    return api('/api/admin/bots/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    }).then(function () {
+      return load();
+    }, function (err) {
+      if (view) view.default_desktop_bot_limit = previousLimit;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
   }
 
   function renderGrants(view, access) {
     var summary = access || grantSummary(view);
     var list = byID('botGrants');
     var globalBox = byID('botGlobal');
+    renderGlobalLimit(view);
+    renderDefaultLimit(view);
     /* While a grant request is in flight the switch shows the admin's intent,
        not the server's last known state, so leave it alone until the response lands. */
-    if (globalBox && !grantLocked()) globalBox.checked = summary.everyone;
+    if (globalBox && !grantLocked()) globalBox.checked = effectiveEveryone(view);
     if (!list) return;
     if (!summary.specific.length) {
       list.innerHTML = summary.grants.length ? '' : '<p class="bot-empty">' + escapeHtml(text().grantEmpty) + '</p>';
@@ -583,6 +1017,7 @@
       return '<div class="bot-grant">'
         + '<span class="bot-grant-kind">' + escapeHtml(item.scope === 'user' ? text().user : text().department) + '</span>'
         + '<span class="bot-grant-name">' + escapeHtml(grantTargetLabel(item)) + '</span>'
+        + grantLimitInput(item)
         + '<button type="button" class="btn-danger" data-grant-delete="' + escapeHtml(item.id) + '"' + (grantLocked() ? ' disabled' : '') + '>'
         + escapeHtml(text().remove) + '</button></div>';
     }).join('');
@@ -621,20 +1056,32 @@
     var grants = view && Array.isArray(view.grants) ? view.grants : [];
     var current = null;
     grants.forEach(function (item) { if (item.scope === 'global') current = item; });
-    if (box.checked && !current) {
+    if (box.checked) {
+      if (panel) panel._botEveryoneOff = false;
+      if (current || !grants.length) {
+        /* Already stored, or the default-open state needs no grant at all. */
+        if (view) render(view);
+        return;
+      }
       setGrantBusy(true);
       return api('/api/admin/bots/grants', { method: 'POST', body: JSON.stringify({ scope: 'global' }) }).then(load).catch(function (err) {
         box.checked = false;
         showToast(messageOf(err), 'error');
       }).then(function () { setGrantBusy(false); });
     }
-    if (!box.checked && current) {
-      setGrantBusy(true);
-      return api('/api/admin/bots/grants/' + encodeURIComponent(current.id), { method: 'DELETE' }).then(load).catch(function (err) {
-        box.checked = true;
-        showToast(messageOf(err), 'error');
-      }).then(function () { setGrantBusy(false); });
+    /* Restricting: the picker opens over the default-open state even when
+       nothing is stored yet, so a first grant can be added. */
+    if (panel) panel._botEveryoneOff = true;
+    if (!current) {
+      if (view) render(view);
+      return;
     }
+    setGrantBusy(true);
+    return api('/api/admin/bots/grants/' + encodeURIComponent(current.id), { method: 'DELETE' }).then(load).catch(function (err) {
+      if (panel) panel._botEveryoneOff = false;
+      box.checked = true;
+      showToast(messageOf(err), 'error');
+    }).then(function () { setGrantBusy(false); });
   }
 
   function orgState() {
@@ -1119,12 +1566,12 @@
   }
 
   function renderUserRow(member, pad) {
-    var granted = !!(member.userId && grantFor('user', member.userId));
+    var grant = member.userId ? grantFor('user', member.userId) : null;
     var action = member.userId
-      ? orgAddButton('data-org-add-user', member.userId, text().orgAddUser, granted, member.label)
+      ? orgAddButton('data-org-add-user', member.userId, text().orgAddUser, !!grant, member.label)
       : '<span class="bot-org-meta">' + escapeHtml(text().orgNoAccount) + '</span>';
     return '<div class="bot-org-row bot-org-user" role="treeitem" style="padding-left:' + String(30 + pad) + 'px">'
-      + '<span class="bot-org-name">' + escapeHtml(member.label) + '</span>' + action + '</div>';
+      + '<span class="bot-org-name">' + escapeHtml(member.label) + '</span>' + (grant ? grantLimitInput(grant) : '') + action + '</div>';
   }
 
   function revealForFilter() {
@@ -1161,11 +1608,13 @@
     var expanded = !!org.expanded[node.id];
     var pad = depth * 16;
     var nameMatches = named;
+    var deptGrant = grantFor('department', node.id);
     var html = '<div class="bot-org-row" role="treeitem" data-org-toggle="' + escapeHtml(node.id) + '" aria-expanded="' + (expanded ? 'true' : 'false') + '" style="padding-left:' + String(8 + pad) + 'px">'
       + '<button type="button" class="bot-org-toggle" data-org-toggle="' + escapeHtml(node.id) + '" aria-label="' + escapeHtml(node.name || node.id) + '">'
       + (expanded ? '\u25bc' : '\u25b6') + '</button>'
       + '<span class="bot-org-name">' + escapeHtml(node.name || node.id) + '</span>'
-      + orgAddButton('data-org-add-dept', node.id, text().orgAddDepartment, !!grantFor('department', node.id), node.name || node.id)
+      + (deptGrant ? grantLimitInput(deptGrant) : '')
+      + orgAddButton('data-org-add-dept', node.id, text().orgAddDepartment, !!deptGrant, node.name || node.id)
       + '</div>';
     if (!expanded) return html;
     if (org.loadingMembers[node.id] && !org.members[node.id]) {
@@ -1240,6 +1689,9 @@
     var action = null;
     var kind = '';
     while (node && node !== tree) {
+      /* The per-grant cap input lives inside the toggle row; typing in it
+         must not collapse the department. */
+      if (node.tagName === 'INPUT' || (node.classList && node.classList.contains('bot-grant-limit'))) return;
       if (node.getAttribute) {
         if (node.getAttribute('data-org-add-dept')) { action = node; kind = 'dept'; break; }
         if (node.getAttribute('data-org-add-user')) { action = node; kind = 'user'; break; }
@@ -1301,6 +1753,7 @@
     list.innerHTML = '<div class="bot-tr bot-th">'
       + '<span>' + escapeHtml(t.botColumn) + '</span>'
       + '<span>' + escapeHtml(t.owner) + '</span>'
+      + '<span>' + escapeHtml(t.desktopColumn) + '</span>'
       + '<span>' + escapeHtml(t.instance) + '</span>'
       + '<span>' + escapeHtml(t.created) + '</span></div>'
       + bots.map(function (bot) {
@@ -1308,10 +1761,19 @@
           + '<div class="bot-td bot-td-main"><strong>' + escapeHtml(bot.name) + '</strong>'
           + (bot.description ? '<small>' + escapeHtml(bot.description) + '</small>' : '') + '</div>'
           + labelled(t.owner, userLabel(bot.owner_user_id) || bot.owner_user_id || '')
+          + labelled(t.desktopColumn, desktopModeLabel(bot))
           + labelled(t.instance, bot.instance_id || '')
           + labelled(t.created, shortTime(bot.created_at))
           + '</div>';
       }).join('');
+  }
+
+  function desktopModeLabel(bot) {
+    var mode = String(bot && bot.desktop_mode || 'shared');
+    var t = text();
+    var label = mode === 'isolated' ? t.desktopIsolated : mode === 'none' ? t.desktopNone : t.desktopShared;
+    if (bot && bot.desktop_over && mode !== 'none') label += ' \u00b7 ' + t.desktopOver;
+    return label;
   }
 
   /* Narrow screens drop the header row, so each value carries its own column label. */
@@ -1335,15 +1797,98 @@
 
   function llmDraft() {
     var panel = byID('tab-bots');
-    if (!panel._llmDraft) panel._llmDraft = { current: botOfficialGroup, providers: [] };
+    if (!panel._llmDraft) panel._llmDraft = { current: botOfficialGroup, providers: [], roles: defaultLLMRoles() };
     return panel._llmDraft;
+  }
+
+  function defaultLLMRoles() {
+    return {
+      foreground: { mode: 'pin', provider: botOfficialGroup, model: '' },
+      background: { mode: 'inherit' },
+      computer_use: { mode: 'inherit' },
+      grounder: { mode: 'unused' }
+    };
+  }
+
+  function knownLLMProviderID(draft, id) {
+    if (isBotDefaultGroup(id)) return botOfficialGroup;
+    return (draft.providers || []).some(function (item) { return item.id === id; }) ? id : '';
+  }
+
+  // The foreground role is the default route: the select shows the stored pin
+  // when one exists, otherwise the settings' current provider (legacy rows
+  // that predate the role table).
+  function llmForegroundProvider(draft) {
+    var role = draft && draft.roles && draft.roles.foreground;
+    if (role && role.mode === 'pin' && knownLLMProviderID(draft, role.provider)) {
+      return isBotDefaultGroup(role.provider) ? botOfficialGroup : role.provider;
+    }
+    var current = String(draft && draft.current || '');
+    return isBotDefaultGroup(current) ? botOfficialGroup : current;
+  }
+
+  function normalizeDraftRole(raw, draft, grounder) {
+    var mode = String((raw && raw.mode) || '').trim().toLowerCase();
+    var provider = knownLLMProviderID(draft, raw && raw.provider);
+    var model = String((raw && raw.model) || '').trim();
+    if (mode === 'pin' && provider) {
+      // The official route schedules its own model; a stored model on it is
+      // stale and is dropped, the same rule the server applies.
+      if (isBotDefaultGroup(provider)) return { mode: 'pin', provider: botOfficialGroup, model: '' };
+      return { mode: 'pin', provider: provider, model: model };
+    }
+    // A pin whose provider is gone falls through to the inherit/unused
+    // default below, the same coercion the server applies.
+    if (mode === 'inherit') return { mode: 'inherit' };
+    if (mode === 'unused' && grounder) return { mode: 'unused' };
+    return { mode: grounder ? 'unused' : 'inherit' };
+  }
+
+  function normalizeDraftRoles(raw, draft) {
+    raw = raw || {};
+    return {
+      foreground: normalizeDraftRole(raw.foreground, draft, false),
+      background: normalizeDraftRole(raw.background, draft, false),
+      computer_use: normalizeDraftRole(raw.computer_use, draft, false),
+      grounder: normalizeDraftRole(raw.grounder, draft, true)
+    };
+  }
+
+  // The select value for one role row. Foreground has no "follow" option: a
+  // legacy row stored as inherit displays the settings' current provider.
+  function roleSelectValue(draft, key, grounder) {
+    var role = draft.roles && draft.roles[key];
+    if (role && role.mode === 'unused' && grounder) return '__unused__';
+    if (key === 'foreground') return llmForegroundProvider(draft);
+    if (role && role.mode === 'pin') {
+      return isBotDefaultGroup(role.provider) ? botOfficialGroup : String(role.provider || '');
+    }
+    return '__inherit__';
+  }
+
+  function roleFromSelect(value, key, grounder) {
+    var id = String(value || '');
+    if (id === '__unused__' && grounder) return { mode: 'unused' };
+    // Empty, __inherit__, or an unknown id resolves to the safe default for
+    // the row: the foreground pins the official group, every other row (the
+    // grounder included) follows the foreground.
+    if (!id || id === '__inherit__' || (!isBotDefaultGroup(id) && !knownLLMProviderID(llmDraft(), id))) {
+      if (key === 'foreground') return { mode: 'pin', provider: botOfficialGroup, model: '' };
+      return { mode: 'inherit' };
+    }
+    return { mode: 'pin', provider: isBotDefaultGroup(id) ? botOfficialGroup : id, model: '' };
+  }
+
+  function coerceDraftRoles(draft) {
+    draft.roles = normalizeDraftRoles(draft.roles, draft);
   }
 
   function draftFromLLM(view) {
     var llm = view && view.llm || {};
     var providers = Array.isArray(llm.providers) ? llm.providers : [];
-    return {
-      current: isBotDefaultGroup(llm.current) ? botOfficialGroup : String(llm.current || ''),
+    var current = String(llm.current || '');
+    var draft = {
+      current: isBotDefaultGroup(current) ? botOfficialGroup : current,
       providers: providers.map(function (item) {
         return {
           id: String(item.id || ''),
@@ -1352,10 +1897,21 @@
           url: String(item.url || ''),
           model: String(item.model || ''),
           key: '',
-          key_set: !!item.key_set
+          key_set: !!item.key_set,
+          vision: (Array.isArray(item.vision) ? item.vision : []).map(function (row) {
+            return {
+              model: String(row.model || ''),
+              override: row.override === 'on' || row.override === 'off' ? row.override : 'auto',
+              known: !!row.known,
+              supported: !!row.supported,
+              detected_at: String(row.detected_at || '')
+            };
+          })
         };
       })
     };
+    draft.roles = normalizeDraftRoles(llm.roles, draft);
+    return draft;
   }
 
   function newLLMProviderID() {
@@ -1365,20 +1921,42 @@
     return out;
   }
 
-  function llmCurrentLabel(draft) {
-    if (!draft || isBotDefaultGroup(draft.current)) return text().llmOfficialName;
-    var match = (draft.providers || []).filter(function (item) { return item.id === draft.current; })[0];
-    if (!match) return text().llmOfficialName;
-    return String(match.name || '').trim() || text().llmName;
+  // syncLLMRowChips re-derives each provider row's "in use" marker from the
+  // current foreground route. The role select can move the route while the
+  // provider rows stay mounted (a rebuild would drop focus), so the chips
+  // travel without repainting the list.
+  function syncLLMRowChips() {
+    var t = text();
+    var draft = llmDraft();
+    var foreground = llmForegroundProvider(draft);
+    (draft.providers || []).forEach(function (item) {
+      var tags = byID('botLLMTags_' + item.id);
+      var row = byID('botLLMRow_' + item.id);
+      if (!tags && !row) return;
+      var protocol = item.protocol === 'anthropic' ? 'anthropic' : 'openai';
+      var inUse = foreground === item.id;
+      if (tags) {
+        tags.innerHTML = (inUse ? '<span class="bot-llm-tag bot-llm-tag-use">' + escapeHtml(t.llmTagInUse) + '</span>' : '')
+          + '<span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
+          + (item.key_set ? '<span class="bot-llm-tag bot-llm-tag-ok">' + escapeHtml(t.llmKeySet) + '</span>' : '');
+      }
+      if (row) row.className = 'bot-llm-row' + (inUse ? ' bot-llm-row-active' : '');
+    });
   }
 
   function syncLLMBadge() {
     var badge = byID('botLLMBadge');
     if (!badge) return;
+    syncLLMRowChips();
     var draft = llmDraft();
-    var selected = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : botOfficialGroup;
-    badge.className = 'badge ' + (selected === botOfficialGroup ? 'info' : 'ok');
-    badge.textContent = llmCurrentLabel(draft);
+    var foreground = llmForegroundProvider(draft);
+    var name = text().llmOfficialName;
+    if (!isBotDefaultGroup(foreground)) {
+      var match = (draft.providers || []).filter(function (item) { return item.id === foreground; })[0];
+      name = match ? (String(match.name || '').trim() || text().llmName) : foreground;
+    }
+    badge.className = 'badge ' + (isBotDefaultGroup(foreground) ? 'info' : 'ok');
+    badge.textContent = name;
   }
 
   function renderLLM(view) {
@@ -1396,73 +1974,656 @@
     if (!list) return;
     var t = text();
     var draft = llmDraft();
-    var current = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : botOfficialGroup;
-    draft.current = current;
+    draft.current = llmForegroundProvider(draft);
     var rows = (draft.providers || []).map(function (item) {
       var id = escapeHtml(item.id);
       var protocol = item.protocol === 'anthropic' ? 'anthropic' : 'openai';
-      return '<div class="bot-llm-provider">'
-        + '<label class="bot-llm-choice"><input id="botLLMCurrent_' + id + '" type="radio" name="botLLMCurrent" value="' + id + '"' + (current === item.id ? ' checked' : '') + '>'
-        + '<span><strong id="botLLMUse_' + id + '">' + escapeHtml(t.llmUse) + ' ' + escapeHtml(item.name || t.llmName) + '</strong>'
-        + (item.key_set ? '<small>' + escapeHtml(t.llmKeySet) + '</small>' : '') + '</span></label>'
-        + '<div class="bot-llm-grid">'
-        + '<div class="bot-field"><label for="botLLMName_' + id + '">' + escapeHtml(t.llmName) + '</label><input id="botLLMName_' + id + '" value="' + escapeHtml(item.name) + '" autocomplete="off"></div>'
-        + '<div class="bot-field"><label for="botLLMProtocol_' + id + '">' + escapeHtml(t.llmProtocol) + '</label><select id="botLLMProtocol_' + id + '">'
-        + '<option value="openai"' + (protocol === 'openai' ? ' selected' : '') + '>OpenAI</option>'
-        + '<option value="anthropic"' + (protocol === 'anthropic' ? ' selected' : '') + '>Anthropic</option></select></div>'
-        + '<div class="bot-field bot-field-wide"><label for="botLLMUrl_' + id + '">' + escapeHtml(t.llmURL) + '</label><input id="botLLMUrl_' + id + '" value="' + escapeHtml(item.url) + '" autocomplete="off" spellcheck="false"></div>'
-        + '<div class="bot-field"><label for="botLLMModel_' + id + '">' + escapeHtml(t.llmModel) + '</label><input id="botLLMModel_' + id + '" value="' + escapeHtml(item.model) + '" autocomplete="off" spellcheck="false"></div>'
-        + '<div class="bot-field"><label for="botLLMKey_' + id + '">' + escapeHtml(t.llmKey) + '</label><input id="botLLMKey_' + id + '" type="password" autocomplete="new-password" value="' + escapeHtml(item.key) + '" placeholder="' + escapeHtml(item.key_set ? t.llmKeyKeep : '') + '"></div>'
-        + '<button type="button" class="btn-secondary bot-llm-remove" id="botLLMRemove_' + id + '">' + escapeHtml(t.llmRemove) + '</button>'
-        + '</div></div>';
+      // The foreground route is the one chat actually uses; surface it so the
+      // administrator can tell a parked provider from the active one.
+      var inUse = draft.current === item.id;
+      return '<div class="bot-llm-row' + (inUse ? ' bot-llm-row-active' : '') + '" id="botLLMRow_' + id + '">'
+        + '<span class="bot-llm-avatar" data-protocol="' + protocol + '" aria-hidden="true">' + (protocol === 'anthropic' ? 'A' : 'O') + '</span>'
+        + '<span class="bot-llm-row-main">'
+        + '<strong class="bot-llm-row-name" id="botLLMUse_' + id + '">' + escapeHtml(item.name || t.llmName) + '</strong>'
+        + '<span class="bot-llm-row-url">' + escapeHtml(item.url) + '</span>'
+        + '</span>'
+        + '<span class="bot-llm-tags" id="botLLMTags_' + id + '">'
+        + (inUse ? '<span class="bot-llm-tag bot-llm-tag-use">' + escapeHtml(t.llmTagInUse) + '</span>' : '')
+        + '<span class="bot-llm-tag">' + (protocol === 'anthropic' ? 'Anthropic' : 'OpenAI') + '</span>'
+        + (item.key_set ? '<span class="bot-llm-tag bot-llm-tag-ok">' + escapeHtml(t.llmKeySet) + '</span>' : '') + '</span>'
+        + '<span class="bot-llm-row-actions">'
+        + '<button type="button" class="btn-secondary" id="botLLMEdit_' + id + '">' + escapeHtml(t.llmEdit) + '</button>'
+        + '<button type="button" class="btn-danger" id="botLLMRemove_' + id + '">' + escapeHtml(t.llmRemove) + '</button>'
+        + '</span></div>';
     }).join('');
-    var empty = (draft.providers || []).length ? '' : '<p class="bot-empty">' + escapeHtml(t.llmEmpty) + '</p>';
-    list.innerHTML = '<label class="bot-llm-choice"><input id="botLLMCurrent_maclaw_official_group" type="radio" name="botLLMCurrent" value="' + botOfficialGroup + '"' + (current === botOfficialGroup ? ' checked' : '') + '>'
-      + '<span><strong>' + escapeHtml(t.llmOfficialName) + '</strong><small>' + escapeHtml(t.llmDefaultHint) + '</small></span></label>'
-      + empty + rows;
+    list.innerHTML = '<p class="bot-empty bot-llm-default-note">' + escapeHtml(t.llmDefaultNote) + '</p>' + rows;
+    paintLLMRoles();
     syncLLMBadge();
+  }
+
+  function llmModelOptionsHTML(models) {
+    return (Array.isArray(models) ? models : []).map(function (item) {
+      var id = String(item && item.id || '').trim();
+      if (!id) return '';
+      return '<option value="' + escapeHtml(id) + '"></option>';
+    }).join('');
+  }
+
+  function llmModelsStatusText(cache) {
+    if (!cache) return '';
+    if (cache.error) return cache.error;
+    var count = Array.isArray(cache.models) ? cache.models.length : 0;
+    if (!count) return '';
+    return text().llmModelsLoaded.replace('{n}', String(count));
+  }
+
+  function llmModelCacheStore(id, cache) {
+    var panel = byID('tab-bots');
+    if (!panel) return;
+    panel._llmModels = panel._llmModels || {};
+    panel._llmModels[id] = cache;
+  }
+
+  function llmModelCacheOf(id) {
+    var panel = byID('tab-bots');
+    if (!panel || !panel._llmModels) return null;
+    return panel._llmModels[id] || null;
+  }
+
+  // clearLLMModelsFor drops a provider's catalog once its coordinates changed
+  // or the row went away. The seq bump also retires an in-flight fetch whose
+  // answer would describe the old endpoint; role pickers referencing the
+  // provider lose their catalog with it.
+  function clearLLMModelsFor(id) {
+    var panel = byID('tab-bots');
+    if (!panel) return;
+    if (panel._llmModels) delete panel._llmModels[id];
+    if (panel._llmFetchSeq) panel._llmFetchSeq[id] = (panel._llmFetchSeq[id] || 0) + 1;
+    if (panel._llmFetchBusy) panel._llmFetchBusy[id] = false;
+    refreshRoleModelPickers(id);
+  }
+
+  // llmModelsMessage names provider-fetch failures before messageOf can
+  // misroute them: a provider's "(HTTP 401)" also matches the MaClawSrv
+  // token-rejection line, which would tell the administrator to fix the
+  // wrong credential.
+  function llmModelsMessage(err) {
+    var raw = err && err.message ? err.message : '';
+    if (raw.indexOf('llm provider key is invalid') !== -1) return text().llmBadKey;
+    if (raw.indexOf('llm provider key') !== -1) return text().llmNeedKey;
+    if (raw.indexOf('llm models provider') !== -1) return text().llmProviderGone;
+    if (raw.indexOf('llm provider protocol') !== -1) return text().llmBadProtocol;
+    if (raw.indexOf('llm provider url') !== -1) return text().llmBadURL;
+    return messageOf(err);
+  }
+
+  // setLLMFetchBusy toggles every role-row fetch button that targets the
+  // given provider; the dialog fetch button manages itself.
+  function setLLMFetchBusy(id, busy) {
+    var t = text();
+    ['foreground', 'background', 'computer_use', 'grounder'].forEach(function (key) {
+      var role = (llmDraft().roles || {})[key] || {};
+      if (role.mode !== 'pin' || role.provider !== id) return;
+      var button = byID('botLLMRoleFetch_' + key);
+      if (!button) return;
+      button.disabled = !!busy;
+      button.textContent = busy ? t.llmFetching : t.llmFetchModels;
+    });
+  }
+
+  // fetchLLMModelsFor asks the hub to list one saved provider's models for
+  // the role rows. A stored provider without a typed key omits it so the hub
+  // reuses the saved credential. Never paints the cache from a response
+  // older than the latest click (the seq guard).
+  function fetchLLMModelsFor(id) {
+    var panel = byID('tab-bots');
+    var item = llmProviderFromID(id);
+    if (!panel || !item) return;
+    if (panel._llmFetchBusy && panel._llmFetchBusy[id]) return;
+    var url = String(item.url || '').trim();
+    var key = String(item.key || '').trim();
+    if (!validServiceUrl(url)) {
+      showToast(text().llmBadURL, 'error');
+      return;
+    }
+    if (!key && !item.key_set) {
+      showToast(text().llmFetchNeedURL, 'error');
+      return;
+    }
+    var body = {
+      protocol: item.protocol === 'anthropic' ? 'anthropic' : 'openai',
+      url: url
+    };
+    if (item.key_set) body.provider_id = id;
+    if (key) body.key = key;
+    panel._llmFetchBusy = panel._llmFetchBusy || {};
+    panel._llmFetchSeq = panel._llmFetchSeq || {};
+    var seq = (panel._llmFetchSeq[id] || 0) + 1;
+    panel._llmFetchSeq[id] = seq;
+    panel._llmFetchBusy[id] = true;
+    setLLMFetchBusy(id, true);
+    return api('/api/admin/bots/llm/models', { method: 'POST', body: JSON.stringify(body) }).then(function (result) {
+      if (panel._llmFetchSeq[id] !== seq) return;
+      var models = result && Array.isArray(result.models) ? result.models : [];
+      var cache = models.length ? { models: models, error: '' } : { models: null, error: text().llmModelsEmpty };
+      llmModelCacheStore(id, cache);
+      refreshRoleModelPickers(id);
+      if (!models.length) showToast(cache.error, 'info');
+    }).catch(function (err) {
+      if (panel._llmFetchSeq[id] !== seq) return;
+      var cache = { models: null, error: llmModelsMessage(err) };
+      llmModelCacheStore(id, cache);
+      refreshRoleModelPickers(id);
+      showToast(cache.error, 'error');
+    }).then(function () {
+      panel._llmFetchBusy[id] = false;
+      setLLMFetchBusy(id, false);
+    });
+  }
+
+  // llmRoleOptions lists the provider choices for one role row. Foreground
+  // has no follow mode; the other rows offer "follow foreground" first and
+  // the grounder keeps its "do not use" entry.
+  function llmRoleOptions(draft, key, grounder, selected) {
+    var t = text();
+    var options = [];
+    if (grounder) options.push({ value: '__unused__', label: t.llmRoleUnused });
+    if (key !== 'foreground') options.push({ value: '__inherit__', label: t.llmRoleInherit });
+    options.push({ value: botOfficialGroup, label: t.llmOfficialName });
+    (draft.providers || []).forEach(function (item) {
+      var name = String(item.name || '').trim() || t.llmName;
+      options.push({ value: item.id, label: name });
+    });
+    return options.map(function (item) {
+      return '<option value="' + escapeHtml(item.value) + '"' + (item.value === selected ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
+    }).join('');
+  }
+
+  // roleModelState decides what the model field on a role row shows: hidden
+  // while the row follows the foreground (or the grounder is unused), locked
+  // on the official route, and editable with the provider's catalog behind
+  // it for a real provider pin.
+  function roleModelState(draft, key, grounder) {
+    var role = (draft.roles || {})[key] || {};
+    var mode = String(role.mode || '');
+    if (key !== 'foreground' && (mode === 'inherit' || (grounder && mode === 'unused'))) {
+      return { hidden: true };
+    }
+    if (mode !== 'pin') {
+      return key === 'foreground' ? { official: true } : { hidden: true };
+    }
+    if (isBotDefaultGroup(role.provider)) {
+      return { official: true };
+    }
+    var provider = llmProviderFromID(role.provider);
+    var fallback = provider && String(provider.model || '').trim();
+    return {
+      value: String(role.model || ''),
+      placeholder: fallback ? text().llmRoleModelDefault.replace('{m}', fallback) : text().llmRoleModelEmpty
+    };
+  }
+
+  function roleModelFieldHTML(draft, key, grounder) {
+    var state = roleModelState(draft, key, grounder);
+    if (state.hidden) return '';
+    var disabled = state.official ? ' disabled' : '';
+    var value = state.official ? '' : escapeHtml(state.value || '');
+    var placeholder = state.official ? text().llmRoleModelOfficial : (state.placeholder || text().llmRoleModelEmpty);
+    var provider = llmProviderFromID((draft.roles[key] || {}).provider);
+    var options = llmModelOptionsHTML(provider && (llmModelCacheOf(provider.id) || {}).models);
+    var fetch = '';
+    if (!state.official && provider) {
+      fetch = '<button type="button" class="bot-llm-fetch" id="botLLMRoleFetch_' + key + '">' + escapeHtml(text().llmFetchModels) + '</button>';
+    }
+    return '<div class="bot-llm-role-model">'
+      + '<input id="botLLMRoleModel_' + key + '" list="botLLMRoleModelList_' + key + '" value="' + value + '" placeholder="' + escapeHtml(placeholder) + '" autocomplete="off" spellcheck="false"' + disabled + '>'
+      + '<datalist id="botLLMRoleModelList_' + key + '">' + options + '</datalist>'
+      + fetch
+      + '</div>';
+  }
+
+  // roleEffectiveModel is the model a pin actually runs: the typed override,
+  // or the provider default when the override is empty.
+  function roleEffectiveModel(draft, key) {
+    var role = (draft.roles || {})[key] || {};
+    var typed = String(role.model || '').trim();
+    if (typed) return typed;
+    var provider = llmProviderFromID(role.provider);
+    return provider ? String(provider.model || '').trim() : '';
+  }
+
+  function visionRecord(provider, model) {
+    var list = provider && provider.vision || [];
+    var want = String(model || '').toLowerCase();
+    for (var i = 0; i < list.length; i += 1) {
+      if (String(list[i].model || '').toLowerCase() === want) return list[i];
+    }
+    return null;
+  }
+
+  // llmVisionStatus is the chip line. The detection timestamp stays out of
+  // the chip (it would wrap the cell) and lives only in llmVisionTitle.
+  function llmVisionStatus(record) {
+    var t = text();
+    if (!record || !record.known) return t.llmVisionUnknown;
+    return record.supported ? t.llmVisionYes : t.llmVisionNo;
+  }
+
+  function llmVisionTitle(record) {
+    var line = llmVisionStatus(record);
+    if (record && record.known && record.detected_at) line += ' ' + record.detected_at;
+    return line;
+  }
+
+  // llmVisionState colors the status chip: neutral until probed, green for a
+  // confirmed vision model, amber for a confirmed text-only one.
+  function llmVisionState(record) {
+    if (!record || !record.known) return 'unknown';
+    return record.supported ? 'yes' : 'no';
+  }
+
+  // roleVisionHTML is the last grid cell of a pinned role row: the override
+  // select, a state chip, and the detect action. The column header names the
+  // control, so the select carries the label via aria-label instead.
+  function roleVisionHTML(draft, key, official) {
+    if (official) return '';
+    var role = (draft.roles || {})[key] || {};
+    if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return '';
+    var provider = llmProviderFromID(role.provider);
+    if (!provider) return '';
+    var model = roleEffectiveModel(draft, key);
+    var record = visionRecord(provider, model);
+    var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+    var t = text();
+    var status = llmVisionStatus(record);
+    return '<div class="bot-llm-role-vision">'
+      + '<select id="botLLMRoleVision_' + key + '" aria-label="' + escapeHtml(t.llmVision) + '">'
+      + '<option value="auto"' + (override === 'auto' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionAuto) + '</option>'
+      + '<option value="on"' + (override === 'on' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOn) + '</option>'
+      + '<option value="off"' + (override === 'off' ? ' selected' : '') + '>' + escapeHtml(t.llmVisionOff) + '</option>'
+      + '</select>'
+      + '<span class="bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record) + '" id="botLLMRoleVisionStatus_' + key + '" role="status" title="' + escapeHtml(llmVisionTitle(record)) + '">' + escapeHtml(status) + '</span>'
+      + '<button type="button" class="btn-secondary bot-llm-vision-detect" id="botLLMRoleVisionDetect_' + key + '">' + escapeHtml(t.llmVisionDetect) + '</button>'
+      + '</div>';
+  }
+
+  function ensureVisionRecord(provider, model, override) {
+    if (!provider.vision) provider.vision = [];
+    var found = visionRecord(provider, model);
+    if (!found) {
+      found = { model: model, override: override || 'auto', known: false, supported: false, detected_at: '' };
+      provider.vision.push(found);
+    }
+    if (override) found.override = override;
+    return found;
+  }
+
+  // paintLLMRoles lays the four roles out as a compact table: a shared
+  // header row names the columns, and every row keeps the same grid so the
+  // selects, model fields, and vision controls line up down the page. Cells
+  // that do not apply (a role that follows the foreground, or the disabled
+  // grounder) show a quiet dash instead of leaving the grid ragged.
+  function paintLLMRoles() {
+    var root = byID('botLLMRoles');
+    if (!root) return;
+    var t = text();
+    var draft = llmDraft();
+    coerceDraftRoles(draft);
+    var head = '<div class="bot-llm-roles-head" id="botLLMRolesHead">'
+      + '<span>' + escapeHtml(t.llmRolesColRole) + '</span>'
+      + '<span>' + escapeHtml(t.llmRolesColProvider) + '</span>'
+      + '<span>' + escapeHtml(t.llmModel) + '</span>'
+      + '<span>' + escapeHtml(t.llmVision) + '</span>'
+      + '</div>';
+    var rows = [
+      { key: 'foreground', label: t.llmRoleForeground, grounder: false },
+      { key: 'background', label: t.llmRoleBackground, grounder: false },
+      { key: 'computer_use', label: t.llmRoleComputerUse, grounder: false },
+      { key: 'grounder', label: t.llmRoleGrounder, grounder: true }
+    ].map(function (row) {
+      var selected = roleSelectValue(draft, row.key, row.grounder);
+      var modelCell = roleModelFieldHTML(draft, row.key, row.grounder);
+      var visionCell = roleVisionHTML(draft, row.key, false);
+      return '<div class="bot-llm-role">'
+        + '<label class="bot-llm-role-name" for="botLLMRole_' + row.key + '"><span class="bot-llm-role-dot" data-role="' + row.key + '" aria-hidden="true"></span><span class="bot-llm-role-label">' + escapeHtml(row.label) + '</span></label>'
+        + '<select id="botLLMRole_' + row.key + '">' + llmRoleOptions(draft, row.key, row.grounder, selected) + '</select>'
+        + (modelCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
+        + (visionCell || '<span class="bot-llm-role-blank" aria-hidden="true">\u2014</span>')
+        + '</div>';
+    }).join('');
+    root.innerHTML = '<div class="bot-llm-roles-title" id="botLLMRolesTitle">' + escapeHtml(t.llmRolesTitle) + '</div>'
+      + '<p class="bot-llm-roles-hint" id="botLLMRolesHint">' + escapeHtml(t.llmRolesHint) + '</p>'
+      + head + rows;
+  }
+
+  function onLLMRoleChange(event) {
+    var target = event && event.target;
+    if (!target || !target.id) return;
+    if (target.id.indexOf('botLLMRoleVision_') === 0) {
+      onLLMRoleVisionEdit(target);
+      return;
+    }
+    if (target.id.indexOf('botLLMRole_') !== 0) return;
+    var key = target.id.slice('botLLMRole_'.length);
+    if (key.indexOf('Model') === 0 || key.indexOf('Vision') === 0) return;
+    var grounder = key === 'grounder';
+    var draft = llmDraft();
+    if (!draft.roles) draft.roles = defaultLLMRoles();
+    draft.roles[key] = roleFromSelect(target.value, key, grounder);
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+    // The model field belongs to the previous provider: repaint the role
+    // block so the input resets and the datalist follows the new provider.
+    paintLLMRoles();
+    syncLLMBadge();
+  }
+
+  function onLLMRoleModelEdit(event) {
+    var target = event && event.target;
+    if (!target || !target.id || target.id.indexOf('botLLMRoleModel_') !== 0) return;
+    var key = target.id.slice('botLLMRoleModel_'.length);
+    var draft = llmDraft();
+    if (!draft.roles || !draft.roles[key]) return;
+    draft.roles[key].model = String(target.value || '').trim();
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+    refreshRoleVision(key);
+  }
+
+  function onLLMRoleVisionEdit(target) {
+    var key = target.id.slice('botLLMRoleVision_'.length);
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key];
+    if (!role || role.mode !== 'pin') return;
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    if (!provider || !model) return;
+    ensureVisionRecord(provider, model, target.value === 'on' || target.value === 'off' ? target.value : 'auto');
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDirty = true;
+  }
+
+  function refreshRoleVision(key) {
+    var status = byID('botLLMRoleVisionStatus_' + key);
+    var select = byID('botLLMRoleVision_' + key);
+    if (!status && !select) return;
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key] || {};
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    var record = visionRecord(provider, model);
+    if (status) {
+      status.textContent = llmVisionStatus(record);
+      status.className = 'bot-llm-vision-chip bot-llm-vision-' + llmVisionState(record);
+      status.title = llmVisionTitle(record);
+    }
+    if (select && document.activeElement !== select) {
+      var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+      select.value = override;
+    }
+  }
+
+  // onLLMRoleClick routes the per-role "fetch models" button: the row's
+  // pinned provider is fetched once and every picker that references it
+  // refreshes from the shared cache.
+  function onLLMRoleClick(event) {
+    var target = event && event.target;
+    if (!target || !target.id) return;
+    if (target.id.indexOf('botLLMRoleVisionDetect_') === 0) {
+      detectRoleVision(target.id.slice('botLLMRoleVisionDetect_'.length));
+      return;
+    }
+    if (target.id.indexOf('botLLMRoleFetch_') !== 0) return;
+    var key = target.id.slice('botLLMRoleFetch_'.length);
+    var role = (llmDraft().roles || {})[key] || {};
+    if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return;
+    fetchLLMModelsFor(role.provider);
+  }
+
+  // refreshRoleModelPickers re-fills the datalists of role rows pinned to the
+  // given provider, so a catalog fetched on a provider card (or here) shows
+  // up in every role row that references it.
+  function refreshRoleModelPickers(providerID) {
+    ['foreground', 'background', 'computer_use', 'grounder'].forEach(function (key) {
+      var role = (llmDraft().roles || {})[key] || {};
+      if (role.mode !== 'pin' || isBotDefaultGroup(role.provider) || role.provider !== providerID) return;
+      var list = byID('botLLMRoleModelList_' + key);
+      if (list) list.innerHTML = llmModelOptionsHTML((llmModelCacheOf(providerID) || {}).models);
+    });
   }
 
   function llmProviderFromID(id) {
     return llmDraft().providers.filter(function (item) { return item.id === id; })[0] || null;
   }
 
-  function onLLMListEdit(event) {
-    var target = event && event.target;
-    if (!target || !target.id) return;
-    var panel = byID('tab-bots');
-    if (target.id.indexOf('botLLMCurrent_') === 0) {
-      llmDraft().current = isBotDefaultGroup(target.value) ? botOfficialGroup : target.value;
-      if (panel) panel._llmDirty = true;
-      // Rebuilding the list here drops the focused field and the key the
-      // administrator just typed. The radio group already shows the choice.
-      syncLLMBadge();
-      return;
-    }
-    var match = target.id.match(/^botLLM(Name|Protocol|Url|Model|Key)_(.+)$/);
-    if (!match) return;
-    var item = llmProviderFromID(match[2]);
-    if (!item) return;
-    var field = { Name: 'name', Protocol: 'protocol', Url: 'url', Model: 'model', Key: 'key' }[match[1]];
-    item[field] = target.value;
-    if (panel) panel._llmDirty = true;
-    if (field === 'name') {
-      var use = byID('botLLMUse_' + item.id);
-      if (use) use.textContent = text().llmUse + ' ' + (String(item.name || '').trim() || text().llmName);
-      if (llmDraft().current === item.id) syncLLMBadge();
-    }
-  }
-
   function onLLMListClick(event) {
     var target = event && event.target;
-    if (!target || !target.id || target.id.indexOf('botLLMRemove_') !== 0) return;
+    if (!target || !target.id) return;
+    if (target.id.indexOf('botLLMEdit_') === 0) {
+      openLLMProviderDialog('edit', target.id.slice('botLLMEdit_'.length));
+      return;
+    }
+    if (target.id.indexOf('botLLMRemove_') !== 0) return;
     var id = target.id.slice('botLLMRemove_'.length);
     var draft = llmDraft();
     draft.providers = draft.providers.filter(function (item) { return item.id !== id; });
     if (draft.current === id) draft.current = botOfficialGroup;
+    coerceDraftRoles(draft);
     var panel = byID('tab-bots');
     if (panel) panel._llmDirty = true;
+    // Roles pinned to the removed provider were coerced above; the catalog
+    // cache and any role picker still pointing at it go with the row.
+    clearLLMModelsFor(id);
     paintLLM();
+  }
+
+  // ---- Provider dialog -------------------------------------------------------
+  // Providers are added and edited in one modal. The list stays a compact
+  // summary; the dialog carries the fields and the catalog fetch.
+
+  function llmDialogLabels() {
+    var t = text();
+    setLabel('botLLMPNameLabel', t.llmName);
+    setLabel('botLLMPProtocolLabel', t.llmProtocol);
+    setLabel('botLLMPUrlLabel', t.llmURL);
+    setLabel('botLLMPModelLabel', t.llmModel);
+    setLabel('botLLMPKeyLabel', t.llmKey);
+    var fetch = byID('botLLMPFetch');
+    if (fetch) fetch.textContent = t.llmFetchModels;
+    var cancel = byID('botLLMPCancel');
+    if (cancel) cancel.textContent = t.llmCancel;
+    var save = byID('botLLMPSave');
+    if (save) save.textContent = t.llmDialogSave;
+    var hint = byID('botLLMPKeyHint');
+    if (hint) hint.textContent = t.llmKeyKeep;
+  }
+
+  function openLLMProviderDialog(mode, providerId) {
+    var panel = byID('tab-bots');
+    var modal = byID('botLLMPModal');
+    if (!panel || !modal) return;
+    if (mode === 'edit' && !providerId) return;
+    var item = mode === 'edit' ? llmProviderFromID(providerId) : null;
+    if (mode === 'edit' && !item) return;
+    var t = text();
+    llmDialogLabels();
+    panel._llmDialog = { mode: mode === 'edit' ? 'edit' : 'create', id: item ? item.id : '', seq: 0 };
+    setLabel('botLLMPModalTitle', item ? t.llmEditProvider : t.llmAdd);
+    byID('botLLMPName').value = item ? item.name : '';
+    byID('botLLMPProtocol').value = item && item.protocol === 'anthropic' ? 'anthropic' : 'openai';
+    byID('botLLMPUrl').value = item ? item.url : '';
+    byID('botLLMPModel').value = item ? item.model : '';
+    // A stored key never rounds-trips to the browser. A typed-but-unsaved key
+    // (key_set false) lives only in this draft, so prefill it; a saved key
+    // starts blank and the placeholder explains keep-on-blank.
+    byID('botLLMPKey').value = item && !item.key_set ? (item.key || '') : '';
+    byID('botLLMPKey').placeholder = item && item.key_set ? t.llmKeyKeep : '';
+    var cache = item ? llmModelCacheOf(item.id) : null;
+    byID('botLLMPModelList').innerHTML = llmModelOptionsHTML(cache && cache.models);
+    byID('botLLMPModelsStatus').textContent = llmModelsStatusText(cache);
+    var fetch = byID('botLLMPFetch');
+    if (fetch) fetch.disabled = false;
+    modal.hidden = false;
+    var name = byID('botLLMPName');
+    if (name && name.focus) name.focus();
+  }
+
+  function closeLLMProviderDialog() {
+    var modal = byID('botLLMPModal');
+    if (modal) modal.hidden = true;
+    var panel = byID('tab-bots');
+    if (panel) panel._llmDialog = null;
+  }
+
+  // Clicking the dimmed backdrop (not the panel) dismisses the dialog.
+  function onBotLLMPModalOverlayClick(event) {
+    if (event && event.target === byID('botLLMPModal')) closeLLMProviderDialog();
+  }
+
+  function onBotLLMPModalKeydown(event) {
+    if (!event || event.key !== 'Escape') return;
+    var modal = byID('botLLMPModal');
+    if (modal && !modal.hidden) closeLLMProviderDialog();
+  }
+
+  // onLLMPDialogEdit retires an in-flight dialog fetch once its coordinates
+  // change: the answer would describe an endpoint the form no longer holds.
+  function onLLMPDialogEdit(event) {
+    var target = event && event.target;
+    if (!target || !target.id) return;
+    if (target.id !== 'botLLMPUrl' && target.id !== 'botLLMPProtocol' && target.id !== 'botLLMPKey') return;
+    var panel = byID('tab-bots');
+    var dialog = panel && panel._llmDialog;
+    if (!dialog) return;
+    dialog.seq = (dialog.seq || 0) + 1;
+    var list = byID('botLLMPModelList');
+    if (list) list.innerHTML = '';
+    var status = byID('botLLMPModelsStatus');
+    if (status) status.textContent = '';
+    var fetch = byID('botLLMPFetch');
+    if (fetch && fetch.disabled) {
+      fetch.disabled = false;
+      fetch.textContent = text().llmFetchModels;
+    }
+  }
+
+  // validateLLMProviderDraft enforces the same shape rules the server applies
+  // to one provider row, plus the per-draft name rules.
+  function validateLLMProviderDraft(item, draft) {
+    var t = text();
+    var name = String(item.name || '').trim();
+    if (!name) return t.llmNeedName;
+    var keyName = name.toLowerCase();
+    if (keyName === 'hub-llm' || keyName === 'system-free' || keyName === botOfficialGroup) return t.llmReservedName;
+    var duplicated = (draft.providers || []).some(function (other) {
+      return other.id !== item.id && llmNamesConflict(String(other.name || '').trim().toLowerCase(), keyName);
+    });
+    if (duplicated) return t.llmDuplicateName;
+    if (item.protocol !== 'openai' && item.protocol !== 'anthropic') return t.llmBadProtocol;
+    if (!validServiceUrl(item.url)) return t.llmBadURL;
+    if (!String(item.model || '').trim()) return t.llmNeedModel;
+    if (!String(item.key || '').trim() && !item.key_set) return t.llmNeedKey;
+    return '';
+  }
+
+  function saveLLMProviderDialog() {
+    var panel = byID('tab-bots');
+    var modal = byID('botLLMPModal');
+    if (!panel || !modal || modal.hidden) return;
+    var dialog = panel._llmDialog || { mode: 'create' };
+    var existing = dialog.mode === 'edit' ? llmProviderFromID(dialog.id) : null;
+    if (dialog.mode === 'edit' && !existing) return;
+    var draft = llmDraft();
+    var item = {
+      id: existing ? existing.id : newLLMProviderID(),
+      name: (byID('botLLMPName').value || '').trim(),
+      protocol: (byID('botLLMPProtocol').value || 'openai').toLowerCase() === 'anthropic' ? 'anthropic' : 'openai',
+      url: (byID('botLLMPUrl').value || '').trim(),
+      model: (byID('botLLMPModel').value || '').trim(),
+      key: (byID('botLLMPKey').value || '').trim(),
+      key_set: existing ? !!existing.key_set : false
+    };
+    var error = validateLLMProviderDraft(item, draft);
+    if (error) {
+      showToast(error, 'error');
+      return;
+    }
+    if (!existing) {
+      if ((draft.providers || []).length >= 8) {
+        showToast(text().llmLimit, 'error');
+        return;
+      }
+      draft.providers.push(item);
+    } else {
+      var coordinatesChanged = existing.protocol !== item.protocol ||
+        existing.url !== item.url ||
+        String(existing.key || '') !== item.key;
+      draft.providers = draft.providers.map(function (other) { return other.id === item.id ? item : other; });
+      if (coordinatesChanged) clearLLMModelsFor(item.id);
+    }
+    panel._llmDirty = true;
+    closeLLMProviderDialog();
+    paintLLM();
+  }
+
+  // fetchLLMDialogModels fetches the catalog for the coordinates typed in the
+  // dialog, which may differ from the saved provider yet. An edit reuses the
+  // provider id so the hub can fall back to the stored key; the answer fills
+  // the dialog datalist and, for an edit, every role picker on that provider.
+  function fetchLLMDialogModels() {
+    var panel = byID('tab-bots');
+    var modal = byID('botLLMPModal');
+    if (!panel || !modal || modal.hidden) return;
+    var dialog = panel._llmDialog || { mode: 'create' };
+    var url = (byID('botLLMPUrl').value || '').trim();
+    var key = (byID('botLLMPKey').value || '').trim();
+    var protocol = (byID('botLLMPProtocol').value || 'openai').toLowerCase() === 'anthropic' ? 'anthropic' : 'openai';
+    if (!validServiceUrl(url)) {
+      showToast(text().llmBadURL, 'error');
+      return;
+    }
+    var stored = dialog.mode === 'edit' ? llmProviderFromID(dialog.id) : null;
+    var keySet = !!stored && !!stored.key_set;
+    if (!key && !keySet) {
+      showToast(text().llmFetchNeedURL, 'error');
+      return;
+    }
+    var body = { protocol: protocol, url: url };
+    if (stored) body.provider_id = stored.id;
+    if (key) body.key = key;
+    dialog.seq = (dialog.seq || 0) + 1;
+    var seq = dialog.seq;
+    var fetch = byID('botLLMPFetch');
+    if (fetch) {
+      fetch.disabled = true;
+      fetch.textContent = text().llmFetching;
+    }
+    api('/api/admin/bots/llm/models', { method: 'POST', body: JSON.stringify(body) }).then(function (result) {
+      if (!panel._llmDialog || panel._llmDialog.seq !== seq) return;
+      var models = result && Array.isArray(result.models) ? result.models : [];
+      var cache = models.length ? { models: models, error: '' } : { models: null, error: text().llmModelsEmpty };
+      var list = byID('botLLMPModelList');
+      if (list) list.innerHTML = llmModelOptionsHTML(models);
+      var status = byID('botLLMPModelsStatus');
+      if (status) status.textContent = llmModelsStatusText(cache);
+      if (stored) {
+        llmModelCacheStore(stored.id, cache);
+        refreshRoleModelPickers(stored.id);
+      }
+      if (!models.length) showToast(cache.error, 'info');
+    }).catch(function (err) {
+      if (!panel._llmDialog || panel._llmDialog.seq !== seq) return;
+      var message = llmModelsMessage(err);
+      var status = byID('botLLMPModelsStatus');
+      if (status) status.textContent = message;
+      showToast(message, 'error');
+    }).then(function () {
+      if (!panel._llmDialog || panel._llmDialog.seq !== seq) return;
+      if (fetch) {
+        fetch.disabled = false;
+        fetch.textContent = text().llmFetchModels;
+      }
+    });
   }
 
   function addLLMProvider() {
@@ -1471,13 +2632,7 @@
       showToast(text().llmLimit, 'error');
       return;
     }
-    var id = newLLMProviderID();
-    draft.providers.push({ id: id, name: '', protocol: 'openai', url: '', model: '', key: '', key_set: false });
-    var panel = byID('tab-bots');
-    if (panel) panel._llmDirty = true;
-    paintLLM();
-    var name = byID('botLLMName_' + id);
-    if (name && name.focus) name.focus();
+    openLLMProviderDialog('create');
   }
 
   // MaClaw treats these display names as one provider. The same set is
@@ -1495,41 +2650,172 @@
 
   function llmDraftError(draft) {
     var t = text();
-    var seenNames = [];
     var providers = draft.providers || [];
     for (var i = 0; i < providers.length; i += 1) {
-      var item = providers[i];
-      var name = String(item.name || '').trim();
-      var protocol = String(item.protocol || '').toLowerCase();
-      var keyName = name.toLowerCase();
-      if (!name) return t.llmNeedName;
-      if (keyName === 'hub-llm' || keyName === 'system-free' || keyName === botOfficialGroup) return t.llmReservedName;
-      if (seenNames.some(function (seen) { return llmNamesConflict(seen, keyName); })) return t.llmDuplicateName;
-      seenNames.push(keyName);
-      if (protocol !== 'openai' && protocol !== 'anthropic') return t.llmBadProtocol;
-      if (!validServiceUrl(item.url)) return t.llmBadURL;
-      if (!String(item.model || '').trim()) return t.llmNeedModel;
-      if (!String(item.key || '').trim() && !item.key_set) return t.llmNeedKey;
+      var error = validateLLMProviderDraft(providers[i], draft);
+      if (error) return error;
     }
-    if (!isBotDefaultGroup(draft.current) && !providers.some(function (item) { return item.id === draft.current; })) return t.llmBadCurrent;
+    // A role model override only exists on a real provider pin, and the same
+    // shape rules the server enforces.
+    var pinnedRoles = ['foreground', 'background', 'computer_use'];
+    for (var r = 0; r < pinnedRoles.length; r += 1) {
+      var role = (draft.roles || {})[pinnedRoles[r]];
+      var roleModel = String((role && role.model) || '').trim();
+      if (role && role.mode === 'pin' && roleModel && (roleModel.length > 128 || /[\r\n]/.test(roleModel))) {
+        return t.llmRoleModelBad;
+      }
+    }
+    var current = llmForegroundProvider(draft);
+    if (!isBotDefaultGroup(current) && !providers.some(function (item) { return item.id === current; })) return t.llmBadCurrent;
     return '';
   }
 
+  function llmRoleRequest(role, key) {
+    // Foreground is the default route: a legacy row stored as inherit pins
+    // the settings' current provider instead of the official group.
+    if (key === 'foreground') {
+      var pinned = llmForegroundProvider(llmDraft());
+      var out = { mode: 'pin', provider: isBotDefaultGroup(pinned) ? botOfficialGroup : pinned };
+      var pinnedModel = role && role.mode === 'pin' ? String(role.model || '').trim() : '';
+      if (!isBotDefaultGroup(out.provider) && pinnedModel) out.model = pinnedModel;
+      return out;
+    }
+    var mode = role && role.mode ? role.mode : 'inherit';
+    var request = { mode: mode };
+    if (mode === 'pin') {
+      var provider = isBotDefaultGroup(role.provider) ? botOfficialGroup : String(role.provider || '');
+      request.provider = provider;
+      // An empty model keeps the provider's default; only a real provider
+      // pin carries an override.
+      if (!isBotDefaultGroup(provider) && String(role.model || '').trim()) {
+        request.model = String(role.model).trim();
+      }
+    }
+    return request;
+  }
+
+  function providerVisionRequest(item, draft) {
+    var models = {};
+    function add(model) {
+      model = String(model || '').trim();
+      if (!model) return;
+      var key = model.toLowerCase();
+      if (models[key]) return;
+      var record = visionRecord(item, model);
+      var override = record && (record.override === 'on' || record.override === 'off') ? record.override : 'auto';
+      models[key] = { model: model, override: override };
+    }
+    add(item.model);
+    ['foreground', 'background', 'computer_use', 'grounder'].forEach(function (key) {
+      var role = (draft.roles || {})[key] || {};
+      if (role.mode !== 'pin' || role.provider !== item.id || isBotDefaultGroup(role.provider)) return;
+      add(String(role.model || '').trim() || item.model);
+    });
+    return Object.keys(models).map(function (key) { return models[key]; });
+  }
+
+  // detectRoleVision probes one pinned role's provider+model. The probe can
+  // take up to the server's 25s timeout and come back inconclusive (the
+  // provider neither described nor refused the image), so the affected
+  // buttons show a busy label while it runs and an inconclusive answer gets
+  // its own toast instead of a silent no-op. Every role row showing the same
+  // provider+model shares the answer; probes of different pairs may run
+  // concurrently, keyed by provider|model.
+  function detectRoleVision(key) {
+    var draft = llmDraft();
+    var role = (draft.roles || {})[key] || {};
+    if (role.mode !== 'pin' || isBotDefaultGroup(role.provider)) return;
+    var provider = llmProviderFromID(role.provider);
+    var model = roleEffectiveModel(draft, key);
+    if (!provider || !provider.key_set || !model) {
+      showToast(text().llmNeedKey, 'error');
+      return;
+    }
+    var panel = byID('tab-bots');
+    var wanted = String(model).trim();
+    var busyKey = provider.id + '|' + wanted;
+    if (panel) {
+      panel._llmVisionBusy = panel._llmVisionBusy || {};
+      if (panel._llmVisionBusy[busyKey]) return;
+      panel._llmVisionBusy[busyKey] = true;
+    }
+    // Buttons on every role row pinned to the same provider+model go busy:
+    // the answer lands on all of them.
+    var rows = ['foreground', 'background', 'computer_use', 'grounder'].filter(function (row) {
+      var item = (draft.roles || {})[row] || {};
+      return item.mode === 'pin' && item.provider === provider.id
+        && String(roleEffectiveModel(draft, row) || '').trim() === wanted;
+    });
+    var t = text();
+    var busyButtons = [];
+    rows.forEach(function (row) {
+      var button = byID('botLLMRoleVisionDetect_' + row);
+      if (button) {
+        button.disabled = true;
+        button.textContent = t.llmVisionProbing;
+        busyButtons.push(button);
+      }
+    });
+    var done = function () {
+      if (panel && panel._llmVisionBusy) delete panel._llmVisionBusy[busyKey];
+      busyButtons.forEach(function (button) {
+        button.disabled = false;
+        button.textContent = t.llmVisionDetect;
+      });
+    };
+    return api('/api/admin/bots/llm/vision', { method: 'POST', body: JSON.stringify({ id: provider.id, model: model }) }).then(function (view) {
+      var providers = view && view.llm && view.llm.providers || [];
+      var fresh = null;
+      for (var i = 0; i < providers.length; i += 1) {
+        if (providers[i].id === provider.id) fresh = providers[i];
+      }
+      // The provider (or its row) may have gone away during the probe; the
+      // draft no longer holds it, so neither its vision rows nor an
+      // inconclusive toast belong here.
+      if (!fresh || !llmProviderFromID(provider.id)) return;
+      provider.vision = (fresh.vision || []).map(function (row) {
+        return {
+          model: String(row.model || ''),
+          override: row.override === 'on' || row.override === 'off' ? row.override : 'auto',
+          known: !!row.known,
+          supported: !!row.supported,
+          detected_at: String(row.detected_at || '')
+        };
+      });
+      rows.forEach(refreshRoleVision);
+      // An inconclusive probe leaves the chip unchanged; say so instead of
+      // letting the button look dead.
+      var record = visionRecord(provider, model);
+      if (!record || !record.known) showToast(text().llmVisionInconclusive, 'info');
+    }).catch(function (err) {
+      showToast(messageOf(err), 'error');
+    }).then(done);
+  }
+
   function llmRequestBody(draft) {
+    var roles = normalizeDraftRoles(draft && draft.roles, draft || {});
+    var current = llmForegroundProvider(draft);
     return {
-      current: isBotDefaultGroup(draft.current) ? botOfficialGroup : draft.current,
+      current: isBotDefaultGroup(current) ? botOfficialGroup : current,
       providers: (draft.providers || []).map(function (item) {
         var out = {
           id: item.id,
           name: String(item.name || '').trim(),
           protocol: String(item.protocol || '').toLowerCase(),
           url: String(item.url || '').trim(),
-          model: String(item.model || '').trim()
+          model: String(item.model || '').trim(),
+          vision: providerVisionRequest(item, draft)
         };
         var key = String(item.key || '').trim();
         if (key) out.key = key;
         return out;
-      })
+      }),
+      roles: {
+        foreground: llmRoleRequest(roles.foreground, 'foreground'),
+        background: llmRoleRequest(roles.background, 'background'),
+        computer_use: llmRoleRequest(roles.computer_use, 'computer_use'),
+        grounder: llmRoleRequest(roles.grounder, 'grounder')
+      }
     };
   }
 
@@ -1565,6 +2851,8 @@
     var raw = String(value || '').trim();
     var parsed;
     try { parsed = new URL(raw); } catch (err) { return false; }
+    var host = String(parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
+    if (host === 'node.invalid' || host.endsWith('.node.invalid')) return false;
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
   }
 
@@ -1581,15 +2869,12 @@
       return;
     }
     var body = { base_url: base };
-    var token = byID('botAccessToken').value || '';
-    if (token !== '') body.access_token = token;
     var adminSecret = byID('botAdminSecret').value || '';
     if (adminSecret !== '') body.admin_secret = adminSecret;
     if (panel) panel._connSaving = true;
     var button = byID('botSave');
     if (button) button.disabled = true;
     return api('/api/admin/bots/settings', { method: 'PUT', body: JSON.stringify(body) }).then(function (view) {
-      byID('botAccessToken').value = '';
       byID('botAdminSecret').value = '';
       var urlInput = byID('botBaseUrl');
       if (urlInput) urlInput._serverValue = urlInput.value;
@@ -1612,7 +2897,7 @@
     var view = panel && panel._botView || {};
     var typedUrl = (byID('botBaseUrl').value || '').trim().replace(/\/+$/, '');
     var savedUrl = String(view.base_url || '').trim().replace(/\/+$/, '');
-    if (typedUrl !== savedUrl || (byID('botAccessToken').value || '') !== '') {
+    if (typedUrl !== savedUrl || (byID('botAdminSecret').value || '') !== '') {
       showToast(text().saveBeforeTest, 'error');
       return;
     }
@@ -1628,6 +2913,7 @@
       byID('botConnStatus').textContent = msg;
       renderConnBadge(panel && panel._botView);
       showToast(msg, 'success');
+      if (panel && !panel._llmDirty) load();
     }).catch(function (err) {
       if (panel) panel._botConnOk = false;
       byID('botConnStatus').textContent = messageOf(err);

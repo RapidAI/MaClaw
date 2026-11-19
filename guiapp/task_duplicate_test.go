@@ -231,6 +231,156 @@ func TestCopiedTaskFirstTabAdoptsStagedTranscript(t *testing.T) {
 	}
 }
 
+func TestReopenCopiedTaskRestoresCodingProcessRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.createTaskRecordWithWorkingDir("指令集", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		taskCodingDevTag,
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	timeline := []interface{}{map[string]interface{}{"id": "search-1", "kind": "progress", "content": "code_search"}}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "source-tab",
+		ProjectPath: source.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"id": "user-1", "role": "user", "content": "本程序现在支持哪些指令集"},
+			map[string]interface{}{"id": "assistant-1", "role": "assistant", "content": "结论：支持 AVX512", "codingTimeline": timeline},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notice := app.CreateProjectTabSession("proj-copy-tab", copied.ProjectPath); notice == "" {
+		t.Fatal("CreateProjectTabSession returned an empty notice")
+	}
+	session, err := persist.LoadSession("proj-copy-tab")
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v %v", session, err)
+	}
+	// The open race used to persist this shape: same words, new ids, no tool rows.
+	session.Conversation = []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "结论：支持 AVX512", "reasoning": "先把各段思考拼在一起"},
+		map[string]interface{}{"id": "restored-2", "role": "user", "content": "再问一句"},
+	}
+	if err := persist.SaveSession(session); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := app.LoadProjectTabConversation("proj-copy-tab")
+	if len(loaded) != 3 || firstCodingTimelineID(loaded[1]) != "search-1" {
+		t.Fatalf("reopened copy = %#v, want the staged process list and the later turn", loaded)
+	}
+	stored, err := persist.LoadSession("proj-copy-tab")
+	if err != nil || stored == nil || firstCodingTimelineID(stored.Conversation[1]) != "search-1" {
+		t.Fatalf("healed session = %#v err=%v", stored, err)
+	}
+}
+
+func TestReopenCopiedTaskRestoresArchivedProcessRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	source := app.createTaskRecordWithWorkingDir("指令集", "", []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		taskCodingDevTag,
+	}, "", true)
+	if source.ProjectPath == "" {
+		t.Fatal("source task was not created")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	older := []interface{}{map[string]interface{}{"id": "search-old", "kind": "progress", "content": "code_search"}}
+	hot := []interface{}{map[string]interface{}{"id": "search-hot", "kind": "progress", "content": "code_search"}}
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "source-tab",
+		ProjectPath: source.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"id": "user-hot", "role": "user", "content": "继续看指令集"},
+			map[string]interface{}{"id": "assistant-hot", "role": "assistant", "content": "结论：还有 AVX2", "codingTimeline": hot},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	if err := persist.SaveConversationViewArchive("source-tab", []interface{}{
+		map[string]interface{}{"id": "user-old", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "assistant-old", "role": "assistant", "content": "结论：支持 AVX512", "codingTimeline": older},
+	}); err != nil {
+		t.Fatalf("SaveConversationViewArchive: %v", err)
+	}
+	copied, err := app.DuplicateTask(source.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notice := app.CreateProjectTabSession("proj-copy-tab", copied.ProjectPath); notice == "" {
+		t.Fatal("CreateProjectTabSession returned an empty notice")
+	}
+	session, err := persist.LoadSession("proj-copy-tab")
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v %v", session, err)
+	}
+	session.Conversation = []interface{}{
+		map[string]interface{}{"id": "restored-2", "role": "user", "content": "继续看指令集"},
+		map[string]interface{}{"id": "restored-3", "role": "assistant", "content": "结论：还有 AVX2"},
+	}
+	if err := persist.SaveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.SaveConversationViewArchive("proj-copy-tab", []interface{}{
+		map[string]interface{}{"id": "restored-0", "role": "user", "content": "本程序现在支持哪些指令集"},
+		map[string]interface{}{"id": "restored-1", "role": "assistant", "content": "结论：支持 AVX512"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := app.LoadProjectTabConversation("proj-copy-tab")
+	if len(loaded) != 2 || firstCodingTimelineID(loaded[1]) != "search-hot" {
+		t.Fatalf("reopened hot tail = %#v, want search-hot", loaded)
+	}
+	archive, err := persist.LoadConversationViewArchive("proj-copy-tab")
+	if err != nil || len(archive) != 2 || firstCodingTimelineID(archive[1]) != "search-old" {
+		t.Fatalf("reopened archive = %#v err=%v, want search-old", archive, err)
+	}
+
+	// A later slim save of the hot tail must not strip the archived process list.
+	app.SaveProjectTabConversation("proj-copy-tab", []interface{}{
+		map[string]interface{}{"id": "restored-2", "role": "user", "content": "继续看指令集"},
+		map[string]interface{}{"id": "restored-3", "role": "assistant", "content": "结论：还有 AVX2"},
+	})
+	if !conversationHasTimelineID(app, "proj-copy-tab", "search-old") || !conversationHasTimelineID(app, "proj-copy-tab", "search-hot") {
+		session, _ = persist.LoadSession("proj-copy-tab")
+		archive, _ = persist.LoadConversationViewArchive("proj-copy-tab")
+		t.Fatalf("slim save dropped a process list session=%#v archive=%#v", session.Conversation, archive)
+	}
+}
+
+func conversationHasTimelineID(app *App, tabID, timelineID string) bool {
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err == nil && session != nil {
+		for _, raw := range session.Conversation {
+			if firstCodingTimelineID(raw) == timelineID {
+				return true
+			}
+		}
+	}
+	archive, err := persist.LoadConversationViewArchive(tabID)
+	if err != nil {
+		return false
+	}
+	for _, raw := range archive {
+		if firstCodingTimelineID(raw) == timelineID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDuplicateTaskKeepsDefaultWorkspaceDir(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	source := app.createTaskRecordWithWorkingDir("未指定目录", "", []string{

@@ -3,12 +3,15 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
@@ -53,12 +56,6 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 	if mode != "create" {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
-	if action == "" {
-		return "", fmt.Errorf("desktop bot understanding omitted the work order")
-	}
-	if name == "" {
-		name = clipRunes(action, 40)
-	}
 	if dayOfWeek < -1 || dayOfWeek > 6 {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
@@ -82,15 +79,35 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 	} else if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
 		return "", fmt.Errorf("desktop bot understanding omitted the schedule")
 	}
+	var mine []scheduler.ScheduledTask
 	for _, existing := range mgr.List() {
 		if existing.Status != "active" || existing.DesktopBotID != id || existing.DesktopBotOwner != owner {
 			continue
 		}
-		if strings.TrimSpace(existing.Action) != action {
-			continue
+		mine = append(mine, existing)
+	}
+	rowID, keptAction := "", ""
+	for _, existing := range mine {
+		if name != "" && existing.Name == name {
+			rowID, keptAction = existing.ID, strings.TrimSpace(existing.Action)
+			break
 		}
-		if err := mgr.Update(existing.ID, map[string]interface{}{
+	}
+	if rowID == "" && action != "" {
+		for _, existing := range mine {
+			if strings.TrimSpace(existing.Action) == action {
+				rowID, keptAction = existing.ID, strings.TrimSpace(existing.Action)
+				break
+			}
+		}
+	}
+	if rowID != "" {
+		if action == "" {
+			action = keptAction
+		}
+		if err := mgr.Update(rowID, map[string]interface{}{
 			"name":             name,
+			"action":           action,
 			"hour":             task.Hour,
 			"minute":           task.Minute,
 			"day_of_week":      task.DayOfWeek,
@@ -98,9 +115,15 @@ func (a *App) ArmDesktopBotSchedule(botID, name, mode, action string, intervalMi
 		}); err != nil {
 			return "", err
 		}
-		log.Printf("[desktop-bot-schedule] update id=%s bot=%q interval=%d hour=%d minute=%d", existing.ID, id, task.IntervalMinutes, task.Hour, task.Minute)
+		log.Printf("[desktop-bot-schedule] update id=%s bot=%q interval=%d hour=%d minute=%d", rowID, id, task.IntervalMinutes, task.Hour, task.Minute)
 		a.noteDesktopBotSchedulesChanged()
-		return existing.ID, nil
+		return rowID, nil
+	}
+	if action == "" {
+		return "", fmt.Errorf("desktop bot understanding omitted the work order")
+	}
+	if task.Name == "" {
+		task.Name = clipRunes(action, 40)
 	}
 	taskID, err := mgr.Add(task)
 	if err != nil {
@@ -118,6 +141,25 @@ func (a *App) noteDesktopBotSchedulesChanged() {
 	a.emitEvent("scheduled-tasks-changed")
 }
 
+// desktopBotScheduleWeekday is the weekday already stored for this timer.
+// A schedule decision that omits day_of_week means that weekday stays.
+func (a *App) desktopBotScheduleWeekday(botID, name string) (int, bool) {
+	name = strings.TrimSpace(name)
+	if a == nil || name == "" {
+		return 0, false
+	}
+	listed, err := a.ListDesktopBotSchedules(botID)
+	if err != nil {
+		return 0, false
+	}
+	for _, item := range listed {
+		if item.Name == name {
+			return item.DayOfWeek, true
+		}
+	}
+	return 0, false
+}
+
 // DesktopBotScheduleInfo is one timed job of this bot, for the schedules tab.
 type DesktopBotScheduleInfo struct {
 	ID              string `json:"id"`
@@ -131,12 +173,69 @@ type DesktopBotScheduleInfo struct {
 	Status          string `json:"status,omitempty"`
 }
 
-// ListDesktopBotSchedules returns this bot's timed jobs. Other bots and host
-// schedules stay off this list.
+// errDesktopSchedulesLocal means this process has no hub to ask, so the
+// display copy on this computer is the only list. Any other error is shown.
+// Falling back to an empty local copy is what painted "还没有定时任务" while
+// the host clock was running.
+var errDesktopSchedulesLocal = errors.New("hub schedules are not configured")
+
+func desktopBotSchedulesUseLocal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errDesktopSchedulesLocal) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Hub URL not configured") || strings.Contains(msg, "Hub token not configured")
+}
+
+// ListDesktopBotSchedules returns this bot's timed jobs. The host clock is
+// the list every desktop and the phone share. A machine with no hub falls
+// back to the copy this computer armed for display.
 func (a *App) ListDesktopBotSchedules(botID string) ([]DesktopBotScheduleInfo, error) {
 	if a == nil {
 		return nil, fmt.Errorf("scheduler unavailable")
 	}
+	remote, err := a.listDesktopBotSchedulesFromHub(botID)
+	if err == nil {
+		return remote, nil
+	}
+	if desktopBotSchedulesUseLocal(err) {
+		return a.listLocalDesktopBotSchedules(botID)
+	}
+	return nil, err
+}
+
+func (a *App) listDesktopBotSchedulesFromHub(botID string) ([]DesktopBotScheduleInfo, error) {
+	if testing.Testing() && desktopBotExchangeOverride == nil {
+		return nil, errDesktopSchedulesLocal
+	}
+	if desktopBotExchangeOverride == nil {
+		if _, _, err := a.getHubCredentials(); err != nil {
+			return nil, err
+		}
+	}
+	_, id, err := desktopBotIdentity(a.desktopBotAccountUserID(), botID)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Items []DesktopBotScheduleInfo `json:"items"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	path := "/api/v1/bots/" + url.PathEscape(id) + "/schedules"
+	if err := a.desktopBotCall(ctx, "GET", path, nil, &out, 8*time.Second); err != nil {
+		return nil, err
+	}
+	if out.Items == nil {
+		out.Items = []DesktopBotScheduleInfo{}
+	}
+	return out.Items, nil
+}
+
+func (a *App) listLocalDesktopBotSchedules(botID string) ([]DesktopBotScheduleInfo, error) {
 	owner, id, err := desktopBotIdentity(a.desktopBotAccountUserID(), botID)
 	if err != nil {
 		return nil, err
@@ -148,6 +247,9 @@ func (a *App) ListDesktopBotSchedules(botID string) ([]DesktopBotScheduleInfo, e
 	out := make([]DesktopBotScheduleInfo, 0)
 	for _, task := range mgr.List() {
 		if task.DesktopBotID != id || task.DesktopBotOwner != owner {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), "watch-job:") {
 			continue
 		}
 		info := DesktopBotScheduleInfo{
@@ -168,8 +270,8 @@ func (a *App) ListDesktopBotSchedules(botID string) ([]DesktopBotScheduleInfo, e
 	return out, nil
 }
 
-// DeleteDesktopBotSchedule removes one timed job of this bot. A job that is
-// running is cancelled and taken off the list. Another bot's job is left as it is.
+// DeleteDesktopBotSchedule removes one timed job of this bot from the host
+// clock, and from the local display copy when that copy still has the row.
 func (a *App) DeleteDesktopBotSchedule(botID, taskID string) error {
 	if a == nil {
 		return fmt.Errorf("scheduler unavailable")
@@ -182,6 +284,42 @@ func (a *App) DeleteDesktopBotSchedule(botID, taskID string) error {
 	if taskID == "" {
 		return fmt.Errorf("no desktop bot schedule matched")
 	}
+	hubErr := a.deleteDesktopBotScheduleOnHub(id, taskID)
+	if hubErr == nil {
+		_ = a.deleteLocalDesktopBotSchedule(owner, id, taskID)
+		log.Printf("[desktop-bot-schedule] delete id=%s bot=%q", taskID, id)
+		a.noteDesktopBotSchedulesChanged()
+		return nil
+	}
+	// The host clock is the one that fires. A local row disappearing while
+	// that clock refused the delete would look like the timer had stopped.
+	if !desktopBotSchedulesUseLocal(hubErr) {
+		return hubErr
+	}
+	if err := a.deleteLocalDesktopBotSchedule(owner, id, taskID); err != nil {
+		return err
+	}
+	log.Printf("[desktop-bot-schedule] delete id=%s bot=%q", taskID, id)
+	a.noteDesktopBotSchedulesChanged()
+	return nil
+}
+
+func (a *App) deleteDesktopBotScheduleOnHub(botID, taskID string) error {
+	if testing.Testing() && desktopBotExchangeOverride == nil {
+		return errDesktopSchedulesLocal
+	}
+	if desktopBotExchangeOverride == nil {
+		if _, _, err := a.getHubCredentials(); err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/schedules/" + url.PathEscape(taskID)
+	return a.desktopBotCall(ctx, "DELETE", path, nil, nil, 8*time.Second)
+}
+
+func (a *App) deleteLocalDesktopBotSchedule(owner, id, taskID string) error {
 	mgr := a.scheduledTaskManagerForIMHandler()
 	if mgr == nil {
 		return fmt.Errorf("scheduler unavailable")
@@ -200,16 +338,11 @@ func (a *App) DeleteDesktopBotSchedule(botID, taskID string) error {
 	if !matched {
 		return fmt.Errorf("no desktop bot schedule matched")
 	}
-	err = mgr.Delete(taskID)
+	err := mgr.Delete(taskID)
 	if err != nil && strings.Contains(err.Error(), "cancellation requested") {
 		err = mgr.ForceDelete(taskID)
 	}
-	if err != nil {
-		return err
-	}
-	log.Printf("[desktop-bot-schedule] delete id=%s bot=%q", taskID, id)
-	a.noteDesktopBotSchedulesChanged()
-	return nil
+	return err
 }
 
 // desktopBotBusySink records schedule runs on that bot's own desktop.
@@ -432,6 +565,33 @@ func (a *App) noteDesktopBotBusy(botID, owner string, busy bool) {
 	a.emitEvent("desktop-bot-busy", string(raw))
 }
 
+// dropLocalDesktopBotScheduleRows removes bot timers from this computer's
+// schedule. A watch-job stays, including a paused historical patrol. The
+// server clock is the one that fires a bot timer.
+func dropLocalDesktopBotScheduleRows(mgr *scheduler.Manager) int {
+	if mgr == nil {
+		return 0
+	}
+	var ids []string
+	for _, task := range mgr.List() {
+		if strings.TrimSpace(task.DesktopBotID) == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(task.Name), "watch-job:") {
+			continue
+		}
+		ids = append(ids, task.ID)
+	}
+	n := 0
+	for _, id := range ids {
+		err := mgr.Delete(id)
+		if err == nil || strings.Contains(err.Error(), "cancellation requested") {
+			n++
+		}
+	}
+	return n
+}
+
 func cancelDesktopBotSchedules(mgr *scheduler.Manager, owner, botID, name string) int {
 	if mgr == nil {
 		return 0
@@ -483,7 +643,7 @@ func desktopScheduleReports(text string, result desktopBotRelayResult, runErr er
 		AskText:     result.AskUserQuestion,
 		Handoff:     result.UserControl || strings.TrimSpace(result.AttentionReason) != "",
 		Changed:     strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser),
-		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && !desktopTaskOutcomeNotDone(result.TaskOutcome),
+		Done:        strings.TrimSpace(result.SendToUser) != "" && !desktopbot.NotContent(result.SendToUser) && desktopTaskOutcomeOf(result.TaskOutcome) == "done",
 	})
 	// A scheduled run whose task is not done is reported, never left quiet.
 	return decision.Report || result.UserControl || strings.TrimSpace(result.AttentionReason) != "" || desktopTaskOutcomeNeedsReport(result.TaskOutcome)
@@ -499,7 +659,7 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		owner = "local"
 	}
 	requestID := fmt.Sprintf("desktop-bot-sched-%s-%d", strings.TrimSpace(task.ID), time.Now().UnixNano())
-	ids, shotPaths := stageDesktopPictures(botID, result.Images, result.Files)
+	shots, local, ids := landDesktopBotMedia(botID, result.Images, result.Files)
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: result.SendToUser})
 	payload := map[string]any{
 		"request_id":      requestID,
@@ -512,16 +672,19 @@ func (a *App) reportDesktopBotSchedule(task *scheduler.ScheduledTask, text strin
 		payload["text"] = text
 	}
 	if visible.Bubble && !visible.Failed {
-		payload["send_to_user"] = visible.Sentence
+		payload["send_to_user"] = localizeDesktopPaths(visible.Sentence, append(append([]string{}, shots...), local...))
+	}
+	if len(shots) > 0 {
+		payload["desktop_shot_paths"] = shots
+	}
+	if len(local) > 0 {
+		payload["local_file_paths"] = local
 	}
 	if runErr != nil {
 		payload["error"] = runErr.Error()
 	}
 	if len(ids) > 0 {
 		payload["desktop_attachment_ids"] = ids
-	}
-	if len(shotPaths) > 0 {
-		payload["desktop_shot_paths"] = shotPaths
 	}
 	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
 		payload["desktop_handoff_url"] = result.NovncURL

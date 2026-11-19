@@ -7,6 +7,7 @@ import { NONE_PROVIDER, HUB_SERVICE_PROVIDER_NAME } from "./LLMConfigPanelShared
 import { CreateMobileLLMDesktopQRSession, FetchProviderModels } from "../../../wailsjs/go/main/App";
 import { panelText } from "../../i18n/mnPanel";
 import { presetProviderDisplayName } from "./presetProviderLabel";
+import { isQoderProvider } from "./providerLogos";
 
 interface MobileQRCodeDialogProps {
     open: boolean;
@@ -83,12 +84,14 @@ export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang
         fetchProviderRef.current = providerName;
         setFetchingModels(true);
         try {
-            const models = await FetchProviderModels(
+            const fetchArgs: [string, string, string, string, string?] = [
                 selectedProvider.url,
                 selectedProvider.key,
                 selectedProvider.protocol || "openai",
-                ""
-            );
+                "",
+            ];
+            if (isQoderProvider(selectedProvider.name)) fetchArgs.push(selectedProvider.name);
+            const models = await FetchProviderModels(...fetchArgs);
             // Discard result if user switched provider during fetch
             if (fetchProviderRef.current !== providerName) return;
             if (Array.isArray(models)) {

@@ -8,6 +8,34 @@ import (
 	"time"
 )
 
+func TestBindDesktopBotFillsOnlyABlankID(t *testing.T) {
+	mgr, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Stop)
+	id, err := mgr.Add(ScheduledTask{
+		Name: "天气", Action: "报告天气", InstanceID: "inst_4",
+		Hour: 8, Minute: 0, DayOfWeek: -1, DayOfMonth: -1, Status: "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.BindDesktopBot(id, "bot_4", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	got := mgr.Get(id)
+	if got == nil || got.DesktopBotID != "bot_4" || got.DesktopBotOwner != "alice" || got.TaskType != TaskTypeReminder {
+		t.Fatalf("bound = %+v", got)
+	}
+	if err := mgr.BindDesktopBot(id, "bot_other", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if again := mgr.Get(id); again == nil || again.DesktopBotID != "bot_4" {
+		t.Fatalf("overwrote = %+v", again)
+	}
+}
+
 func TestEligibleClockSkipsOtherRows(t *testing.T) {
 	mgr, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
 	if err != nil {
@@ -79,5 +107,39 @@ func TestEligibleClockSkipsOtherRows(t *testing.T) {
 			t.Fatalf("second fire calls=%d inflight=%d", n, mgr.Inflight())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestUpdateKeepsTheNextRunWhenOnlyTheOrderChanges(t *testing.T) {
+	mgr, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Stop)
+	id, err := mgr.Add(ScheduledTask{
+		Name: "watch", Action: "看一眼", DesktopBotID: "bot_1",
+		IntervalMinutes: 5, DayOfWeek: -1, DayOfMonth: -1, Status: "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mgr.Get(id)
+	if before == nil || before.NextRunAt == nil {
+		t.Fatal("no next run")
+	}
+	due := *before.NextRunAt
+	if err := mgr.Update(id, map[string]interface{}{"action": "看一眼，有变化就说"}); err != nil {
+		t.Fatal(err)
+	}
+	after := mgr.Get(id)
+	if after == nil || after.Action != "看一眼，有变化就说" || after.NextRunAt == nil || !after.NextRunAt.Equal(due) || after.IntervalMinutes != 5 {
+		t.Fatalf("order edit moved the slot: %+v", after)
+	}
+	if err := mgr.Update(id, map[string]interface{}{"interval_minutes": 15, "hour": 8, "minute": 30}); err != nil {
+		t.Fatal(err)
+	}
+	moved := mgr.Get(id)
+	if moved == nil || moved.IntervalMinutes != 15 || moved.Hour != 8 || moved.Minute != 30 || moved.NextRunAt == nil || !moved.NextRunAt.After(time.Now()) {
+		t.Fatalf("period edit did not keep a future slot: %+v", moved)
 	}
 }

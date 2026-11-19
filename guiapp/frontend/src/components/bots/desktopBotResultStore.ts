@@ -1,5 +1,5 @@
 import { EventsOn } from '../../../wailsjs/runtime';
-import { PostDesktopBotCross } from '../../../wailsjs/go/main/App';
+import { PostDesktopBotCross, SpeakDesktopBotReply } from '../../../wailsjs/go/main/App';
 import { desktopBotLine } from './desktopBotAck';
 import { startDesktopBotSync } from './desktopBotSync';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
@@ -217,6 +217,13 @@ export function handleDesktopBotResult(payload: unknown) {
         runId: String(data.run_id || data.RunID || '').trim() || undefined,
         conversation: conversationFrom(data),
     });
+    // Voice readback: the backend speaks `spoken` only when
+    // bot_voice_readback_enabled + tts_enabled are both on, so calling here
+    // unconditionally costs one no-op binding call when it is off. Option
+    // cards keep the bubble empty by design, so their question and choices
+    // are spoken instead — a hands-free user still hears and can answer.
+    const spoken = shown || spokenForAskCard(ask);
+    if (settledId && spoken) void SpeakDesktopBotReply(spoken).catch(() => {});
     if (!result.silent) reportDesktopBotCrossResult(resultUser, resultBot, result.content);
     if (result.failed && !ask && settledId) rewordFailedTurn(resultUser, resultBot, settledId, shown, String(result.content || ''));
 }
@@ -337,6 +344,16 @@ export function sentenceForTurn(result: { content: string; failed?: boolean }, a
         if (secret && !isDesktopBotFiller(secret)) return secret;
     }
     return result.content || '';
+}
+
+/** What voice readback says when the bubble is empty by design: option-inquiry
+ *  cards own the prompt + lettered choices on screen, so voice speaks the
+ *  question and its options — the user can then answer by voice. */
+function spokenForAskCard(ask: DesktopBotAsk | undefined): string {
+    if (!ask?.options?.length) return '';
+    const question = (ask.question || '').trim();
+    const head = question && !isDesktopBotFiller(question) ? question : '';
+    return [head, choiceLine(ask)].filter(Boolean).join('\n');
 }
 
 export function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBotAsk | undefined, images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }, attachmentIds?: string[]) {

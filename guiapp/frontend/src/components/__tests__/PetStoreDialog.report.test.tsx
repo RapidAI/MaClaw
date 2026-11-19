@@ -14,6 +14,7 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
         paid_packs: [{ id: 'paid-one', name: 'Paid One', sales_count: 3, sales_amount: 18 }],
         free_download_packs: [{ id: 'free-one', name: 'Free One', download_count: 7 }],
     }),
+    GetPetStoreInstalledPackDetails: vi.fn().mockResolvedValue({}),
     GetPetStoreRankings: vi.fn().mockResolvedValue({ creators: [], downloads: [], sales: [] }),
     InstallPetStorePack: vi.fn().mockResolvedValue('pet-one'),
     IsPetStorePackInstalled: vi.fn().mockResolvedValue(false),
