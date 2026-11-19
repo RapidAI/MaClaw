@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,6 +55,7 @@ type desktopAdmitState struct {
 	// statusLine is MaClawSrv's live status for the bot's status area (run
 	// id, step, latest progress, background job, next check). Not persisted.
 	statusLine string
+	process    []string
 	// seen is the last time the watcher read this run as still going. Not
 	// persisted. A run nobody has been able to read for a while is not taken
 	// as driving the desktop (see botDesktopInUse), so a dead MaClawSrv does
@@ -64,6 +66,8 @@ type desktopAdmitState struct {
 	progressWhere string
 	progressNext  string
 	progressOpen  string
+	// desktopUser is the desktop resolved when this run was admitted.
+	desktopUser string
 	// session is the srv conversation this post/run uses: the bot's main
 	// one (the bot id) or a per-run thread (see desktopThreadSession).
 	session string
@@ -172,20 +176,23 @@ type admittedDesktopFollow struct {
 	ClientMessageID string
 	// Session is the srv conversation the run is in (bot id or a thread).
 	Session string
+	// DesktopUser is the desktop resolved at admission.
+	DesktopUser string
 }
 
 type desktopRunView struct {
-	ID              string `json:"id"`
-	Status          string `json:"status"`
-	Error           string `json:"error"`
-	DesktopReady    bool   `json:"desktop_ready"`
-	DesktopHandoff  bool   `json:"desktop_handoff"`
-	AttentionReason string `json:"attention_reason"`
-	Activity        string `json:"activity,omitempty"`
-	StatusLine      string `json:"status_line,omitempty"`
-	ProgressWhere   string `json:"progress_where,omitempty"`
-	ProgressNext    string `json:"progress_next,omitempty"`
-	ProgressOpen    string `json:"progress_open,omitempty"`
+	ID              string   `json:"id"`
+	Status          string   `json:"status"`
+	Error           string   `json:"error"`
+	DesktopReady    bool     `json:"desktop_ready"`
+	DesktopHandoff  bool     `json:"desktop_handoff"`
+	AttentionReason string   `json:"attention_reason"`
+	Activity        string   `json:"activity,omitempty"`
+	StatusLine      string   `json:"status_line,omitempty"`
+	Process         []string `json:"process,omitempty"`
+	ProgressWhere   string   `json:"progress_where,omitempty"`
+	ProgressNext    string   `json:"progress_next,omitempty"`
+	ProgressOpen    string   `json:"progress_open,omitempty"`
 	// Metadata is the run's own metadata (task_outcome lives there too).
 	Metadata map[string]string `json:"metadata,omitempty"`
 	Message  struct {
@@ -599,6 +606,21 @@ func desktopTerminalMiss(runID, status, text, recorded string, handoff bool) err
 	return fmt.Errorf("run %s ended as %s without a result", strings.TrimSpace(runID), strings.TrimSpace(status))
 }
 
+func (s *Service) admittedDesktopUser(tenantID, userID, botID, runID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
+	s.mu.Unlock()
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.desktopUser
+}
+
 func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	if s == nil || strings.TrimSpace(job.RunID) == "" {
 		return
@@ -706,6 +728,9 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 	state.finished = time.Now()
 	state.mediaFetched = true
 	state.mu.Unlock()
+	if keepErr := s.keepDesktopRunMedia(tenantID, userID, botID, runID, reply.Images, reply.Files); keepErr != nil {
+		log.Printf("[desktop-run-media] keep run=%s: %v", runID, keepErr)
+	}
 	if err != nil {
 		// Keeping the claim after a failed settle would answer every later
 		// read with "still going" forever and strand the run for good, which
@@ -748,6 +773,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 				s.noteDesktopRunSeen(state)
 				s.rememberDesktopRunActivity(state, view.Activity)
 				s.rememberDesktopRunStatusLine(state, view.StatusLine)
+				s.rememberDesktopRunProcess(state, view.Process)
 				s.rememberDesktopRunProgress(state, view)
 				writePoll("status:"+view.Status, nil,
 					"instance", job.InstanceID,
@@ -836,6 +862,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 			}
 		}
 		body.CallErr = desktopTerminalMiss(job.RunID, view.Status, body.Text, view.Error, body.Handoff)
+		body.DesktopUser = job.DesktopUser
 		reply, settleErr := s.settleDesktopCommand(job.TenantID, job.UserID, job.BotID, job.InstanceID, job.Novnc, job.Opened, body)
 		state.mu.Lock()
 		state.reply = reply
@@ -850,6 +877,9 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		runStatus := state.status
 		session := state.session
 		state.mu.Unlock()
+		if keepErr := s.keepDesktopRunMedia(job.TenantID, job.UserID, job.BotID, job.RunID, reply.Images, reply.Files); keepErr != nil {
+			log.Printf("[desktop-run-media] keep run=%s: %v", job.RunID, keepErr)
+		}
 		if settleErr != nil {
 			// The client acks this result and the admit record is deleted.
 			// The continuation mark has to remember the failure itself, or
@@ -934,6 +964,47 @@ func (s *Service) rememberDesktopRunStatusLine(state *desktopAdmitState, line st
 	state.mu.Lock()
 	state.statusLine = line
 	state.mu.Unlock()
+}
+
+func (s *Service) rememberDesktopRunProcess(state *desktopAdmitState, lines []string) {
+	if state == nil {
+		return
+	}
+	var kept []string
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) > desktopRunStatusLineMax {
+			line = string(r[:desktopRunStatusLineMax])
+		}
+		kept = append(kept, line)
+		if len(kept) == 40 {
+			break
+		}
+	}
+	state.mu.Lock()
+	state.process = kept
+	state.mu.Unlock()
+}
+
+func (s *Service) DesktopRunProcess(tenantID, userID, botID, runID string) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
+	s.mu.Unlock()
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.done || len(state.process) == 0 {
+		return nil
+	}
+	return append([]string(nil), state.process...)
 }
 
 // DesktopRunStatusLine is the live status cached for a run still going.
@@ -1346,14 +1417,16 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		if watchErr != nil {
 			novnc = ""
 		}
+		desktopUser, _ := s.desktopUserOf(tenantID, userID, botID)
 		s.followAdmittedDesktopRun(admittedDesktopFollow{
-			TenantID:   tenantID,
-			UserID:     userID,
-			BotID:      botID,
-			InstanceID: instanceID,
-			Novnc:      novnc,
-			RunID:      runID,
-			Started:    time.Now(),
+			TenantID:    tenantID,
+			UserID:      userID,
+			BotID:       botID,
+			InstanceID:  instanceID,
+			Novnc:       novnc,
+			RunID:       runID,
+			Started:     time.Now(),
+			DesktopUser: desktopUser,
 		})
 		traceBot(botID, "run_readmit", nil,
 			"instance", instanceID,
@@ -1377,6 +1450,7 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 		Turn:        desktopTurnOf(view.Message.Metadata["client_message_id"], runID),
 	}
 	body.CallErr = desktopTerminalMiss(runID, view.Status, body.Text, view.Error, body.Handoff)
+	body.DesktopUser = s.admittedDesktopUser(tenantID, userID, botID, runID)
 	// Settling is claimed, not repeated. The caller polls again whenever the
 	// answer was lost, and the desktop bookkeeping inside settle does not
 	// survive being run twice.

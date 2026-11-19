@@ -133,9 +133,11 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, session)
 	})
-	// POST /v1/desktops/view returns the noVNC page of a screen that is
+	// POST /v1/desktops/view returns the typed picture of a screen that is
 	// already running. It never starts, restores, or refreshes last_activity.
-	// An empty novnc_url means the screen is not up.
+	// desktop_state is running, asleep, display_stopped, or unavailable.
+	// unavailable is a failed read and still answers 200: an empty novnc_url
+	// alone is a stopped screen, and the two must not be confused.
 	mux.HandleFunc("POST /v1/desktops/view", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -148,7 +150,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		if !decodeBody(w, r, &in) {
 			return
 		}
-		session, err := svc.PeekSession(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID})
+		session, err := svc.ViewState(r.Context(), Spec{TenantID: in.TenantID, UserID: in.UserID})
 		if err != nil {
 			writeServiceErr(w, err)
 			return
@@ -303,7 +305,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(in.Action)) {
-		case "read", "bytes", "write", "edit", "list":
+		case "read", "bytes", "link", "write", "edit", "list":
 		default:
 			writeOp(w, "", fmt.Errorf("%w: file action is invalid", ErrInvalid))
 			return
@@ -319,6 +321,8 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			text, err = svc.ReadFile(r.Context(), in.TenantID, in.UserID, in.Path)
 		case "bytes":
 			text, err = svc.ReadBytes(r.Context(), in.TenantID, in.UserID, in.Path)
+		case "link":
+			text, err = svc.ReadDesktopLink(r.Context(), in.TenantID, in.UserID, in.Path)
 		case "write":
 			text, err = svc.WriteFile(r.Context(), in.TenantID, in.UserID, in.Path, in.Content)
 		case "edit":

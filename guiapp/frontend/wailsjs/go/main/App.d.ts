@@ -2266,7 +2266,13 @@ export function RateHubSkill(arg1:string,arg2:number):Promise<void>;
 
 export function ReadBBS():Promise<string>;
 
+export function ForgetDesktopBotFiles(arg1:string):Promise<void>;
+
 export function FetchDesktopBotAttachment(arg1:string,arg2:string):Promise<{ mime?: string; data?: string; attachment_id?: string }>;
+
+export function FetchDesktopBotContainerFile(arg1:string,arg2:string):Promise<string>;
+
+export function RefetchDesktopBotRunImage(arg1:string,arg2:string,arg3:string):Promise<{ mime?: string; data?: string; attachment_id?: string }>;
 
 export function ReadDesktopBotShot(arg1:string):Promise<{ mime?: string; data?: string }>;
 
@@ -3226,8 +3232,8 @@ export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
 export function SetDesktopBotControl(arg1:string,arg2:boolean):Promise<{input_granted:boolean}>;
-export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,input_granted?:boolean,attention_reason?:string,desktop_mode?:string}>;
-export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,input_granted?:boolean,attention_reason?:string,desktop_mode?:string,desktop_state?:string,code?:string}>;
+export function WakeDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,input_granted?:boolean,attention_reason?:string,desktop_mode?:string,desktop_state?:string,code?:string}>;
 
 export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,direct_url?:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
 
@@ -3279,7 +3285,7 @@ export function RollbackDesktopBotStyle(arg1:string,arg2:number):Promise<{bot_id
 
 export function GetBotCollabFeatures():Promise<{assignments:boolean,peer_review:boolean,say:boolean,rooms:boolean}>;
 
-export function ListBotSaid(arg1:string):Promise<Array<{id:string,from:string,target:string,kind:string,text:string,created_at:string,files?:Array<{name:string,mime?:string,size:number,sha256:string}>}>>;
+export function ListBotSaid(arg1:string):Promise<Array<{id:string,from:string,target:string,kind:string,message_kind?:string,text:string,created_at:string,files?:Array<{name:string,mime?:string,size:number,sha256:string}>}>>;
 
 export function ListBotAssignments():Promise<Array<{id:string,owner_bot:string,target_bot:string,task:string,state:string,parent_id?:string,created_at:string,last_report?:string,artifacts?:Array<string>,open_question?:string,review?:string,review_note?:string,reviewer?:string}>>;
 

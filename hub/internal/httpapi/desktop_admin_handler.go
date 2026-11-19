@@ -111,6 +111,15 @@ func (c botDesktopControl) BotDesktopUse(tenantID, userID string) (time.Time, st
 	return c.pool.BotGUIUse(tenantID, userID)
 }
 
+// DesktopViewState is the typed picture (botmgmt.DesktopViewState). It never
+// starts or pins the desktop. A failed read stays an error, not "running".
+func (c botDesktopControl) DesktopViewState(ctx context.Context, tenantID, userID string) (string, string, error) {
+	if c.pool == nil {
+		return "", "", desktoppool.ErrDesktopViewUnavailable
+	}
+	return c.pool.DesktopViewState(ctx, tenantID, userID)
+}
+
 // PeekDesktopView is the already-running noVNC page for this desktop user
 // (botmgmt.DesktopViewPeek). It never starts or pins the desktop.
 func (c botDesktopControl) PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error) {
@@ -1466,12 +1475,13 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 			return
 		}
 		var in struct {
-			TenantID   string `json:"tenant_id"`
-			UserID     string `json:"user_id"`
-			InstanceID string `json:"instance_id"`
-			Room       string `json:"room"`
-			Text       string `json:"text"`
-			Key        string `json:"key"`
+			TenantID    string `json:"tenant_id"`
+			UserID      string `json:"user_id"`
+			InstanceID  string `json:"instance_id"`
+			Room        string `json:"room"`
+			Text        string `json:"text"`
+			Key         string `json:"key"`
+			MessageKind string `json:"message_kind"`
 			// Files: a server-started turn's deliverables, base64; at most
 			// 3 x 8 MB like a notify. Stored before the note is written.
 			Files []struct {
@@ -1517,7 +1527,7 @@ func PostDesktopSayHandler(bots *botmgmt.Service) http.HandlerFunc {
 				files = append(files, stored)
 			}
 		}
-		note, err := bots.SayFilesFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key, files)
+		note, err := bots.SayFilesKindFromInstance(r.Context(), in.TenantID, in.UserID, in.InstanceID, in.Room, in.Text, in.Key, files, in.MessageKind)
 		var said *botmgmt.AlreadySaidError
 		var worker *botmgmt.WorkerSayError
 		switch {

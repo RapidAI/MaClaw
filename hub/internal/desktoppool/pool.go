@@ -805,6 +805,7 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 	}
 	var out struct {
 		Novnc string `json:"novnc_url"`
+		State string `json:"desktop_state"`
 	}
 	body := map[string]string{
 		"tenant_id": store.NormalizeTenantID(tenantID),
@@ -819,8 +820,21 @@ func (p *Pool) PeekDesktopView(ctx context.Context, tenantID, userID string) (st
 		}
 		return "", err
 	}
-	return nodeEndpoint(server, out.Novnc), nil
+	switch strings.TrimSpace(out.State) {
+	case "unavailable":
+		// HTTP 200 with an empty page is also how a stopped screen answers.
+		// unavailable is a failed read, so it must not look like "down".
+		return "", ErrDesktopViewUnavailable
+	case "asleep", "display_stopped":
+		return "", nil
+	default:
+		return nodeEndpoint(server, out.Novnc), nil
+	}
 }
+
+// ErrDesktopViewUnavailable is a view read that failed. It is not an asleep
+// or stopped screen, and it must not start the desktop.
+var ErrDesktopViewUnavailable = errors.New("desktop view is unavailable")
 
 // NudgeDesktopView asks the desktop service to turn a running screen's
 // picture back on. It never starts a stopped screen. An older desktopd
@@ -848,6 +862,65 @@ func (p *Pool) NudgeDesktopView(ctx context.Context, tenantID, userID string) er
 		return err
 	}
 	return nil
+}
+
+// DesktopViewState is the typed picture of a screen that is already up.
+// It never starts, wakes, or pins the desktop. state is running, asleep,
+// or display_stopped. A 409 DESKTOP_ASLEEP and an empty page are asleep.
+// A transport failure is display_stopped: a viewer must not keep a frame
+// it can no longer confirm.
+func (p *Pool) DesktopViewState(ctx context.Context, tenantID, userID string) (string, string, error) {
+	if p == nil {
+		return "asleep", "", nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", "", ctx.Err()
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "asleep", "", nil
+	}
+	var out struct {
+		Novnc string `json:"novnc_url"`
+		State string `json:"desktop_state"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/view", body, &out); err != nil {
+		var statusErr *upstream.StatusError
+		if errors.As(err, &statusErr) && statusErr.Status == http.StatusConflict {
+			return "asleep", "", nil
+		}
+		if desktopbot.IsDesktopAsleep(err) {
+			return "asleep", "", nil
+		}
+		// A transport or inspect failure is not a stopped display.
+		return "", "", err
+	}
+	state, novnc := reportedViewState(out.State, out.Novnc)
+	return state, novnc, nil
+}
+
+// reportedViewState keeps a typed state from desktopd. An older desktopd
+// omits the field. The view route's contract is that a page means the
+// screen is up and no page means it is not; Hub turns that into the typed
+// state the GUI reads. A non-running state never keeps the page.
+func reportedViewState(state, novnc string) (string, string) {
+	state = strings.TrimSpace(state)
+	novnc = strings.TrimSpace(novnc)
+	switch state {
+	case "running":
+		return "running", novnc
+	case "asleep", "display_stopped", "unavailable":
+		return state, ""
+	default:
+		if novnc == "" {
+			return "asleep", ""
+		}
+		return "running", novnc
+	}
 }
 
 // RunApp forwards one xdotool command to the Docker service that owns the user.
@@ -931,7 +1004,7 @@ func (p *Pool) RunInstall(ctx context.Context, tenantID, userID string, packages
 func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
 	action = strings.ToLower(strings.TrimSpace(action))
 	switch action {
-	case "read", "write", "edit", "list", "bytes":
+	case "read", "write", "edit", "list", "bytes", "link":
 	default:
 		return "", fmt.Errorf("%w: file action is invalid", ErrInvalidInput)
 	}

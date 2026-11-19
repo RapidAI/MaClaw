@@ -174,6 +174,7 @@ func desktopHealTake(runID string) bool {
 		return false
 	}
 	desktopHealCount[runID]++
+	desktopNoteRunHeal(runID)
 	return true
 }
 

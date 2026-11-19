@@ -90,7 +90,9 @@ import {
     SaveDesktopProxyMode,
     OpenFileOrShowInFolder,
     FetchDesktopBotAttachment,
+    FetchDesktopBotContainerFile,
     ReadDesktopBotShot,
+    RefetchDesktopBotRunImage,
     SaveBotSecret,
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
@@ -103,6 +105,7 @@ import { DESKTOP_BOT_LATE_ACK_BUDGET_MS, bindAckCommand, desktopBotAck, desktopB
 import { splitMaterials as splitAckMaterials } from './desktopBotMaterials';
 import { continueSessionForSend, desktopThreadOf, routedLine } from './desktopContinueSession';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, sameDesktopScreen, screenNeedsOwnHold, screenPictureFallback, shownScreenURL, withSavedScreenMode, type BotScreen } from './desktopScreens';
+import { applyWatchResult, disconnectBot, pictureFromWatch } from './desktopViewState';
 import { RETURNED_HANDOFF_GRACE_MS, handoffResultAsksAgain, isMachineAttention, returnedHandoffLive, returnedHandoffVerdict, visibleDesktopText, watchMayRevokeGrant, type HandoffReport, type ReturnedHandoff } from './desktopHandoff';
 import { desktopViewerSrc, loadDesktopViewer, saveDesktopViewer, type DesktopViewer } from './desktopViewer';
 import { wakeFailureReason } from './desktopWake';
@@ -173,6 +176,8 @@ import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from '
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
 import { activeRunsOccupy, botBusyPhase, reattachStalePending } from './desktopBotBusy';
 import { BotChipContext, BotMessageBody, botMessageIsStructured, splitBotBeats } from './botMessageBody';
+import { classifyBotPath, guiPathsFromMessages } from './desktopPathOrigin';
+import { DesktopPictureMissing } from './DesktopPictureMissing';
 import { BotFeedLine, botFeedLineInternal, botFeedLineOf } from './botFeedLine';
 import { botChatIsNearBottom, botChatLogStamp, pinBotChatToBottom } from './botChatScroll';
 import { BOT_SYNCED_EVENT, noteDesktopBotCleared } from './desktopBotSync';
@@ -197,7 +202,7 @@ import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
-import { BotSaidInline, saidFileIsImage } from './collab/BotSaidInline';
+import { BotSaidInline, DesktopBotProcessNote, saidFileIsImage } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { applyBotStatusLine, applyRunScopedText, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
@@ -955,6 +960,7 @@ function copy(lang: string) {
             screenOf: (name: string) => `${name}'s screen`,
             screenshot: 'Desktop screenshot',
             viewShot: 'View full size',
+            pictureRetry: 'Picture did not load. Retry',
             zoomIn: 'Enlarge',
             zoomOut: 'Fit to window',
             closePreview: 'Close',
@@ -1011,6 +1017,7 @@ function copy(lang: string) {
             isolatedDesktopHint: 'This bot uses its own virtual desktop. Off means it shares yours.',
             desktopModeFailed: 'The desktop mode was not changed.',
             watching: 'Watching the desktop.',
+            asleepTitle: 'Desktop is asleep',
             desktopAsleep: 'Desktop is asleep. It wakes when the bot needs it, or when you click Wake.',
             wakeDesktop: 'Wake',
             wakingDesktop: 'Waking the computer…',
@@ -1213,6 +1220,7 @@ function copy(lang: string) {
             screenOf: (name: string) => `${name} 的螢幕`,
             screenshot: '桌面截圖',
             viewShot: '查看大圖',
+            pictureRetry: '圖片沒載入，重試',
             zoomIn: '放大',
             zoomOut: '適合視窗',
             closePreview: '關閉',
@@ -1269,6 +1277,7 @@ function copy(lang: string) {
             isolatedDesktopHint: '這個 Bot 使用自己的虛擬桌面。關閉後改回共用你的桌面。',
             desktopModeFailed: '桌面模式沒有改成。',
             watching: '正在觀看桌面。',
+            asleepTitle: '桌面在休眠',
             desktopAsleep: '桌面在休眠。Bot 需要桌面步驟時會喚醒，或你點「喚醒」。',
             wakeDesktop: '喚醒',
             wakingDesktop: '正在喚醒電腦…',
@@ -1469,6 +1478,7 @@ function copy(lang: string) {
         screenOf: (name: string) => `${name} 的屏幕`,
         screenshot: '桌面截图',
         viewShot: '查看大图',
+        pictureRetry: '图片没载入，重试',
         zoomIn: '放大',
         zoomOut: '适合窗口',
         closePreview: '关闭',
@@ -1525,6 +1535,7 @@ function copy(lang: string) {
         isolatedDesktopHint: '这个 bot 使用自己的虚拟桌面。关闭后改回共用你的桌面。',
         desktopModeFailed: '桌面模式没有改成。',
         watching: '正在观看桌面。',
+        asleepTitle: '桌面在休眠',
         desktopAsleep: '桌面在休眠。Bot 需要桌面步骤时会唤醒，或你点「唤醒」。',
         wakeDesktop: '唤醒',
         wakingDesktop: '正在唤醒电脑…',
@@ -1867,36 +1878,91 @@ function BotShotPreview({ src, alt, closeLabel, zoomInLabel, zoomOutLabel, onClo
     return createPortal(overlay, document.body);
 }
 
-const AttachmentShot = memo(function AttachmentShot({ botId, id, alt, openLabel, onOpen }: { botId: string; id: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
+function pictureSrc(shot: unknown): string {
+    const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
+    const mime = String(record?.mime || record?.MIME || '').trim().toLowerCase();
+    const data = String(record?.data || record?.Data || '').replace(/\s+/g, '');
+    if ((mime !== 'image/png' && mime !== 'image/jpeg') || !data) return '';
+    return `data:${mime};base64,${data}`;
+}
+
+const AttachmentShot = memo(function AttachmentShot({ botId, runId, id, alt, openLabel, onOpen, retryLabel }: { botId: string; runId?: string; id: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void; retryLabel: string }) {
     const [src, setSrc] = useState('');
+    const [missing, setMissing] = useState(false);
+    const [attempt, setAttempt] = useState(0);
     useEffect(() => {
         let live = true;
-        void FetchDesktopBotAttachment(botId, id).then(shot => {
-            const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
-            const mime = String(record?.mime || record?.MIME || '').trim().toLowerCase();
-            const data = String(record?.data || record?.Data || '').replace(/\s+/g, '');
-            if (!live || (mime !== 'image/png' && mime !== 'image/jpeg') || !data) return;
-            setSrc(`data:${mime};base64,${data}`);
-        }).catch(() => undefined);
+        const load = async () => {
+            try {
+                const shot = await FetchDesktopBotAttachment(botId, id);
+                const next = pictureSrc(shot);
+                if (next) {
+                    if (live) { setSrc(next); setMissing(false); }
+                    return;
+                }
+            } catch { /* the durable file may be gone; Hub still has the run */ }
+            if (runId) {
+                try {
+                    const shot = await RefetchDesktopBotRunImage(botId, runId, id);
+                    const next = pictureSrc(shot);
+                    if (next) {
+                        if (live) { setSrc(next); setMissing(false); }
+                        return;
+                    }
+                } catch { /* shown as a retry */ }
+            }
+            if (live) setMissing(true);
+        };
+        void load();
         return () => { live = false; };
-    }, [botId, id]);
+    }, [botId, runId, id, attempt]);
+    if (!src && missing) return <DesktopPictureMissing label={retryLabel} onRetry={() => { setMissing(false); setAttempt(value => value + 1); }} />;
     if (!src) return null;
     return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
 });
 
-const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void }) {
+function shotFileID(path: string): string {
+    const base = path.split(/[/\\]/).pop() || '';
+    return base.replace(/\.(png|jpe?g)$/i, '');
+}
+
+const BotShot = memo(function BotShot({ path, botId, runId, alt, openLabel, onOpen, retryLabel }: { path: string; botId?: string; runId?: string; alt: string; openLabel: string; onOpen: (src: string, trigger: HTMLButtonElement) => void; retryLabel: string }) {
     const [src, setSrc] = useState('');
+    const [missing, setMissing] = useState(false);
+    const [attempt, setAttempt] = useState(0);
     useEffect(() => {
         let live = true;
-        void ReadDesktopBotShot(path).then(shot => {
-            const record = shot as { mime?: unknown; MIME?: unknown; data?: unknown; Data?: unknown } | undefined;
-            const mime = String(record?.mime || record?.MIME || '').trim().toLowerCase();
-            const data = String(record?.data || record?.Data || '').replace(/\s+/g, '');
-            if (!live || (mime !== 'image/png' && mime !== 'image/jpeg') || !data) return;
-            setSrc(`data:${mime};base64,${data}`);
-        }).catch(() => undefined);
+        const show = (shot: { mime?: string; data?: string } | null) => {
+            const next = pictureSrc(shot);
+            if (!live) return;
+            if (next) { setSrc(next); setMissing(false); }
+            else setMissing(true);
+        };
+        void ReadDesktopBotShot(path).then(async shot => {
+            if (pictureSrc(shot) || !botId || !runId) {
+                show(shot);
+                return;
+            }
+            const id = shotFileID(path);
+            if (!id) { show(null); return; }
+            try {
+                show(await RefetchDesktopBotRunImage(botId, runId, id));
+            } catch {
+                if (live) setMissing(true);
+            }
+        }).catch(async () => {
+            if (!botId || !runId) { if (live) setMissing(true); return; }
+            const id = shotFileID(path);
+            if (!id) { if (live) setMissing(true); return; }
+            try {
+                show(await RefetchDesktopBotRunImage(botId, runId, id));
+            } catch {
+                if (live) setMissing(true);
+            }
+        });
         return () => { live = false; };
-    }, [path]);
+    }, [path, botId, runId, attempt]);
+    if (!src && missing) return <DesktopPictureMissing label={retryLabel} onRetry={() => { setMissing(false); setAttempt(value => value + 1); }} />;
     if (!src) return null;
     return <ChatShot src={src} alt={alt} openLabel={openLabel} onOpen={onOpen} />;
 });
@@ -1905,6 +1971,19 @@ const BotShot = memo(function BotShot({ path, alt, openLabel, onOpen }: { path: 
 // (or shows it in its folder). botID selects the copy this bot delivered
 // when the card still quotes the cloud path.
 const botChipOpenLink = (url: string) => BrowserOpenURL(url);
+
+function botPathKind(path: string, message: { localPaths?: string[]; shotPaths?: string[] }) {
+    return classifyBotPath(path, { guiPaths: [...(message.localPaths || []), ...(message.shotPaths || [])] });
+}
+
+function openDesktopContainerFile(botId: string, event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    void FetchDesktopBotContainerFile(botId, filePath).then(saved => {
+        if (!saved) return;
+        void OpenFileOrShowInFolder(saved).catch(() => ShowItemInFolder(saved));
+    }).catch(() => undefined);
+}
 
 function openBotFile(event: { preventDefault: () => void; stopPropagation: () => void }, filePath: string, botID?: string): Promise<void> {
     event.preventDefault();
@@ -2580,6 +2659,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // background job, next watcher check). Shown in the status row, never
     // as a chat message (Daniel 11-11 21:10).
     const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string; closed?: Record<string, true> }>>({});
+    const [processByBot, setProcessByBot] = useState<Record<string, string[]>>({});
     // A thread the person is following up in, or {main:true} for a clearly
     // new message. Empty means the last recent thread (or main) decides.
     const [continueForceByBot, setContinueForceByBot] = useState<Record<string, { session?: string; main?: boolean }>>({});
@@ -2765,6 +2845,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const expandBtnRef = useRef<HTMLButtonElement>(null);
     const restoreBtnRef = useRef<HTMLButtonElement>(null);
     const handoffRef = useRef<HTMLIFrameElement>(null);
+    // pictureSeq bumps on 唤醒. A poll records the value it started with and
+    // must not apply a result if a wake has moved on. wakeArm is the
+    // generation whose display is still starting. watchKick re-reads one bot
+    // without unmounting the player.
+    const pictureSeq = useRef<Record<string, number>>({});
+    const wakeArm = useRef<Record<string, number | undefined>>({});
+    const watchKickRef = useRef<Record<string, () => void>>({});
+    const frameBotRef = useRef('');
     const stageRef = useRef<HTMLDivElement>(null);
     const workspaceRef = useRef<HTMLElement>(null);
     const preferredListWidthRef = useRef(preferredListWidth);
@@ -3123,6 +3211,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return () => window.removeEventListener('message', onMessage);
     }, []);
     const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screensForMode, bots);
+    frameBotRef.current = holdBotId || selectedId || '';
     // "My desktop" is missing only for an isolated bot: a shared bot's "mine"
     // is its own display and already has retry/loading through its own poll.
     // While a shared-display hold is being fetched, it is still connecting,
@@ -3679,12 +3768,34 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; input_granted?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
+                const seq = pictureSeq.current[botId] || 0;
+                const view = await WatchDesktopBot(botId, epoch);
                 if (!alive) return;
-                const url = await desktopPictureURL(view);
-                if (!url) {
-                    // Asleep is the normal idle state. Do not start the desktop
-                    // and do not show a connection error — offer 唤醒 instead.
+                const picture = pictureFromWatch(view);
+                const decision = applyWatchResult(seq, pictureSeq.current[botId] || 0, picture.state, wakeArm.current[botId]);
+                if (decision !== 'apply') return;
+                if (picture.state === 'running' && wakeArm.current[botId] === seq) delete wakeArm.current[botId];
+                if (picture.state === 'unavailable') {
+                    watchMisses.current[botId] = 0;
+                    setAsleepByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+                    setRetryByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                    setLiveDesktop(prev => {
+                        if (!(botId in prev)) return prev;
+                        const next = { ...prev };
+                        delete next[botId];
+                        return next;
+                    });
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (!existing?.url) return prev;
+                        return { ...prev, [botId]: { ...existing, url: '' } };
+                    });
+                    return;
+                }
+                if (picture.state !== 'running' || !picture.url) {
+                    // A typed state that is not running has no frame. An old
+                    // Hub omits desktop_state; pictureFromWatch already turned
+                    // its page into running. Do not start the desktop.
                     watchMisses.current[botId] = 0;
                     setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                     setLiveDesktop(prev => {
@@ -3693,9 +3804,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         delete next[botId];
                         return next;
                     });
-                    setAsleepByBot(prev => prev[botId] ? prev : { ...prev, [botId]: true });
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (!existing?.url) return prev;
+                        return { ...prev, [botId]: { ...existing, url: '' } };
+                    });
+                    setAsleepByBot(prev => {
+                        const down = picture.state === 'asleep' || picture.state === 'display_stopped';
+                        if (!!prev[botId] === down) return prev;
+                        return { ...prev, [botId]: down };
+                    });
                     return;
                 }
+                const url = picture.url;
                 setAsleepByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
                 watchMisses.current[botId] = 0;
                 setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -3776,10 +3897,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 pending = false;
             }
         };
+        watchKickRef.current[botId] = () => { void tick(); };
         void tick();
         const timer = window.setInterval(() => { void tick(); }, DESKTOP_BOT_WATCH_INTERVAL_MS);
         return () => {
             alive = false;
+            delete watchKickRef.current[botId];
             window.clearInterval(timer);
             // Defer the release one microtask. Switching to another bot whose
             // stage is already open installs the next generation first, and
@@ -3799,6 +3922,21 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             });
         };
     }, [selectedId, showDesktop, selectedNoComputer]);
+
+    // The H.264 player posts this when its WebSocket closes. noVNC does not.
+    // The player reconnects on its own, so this does not unmount the iframe
+    // and does not decide the desktop is asleep. It re-checks the watch for
+    // the bot this frame is showing, and only a message from that frame.
+    useEffect(() => {
+        const onMessage = (ev: MessageEvent) => {
+            const frame = handoffRef.current?.contentWindow ?? null;
+            const botId = disconnectBot(frame, ev.source, ev.data, frameBotRef.current);
+            if (!botId) return;
+            watchKickRef.current[botId]?.();
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, []);
 
     const botScreenKey = bots.filter(bot => desktopModeOf(bot.desktopMode) !== 'none').map(bot => bot.id).join('\n');
     useEffect(() => {
@@ -3850,13 +3988,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (pending) return;
             pending = true;
             try {
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string } | undefined;
+                const seq = pictureSeq.current[botId] || 0;
+                const view = await WatchDesktopBot(botId, epoch);
                 if (!alive) return;
-                const url = await desktopPictureURL(view);
+                const picture = pictureFromWatch(view);
+                const decision = applyWatchResult(seq, pictureSeq.current[botId] || 0, picture.state, wakeArm.current[botId]);
+                if (decision !== 'apply') return;
+                if (picture.state === 'running' && wakeArm.current[botId] === seq) delete wakeArm.current[botId];
+                const url = picture.state === 'running' ? picture.url : '';
+                const down = picture.state === 'asleep' || picture.state === 'display_stopped';
+                setAsleepByBot(prev => {
+                    if (!!prev[botId] === down) return prev;
+                    return { ...prev, [botId]: down };
+                });
                 setScreenByBot(prev => {
                     const existing = prev[botId];
                     const next = {
-                        url: url || existing?.url || '',
+                        url,
                         mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (existing?.mode || desktopModeOf(botsRef.current.find(item => item.id === botId)?.desktopMode)),
                     };
                     if (existing && existing.url === next.url && existing.mode === next.mode) return prev;
@@ -3868,10 +4016,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 pending = false;
             }
         };
+        watchKickRef.current[botId] = () => { void tick(); };
         void tick();
         const timer = window.setInterval(() => { void tick(); }, DESKTOP_BOT_WATCH_INTERVAL_MS);
         return () => {
             alive = false;
+            delete watchKickRef.current[botId];
             window.clearInterval(timer);
             void ReleaseDesktopBotWatch(botId, epoch).catch(() => undefined);
         };
@@ -4067,7 +4217,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setStatusByBot(prev => applyBotStatusLine(prev, botId, runId, line));
         };
         const off = EventsOn('desktop-bot-status', handler);
-        return () => { if (typeof off === 'function') off(); };
+        const processHandler = (payload: unknown) => {
+            let data: Record<string, unknown>;
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+            } catch {
+                return;
+            }
+            const botId = String(data?.bot_id || '').trim();
+            const lines = Array.isArray(data?.process) ? data.process.map(item => String(item || '').trim()).filter(Boolean) : [];
+            if (!botId || !lines.length) return;
+            setProcessByBot(prev => ({ ...prev, [botId]: lines.slice(-40) }));
+        };
+        const offProcess = EventsOn('desktop-bot-process', processHandler);
+        return () => {
+            if (typeof off === 'function') off();
+            if (typeof offProcess === 'function') offProcess();
+        };
     }, []);
 
     // A send that Hub refused is still the pending bubble. This line is only
@@ -6868,13 +7034,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const epoch = watchEpochByBot.current[botId] || takeDesktopWatchEpoch();
         watchEpochByBot.current[botId] = epoch;
         stageEpoch.current = epoch;
+        const seq = (pictureSeq.current[botId] || 0) + 1;
+        pictureSeq.current[botId] = seq;
+        wakeArm.current[botId] = seq;
         try {
-            const view = await WakeDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string } | undefined;
+            const view = await WakeDesktopBot(botId, epoch);
+            if ((pictureSeq.current[botId] || 0) !== seq) return;
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
             if (panel !== 'auto' && panel !== 'user') return;
-            const url = await desktopPictureURL(view);
-            if (!url) {
+            const picture = pictureFromWatch(view);
+            // Old Hub wake answers with a page and no desktop_state. That is
+            // running. A typed state that is not running did not come up.
+            if (picture.state !== 'running' || !picture.url) {
+                delete wakeArm.current[botId];
                 setAsleepByBot(prev => ({ ...prev, [botId]: true }));
                 setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason('') } }));
                 return;
@@ -6882,9 +7055,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setWakeByBot(prev => { const next = { ...prev }; delete next[botId]; return next; });
             setRetryByBot(prev => ({ ...prev, [botId]: false }));
             setAsleepByBot(prev => ({ ...prev, [botId]: false }));
-            syncLive(botId, { url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
+            syncLive(botId, { url: picture.url, userControl: view?.user_control === true, attentionReason: String(view?.attention_reason || '') });
             openPanel(botId, 'user');
         } catch (err) {
+            if ((pictureSeq.current[botId] || 0) === seq) delete wakeArm.current[botId];
             setWakeByBot(prev => ({ ...prev, [botId]: { state: 'failed', reason: wakeFailureReason(err) } }));
             if (stageEpoch.current !== epoch) return;
             const panel = panelsRef.current[botId];
@@ -7419,7 +7593,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             data-testid="desktop-bot-log"
                             onScroll={onLogScroll}
                         >
-                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id).catch(() => {}); } }}>
+                            <BotChipContext.Provider value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => classifyBotPath(path, { guiPaths: guiPathsFromMessages(messages) }) }}>
                             <div ref={logBodyRef} className="desktop-bot-chat__log-body">
                             {messages.length === 0 ? (
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
@@ -7445,7 +7619,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                 );
                                 return (
-                                <Fragment key={message.id}>
+                                <BotChipContext.Provider key={message.id} value={{ openLink: botChipOpenLink, openPath: (event, path) => { void openBotFile(event, path, selected.id); }, openDesktopPath: (event, path) => openDesktopContainerFile(selected.id, event, path), pathKind: (path) => botPathKind(path, message) }}>
+                                <Fragment>
                                 {beats.slice(0, -1).map((beat, beatIndex) => (
                                     <div key={`${message.id}:beat${beatIndex}`} className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant" data-message-role="assistant" data-testid="desktop-bot-beat">
                                         <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant${botMessageIsStructured(beat) ? '' : ' is-plain'}`}>
@@ -7464,11 +7639,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 ))}
                                             </span>
                                         ) : null}
-                                        {message.role === 'assistant' && !message.failed && message.attachmentIds?.length && selected ? message.attachmentIds.map(id => (
-                                            <AttachmentShot key={id} botId={selected.id} id={id} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
+                                        {message.role === 'assistant' && !message.failed && message.shotPaths?.length ? message.shotPaths.map(path => (
+                                            <BotShot key={path} path={path} botId={selected.id} runId={message.runId} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} retryLabel={text.pictureRetry} />
                                         )) : null}
-                                        {message.role === 'assistant' && !message.failed && !message.attachmentIds?.length && message.shotPaths?.length ? message.shotPaths.map(path => (
-                                            <BotShot key={path} path={path} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
+                                        {message.role === 'assistant' && !message.failed && !message.shotPaths?.length && message.attachmentIds?.length && selected ? message.attachmentIds.map(id => (
+                                            <AttachmentShot key={id} botId={selected.id} runId={message.runId} id={id} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} retryLabel={text.pictureRetry} />
                                         )) : null}
                                         {message.role === 'assistant' && !message.failed && !message.shotPaths?.length && message.images?.length ? message.images.map((image, index) => (
                                             <InlineChatShot
@@ -7598,6 +7773,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <BotSaidInline items={placedSays.after.get(message.id) || []} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={openFeedFile} ensureFile={ensureSaidFilePath} loadFile={loadSaidPicture} onOpenShot={openShot} openLabel={text.viewShot} />
                                 ) : null}
                                 </Fragment>
+                                </BotChipContext.Provider>
                                 );
                             })}
                             {!!selected && !handoffReturned(selected.id) && !selectedNoComputer && !handoffSettled && (personOperates || (!!handoffMessage && !agentOperating)) ? (
@@ -7626,6 +7802,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}{liveRunsOf(selected.id) > 1 ? <span className="desktop-bot-chat__processing-count" data-testid="desktop-bot-run-count">{lang.startsWith('zh') ? ` · ${liveRunsOf(selected.id)} 件同时在做` : ` · ${liveRunsOf(selected.id)} jobs at once`}</span> : null}</span>
                                 {statusByBot[selected.id]?.text ? (
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
+                                ) : null}
+                                {processByBot[selected.id]?.length ? (
+                                    <DesktopBotProcessNote id={`status-${selected.id}`} text={processByBot[selected.id].join('\n')} lang={lang} />
                                 ) : null}
                             </p>
                         ) : null}
@@ -7869,8 +8048,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
                             {selectedAsleep ? (
                                 <div className="desktop-bot-sleep" data-testid="desktop-bot-sleep">
+                                    <p className="desktop-bot-sleep__label" data-testid="desktop-bot-asleep-label">{text.asleepTitle}</p>
                                     <button type="button" className="desktop-bot-sleep__wake" data-testid="desktop-bot-wake" title={text.wakeDesktop} aria-label={text.desktopAsleep} onClick={() => void retryConnection(selected.id)}>
                                         <ComputerSleepScene />
+                                        <span>{text.wakeDesktop}</span>
                                     </button>
                                     {wakeByBot[selected.id]?.state === 'waking' ? (
                                         <p className="desktop-bot-sleep__status" data-testid="desktop-bot-waking" role="status">{text.wakingDesktop}</p>

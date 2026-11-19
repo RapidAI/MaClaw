@@ -174,6 +174,22 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		s.drainDesktopQueue(tenantID, owner, botID)
 	}
 	pictureCtx := desktoppool.WithComputer(ctx, rec.Bots[index].NodeID)
+	// The same per-user gate as Wake. A poll must not read or drop the
+	// picture while a wake is still deciding whether the screen is up.
+	gate := s.desktopUserGate(tenantID, userID)
+	gate.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			gate.Unlock()
+		}
+	}()
+	releaseGate := func() {
+		if locked {
+			gate.Unlock()
+			locked = false
+		}
+	}
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
 		// A bot step that drives the screen (its session wake, an app,
 		// open, ctl or screenshot call, or the worker's tool route) is not a
@@ -226,6 +242,7 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		// every other watch stays asleep. A start that just failed waits out
 		// the gap instead of opening again on the next poll.
 		if awaiting && !s.desktopRecoverCooling(tenantID, userID) {
+			releaseGate()
 			return s.WakeDesktopView(ctx, tenantID, owner, botID)
 		}
 		return "", false, nil
@@ -254,6 +271,7 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
 	if awaiting {
+		releaseGate()
 		return s.WakeDesktopView(ctx, tenantID, owner, botID)
 	}
 	// The pin can outlive the screen (the bot still holds the desktop after
@@ -289,6 +307,28 @@ type DesktopViewNudge interface {
 func (s *Service) desktopPictureState(ctx context.Context, tenantID, userID string) (live string, down bool) {
 	if s == nil || s.Desktop == nil {
 		return "", false
+	}
+	if _, ok := s.Desktop.(DesktopViewState); ok && s.Desktop != nil {
+		state, novnc, known := s.askDesktopViewState(ctx, tenantID, userID)
+		if !known || state == DesktopStateUnavailable {
+			return "", false
+		}
+		switch state {
+		case DesktopStateRunning:
+			novnc = strings.TrimSpace(novnc)
+			if novnc == "" {
+				return "", true
+			}
+			return novnc, false
+		case DesktopStateAsleep, DesktopStateDisplayStopped:
+			return "", true
+		default:
+			novnc = strings.TrimSpace(novnc)
+			if novnc == "" {
+				return "", true
+			}
+			return novnc, false
+		}
 	}
 	peek, ok := s.Desktop.(DesktopViewPeek)
 	if !ok || peek == nil {

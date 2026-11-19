@@ -506,6 +506,9 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 			if line := svc.DesktopRunStatusLine(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); line != "" {
 				running["status_line"] = line
 			}
+			if process := svc.DesktopRunProcess(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); len(process) > 0 {
+				running["process"] = process
+			}
 			writeJSON(w, http.StatusAccepted, running)
 			return
 		}
@@ -712,19 +715,14 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			writeJSON(w, http.StatusOK, map[string]any{"released": true})
 			return
 		}
-		var novnc string
-		var userControl bool
-		var err error
-		if wake {
-			novnc, userControl, err = svc.WakeDesktopView(ctx, principal.TenantID, principal.UserID, botID)
-		} else {
-			novnc, userControl, err = svc.HoldDesktopView(ctx, principal.TenantID, principal.UserID, botID)
-		}
+		novnc, userControl, state, err := svc.DesktopPicture(ctx, principal.TenantID, principal.UserID, botID, wake)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, principal.MachineID, novnc, userControl))
+		body := desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, principal.MachineID, novnc, userControl)
+		body["desktop_state"] = state
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 
