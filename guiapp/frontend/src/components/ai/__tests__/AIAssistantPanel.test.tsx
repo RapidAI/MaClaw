@@ -226,6 +226,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     AIAssistantFileTypeIconDataURL: vi.fn().mockResolvedValue(''),
     ConversationViewArchiveCount: vi.fn().mockResolvedValue(0),
     CaptureGUIBugReportScreenshot: vi.fn().mockResolvedValue('shot'),
+    GUIBugReportScreenshotDataURL: vi.fn().mockResolvedValue('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='),
     DiscardGUIBugReportScreenshot: vi.fn().mockResolvedValue(undefined),
     SubmitGUIBugReport: vi.fn().mockResolvedValue({ id: 'BR-test' }),
     AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),

@@ -3,9 +3,12 @@ package guiapp
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
 	"image/png"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	xdraw "golang.org/x/image/draw"
 )
 
 const (
@@ -27,6 +31,10 @@ const (
 	// product below a real desktop (8K is about 33M) rejects that capture
 	// after it has already been encoded.
 	guiBugReportScreenshotMaxEdge = 16384
+	// The dialog paints on this bitmap and flattens the marked PNG from it.
+	// A capture that already fits is returned unchanged. Anything larger is
+	// scaled here so an 8K window is not decoded inside the webview.
+	guiBugReportPreviewMaxEdge = 4096
 )
 
 // guiBugReportRect is a screen rectangle in pixels. Left/Top can be negative
@@ -216,9 +224,96 @@ func (a *App) DiscardGUIBugReportScreenshot(token string) {
 	_ = os.Remove(token)
 }
 
+// GUIBugReportScreenshotDataURL returns the stored capture as a PNG data URL
+// so the report dialog can show it and let the reporter mark it. The path
+// stays on the backend. Only the capture this dialog owns is readable.
+func (a *App) GUIBugReportScreenshotDataURL() (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("application is not ready")
+	}
+	a.guiBugReportShotMu.Lock()
+	shot := a.guiBugReportShot
+	a.guiBugReportShotMu.Unlock()
+	if strings.TrimSpace(shot) == "" {
+		return "", fmt.Errorf("main window screenshot is missing; open the report again")
+	}
+	pngBytes, err := os.ReadFile(shot)
+	if err != nil {
+		return "", err
+	}
+	if err := validateGUIBugReportScreenshot(pngBytes); err != nil {
+		return "", err
+	}
+	preview, err := guiBugReportPreviewPNG(pngBytes)
+	if err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(preview), nil
+}
+
+// guiBugReportPreviewSize is the bitmap the dialog shows. The long edge
+// stops at guiBugReportPreviewMaxEdge. A picture that already fits keeps
+// its own size, including a 1-pixel edge.
+func guiBugReportPreviewSize(width, height int) (int, int) {
+	if width <= 0 || height <= 0 {
+		return 0, 0
+	}
+	longEdge := width
+	if height > longEdge {
+		longEdge = height
+	}
+	if longEdge <= guiBugReportPreviewMaxEdge {
+		return width, height
+	}
+	if width >= height {
+		fitted := int(math.Round(float64(height) * float64(guiBugReportPreviewMaxEdge) / float64(width)))
+		if fitted < 1 {
+			fitted = 1
+		}
+		return guiBugReportPreviewMaxEdge, fitted
+	}
+	fitted := int(math.Round(float64(width) * float64(guiBugReportPreviewMaxEdge) / float64(height)))
+	if fitted < 1 {
+		fitted = 1
+	}
+	return fitted, guiBugReportPreviewMaxEdge
+}
+
+// guiBugReportPreviewPNG returns the stored capture when it already fits
+// in the dialog, and a scaled PNG otherwise. The file on disk is not
+// rewritten: an unmarked report still zips those original bytes.
+func guiBugReportPreviewPNG(data []byte) ([]byte, error) {
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("main window screenshot is not a PNG")
+	}
+	width, height := guiBugReportPreviewSize(cfg.Width, cfg.Height)
+	if width == cfg.Width && height == cfg.Height {
+		return data, nil
+	}
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("main window screenshot dimensions are not supported")
+	}
+	src, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("main window screenshot is not a PNG")
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	var out bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&out, dst); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
 // SubmitGUIBugReport posts the same HubCenter diagnostics package as
 // SubmitBugReport, and adds screen_shot.png plus bugreports.txt at the ZIP root.
-func (a *App) SubmitGUIBugReport(description string) (map[string]interface{}, error) {
+// annotatedPNG is empty when the reporter did not mark the screenshot: the
+// zip then keeps the original capture bytes. A PNG data URL or raw base64
+// replaces screen_shot.png with that flattened image. The temp file itself
+// stays the original capture, so a failed upload can be sent again.
+func (a *App) SubmitGUIBugReport(description, annotatedPNG string) (map[string]interface{}, error) {
 	if a == nil {
 		return nil, fmt.Errorf("application is not ready")
 	}
@@ -228,6 +323,10 @@ func (a *App) SubmitGUIBugReport(description string) (map[string]interface{}, er
 	}
 	if len(description) > guiBugReportNoteLimit {
 		return nil, fmt.Errorf("problem description is too long")
+	}
+	annotated, err := decodeGUIBugReportAnnotatedPNG(annotatedPNG)
+	if err != nil {
+		return nil, err
 	}
 	a.guiBugReportShotMu.Lock()
 	shot := a.guiBugReportShot
@@ -244,6 +343,9 @@ func (a *App) SubmitGUIBugReport(description string) (map[string]interface{}, er
 	if err := validateGUIBugReportScreenshot(pngBytes); err != nil {
 		_ = os.Remove(shot)
 		return nil, err
+	}
+	if len(annotated) > 0 {
+		pngBytes = annotated
 	}
 	osVersion := strings.TrimSpace(a.getOSVersion())
 	if osVersion == "" || strings.EqualFold(osVersion, "Unknown") {
@@ -282,6 +384,56 @@ func (a *App) keepGUIBugReportShot(path string) {
 	if a.guiBugReportShot != path {
 		_ = os.Remove(path)
 	}
+}
+
+// decodeGUIBugReportAnnotatedPNG accepts the flattened screenshot the dialog
+// exports. An empty string means the original capture is the zip image.
+// A data URL must be a PNG. The size check happens before the decode so a
+// huge string is rejected without allocating the bitmap.
+func decodeGUIBugReportAnnotatedPNG(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if len(raw) > ((guiBugReportScreenshotMaxBytes+2)/3)*4+64 {
+		return nil, fmt.Errorf("main window screenshot is empty or too large")
+	}
+	payload := raw
+	if comma := strings.IndexByte(raw, ','); comma >= 0 && strings.HasPrefix(strings.ToLower(raw[:comma]), "data:") {
+		header := strings.ToLower(raw[:comma])
+		if !strings.Contains(header, "image/png") || !strings.Contains(header, "base64") {
+			return nil, fmt.Errorf("annotated screenshot must be a PNG")
+		}
+		payload = raw[comma+1:]
+	}
+	payload = stripBugReportBase64Space(payload)
+	if payload == "" {
+		return nil, fmt.Errorf("annotated screenshot must be a PNG")
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, fmt.Errorf("annotated screenshot must be a PNG")
+	}
+	if err := validateGUIBugReportScreenshot(data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// stripBugReportBase64Space removes wrapping whitespace. A canvas data URL
+// has none, and Map would copy the whole multi-megabyte payload.
+func stripBugReportBase64Space(payload string) string {
+	if !strings.ContainsAny(payload, "\n\r \t") {
+		return payload
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', ' ', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, payload)
 }
 
 func validateGUIBugReportScreenshot(data []byte) error {

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaptureGUIBugReportScreenshot, DiscardGUIBugReportScreenshot, SubmitGUIBugReport } from "../../../wailsjs/go/main/App";
+import { CaptureGUIBugReportScreenshot, DiscardGUIBugReportScreenshot, GUIBugReportScreenshotDataURL, SubmitGUIBugReport } from "../../../wailsjs/go/main/App";
 import { useModalFocusTrap } from "../../hooks/useModalFocusTrap";
 import { localizeText } from "./aiAssistantI18n";
 import { useDialog } from "../CustomDialog";
+import { BugReportShotEditor } from "./BugReportShotEditor";
+import { emptyBugReportShotExport, type BugReportShotExporter } from "./bugReportAnnotate";
 
 /** HubCenter and SubmitGUIBugReport both cap the description at 32 KB of UTF-8. */
 export const GUI_BUG_REPORT_DESCRIPTION_BYTES = 32 * 1024;
@@ -80,6 +82,7 @@ export function BugReportButton({ lang }: { lang: string }) {
     // Discard. A newer capture has a different token, so a discard that
     // arrives after the next shot is stored cannot delete it.
     const shotToken = useRef("");
+    const exporter = useRef<BugReportShotExporter>(emptyBugReportShotExport);
     const alive = useRef(true);
     const [open, setOpen] = useState(false);
     const [text, setText] = useState("");
@@ -92,6 +95,12 @@ export function BugReportButton({ lang }: { lang: string }) {
         "The description is limited to 32 KB.",
         "故障描述不能超过 32 KB。",
         "故障描述不能超過 32 KB。",
+    );
+    const markFailed = localizeText(
+        lang,
+        "The marked screenshot could not be prepared. Try again.",
+        "标注后的截图没能生成，请再试一次。",
+        "標註後的截圖沒能產生，請再試一次。",
     );
 
     useEffect(() => {
@@ -124,6 +133,7 @@ export function BugReportButton({ lang }: { lang: string }) {
                 return;
             }
             shotToken.current = token || "";
+            exporter.current = emptyBugReportShotExport;
             phase.current = "edit";
             setText("");
             setOpen(true);
@@ -141,6 +151,7 @@ export function BugReportButton({ lang }: { lang: string }) {
         phase.current = "idle";
         const token = shotToken.current;
         shotToken.current = "";
+        exporter.current = emptyBugReportShotExport;
         setOpen(false);
         setError("");
         if (token) void DiscardGUIBugReportScreenshot(token);
@@ -177,11 +188,16 @@ export function BugReportButton({ lang }: { lang: string }) {
             return;
         }
         if (phase.current !== "edit") return;
+        const shot = exporter.current();
+        if (shot.failed) {
+            setError(markFailed);
+            return;
+        }
         phase.current = "send";
         setBusy(true);
         setError("");
         try {
-            const report = await SubmitGUIBugReport(description);
+            const report = await SubmitGUIBugReport(description, shot.annotated);
             phase.current = "idle";
             // Submit removed the file. This dialog no longer owns a capture,
             // so it must not discard that token after the next shot is stored.
@@ -248,6 +264,7 @@ export function BugReportButton({ lang }: { lang: string }) {
                         armedGesture.current = 0;
                     }}
                     onSend={() => { void sendReport(); }}
+                    exporter={exporter}
                 />
             ) : null}
         </>
@@ -268,6 +285,7 @@ function BugReportDialog({
     onArmSend,
     onDisarmSend,
     onSend,
+    exporter,
 }: {
     lang: string;
     title: string;
@@ -280,10 +298,35 @@ function BugReportDialog({
     onArmSend: () => void;
     onDisarmSend: () => void;
     onSend: () => void;
+    exporter: { current: BugReportShotExporter };
 }) {
     const dialogRef = useRef<HTMLDivElement>(null);
     const descriptionRef = useRef<HTMLTextAreaElement>(null);
     const { onKeyDown } = useModalFocusTrap(dialogRef, { onEscape: onClose, initialFocusRef: descriptionRef });
+    const [shotURL, setShotURL] = useState("");
+    const [shotMissing, setShotMissing] = useState(false);
+    const previewFailed = localizeText(
+        lang,
+        "The screenshot preview did not load. Sending still attaches the original capture.",
+        "截图预览未能显示，发送时仍会附上原始截图。",
+        "截圖預覽未能顯示，發送時仍會附上原始截圖。",
+    );
+    useEffect(() => {
+        let cancel = false;
+        GUIBugReportScreenshotDataURL().then((url) => {
+            if (cancel) return;
+            if (!url) {
+                setShotMissing(true);
+                return;
+            }
+            setShotURL(url);
+        }).catch(() => {
+            if (!cancel) setShotMissing(true);
+        });
+        return () => {
+            cancel = true;
+        };
+    }, []);
     const host = document.getElementById("App") ?? document.body;
     return createPortal(
         <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
@@ -302,6 +345,21 @@ function BugReportDialog({
                     <h3 id="gui-bug-report-title">{title}</h3>
                     <button className="modal-close" type="button" disabled={busy} onClick={onClose} aria-label={localizeText(lang, "Close", "关闭", "關閉")}>&times;</button>
                 </div>
+                {shotURL && !shotMissing ? (
+                    <BugReportShotEditor
+                        lang={lang}
+                        src={shotURL}
+                        disabled={busy}
+                        exporter={exporter}
+                        onPreviewError={() => setShotMissing(true)}
+                    />
+                ) : (
+                    <div className="gui-bug-report-shot-wrap">
+                        <div className="gui-bug-report-shot gui-bug-report-shot--pending" role="status">
+                            {shotMissing ? previewFailed : localizeText(lang, "Loading screenshot…", "正在载入截图…", "正在載入截圖…")}
+                        </div>
+                    </div>
+                )}
                 <label htmlFor="gui-bug-report-description">{localizeText(lang, "Problem description", "故障描述", "故障描述")}</label>
                 <textarea
                     ref={descriptionRef}

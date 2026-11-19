@@ -154,12 +154,124 @@
 }
 .mc-task-execution-actions .task-bug-report-btn svg { display: block; }
 .mc-task-execution-actions .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
-.gui-bug-report-dialog { width: min(480px, 92vw); }
+.modal-content.problem-report-dialog.gui-bug-report-dialog {
+  width: min(880px, 94vw);
+  max-height: min(960px, 92vh);
+}
 .gui-bug-report-dialog .problem-report-dialog__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .gui-bug-report-dialog label { display: block; color: var(--theme-text-secondary); font-size: 13px; }
+.gui-bug-report-annotate-label {
+  margin: 2px 0 8px;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+}
+.gui-bug-report-shot-wrap {
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 10px;
+}
+.gui-bug-report-shot {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+  line-height: 0;
+  border: 1px solid var(--theme-border);
+  overflow: hidden;
+  background: var(--theme-surface-muted);
+  user-select: none;
+}
+.gui-bug-report-shot img {
+  display: block;
+  max-width: 100%;
+  max-height: min(46vh, 420px);
+  width: auto;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+}
+.gui-bug-report-shot canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  touch-action: none;
+  cursor: crosshair;
+  outline: none;
+}
+.gui-bug-report-shot[data-disabled="true"] canvas { pointer-events: none; cursor: default; }
+.gui-bug-report-shot--pending {
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 140px;
+  padding: 16px;
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  box-sizing: border-box;
+}
+.gui-bug-report-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.gui-bug-report-tools__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
+}
+.gui-bug-report-tools__spacer { flex: 1 1 8px; }
+.gui-bug-report-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.gui-bug-report-tool svg { display: block; flex: 0 0 auto; }
+.gui-bug-report-tool:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.gui-bug-report-tool[aria-pressed="true"] { background: var(--theme-primary-soft); color: var(--theme-primary); }
+.gui-bug-report-tool:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.gui-bug-report-tool:disabled { opacity: 0.45; cursor: not-allowed; }
+.gui-bug-report-tool:disabled:hover { background: transparent; color: var(--theme-text-secondary); }
+.gui-bug-report-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.gui-bug-report-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--theme-surface), 0 0 0 4px var(--theme-primary);
+}
+.gui-bug-report-swatch:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.gui-bug-report-swatch:disabled { opacity: 0.45; cursor: not-allowed; }
 .gui-bug-report-dialog textarea {
   width: 100%;
-  min-height: 128px;
+  min-height: 96px;
   box-sizing: border-box;
   margin-top: 8px;
   padding: 10px 12px;

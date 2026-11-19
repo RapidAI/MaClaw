@@ -374,6 +374,10 @@ export function CaptureGUIBugReportScreenshot() {
   return window['go']['main']['App']['CaptureGUIBugReportScreenshot']();
 }
 
+export function GUIBugReportScreenshotDataURL() {
+  return window['go']['main']['App']['GUIBugReportScreenshotDataURL']();
+}
+
 export function DiscardGUIBugReportScreenshot(arg1) {
   return window['go']['main']['App']['DiscardGUIBugReportScreenshot'](arg1);
 }
@@ -6066,8 +6070,8 @@ export function SubmitBugReport(arg1, arg2, arg3) {
   return window['go']['main']['App']['SubmitBugReport'](arg1, arg2, arg3);
 }
 
-export function SubmitGUIBugReport(arg1) {
-  return window['go']['main']['App']['SubmitGUIBugReport'](arg1);
+export function SubmitGUIBugReport(arg1, arg2) {
+  return window['go']['main']['App']['SubmitGUIBugReport'](arg1, arg2);
 }
 
 export function SubmitMaclawAppPackage(arg1) {

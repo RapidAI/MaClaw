@@ -3,6 +3,7 @@ package guiapp
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
 	"image"
@@ -40,7 +41,7 @@ func TestSubmitGUIBugReportZipAddsScreenshotAndDescriptionOnly(t *testing.T) {
 	app.guiBugReportShot = shot
 	description := "窗口卡住了，期望还能继续对话"
 	got := captureBugReportUpload(t, app, func() (map[string]interface{}, error) {
-		return app.SubmitGUIBugReport(description)
+		return app.SubmitGUIBugReport(description, "")
 	})
 	if got.osVersion != expectedGUIBugReportOS(app) || got.description != description || got.guiVersion == "" {
 		t.Fatalf("upload fields os=%q description=%q gui=%q", got.osVersion, got.description, got.guiVersion)
@@ -137,7 +138,7 @@ func TestSubmitGUIBugReportKeepsScreenshotWhenUploadFails(t *testing.T) {
 	defer server.Close()
 	token := testSkillMarketSignedToken("u_current", "phone:13301168516", time.Now().Add(time.Hour))
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", token)
-	if _, err := app.SubmitGUIBugReport("窗口卡住了"); err == nil {
+	if _, err := app.SubmitGUIBugReport("窗口卡住了", ""); err == nil {
 		t.Fatal("first upload should fail")
 	}
 	if app.guiBugReportShot != shot {
@@ -146,7 +147,7 @@ func TestSubmitGUIBugReportKeepsScreenshotWhenUploadFails(t *testing.T) {
 	if _, err := os.Stat(shot); err != nil {
 		t.Fatalf("screenshot file: %v", err)
 	}
-	result, err := app.SubmitGUIBugReport("窗口卡住了")
+	result, err := app.SubmitGUIBugReport("窗口卡住了", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +162,10 @@ func TestSubmitGUIBugReportKeepsScreenshotWhenUploadFails(t *testing.T) {
 func TestSubmitGUIBugReportRejectsEmptyDescriptionAndMissingShot(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
-	if _, err := app.SubmitGUIBugReport("  "); err == nil {
+	if _, err := app.SubmitGUIBugReport("  ", ""); err == nil {
 		t.Fatal("blank description was accepted")
 	}
-	if _, err := app.SubmitGUIBugReport("the window froze"); err == nil {
+	if _, err := app.SubmitGUIBugReport("the window froze", ""); err == nil {
 		t.Fatal("missing screenshot was accepted")
 	}
 }
@@ -181,7 +182,7 @@ func TestSubmitGUIBugReportKeepsShotWhenDescriptionExceedsBytes(t *testing.T) {
 	if len(over) <= guiBugReportNoteLimit {
 		t.Fatalf("fixture is only %d bytes", len(over))
 	}
-	if _, err := app.SubmitGUIBugReport(over); err == nil || !strings.Contains(err.Error(), "too long") {
+	if _, err := app.SubmitGUIBugReport(over, ""); err == nil || !strings.Contains(err.Error(), "too long") {
 		t.Fatal(err)
 	}
 	if app.guiBugReportShot != shot {
@@ -192,9 +193,218 @@ func TestSubmitGUIBugReportKeepsShotWhenDescriptionExceedsBytes(t *testing.T) {
 	}
 
 	app.guiBugReportShot = filepath.Join(t.TempDir(), "absent.png")
-	_, err := app.SubmitGUIBugReport(strings.Repeat("a", guiBugReportNoteLimit))
+	_, err := app.SubmitGUIBugReport(strings.Repeat("a", guiBugReportNoteLimit), "")
 	if err == nil || strings.Contains(err.Error(), "too long") {
 		t.Fatalf("32 KB description was treated as too long: %v", err)
+	}
+}
+
+func TestSubmitGUIBugReportZipUsesAnnotatedScreenshot(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	base := app.getMaclawBaseDir()
+	if err := os.MkdirAll(filepath.Join(base, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "logs", "app.log"), []byte("log-line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := sizedBugReportPNG(t, 2, 2)
+	annotated := sizedBugReportPNG(t, 3, 1)
+	if bytes.Equal(original, annotated) {
+		t.Fatal("annotated fixture matches the original capture")
+	}
+	shot := filepath.Join(app.GetTempDir(), "gui-screen-shot-marked.png")
+	if err := os.WriteFile(shot, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.guiBugReportShot = shot
+	payload := "data:image/png;base64," + base64.StdEncoding.EncodeToString(annotated)
+	got := captureBugReportUpload(t, app, func() (map[string]interface{}, error) {
+		return app.SubmitGUIBugReport("窗口上画了标记", payload)
+	})
+	if !bytes.Equal(got.files["screen_shot.png"], annotated) {
+		t.Fatal("screen_shot.png was not the marked image")
+	}
+	if bytes.Equal(got.files["screen_shot.png"], original) {
+		t.Fatal("screen_shot.png kept the unmarked capture")
+	}
+	if _, err := os.Stat(shot); !os.IsNotExist(err) {
+		t.Fatalf("temp screenshot still present: %v", err)
+	}
+}
+
+func TestSubmitGUIBugReportRejectsBadAnnotationAndKeepsShot(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	original := sizedBugReportPNG(t, 2, 2)
+	shot := filepath.Join(app.GetTempDir(), "gui-screen-shot-kept.png")
+	if err := os.WriteFile(shot, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.guiBugReportShot = shot
+	if _, err := app.SubmitGUIBugReport("窗口卡住了", "data:image/jpeg;base64,aaaa"); err == nil {
+		t.Fatal("jpeg annotation was accepted")
+	}
+	if app.guiBugReportShot != shot {
+		t.Fatalf("bad annotation dropped the screenshot: %q", app.guiBugReportShot)
+	}
+	body, err := os.ReadFile(shot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, original) {
+		t.Fatal("bad annotation rewrote the capture")
+	}
+	if _, err := app.SubmitGUIBugReport("窗口卡住了", "data:image/png;base64,aGVsbG8="); err == nil {
+		t.Fatal("non-png payload was accepted")
+	}
+	if app.guiBugReportShot != shot {
+		t.Fatal("invalid png dropped the screenshot")
+	}
+}
+
+func TestSubmitGUIBugReportKeepsOriginalFileWhenAnnotatedUploadFails(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	base := app.getMaclawBaseDir()
+	if err := os.MkdirAll(filepath.Join(base, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "logs", "app.log"), []byte("log-line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := sizedBugReportPNG(t, 2, 2)
+	annotated := sizedBugReportPNG(t, 4, 2)
+	shot := filepath.Join(app.GetTempDir(), "gui-screen-shot-retry-marked.png")
+	if err := os.WriteFile(shot, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.guiBugReportShot = shot
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	token := testSkillMarketSignedToken("u_current", "phone:13301168516", time.Now().Add(time.Hour))
+	saveBugReportHubPrincipal(t, app, server.URL, "u_current", token)
+	payload := "data:image/png;base64," + base64.StdEncoding.EncodeToString(annotated)
+	if _, err := app.SubmitGUIBugReport("窗口卡住了", payload); err == nil {
+		t.Fatal("upload should fail")
+	}
+	if app.guiBugReportShot != shot {
+		t.Fatalf("screenshot path after failure = %q", app.guiBugReportShot)
+	}
+	body, err := os.ReadFile(shot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, original) {
+		t.Fatal("failed upload replaced the capture with the marked image")
+	}
+}
+
+func TestGUIBugReportScreenshotDataURLReadsStoredShot(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	if _, err := app.GUIBugReportScreenshotDataURL(); err == nil {
+		t.Fatal("missing screenshot returned a data URL")
+	}
+	original := sizedBugReportPNG(t, 2, 2)
+	shot := filepath.Join(app.GetTempDir(), "gui-screen-shot-preview.png")
+	if err := os.WriteFile(shot, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.guiBugReportShot = shot
+	got, err := app.GUIBugReportScreenshotDataURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("data URL = %q", got[:min(len(got), 32)])
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got, prefix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, original) {
+		t.Fatal("data URL is not the stored capture")
+	}
+	if _, err := os.Stat(shot); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGUIBugReportPreviewSize(t *testing.T) {
+	if w, h := guiBugReportPreviewSize(1920, 1080); w != 1920 || h != 1080 {
+		t.Fatalf("fitted window = %d x %d", w, h)
+	}
+	if w, h := guiBugReportPreviewSize(2000, 8000); w != 1024 || h != guiBugReportPreviewMaxEdge {
+		t.Fatalf("tall window = %d x %d", w, h)
+	}
+	if w, h := guiBugReportPreviewSize(0, 10); w != 0 || h != 0 {
+		t.Fatalf("empty window = %d x %d", w, h)
+	}
+}
+
+func TestGUIBugReportScreenshotDataURLScalesAbovePreviewEdge(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	original := sizedBugReportPNG(t, guiBugReportPreviewMaxEdge+1, 2)
+	shot := filepath.Join(app.GetTempDir(), "gui-screen-shot-wide.png")
+	if err := os.WriteFile(shot, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.guiBugReportShot = shot
+	got, err := app.GUIBugReportScreenshotDataURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got, "data:image/png;base64,"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != guiBugReportPreviewMaxEdge || cfg.Height != 2 {
+		t.Fatalf("preview = %d x %d", cfg.Width, cfg.Height)
+	}
+	body, err := os.ReadFile(shot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, original) {
+		t.Fatal("preview rewrote the capture")
+	}
+}
+
+func TestDecodeGUIBugReportAnnotatedPNG(t *testing.T) {
+	pngBytes := sizedBugReportPNG(t, 2, 2)
+	encoded := base64.StdEncoding.EncodeToString(pngBytes)
+	got, err := decodeGUIBugReportAnnotatedPNG("  ")
+	if err != nil || got != nil {
+		t.Fatalf("empty annotation = %v %v", got, err)
+	}
+	got, err = decodeGUIBugReportAnnotatedPNG("data:image/png;base64," + encoded[:8] + "\n" + encoded[8:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, pngBytes) {
+		t.Fatal("whitespace in the data URL changed the PNG")
+	}
+	got, err = decodeGUIBugReportAnnotatedPNG(encoded)
+	if err != nil || !bytes.Equal(got, pngBytes) {
+		t.Fatalf("raw base64: %v", err)
+	}
+	if _, err := decodeGUIBugReportAnnotatedPNG("data:image/jpeg;base64," + encoded); err == nil {
+		t.Fatal("jpeg data URL was accepted")
+	}
+	if _, err := decodeGUIBugReportAnnotatedPNG("data:image/png;base64,aGVsbG8="); err == nil {
+		t.Fatal("non-png bytes were accepted")
 	}
 }
 
@@ -580,8 +790,13 @@ func expectedGUIBugReportOS(app *App) string {
 
 func tinyBugReportPNG(t *testing.T) []byte {
 	t.Helper()
+	return sizedBugReportPNG(t, 2, 2)
+}
+
+func sizedBugReportPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+	if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, width, height))); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()

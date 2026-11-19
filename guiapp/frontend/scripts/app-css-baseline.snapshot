@@ -28348,7 +28348,6 @@ button[class*='primary'], .btn-primary, button[type='submit'] { border-radius: v
   padding-inline: 10px;
 }
 .sidebar-task-row:hover:not(.is-busy):not(.is-active) {
-  border-color: var(--office-line);
   background: var(--office-canvas);
 }
 .sidebar-task-row.is-active {
@@ -28888,7 +28887,7 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   border-right: 1px solid var(--theme-border) !important;
 }
 .sidebar-task-row { min-height: 48px; margin: 2px 10px; border-radius: var(--radius-md); }
-.sidebar-task-row.is-active { background: var(--theme-primary-soft) !important; border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; box-shadow: none !important; }
+.sidebar-task-row.is-active { background: var(--theme-primary-soft) !important; box-shadow: none !important; }
 .global-action-bar { min-height: 48px; background: var(--theme-surface) !important; border-bottom: 1px solid var(--theme-border) !important; }
 .main-content, .content-panel, .workspace-content { background: var(--theme-surface); }
 textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], input[placeholder*='办公任务'] { border-radius: var(--radius-lg) !important; box-shadow: 0 2px 8px rgba(30,60,90,.08) !important; }
@@ -29541,7 +29540,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .sidebar-task-row[data-status='pending']::before { background: var(--theme-warning); }
 
 /* Reference task pane separators and hover states */
-.mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-primary-soft) !important; border-color: var(--theme-border) !important; }
+.mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-primary-soft) !important; }
 .mc-task-pane .sidebar-task-row + .sidebar-task-row { border-top: 0; }
 .mc-task-pane > div:nth-child(2) { border-bottom: 1px solid var(--theme-border-subtle); padding-bottom: 8px; margin-bottom: 8px; }
 
@@ -29660,7 +29659,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference task interactions */
 .mc-task-pane .sidebar-task-row { transition: background .16s ease, border-color .16s ease, transform .16s ease; }
 .mc-task-pane .sidebar-task-row:hover { transform: translateX(1px); }
-.mc-task-pane .sidebar-task-row.is-busy { cursor: progress; opacity: .68; }
+.mc-task-pane .sidebar-task-row.is-busy { cursor: progress; }
 
 /* Reference primary action emphasis */
 .mc-welcome .btn-primary,
@@ -30090,12 +30089,124 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-execution-actions .task-bug-report-btn svg { display: block; }
 .mc-task-execution-actions .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
-.gui-bug-report-dialog { width: min(480px, 92vw); }
+.modal-content.problem-report-dialog.gui-bug-report-dialog {
+  width: min(880px, 94vw);
+  max-height: min(960px, 92vh);
+}
 .gui-bug-report-dialog .problem-report-dialog__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .gui-bug-report-dialog label { display: block; color: var(--theme-text-secondary); font-size: 13px; }
+.gui-bug-report-annotate-label {
+  margin: 2px 0 8px;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+}
+.gui-bug-report-shot-wrap {
+  display: flex;
+  justify-content: center;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 10px;
+}
+.gui-bug-report-shot {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 auto;
+  line-height: 0;
+  border: 1px solid var(--theme-border);
+  overflow: hidden;
+  background: var(--theme-surface-muted);
+  user-select: none;
+}
+.gui-bug-report-shot img {
+  display: block;
+  max-width: 100%;
+  max-height: min(46vh, 420px);
+  width: auto;
+  height: auto;
+  pointer-events: none;
+  user-select: none;
+}
+.gui-bug-report-shot canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  touch-action: none;
+  cursor: crosshair;
+  outline: none;
+}
+.gui-bug-report-shot[data-disabled="true"] canvas { pointer-events: none; cursor: default; }
+.gui-bug-report-shot--pending {
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 140px;
+  padding: 16px;
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  box-sizing: border-box;
+}
+.gui-bug-report-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.gui-bug-report-tools__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface);
+}
+.gui-bug-report-tools__spacer { flex: 1 1 8px; }
+.gui-bug-report-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.gui-bug-report-tool svg { display: block; flex: 0 0 auto; }
+.gui-bug-report-tool:hover { background: var(--theme-surface-muted); color: var(--theme-text-primary); }
+.gui-bug-report-tool[aria-pressed="true"] { background: var(--theme-primary-soft); color: var(--theme-primary); }
+.gui-bug-report-tool:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.gui-bug-report-tool:disabled { opacity: 0.45; cursor: not-allowed; }
+.gui-bug-report-tool:disabled:hover { background: transparent; color: var(--theme-text-secondary); }
+.gui-bug-report-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.gui-bug-report-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--theme-surface), 0 0 0 4px var(--theme-primary);
+}
+.gui-bug-report-swatch:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.gui-bug-report-swatch:disabled { opacity: 0.45; cursor: not-allowed; }
 .gui-bug-report-dialog textarea {
   width: 100%;
-  min-height: 128px;
+  min-height: 96px;
   box-sizing: border-box;
   margin-top: 8px;
   padding: 10px 12px;
@@ -31601,7 +31712,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-task-tab-switcher__item--unopened:hover { color: var(--theme-primary); }
 #App[data-ai-theme='dark'] .mc-task-execution-actions .mc-task-tab-switcher__close { background: transparent !important; color: var(--theme-text-muted) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-actions .mc-task-tab-switcher__close:hover { background: color-mix(in srgb, var(--theme-danger) 18%, transparent) !important; color: var(--theme-danger) !important; }
-#App[data-ai-theme='dark'] .mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-surface-muted) !important; border-color: var(--theme-border) !important; }
+#App[data-ai-theme='dark'] .mc-task-pane .sidebar-task-row:hover:not(.is-active) { background: var(--theme-surface-muted) !important; }
 #App[data-ai-theme='dark'] .mc-conversation-body .mc-chat-copy-btn,
 #App[data-ai-theme='dark'] .mc-conversation-body [data-testid^='assistant-chat-copy-'] {
   border: 0 !important;
@@ -32760,11 +32871,13 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   gap: 4px !important;
   /* 1px block margin on each card. The row sits inside an unstyled wrapper,
      and adjacent flex items do not collapse those margins, so the slit
-     between borders is 2px. min-height: 0 keeps the older 52px/48px row
-     rules from undoing the compact padding. */
+     between cards is 2px. The border stays 1px and transparent so a
+     selected card does not change size when its frame appears.
+     min-height: 0 keeps the older 52px/48px row rules from undoing the
+     compact padding. */
   margin: 1px 4px;
   padding: 3px 8px !important;
-  border: 1px solid var(--theme-border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   /* Selecting the title fights the row drag and the gesture never starts. */
   user-select: none;
@@ -32955,6 +33068,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-pane .sidebar-task-row.is-active {
   background: var(--theme-surface-muted) !important;
+  /* Owns the selected frame. This selector outranks the transparent
+     shorthand above. Hover rules must not set border-color or they
+     paint a frame back on the other cards. */
+  border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
   box-shadow: inset 3px 0 0 var(--mc-accent, #2e75cb) !important;
 }
 .mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
@@ -33953,6 +34070,27 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .stsm-row-progress {
   margin-top: 6px;
+}
+/* The directory badge and name stay in the line while hidden, so the card
+   keeps that line's height. The track is painted over the same box. */
+.mc-task-pane .mc-task-working-dir--progress {
+  position: relative;
+}
+.mc-task-pane .mc-task-working-dir--progress .mc-task-working-dir__place {
+  visibility: hidden;
+}
+.mc-task-pane .mc-task-working-dir--progress .sidebar-task-progress__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin: 0;
+  transform: translateY(-50%);
+}
+.mc-task-pane .mc-task-working-dir--progress:hover {
+  color: var(--theme-text-secondary) !important;
+  text-decoration: none !important;
 }
 .stsm-row-error {
   display: block;
