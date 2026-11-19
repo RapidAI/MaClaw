@@ -1421,6 +1421,9 @@ func finishDesktopActionPhase(scope agentruntime.Scope, text string, err error, 
 	if phase != "execute" {
 		return text, err
 	}
+	if reason == "login_wall" || reason == "mfa" || reason == "payment_confirm" {
+		desktopNoteRunBlocker(scope.RunID, reason)
+	}
 	// Remember the page even when nobody is here to take the keyboard, so a
 	// later computer batch does not type the password or the code.
 	noteDesktopPageNeed(scope, "page flags: "+reason)
@@ -2948,6 +2951,7 @@ func ensureDesktopRound(ctx context.Context, scope agentruntime.Scope, userKey s
 // still uses is kept, so one bot finishing does not cut another bot's browser.
 // The next tool after the computer sleeps calls Ensure again.
 func finishDesktopRound(tenantID, userID, runID string) {
+	desktopLongJobReleaseOutcomes(runID)
 	desktopClearFinish(runID)
 	runID = strings.TrimSpace(runID)
 	if runID == "" {

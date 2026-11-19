@@ -83,6 +83,24 @@ function SaidFileChip({ noteId, name, onOpenFile }: { noteId: string; name: stri
     );
 }
 
+// First non-empty line. The rest stays behind the disclosure. This does
+// not look for log phrases; the server already marked the message process.
+export function processNoteSummary(text: string): string {
+    const line = String(text || '').split('\n').map(part => part.trim()).find(Boolean) || '';
+    return line.length > 96 ? `${line.slice(0, 96)}…` : line;
+}
+
+/** A process note is one collapsed row. It is not a chat bubble. */
+export function DesktopBotProcessNote({ id, text, lang = 'zh-Hans' }: { id: string; text: string; lang?: string }) {
+    const summary = processNoteSummary(text) || (lang.startsWith('zh') ? '过程' : 'Progress');
+    return (
+        <details className="desktop-bot-chat__process" data-message-kind="process" data-testid={`desktop-bot-process-${id}`}>
+            <summary>{summary}</summary>
+            <pre className="desktop-bot-chat__process-body">{text}</pre>
+        </details>
+    );
+}
+
 function SaidPicture({ noteId, name, loadFile, onOpenShot, openLabel, onReady, onFail }: {
     noteId: string;
     name: string;
@@ -211,7 +229,15 @@ export function BotSaidInline({ items, bots, lookOf, lang = 'zh-Hans', onOpenFil
     if (!items.length) return null;
     return (
         <>
-            {items.map(item => (
+            {items.map(item => item.message_kind === 'process' ? (
+                <div key={item.id} className="desktop-bot-chat__entry desktop-bot-chat__entry--assistant bot-said" data-message-role="said" data-message-kind="process" data-testid={`bot-said-${item.id}`}>
+                    <span className="bot-said__who">
+                        <BotAvatar className="desktop-bot-chat__notice-avatar" title={(bots.find(b => b.id === item.from) || { title: item.from }).title} {...lookOf(bots.find(b => b.id === item.from) || { id: item.from, title: item.from })} />
+                        {botName(bots, item.from, lang)}
+                    </span>
+                    <DesktopBotProcessNote id={item.id} text={item.text} lang={lang} />
+                </div>
+            ) : (
                 <SaidEntry key={item.id} item={item} bots={bots} lookOf={lookOf} lang={lang} onOpenFile={onOpenFile} ensureFile={ensureFile} loadFile={loadFile} onOpenShot={onOpenShot} openLabel={openLabel} />
             ))}
         </>

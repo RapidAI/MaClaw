@@ -50,7 +50,7 @@ func (s *Service) sayUnfetchedResultLater(tenantID, userID, botID, runID string,
 			files = nil
 			said += "\n\n" + note
 		}
-		_, err := s.sayWith(ctx, tenantID, userID, botID, "", said, "run-result:"+runID, files)
+		_, err := s.sayWith(ctx, tenantID, userID, botID, "", said, "run-result:"+runID, files, "outcome")
 		traceBot(botID, "result_said", err, "run", runID, "reason", "not_fetched", "files", fmt.Sprintf("%d", len(files)))
 		if err == nil && (!hasFiles || stored) {
 			// Said once: a GUI that opens later must not show it again.

@@ -202,7 +202,7 @@ import { BotRailIcon } from '../layout/SidebarNavIcons';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useBotCollab } from './collab/useBotCollab';
 import { BotCollabStatus } from './collab/BotCollabStatus';
-import { BotSaidInline, saidFileIsImage } from './collab/BotSaidInline';
+import { BotSaidInline, DesktopBotProcessNote, saidFileIsImage } from './collab/BotSaidInline';
 import { BotRoomsDialog } from './collab/BotRoomsDialog';
 import { applyBotStatusLine, applyRunScopedText, placeChatSays, shownDesktopBotActivity } from './collab/botCollab';
 import './DesktopBotWorkspace.css';
@@ -2659,6 +2659,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // background job, next watcher check). Shown in the status row, never
     // as a chat message (Daniel 11-11 21:10).
     const [statusByBot, setStatusByBot] = useState<Record<string, { text: string; runId: string; closed?: Record<string, true> }>>({});
+    const [processByBot, setProcessByBot] = useState<Record<string, string[]>>({});
     // A thread the person is following up in, or {main:true} for a clearly
     // new message. Empty means the last recent thread (or main) decides.
     const [continueForceByBot, setContinueForceByBot] = useState<Record<string, { session?: string; main?: boolean }>>({});
@@ -4216,7 +4217,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             setStatusByBot(prev => applyBotStatusLine(prev, botId, runId, line));
         };
         const off = EventsOn('desktop-bot-status', handler);
-        return () => { if (typeof off === 'function') off(); };
+        const processHandler = (payload: unknown) => {
+            let data: Record<string, unknown>;
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+            } catch {
+                return;
+            }
+            const botId = String(data?.bot_id || '').trim();
+            const lines = Array.isArray(data?.process) ? data.process.map(item => String(item || '').trim()).filter(Boolean) : [];
+            if (!botId || !lines.length) return;
+            setProcessByBot(prev => ({ ...prev, [botId]: lines.slice(-40) }));
+        };
+        const offProcess = EventsOn('desktop-bot-process', processHandler);
+        return () => {
+            if (typeof off === 'function') off();
+            if (typeof offProcess === 'function') offProcess();
+        };
     }, []);
 
     // A send that Hub refused is still the pending bubble. This line is only
@@ -7785,6 +7802,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <span className="desktop-bot-chat__processing-label">{understandingByBot[selected.id] && !askingByBot[selected.id] ? desktopBotUnderstandingLabel(lang) : desktopBotWorkingLabel(askingByBot[selected.id] || '', shownDesktopBotActivity(activityByBot[selected.id]))}{liveRunsOf(selected.id) > 1 ? <span className="desktop-bot-chat__processing-count" data-testid="desktop-bot-run-count">{lang.startsWith('zh') ? ` · ${liveRunsOf(selected.id)} 件同时在做` : ` · ${liveRunsOf(selected.id)} jobs at once`}</span> : null}</span>
                                 {statusByBot[selected.id]?.text ? (
                                     <span className="desktop-bot-chat__processing-status" data-testid="desktop-bot-status-line" title={statusByBot[selected.id].text}>{statusByBot[selected.id].text}</span>
+                                ) : null}
+                                {processByBot[selected.id]?.length ? (
+                                    <DesktopBotProcessNote id={`status-${selected.id}`} text={processByBot[selected.id].join('\n')} lang={lang} />
                                 ) : null}
                             </p>
                         ) : null}

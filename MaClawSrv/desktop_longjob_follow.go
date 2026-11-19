@@ -41,7 +41,41 @@ var desktopLongJobRunGetter = func(ctx context.Context, p agentservice.Principal
 	if err != nil || msg == nil {
 		return run.Status, "", err
 	}
-	return run.Status, msg.Content, nil
+	// The person's result is the structured finish recorded at completion.
+	// Recomputing it here is too late: the receipt already dropped the
+	// in-memory steps, and the model's raw reply would become the outcome.
+	return run.Status, desktopLongJobDeliveredOutcome(runID, *msg), nil
+}
+
+// desktopLongJobDeliveredOutcome is what a finished watcher turn says.
+// The completion hook already stored the sentence. That file is what is
+// said after the receipt cleanup. A finish still in memory is only the
+// fallback for a run whose receipt has not been written yet.
+func desktopLongJobDeliveredOutcome(runID string, msg agentservice.Message) string {
+	if sentence, ok := desktopStoredFinishSentence(runID); ok {
+		return sentence
+	}
+	outcome, why := desktopRunOutcome(runID, &msg)
+	if fin, ok := desktopComposeRunFinish(runID, msg, outcome, why); ok {
+		if sentence := strings.TrimSpace(fin.Sentence()); sentence != "" {
+			return sentence
+		}
+	}
+	return msg.Content
+}
+
+// desktopLongJobSourceSentence is the launcher run's stored finish.
+// The watch run is not that run: its reply is the model's log, and its
+// own receipt does not carry the measured result.
+func desktopLongJobSourceSentence(j *desktopLongJob) (string, bool) {
+	if j == nil {
+		return "", false
+	}
+	source := strings.TrimSpace(j.SourceRun)
+	if source == "" {
+		return "", false
+	}
+	return desktopStoredFinishSentence(source)
 }
 
 // desktopLongJobRunSaid: the turn already spoke with action=say.
@@ -101,6 +135,12 @@ func desktopLongJobFollowRunFiles(ctx context.Context, p agentservice.Principal,
 			return
 		}
 		attached := files.take()
+		if cur := desktopLongJobGet(jobID); cur != nil {
+			j = cur
+		}
+		if sentence, ok := desktopLongJobSourceSentence(j); ok && strings.TrimSpace(j.SourceRun) != strings.TrimSpace(runID) {
+			reply = sentence
+		}
 		spoke := desktopLongJobRunSaid(instanceID, runID)
 		if spoke && len(attached) == 0 {
 			log.Printf("[desktop-longjob] job=%s watch run %s (%s) spoke itself", jobID, runID, dec)
@@ -120,12 +160,13 @@ func desktopLongJobFollowRunFiles(ctx context.Context, p agentservice.Principal,
 			cur = j
 		}
 		body := map[string]any{
-			"tenant_id":   cur.TenantID,
-			"user_id":     desktopOwnerUserID(cur.UserID),
-			"instance_id": instanceID,
-			"room":        "",
-			"text":        text,
-			"key":         desktopMessageKey(instanceID+"|"+runID, "watch-reply", text),
+			"tenant_id":    cur.TenantID,
+			"user_id":      desktopOwnerUserID(cur.UserID),
+			"instance_id":  instanceID,
+			"room":         "",
+			"text":         text,
+			"message_kind": desktopMsgOutcome,
+			"key":          desktopMessageKey(instanceID+"|"+runID, "watch-reply", text),
 		}
 		if len(attached) > 0 {
 			body["files"] = desktopWatchFilesBody(attached)

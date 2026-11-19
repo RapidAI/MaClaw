@@ -22,12 +22,13 @@ type BotCollabFeatures struct {
 // BotSaidItem is one message a bot said (kind say) or the person wrote in
 // a room (kind room, from "human").
 type BotSaidItem struct {
-	ID        string `json:"id"`
-	From      string `json:"from"`
-	Target    string `json:"target"`
-	Kind      string `json:"kind"`
-	Text      string `json:"text"`
-	CreatedAt string `json:"created_at"`
+	ID          string `json:"id"`
+	From        string `json:"from"`
+	Target      string `json:"target"`
+	Kind        string `json:"kind"`
+	MessageKind string `json:"message_kind,omitempty"`
+	Text        string `json:"text"`
+	CreatedAt   string `json:"created_at"`
 	// Files a server-started turn (background-job check or resume) said
 	// with this message; fetch with FetchDesktopBotMailFile(id, name).
 	Files []DesktopBotMailFile `json:"files,omitempty"`
