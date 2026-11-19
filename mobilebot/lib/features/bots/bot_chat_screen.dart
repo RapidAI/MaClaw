@@ -184,6 +184,23 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     return '';
   }
 
+  /// 一轮聆听的收口：最终识别词非空→自动发送；空（静默/超时）→稍后重新
+  /// 聆听。onStatus 终态与 onResult 的 finalResult 都会进来（部分 OEM 识别
+  /// 器只发结果不发终态状态），靠 _listening 幂等，先到者生效。
+  void _handleVoiceTurnEnd() {
+    if (!_listening) return;
+    _listening = false;
+    if (mounted) setState(() {});
+    if (!_voiceMode) return;
+    final text = _voiceCaptured.trim();
+    _voiceCaptured = '';
+    if (text.isNotEmpty) {
+      ref.read(botChatProvider.notifier).send(text);
+    } else {
+      _scheduleVoiceRelisten();
+    }
+  }
+
   /// 聆听一轮：最终识别结果非空→自动发送；空（静默/超时）→稍后重新聆听。
   Future<void> _voiceListen() async {
     if (!_voiceMode || _listening || _ttsBusy) return;
@@ -201,16 +218,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       },
       onStatus: (status) {
         if (status != 'done' && status != 'notListening') return;
-        _listening = false;
-        if (mounted) setState(() {});
-        if (!_voiceMode) return;
-        final text = _voiceCaptured.trim();
-        _voiceCaptured = '';
-        if (text.isNotEmpty) {
-          ref.read(botChatProvider.notifier).send(text);
-        } else {
-          _scheduleVoiceRelisten();
-        }
+        _handleVoiceTurnEnd();
       },
     );
     if (!ok) {
@@ -224,7 +232,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       listenOptions: stt.SpeechListenOptions(
         localeId: pickAsrLocale(await _speech.locales()),
       ),
-      onResult: (result) => _voiceCaptured = result.recognizedWords,
+      onResult: (result) {
+        _voiceCaptured = result.recognizedWords;
+        if (result.finalResult) _handleVoiceTurnEnd();
+      },
     );
   }
 

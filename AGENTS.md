@@ -633,6 +633,31 @@
   view/operate tiers are whitelisted hub-side; a new op needs the desktop
   `executeRemoteControl` case AND the hub whitelist (see "Remote-control ops"
   above).
+- Remote-task live viewer (`viewer_reducer.dart` ↔ desktop
+  `reduceViewerEvent.ts` ↔ Go contract reference `viewer_reduce.go`, all
+  locked to the same JSON vectors in
+  `guiapp/testdata/viewer_contract_vectors.json`): the viewer feed replays
+  EVERY progress publish, so ALL THREE reducers keep the desktop chat's
+  sticky tail row — a repeated delivery of the same running step dedups
+  against the TIMELINE TAIL by phase+task+title (coding rows; run_id
+  excluded, mirroring the compat text) or exact text (taskless rows), and
+  each caps the timeline at 160 like `VIEWER_TIMELINE_KEPT`. Without this
+  one running step paints a row per publish ("running · 实现…" ×N in
+  `_LiveRound`'s notes and the desktop remote mirror). The relay also
+  collapses: `relayRemoteStreamEvent` drops a progress whose wire text
+  equals the session's previous one (`viewerProgressTail`) BEFORE
+  `publishViewerEvent` — cursors stay contiguous (allocated per publish,
+  never skipped) and OLD phone builds, which have no reducer dedup, stop
+  stacking without an app update. Heartbeats/control lanes pass through;
+  queue-overflow tests must fill with DISTINCT texts. Known parse drift,
+  kept: legacy-text phases go through the desktop's
+  `CODING_AGENT_KNOWN_PHASES` whitelist ("done" → ''), the phone keeps the
+  raw word; shared vectors must use phases both sides represent
+  identically ("completed", not "done") — coding-map rows skip
+  normalization on BOTH sides. Adding a vector means updating all THREE
+  reducers at once — the Go one is embed-golden
+  (`TestReduceViewerEventMatchesGolden`) and fails the build first when a
+  consumer implementation drifts.
 - CI: `.github/workflows/mobilebot.yml` (PR/push checks + debug APK artifact);
   `.github/workflows/main.yml` `build-android` job ships signed
   `MaclawGo.apk` into tagged Releases — needs secrets
@@ -664,6 +689,19 @@
   default); a hardcoded unsupported locale dies with
   language-not-supported before a single word is heard. Plugin side, a
   null `localeId` omits `EXTRA_LANGUAGE` entirely = device default.
+- Dictation text lands in `onResult`, NOT in `onStatus`: recognized words
+  go straight into the composer per callback (bot chat `_toggleListening`,
+  assistant `_dictate`; snapshot the composer as the prefix right before
+  `listen`). Some OEM recognizers deliver results without ever firing the
+  terminal `'done'`/`'notListening'` status — gating the landing on status
+  left the assistant composer stuck at 聆听中 with nothing on screen.
+  `onStatus` only resets `_listening`; a `listen()` throw resets it too.
+  Voice-assistant mode (`_voiceListen`) has the same trap on the SEND side:
+  auto-send/relisten funnels through `_handleVoiceTurnEnd`, called from
+  BOTH the terminal status and `onResult(finalResult)` — `_listening`
+  makes it idempotent, so a recognizer that never fires the status still
+  sends, and a status after a final result cannot double-fire into a
+  spurious relisten.
 - Bot reply media never travels in the journal: the projection strips
   bytes, the desktop saves delivered files on ITS OWN disk (only
   unsavable ones keep attachment ids), and Hub's `ReplyFile` carries no

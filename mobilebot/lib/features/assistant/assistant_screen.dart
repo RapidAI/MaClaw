@@ -285,7 +285,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     await engine.ensurePrefs();
     var usedSystem = false;
     if (engine.asrEngine == AsrEngine.system) {
-      var captured = '';
+      // 识别词直接进输入框（同 Bot 聊天的听写）：部分 OEM 识别器只发结果
+      // 不发终态状态，等 'done' 再上屏会让输入栏卡在"聆听中"而一个字都
+      // 不落；落在 onResult 里则部分结果也能实时上屏。
       final ok = await _speech.initialize(
         onError: (_) {
           if (mounted) setState(() => _listening = false);
@@ -293,19 +295,31 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         onStatus: (status) {
           if (status != 'done' && status != 'notListening') return;
           if (mounted) setState(() => _listening = false);
-          final text = captured.trim();
-          if (text.isNotEmpty) _appendInput(text);
         },
       );
       if (ok) {
         usedSystem = true;
+        final prefix = _inputCtrl.text;
         setState(() => _listening = true);
-        await _speech.listen(
-          listenOptions: stt.SpeechListenOptions(
-            localeId: pickAsrLocale(await _speech.locales()),
-          ),
-          onResult: (r) => captured = r.recognizedWords,
-        );
+        try {
+          await _speech.listen(
+            listenOptions: stt.SpeechListenOptions(
+              localeId: pickAsrLocale(await _speech.locales()),
+            ),
+            onResult: (r) {
+              _inputCtrl.text = prefix.isEmpty
+                  ? r.recognizedWords
+                  : '$prefix ${r.recognizedWords}';
+              _inputCtrl.selection = TextSelection.collapsed(
+                offset: _inputCtrl.text.length,
+              );
+            },
+          );
+        } on Object {
+          // listen 抛错（通道/识别器占用）：复位聆听态，别把输入栏
+          // 永久卡在"聆听中"。已识别的词在 onResult 里已经上屏。
+          if (mounted) setState(() => _listening = false);
+        }
       }
     }
     if (!usedSystem) await _localDictate();
