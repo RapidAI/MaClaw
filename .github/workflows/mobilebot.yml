@@ -1,0 +1,70 @@
+name: mobilebot
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/mobilebot.yml"
+      - "mobilebot/**"
+      - "hub/internal/remotecontrol/**"
+      - "hub/internal/httpapi/remote_control*.go"
+      - "hub/internal/httpapi/mobile_handlers*.go"
+      - "hub/internal/httpapi/router.go"
+  push:
+    paths:
+      - ".github/workflows/mobilebot.yml"
+      - "mobilebot/**"
+      - "hub/internal/remotecontrol/**"
+      - "hub/internal/httpapi/remote_control*.go"
+      - "hub/internal/httpapi/mobile_handlers*.go"
+      - "hub/internal/httpapi/router.go"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # Pin the Flutter version the app pins in mobilebot/.fvmrc — a newer
+      # stable can fail analysis on new deprecations before the code migrates.
+      - id: flutter-pin
+        run: echo "version=$(python3 -c 'import json; print(json.load(open("mobilebot/.fvmrc"))["flutter"])')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ steps.flutter-pin.outputs.version }}
+          cache: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('mobilebot/android/**/*.gradle*', 'mobilebot/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      # Hub contract the app talks to: remote-control grants/ops and the
+      # mobile auth/desktop-qr endpoints.
+      - run: go test ./hub/internal/remotecontrol/... -count=1
+      - run: go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
+      - working-directory: mobilebot
+        run: flutter pub get
+      - working-directory: mobilebot
+        run: dart analyze lib test
+      - working-directory: mobilebot
+        run: flutter test --concurrency=1
+      - name: Build voice native library
+        run: bash mobilebot/tool/build_voice.sh
+      - working-directory: mobilebot
+        run: flutter build apk --debug
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mobilebot-debug-apk
+          path: mobilebot/build/app/outputs/flutter-apk/app-debug.apk

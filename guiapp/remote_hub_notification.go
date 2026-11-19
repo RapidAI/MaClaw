@@ -41,12 +41,20 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		}
 		// A shared document uses the same OS channel. The companion title bar
 		// shows the same bell; a hidden window still needs the system notice.
-		if isCompanionShareNotification(push.Notification.Source) || isCompanionHostTransferNotification(push.Notification.Source) {
+		// The group join digest rides it too: it is a share notice in merged
+		// form, with the same "open the bell" action.
+		if isCompanionShareNotification(push.Notification.Source) || isCompanionHostTransferNotification(push.Notification.Source) || isCompanionGroupDigestNotification(push.Notification.Source) {
 			go a.announceCompanionShareNotification(push.Notification.ID, push.Notification.Title, push.Notification.Content)
 		}
 		// Urgent notifications get an additional toast event.
 		if push.Notification.Priority == "urgent" {
 			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)
+		}
+		// A pinned message changes what the sidebar banner shows. The push
+		// payload itself is not enough (the banner caps at 1 permanent + 3
+		// latest), so re-pull the authoritative pinned list.
+		if push.Notification.Pinned {
+			go a.PullPinnedNotifications()
 		}
 
 	case "revoke":
@@ -55,5 +63,7 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		}
 		a.notifCache.Remove(push.NotifID)
 		emitNotificationFrontendEvent(a, "notification:revoke", push.NotifID)
+		// The revoke may target a pinned row; re-pull keeps the banner exact.
+		go a.PullPinnedNotifications()
 	}
 }

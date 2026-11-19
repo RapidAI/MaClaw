@@ -19,6 +19,10 @@ type AskUserRequest struct {
 	// InputType: text, choice (single), multi_choice (several), confirm, secret, secret_fill.
 	InputType  string   `json:"input_type,omitempty"`
 	SecretName string   `json:"secret_name,omitempty"`
+	// Takeover marks a question that is really a desktop handoff: the next
+	// step happens on the computer screen, not in this chat. The display
+	// hint then points at the takeover button instead of a typed reply.
+	Takeover bool `json:"takeover,omitempty"`
 }
 
 // ValidSecretName reports whether name may be shown to a model.
@@ -234,8 +238,15 @@ func FormatAskUserForDisplay(req *AskUserRequest) string {
 			b.WriteString("\n\n请输入：选项字母或内容")
 		}
 	default:
-		// text type or unspecified — guide the user to reply directly.
-		b.WriteString("\n\n请直接输入您的回复")
+		// A desktop handoff asks the person to act on the computer screen,
+		// not to type an answer: the phone renders this ask as a takeover
+		// card with the wall's screenshot.
+		if req.Takeover {
+			b.WriteString("\n\n请在电脑上完成，或点「接管」继续。")
+		} else {
+			// text type or unspecified — guide the user to reply directly.
+			b.WriteString("\n\n请直接输入您的回复")
+		}
 	}
 	return b.String()
 }

@@ -19,7 +19,16 @@ func newGoalBarApp(t *testing.T) (*App, *goal.Store, *GoalContinuationEngine) {
 	engine.cooldown = time.Hour
 	app.goalContinuation = engine
 	app.imHandler = &IMMessageHandler{app: app, goalStore: store}
-	t.Cleanup(func() { engine.CancelPending("desktop-user") })
+	// Open the pending-reply store before any synctest bubble: its sqlite
+	// pool spawns a durable goroutine, and a handle first opened inside a
+	// bubble can neither be closed outside it nor left running at bubble end.
+	app.imHandler.ensurePendingReplyStore()
+	t.Cleanup(func() {
+		engine.CancelPending("desktop-user")
+		if h := app.imHandler; h != nil && h.pendingReplyStore != nil {
+			h.pendingReplyStore.Close()
+		}
+	})
 	return app, store, engine
 }
 
@@ -2332,6 +2341,69 @@ func TestGoalCompleteClearsTheCallingHandlerChecklist(t *testing.T) {
 	}
 	if mem := caller.getStickyCodingWorkbenchMemory(userID); len(mem.StepStatuses) != 0 {
 		t.Fatalf("the handler that completed the goal kept its checklist: %+v", mem)
+	}
+}
+
+func TestGoalCompleteEmitsCloseoutNotice(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	g, err := store.Set(userID, "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "freeze the baseline", []goal.Step{{Index: 1, Title: "freeze baseline"}}, []string{"baseline frozen"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateStep(userID, g.GoalID, 1, goal.StepDone, "baseline frozen"); err != nil {
+		t.Fatal(err)
+	}
+	var notices []struct {
+		text    string
+		asError bool
+	}
+	engine.noticeObserver = func(_, text string, asError bool) {
+		notices = append(notices, struct {
+			text    string
+			asError bool
+		}{text, asError})
+	}
+
+	if got := h.goalCompleteForUser(userID, map[string]interface{}{"summary": "baseline frozen"}); strings.Contains(got, "错误") {
+		t.Fatalf("complete refused: %s", got)
+	}
+	// The post-loop announce never runs for a goal that turned terminal
+	// mid-turn, so the closeout must be emitted at the transition.
+	if len(notices) != 1 || notices[0].asError {
+		t.Fatalf("completion should emit exactly one non-error closeout: %+v", notices)
+	}
+	for _, want := range []string{"目标已完成", "ship it", "baseline frozen", "总轮次"} {
+		if !strings.Contains(notices[0].text, want) {
+			t.Fatalf("closeout text missing %q: %q", want, notices[0].text)
+		}
+	}
+}
+
+func TestGoalFailEmitsErrorCloseoutNotice(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	if _, err := store.Set(userID, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	var notices []string
+	engine.noticeObserver = func(_, text string, asError bool) {
+		if asError {
+			notices = append(notices, text)
+		}
+	}
+
+	if got := h.goalFailForUser(userID, map[string]interface{}{"reason": "构建过不了"}); !strings.Contains(got, "目标失败") {
+		t.Fatalf("fail reply = %s", got)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "目标失败") || !strings.Contains(notices[0], "构建过不了") {
+		t.Fatalf("failure closeout = %v", notices)
 	}
 }
 

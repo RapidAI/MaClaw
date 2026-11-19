@@ -108,6 +108,10 @@ type IMAgentResponse struct {
 	KeepPanel       bool `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
 	ConfirmedResume bool `json:"confirmed_resume,omitempty"`
 	HardExit        bool `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
+	// CodingSteps is the per-step result of a coding turn. It stays on the
+	// host so Hub and other clients do not grow a second task API. MCP reads
+	// it when it seals the run.
+	CodingSteps []CodingStepOutcome `json:"-"`
 	// sessionRoundContinue tells the chat-task worker to run another wave.
 	// The foreground scheduler reads the same flag so a finished wave does
 	// not clear the continuation it just armed.

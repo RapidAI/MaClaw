@@ -3,24 +3,15 @@ package desktopd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
-// Typed picture states. running is the only one with a live frame.
-// asleep: the container is stopped (the reaper docker-stopped it, or it
-// was never started). display_stopped: the container is up and the
-// supervisor idle-stopped the bot display. Both are 200 from /view;
-// opening either without a wake reason is 409 DESKTOP_ASLEEP.
-const (
-	DesktopRunning        = "running"
-	DesktopAsleep         = "asleep"
-	DesktopDisplayStopped = "display_stopped"
-	// DesktopUnavailable is an inspect or display read that failed. It is
-	// not a stopped container and not a stopped display.
-	DesktopUnavailable = "unavailable"
-)
+// errScreenNotUp is a nudge of a display that is not running.
+var errScreenNotUp = errors.New("screen is not up")
 
 // PeekSession returns the noVNC (and CDP) page for a screen that is already
 // running. It never starts, restores, or refreshes last_activity. An empty
@@ -33,22 +24,25 @@ func (s *Service) PeekSession(ctx context.Context, spec Spec) (Session, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return Session{}, ctx.Err()
 	}
-	running, err := s.displayStatus(ctx, spec)
-	if err != nil || !running {
-		return Session{}, nil
-	}
-	return s.sessionForRunningScreen(ctx, spec)
-}
-
-// sessionForRunningScreen builds the page for a screen the caller already
-// knows is running. It does not ask the supervisor again.
-func (s *Service) sessionForRunningScreen(ctx context.Context, spec Spec) (Session, error) {
 	base, err := s.publicBase()
 	if err != nil {
 		return Session{}, err
 	}
+	// Ask whether the display is up before reading its address. A docker
+	// failure here is not "stopped": an empty page would make Hub reopen a
+	// desktop that is still up.
+	live, err := s.screenLive(ctx, spec)
+	if err != nil {
+		return Session{}, err
+	}
+	if !live {
+		return Session{}, nil
+	}
 	status, err := s.Screen(ctx, spec)
-	if err != nil || strings.TrimSpace(status.Token) == "" || !desktop.ValidDisplay(status.Display) {
+	if err != nil {
+		return Session{}, err
+	}
+	if strings.TrimSpace(status.Token) == "" || !desktop.ValidDisplay(status.Display) {
 		return Session{}, nil
 	}
 	// One tunnel per container, named by the owner. The gate token in the
@@ -69,23 +63,216 @@ func (s *Service) sessionForRunningScreen(ctx context.Context, spec Spec) (Sessi
 	return session, nil
 }
 
-// classifyDesktopView is the picture state for one look. A stopped
-// container is asleep. A container whose display is not running, or whose
-// screen has no page, is display_stopped. Only both-up with a page is running.
-func classifyDesktopView(containerUp, displayUp bool, novnc string) string {
-	if !containerUp {
-		return DesktopAsleep
+// screenLive reports whether this screen's display is up. A stopped
+// container or an explicit running:false is not live and not an error.
+// A docker failure while the container is running is an error: the screen
+// may still be up, and an empty answer would look like it had stopped.
+func (s *Service) screenLive(ctx context.Context, spec Spec) (bool, error) {
+	key, err := specKey(spec)
+	if err != nil {
+		return false, err
 	}
-	if !displayUp || strings.TrimSpace(novnc) == "" {
-		return DesktopDisplayStopped
+	name := containerName(spec.TenantID, spec.UserID)
+	if name == "" {
+		return false, nil
 	}
-	return DesktopRunning
+	out, err := s.docker(ctx, "inspect", "--format", "{{.State.Running}}", name)
+	if err != nil {
+		if missingObject(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if strings.TrimSpace(out) != "true" {
+		return false, nil
+	}
+	out, err = s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "display", key)
+	if err != nil {
+		// The supervisor's own "never opened" is an answer: this screen is
+		// not up. Any other exec failure may be a blink while it is up.
+		if strings.Contains(err.Error(), "desktop was never opened") {
+			return false, nil
+		}
+		return false, err
+	}
+	return displayStatusLive(out), nil
 }
 
-// ViewState is PeekSession plus the typed state a viewer needs so it can
-// drop a remembered page. It never starts, restores, or refreshes
-// last_activity. docker inspect distinguishes a stopped container (asleep)
-// from a container whose display the supervisor stopped (display_stopped).
+// NudgeSession turns a running screen's picture back on. Xvfb blanks after
+// ten minutes, and a display that is still running then stays black while
+// its address looks live. This does not start, stop, or refresh activity.
+func (s *Service) NudgeSession(ctx context.Context, spec Spec) error {
+	spec, err := normalize(spec)
+	if err != nil {
+		return err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	live, err := s.screenLive(ctx, spec)
+	if err != nil {
+		return err
+	}
+	if !live {
+		// Not up is not a successful unblank. Callers record a success as
+		// "just touched", and that would hold off restarting a screen that
+		// is actually stopped.
+		return errScreenNotUp
+	}
+	status, err := s.Screen(ctx, spec)
+	if err != nil {
+		return err
+	}
+	display := strings.TrimSpace(status.Display)
+	if !desktop.ValidDisplay(display) {
+		return errScreenNotUp
+	}
+	name := containerName(spec.TenantID, spec.UserID)
+	if name == "" {
+		return errScreenNotUp
+	}
+	// xset may be missing in an old image. The screen is still up either way.
+	// Each call is bounded so a stuck X command cannot hold the watch poll.
+	for _, argv := range [][]string{
+		{"xset", "s", "reset"},
+		{"xset", "-dpms"},
+		{"xset", "dpms", "force", "on"},
+	} {
+		_, _ = s.execOnDisplay(ctx, name, display, argv...)
+	}
+	// A bot display has no wallpaper. A minimized Chromium is a black screen
+	// with the process still running, so the address looks live and 唤醒 is
+	// never offered. Map it only when nothing visible is already up, so a
+	// captcha the person is dragging is left alone.
+	if spec.BotID != "" {
+		s.mapHiddenBrowser(ctx, name, display)
+	}
+	return nil
+}
+
+func (s *Service) execOnDisplay(ctx context.Context, name, display string, argv ...string) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	args := append([]string{"exec", "-e", "DISPLAY=" + display, name}, argv...)
+	return s.docker(cmdCtx, args...)
+}
+
+func (s *Service) mapHiddenBrowser(ctx context.Context, name, display string) {
+	out, err := s.execOnDisplay(ctx, name, display, "xdotool", "search", "--class", "chromium")
+	if err != nil {
+		return
+	}
+	hidden := ""
+	hiddenWidth := 0
+	for _, wid := range strings.Fields(out) {
+		if !decimalID(wid) {
+			continue
+		}
+		info, err := s.execOnDisplay(ctx, name, display, "xwininfo", "-id", wid)
+		if err != nil {
+			continue
+		}
+		state, width := windowMapState(info)
+		if width < 200 {
+			continue
+		}
+		if state == "IsViewable" {
+			return
+		}
+		if state != "" && width > hiddenWidth {
+			hidden, hiddenWidth = wid, width
+		}
+	}
+	if hidden == "" {
+		return
+	}
+	_, _ = s.execOnDisplay(ctx, name, display, "xdotool", "windowmap", hidden)
+	_, _ = s.execOnDisplay(ctx, name, display, "xdotool", "windowactivate", hidden)
+}
+
+func decimalID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func windowMapState(info string) (string, int) {
+	state, width := "", 0
+	for _, line := range strings.Split(info, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Map State:") {
+			state = strings.TrimSpace(strings.TrimPrefix(line, "Map State:"))
+		} else if strings.HasPrefix(line, "Width:") {
+			for _, field := range strings.Fields(strings.TrimPrefix(line, "Width:")) {
+				n := 0
+				ok := true
+				for _, r := range field {
+					if r < '0' || r > '9' {
+						ok = false
+						break
+					}
+					n = n*10 + int(r-'0')
+				}
+				if ok {
+					width = n
+				}
+				break
+			}
+		}
+	}
+	return state, width
+}
+
+func displayStatusLive(out string) bool {
+	line := statusLine(out)
+	if line == "" {
+		return true
+	}
+	var status struct {
+		Running *bool `json:"running"`
+	}
+	if json.Unmarshal([]byte(line), &status) != nil || status.Running == nil {
+		return true
+	}
+	return *status.Running
+}
+
+// displayRunning is the supervisor's running bit for this screen. A missing
+// or unreadable answer is treated as up when Screen already returned a
+// token, so an older supervisor still yields a view. running:false stays
+// empty: a slept screen must not look live.
+func (s *Service) displayRunning(ctx context.Context, spec Spec) bool {
+	key, err := specKey(spec)
+	if err != nil {
+		return false
+	}
+	name := containerName(spec.TenantID, spec.UserID)
+	if name == "" {
+		return false
+	}
+	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "display", key)
+	if err != nil {
+		return false
+	}
+	return displayStatusLive(out)
+}
+
+const (
+	DesktopRunning        = "running"
+	DesktopAsleep         = "asleep"
+	DesktopDisplayStopped = "display_stopped"
+	DesktopUnavailable    = "unavailable"
+)
+
+// ViewState is the typed picture for a viewer. It never starts the desktop.
+// A docker failure is unavailable, a stopped container is asleep, and a
+// container whose display is not running is display_stopped.
 func (s *Service) ViewState(ctx context.Context, spec Spec) (Session, error) {
 	spec, err := normalize(spec)
 	if err != nil {
@@ -94,65 +281,40 @@ func (s *Service) ViewState(ctx context.Context, spec Spec) (Session, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return Session{}, ctx.Err()
 	}
-	up, err := s.containerRunning(ctx, containerName(spec.TenantID, spec.UserID))
+	name := containerName(spec.TenantID, spec.UserID)
+	up, err := s.containerRunning(ctx, name)
 	if err != nil {
 		return Session{State: DesktopUnavailable}, nil
 	}
-	if !up {
-		return Session{State: DesktopAsleep}, nil
+	live := false
+	if up {
+		live, err = s.screenLive(ctx, spec)
+		if err != nil {
+			return Session{State: DesktopUnavailable}, nil
+		}
 	}
-	// One display read. PeekSession would ask again.
-	running, err := s.displayStatus(ctx, spec)
-	if err != nil {
-		return Session{State: DesktopUnavailable}, nil
+	var page string
+	var session Session
+	if up && live {
+		session, err = s.PeekSession(ctx, spec)
+		if err != nil {
+			return Session{}, err
+		}
+		page = session.Novnc
 	}
-	if !running {
-		return Session{State: DesktopDisplayStopped}, nil
-	}
-	session, err := s.sessionForRunningScreen(ctx, spec)
-	if err != nil {
-		return Session{}, err
-	}
-	session.State = classifyDesktopView(true, true, session.Novnc)
+	session.State = classifyDesktopView(up, live, page)
 	if session.State != DesktopRunning {
-		return Session{State: session.State}, nil
+		session.Novnc = ""
 	}
 	return session, nil
 }
 
-// displayRunning is the supervisor's running bit. A read error is not up.
-// displayStatus treats a missing running bit as up so an older supervisor
-// still yields a view, and running:false as stopped.
-func (s *Service) displayRunning(ctx context.Context, spec Spec) bool {
-	running, err := s.displayStatus(ctx, spec)
-	return err == nil && running
-}
-
-// displayStatus is the supervisor's running bit. A docker exec failure is
-// an error, not "stopped". A missing running bit is up, so an older
-// supervisor still yields a view. running:false is display_stopped.
-func (s *Service) displayStatus(ctx context.Context, spec Spec) (bool, error) {
-	key, err := specKey(spec)
-	if err != nil {
-		return false, err
+func classifyDesktopView(containerUp, displayLive bool, page string) string {
+	if !containerUp {
+		return DesktopAsleep
 	}
-	name := containerName(spec.TenantID, spec.UserID)
-	if name == "" {
-		return false, ErrInvalid
+	if !displayLive || strings.TrimSpace(page) == "" {
+		return DesktopDisplayStopped
 	}
-	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "display", key)
-	if err != nil {
-		return false, err
-	}
-	line := statusLine(out)
-	if line == "" {
-		return true, nil
-	}
-	var status struct {
-		Running *bool `json:"running"`
-	}
-	if json.Unmarshal([]byte(line), &status) != nil || status.Running == nil {
-		return true, nil
-	}
-	return *status.Running, nil
+	return DesktopRunning
 }

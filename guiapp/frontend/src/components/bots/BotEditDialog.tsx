@@ -16,6 +16,47 @@ export type BotEditDialogLabels = {
     nameTaken?: string;
 };
 
+/** One local server the new bot can run on. */
+export type BotServerChoice = {
+    id: string;
+    label: string;
+};
+
+/** Create-only: whether this bot should use a computer, plus the quota line. */
+export type BotComputerChoice = {
+    label: string;
+    quota: string;
+    /** True when the grant is already used up, so a new bot cannot take a computer. */
+    locked: boolean;
+    /** True when no cloud or local computer is bound: the switch hides and only unavailableText shows. */
+    unavailable?: boolean;
+    /** Line shown in place of the switch while unavailable. */
+    unavailableText?: string;
+    /** Local servers with MaClawSrv. Empty hides the picker. */
+    servers?: BotServerChoice[];
+    /** Initially selected server. Empty is the cloud computer. */
+    server?: string;
+    /** False when this account has no assigned cloud computer: the cloud radio hides and the choice is local only. */
+    cloudAvailable?: boolean;
+    /** Why the cloud option is unavailable, shown when local servers are listed. */
+    cloudHint?: string;
+    cloudLabel?: string;
+    localLabel?: string;
+    serverLegend?: string;
+    /** Shown when local is selected but that server is no longer listed. */
+    serverMissing?: string;
+};
+
+function initialComputerChoice(computer?: BotComputerChoice): { place: 'cloud' | 'local'; server: string } {
+    const servers = computer?.servers ?? [];
+    const next = (computer?.server || '').trim();
+    if (servers.some(item => item.id === next)) return { place: 'local', server: next };
+    if (computer?.cloudAvailable === false && servers.length > 0) {
+        return { place: 'local', server: servers[0]?.id || '' };
+    }
+    return { place: 'cloud', server: servers[0]?.id || '' };
+}
+
 type BotEditDialogProps = {
     initialTitle: string;
     initialDescription: string;
@@ -24,11 +65,13 @@ type BotEditDialogProps = {
     notice: string;
     saving: boolean;
     onClose: () => void;
-    onSubmit: (title: string, description: string, look: BotAppearance) => void;
+    onSubmit: (title: string, description: string, look: BotAppearance, needsComputer?: boolean, serverID?: string) => void;
     initialAppearance?: BotAppearance;
     /** Returns true when the name is already used by another bot. */
     isNameTaken?: (title: string) => boolean;
     testId?: string;
+    /** Present only while creating. Editing a bot does not change this here. */
+    computer?: BotComputerChoice;
 };
 
 // Same caps as the rename inputs this dialog replaces.
@@ -39,7 +82,7 @@ const DESCRIPTION_MAX = 80;
  * Modal editor for a bot's name and description. Rendered inside #App, so the
  * custom-dialog classes pick up the theme variables directly.
  */
-export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit, initialAppearance, isNameTaken, testId }: BotEditDialogProps) {
+export function BotEditDialog({ initialTitle, initialDescription, labels, notice, saving, onClose, onSubmit, initialAppearance, isNameTaken, testId, computer }: BotEditDialogProps) {
     const titleId = useId();
     const nameId = useId();
     const descriptionId = useId();
@@ -51,6 +94,27 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
     const [color, setColor] = useState(initialAppearance?.color || BOT_COLORS[0]);
     const [shape, setShape] = useState<BotShape>(initialAppearance?.shape || 'circle');
+    const [needsComputer, setNeedsComputer] = useState(computer ? !computer.locked : true);
+    const openingChoice = initialComputerChoice(computer);
+    const [place, setPlace] = useState<'cloud' | 'local'>(openingChoice.place);
+    const [server, setServer] = useState(openingChoice.server);
+    const [choiceError, setChoiceError] = useState('');
+    const choiceTouched = useRef(false);
+    useEffect(() => {
+        if (computer?.locked) setNeedsComputer(false);
+    }, [computer?.locked]);
+    useEffect(() => {
+        if (choiceTouched.current) return;
+        const servers = computer?.servers ?? [];
+        const next = (computer?.server || '').trim();
+        if (servers.some(item => item.id === next)) {
+            setPlace('local');
+            setServer(next);
+            return;
+        }
+        setPlace(computer?.cloudAvailable === false && servers.length > 0 ? 'local' : 'cloud');
+        setServer(servers[0]?.id || '');
+    }, [computer?.server, computer?.servers, computer?.cloudAvailable]);
     const taken = !!isNameTaken && title.trim() !== '' && isNameTaken(title.trim());
     const canSave = title.trim() !== '' && !taken && !saving;
 
@@ -81,6 +145,29 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
 
     const submit = () => {
         if (!canSave) return;
+        const servers = computer?.servers ?? [];
+        if (needsComputer && servers.length > 0) {
+            let picked = '';
+            if (place === 'cloud' && computer?.cloudAvailable === false) {
+                setChoiceError(computer?.cloudHint || computer?.serverMissing || 'Choose a local computer');
+                return;
+            }
+            if (place === 'local') {
+                picked = servers.find(item => item.id === server)?.id || '';
+                if (!picked && servers.length === 1) picked = servers[0].id;
+                if (!picked) {
+                    setChoiceError(computer?.serverMissing || 'Choose a local computer');
+                    return;
+                }
+            }
+            setChoiceError('');
+            onSubmit(title.trim(), description.trim(), { color, shape }, true, picked);
+            return;
+        }
+        if (computer) {
+            onSubmit(title.trim(), description.trim(), { color, shape }, needsComputer);
+            return;
+        }
         onSubmit(title.trim(), description.trim(), { color, shape });
     };
 
@@ -210,6 +297,83 @@ export function BotEditDialog({ initialTitle, initialDescription, labels, notice
                             ))}
                         </div>
                     </div>
+                    {computer ? (
+                        <div className="bot-edit-dialog__field">
+                            {computer.unavailable ? (
+                                <p className="bot-edit-dialog__quota" data-testid="bot-create-no-computer">{computer.unavailableText || computer.label}</p>
+                            ) : (
+                            <>
+                            <label className="bot-edit-dialog__computer">
+                                <input
+                                    type="checkbox"
+                                    data-testid="bot-create-needs-computer"
+                                    checked={needsComputer}
+                                    disabled={saving || computer.locked}
+                                    onChange={event => setNeedsComputer(event.target.checked)}
+                                />
+                                <span>{computer.label}</span>
+                            </label>
+                            {computer.quota ? <p className="bot-edit-dialog__quota" data-testid="bot-create-quota">{computer.quota}</p> : null}
+                            {computer.cloudAvailable === false && computer.cloudHint ? <p className="bot-edit-dialog__quota" data-testid="bot-create-cloud-hint">{computer.cloudHint}</p> : null}
+                            {needsComputer && computer.servers && computer.servers.length > 0 ? (
+                                <div className="bot-edit-dialog__servers" data-testid="bot-create-servers">
+                                    <div role="radiogroup" aria-label={computer.serverLegend || 'Server'}>
+                                        <span className="form-label bot-edit-dialog__label">{computer.serverLegend || 'Server'}</span>
+                                        {computer.cloudAvailable !== false ? (
+                                            <label className="bot-edit-dialog__computer">
+                                                <input
+                                                    type="radio"
+                                                    name="bot-create-place"
+                                                    data-testid="bot-create-place-cloud"
+                                                    checked={place === 'cloud'}
+                                                    disabled={saving}
+                                                    onChange={() => { choiceTouched.current = true; setChoiceError(''); setPlace('cloud'); }}
+                                                />
+                                                <span>{computer.cloudLabel || 'Cloud computer'}</span>
+                                            </label>
+                                        ) : null}
+                                        <label className="bot-edit-dialog__computer">
+                                            <input
+                                                type="radio"
+                                                name="bot-create-place"
+                                                data-testid="bot-create-place-local"
+                                                checked={place === 'local'}
+                                                disabled={saving}
+                                                onChange={() => {
+                                                    choiceTouched.current = true;
+                                                    setChoiceError('');
+                                                    setPlace('local');
+                                                    if (!(computer.servers ?? []).some(item => item.id === server)) setServer(computer.servers?.[0]?.id || '');
+                                                }}
+                                            />
+                                            <span>{computer.localLabel || 'Local computer'}</span>
+                                            {computer.servers.length === 1 ? <span>{' · '}<span data-testid="bot-create-local-only">{computer.servers[0].label}</span></span> : null}
+                                        </label>
+                                    </div>
+                                    {place === 'local' && computer.servers.length > 1 ? (
+                                        <div className="bot-edit-dialog__servers" role="radiogroup" aria-label={computer.localLabel || 'Local computer'} data-testid="bot-create-local-servers">
+                                            {computer.servers.map(item => (
+                                                <label key={item.id} className="bot-edit-dialog__computer">
+                                                    <input
+                                                        type="radio"
+                                                        name="bot-create-server"
+                                                        data-testid={`bot-create-server-${item.id}`}
+                                                        checked={server === item.id}
+                                                        disabled={saving}
+                                                        onChange={() => { choiceTouched.current = true; setChoiceError(''); setServer(item.id); }}
+                                                    />
+                                                    <span>{item.label}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                    {choiceError ? <p className="bot-edit-dialog__notice" role="alert" data-testid="bot-create-server-missing">{choiceError}</p> : null}
+                                </div>
+                            ) : null}
+                            </>
+                            )}
+                        </div>
+                    ) : null}
                     {notice ? <p className="bot-edit-dialog__notice" role="status">{notice}</p> : null}
                 </div>
                 <div className="modal-footer custom-dialog__footer">

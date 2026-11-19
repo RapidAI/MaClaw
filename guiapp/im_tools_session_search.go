@@ -6,29 +6,7 @@ package guiapp
 import (
 	"fmt"
 	"strings"
-
-	"github.com/RapidAI/CodeClaw/corelib/session"
 )
-
-// getSessionStore returns the session search store, lazily initializing it
-// if not already created. Returns nil if initialization fails.
-func (h *IMMessageHandler) getSessionStore() *session.Store {
-	if h.app == nil {
-		return nil
-	}
-	// Check if the app already has a session store field; if not, create one.
-	h.app.sessionStoreMu.Do(func() {
-		dbPath := h.getSessionSearchDBPath()
-		store, err := session.NewStore(dbPath)
-		if err != nil {
-			// Log but don't crash — search is a best-effort feature.
-			fmt.Printf("[session_search] failed to open store: %v\n", err)
-			return
-		}
-		h.app.sessionSearchStore = store
-	})
-	return h.app.sessionSearchStore
-}
 
 // toolSessionSearch handles the session_search tool call.
 // Parameters:
@@ -63,7 +41,8 @@ func (h *IMMessageHandler) toolSessionSearch(args map[string]interface{}) string
 		maxResults = maxSessionSearchResults
 	}
 
-	store := h.getSessionStore()
+	store, release := h.app.acquireSessionStore()
+	defer release()
 	if store == nil {
 		return "session search store 未初始化"
 	}

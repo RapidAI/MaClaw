@@ -2,13 +2,14 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 probe，再 click/type。"
+const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在右侧预览窗点「接管」完成验证后继续。继续之后必须先 probe，再 click/type。"
 
 // browserPageFlagsCollectJS assumes pageText/anyIframeSrc/anySelector exist.
 const browserPageFlagsCollectJS = `
@@ -71,7 +72,13 @@ const browserPageFlagsCollectJS = `
   const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
   const signedInChrome = /退出登录|已登录/.test(fullText);
   const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
-  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower));
+  // The first screen of a sign-in is often only an email or mobile field
+  // (Amazon "Sign in or create account"). A password field is not required.
+  // A homepage that merely links to sign-in is not this page.
+  const accountEntry = anySelector('input[type="email"], input[autocomplete="username"], input[autocomplete="email"], input[name*="email" i], input[id*="email" i]');
+  const signInPage = /sign in or create|sign in to|log in to|enter mobile number or email|手机号或邮箱|请登录|登录或注册|密码登录|账号登录/.test(lower);
+  const loginURL = /\/signin\b|\/signup\b|\/login\b|passport\./i.test(String(location.href || ''));
+  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower)) || (accountEntry && signInPage) || (loginURL && /sign in|log in|登录|create account|邮箱|email|手机号/.test(lower));
   let blockingNotice = '';
   try { blockingNotice = ` + blockingNoticeFnJS + `().join(' | '); } catch (e) {}
   const pageFlags = {
@@ -285,6 +292,13 @@ func shouldAskCaptchaWidget(hasSnapshot, snapshotWidget, didPeek bool, peekedWid
 	return hasSnapshot && snapshotWidget
 }
 
+func (s *BrowserAgentSession) personAskIfNeeded(action string) *BrowserActionResult {
+	if ask := s.captchaAskIfNeeded(action); ask != nil {
+		return ask
+	}
+	return s.qrAskIfNeeded(action)
+}
+
 func (s *BrowserAgentSession) captchaAskIfNeeded(action string) *BrowserActionResult {
 	if !isCaptchaMutatingAction(action) {
 		return nil
@@ -322,11 +336,30 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		s.mu.RUnlock()
 	}
 	ctx := strings.TrimSpace(strings.Join([]string{title, url}, " "))
+	if err := s.handPageToUser("captcha_widget", url, title); err != nil && previewHandoffEnabled() {
+		display := "用户已在预览中处理验证。先 probe，再继续。不要在对话里索要验证码。"
+		if !errors.Is(err, errUserReleased) {
+			display = err.Error()
+		}
+		return &BrowserActionResult{
+			SessionID: sessionID,
+			Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+			Status:    "blocked",
+			Display:   display,
+			Detail:    "captcha_widget",
+			Data: map[string]interface{}{
+				"reason":     "captcha_widget",
+				"page_flags": BrowserPageFlags{CaptchaWidget: true},
+				"url":        url,
+				"title":      title,
+			},
+		}
+	}
 	return &BrowserActionResult{
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
 		Status:    "ask",
-		Display:   "page has a captcha challenge; solve it in the browser, then probe before clicking",
+		Display:   "page has a captcha challenge; the person solves it in the MaClaw preview (接管), then probe before clicking",
 		Detail:    "captcha_widget",
 		AskUser:   captchaAskUserRequest(ctx),
 		Data: map[string]interface{}{
@@ -335,6 +368,49 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 			"url":        url,
 			"title":      title,
 		},
+	}
+}
+
+func (s *BrowserAgentSession) qrAskIfNeeded(action string) *BrowserActionResult {
+	if !isCaptchaMutatingAction(action) {
+		return nil
+	}
+	flags, ok := s.lastSnapshotFlags()
+	if !ok || !flags.LoginQR {
+		return nil
+	}
+	url, title := "", ""
+	sessionID := ""
+	if s != nil {
+		s.mu.RLock()
+		sessionID = s.ID
+		if s.snapshots != nil && s.lastSnapshotID != "" {
+			if snap := s.snapshots[s.lastSnapshotID]; snap != nil {
+				url = snap.URL
+				title = snap.Title
+			}
+		}
+		s.mu.RUnlock()
+	}
+	if err := s.handPageToUser("qr", url, title); err != nil && previewHandoffEnabled() {
+		display := "用户已在预览中完成扫码。先 probe，再继续。不要在对话里索要密码或验证码。"
+		if !errors.Is(err, errUserReleased) {
+			display = err.Error()
+		}
+		return &BrowserActionResult{
+			SessionID: sessionID,
+			Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+			Status:    "blocked",
+			Display:   display,
+			Detail:    "login_qr",
+		}
+	}
+	return &BrowserActionResult{
+		SessionID: sessionID,
+		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
+		Status:    "ask",
+		Display:   "page has a QR sign-in; the person scans it in the MaClaw preview (接管), then probe before clicking",
+		Detail:    "login_qr",
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,7 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// Guards read-modify-write of app_install_records.json.
+// Guards read-modify-write of app_install_records.db.
 var maclawAppInstallRegistryMu sync.RWMutex
 
 // PlanMaclawAppInstall returns the backend-authoritative install plan for a
@@ -1087,25 +1086,7 @@ func (a *App) readMaclawAppInstallRegistry() (maclawAppInstallRegistry, error) {
 }
 
 func (a *App) readMaclawAppInstallRegistryUnlocked() (maclawAppInstallRegistry, error) {
-	path := a.maclawAppInstallRegistryPath()
-	registry := maclawAppInstallRegistry{Schema: "maclaw.app.installs.v1"}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return registry, nil
-	}
-	if err != nil {
-		return registry, err
-	}
-	if len(data) == 0 {
-		return registry, nil
-	}
-	if err := json.Unmarshal(data, &registry); err != nil {
-		return registry, fmt.Errorf("decode maclaw app install registry: %w", err)
-	}
-	if registry.Schema == "" {
-		registry.Schema = "maclaw.app.installs.v1"
-	}
-	return registry, nil
+	return a.readMaclawAppInstallRegistryDB()
 }
 
 func (a *App) writeMaclawAppInstallRegistry(registry maclawAppInstallRegistry) error {
@@ -1115,10 +1096,5 @@ func (a *App) writeMaclawAppInstallRegistry(registry maclawAppInstallRegistry) e
 }
 
 func (a *App) writeMaclawAppInstallRegistryUnlocked(registry maclawAppInstallRegistry) error {
-	path := a.maclawAppInstallRegistryPath()
-	data, err := json.MarshalIndent(registry, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(path, data)
+	return a.writeMaclawAppInstallRegistryDB(registry)
 }

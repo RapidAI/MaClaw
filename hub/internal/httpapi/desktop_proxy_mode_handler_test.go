@@ -43,4 +43,9 @@ func TestWriteProxyModeErrorLocked(t *testing.T) {
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "DESKTOP_PROXY_MODE_LOCKED") {
 		t.Fatalf("locked = %d %s", rec.Code, rec.Body.String())
 	}
+	rec = httptest.NewRecorder()
+	writeProxyModeError(rec, desktoppool.ErrIntranetProxyDirect)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "connects directly") || strings.Contains(rec.Body.String(), "administrator") {
+		t.Fatalf("intranet = %d %s", rec.Code, rec.Body.String())
+	}
 }

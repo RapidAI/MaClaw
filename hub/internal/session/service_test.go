@@ -2,7 +2,10 @@ package session
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +48,21 @@ func (s *sessionRepoStub) UpdatePreview(ctx context.Context, sessionID string, p
 	s.previewText = previewText
 	s.previewSeq = outputSeq
 	return nil
+}
+
+// previewFailRepo fails the first failUntil preview writes, then records them.
+type previewFailRepo struct {
+	sessionRepoStub
+	failUntil int
+	calls     int
+}
+
+func (r *previewFailRepo) UpdatePreview(ctx context.Context, sessionID string, previewText string, outputSeq int64, updatedAt time.Time) error {
+	r.calls++
+	if r.calls <= r.failUntil {
+		return errors.New("disk full")
+	}
+	return r.sessionRepoStub.UpdatePreview(ctx, sessionID, previewText, outputSeq, updatedAt)
 }
 
 func (s *sessionRepoStub) UpdateHostOnline(ctx context.Context, sessionID string, hostOnline bool, updatedAt time.Time) error {
@@ -374,5 +392,564 @@ func TestSessionServiceMarkMachineOfflineMarksSessionsUnreachable(t *testing.T) 
 
 	if repo.hostOnlineID == "" || repo.hostOnlineValue {
 		t.Fatalf("expected host_online persistence to be updated")
+	}
+}
+
+func TestPreviewDeltaWindowMatchesTheDesktopBurst(t *testing.T) {
+	if deltaDebounceInterval != 16*time.Millisecond {
+		t.Fatalf("viewer merge window = %s, want 16ms", deltaDebounceInterval)
+	}
+}
+
+func TestPreviewDeltaPublishesTheFirstLineImmediately(t *testing.T) {
+	prev := deltaDebounceInterval
+	deltaDebounceInterval = 80 * time.Millisecond
+	t.Cleanup(func() { deltaDebounceInterval = prev })
+
+	svc := NewService(NewCache(), nil)
+	t.Cleanup(svc.StopReaper)
+
+	got := make(chan []string, 4)
+	var published *SessionPreviewDelta
+	svc.RegisterListener(func(ev Event) {
+		if ev.Type != "session.preview_delta" || ev.PreviewDelta == nil {
+			return
+		}
+		published = ev.PreviewDelta
+		got <- append([]string(nil), ev.PreviewDelta.AppendLines...)
+	})
+
+	first := []string{"first"}
+	start := time.Now()
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: first,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case lines := <-got:
+		if time.Since(start) > deltaDebounceInterval/2 {
+			t.Fatalf("first preview line waited %s", time.Since(start))
+		}
+		if len(lines) != 1 || lines[0] != "first" {
+			t.Fatalf("first lines = %#v", lines)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview line was not published")
+	}
+	first[0] = "mutated"
+	if published == nil || len(published.AppendLines) != 1 || published.AppendLines[0] != "first" {
+		t.Fatalf("published preview aliases the caller buffer: %#v", published)
+	}
+
+	follow := []string{"second"}
+	followStart := time.Now()
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: follow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	follow[0] = "mutated"
+	select {
+	case lines := <-got:
+		t.Fatalf("follow-up published before the open window: %#v", lines)
+	case <-time.After(deltaDebounceInterval / 4):
+	}
+	select {
+	case lines := <-got:
+		// The window was armed on the lead, so this line is due with that
+		// timer. A second full period means the viewer hold stacked again.
+		if waited := time.Since(followStart); waited > deltaDebounceInterval+100*time.Millisecond {
+			t.Fatalf("follow-up waited %s", waited)
+		}
+		if len(lines) != 1 || lines[0] != "second" {
+			t.Fatalf("follow-up lines = %#v", lines)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follow-up preview line was not published")
+	}
+}
+
+func TestPreviewDeltaKeepsPublishingWhileLinesKeepArriving(t *testing.T) {
+	svc := NewService(NewCache(), nil)
+	t.Cleanup(svc.StopReaper)
+
+	got := make(chan []string, 32)
+	svc.RegisterListener(func(ev Event) {
+		if ev.Type != "session.preview_delta" || ev.PreviewDelta == nil {
+			return
+		}
+		got <- append([]string(nil), ev.PreviewDelta.AppendLines...)
+	})
+
+	send := func(seq int, line string) {
+		t.Helper()
+		if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-live", SessionPreviewDelta{
+			OutputSeq:   int64(seq),
+			AppendLines: []string{line},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var want []string
+	send(1, "line-0")
+	want = append(want, "line-0")
+	select {
+	case lines := <-got:
+		if len(lines) != 1 || lines[0] != "line-0" {
+			t.Fatalf("first = %#v", lines)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first line was not published")
+	}
+
+	secondArrived := false
+	var gotLines []string
+	gotLines = append(gotLines, "line-0")
+	deadline := time.Now().Add(400 * time.Millisecond)
+	seq := 2
+	for time.Now().Before(deadline) {
+		line := fmt.Sprintf("line-%d", seq-1)
+		send(seq, line)
+		want = append(want, line)
+		seq++
+		select {
+		case lines := <-got:
+			secondArrived = true
+			gotLines = append(gotLines, lines...)
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !secondArrived {
+		t.Fatal("steady preview stream published nothing until the sender paused")
+	}
+
+	quiet := time.NewTimer(deltaDebounceInterval + 250*time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case lines := <-got:
+			gotLines = append(gotLines, lines...)
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(deltaDebounceInterval + 250*time.Millisecond)
+		case <-quiet.C:
+			if strings.Join(gotLines, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("published lines = %q, want %q", gotLines, want)
+			}
+			return
+		}
+	}
+}
+
+func TestPreviewDeltaCloseFlushesTheMergedTail(t *testing.T) {
+	svc := NewService(NewCache(), nil)
+	t.Cleanup(svc.StopReaper)
+
+	type note struct {
+		typ   string
+		lines []string
+	}
+	got := make(chan note, 4)
+	svc.RegisterListener(func(ev Event) {
+		n := note{typ: ev.Type}
+		if ev.PreviewDelta != nil {
+			n.lines = append([]string(nil), ev.PreviewDelta.AppendLines...)
+		}
+		got <- n
+	})
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: []string{"first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		if n.typ != "session.preview_delta" || len(n.lines) != 1 || n.lines[0] != "first" {
+			t.Fatalf("first = %#v", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview line was not published")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: []string{"tail"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.OnSessionClosed(context.Background(), "machine-1", "user-1", "session-1", map[string]any{
+		"status": "exited",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var notes []note
+	for i := 0; i < 2; i++ {
+		select {
+		case n := <-got:
+			notes = append(notes, n)
+		case <-time.After(deltaDebounceInterval / 4):
+			t.Fatalf("close did not flush the open tail, got %#v", notes)
+		}
+	}
+	if notes[0].typ != "session.preview_delta" || len(notes[0].lines) != 1 || notes[0].lines[0] != "tail" {
+		t.Fatalf("tail = %#v", notes[0])
+	}
+	if notes[1].typ != "session.closed" {
+		t.Fatalf("expected close after the tail, got %#v", notes[1])
+	}
+	select {
+	case n := <-got:
+		t.Fatalf("extra event after close: %#v", n)
+	case <-time.After(deltaDebounceInterval + 50*time.Millisecond):
+	}
+}
+
+func TestPreviewDeltaPersistFailureStillPublishesAndRetries(t *testing.T) {
+	repo := &previewFailRepo{failUntil: 1}
+	svc := NewService(NewCache(), repo)
+	t.Cleanup(svc.StopReaper)
+
+	got := make(chan []string, 2)
+	svc.RegisterListener(func(ev Event) {
+		if ev.Type != "session.preview_delta" || ev.PreviewDelta == nil {
+			return
+		}
+		got <- append([]string(nil), ev.PreviewDelta.AppendLines...)
+	})
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: []string{"kept"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case lines := <-got:
+		if len(lines) != 1 || lines[0] != "kept" {
+			t.Fatalf("published = %#v", lines)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("persist failure dropped the live preview")
+	}
+	if repo.calls != 1 {
+		t.Fatalf("persist calls = %d, want 1", repo.calls)
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: []string{"retry"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.calls != 2 {
+		t.Fatalf("failed persist did not retry, calls = %d", repo.calls)
+	}
+	if repo.previewText != "kept\nretry" {
+		t.Fatalf("retried preview = %q", repo.previewText)
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   3,
+		AppendLines: []string{"later"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.calls != 2 {
+		t.Fatalf("successful persist did not keep the throttle, calls = %d", repo.calls)
+	}
+}
+
+func TestPreviewDeltaCloseWaitsForTheInFlightFlush(t *testing.T) {
+	svc := NewService(NewCache(), nil)
+	t.Cleanup(svc.StopReaper)
+
+	type note struct {
+		typ   string
+		lines []string
+	}
+	got := make(chan note, 4)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFlush := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFlush)
+	svc.RegisterListener(func(ev Event) {
+		n := note{typ: ev.Type}
+		if ev.PreviewDelta != nil {
+			n.lines = append([]string(nil), ev.PreviewDelta.AppendLines...)
+		}
+		if n.typ == "session.preview_delta" && len(n.lines) == 1 && n.lines[0] == "slow" {
+			entered <- struct{}{}
+			<-release
+		}
+		got <- n
+	})
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: []string{"first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		if n.typ != "session.preview_delta" || len(n.lines) != 1 || n.lines[0] != "first" {
+			t.Fatalf("first = %#v", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview line was not published")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: []string{"slow"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("merged preview did not reach the listener")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   3,
+		AppendLines: []string{"after"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(deltaDebounceInterval + 20*time.Millisecond)
+	select {
+	case n := <-got:
+		t.Fatalf("line published during the in-flight emit: %#v", n)
+	default:
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- svc.OnSessionClosed(context.Background(), "machine-1", "user-1", "session-1", map[string]any{
+			"status": "exited",
+		})
+	}()
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case err := <-closeDone:
+		t.Fatalf("close finished while the preview emit was still running: %v", err)
+	default:
+	}
+
+	releaseFlush()
+	var notes []note
+	deadline := time.After(time.Second)
+	for len(notes) < 3 {
+		select {
+		case n := <-got:
+			notes = append(notes, n)
+		case <-deadline:
+			t.Fatalf("events after release = %#v", notes)
+		}
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if notes[0].typ != "session.preview_delta" || len(notes[0].lines) != 1 || notes[0].lines[0] != "slow" {
+		t.Fatalf("in-flight preview = %#v", notes[0])
+	}
+	if notes[1].typ != "session.preview_delta" || len(notes[1].lines) != 1 || notes[1].lines[0] != "after" {
+		t.Fatalf("line queued during emit = %#v", notes[1])
+	}
+	if notes[2].typ != "session.closed" {
+		t.Fatalf("close = %#v", notes[2])
+	}
+}
+
+// closeFailRepo records the close, then fails the row update.
+type closeFailRepo struct {
+	sessionRepoStub
+}
+
+func (r *closeFailRepo) Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error {
+	_ = r.sessionRepoStub.Close(ctx, sessionID, exitCode, endedAt, status)
+	return errors.New("close failed")
+}
+
+func TestPreviewDeltaCloseStillPublishesWhenTheRowUpdateFails(t *testing.T) {
+	repo := &closeFailRepo{}
+	svc := NewService(NewCache(), repo)
+	t.Cleanup(svc.StopReaper)
+
+	type note struct {
+		typ   string
+		lines []string
+	}
+	got := make(chan note, 4)
+	svc.RegisterListener(func(ev Event) {
+		n := note{typ: ev.Type}
+		if ev.PreviewDelta != nil {
+			n.lines = append([]string(nil), ev.PreviewDelta.AppendLines...)
+		}
+		got <- n
+	})
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: []string{"first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		if n.typ != "session.preview_delta" || len(n.lines) != 1 || n.lines[0] != "first" {
+			t.Fatalf("first = %#v", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview line was not published")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: []string{"tail"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.OnSessionClosed(context.Background(), "machine-1", "user-1", "session-1", map[string]any{
+		"status": "exited",
+	})
+	if err == nil || err.Error() != "close failed" {
+		t.Fatalf("close err = %v", err)
+	}
+	if repo.closedID != "session-1" || repo.closedStatus != "exited" {
+		t.Fatalf("close row = id %q status %q", repo.closedID, repo.closedStatus)
+	}
+	svc.previewDBMu.Lock()
+	_, stamped := svc.previewDBLastWrite["session-1"]
+	svc.previewDBMu.Unlock()
+	if stamped {
+		t.Fatal("failed close left the preview throttle stamp")
+	}
+
+	var notes []note
+	for i := 0; i < 2; i++ {
+		select {
+		case n := <-got:
+			notes = append(notes, n)
+		default:
+			t.Fatalf("viewer event missing when close returned, got %#v", notes)
+		}
+	}
+	if notes[0].typ != "session.preview_delta" || len(notes[0].lines) != 1 || notes[0].lines[0] != "tail" {
+		t.Fatalf("tail = %#v", notes[0])
+	}
+	if notes[1].typ != "session.closed" {
+		t.Fatalf("expected close after the tail, got %#v", notes[1])
+	}
+}
+
+func TestPreviewDeltaCloseKeepsALineThatArrivesWhileTheTailIsEmitted(t *testing.T) {
+	svc := NewService(NewCache(), nil)
+	t.Cleanup(svc.StopReaper)
+
+	type note struct {
+		typ   string
+		lines []string
+	}
+	got := make(chan note, 4)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFlush := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFlush)
+	svc.RegisterListener(func(ev Event) {
+		n := note{typ: ev.Type}
+		if ev.PreviewDelta != nil {
+			n.lines = append([]string(nil), ev.PreviewDelta.AppendLines...)
+		}
+		if n.typ == "session.preview_delta" && len(n.lines) == 1 && n.lines[0] == "tail" {
+			entered <- struct{}{}
+			<-release
+		}
+		got <- n
+	})
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   1,
+		AppendLines: []string{"first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		if n.typ != "session.preview_delta" || len(n.lines) != 1 || n.lines[0] != "first" {
+			t.Fatalf("first = %#v", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first preview line was not published")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   2,
+		AppendLines: []string{"tail"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- svc.OnSessionClosed(context.Background(), "machine-1", "user-1", "session-1", map[string]any{
+			"status": "exited",
+		})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("tail was not emitted")
+	}
+
+	if err := svc.OnSessionPreviewDelta(context.Background(), "machine-1", "user-1", "session-1", SessionPreviewDelta{
+		OutputSeq:   3,
+		AppendLines: []string{"during"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		t.Fatalf("line published while the tail emit was blocked: %#v", n)
+	default:
+	}
+
+	releaseFlush()
+	var notes []note
+	deadline := time.After(time.Second)
+	for len(notes) < 3 {
+		select {
+		case n := <-got:
+			notes = append(notes, n)
+		case <-deadline:
+			t.Fatalf("events after release = %#v", notes)
+		}
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if notes[0].typ != "session.preview_delta" || len(notes[0].lines) != 1 || notes[0].lines[0] != "tail" {
+		t.Fatalf("tail = %#v", notes[0])
+	}
+	if notes[1].typ != "session.preview_delta" || len(notes[1].lines) != 1 || notes[1].lines[0] != "during" {
+		t.Fatalf("line queued during the tail emit = %#v", notes[1])
+	}
+	if notes[2].typ != "session.closed" {
+		t.Fatalf("close = %#v", notes[2])
 	}
 }

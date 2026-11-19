@@ -17,6 +17,16 @@ nginx（maclaw.top）无需新增端口或路由。noVNC 保留为备用。
 | `MACLAW_DESKTOP_H264` | 开 | 默认 gate 提供 `h264.html` / `/h264`；`off`/`0`/`false`/`no` 关闭。关闭时 `h264.html` 302 到 `?vnc=` 指定的 noVNC 页 |
 | `MACLAW_DESKTOP_H264_FPS` | 15 | 5..30 |
 
+观看端查询参数（`/h264` WebSocket，播放器页 `h264.html` 会转发 `w`/`fps`）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `w` | 原生宽 | 输出流的目标宽度（≥320 且小于原生宽才生效，等比缩到偶数）。x11grab 仍抓全屏，`scale` 滤镜缩小编码输出；手机等窄链路观看端用它降低码率 |
+| `fps` | env 值 | 客户端只能调低（3..env 值），不能超过 `MACLAW_DESKTOP_H264_FPS` |
+
+不同 `(display, 宽, 高, fps)` 各有独立共享编码器：原生观看、缩流观看互不复用 ffmpeg；
+接管（`input=1`）应回传原生参数以保证点击精度（坐标是 0..1 归一化的）。
+
 每个容器最多 4 路；镜像没有 ffmpeg 时 `/h264` 返回 503（播放器重试 3 次后回退 noVNC）。
 
 ## 链路
@@ -28,6 +38,9 @@ GUI iframe ─ Hub /api/v1/desktop-handoff/<t>/h264.html?view_only=0|1&vnc=<noVN
                 → supervisor 解析 fMP4 → Annex B 访问单元 → WebSocket
 浏览器：WebCodecs VideoDecoder(optimizeForLatency) → canvas
         无 WebCodecs → `/h264?mse=1`（原始 fMP4，MSE <video>）
+        `h264.html?mse=1` 也可强制走 <video>——移动端 Android WebView 的
+        canvas.drawImage(VideoFrame) 会退到 16 位有序抖动软光栅（画面呈半调
+        噪点），App 统一传 mse=1 绕开 canvas 路径
         WebCodecs 与 MSE 都没有 / 连不上 → 跳转 `vnc` 参数里的 noVNC 页
 ```
 

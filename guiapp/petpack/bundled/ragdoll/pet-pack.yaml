@@ -1,0 +1,129 @@
+schema_version: 3
+id: ragdoll
+name: Ragdoll
+version: 3.0.0
+author: MaClaw Official
+license: proprietary
+description: "A ragdoll cat-girl who walks the desktop, grows while she stays with you, and gains a charm, slippers, and a little mouse"
+tier: figurative
+min_maclaw_version: "0.0.0"
+label:
+  en: Ragdoll
+  zh-Hans: 布偶猫
+  zh-Hant: 布偶貓
+description_i18n:
+  en: "A ragdoll cat-girl who walks the desktop and grows as she stays with you: a mouse charm, then slippers, then a small mouse beside her. She signals when work starts, needs you, finishes, or fails"
+  zh-Hans: "会在桌面上走动、奔跑、跳跃、弯腰和唱歌的布偶猫女娘。陪伴越久会稍稍长大，先在手上挂一只小老鼠，再穿上拖鞋，后来身旁多一只小老鼠，并在任务开始、需要你、完成或失败时提醒你"
+  zh-Hant: "會在桌面上走動、奔跑、跳躍、彎腰和唱歌的布偶貓女娘。陪伴越久會稍稍長大，先在手上掛一隻小老鼠，再穿上拖鞋，後來身旁多一隻小老鼠，並在任務開始、需要你、完成或失敗時提醒你"
+preview: preview.png
+default_size: 224
+tone: balanced
+tags: ["official", "default"]
+renderer: native-character
+face_overlay: false
+assets:
+  preview: preview.png
+  native:
+    idle: native/idle.png
+    listening: native/listening.png
+    thinking: native/thinking.png
+    speaking: native/speaking.png
+    done: native/done.png
+    alert: native/alert.png
+    quiet: native/quiet.png
+  rig:
+    definition: rig/ragdoll.pet-rig.json
+    textures:
+      - rig/tail.png
+      - rig/leg-l.png
+      - rig/leg-r.png
+      - rig/torso.png
+      - rig/arm-l.png
+      - rig/arm-r.png
+      - rig/head.png
+      - rig/braid.png
+      - rig/braid-tip.png
+      - rig/mouth.png
+      - rig/eyes.png
+      - rig/mouse-charm.png
+      - rig/slipper.png
+      - rig/mouse-pet.png
+  character:
+    definition: character/ragdoll.performer.json
+fallback:
+  renderer: native-skeleton
+  idle: native/idle.png
+variants:
+  - id: default
+    tier: figurative
+    renderer: native-character
+    face_overlay: false
+    assets:
+      native:
+        idle: native/idle.png
+        listening: native/listening.png
+        thinking: native/thinking.png
+        speaking: native/speaking.png
+        done: native/done.png
+        alert: native/alert.png
+        quiet: native/quiet.png
+      rig:
+        definition: rig/ragdoll.pet-rig.json
+        textures:
+          - rig/tail.png
+          - rig/leg-l.png
+          - rig/leg-r.png
+          - rig/torso.png
+          - rig/arm-l.png
+          - rig/arm-r.png
+          - rig/head.png
+          - rig/braid.png
+          - rig/braid-tip.png
+          - rig/mouth.png
+          - rig/eyes.png
+          - rig/mouse-charm.png
+          - rig/slipper.png
+          - rig/mouse-pet.png
+      character:
+        definition: character/ragdoll.performer.json
+  - id: classic
+    tier: classic
+    renderer: procedural-fallback
+    face_overlay: true
+motion:
+  idle_ms: 4000
+  listening_ms: 1200
+  thinking_ms: 1800
+  speaking_ms: 1280
+  amplitude: 1
+  sound_profile: classic
+  pitch: 1
+capabilities:
+  supports_done_state: true
+  supports_alert_state: true
+  pet_performance_v3: true
+  supports_task_duty: true
+adornments:
+  - id: mouse-charm
+    slots: [mouse_charm]
+  - id: slippers
+    slots: [slipper_l, slipper_r]
+  - id: mouse-pet
+    slots: [mouse_pet]
+rearing:
+  stages:
+    - id: familiar
+      after_ms: 7200000
+      scale: 1.04
+      cue: notice
+      adornments: [mouse-charm]
+    - id: grown
+      after_ms: 86400000
+      scale: 1.1
+      cue: celebrate
+      adornments: [mouse-charm, slippers]
+    - id: settled
+      after_ms: 259200000
+      scale: 1.18
+      cue: celebrate
+      adornments: [mouse-charm, slippers, mouse-pet]

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/core/account_store.dart';
@@ -23,7 +24,11 @@ class _FakeApi extends BotApi {
   BotAccess access = const BotAccess(enabled: true);
   List<Bot> bots = const [];
   Object? refreshError;
+  Object? createError;
   String? deletedBotId;
+  Future<List<Bot>>? pendingBots;
+  int listCalls = 0;
+  DesktopBotQuota? quotaAfterFirstList;
 
   @override
   Future<BotAccess> fetchAccess() async {
@@ -33,7 +38,12 @@ class _FakeApi extends BotApi {
 
   @override
   Future<List<Bot>> listBots() async {
+    listCalls++;
     if (refreshError != null) throw refreshError!;
+    if (pendingBots != null) return pendingBots!;
+    if (listCalls > 1 && quotaAfterFirstList != null) {
+      desktopQuota = quotaAfterFirstList!;
+    }
     return bots;
   }
 
@@ -43,8 +53,16 @@ class _FakeApi extends BotApi {
     String description = '',
     String? color,
     String? shape,
-  }) async =>
-      Bot(id: 'new-1', name: name, description: description);
+    bool needsComputer = true,
+  }) async {
+    if (createError != null) throw createError!;
+    return Bot(
+      id: 'new-1',
+      name: name,
+      description: description,
+      desktopMode: needsComputer ? 'shared' : 'none',
+    );
+  }
 
   @override
   Future<void> deleteBot(String botId) async {
@@ -54,19 +72,16 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 ProviderContainer _container(_FakeApi api) => ProviderContainer(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-      ],
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+  ],
+);
 
 Future<void> _settle(ProviderContainer container) async {
   // build() schedules refresh() in a microtask; let it finish.
@@ -117,8 +132,11 @@ void main() {
 
   test('BOT_DISABLED lands the disabled state without expiring', () async {
     final api = _FakeApi()
-      ..refreshError =
-          const HubApiException('BOT_DISABLED', '未开通 Bot 功能', statusCode: 403);
+      ..refreshError = const HubApiException(
+        'BOT_DISABLED',
+        '未开通 Bot 功能',
+        statusCode: 403,
+      );
     final container = _container(api);
     addTearDown(container.dispose);
 
@@ -132,8 +150,11 @@ void main() {
 
   test('an unauthorized refresh marks the session expired', () async {
     final api = _FakeApi()
-      ..refreshError =
-          const HubApiException('UNAUTHORIZED', '凭证过期', statusCode: 401);
+      ..refreshError = const HubApiException(
+        'UNAUTHORIZED',
+        '凭证过期',
+        statusCode: 401,
+      );
     final container = _container(api);
     addTearDown(container.dispose);
 
@@ -142,20 +163,126 @@ void main() {
     expect(container.read(sessionProvider).expired, isTrue);
   });
 
+  test('a late reply from the previous api is dropped on rebuild', () async {
+    final slow = Completer<List<Bot>>();
+    final oldApi = _FakeApi()..pendingBots = slow.future;
+    final newApi = _FakeApi()..bots = const [_botB];
+    final container = ProviderContainer(
+      overrides: [
+        botApiProvider.overrideWithValue(oldApi),
+        sessionProvider.overrideWith(_FakeSession.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    // The initial refresh starts against the old api, then the provider is
+    // rebound (account switch) before it resolves.
+    await Future<void>.delayed(Duration.zero);
+    container.updateOverrides([
+      botApiProvider.overrideWithValue(newApi),
+      sessionProvider.overrideWith(_FakeSession.new),
+    ]);
+    await _settle(container);
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['b']);
+
+    // The stale response resolves after the rebuild — its writes must not
+    // stamp the old account's list over the new one.
+    slow.complete(const [_botA]);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['b']);
+  });
+
   test('create appends the new bot and remove drops it', () async {
     final api = _FakeApi()..bots = const [_botA];
     final container = _container(api);
     addTearDown(container.dispose);
     await _settle(container);
 
-    final created =
-        await container.read(botsProvider.notifier).create('新Bot', 'd');
+    final created = await container
+        .read(botsProvider.notifier)
+        .create('新Bot', 'd');
     expect(created.id, 'new-1');
-    expect(container.read(botsProvider).bots.map((b) => b.id),
-        ['a', 'new-1']);
+    expect(container.read(botsProvider).bots.map((b) => b.id), ['a', 'new-1']);
 
     await container.read(botsProvider.notifier).remove(_botA);
     expect(api.deletedBotId, 'a');
     expect(container.read(botsProvider).bots.map((b) => b.id), ['new-1']);
+  });
+
+  test('creating without a computer does not spend a full quota', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 1, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
+    final created = await container
+        .read(botsProvider.notifier)
+        .create('文书', '', needsComputer: false);
+    expect(created.desktopMode, 'none');
+    expect(container.read(botsProvider).quota.used, 1);
+  });
+
+  test('creating with a computer spends the grant', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 2, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    await container.read(botsProvider.notifier).create('画图', '');
+    expect(container.read(botsProvider).quota.used, 2);
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
+  });
+
+  test('removing a computer bot releases the grant', () async {
+    const deskBot = Bot(id: 'd', name: '桌面', desktopMode: 'shared');
+    const freeBot = Bot(id: 'f', name: '文书', desktopMode: 'none');
+    final api = _FakeApi()
+      ..bots = const [deskBot, freeBot]
+      ..desktopQuota = const DesktopBotQuota(limit: 1, used: 1, known: true);
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+
+    await container.read(botsProvider.notifier).remove(freeBot);
+    expect(container.read(botsProvider).quota.used, 1);
+    await container.read(botsProvider.notifier).remove(deskBot);
+    expect(container.read(botsProvider).quota.used, 0);
+    expect(container.read(botsProvider).quota.exhausted, isFalse);
+  });
+
+  test('a quota rejection resyncs the grant', () async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 2, used: 0, known: true)
+      ..quotaAfterFirstList = const DesktopBotQuota(
+        limit: 1,
+        used: 1,
+        known: true,
+      )
+      ..createError = const HubApiException(
+        'DESKTOP_QUOTA_EXCEEDED',
+        '额度已满',
+        statusCode: 409,
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _settle(container);
+    expect(container.read(botsProvider).quota.exhausted, isFalse);
+
+    await expectLater(
+      container.read(botsProvider.notifier).create('新Bot', ''),
+      throwsA(isA<HubApiException>()),
+    );
+    for (
+      var i = 0;
+      i < 50 && !container.read(botsProvider).quota.exhausted;
+      i++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(api.listCalls, greaterThan(1));
+    expect(container.read(botsProvider).quota.exhausted, isTrue);
   });
 }

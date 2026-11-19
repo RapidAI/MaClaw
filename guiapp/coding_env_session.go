@@ -92,6 +92,16 @@ type stickyCodingWorkbenchMemory struct {
 	PendingPlanUserText string `json:"pending_plan_user_text,omitempty"`
 	// ApprovedPlanJSON is a one-shot plan ready to execute after /plan approve.
 	ApprovedPlanJSON string `json:"approved_plan_json,omitempty"`
+	// ApprovedPlanValidators are the labeled validation commands frozen into
+	// the execution contract at /plan approve. They outlive the first round so
+	// a plan that continues across session-round re-arms is still verified by
+	// the host at its terminal round, and they are dropped if the plan is
+	// redirected or abandoned before then.
+	ApprovedPlanValidators []string `json:"approved_plan_validators,omitempty"`
+	// ApprovedPlanValidatorDir is the write scope frozen at approval. It is
+	// stored with the commands because ProjectPath may be re-rooted by a later
+	// turn; validators must still run in the directory the user approved.
+	ApprovedPlanValidatorDir string `json:"approved_plan_validator_dir,omitempty"`
 	// SkipNextPlan forces the next resolve to single-task (from /plan skip).
 	SkipNextPlan bool `json:"skip_next_plan,omitempty"`
 	// SkipPlanText is the one request that skip is replaying. A later, different
@@ -104,6 +114,10 @@ type stickyCodingWorkbenchMemory struct {
 	PlanReviewRunning bool `json:"plan_review_running,omitempty"`
 	// StepStatuses is live Todo status for the active multi-step plan.
 	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// DisplayedStepRound is the checklist window. Zero publishes every step
+	// (the first plan, or a full replace). A resume increments it. Sticky
+	// rows from earlier rounds stay for the next continue.
+	DisplayedStepRound int `json:"displayed_step_round,omitempty"`
 	// StepsEmitSeq orders checklist snapshots. Unix seconds collide when a
 	// plan is confirmed in the same second it was stored, and a late copy of
 	// that earlier snapshot would put Start / Skip / Reject back.
@@ -719,6 +733,15 @@ func stickyRememberSessionPlan(mem *stickyCodingWorkbenchMemory, userText string
 // caller has none, the executor result decides. A turn that produced neither
 // records nothing, so an aborted dispatch cannot overwrite the last outcome.
 func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, userText string, result *CodingSubAgentResult, outcome string) {
+	h.writeStickyLocalCodingTurn(userID, projectPath, userText, result, outcome, true)
+}
+
+// writeStickyLocalCodingTurn records the finished turn. rememberUser is false
+// for a host-authored delivery in a shared task: the files and the outcome
+// belong to this turn, and the user's own request stays the session goal.
+// LastSummary is that request's previous deliverable. The next user turn
+// treats it as this turn's input, so a host delivery must not replace it.
+func (h *IMMessageHandler) writeStickyLocalCodingTurn(userID, projectPath, userText string, result *CodingSubAgentResult, outcome string, rememberUser bool) {
 	if h == nil {
 		return
 	}
@@ -740,13 +763,17 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 			}
 		}
 		mem.ProjectPath = path
-		mem.LastUserText = strings.TrimSpace(userText)
-		stickyRememberSessionPlan(mem, userText)
+		if rememberUser {
+			mem.LastUserText = strings.TrimSpace(userText)
+			stickyRememberSessionPlan(mem, userText)
+		}
 		if result != nil {
 			mem.TurnCount++
-			summary := stickyCodingCarrySummary(result.Summary, result.Error)
-			if summary != "" {
-				mem.LastSummary = summary
+			if rememberUser {
+				summary := stickyCodingCarrySummary(result.Summary, result.Error)
+				if summary != "" {
+					mem.LastSummary = summary
+				}
 			}
 			mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))
 			mem.FilesCreated = uniqueSortedSubAgentStrings(append(mem.FilesCreated, result.FilesCreated...))
@@ -764,6 +791,10 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 // recordStickyRemoteCodingTurn records one finished remote workbench turn.
 // outcome is the plan-derived verdict, for the same reason as the local twin.
 func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string, result *RemoteCodingSubAgentResult, outcome string) {
+	h.writeStickyRemoteCodingTurn(userID, userText, result, outcome, true)
+}
+
+func (h *IMMessageHandler) writeStickyRemoteCodingTurn(userID, userText string, result *RemoteCodingSubAgentResult, outcome string, rememberUser bool) {
 	if h == nil {
 		return
 	}
@@ -775,16 +806,20 @@ func (h *IMMessageHandler) recordStickyRemoteCodingTurn(userID, userText string,
 	}
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.Kind = "remote"
-		mem.LastUserText = strings.TrimSpace(userText)
-		stickyRememberSessionPlan(mem, userText)
+		if rememberUser {
+			mem.LastUserText = strings.TrimSpace(userText)
+			stickyRememberSessionPlan(mem, userText)
+		}
 		if result != nil {
 			mem.TurnCount++
-			summary := stickyCodingCarrySummary(result.Summary, result.Error)
-			if summary == "" && !codingLoopIterationExhausted(result.Error) {
-				summary = fmt.Sprintf("status=%s iterations=%d", result.Status, result.Iterations)
-			}
-			if summary != "" {
-				mem.LastSummary = summary
+			if rememberUser {
+				summary := stickyCodingCarrySummary(result.Summary, result.Error)
+				if summary == "" && !codingLoopIterationExhausted(result.Error) {
+					summary = fmt.Sprintf("status=%s iterations=%d", result.Status, result.Iterations)
+				}
+				if summary != "" {
+					mem.LastSummary = summary
+				}
 			}
 			if len(result.FilesModified) > 0 {
 				mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, result.FilesModified...))

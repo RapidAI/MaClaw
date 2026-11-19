@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,13 +21,16 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	// GitHubAccountClientID 是默认的 OAuth client_id。复用现有已开启 device
-	// flow 的 GitHub OAuth App；用户可以在设置中粘贴自己注册的 OAuth App
-	// 的 Client ID 覆盖（授权页会显示对应 App 名）。
-	GitHubAccountClientID = GitHubCopilotClientID
+	// GitHubAccountClientID 是仓库登录用的 OAuth App（GitHub CLI 的公开
+	// client，设备码流程不需要 client secret）。不能用 Copilot 的
+	// GitHubCopilotClientID：那是 GitHub App（Iv1.）。GitHub App 的设备码
+	// 流程忽略 scope（只认 offline_access），令牌以 ghu_ 开头，响应里的
+	// scope 和 X-OAuth-Scopes 都是空的，仓库内容和 webhook 都没有权限。
+	// 用户可以在设置里粘贴自己的 OAuth App Client ID 覆盖授权页名称。
+	GitHubAccountClientID = "178c6fc778ccc68e1d6a"
 
 	// GitHubAccountScopes 是连接请求的默认 scope。read:user 读取账号信息，
-	// repo 允许读取/克隆私有仓库（对公开仓库的搜索与克隆不是必须）。
+	// repo 允许读取/克隆私有仓库，并包含仓库 webhook。
 	GitHubAccountScopes = "read:user repo"
 
 	// GitHubAPIBase 是 GitHub REST API 基础地址。
@@ -96,8 +100,11 @@ func RequestGitHubDeviceCodeWith(ctx context.Context, clientID, scope string) (*
 
 // PollGitHubDeviceCodeWith polls the token endpoint like PollGitHubDeviceCode
 // but exchanges against the given client_id. Per RFC 8628 §3.5 each slow_down
-// grows the poll interval by 5s.
-func PollGitHubDeviceCodeWith(ctx context.Context, clientID, deviceCode string, interval int) (string, error) {
+// grows the poll interval by 5s. scope is the grant from the token response.
+// OAuth Apps return it there (for example "read:user,repo"). GitHub Apps
+// always return an empty scope; that empty string is the grant, not a
+// missing field.
+func PollGitHubDeviceCodeWith(ctx context.Context, clientID, deviceCode string, interval int) (token, scope string, err error) {
 	if interval < 1 {
 		interval = GitHubCopilotDefaultInterval
 	}
@@ -107,18 +114,18 @@ func PollGitHubDeviceCodeWith(ctx context.Context, clientID, deviceCode string, 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("github device code: %w", ctx.Err())
+			return "", "", fmt.Errorf("github device code: %w", ctx.Err())
 		case <-ticker.C:
-			token, retry, slowDown, err := tryExchangeDeviceCodeWith(ctx, clientID, deviceCode)
+			token, scope, retry, slowDown, err := tryExchangeDeviceCodeWith(ctx, clientID, deviceCode)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if slowDown {
 				interval += 5
 				ticker.Reset(time.Duration(interval) * time.Second)
 			}
 			if !retry {
-				return token, nil
+				return token, scope, nil
 			}
 		}
 	}
@@ -126,64 +133,105 @@ func PollGitHubDeviceCodeWith(ctx context.Context, clientID, deviceCode string, 
 
 // tryExchangeDeviceCodeWith is tryExchangeDeviceCode with a caller-chosen client_id.
 // The slowDown return tells the caller to grow its interval per RFC 8628.
-func tryExchangeDeviceCodeWith(ctx context.Context, clientID, deviceCode string) (token string, retry, slowDown bool, err error) {
+func tryExchangeDeviceCodeWith(ctx context.Context, clientID, deviceCode string) (token, scope string, retry, slowDown bool, err error) {
 	reqBody, err := json.Marshal(map[string]string{
 		"client_id":   clientID,
 		"device_code": deviceCode,
 		"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
 	})
 	if err != nil {
-		return "", false, false, fmt.Errorf("github token exchange: encode request: %w", err)
+		return "", "", false, false, fmt.Errorf("github token exchange: encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", GitHubTokenURL, strings.NewReader(string(reqBody)))
 	if err != nil {
-		return "", false, false, fmt.Errorf("github token exchange: create request: %w", err)
+		return "", "", false, false, fmt.Errorf("github token exchange: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := DoNoFollow(req)
 	if err != nil {
-		return "", true, false, nil // 网络错误，重试
+		return "", "", true, false, nil // 网络错误，重试
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return "", true, false, nil
+		return "", "", true, false, nil
 	}
 	if resp.StatusCode >= 500 {
 		// A transient 5xx answers with HTML, not the device-flow JSON error
 		// field — retry like a network failure rather than failing the login.
-		return "", true, false, nil
+		return "", "", true, false, nil
 	}
+	return parseGitHubDeviceToken(body)
+}
 
+// parseGitHubDeviceToken reads one device-flow token response. scope is the
+// granted OAuth scope list. Callers must keep an empty scope: a GitHub App
+// token is issued with scope "" and that is not "field missing".
+func parseGitHubDeviceToken(body []byte) (token, scope string, retry, slowDown bool, err error) {
 	var result struct {
 		AccessToken string `json:"access_token"`
+		Scope       string `json:"scope"`
 		Error       string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", false, false, fmt.Errorf("github token exchange: parse response: %w", err)
+		return "", "", false, false, fmt.Errorf("github token exchange: parse response: %w", err)
 	}
 
 	switch result.Error {
 	case "":
 		if result.AccessToken == "" {
-			return "", false, false, fmt.Errorf("github token exchange: empty access_token")
+			return "", "", false, false, fmt.Errorf("github token exchange: empty access_token")
 		}
-		return result.AccessToken, false, false, nil
+		return result.AccessToken, strings.TrimSpace(result.Scope), false, false, nil
 	case "authorization_pending":
-		return "", true, false, nil
+		return "", "", true, false, nil
 	case "slow_down":
-		return "", true, true, nil
+		return "", "", true, true, nil
 	case "expired_token":
-		return "", false, false, fmt.Errorf("github device code expired — user did not authorize in time")
+		return "", "", false, false, fmt.Errorf("github device code expired — user did not authorize in time")
 	case "access_denied":
-		return "", false, false, fmt.Errorf("github: user denied authorization")
+		return "", "", false, false, fmt.Errorf("github: user denied authorization")
 	default:
-		return "", false, false, fmt.Errorf("github token exchange error: %s", result.Error)
+		return "", "", false, false, fmt.Errorf("github token exchange error: %s", result.Error)
 	}
+}
+
+// GitHubAppClientID reports a GitHub App client id. Those ids start with
+// Iv1. (sometimes written lv1.). Device flow against them does not grant
+// OAuth scopes, so a request for "repo" cannot add repository access.
+func GitHubAppClientID(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.HasPrefix(id, "iv1.") || strings.HasPrefix(id, "lv1.")
+}
+
+// GitHubEffectiveScopes is the scope list to store. The /user response
+// header is the live grant. The token response is the fallback, because a
+// GitHub App leaves the header empty and an OAuth App still lists the grant
+// on the token itself ("read:user,repo").
+func GitHubEffectiveScopes(headerScopes, grantedScopes string) string {
+	if s := strings.TrimSpace(headerScopes); s != "" {
+		return s
+	}
+	return strings.TrimSpace(grantedScopes)
+}
+
+// GitHubScopesHaveRepo reports the exact OAuth scope "repo".
+// public_repo and repo:status do not grant repository hooks.
+// Commas and whitespace are separators, the same split the maintenance
+// page uses on the stored grant.
+func GitHubScopesHaveRepo(scopeList string) bool {
+	for _, part := range strings.FieldsFunc(scopeList, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}) {
+		if part == "repo" {
+			return true
+		}
+	}
+	return false
 }
 
 // FetchGitHubUser returns the authenticated account profile for token, plus the

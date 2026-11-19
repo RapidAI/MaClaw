@@ -18,8 +18,13 @@ import (
 
 const (
 	deviceAmbientRefreshInterval = 45 * time.Minute
-	deviceAmbientRetryInterval   = 5 * time.Minute
-	deviceAmbientExpiresAfter    = 2 * time.Hour
+	// A failed resolve may have spent a web search plus an LLM request, so a
+	// persistent outage must not turn retries into an upstream metronome.
+	deviceAmbientRetryInterval = 15 * time.Minute
+	// With no display attached the loop only re-checks for a consumer on
+	// this cadence; the check itself is local and costs no network traffic.
+	deviceAmbientIdlePoll     = 15 * time.Minute
+	deviceAmbientExpiresAfter = 2 * time.Hour
 )
 
 type deviceAmbientWeather struct {
@@ -47,19 +52,94 @@ func (a *App) deviceAmbientWeatherLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 
+		if !a.deviceAmbientHasConsumer() {
+			// No USB companion board is attached: there is nobody to show
+			// the snapshot to, so the resolve must not run at all. Buddy
+			// attach replays the cached snapshot or resolves once stale.
+			timer.Reset(deviceAmbientIdlePoll)
+			continue
+		}
+
 		delay := deviceAmbientRefreshInterval
-		weather, err := a.resolveDeviceAmbientWeather(ctx)
+		weather, err := a.deviceAmbientWeatherFresh(ctx)
 		if err != nil {
 			log.Printf("[device-ambient] weather refresh failed: %v", err)
 			delay = deviceAmbientRetryInterval
 		} else if err := a.pushDeviceAmbientWeather(weather); err != nil {
+			// A push failure is a link problem, not a resolve problem:
+			// re-running the pipeline would spend another search + LLM
+			// request for nothing. The Hub reconnect hook republishes when
+			// the link returns.
 			log.Printf("[device-ambient] weather push deferred: %v", err)
-			delay = deviceAmbientRetryInterval
 		} else {
 			log.Printf("[device-ambient] weather pushed: %s %dC (%s)", weather.Summary, weather.TemperatureC, weather.Location)
 		}
 		timer.Reset(delay)
 	}
+}
+
+// deviceAmbientHasConsumer reports whether the USB companion board that
+// renders the snapshot is attached. With no board there is nobody to show
+// the weather to, so nothing may touch the network for it.
+func (a *App) deviceAmbientHasConsumer() bool {
+	a.buddyMu.Lock()
+	defer a.buddyMu.Unlock()
+	return a.buddyRunner != nil
+}
+
+// ambientWeatherCached returns the last resolved snapshot while it still
+// sits inside the device expiry window, so a re-attach inside two hours
+// never triggers another weather resolve.
+func (a *App) ambientWeatherCached() (deviceAmbientWeather, bool) {
+	a.ambientWeatherMu.Lock()
+	weather, at := a.ambientWeather, a.ambientWeatherAt
+	a.ambientWeatherMu.Unlock()
+	if at.IsZero() || time.Since(at) >= deviceAmbientExpiresAfter {
+		return deviceAmbientWeather{}, false
+	}
+	return weather, true
+}
+
+func (a *App) storeAmbientWeather(weather deviceAmbientWeather) {
+	a.ambientWeatherMu.Lock()
+	a.ambientWeather = weather
+	a.ambientWeatherAt = time.Now()
+	a.ambientWeatherMu.Unlock()
+}
+
+// deviceAmbientWeatherFresh returns the cached snapshot while it is inside
+// the device expiry window; once stale (or never resolved) it runs the full
+// resolve pipeline and caches the result. The double-check inside the
+// resolve mutex keeps a concurrent attach from paying for a second resolve.
+func (a *App) deviceAmbientWeatherFresh(ctx context.Context) (deviceAmbientWeather, error) {
+	if cached, ok := a.ambientWeatherCached(); ok {
+		return cached, nil
+	}
+	a.ambientResolveMu.Lock()
+	defer a.ambientResolveMu.Unlock()
+	if cached, ok := a.ambientWeatherCached(); ok {
+		return cached, nil
+	}
+	return a.resolveAndCacheDeviceAmbientWeatherLocked(ctx)
+}
+
+// resolveAndCacheDeviceAmbientWeather serializes every resolve — automatic
+// and manual — so a settings refresh landing on a loop tick cannot pay for
+// two weather pipelines at once.
+func (a *App) resolveAndCacheDeviceAmbientWeather(ctx context.Context) (deviceAmbientWeather, error) {
+	a.ambientResolveMu.Lock()
+	defer a.ambientResolveMu.Unlock()
+	return a.resolveAndCacheDeviceAmbientWeatherLocked(ctx)
+}
+
+// resolveAndCacheDeviceAmbientWeatherLocked is the resolve+cache body; the
+// caller must hold ambientResolveMu.
+func (a *App) resolveAndCacheDeviceAmbientWeatherLocked(ctx context.Context) (deviceAmbientWeather, error) {
+	weather, err := a.resolveDeviceAmbientWeather(ctx)
+	if err == nil {
+		a.storeAmbientWeather(weather)
+	}
+	return weather, err
 }
 
 func (a *App) pushDeviceAmbientWeather(weather deviceAmbientWeather) error {
@@ -75,12 +155,21 @@ func (a *App) pushDeviceAmbientWeather(weather deviceAmbientWeather) error {
 
 // refreshDeviceAmbientWeatherOnce is also called after every Hub reconnect so
 // hardware does not wait for the periodic ticker before receiving fresh state.
+// Without an attached board the reconnect alone is no reason to resolve, and
+// a still-fresh snapshot is repushed without hitting the network.
 func (a *App) refreshDeviceAmbientWeatherOnce() {
+	if !a.deviceAmbientHasConsumer() {
+		return
+	}
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	weather, err := a.resolveDeviceAmbientWeather(ctx)
+	// Bound the wait on ambientResolveMu as well as the resolve itself: an
+	// unbounded call could park behind a slow resolve and stall the loop.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	weather, err := a.deviceAmbientWeatherFresh(ctx)
 	if err != nil {
 		log.Printf("[device-ambient] reconnect refresh failed: %v", err)
 		return
@@ -103,7 +192,7 @@ func (a *App) RefreshDeviceAmbientWeather() (string, error) {
 	// panel cannot spin for the full multi-engine strategy budget.
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	weather, err := a.resolveDeviceAmbientWeather(ctx)
+	weather, err := a.resolveAndCacheDeviceAmbientWeather(ctx)
 	if err != nil {
 		return "", err
 	}

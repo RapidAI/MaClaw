@@ -442,6 +442,30 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(resolveTaskExecutionStatus({ ...base, raw: "running" })).toEqual({ label: "进行中", tone: "running" });
     });
 
+    it("uses the shared execution status ahead of a stale completed word", () => {
+        const base = {
+            lang: "zh-Hans",
+            raw: "completed passed",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: true,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 1,
+            codingStepsAllPassed: false,
+            pendingUnfinishedStatus: "",
+            executionStatus: "waiting_review",
+        };
+        expect(resolveTaskExecutionStatus(base)).toEqual({ label: "等待审阅", tone: "pending" });
+        expect(resolveTaskExecutionStatus({ ...base, raw: "failed blocked error" })).toEqual({ label: "等待审阅", tone: "pending" });
+        expect(resolveTaskExecutionStatus({ ...base, executionStatus: "cancelled", raw: "failed" })).toEqual({ label: "已取消", tone: "cancelled" });
+        expect(resolveTaskExecutionStatus({ ...base, executionStatus: "", raw: "completed failed" })).toEqual({ label: "已完成", tone: "completed" });
+        expect(resolveTaskExecutionStatus({ ...base, executionStatus: "", raw: "failed" })).toEqual({ label: "失败", tone: "failed" });
+        expect(resolveTaskExecutionStatus({ ...base, busy: true })).toEqual({ label: "进行中", tone: "running" });
+        expect(resolveTaskExecutionStatus({ ...base, cancelPending: true, busy: false })).toEqual({ label: "正在停止", tone: "pending" });
+    });
+
     it("keeps an active or execute phase in progress when the run already has output", () => {
         const base = {
             lang: "zh-Hans",

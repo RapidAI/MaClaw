@@ -6,13 +6,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 )
 
 // UserDesktopViewHold is how long an explicit human 唤醒 session refreshes
 // the Hub-side pin after the last WakeDesktopView poll. Mere 观看 no longer
 // uses this: watching must not keep a sleeping desktop awake.
 const UserDesktopViewHold = 2 * time.Minute
+
+// desktopRecoverGap is how soon a login watch may start a stopped screen
+// again. The page polls every few seconds, and a screen that is still
+// coming up answers empty; starting it on every poll reopens the desktop.
+const desktopRecoverGap = 20 * time.Second
 
 // desktopViewOpenTimeout is how long one watch may spend bringing the desktop
 // up. The GUI poll waits the same length, so a start that finishes inside
@@ -127,9 +132,11 @@ func (s *Service) userDesktopViewActiveLocked(key string) bool {
 }
 
 // HoldDesktopView attaches to a desktop that is already up for a bot step or
-// an explicit human 唤醒 session. It never starts a stopped desktop, never
-// pins idle-sleep, and never sends view_hold. Daniel 2026-11-06: opening the
-// 电脑 tab / 仅观看 must show asleep when the bot is idle.
+// an explicit human 唤醒 session. It does not start a stopped desktop, except
+// while a login handoff is still waiting: that screen is the one the person
+// was asked to use, and a remembered address after it stopped is a black
+// picture. It never pins idle-sleep and never sends view_hold. Daniel
+// 2026-11-06: opening the 电脑 tab / 仅观看 must show asleep when the bot is idle.
 // user_control stays true only when this bot already handed the keyboard to
 // the person for a login.
 func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID string) (string, bool, error) {
@@ -151,24 +158,30 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	if botNone(rec.Bots[index]) {
+		return "", false, ErrNoDesktop
+	}
 	owner := userID
 	userID = desktopUserForBot(userID, rec.Bots[index])
+	s.dropPictureFromAnotherComputer(tenantID, userID, botID)
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
 	_ = desktopWatchEpoch(ctx)
 	// A watch is how we notice the container has memory again. Parked runs
 	// start on that read; a still-high reading leaves them queued.
-	if !s.desktopMemoryPressured(ctx, tenantID, owner) {
+	if !s.desktopMemoryPressured(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, owner) {
 		s.drainDesktopQueue(tenantID, owner, botID)
 	}
+	pictureCtx := desktoppool.WithComputer(ctx, rec.Bots[index].NodeID)
 	if !s.desktopViewLiveForWatch(tenantID, userID) {
 		// A bot step that drives the screen (its session wake, an app,
 		// open, ctl or screenshot call, or the worker's tool route) is not a
 		// Hub command open, so the counters above do not see it. That is
 		// the bot really using the desktop, and so is the run it belongs to
 		// while it is still going: show its picture without starting or
-		// pinning anything.
+		// pinning anything. Do not ask again here. A second look that
+		// answers empty would drop the page the first look just found.
 		raw, ok := s.botDesktopInUse(tenantID, owner, userID, rec.Bots)
 		if !ok {
 			return "", false, nil
@@ -179,23 +192,75 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 				// have recorded use without a session wake, so the in-memory
 				// page is empty. Derive this bot's own running-screen URL
 				// without starting or pinning anything.
-				raw = s.peekDesktopView(ctx, tenantID, userID)
+				raw = s.peekDesktopView(pictureCtx, tenantID, userID)
 			}
 			if raw != "" {
 				s.rememberDesktopView(tenantID, userID, raw)
 			}
 		}
+		novnc := s.desktopViewURL(tenantID, userID)
+		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
-	// Same per-user gate as WakeDesktopView, so a poll cannot read the page
-	// while a wake is still opening it.
-	gate := s.desktopUserGate(tenantID, userID)
-	gate.Lock()
-	defer gate.Unlock()
 	novnc := s.desktopViewURL(tenantID, userID)
-	if novnc != "" && !s.desktopPictureRunning(ctx, tenantID, userID) {
+	awaiting := s.desktopLoginAwaiting(tenantID, userID)
+	if novnc == "" {
+		// The address was dropped, or this pin never had one. Look once
+		// before starting: a look that blinked empty must not hide a screen
+		// that is up, and must not open a second desktop over it. A look
+		// that failed is neither up nor down, so it must not start one either.
+		if _, canLook := s.Desktop.(DesktopViewPeek); canLook {
+			live, down := s.desktopPictureState(pictureCtx, tenantID, userID)
+			if live != "" {
+				s.rememberDesktopView(tenantID, userID, live)
+				novnc = s.desktopViewURL(tenantID, userID)
+				// This pin still owes the person a picture. Unblank it.
+				// The in-use path returned above and does not reach here.
+				s.nudgeDesktopPicture(pictureCtx, tenantID, userID, false)
+				return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+			}
+			if !down {
+				return "", false, nil
+			}
+		}
+		// Nothing is up. A login that is still waiting may start the screen;
+		// every other watch stays asleep. A start that just failed waits out
+		// the gap instead of opening again on the next poll.
+		if awaiting && !s.desktopRecoverCooling(tenantID, userID) {
+			return s.WakeDesktopView(ctx, tenantID, owner, botID)
+		}
 		return "", false, nil
 	}
-	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	live, down := s.desktopPictureState(pictureCtx, tenantID, userID)
+	if live != "" {
+		s.rememberDesktopView(tenantID, userID, live)
+		novnc = s.desktopViewURL(tenantID, userID)
+		// The display can still be running after Xvfb has blanked it. Login
+		// waiting is not the only case: after the short idle hand-back the
+		// bot still holds the desktop, the address is live, and the page
+		// therefore never offers 唤醒. Turn the picture on. This does not
+		// restart the desktop. A bot that is merely in use returned above.
+		s.nudgeDesktopPicture(pictureCtx, tenantID, userID, false)
+		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	}
+	if !down {
+		// The look-up failed. Empty would be the same shape as a stopped
+		// screen, and dropping the address would hide a picture that is up.
+		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	}
+	if s.desktopRecoverCooling(tenantID, userID) {
+		// A start from the previous poll may still be coming up. Its first
+		// look answers empty; dropping the address here flips the page to
+		// asleep while that start is in flight.
+		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	}
+	if awaiting {
+		return s.WakeDesktopView(ctx, tenantID, owner, botID)
+	}
+	// The pin can outlive the screen (the bot still holds the desktop after
+	// the login wait ended). Serving the old address paints black and the
+	// page never offers 唤醒, because that button is the empty-picture state.
+	s.dropDesktopPicture(tenantID, userID)
+	return "", false, nil
 }
 
 // DesktopActivity is the optional read of the last bot desktop-screen step
@@ -209,6 +274,94 @@ type DesktopActivity interface {
 // noVNC page. It must never start, wake, or pin the desktop.
 type DesktopViewPeek interface {
 	PeekDesktopView(ctx context.Context, tenantID, userID string) (string, error)
+}
+
+// DesktopViewNudge turns a running screen's picture back on. It must not
+// start a stopped desktop. A service without it leaves the picture as it is.
+type DesktopViewNudge interface {
+	NudgeDesktopView(ctx context.Context, tenantID, userID string) error
+}
+
+// desktopPictureState is the screen that is actually up. live is its noVNC
+// page. down is true only when the look-up answered and the screen is not
+// running. A failed look-up is neither: a blink must not restart a desktop
+// the person is logging in on.
+func (s *Service) desktopPictureState(ctx context.Context, tenantID, userID string) (live string, down bool) {
+	if s == nil || s.Desktop == nil {
+		return "", false
+	}
+	peek, ok := s.Desktop.(DesktopViewPeek)
+	if !ok || peek == nil {
+		return "", false
+	}
+	raw, err := peek.PeekDesktopView(ctx, tenantID, userID)
+	if err != nil {
+		return "", false
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", true
+	}
+	return raw, false
+}
+
+func (s *Service) desktopRecoverCooling(tenantID, userID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last, ok := s.desktopRecoverAttempt[desktopViewKey(tenantID, userID)]
+	if !ok {
+		return false
+	}
+	age := s.now().Sub(last)
+	return age >= 0 && age < desktopRecoverGap
+}
+
+func (s *Service) noteDesktopRecover(tenantID, userID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.desktopRecoverAttempt == nil {
+		s.desktopRecoverAttempt = map[string]time.Time{}
+	}
+	s.desktopRecoverAttempt[desktopViewKey(tenantID, userID)] = s.now()
+}
+
+// nudgeDesktopPicture asks the machine to unblank a screen that is already
+// up. force is an explicit 唤醒: the person asked, so the gap does not apply.
+// A watch passes force false and waits the gap out, or a 4s poll would
+// xset on every tick. A failed nudge is not recorded, so the next poll can
+// try again. Success uses the same gap as a restart: the screen was just
+// touched and must not be opened again while that settles.
+func (s *Service) nudgeDesktopPicture(ctx context.Context, tenantID, userID string, force bool) {
+	if s == nil || s.Desktop == nil {
+		return
+	}
+	if !force && s.desktopRecoverCooling(tenantID, userID) {
+		return
+	}
+	nudge, ok := s.Desktop.(DesktopViewNudge)
+	if !ok || nudge == nil {
+		return
+	}
+	if err := nudge.NudgeDesktopView(ctx, tenantID, userID); err != nil {
+		return
+	}
+	s.noteDesktopRecover(tenantID, userID)
+}
+
+func (s *Service) desktopLoginAwaiting(tenantID, userID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDesktopHydrated(tenantID)
+	return s.desktopAwaiting[desktopViewKey(tenantID, userID)]
 }
 
 func (s *Service) peekDesktopView(ctx context.Context, tenantID, userID string) string {
@@ -349,10 +502,14 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	if botNone(rec.Bots[index]) {
+		return "", false, ErrNoDesktop
+	}
 	userID = desktopUserForBot(userID, rec.Bots[index])
 	if ctx != nil && ctx.Err() != nil {
 		return "", false, fmt.Errorf("%w: %s", ErrSrv, ctx.Err().Error())
 	}
+	s.dropPictureFromAnotherComputer(tenantID, userID, botID)
 	epoch := desktopWatchEpoch(ctx)
 	if !s.noteDesktopUserView(tenantID, userID, epoch) {
 		return "", false, nil
@@ -360,24 +517,42 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	gate := s.desktopUserGate(tenantID, userID)
 	gate.Lock()
 	defer gate.Unlock()
-	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" && s.desktopPictureRunning(ctx, tenantID, userID) {
-		return novnc, s.desktopKeyboardForBot(tenantID, userID, botID), nil
+	pictureCtx := desktoppool.WithComputer(ctx, rec.Bots[index].NodeID)
+	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" {
+		live, down := s.desktopPictureState(pictureCtx, tenantID, userID)
+		if live != "" {
+			s.rememberDesktopView(tenantID, userID, live)
+			novnc = s.desktopViewURL(tenantID, userID)
+			// 唤醒 of a screen that is still up. The picture may be blanked;
+			// opening it again would restart the login. Turn the picture on.
+			s.nudgeDesktopPicture(pictureCtx, tenantID, userID, true)
+		}
+		// A stopped screen keeps its old address. Returning it paints black
+		// and the next 唤醒 does the same thing, so the picture never comes back.
+		// A look-up that failed is not "stopped": leave the address alone.
+		if !down || s.desktopRecoverCooling(tenantID, userID) {
+			return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+		}
+		s.dropDesktopPicture(tenantID, userID)
 	}
 	if !s.desktopWatchStillCurrent(tenantID, userID, epoch) {
 		return "", false, nil
 	}
+	// Count the attempt before Open returns. A failure used to be followed
+	// by another Open on the next poll, a few seconds later, for as long
+	// as the login was still waiting.
+	s.noteDesktopRecover(tenantID, userID)
 	openCtx, cancel := desktopViewOpenContext(ctx)
 	defer cancel()
 	openCtx = WithDesktopWakeReason(openCtx, DesktopWakeHuman)
+	openCtx = desktoppool.WithComputer(openCtx, rec.Bots[index].NodeID)
 	novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
 	if openErr != nil {
-		if desktopbot.IsDesktopAsleep(openErr) {
-			return "", false, desktopbot.AsleepError{}
-		}
-		return "", false, fmt.Errorf("%w: %s", ErrSrv, openErr.Error())
+		return "", false, explainDesktopErr(openErr)
 	}
 	if novnc = strings.TrimSpace(novnc); novnc != "" {
 		s.rememberDesktopView(tenantID, userID, novnc)
+		s.noteDesktopRecover(tenantID, userID)
 	}
 	// No sendDesktopViewHold: 正在观看 must not block idle-sleep.
 	gated := s.desktopViewURL(tenantID, userID)

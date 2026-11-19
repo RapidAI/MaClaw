@@ -844,6 +844,30 @@ func (m *SSHSessionManager) callWithSessionClient(s *SSHManagedSession, fn func(
 		if err != nil {
 			return fmt.Errorf("acquire connection: %w", err)
 		}
+		// A referenced pooled client is handed out without probing. A
+		// half-open one would park the SFTP channel open behind a stuck
+		// request until the pool keepalive kills it (~30-60s). Probe first;
+		// when the dead client is the session's own transport, re-shell so
+		// the session and the pool both land on the fresh connection.
+		if !sshClientTransportLive(client) {
+			m.pool.Release(cfg, client)
+			if h := s.PTY(); h != nil && h.SSHClient() == client {
+				if recErr := m.reconnectSession(s); recErr != nil {
+					return fmt.Errorf("acquire connection: %w", recErr)
+				}
+				client, err = m.pool.Acquire(cfg)
+				if err != nil {
+					return fmt.Errorf("acquire connection: %w", err)
+				}
+			} else {
+				// A dead entry not bound to the session is dropped and
+				// re-dialed; the reconnect ref is the borrow itself.
+				client, err = m.pool.Reconnect(cfg)
+				if err != nil {
+					return fmt.Errorf("acquire connection: %w", err)
+				}
+			}
+		}
 		defer m.pool.Release(cfg, client)
 		return fn(client)
 	}

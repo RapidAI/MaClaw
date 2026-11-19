@@ -223,8 +223,10 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		haSvc.SetPetStoreMetricsApplier(smHandlers.ApplyPetStoreMetrics)
 		haSvc.SetExpertMarketSnapshotApplier(smHandlers.ApplyExpertMarketSnapshot)
 		haSvc.SetExpertMarketMetricsApplier(smHandlers.ApplyExpertMarketMetrics)
+		haSvc.SetExpertMarketCategoriesApplier(smHandlers.ApplyExpertMarketCategoriesSnapshot)
 		app.goBackground(func(ctx context.Context) { smHandlers.SeedPetStoreHASync(ctx) })
 		app.goBackground(func(ctx context.Context) { smHandlers.SeedExpertMarketHASync(ctx) })
+		app.goBackground(func(ctx context.Context) { smHandlers.SeedExpertMarketCategoriesHASync(ctx) })
 	}
 
 	app.goBackground(processor.Run)

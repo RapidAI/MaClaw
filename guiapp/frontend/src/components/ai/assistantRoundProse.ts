@@ -16,7 +16,7 @@ import { noteNonAppendStreamText } from "./streamTextRevision";
  * A recorded tool-call marker is substantive too: wiping it would drop the
  * only copy of that call from the transcript.
  */
-const ROUND_PROSE_PRESERVE_MIN_CHARS = 40;
+export const ROUND_PROSE_PRESERVE_MIN_CHARS = 40;
 
 /** Content-lane reset. \x01 is reasoning. The parser rejected this round's draft. */
 export const rejectedRoundContentToken = "\x02";

@@ -96,6 +96,14 @@ func cleanCodingWorkbenchBrowserPath(value string) (string, error) {
 }
 
 func codingWorkbenchBrowserLocalRoot(a *App, projectPath string) (string, error) {
+	if a != nil {
+		if dir, active, blocked := a.repoMaintGuardForOwner(projectSessionOwnerID(projectPath)); active {
+			if blocked {
+				return "", fmt.Errorf("path outside the ghost directory")
+			}
+			return dir, nil
+		}
+	}
 	root := ""
 	if a != nil {
 		if cloudDir := strings.TrimSpace(a.cloudWorkspaceExecutionDir(projectPath)); cloudDir != "" {

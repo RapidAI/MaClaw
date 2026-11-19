@@ -65,7 +65,39 @@ var (
 	ErrNotFound            = errors.New("notification not found")
 	ErrCannotRevoke        = errors.New("only published notifications can be revoked")
 	ErrCannotDelete        = errors.New("published notifications must be revoked before delete")
+	// Pinned-card validation errors.
+	ErrLinkURLInvalid    = errors.New("link_url must start with http:// or https://")
+	ErrLinkURLTooLong    = errors.New("link_url exceeds 500 characters")
+	ErrButtonTextTooLong = errors.New("button_text exceeds 20 characters")
 )
+
+// validatePinnedFields validates the pinned-card extras and applies defaults:
+// an empty button label falls back to DefaultPinnedButtonText, the link must
+// be http(s) so clients can open it, and both stay within caps.
+func validatePinnedFields(req *CreateRequest) error {
+	req.LinkURL = strings.TrimSpace(req.LinkURL)
+	if req.LinkURL != "" {
+		lower := strings.ToLower(req.LinkURL)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			return ErrLinkURLInvalid
+		}
+		if len([]rune(req.LinkURL)) > 500 {
+			return ErrLinkURLTooLong
+		}
+	}
+	req.ButtonText = strings.TrimSpace(req.ButtonText)
+	if req.ButtonText == "" && (req.Pinned || req.PinnedForever) {
+		req.ButtonText = DefaultPinnedButtonText
+	}
+	if len([]rune(req.ButtonText)) > 20 {
+		return ErrButtonTextTooLong
+	}
+	if req.PinnedForever {
+		// A permanent pin is still a pin; keep the flag pair consistent.
+		req.Pinned = true
+	}
+	return nil
+}
 
 // CreateNotification validates the request, persists the notification, and triggers
 // cascade dispatch to target Hubs. The cascade dispatch is done asynchronously
@@ -74,23 +106,30 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	if err := validateCreateRequest(req); err != nil {
 		return nil, err
 	}
+	if err := validatePinnedFields(&req); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	notif := &Notification{
-		ID:           uuid.New().String(),
-		Title:        strings.TrimSpace(req.Title),
-		Content:      strings.TrimSpace(req.Content),
-		Category:     req.Category,
-		Priority:     req.Priority,
-		AudienceType: req.AudienceType,
-		AudienceIDs:  req.AudienceIDs,
-		Status:       StatusPublished,
-		IMPush:       req.IMPush,
-		CreatedBy:    req.CreatedBy,
-		PublishAt:    req.PublishAt,
-		ExpireAt:     req.ExpireAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:            uuid.New().String(),
+		Title:         strings.TrimSpace(req.Title),
+		Content:       strings.TrimSpace(req.Content),
+		Category:      req.Category,
+		Priority:      req.Priority,
+		AudienceType:  req.AudienceType,
+		AudienceIDs:   req.AudienceIDs,
+		Status:        StatusPublished,
+		IMPush:        req.IMPush,
+		Pinned:        req.Pinned,
+		PinnedForever: req.PinnedForever,
+		LinkURL:       req.LinkURL,
+		ButtonText:    req.ButtonText,
+		CreatedBy:     req.CreatedBy,
+		PublishAt:     req.PublishAt,
+		ExpireAt:      req.ExpireAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if req.Status == StatusDraft {

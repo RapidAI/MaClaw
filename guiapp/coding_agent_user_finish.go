@@ -267,6 +267,220 @@ func truncateRunesV2Tail(s string, max int) string {
 	return strings.TrimSpace(string(runes[len(runes)-max:]))
 }
 
+// codingRoundConclusion makes the streamed finish name the blocker the
+// checklist still holds. A review wait is not a skip and not a failure.
+// A real failed step stays in the text, and so does the open review.
+// "Stopped before finishing." is left as the goal bar reads it.
+func codingRoundConclusion(report string, steps []codingWorkbenchStepStatus) string {
+	report = strings.TrimSpace(report)
+	failed := false
+	review := false
+	for _, st := range steps {
+		switch strings.TrimSpace(st.Status) {
+		case codingStepFailed, codingStepVerifyFail:
+			failed = true
+		}
+		if codingPlanStepIsReviewHandoff(st) || strings.TrimSpace(st.BlockReason) == "等待子任务审阅" {
+			review = true
+		}
+	}
+	if review || failed {
+		// A review-only tally's "still failed" is not a failed step. A real
+		// failure keeps that count. Skip lines that only restate a review or
+		// a prior step are not the blocker, with or without that failure.
+		report = codingDropReviewSkipTally(report, review && !failed)
+	}
+	notes := []string(nil)
+	if failed {
+		notes = codingRoundOpenFailureNotes(steps)
+		genericCovered := strings.Contains(report, "still failed") || strings.Contains(report, "did not finish")
+		for _, note := range notes {
+			if note == "" || strings.Contains(report, note) {
+				continue
+			}
+			if genericCovered && codingRoundNoteIsGenericFailure(note) {
+				continue
+			}
+			report = codingAppendRoundParagraph(report, note)
+		}
+	}
+	if review && !strings.Contains(report, mcpReviewHandoffErrorText) && !strings.Contains(report, "等待子任务审阅") {
+		report = codingAppendRoundParagraph(report, mcpReviewHandoffErrorText)
+	}
+	// Only notes that are actually in the text can lead. A generic
+	// "did not finish" line that the tally already covers was not added.
+	leadNotes := make([]string, 0, len(notes))
+	for _, note := range notes {
+		if note != "" && strings.Contains(report, note) {
+			leadNotes = append(leadNotes, note)
+		}
+	}
+	return codingLeadRoundBlocker(report, failed, review, leadNotes)
+}
+
+func codingAppendRoundParagraph(report, paragraph string) string {
+	paragraph = strings.TrimSpace(paragraph)
+	if paragraph == "" {
+		return strings.TrimSpace(report)
+	}
+	report = strings.TrimSpace(report)
+	if report == "" {
+		return paragraph
+	}
+	return report + "\n\n" + paragraph
+}
+
+// codingLeadRoundBlocker puts the open blocker in the first paragraph.
+// A step's own failure summary leads. The "still failed" count stays after
+// that summary. A generic "did not finish" note does not replace the count.
+// "Stopped before finishing." stays first: the goal bar reads that sentence.
+func codingLeadRoundBlocker(report string, failed, review bool, notes []string) string {
+	report = strings.TrimSpace(report)
+	if report == "" || (!failed && !review) {
+		return report
+	}
+	parts := codingRoundParagraphs(report)
+	if len(parts) == 0 {
+		return report
+	}
+	if strings.Contains(parts[0], "Stopped before finishing.") {
+		return report
+	}
+	var leads []string
+	if failed {
+		if codingOpeningNamesFailure(parts[0], notes) {
+			return report
+		}
+		leads = notes
+	} else {
+		if strings.Contains(parts[0], mcpReviewHandoffErrorText) || strings.Contains(parts[0], "等待子任务审阅") {
+			return report
+		}
+		leads = []string{mcpReviewHandoffErrorText}
+	}
+	return codingMoveParagraphsFirst(parts, leads)
+}
+
+// codingOpeningNamesFailure reports whether the first paragraph already
+// states the blocker. A count such as "still failed" does not name a step
+// whose own summary is still later in the text.
+func codingOpeningNamesFailure(opening string, notes []string) bool {
+	named := false
+	for _, note := range notes {
+		if note == "" {
+			continue
+		}
+		if strings.Contains(opening, note) {
+			named = true
+			continue
+		}
+		if !codingRoundNoteIsGenericFailure(note) {
+			return false
+		}
+	}
+	if named {
+		return true
+	}
+	return strings.Contains(opening, "still failed") || strings.Contains(opening, "did not finish")
+}
+
+func codingRoundNoteIsGenericFailure(note string) bool {
+	note = strings.TrimSpace(note)
+	return note == "A step did not finish." || strings.HasSuffix(note, " did not finish.")
+}
+
+func codingRoundParagraphs(report string) []string {
+	raw := strings.Split(report, "\n\n")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func codingMoveParagraphsFirst(parts, leads []string) string {
+	lead := make(map[string]bool, len(leads))
+	for _, item := range leads {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			lead[item] = true
+		}
+	}
+	front := make([]string, 0, len(leads))
+	rest := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(leads))
+	for _, part := range parts {
+		if lead[part] {
+			if !seen[part] {
+				front = append(front, part)
+				seen[part] = true
+			}
+			continue
+		}
+		rest = append(rest, part)
+	}
+	for _, item := range leads {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		front = append(front, item)
+		seen[item] = true
+	}
+	return strings.TrimSpace(strings.Join(append(front, rest...), "\n\n"))
+}
+
+// codingRoundOpenFailureNotes is the failure the checklist still holds when
+// this round's own tally only described the steps it executed.
+func codingRoundOpenFailureNotes(steps []codingWorkbenchStepStatus) []string {
+	notes := make([]string, 0, 1)
+	for _, st := range steps {
+		switch strings.TrimSpace(st.Status) {
+		case codingStepFailed, codingStepVerifyFail:
+		default:
+			continue
+		}
+		note := strings.TrimSpace(st.Summary)
+		if note == "" {
+			title := strings.TrimSpace(st.Title)
+			if title == "" && st.Index > 0 {
+				title = fmt.Sprintf("T%d", st.Index)
+			}
+			if title == "" {
+				note = "A step did not finish."
+			} else {
+				note = title + " did not finish."
+			}
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
+func codingDropReviewSkipTally(report string, dropFailureTally bool) string {
+	parts := strings.Split(report, "\n\n")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trim := strings.TrimSpace(part)
+		if trim == "" {
+			continue
+		}
+		if dropFailureTally && strings.Contains(trim, "still failed") {
+			continue
+		}
+		if strings.HasPrefix(trim, "Skipped ") || trim == "Skipped this step." {
+			if strings.Contains(trim, mcpReviewHandoffErrorText) || strings.Contains(trim, "prior step") || strings.Contains(trim, "等待子任务审阅") || strings.Contains(strings.ToLower(trim), "waiting_child") {
+				continue
+			}
+		}
+		kept = append(kept, trim)
+	}
+	return strings.Join(kept, "\n\n")
+}
+
 func formatCodingWorkbenchUserAnswer(kind codingRequestKind, results []v2.TaskRunResult, cancelled bool) string {
 	finish := strings.TrimSpace(formatCodingAgentUserFinish(results, cancelled))
 	if kind != codingRequestInquiry {
@@ -449,6 +663,24 @@ func formatCodingSubAgentUserAnswer(result *CodingSubAgentResult) string {
 	})
 }
 
+// codingFailedStepSummary is the text a failed step keeps. An empty model
+// answer leaves the interruption on Error. A success-shaped summary is not
+// that failure. The checklist and the finish both read this text.
+func codingFailedStepSummary(summary, errText string) string {
+	summary = strings.TrimSpace(summary)
+	if strings.TrimSpace(errText) == "" {
+		return summary
+	}
+	visible := strings.TrimSpace(formatCodingAgentVisibleError(errText))
+	if visible == "" {
+		return summary
+	}
+	if codingStepChecklistNote(summary) == "" || codingAgentSummaryLooksSuccessful(summary) {
+		return visible
+	}
+	return summary
+}
+
 func codingAgentSummaryLooksSuccessful(summary string) bool {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
@@ -588,16 +820,63 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 		if rr.Error == "" {
 			rr.Error = "cancelled"
 		}
+	case "waiting_child":
+		rr.Status = v2.TaskSkipped
+		rr.RuntimeHandoff = true
+		rr.Error = result.Error
 	default:
 		rr.Status = v2.TaskFailed
 		rr.Error = result.Error
+	}
+	if result.RuntimeHandoff || rr.RuntimeHandoff {
+		rr.Status = v2.TaskSkipped
+		rr.RuntimeHandoff = true
+		reason, _ := mcpHandoffReason(rr.Error, true)
+		rr.Error = reason
 	}
 	rr.Summary = result.Summary
 	rr.FilesCreated = append([]string{}, result.FilesCreated...)
 	rr.FilesModified = append([]string{}, result.FilesModified...)
 	rr.RuntimeTaskID = result.RuntimeTaskID
-	rr.RuntimeHandoff = result.RuntimeHandoff
+	rr.Children = cloneChildTaskViews(result.Children)
 	return rr
+}
+
+// remoteCodingStickyStep is the checklist row for one remote plan step.
+// The runner result stays skipped. The row matches a local handoff:
+// waiting_review, plus the child this review is about. A later step must
+// not store the handoff sentence as its own error. That sentence is how a
+// step is recognized as the handoff, so a dependent would never reopen.
+func remoteCodingStickyStep(result *RemoteCodingSubAgentResult) (stepStatus, summary, childID string) {
+	stepStatus = codingStepFailed
+	if result == nil {
+		return codingStepFailed, "nil result", ""
+	}
+	summary = strings.TrimSpace(result.Summary)
+	if result.Status == "success" {
+		stepStatus = codingStepPassed
+	}
+	if result.RuntimeHandoff || strings.EqualFold(strings.TrimSpace(result.Status), "waiting_child") || mcpSkipIsReviewHandoff(result.Error) {
+		stepStatus = mcpStepWaiting
+		summary = mcpReviewHandoffErrorText
+	}
+	if stepStatus == codingStepFailed && codingLoopIterationExhausted(result.Error) {
+		stepStatus = codingStepRunning
+		summary = stickyCodingCarrySummary(result.Summary, result.Error)
+	}
+	// The run result for this status is a cancel skip. The checklist must
+	// use the same row, or the workbench reports a program failure while
+	// the task query reports a user stop.
+	if strings.EqualFold(strings.TrimSpace(result.Status), "cancelled") || strings.EqualFold(strings.TrimSpace(result.Status), "canceled") {
+		stepStatus = codingStepInterrupted
+		summary = "cancelled"
+	} else if stepStatus == codingStepFailed {
+		summary = codingFailedStepSummary(summary, result.Error)
+	}
+	if len(result.Children) > 0 {
+		childID = strings.TrimSpace(result.Children[0].TaskID)
+	}
+	return stepStatus, summary, childID
 }
 
 func appendCodingWorkbenchSkippedResults(results []v2.TaskRunResult, tasks []*v2.TaskItem, steps []codingWorkbenchStepStatus) []v2.TaskRunResult {

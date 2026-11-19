@@ -123,30 +123,37 @@ func (a *App) WaitQoderOAuth() (string, error) {
 	// so the expensive lookup never extends the global OAuth lock hold. It
 	// rides the flow context: if a newer login already replaced this flow, the
 	// fetch is cancelled instead of wasting the request.
-	defaultModel := a.fetchQoderDefaultModel(flow.ctx, flow.profile, token)
+	defaultModel, labels := a.fetchQoderLoginCatalog(flow.ctx, flow.profile, token)
 	if err := flow.claim(func() error {
-		return a.saveQoderLogin(flow.profile, token, defaultModel)
+		return a.saveQoderLogin(flow.profile, token, defaultModel, labels)
 	}); err != nil {
 		return "", err
 	}
 	return a.oauthLoginSuccessMessage(flow.profile.Name, flow.profile.Name+" 登录成功")
 }
 
-// fetchQoderDefaultModel reads the server catalog's default key, falling back
-// to the built-in default when the catalog is unreadable. ctx is the owning
-// flow's context: when the flow itself already ended (cancelled or expired)
-// the fetch failure stays silent — that login is gone either way.
-func (a *App) fetchQoderDefaultModel(ctx context.Context, profile qoder.Profile, token qoder.Token) string {
+// fetchQoderLoginCatalog reads every enabled model's display name. The
+// default is the catalog default's display name, not its short key. ctx is
+// the owning flow's context: when the flow itself already ended the fetch
+// failure stays silent — that login is gone either way.
+func (a *App) fetchQoderLoginCatalog(ctx context.Context, profile qoder.Profile, token qoder.Token) (defaultLabel string, labels []string) {
 	catalogCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, defaultKey, err := qoder.ListModels(catalogCtx, profile, token.UserID, token.AccessToken)
-	if err != nil || strings.TrimSpace(defaultKey) == "" {
+	models, _, err := qoder.ListModels(catalogCtx, profile, token.UserID, token.AccessToken)
+	if err != nil || len(models) == 0 {
 		if err != nil && ctx.Err() == nil {
 			log.Printf("[qoder] provider=%s model catalog unavailable, keeping the fallback default", profile.Name)
 		}
-		return qoder.DefaultModel
+		return qoder.DefaultModelLabel, []string{qoder.DefaultModelLabel}
 	}
-	return strings.TrimSpace(defaultKey)
+	labels, defaultLabel = qoder.EnabledCatalog(models)
+	if defaultLabel == "" {
+		defaultLabel = qoder.DefaultModelLabel
+	}
+	if len(labels) == 0 {
+		labels = []string{defaultLabel}
+	}
+	return defaultLabel, labels
 }
 
 // CancelQoderOAuth stops an in-progress Qoder device login. A login that has
@@ -193,17 +200,24 @@ func (a *App) clearQoderOwnedGen(gen uint64) {
 	a.oauthMu.Unlock()
 }
 
-// fetchQoderCatalogModels lists the Qoder server catalog for an already
-// authenticated edition. Both editions share one chat URL, so the edition
-// cannot be told apart from the URL alone: try the configured providers in
-// order and answer with whichever stored token still works. The catalog rides
-// the site inference host behind the official CLI's signed identity contract
-// (UMID fingerprint + WASM request signer), so plain fetches can 404 — when
-// both editions fail to serve a catalog, fall back to the CLI's own hardcoded
-// default model instead of surfacing the upstream error.
-func (a *App) fetchQoderCatalogModels() ([]ProviderModelItem, error) {
+// qoderCatalogProfiles is the edition order for a catalog read. A named
+// provider stays on its own edition: both editions share the chat URL, so a
+// CN token must not answer a Global model's request.
+func qoderCatalogProfiles(preferredName string) []qoder.Profile {
+	if preferred, ok := qoder.ProfileByName(preferredName); ok {
+		return []qoder.Profile{preferred}
+	}
+	return []qoder.Profile{qoder.CNProfile(), qoder.GlobalProfile()}
+}
+
+// fetchQoderCatalogModels lists enabled display names for an authenticated
+// edition. The catalog is on the site inference host behind the signed
+// identity contract. A named edition returns that edition's error when its
+// own list fails. An unnamed read tries each stored token and, if every one
+// fails, returns the CLI default name.
+func (a *App) fetchQoderCatalogModels(preferredName string) ([]ProviderModelItem, error) {
 	var lastErr error
-	for _, profile := range []qoder.Profile{qoder.CNProfile(), qoder.GlobalProfile()} {
+	for _, profile := range qoderCatalogProfiles(preferredName) {
 		token, uid := a.qoderStoredCredential(profile)
 		if token == "" {
 			continue
@@ -215,20 +229,12 @@ func (a *App) fetchQoderCatalogModels() ([]ProviderModelItem, error) {
 			lastErr = err
 			continue
 		}
-		items := make([]ProviderModelItem, 0, len(models))
-		seen := map[string]bool{}
-		for _, model := range models {
-			if !model.Enabled || seen[model.Key] {
-				// The catalog repeats one model across scenes (chat/assistant/
-				// cli ...); the dropdown must list each key once.
-				continue
-			}
-			seen[model.Key] = true
-			name := model.DisplayName
-			if name == "" {
-				name = model.Key
-			}
-			items = append(items, ProviderModelItem{ID: model.Key, Name: name})
+		labels, _ := qoder.EnabledCatalog(models)
+		items := make([]ProviderModelItem, 0, len(labels))
+		for _, label := range labels {
+			// Settings and the agent model menu show the display name.
+			// The short key stays inside the alias map for the chat wire.
+			items = append(items, ProviderModelItem{ID: label, Name: label})
 		}
 		if len(items) > 0 {
 			return items, nil
@@ -239,10 +245,13 @@ func (a *App) fetchQoderCatalogModels() ([]ProviderModelItem, error) {
 		lastErr = fmt.Errorf("请先完成 Qoder 登录再获取模型列表")
 		return nil, lastErr
 	}
+	// A named edition keeps its saved list when its own catalog fails.
+	// Substituting one fallback name would replace every model on Test & Save.
+	if _, named := qoder.ProfileByName(preferredName); named {
+		return nil, lastErr
+	}
 	log.Printf("[qoder] model catalog unavailable upstream (%s), serving the CLI default model", lastErr)
-	// The CLI's --list-models at the time of writing shows Qwen3.8-Max; the
-	// key, not the display name, is what the chat API expects.
-	return []ProviderModelItem{{ID: qoder.DefaultModel, Name: "Qwen3.8-Max"}}, nil
+	return []ProviderModelItem{{ID: qoder.DefaultModelLabel, Name: qoder.DefaultModelLabel}}, nil
 }
 
 // testQoderLLM probes a Qoder provider through the /algo signed chat wire.
@@ -293,12 +302,12 @@ func (a *App) qoderStoredCredential(profile qoder.Profile) (token, uid string) {
 // and the credential store, then lets the normal post-login probe decide
 // whether this provider is assignable. defaultModel comes from the catalog
 // fetch that Wait completed before claiming.
-func (a *App) saveQoderLogin(profile qoder.Profile, token qoder.Token, defaultModel string) error {
+func (a *App) saveQoderLogin(profile qoder.Profile, token qoder.Token, defaultModel string, labels []string) error {
 	if strings.TrimSpace(token.AccessToken) == "" {
 		return fmt.Errorf("Qoder 登录未返回访问令牌")
 	}
 	if strings.TrimSpace(defaultModel) == "" {
-		defaultModel = qoder.DefaultModel
+		defaultModel = qoder.DefaultModelLabel
 	}
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
@@ -308,8 +317,14 @@ func (a *App) saveQoderLogin(profile qoder.Profile, token qoder.Token, defaultMo
 		data.Providers[i].URL = qoder.CanonicalChatURL(profile.ChatURL)
 		data.Providers[i].Protocol = "openai"
 		data.Providers[i].AuthType = "oauth"
-		if strings.TrimSpace(data.Providers[i].Model) == "" {
+		current := strings.TrimSpace(data.Providers[i].Model)
+		if current == "" || strings.EqualFold(current, qoder.DefaultModel) || strings.EqualFold(current, qoder.DefaultModelLabel) {
 			data.Providers[i].Model = defaultModel
+		} else if label := qoder.CanonicalDisplayName(current); label != "" {
+			data.Providers[i].Model = label
+		}
+		if len(labels) > 0 {
+			data.Providers[i].Models = append([]string(nil), labels...)
 		}
 		if data.Providers[i].ContextLength <= 0 {
 			data.Providers[i].ContextLength = qoder.DefaultContextLength

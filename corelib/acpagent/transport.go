@@ -3,6 +3,7 @@ package acpagent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -41,8 +42,20 @@ func (c *Conn) ReadRequest() (Request, error) {
 
 // ReadMessage reads the next NDJSON line as request/notification or response.
 func (c *Conn) ReadMessage() (IncomingMessage, error) {
-	line, err := c.in.ReadBytes('\n')
-	if err != nil {
+	const maxMessageBytes = 16 << 20
+	var line []byte
+	for {
+		fragment, err := c.in.ReadSlice('\n')
+		line = append(line, fragment...)
+		if len(line) > maxMessageBytes {
+			return IncomingMessage{}, fmt.Errorf("acpagent: message exceeds %d bytes", maxMessageBytes)
+		}
+		if err == nil {
+			break
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		return IncomingMessage{}, err
 	}
 	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {

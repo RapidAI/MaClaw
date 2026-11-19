@@ -177,6 +177,18 @@ func (h *IMMessageHandler) administerTrustedGoal(principalID, objective, status,
 		if parsed == goal.StatusComplete {
 			h.clearGoalFinishedCodingChecklist(principalID)
 		}
+		// A terminal write through the trusted surface still owes the
+		// transcript the closeout row the goal_complete/goal_fail tools emit —
+		// the post-loop announce early-returns on terminal goals, so only the
+		// transition site can report it.
+		if h.app != nil && h.app.goalContinuation != nil {
+			switch parsed {
+			case goal.StatusComplete:
+				h.app.goalContinuation.emitGoalNotice(principalID, goalCompletionReport(updated, note), false)
+			case goal.StatusFailed:
+				h.app.goalContinuation.emitGoalNotice(principalID, goalFailureReport(updated, updated.Summary), true)
+			}
+		}
 		return semanticTrustedGoalProjection("updated", updated), nil
 	default:
 		current := store.Get(principalID)

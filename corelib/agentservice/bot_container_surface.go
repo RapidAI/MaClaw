@@ -59,8 +59,29 @@ func (c *coreAgentCallbacks) hubBotInstance() bool {
 	return strings.TrimSpace(c.instance.Metadata["hub_bot"]) == "1"
 }
 
-func (c *coreAgentCallbacks) botUsesContainer() bool {
+// botHasNoDesktop is a bot created with desktop_mode=none. Hub marks the
+// turn (bot_desktop) and the instance (hub_bot_desktop).
+func (c *coreAgentCallbacks) botHasNoDesktop() bool {
 	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(c.messageMetadata["bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	if strings.TrimSpace(c.instance.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone {
+		return true
+	}
+	return strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone
+}
+
+// hubBotDropsInProcessDelegate is the in-process sub-agent. A Hub bot,
+// including one with no computer, does not get it.
+func (c *coreAgentCallbacks) hubBotDropsInProcessDelegate(name string) bool {
+	return c != nil && c.hubBotInstance() && strings.TrimSpace(name) == "delegate_task"
+}
+
+func (c *coreAgentCallbacks) botUsesContainer() bool {
+	if c == nil || c.botHasNoDesktop() {
 		return false
 	}
 	if c.hubBotInstance() {
@@ -121,6 +142,31 @@ func botRejectsToolName(name string) bool {
 	return desktopLeavesLoggedInBrowser(rendered) || botHostSystemTool(rendered)
 }
 
+// noneDesktopDropsTool removes the desktop, the computer, and the browser
+// from a bot that has no cloud desktop. Search and page fetch stay on the
+// server. A bot that does have a desktop keeps the list it already had.
+func noneDesktopDropsTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "web_search" || name == "web_fetch" || name == "knowledge_save_url" {
+		return false
+	}
+	switch name {
+	case "desktop", "local_computer", "browser", "computer_use", "open", "download_file", "screenshot":
+		return true
+	}
+	if strings.HasPrefix(name, "computer_") || strings.HasPrefix(name, "gui_") {
+		return true
+	}
+	if botHostSystemTool(name) {
+		return true
+	}
+	rendered := coretool.SemanticModelFunctionName(name)
+	if rendered != "" && rendered != name {
+		return noneDesktopDropsTool(rendered)
+	}
+	return false
+}
+
 func botHostSystemTool(name string) bool {
 	switch name {
 	case "read_file", "write_file", "edit_file", "edit_lines", "list_directory",
@@ -148,6 +194,18 @@ func botHostSystemTool(name string) bool {
 }
 
 func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) []map[string]interface{} {
+	tools = c.withBotScheduleTool(tools)
+	if c.botHasNoDesktop() {
+		kept := make([]map[string]interface{}, 0, len(tools))
+		for _, tool := range tools {
+			name := tooldef.Name(tool)
+			if noneDesktopDropsTool(name) || c.hubBotDropsInProcessDelegate(name) {
+				continue
+			}
+			kept = append(kept, tool)
+		}
+		return kept
+	}
 	if !c.botUsesContainer() {
 		return tools
 	}
@@ -161,12 +219,14 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 		if c.botMissesContainer(name) {
 			continue
 		}
-		if name == "delegate_task" && c.hubBotInstance() {
+		if c.hubBotDropsInProcessDelegate(name) {
 			// A Hub bot hands work to a teammate with desktop
 			// action=delegate. The in-process sub-agent is not a teammate:
 			// asked to "let collab-b write it", the bot ran delegate_task
 			// and reported the sub-agent's code as collab-b's, with no
-			// note in Hub (papers 2026-10-30 run_928f4029).
+			// note in Hub (papers 2026-10-30 run_928f4029). A bot with no
+			// computer has the same hole: the sub-agent would run on the
+			// server.
 			continue
 		}
 		if name == "web_search" || name == "web_fetch" {
@@ -197,7 +257,43 @@ func (c *coreAgentCallbacks) finishToolSurface(tools []map[string]interface{}) [
 			kept = append(kept, def)
 		}
 	}
-	return kept
+	return c.withRepoTool(kept)
+}
+
+// withBotScheduleTool keeps bot_schedule on a desktop-bot turn, including a
+// semantic plan and a light turn. The plan chooses the work tools. This tool
+// is how that bot registers its own later runs.
+func (c *coreAgentCallbacks) withBotScheduleTool(tools []map[string]interface{}) []map[string]interface{} {
+	if c == nil || c.botScheduleHandler == nil || strings.TrimSpace(c.botID) == "" {
+		return tools
+	}
+	for _, tool := range tools {
+		if tooldef.Name(tool) == "bot_schedule" {
+			return tools
+		}
+	}
+	out := make([]map[string]interface{}, len(tools)+1)
+	copy(out, tools)
+	out[len(tools)] = botScheduleToolDefinition()
+	return out
+}
+
+func botScheduleToolDefinition() map[string]interface{} {
+	return functionToolDefinition("bot_schedule",
+		"Register, update, list, or cancel this bot's own timer. Call it when the work in front of you should happen again later, including when the person did not name a clock. name is the timer. The same name updates that timer. A different repeating job uses another name. instruction is the whole order for one later run. interval_minutes repeats. hour and minute together are a clock time; set both or neither. Omit a clock field to keep the armed value. A new timer needs interval_minutes, or both hour and minute. action is create, list, or cancel.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"action":           map[string]interface{}{"type": "string", "description": "create, list, or cancel. Default create."},
+				"name":             map[string]interface{}{"type": "string", "description": "Stable timer name. Required for create and cancel."},
+				"instruction":      map[string]interface{}{"type": "string", "description": "The whole order for one later run. Empty on update keeps the stored order."},
+				"interval_minutes": map[string]interface{}{"type": "integer", "description": "Repeat every N minutes. Omit to keep the armed interval."},
+				"hour":             map[string]interface{}{"type": "integer", "description": "Clock hour 0-23. Set together with minute, or omit both."},
+				"minute":           map[string]interface{}{"type": "integer", "description": "Clock minute 0-59. Set together with hour, or omit both."},
+				"day_of_week":      map[string]interface{}{"type": "integer", "description": "0 Sunday through 6 Saturday. Omit to keep the armed weekday."},
+			},
+		},
+	)
 }
 
 // botSSHPlanAction is the read-only slice of the ssh tool. A plan turn can

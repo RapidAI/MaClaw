@@ -31,6 +31,8 @@ export type AssistantScrollIntentEvent = {
     target?: EventTarget | null;
     type?: string;
     deltaY?: number;
+    /** TouchEvent.touches — lets callers measure a drag direction per move. */
+    touches?: ArrayLike<{ clientY: number }>;
 };
 
 /** Nested thinking pane: ignore text clicks and downward wheels, but treat scrollbar drags as leave-intent. */
@@ -44,10 +46,28 @@ export function shouldIgnoreNestedScrollIntent(event?: AssistantScrollIntentEven
 
 export function shouldIgnoreUserScrollIntent(event?: AssistantScrollIntentEvent): boolean {
     const target = event?.target;
-    // data-nested-scroll is the live capped thought pane (growth absorption
-    // and cover-lift). The earlier-messages dialog is only a gesture
-    // boundary; marking it as a thought pane would swallow live follow.
-    if (target instanceof Element && target.closest("[data-nested-scroll], [data-scroll-intent-boundary]")) return true;
+    if (target instanceof Element) {
+        // data-nested-scroll is the live capped thought pane (growth absorption
+        // and cover-lift). The earlier-messages dialog is only a gesture
+        // boundary; marking it as a thought pane would swallow live follow.
+        const boundary = target.closest("[data-scroll-intent-boundary]");
+        if (boundary) return true;
+        const nested = target.closest("[data-nested-scroll]");
+        if (nested) {
+            // An upward scroll gesture on a pane already at its top cannot
+            // move the pane — it chains to the transcript and is a real
+            // leave-the-tail intent. Swallowing it left the outer scroller
+            // intentless, so the next streaming pin yanked the view back to
+            // the bottom ("cannot scroll" while a turn streams). Touch
+            // drags get the same treatment: the caller derives deltaY from
+            // consecutive touch positions, so a downward finger pull on a
+            // topped pane reads as wheel-up.
+            if ((event?.type === "wheel" || event?.type === "touchmove") && (event.deltaY ?? 0) < 0 && nested.scrollTop <= 0) {
+                return false;
+            }
+            return true;
+        }
+    }
     return shouldIgnoreNestedScrollIntent(event);
 }
 

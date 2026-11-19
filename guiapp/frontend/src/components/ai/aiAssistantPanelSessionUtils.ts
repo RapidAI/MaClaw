@@ -28,7 +28,12 @@ export function isHostGoalChecklistText(content: string): boolean {
     return HOST_GOAL_SLASH_PROMPT.test(text);
 }
 
-function isVisibleHostGoalChecklist(message: ChatMessage): boolean {
+/**
+ * Rows the goal-checklist surface owns: the system card and the legacy
+ * host-authored user bubbles it replaced. The transcript filter must use
+ * this same predicate so the collapse and the render path never disagree.
+ */
+export function isVisibleHostGoalChecklist(message: ChatMessage): boolean {
     if (message.kind === "goalChecklist") return true;
     return message.role === "user" && isHostGoalChecklistText(message.content || "");
 }
@@ -291,13 +296,11 @@ export function latestHostGoalChecklistText(messages: readonly ChatMessage[] | n
     const rows = Array.isArray(messages) ? messages : [];
     for (let index = rows.length - 1; index >= 0; index -= 1) {
         const message = rows[index];
-        if (!message) continue;
+        if (!message || !isVisibleHostGoalChecklist(message)) continue;
         if (message.kind === "goalChecklist") return String(message.content || "");
         // Same conversion renderMessage applied inline: a host continuation
         // stored as a user row still feeds the float.
-        if (message.role === "user" && isHostGoalChecklistText(message.content || "")) {
-            return rewriteHostGoalChecklistBody(message.content || "");
-        }
+        return rewriteHostGoalChecklistBody(message.content || "");
     }
     return "";
 }
@@ -318,6 +321,30 @@ export function goalChecklistOverlayBodyFromText(text: string): string {
 /** Convenience form used by tests; the panel splits the two for cheaper renders. */
 export function goalChecklistOverlayBodyFromMessages(messages: readonly ChatMessage[] | null | undefined): string {
     return goalChecklistOverlayBodyFromText(latestHostGoalChecklistText(messages));
+}
+
+/**
+ * Sessions whose goal the backend reported terminal (complete/cleared).
+ * The live status retires the float outright — belt and braces beside the
+ * transcript card's 已完成 rule, so an event that arrives before the card
+ * merges (or a card the display path drops) still ends the float. Any
+ * non-terminal status — a new or resumed goal — clears the mark and the
+ * float returns.
+ */
+export function goalTerminalSessionKeysNext(
+    prev: ReadonlySet<string>,
+    userID: unknown,
+    status: unknown,
+): Set<string> | null {
+    const key = normalizeAssistantSessionKey(String(userID ?? "").trim());
+    if (!key) return null;
+    const normalizedStatus = String(status ?? "").trim().toLowerCase();
+    const terminal = normalizedStatus === "complete" || normalizedStatus === "cleared";
+    if (terminal === prev.has(key)) return null;
+    const next = new Set(prev);
+    if (terminal) next.add(key);
+    else next.delete(key);
+    return next;
 }
 
 /**

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
+	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 )
 
 // botAuthenticator is the machine identity a bot request needs. A viewer
@@ -116,12 +119,17 @@ func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": bots})
+		quota, qerr := svc.DesktopQuotaForUser(r.Context(), principal.TenantID, principal.UserID)
+		if qerr != nil {
+			writeBotUserError(w, r, principal, qerr, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": bots, "desktop_quota": quota})
 	}
 }
 
 // PostBotUserHandler POST /api/v1/bots
-func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+func PostBotUserHandler(svc *botmgmt.Service, pool *desktoppool.Pool, reg *edgenode.Registry, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok || svc == nil {
@@ -135,6 +143,11 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			Description string  `json:"description"`
 			Color       *string `json:"color"`
 			Shape       *string `json:"shape"`
+			Desktop     *bool   `json:"desktop"`
+			// NodeID chooses the server. Absent keeps the user's current pin.
+			// Empty is the cloud computer. A local id must be one of the
+			// caller's own desktop servers that has MaClawSrv.
+			NodeID *string `json:"node_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
@@ -144,7 +157,26 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		bot, err := svc.CreateBotForUser(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description)
+		wantDesktop := true
+		if in.Desktop != nil {
+			wantDesktop = *in.Desktop
+		}
+		var bot botmgmt.Bot
+		var err error
+		// A bot without a computer does not choose a server. The pin, when
+		// there is one, still decides which srv creates the instance.
+		if in.NodeID != nil && wantDesktop {
+			nodeID := strings.TrimSpace(*in.NodeID)
+			if nodeID != "" {
+				if err := userOwnsDesktopNode(r.Context(), pool, reg, principal.TenantID, principal.UserID, nodeID); err != nil {
+					writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", err.Error())
+					return
+				}
+			}
+			bot, err = svc.CreateBotForUserOnNode(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop, nodeID)
+		} else {
+			bot, err = svc.CreateBotForUserDesktop(r.Context(), principal.TenantID, principal.UserID, in.Name, in.Description, &wantDesktop)
+		}
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -156,6 +188,38 @@ func PostBotUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.Ha
 		}
 		writeJSON(w, http.StatusCreated, bot)
 	}
+}
+
+// userOwnsDesktopNode reports whether this user may create a bot on nodeID.
+// A personal desktop is theirs. A shared node is not, unless they registered
+// that desktop themselves.
+func userOwnsDesktopNode(ctx context.Context, pool *desktoppool.Pool, reg *edgenode.Registry, tenantID, userID, nodeID string) error {
+	if pool == nil || reg == nil || !edgenode.Enabled() {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	node, err := reg.Lookup(ctx, nodeID)
+	if err != nil || edgeTenantMismatch(node.TenantID, tenantID) || edgeTenantMismatch(tenantID, node.TenantID) {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	if node.OwnerUserID != "" && node.OwnerUserID != userID {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	if !node.HasSrv {
+		return errors.New("这个节点还没有 srv")
+	}
+	servers, _, err := pool.OwnedServers(ctx, tenantID, userID)
+	if err != nil {
+		return errors.New("这台服务器不能用来创建 Bot")
+	}
+	for _, server := range servers {
+		if server.NodeID == nodeID {
+			return nil
+		}
+	}
+	if node.OwnerUserID == userID {
+		return nil
+	}
+	return errors.New("这台服务器不能用来创建 Bot")
 }
 
 // PatchBotUserHandler PATCH /api/v1/bots/{id}
@@ -269,6 +333,21 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 				writeBotUserError(w, r, principal, err, clientMessageID)
 				return
 			}
+			if admission.Joined {
+				// This press did not start a turn. A run id here is the one
+				// already running, and answering 202 with it makes the client
+				// wait on that run as if this press had started it.
+				reply := admission.Reply
+				if strings.TrimSpace(reply.Text) == "" {
+					reply.Text = botmgmt.DesktopContinueJoinedLine
+					reply.SendToUser = reply.Text
+				}
+				writeJSON(w, http.StatusOK, struct {
+					botmgmt.Reply
+					Joined bool `json:"joined"`
+				}{Reply: reply, Joined: true})
+				return
+			}
 			if admission.Queued || (admission.Accepted && !admission.Settled) || (admission.Kind != "" && admission.Kind != "new") {
 				status := http.StatusOK
 				if admission.Queued || (admission.Accepted && !admission.Settled && strings.TrimSpace(admission.Reply.Text) == "") {
@@ -288,6 +367,7 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 					"held":              admission.Held,
 					"position":          admission.Position,
 					"text":              admission.Reply.Text,
+					"instruction":       admission.Instruction,
 					"schedule":          admission.Schedule,
 				}
 				if admission.Queued {
@@ -601,12 +681,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"novnc_url":        novnc,
-			"user_control":     userControl,
-			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
-			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
-		})
+		writeJSON(w, http.StatusOK, desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, principal.MachineID, novnc, userControl))
 	}
 }
 
@@ -642,14 +717,28 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			writeBotUserError(w, r, principal, err, "")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"novnc_url":        novnc,
-			"user_control":     userControl,
-			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
-			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
-			"desktop_state":    state,
-		})
+		body := desktopWatchBody(r, svc, principal.TenantID, principal.UserID, botID, principal.MachineID, novnc, userControl)
+		body["desktop_state"] = state
+		writeJSON(w, http.StatusOK, body)
 	}
+}
+
+func desktopWatchBody(r *http.Request, svc *botmgmt.Service, tenantID, userID, botID, machineID, novnc string, userControl bool) map[string]any {
+	body := map[string]any{
+		"novnc_url":        novnc,
+		"user_control":     userControl,
+		"input_granted":    svc.DesktopInputGranted(r.Context(), tenantID, userID, botID, machineID),
+		"attention_reason": svc.DesktopAttention(tenantID, userID, botID),
+		"desktop_mode":     botDesktopModeOf(r, svc, tenantID, userID, botID),
+	}
+	pictureUser := userID
+	if desktopUser := svc.DesktopUserForBot(tenantID, userID, botID); desktopUser != "" {
+		pictureUser = desktopUser
+	}
+	if direct := edgeDirectURL(tenantID, pictureUser, svc.DesktopViewRaw(tenantID, pictureUser), userControl); direct != "" {
+		body["direct_url"] = direct
+	}
+	return body
 }
 
 // botWatchRelease reads optional {"release":true,"wake":true,"epoch":n}.
@@ -704,6 +793,47 @@ func botDesktopModeOf(r *http.Request, svc *botmgmt.Service, tenantID, userID, b
 		return "shared"
 	}
 	return mode
+}
+
+// GetBotSchedulesHandler GET /api/v1/bots/{id}/schedules
+// The bot's timers on the host clock, for every desktop and the phone.
+func GetBotSchedulesHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		items, err := svc.ListBotSchedules(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if items == nil {
+			items = []botmgmt.BotSchedule{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// DeleteBotScheduleHandler DELETE /api/v1/bots/{id}/schedules/{taskID}
+func DeleteBotScheduleHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		if err := svc.DeleteBotSchedule(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("taskID")); err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
 }
 
 // GetBotActiveRunsHandler GET /api/v1/bots/{id}/runs/active

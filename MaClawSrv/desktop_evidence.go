@@ -85,9 +85,17 @@ func desktopObservePublishEvidence(scope agentruntime.Scope, action, out string)
 			if m == nil {
 				continue
 			}
-			id := ""
-			if len(m) > 1 {
-				id = m[1]
+			// The first capture group is not always the id. Zhihu's
+			// success_url captures the query, which is not an article id.
+			id := browser.SuccessPostID(p.SuccessURL, u)
+			if browser.PublicPostURL(u) != "" && !desktopEvidenceOwnsPublicURL(scope.RunID, u) {
+				// This success pattern is the public article itself (Zhihu's
+				// /p/<id>). It counts only when this run's publish record
+				// already names that same id. A link read before submit, or
+				// a different article seen after an id-less submit, is not
+				// this post. A creator console page stays evidence on its
+				// own: CSDN's success URL is not public.
+				continue
 			}
 			link := ""
 			if pr := desktopPostURLPattern(p.PostURL, id); pr != nil {
@@ -100,6 +108,11 @@ func desktopObservePublishEvidence(scope agentruntime.Scope, action, out string)
 			}
 			if link == "" {
 				link = browser.PostURLFrom(p.PostURL, id, "")
+			}
+			if link == "" && strings.Contains(p.PostURL, "{") {
+				// The profile builds a public article URL. The creator
+				// console (mp.csdn.net/.../success/<id>) is not that URL.
+				continue
 			}
 			if link == "" {
 				link = u
@@ -120,6 +133,22 @@ func desktopObservePublishEvidence(scope agentruntime.Scope, action, out string)
 		}
 	}
 	return ""
+}
+
+// desktopEvidenceOwnsPublicURL: raw is the public article this run already
+// named. A submit that came back with no id does not own whatever article
+// link shows up later.
+func desktopEvidenceOwnsPublicURL(runID, raw string) bool {
+	rec, ok := desktopPublishRecordOf(runID)
+	if !ok || strings.TrimSpace(rec.PostID) == "" {
+		return false
+	}
+	switch rec.State {
+	case browser.PublishSubmitted, browser.PublishLive, browser.PublishLiveIncomplete:
+	default:
+		return false
+	}
+	return browser.PostURLHasID(raw, rec.PostID)
 }
 
 // desktopTaskTitle: the title the run published under, when one is known.
@@ -155,7 +184,12 @@ func desktopSiteDoneWithoutLink(runID string, p *browser.SiteProfile) string {
 	}
 	for _, key := range desktopLedgerKeysForRun(runID) {
 		for _, e := range desktopLedgerEntries(key) {
-			if e.Kind == "posted" && e.Run == runID && e.Detail == string(browser.PublishLive) && desktopProfileHasHost(p, e.Host) {
+			if e.Kind == "posted" && e.Run == runID && e.URL == "" && e.Detail == string(browser.PublishLive) && desktopProfileHasHost(p, e.Host) {
+				// The profile knows how to build the public URL. An article
+				// id alone (CSDN 170775764) is not a finished post.
+				if strings.TrimSpace(p.PostURL) != "" {
+					return ""
+				}
 				return "(published, the site gave no public link)"
 			}
 		}

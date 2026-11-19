@@ -225,11 +225,14 @@ func (h *IMMessageHandler) goalCompleteForUser(userID string, args map[string]in
 	if updated == nil {
 		updated = g
 	}
-	report := goal.FormatCompletionReport(updated, summary)
-	if updated.TokenBudget > 0 {
-		report += fmt.Sprintf("\nToken 使用: %d / %d", updated.TokensUsed, updated.TokenBudget)
+	report := goalCompletionReport(updated, summary)
+	// The tool result goes back to the model; this notice is the transcript's
+	// authoritative closeout row. The post-loop announce never sees a goal
+	// that turned terminal mid-turn (maybeScheduleGoalContinuation returns
+	// before reaching it), so the report is emitted at the transition.
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.emitGoalNotice(userID, report, false)
 	}
-	report += fmt.Sprintf("\n总轮次: %d | 耗时: %ds", updated.TurnsUsed, updated.TimeUsedSeconds)
 	return report
 }
 
@@ -363,8 +366,13 @@ func (h *IMMessageHandler) goalFailForUser(userID string, args map[string]interf
 		}
 	}
 
-	return fmt.Sprintf("目标失败\n目标: %s\n原因: %s\nToken 使用: %d | 总轮次: %d",
-		g.Objective, reason, g.TokensUsed, g.TurnsUsed)
+	text := goalFailureReport(g, reason)
+	// Same closeout row as the completion report: a tool-driven fail ends the
+	// turn before the post-loop announce can run.
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.emitGoalNotice(userID, text, true)
+	}
+	return text
 }
 
 func (h *IMMessageHandler) goalGet() string {

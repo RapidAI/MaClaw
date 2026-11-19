@@ -63,6 +63,27 @@ type Service struct {
 	// device comes online. The callback receives the userID and a list of
 	// all online machine display names. Used to push IM usage guidance.
 	OnMultiDeviceOnline func(tenantID, userID string, machineNames []string)
+
+	// repoMaintPush delivers persisted GitHub repo-maint rows once this
+	// machine is online. It must call SendToOnlineMachine, never SendToMachine,
+	// so an offline desktop does not consume the short in-memory queue.
+	repoMaintPush func(machineID string)
+}
+
+// SetOnlineHook registers the repo-maint wakeup. MarkOnline calls it beside
+// DrainPendingMessages, including when the machine repository is not wired.
+func (s *Service) SetOnlineHook(fn func(machineID string)) {
+	if s == nil {
+		return
+	}
+	s.repoMaintPush = fn
+}
+
+func (s *Service) notifyRepoMaintOnline(machineID string) {
+	if s == nil || s.repoMaintPush == nil {
+		return
+	}
+	go s.repoMaintPush(machineID)
 }
 
 func (s *Service) IsMachineOnline(machineID string) bool {
@@ -356,6 +377,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 
 	if s.repo == nil {
 		log.Printf("[device] MarkOnline: no repo, skipping DB update for machine_id=%s", machineID)
+		s.notifyRepoMaintOnline(machineID)
 		return nil
 	}
 	if err := s.repo.UpdateMetadata(ctx, machineID, store.MachineMetadata{
@@ -398,6 +420,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	// This covers Hub redeployment scenarios where users sent messages during
 	// the brief disconnection window.
 	go s.DrainPendingMessages(machineID)
+	s.notifyRepoMaintOnline(machineID)
 
 	return nil
 }
@@ -591,6 +614,40 @@ func (s *Service) GracefulCloseAll() {
 			defer func() { _ = recover() }()
 			_ = c.Conn.WriteControl(websocket.CloseMessage, closeMsg, deadline)
 		}(conn)
+	}
+}
+
+// CloseTenant closes every desktop connection in one tenant. Reauthentication
+// is blocked separately by IdentityService.ensureTenantActive.
+func (s *Service) CloseTenant(tenantID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	s.runtime.mu.RLock()
+	conns := make([]*ws.ConnContext, 0)
+	for _, conn := range s.runtime.desktopsByMachine {
+		if conn != nil && conn.Conn != nil && store.NormalizeTenantID(conn.TenantID) == tenantID {
+			conns = append(conns, conn)
+		}
+	}
+	s.runtime.mu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Conn.Close()
+	}
+}
+
+// CloseUser closes every desktop connection owned by one user.
+func (s *Service) CloseUser(tenantID, userID string) {
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	s.runtime.mu.RLock()
+	conns := make([]*ws.ConnContext, 0)
+	for _, conn := range s.runtime.desktopsByMachine {
+		if conn != nil && conn.Conn != nil && store.NormalizeTenantID(conn.TenantID) == tenantID && conn.UserID == userID {
+			conns = append(conns, conn)
+		}
+	}
+	s.runtime.mu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Conn.Close()
 	}
 }
 

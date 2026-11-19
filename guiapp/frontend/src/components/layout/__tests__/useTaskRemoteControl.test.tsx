@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTaskRemoteControl } from '../useTaskRemoteControl';
-import { remoteMachineTargetSnapshot } from '../remoteAssistantSession';
+import { applyRemoteStreamPayload, applyRemoteWatchSnapshot, publishRemoteAssistantSession, remoteAssistantSessionSnapshot, remoteMachineTargetSnapshot } from '../remoteAssistantSession';
 
 vi.mock('../../../wailsjs/runtime', () => ({
     EventsOn: vi.fn(() => () => {}),
@@ -53,11 +53,107 @@ async function setup(state = remoteState()) {
 
 describe('useTaskRemoteControl', () => {
     afterEach(() => {
+        publishRemoteAssistantSession(null);
         delete (window as unknown as { go?: unknown }).go;
         cleanup();
     });
     beforeEach(() => {
         vi.clearAllMocks();
+    });
+
+    it('a proto-2 cursor hole watches the open task again', async () => {
+        const { result, op } = await setup();
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => { await result.current.openTask('D:/x'); });
+        const watches = () => op.mock.calls.filter(call => call[1] === 'watch_task').length;
+        expect(watches()).toBe(1);
+        publishRemoteAssistantSession({
+            grantId: 'ga',
+            machineName: 'A机',
+            projectPath: 'D:/x',
+            taskName: 'x',
+            canSend: true,
+            offline: false,
+            error: '',
+            messages: [],
+        });
+        applyRemoteWatchSnapshot('ga', 'D:/x', {
+            request_id: 'r1',
+            project_path: 'D:/x',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 4);
+        applyRemoteStreamPayload({
+            grant_id: 'ga',
+            project_path: 'D:/x',
+            request_id: 'r1',
+            event: 'token',
+            cursor: 6,
+            cursor_from: 6,
+            text: '乙',
+        });
+        await act(async () => {});
+        expect(watches()).toBe(2);
+        expect(op).toHaveBeenCalledWith('ga', 'watch_task', JSON.stringify({ project_path: 'D:/x', stream_proto: 2 }));
+    });
+
+    it('asks once more when that watch is behind a cursor already seen', async () => {
+        let watchCount = 0;
+        const op = vi.fn(async (_grantId: string, name: string) => {
+            if (name !== 'watch_task') return '{}';
+            watchCount += 1;
+            if (watchCount === 1) return '{}';
+            if (watchCount === 2) return JSON.stringify({ stream_proto: 2, cursor: 5 });
+            return JSON.stringify({
+                stream_proto: 2,
+                cursor: 8,
+                live: {
+                    request_id: 'r1',
+                    project_path: 'D:/x',
+                    cursor: 8,
+                    parts: [{ kind: 'text', seq: 1, text: '补上' }],
+                },
+            });
+        });
+        setBindings({
+            ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))),
+            RemoteControlOp: op,
+            RevokeRemoteControl: vi.fn(async () => true),
+        });
+        const result = renderHook(() => useTaskRemoteControl()).result;
+        await act(async () => {});
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => { await result.current.openTask('D:/x'); });
+        expect(watchCount).toBe(1);
+        publishRemoteAssistantSession({
+            grantId: 'ga',
+            machineName: 'A机',
+            projectPath: 'D:/x',
+            taskName: 'x',
+            canSend: true,
+            offline: false,
+            error: '',
+            messages: [],
+        });
+        applyRemoteWatchSnapshot('ga', 'D:/x', {
+            request_id: 'r1',
+            project_path: 'D:/x',
+            cursor: 4,
+            parts: [{ kind: 'text', seq: 1, text: '甲' }],
+        }, undefined, 4);
+        applyRemoteStreamPayload({
+            grant_id: 'ga',
+            project_path: 'D:/x',
+            request_id: 'r1',
+            event: 'token',
+            cursor: 8,
+            cursor_from: 8,
+            text: '乙',
+        });
+        await act(async () => {});
+        expect(watchCount).toBe(3);
+        const body = (remoteAssistantSessionSnapshot()?.live?.parts || []).filter(part => part.kind === 'text').map(part => part.text).join('');
+        expect(body).toBe('补上');
     });
 
     it('discards a stale task poll for a machine the person already left', async () => {
@@ -204,6 +300,125 @@ describe('useTaskRemoteControl', () => {
         expect(target.machines.map(m => m.grantId)).toEqual(['ga', 'gb']);
         expect(target.machines.every(m => m.operate && m.online)).toBe(true);
         expect(target.machines[0].machineName).toBe('A机');
+    });
+
+    it('coalesces remote state refreshes while one is in flight', async () => {
+        const pending = deferred();
+        const listState = vi.fn(() => pending.promise);
+        setBindings({ ListRemoteControlState: listState, RemoteControlOp: vi.fn(async () => '{}') });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        let first!: Promise<void>;
+        let second!: Promise<void>;
+        act(() => {
+            first = result.current.refresh();
+            second = result.current.refresh();
+        });
+        expect(listState).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            pending.resolve(remoteState());
+            await Promise.all([first, second]);
+        });
+    });
+
+    it('skips reparsing a byte-identical conversation snapshot', async () => {
+        const raw = JSON.stringify({ task: { project_path: 'D:/a' }, messages: [{ role: 'assistant', content: 'done' }], artifacts: [] });
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'get_task') return Promise.resolve(raw);
+            if (op === 'list_tasks') return Promise.resolve(JSON.stringify({ tasks: [] }));
+            return Promise.resolve('{}');
+        });
+        const parseSpy = vi.spyOn(JSON, 'parse');
+        try {
+            setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+            const { result } = renderHook(() => useTaskRemoteControl());
+            await act(async () => {});
+            act(() => result.current.selectGrant('ga'));
+            await act(async () => {});
+            await act(async () => { await result.current.openTask('D:/a'); });
+            await act(async () => { await result.current.openTask('D:/a'); });
+            const parses = parseSpy.mock.calls.filter(call => typeof call[0] === 'string' && call[0].includes('"messages"'));
+            expect(parses).toHaveLength(1);
+            expect(result.current.detail?.messages).toHaveLength(1);
+        } finally {
+            parseSpy.mockRestore();
+        }
+    });
+
+    it('skips reparsing a byte-identical task snapshot', async () => {
+        const raw = JSON.stringify({ tasks: [{ id: 'ta', name: 'A任务', project_path: 'D:/a' }] });
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'list_tasks') return Promise.resolve(raw);
+            return Promise.resolve('{}');
+        });
+        const parseSpy = vi.spyOn(JSON, 'parse');
+        try {
+            setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+            const { result } = renderHook(() => useTaskRemoteControl());
+            await act(async () => {});
+            act(() => result.current.openTaskForGrant('ga', 'D:/a'));
+            await act(async () => {});
+            act(() => result.current.openTaskForGrant('ga', 'D:/a'));
+            await act(async () => {});
+            const parses = parseSpy.mock.calls.filter(call => typeof call[0] === 'string' && call[0].includes('"tasks"'));
+            expect(parses).toHaveLength(1);
+            expect(result.current.tasks.map(task => task.id)).toEqual(['ta']);
+        } finally {
+            parseSpy.mockRestore();
+        }
+    });
+
+    it('coalesces list_tasks requests for the same grant', async () => {
+        const pending = deferred();
+        let listCalls = 0;
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'list_tasks') {
+                listCalls += 1;
+                return pending.promise;
+            }
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => {
+            result.current.openTaskForGrant('ga', 'D:/slow');
+            result.current.openTaskForGrant('ga', 'D:/slow');
+        });
+        expect(listCalls).toBe(1);
+        await act(async () => {
+            pending.resolve(JSON.stringify({ tasks: [] }));
+        });
+    });
+
+    it('coalesces duplicate get_task requests while one is in flight', async () => {
+        const pending = deferred();
+        let getTaskCalls = 0;
+        const op = vi.fn((_grantId: string, op: string) => {
+            if (op === 'get_task') {
+                getTaskCalls += 1;
+                return pending.promise;
+            }
+            if (op === 'list_tasks') return Promise.resolve(JSON.stringify({ tasks: [] }));
+            return Promise.resolve('{}');
+        });
+        setBindings({ ListRemoteControlState: vi.fn(async () => JSON.parse(JSON.stringify(remoteState()))), RemoteControlOp: op });
+        const { result } = renderHook(() => useTaskRemoteControl());
+        await act(async () => {});
+        act(() => result.current.selectGrant('ga'));
+        await act(async () => {});
+
+        let first!: Promise<void>;
+        let second!: Promise<void>;
+        act(() => {
+            first = result.current.openTask('D:/slow');
+            second = result.current.openTask('D:/slow');
+        });
+        expect(getTaskCalls).toBe(1);
+        await act(async () => {
+            pending.resolve(JSON.stringify({ messages: [], artifacts: [] }));
+            await Promise.all([first, second]);
+        });
+        expect(result.current.detailPath).toBe('D:/slow');
     });
 
     it('refuses to send a message on a view-only grant', async () => {

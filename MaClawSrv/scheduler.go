@@ -14,8 +14,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
-func scheduledTaskPrompt(action string) string {
-	return desktopbot.RoutineQuietPrompt + "\n" + strings.TrimSpace(action)
+func scheduledTaskPrompt(action string, noDesktop bool) string {
+	return desktopbot.RoutineQuietPromptFor(noDesktop) + "\n" + strings.TrimSpace(action)
 }
 
 // initScheduler starts the host clock. Desktop-bot rows always run: a chat
@@ -84,8 +84,8 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 
 	// Expose manage_schedule only with the general scheduler. im_message is
 	// wired independently in main. The context handler binds each task to
-	// the calling agent instance. Desktop-bot rows do not use this tool:
-	// Intake writes them, and the clock below fires them either way.
+	// the calling agent instance. A desktop bot turn stamps its bot id, so
+	// this tool edits the same row as bot_schedule. That row fires as the bot.
 	if enabled && executor != nil {
 		executor.ScheduleHandler = newSrvManageScheduleHandler(svc, mgr)
 		executor.ScheduleHandlerContext = func(_ context.Context, principal agentservice.Principal, instanceID string, args map[string]interface{}) string {
@@ -101,10 +101,19 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	setSrvSchedulerManager(mgr)
+	if executor != nil {
+		// The desktop-bot clock fires these rows with or without the general
+		// scheduler. The working bot registers them through bot_schedule.
+		executor.DesktopBotSchedule = func(_ context.Context, principal agentservice.Principal, instanceID, botID string, args map[string]interface{}) string {
+			return desktopBotScheduleTool(mgr, principal, instanceID, botID, args)
+		}
+	}
 	// Reconcile while the clock is stopped, then drop catch-up ids for rows
 	// that reconcile removed. The ticker and the scheduler start after that,
 	// so a watch whose bot is gone cannot fire once on the way up.
 	bindDesktopLongJobService(svc)
+	adoptUntaggedBotSchedules(svc, mgr)
+	dropDesktopBotScheduleDelivery(mgr)
 	mgr.RefreshCatchUps(time.Now())
 	startDesktopLongJobClock()
 	if !enabled {
@@ -149,12 +158,11 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 			return runDesktopBotSchedule(ctx, svc, task)
 		}
 
-		actionText := scheduledTaskPrompt(task.Action)
-
 		principal, instanceID, err := srvScheduledTaskRunTarget(ctx, svc, executor, agentservice.Principal{}, task, &mu, &cachedInstanceID)
 		if err != nil {
 			return "", err
 		}
+		actionText := scheduledTaskPrompt(task.Action, scheduleTurnHasNoDesktop(ctx, svc, principal, instanceID))
 
 		// SendMessage owns the session. PostMessage with an empty session id
 		// fails before the agent starts.
@@ -317,7 +325,7 @@ func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, e
 	if err != nil {
 		return "", err
 	}
-	actionText := scheduledTaskPrompt(task.Action)
+	actionText := scheduledTaskPrompt(task.Action, scheduleTurnHasNoDesktop(ctx, svc, principal, instanceID))
 	instanceID, metadata, targetErr := instanceMessageTarget(ctx, svc, principal, instanceID)
 	if targetErr != nil {
 		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", targetErr))

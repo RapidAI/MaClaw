@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/core/providers.dart';
@@ -33,20 +34,17 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 Widget _app(_FakeApi api) => ProviderScope(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-      ],
-      child: const MaterialApp(home: BotsScreen()),
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+  ],
+  child: l10nApp(child: const BotsScreen()),
+);
 
 const _bot = Bot(
   id: 'b1',
@@ -90,5 +88,31 @@ void main() {
 
     expect(find.text('名称'), findsOneWidget);
     expect(find.text('简介（可选）'), findsOneWidget);
+    expect(find.text('这个 bot 需要电脑'), findsOneWidget);
+  });
+
+  testWidgets('a no-computer bot hides the screen button', (tester) async {
+    final api = _FakeApi()
+      ..bots = const [Bot(id: 'n1', name: '文书', desktopMode: 'none')];
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无电脑'), findsOneWidget);
+    expect(find.byTooltip('电脑画面'), findsNothing);
+  });
+
+  testWidgets('a full quota locks the computer switch', (tester) async {
+    final api = _FakeApi()
+      ..desktopQuota = const DesktopBotQuota(limit: 1, used: 1, known: true);
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('新建 Bot'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('已用 1 / 1'), findsOneWidget);
+    final sw = tester.widget<SwitchListTile>(find.byType(SwitchListTile));
+    expect(sw.value, isFalse);
+    expect(sw.onChanged, isNull);
   });
 }

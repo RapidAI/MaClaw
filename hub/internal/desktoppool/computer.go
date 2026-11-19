@@ -103,6 +103,10 @@ func (p *Pool) computerOp(ctx context.Context, tenantID, userID, path string, fo
 	if client == nil {
 		client = &http.Client{Timeout: computerOpTimeout}
 	}
+	client, err = p.withNodeTransport(ctx, server, client)
+	if err != nil {
+		return ComputerResult{}, err
+	}
 	var out ComputerResult
 	if err := p.callClient(ctx, client, server, http.MethodPost, path, body, &out); err != nil {
 		var statusErr *upstream.StatusError

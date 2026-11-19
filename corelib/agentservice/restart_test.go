@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,20 @@ func TestDrainInterruptsInsteadOfCancelling(t *testing.T) {
 	}
 	if _, err := svc.PostMessageAsync(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "too late"}); !errors.Is(err, ErrServiceDraining) {
 		t.Fatalf("new run during drain: %v", err)
+	}
+}
+
+func TestClipTaskRequestKeepsTheEndingSites(t *testing.T) {
+	body := strings.Repeat("正文", 1500) + "发到知乎、CSDN和小红书"
+	got := clipTaskRequest(body)
+	if !strings.Contains(got, "小红书") || !strings.HasPrefix(got, "正文") {
+		t.Fatalf("tail dropped: %q", string([]rune(got)[len([]rune(got))-20:]))
+	}
+	if n := len([]rune(got)); n > 2000 {
+		t.Fatalf("len %d", n)
+	}
+	if clipTaskRequest(restartNoticeContinue) != "" {
+		t.Fatal("restart sentence kept")
 	}
 }
 
@@ -85,6 +100,232 @@ func TestResumeInterruptedRunOnce(t *testing.T) {
 	}
 	if !saw {
 		t.Fatalf("notice missing: %+v", msgs)
+	}
+}
+
+func TestResumeInstallsTheReplySlotWithThePersonsAsk(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "shot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgID := NewID("msg")
+	if err := svc.store.SaveMessage(Message{
+		ID: msgID, TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Role: MessageRoleUser, Content: "运行后截屏发给我", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var gotAsk string
+	svc.ResumeExecutionHooks = func(_ Principal, _ Instance, ask string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		gotAsk = ask
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		UserMessageID: msgID,
+		Status:        RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish the reply slot")
+	}
+	if gotAsk != "运行后截屏发给我" {
+		t.Fatalf("ask=%q", gotAsk)
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept string
+	for _, msg := range msgs {
+		if msg.Content == restartNoticeContinue && msg.Metadata != nil && msg.Metadata["task_request"] != "" {
+			kept = msg.Metadata["task_request"]
+		}
+	}
+	if kept != "运行后截屏发给我" {
+		t.Fatalf("task_request=%q", kept)
+	}
+}
+
+func TestResumeKeepsTheScheduleOrigin(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "weather"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	svc.ResumeExecutionHooks = func(Principal, Instance, string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_id":              "bot_4",
+			"bot_phase":           "execute",
+			"bot_origin":          "schedule",
+			"computer_helper":     "1",
+			"bot_task":            "北京天气PDF",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish")
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range msgs {
+		if msg.Metadata == nil || msg.Metadata["restart_from"] == "" {
+			continue
+		}
+		if msg.Metadata["bot_origin"] != "schedule" || msg.Metadata["bot_id"] != "bot_4" || msg.Metadata["bot_task"] != "北京天气PDF" || msg.Metadata["computer_helper"] != "1" {
+			t.Fatalf("metadata=%v", msg.Metadata)
+		}
+		return
+	}
+	t.Fatal("continuation message missing")
+}
+
+func TestResumeOfANoneBotDropsTheComputerHelper(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{
+		"hub_bot": "1", "hub_bot_desktop": "none",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "notes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	svc.ResumeExecutionHooks = func(Principal, Instance, string) (func(context.Context) context.Context, func(context.Context, *Run, *Message, error)) {
+		return func(ctx context.Context) context.Context { return ctx }, func(context.Context, *Run, *Message, error) {
+			close(done)
+		}
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_id":              "bot_none",
+			"bot_phase":           "execute",
+			"bot_origin":          "schedule",
+			"computer_helper":     "1",
+			"bot_task":            "看看有没有新消息",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resume did not finish")
+	}
+	msgs, err := svc.store.ListMessages(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range msgs {
+		if msg.Metadata == nil || msg.Metadata["restart_from"] == "" {
+			continue
+		}
+		if msg.Metadata["bot_desktop"] != "none" || msg.Metadata["computer_helper"] != "" || msg.Metadata["bot_origin"] != "schedule" {
+			t.Fatalf("metadata=%v", msg.Metadata)
+		}
+		return
+	}
+	t.Fatal("continuation message missing")
+}
+
+func TestResumeHoldLastsUntilTheContinuationFinishes(t *testing.T) {
+	svc, principal, inst := setupCaptureAgentService(t, EchoExecutor{})
+	defer svc.Close()
+	updated, err := svc.UpdateInstance(context.Background(), principal, inst.ID, UpdateInstanceInput{Metadata: map[string]string{"hub_bot": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst = *updated
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "weather"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	var once sync.Once
+	svc.ResumeHold = func(run Run) func() {
+		if run.Metadata["bot_origin"] != "schedule" || run.Metadata["schedule_task"] != "task-1" {
+			t.Errorf("held run meta=%v", run.Metadata)
+		}
+		return func() { once.Do(func() { close(released) }) }
+	}
+	run := Run{
+		ID: NewID("run"), TenantID: principal.TenantID, UserID: principal.UserID, InstanceID: inst.ID, SessionID: sess.ID,
+		Status: RunStatusInterrupted, Error: runInterruptedError, StartedAt: time.Now().Add(-time.Minute),
+		Metadata: map[string]string{
+			metaRestartCheckpoint: `{"session_id":"` + sess.ID + `","instance_id":"` + inst.ID + `"}`,
+			metaRestartTrajectory: `{"entries":[{"role":"user","content":"keep going"}]}`,
+			"bot_origin":          "schedule",
+			"schedule_task":       "task-1",
+		},
+	}
+	if err := svc.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if n := svc.ResumeInterruptedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d", n)
+	}
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hold was not released when the continuation finished")
 	}
 }
 

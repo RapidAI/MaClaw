@@ -1,7 +1,9 @@
 package browser
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -97,6 +99,9 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if url == "" {
 		return nil, fmt.Errorf("missing url")
 	}
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
 	if kept := s.keptLoggedInDocument(url); kept != nil {
 		return kept, nil
 	}
@@ -125,6 +130,15 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	readyNote := ""
 	if rep, ok := s.session.waitPageReady(); ok {
 		readyNote = rep.Note()
+		if reason, take := wallHandsPageOver(rep.Wall); take {
+			if err := s.handPageToUser(reason, rep.State.URL, rep.State.Title); err != nil && previewHandoffEnabled() {
+				if errors.Is(err, errUserReleased) {
+					readyNote += "。用户已交还预览，先 probe 再继续"
+				} else {
+					return nil, err
+				}
+			}
+		}
 		log.Printf("[browser] navigate ready url=%q final=%q rs=%s n=%d reloaded=%t wall=%s waited=%s", url, rep.State.URL, rep.State.ReadyState, rep.State.Interactive, rep.Reloaded, rep.Wall, rep.Waited.Round(100*time.Millisecond))
 	}
 	followed := s.followAction("browser_navigate", 3*time.Second, 300*time.Millisecond, true, 0, 0, "navigate")
@@ -497,7 +511,10 @@ func (s *BrowserAgentSession) submitClickRecentLocked(key string, now time.Time)
 
 // Click clicks an element by ref or selector.
 func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("click"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("click"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -554,7 +571,10 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 
 // ClickText clicks an element from the latest snapshot by visible text/name.
 func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("click"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("click"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -621,7 +641,10 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 
 // TypeContentAppend types into a ref/selector, optionally appending instead of replacing.
 func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text, contentFormat string, appendText bool) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("type"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("type"); ask != nil {
 		return ask, nil
 	}
 	if s == nil || s.session == nil {
@@ -639,12 +662,12 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	// only the code, never the text that was offered.
 	if s.modelPasswordTypingBlocked() && ref == "" && selector == "" {
 		if _, kind := s.FocusedInputKind(); FocusBlocksModelType(kind) {
-			return nil, fmt.Errorf("not_password_field")
+			return nil, s.refuseSecretTyping()
 		}
 		// A focused container is not a password, but prepare descends into
 		// its first input and would clear that field.
 		if kind, err := s.receiveTargetKind(""); err != nil || receiveKindBlocks(kind) {
-			return nil, fmt.Errorf("not_password_field")
+			return nil, s.refuseSecretTyping()
 		}
 	}
 	if ref == "" && selector == "" {
@@ -687,6 +710,9 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 		}, func(selector string) (string, error) {
 			return s.receiveTargetKindInFrame(frameID, selector)
 		}); err != nil {
+			if err.Error() == "not_password_field" {
+				return nil, s.refuseSecretTyping()
+			}
 			return nil, err
 		}
 	}
@@ -809,6 +835,9 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 	}
 	if !s.IsTargetAlive() {
 		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
+	}
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
 	}
 	if err := s.session.Back(); err != nil {
 		return nil, err
@@ -1072,8 +1101,30 @@ func (s *BrowserAgentSession) requireLiveSession() error {
 	return nil
 }
 
+// CaptureScreenshotPNG returns the raw PNG of the current page.
+func (s *BrowserAgentSession) CaptureScreenshotPNG() ([]byte, error) {
+	if err := s.requireLiveSession(); err != nil {
+		return nil, err
+	}
+	encoded, err := s.session.Screenshot(false)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("screenshot is empty")
+	}
+	return raw, nil
+}
+
 func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserActionResult, error) {
 	if err := s.requireLiveSession(); err != nil {
+		return nil, err
+	}
+	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
 	candidates, resolved, err := s.selectorCandidatesForAction(snapshotID, ref, selector)
@@ -1142,7 +1193,10 @@ func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserA
 }
 
 func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("press"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("press"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1152,8 +1206,13 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 	// key is sent. Navigation keys still go through. The error is only the code.
 	if s.modelPasswordTypingBlocked() && KeyInsertsText(key) {
 		if _, kind := s.FocusedInputKind(); FocusBlocksModelType(kind) {
-			return nil, fmt.Errorf("not_password_field")
+			return nil, s.refuseSecretTyping()
 		}
+	}
+	// Enter in a form field, and Space on the pay button, submit the order.
+	// Stop for the card before the key is sent.
+	if err := s.guardCheckoutPress(key); err != nil {
+		return policyBlockResult(s, "browser_press", err)
 	}
 	if err := s.session.Press(key); err != nil {
 		return nil, err
@@ -1169,7 +1228,10 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 }
 
 func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("dialog"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("dialog"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1193,7 +1255,10 @@ func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*Bro
 }
 
 func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("select"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("select"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {
@@ -1257,6 +1322,9 @@ func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX,
 	if err := s.requireLiveSession(); err != nil {
 		return nil, err
 	}
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
 	used := strings.TrimSpace(selector)
 	frameID := ""
 	if strings.TrimSpace(ref) != "" || used != "" {
@@ -1307,7 +1375,10 @@ func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX,
 }
 
 func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files []string) (*BrowserActionResult, error) {
-	if ask := s.captchaAskIfNeeded("set_files"); ask != nil {
+	if err := s.blockIfUserHolds(); err != nil {
+		return nil, err
+	}
+	if ask := s.personAskIfNeeded("set_files"); ask != nil {
 		return ask, nil
 	}
 	if err := s.requireLiveSession(); err != nil {

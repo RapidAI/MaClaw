@@ -538,6 +538,19 @@
           <div class="head" style="margin-bottom:8px"><div><div class="item-title" data-icon="list"><span id="tenantListTitle"></span> <span id="tenantCountBadge" class="badge info">0</span></div><div class="item-meta" id="tenantListDesc"></div></div></div>
           <div id="tenantList"><div class="hint" id="tenantListEmpty"></div></div>
         </div>
+        <div class="item hidden" id="tenantEdgePolicy" hidden style="margin-top:10px;padding:12px 14px">
+          <div class="item-title" id="tenantEdgePolicyTitle"></div>
+          <div class="item-meta" id="tenantEdgePolicyDesc"></div>
+          <div id="tenantEdgeNodeList"></div>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="tenantEdgeTenant" id="tenantEdgeTenantLabel"></label><select id="tenantEdgeTenant"></select></div>
+            <label class="tenant-check"><input id="tenantEdgeAllow" type="checkbox"><span id="tenantEdgeAllowLabel"></span></label>
+            <div><label for="tenantEdgeMaxNodes" id="tenantEdgeMaxNodesLabel"></label><input id="tenantEdgeMaxNodes" inputmode="numeric"></div>
+            <div><label for="tenantEdgeMaxStreams" id="tenantEdgeMaxStreamsLabel"></label><input id="tenantEdgeMaxStreams" inputmode="numeric"></div>
+            <div><label for="tenantEdgeMaxViews" id="tenantEdgeMaxViewsLabel"></label><input id="tenantEdgeMaxViews" inputmode="numeric"></div>
+          </div>
+          <div class="actions" style="margin-top:10px"><button class="btn-secondary" id="tenantEdgeSave" type="button" disabled></button></div>
+        </div>
       </section>
 
       <!-- Tab: Governance -->
@@ -1638,6 +1651,7 @@
 <script defer src="/admin/admin-tabs.js"></script>
 <script defer src="/admin/admin-lazy-module-loader.js"></script>
 <script defer src="/admin/tenant-tab.js"></script>
+<script defer src="/admin/edge-policy-panel.js"></script>
 <script defer src="/admin/admin-ui.js"></script>
 <script defer src="/admin/center-tab.js"></script>
 <script defer src="/admin/governance-tab.js"></script>
@@ -1650,8 +1664,8 @@
 <script defer src="/admin/user-referrals-tab.js"></script>
 <script defer src="/admin/system-tab.js"></script>
 <script defer src="/admin/cloud-workspace-tab.js?v=cws-preview-20260828-1"></script>
-<script defer src="/admin/bot-tab.js?v=bot-admin-20261009-llm"></script>
-<script defer src="/admin/desktop-tab.js?v=desktop-on-bot-20261007-5"></script>
+<script defer src="/admin/bot-tab.js?v=bot-admin-20261116-default-open"></script>
+<script defer src="/admin/desktop-tab.js?v=enroll-code-3h-20261116"></script>
 <script defer src="/admin/compute-tab.js"></script>
 <script defer src="/admin/maclaw-compute-module.js"></script>
 <script defer src="/admin/card-store-tab.js"></script>

@@ -7,10 +7,112 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
+
+func TestNoneDesktopBotDropsDesktopToolsAndKeepsServerWeb(t *testing.T) {
+	none := &coreAgentCallbacks{
+		messageMetadata: map[string]string{"bot_desktop": "none"},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1", "hub_bot_desktop": "none",
+		}}},
+	}
+	if none.botUsesContainer() {
+		t.Fatal("a bot without a desktop was sent into the container")
+	}
+	kept := map[string]string{}
+	for _, tool := range none.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("desktop", "cloud desktop", nil),
+		functionToolDefinition("local_computer", "the person's computer", nil),
+		functionToolDefinition("browser", "host browser", nil),
+		functionToolDefinition("computer_use", "drive the desktop", nil),
+		functionToolDefinition("computer_observe", "look at the screen", nil),
+		functionToolDefinition("bash", "host shell", nil),
+		functionToolDefinition("read_file", "read the host", nil),
+		functionToolDefinition("generate_pdf", "write to host workspace", nil),
+		functionToolDefinition("bot_generate_pdf", "deliver PDF in chat", nil),
+		functionToolDefinition("web_search", "search the public web", nil),
+		functionToolDefinition("web_fetch", "fetch a public page", nil),
+		functionToolDefinition("memory_search", "search memory", nil),
+		functionToolDefinition("ask_user", "ask", nil),
+		functionToolDefinition("delegate_task", "run a sub-agent on this machine", nil),
+	}) {
+		fn, _ := tool["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		kept[tooldef.Name(tool)] = desc
+	}
+	for _, name := range []string{"desktop", "local_computer", "browser", "computer_use", "computer_observe", "bash", "read_file", "generate_pdf", "delegate_task"} {
+		if _, ok := kept[name]; ok {
+			t.Fatalf("none bot kept %s", name)
+		}
+	}
+	for _, name := range []string{"web_search", "web_fetch", "memory_search", "ask_user", "bot_generate_pdf"} {
+		if _, ok := kept[name]; !ok {
+			t.Fatalf("none bot lost %s: %#v", name, kept)
+		}
+	}
+	if strings.Contains(kept["web_search"], "desktop") || strings.Contains(kept["web_fetch"], "desktop") {
+		t.Fatalf("search was moved onto the desktop network: %#v", kept)
+	}
+	if allowed, _ := none.IsToolCallAllowed("desktop", `{}`); allowed {
+		t.Fatal("desktop call was allowed")
+	}
+	if allowed, _ := none.IsToolCallAllowed("browser", `{}`); allowed {
+		t.Fatal("browser call was allowed")
+	}
+	if allowed, _ := none.IsToolCallAllowed("computer_observe", `{}`); allowed {
+		t.Fatal("computer call was allowed")
+	}
+	if allowed, reason := none.IsToolCallAllowed("delegate_task", `{"request":"run"}`); allowed || reason == "" {
+		t.Fatalf("delegate call allowed=%v reason=%q", allowed, reason)
+	}
+
+	normal := &coreAgentCallbacks{
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{"hub_bot": "1"}}},
+	}
+	normalKept := map[string]bool{}
+	for _, tool := range normal.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("desktop", "cloud desktop", nil),
+		functionToolDefinition("bot_generate_pdf", "deliver PDF in chat", nil),
+		functionToolDefinition("browser", "host browser", nil),
+		functionToolDefinition("computer_use", "drive the desktop", nil),
+		functionToolDefinition("web_search", "host search", nil),
+		functionToolDefinition("ask_user", "ask", nil),
+	}) {
+		normalKept[tooldef.Name(tool)] = true
+	}
+	if !normalKept["desktop"] || !normalKept["bot_generate_pdf"] || normalKept["browser"] || normalKept["computer_use"] || !normalKept["web_search"] || !normalKept["ask_user"] {
+		t.Fatalf("ordinary bot surface changed: %#v", normalKept)
+	}
+}
+
+func TestBotPDFStaysVisibleOnLightTurnsOnlyWhenModuleIsBound(t *testing.T) {
+	bot := &coreAgentCallbacks{
+		instance:           Instance{Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"}},
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "bot_generate_pdf"}},
+	}
+	seen := map[string]bool{}
+	for _, def := range bot.BuildTools("再来一次，生成PDF") {
+		seen[tooldef.Name(def)] = true
+	}
+	if !seen["bot_generate_pdf"] || seen["generate_pdf"] || seen["desktop"] {
+		t.Fatalf("no-desktop PDF tool surface: %#v", seen)
+	}
+	if !bot.IsToolAllowedForPromptProfile("bot_generate_pdf", agent.PromptProfileLight) {
+		t.Fatal("light bot turn lost the PDF runtime tool")
+	}
+	if allowed, reason := bot.IsToolCallAllowed("bot_generate_pdf", `{"content":"report"}`); !allowed {
+		t.Fatalf("no-desktop PDF call denied: %s", reason)
+	}
+	bot.runtimeTools = nil
+	if bot.IsToolAllowedForPromptProfile("bot_generate_pdf", agent.PromptProfileLight) {
+		t.Fatal("advertised PDF without a runtime handler")
+	}
+}
 
 func TestBotModeKeepsContainerToolsAndDropsHostSystem(t *testing.T) {
 	bot := &coreAgentCallbacks{

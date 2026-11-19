@@ -1,0 +1,29 @@
+---
+description: 改完 MaClawSrv、hub 或 desktopd 后，自动把对应二进制部署到 hub.mypapers.top
+globs: MaClawSrv/**/*.go,hub/**/*.go,desktopd/**/*.go
+alwaysApply: false
+---
+
+# 改完即部署到 hub.mypapers.top
+
+改完会影响正在跑的桌面 bot 的代码后，在同一轮里部署，不要等用户再提醒。只部署这次改动对应的二进制。
+
+主机是 `hub.mypapers.top`（与 `maclawsrv.mypapers.top`、`dockerd.mypapers.top` 同一台），用户 `root`。密码用用户已经给过的那一份，不要写进仓库、规则、日志或提交说明。
+
+按 `docs/desktop-gui-v2.md` 第 4.4 节做二进制替换。不要用 `deploy_maclawsrv.cmd`、`deploy_desktopd.cmd`、`desktopd/remote_deploy.sh`、`build/maclawsrv_deploy/remote_deploy_maclawsrv.sh`。不要覆盖 `start.sh`、`configs/config.yaml`、`.env`、systemd 单元，不要重启 Docker，不要停 HubCenter。
+
+本机交叉编译当前工作区（不只编译 HEAD）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.serviceVersion=<日期.简述> -X main.serviceCommit=<git>-dirty -X main.serviceBuiltAt=<RFC3339>" -o maclawsrv ./MaClawSrv
+```
+
+hub 与 desktopd 不带这三项版本变量：`go build -ldflags "-s -w" -o maclaw-hub ./hub/cmd/hub`，`go build -ldflags "-s -w" -o desktopd ./desktopd/cmd/desktopd`。重的 `go build` 走 `scripts/goheavy.ps1`。
+
+主机上先把现有二进制备份到旁边（`*.bak-<简述>-<日期>`，不要覆盖旧备份），再覆盖，`chmod 755`，只重启改过的进程：
+
+- maclawsrv：`/data/soft/maclaw_srv/bin/maclawsrv`，`systemctl restart maclawsrv.service`。启动后大约 3 秒才监听。确认 `curl -fsS --max-time 5 http://127.0.0.1:18080/version`。
+- hub：`/data/soft/hub/maclaw-hub`，`( cd /data/soft/hub && ./start.sh )`。没有 `/version`。用新 pid 和 `sha256sum` 确认。`http://127.0.0.1:9399/api/mobile/bootstrap` 返回 401 表示在听。
+- desktopd：`/data/soft/maclaw_desktopd/bin/desktopd`，`systemctl restart maclaw-desktopd.service`。
+
+重启会丢掉当时还在进行的对话。部署后用版本、pid、sha256 向用户说明结果，以及没重启的进程。

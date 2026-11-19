@@ -1,17 +1,15 @@
 package guiapp
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Serializes read-modify-write of app_run_history.json across concurrent
-// skill completions / UI clears. Readers take RLock so list is not torn mid-write.
+// Serializes app_run_history.db transactions across concurrent skill
+// completions / UI clears. Readers take RLock so list is not torn mid-write.
 var maclawAppRunHistoryMu sync.RWMutex
 
 // maclawAppRunHistoryEntry is the durable run history / publish-evidence record
@@ -159,47 +157,7 @@ func (a *App) RecordMaclawAppRunHistory(entry maclawAppRunHistoryEntry) (maclawA
 	maclawAppRunHistoryMu.Lock()
 	defer maclawAppRunHistoryMu.Unlock()
 
-	store, err := a.readMaclawAppRunHistoryStore()
-	if err != nil {
-		return maclawAppRunHistoryEntry{}, err
-	}
-	if store.ByApp == nil {
-		store.ByApp = map[string][]maclawAppRunHistoryEntry{}
-	}
-	// A run may first be written under the runtime Skill identity and then under
-	// the panel app identity (or vice versa). Merge the same runID across every
-	// identity bucket so the sparse governance stamp cannot leave two divergent
-	// records and the rich runtime fields remain authoritative.
-	for key, list := range store.ByApp {
-		next := make([]maclawAppRunHistoryEntry, 0, len(list))
-		for _, existing := range list {
-			if strings.EqualFold(strings.TrimSpace(existing.RunID), entry.RunID) {
-				entry = mergeMaclawAppRunHistoryEntry(entry, existing)
-				continue
-			}
-			next = append(next, existing)
-		}
-		if len(next) == 0 {
-			delete(store.ByApp, key)
-		} else {
-			store.ByApp[key] = next
-		}
-	}
-	list := store.ByApp[entry.AppID]
-	next := make([]maclawAppRunHistoryEntry, 0, len(list)+1)
-	next = append(next, list...)
-	next = append([]maclawAppRunHistoryEntry{entry}, next...)
-	if len(next) > maclawAppRunHistoryPerAppLimit {
-		next = next[:maclawAppRunHistoryPerAppLimit]
-	}
-	store.ByApp[entry.AppID] = next
-	store.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	store.Schema = maclawAppRunHistorySchema
-	pruneMaclawAppRunHistoryStore(&store)
-	if err := a.writeMaclawAppRunHistoryStore(store); err != nil {
-		return maclawAppRunHistoryEntry{}, err
-	}
-	return entry, nil
+	return a.recordMaclawAppRunHistoryDB(entry)
 }
 
 // ListMaclawAppRunHistory returns durable run history for one app (newest first).
@@ -213,20 +171,7 @@ func (a *App) ListMaclawAppRunHistory(appID string, limit int) ([]maclawAppRunHi
 	}
 	maclawAppRunHistoryMu.RLock()
 	defer maclawAppRunHistoryMu.RUnlock()
-	store, err := a.readMaclawAppRunHistoryStore()
-	if err != nil {
-		return nil, err
-	}
-	list := store.ByApp[appID]
-	if len(list) == 0 {
-		return []maclawAppRunHistoryEntry{}, nil
-	}
-	if len(list) > limit {
-		list = list[:limit]
-	}
-	out := make([]maclawAppRunHistoryEntry, len(list))
-	copy(out, list)
-	return out, nil
+	return a.listMaclawAppRunHistoryDB(appID, limit)
 }
 
 // ListAllMaclawAppRunHistory returns newest durable runs across all apps.
@@ -236,24 +181,7 @@ func (a *App) ListAllMaclawAppRunHistory(limit int) ([]maclawAppRunHistoryEntry,
 	}
 	maclawAppRunHistoryMu.RLock()
 	defer maclawAppRunHistoryMu.RUnlock()
-	store, err := a.readMaclawAppRunHistoryStore()
-	if err != nil {
-		return nil, err
-	}
-	all := make([]maclawAppRunHistoryEntry, 0, 32)
-	for appID, list := range store.ByApp {
-		for _, entry := range list {
-			if strings.TrimSpace(entry.AppID) == "" {
-				entry.AppID = appID
-			}
-			all = append(all, entry)
-		}
-	}
-	sortMaclawAppRunHistoryNewestFirst(all)
-	if len(all) > limit {
-		all = all[:limit]
-	}
-	return all, nil
+	return a.listAllMaclawAppRunHistoryDB(limit)
 }
 
 // ClearMaclawAppRunHistory removes durable history for one app.
@@ -265,22 +193,7 @@ func (a *App) ClearMaclawAppRunHistory(appID string) (bool, error) {
 	maclawAppRunHistoryMu.Lock()
 	defer maclawAppRunHistoryMu.Unlock()
 
-	store, err := a.readMaclawAppRunHistoryStore()
-	if err != nil {
-		return false, err
-	}
-	if store.ByApp == nil {
-		return false, nil
-	}
-	if _, ok := store.ByApp[appID]; !ok {
-		return false, nil
-	}
-	delete(store.ByApp, appID)
-	store.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := a.writeMaclawAppRunHistoryStore(store); err != nil {
-		return false, err
-	}
-	return true, nil
+	return a.clearMaclawAppRunHistoryDB(appID)
 }
 
 // CheckMaclawAppRuntimeHealth re-plans dependencies for a package/app and
@@ -447,49 +360,7 @@ func (a *App) maclawAppRunHistoryPath() string {
 }
 
 func (a *App) readMaclawAppRunHistoryStore() (maclawAppRunHistoryStore, error) {
-	path := a.maclawAppRunHistoryPath()
-	store := maclawAppRunHistoryStore{
-		Schema: maclawAppRunHistorySchema,
-		ByApp:  map[string][]maclawAppRunHistoryEntry{},
-	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return store, nil
-	}
-	if err != nil {
-		return store, err
-	}
-	if len(data) == 0 {
-		return store, nil
-	}
-	if err := json.Unmarshal(data, &store); err != nil {
-		return store, fmt.Errorf("decode maclaw app run history: %w", err)
-	}
-	if store.Schema == "" {
-		store.Schema = maclawAppRunHistorySchema
-	}
-	if store.ByApp == nil {
-		store.ByApp = map[string][]maclawAppRunHistoryEntry{}
-	}
-	return store, nil
-}
-
-func (a *App) writeMaclawAppRunHistoryStore(store maclawAppRunHistoryStore) error {
-	path := a.maclawAppRunHistoryPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if store.Schema == "" {
-		store.Schema = maclawAppRunHistorySchema
-	}
-	if store.ByApp == nil {
-		store.ByApp = map[string][]maclawAppRunHistoryEntry{}
-	}
-	data, err := json.MarshalIndent(store, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(path, data)
+	return a.readMaclawAppRunHistoryStoreDB()
 }
 
 // maclawAppDependencyIsHardBlocked mirrors frontend isBlockingBackendDependency:

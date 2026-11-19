@@ -1770,3 +1770,61 @@ func TestUserBillingTimezoneIsWriteOnceAndHydrated(t *testing.T) {
 		t.Fatalf("listed users = %#v, err=%v", items, err)
 	}
 }
+
+func TestMachineUpdateMetadataPreservesUnsetFields(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	user := &store.User{
+		ID: "u_meta", TenantID: "tenant_acme", Email: "meta@example.com",
+		SN: "SN-2026-000777", Status: "active", EnrollmentStatus: "approved",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	machine := &store.Machine{
+		ID: "m_meta", TenantID: user.TenantID, UserID: user.ID,
+		Name: "office-pc", Platform: "windows", Hostname: "host-1", Arch: "amd64",
+		AppVersion: "8.1.0.12464", HeartbeatSec: 60,
+		MachineTokenHash: "h", Status: "offline",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Machines.Create(ctx, machine); err != nil {
+		t.Fatalf("create machine: %v", err)
+	}
+
+	// An older client re-enrolls without version/host info: stored values must
+	// survive instead of being blanked.
+	if err := st.Machines.UpdateMetadata(ctx, machine.ID, store.MachineMetadata{
+		Name: "office-pc", Platform: "windows",
+	}); err != nil {
+		t.Fatalf("update metadata from old client: %v", err)
+	}
+	got, err := st.Machines.GetByID(ctx, machine.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get machine: %v", err)
+	}
+	if got.AppVersion != "8.1.0.12464" || got.Hostname != "host-1" || got.Arch != "amd64" {
+		t.Fatalf("unset fields were not preserved: %#v", got)
+	}
+	if got.HeartbeatSec != 60 {
+		t.Fatalf("unset heartbeat should preserve stored value, got %d", got.HeartbeatSec)
+	}
+
+	// A newer client reporting real values still overwrites everything.
+	if err := st.Machines.UpdateMetadata(ctx, machine.ID, store.MachineMetadata{
+		Name: "laptop", Platform: "macos", Hostname: "host-2", Arch: "arm64",
+		AppVersion: "9.0.0", HeartbeatIntervalSec: 15,
+	}); err != nil {
+		t.Fatalf("update metadata from new client: %v", err)
+	}
+	got, err = st.Machines.GetByID(ctx, machine.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get machine: %v", err)
+	}
+	if got.Name != "laptop" || got.Platform != "macos" || got.AppVersion != "9.0.0" || got.HeartbeatSec != 15 {
+		t.Fatalf("reported fields were not applied: %#v", got)
+	}
+}

@@ -318,7 +318,7 @@ func (p *publishRun) fillRich(obj string) (string, error) {
 // publishStructureFn checks a container (the editor, or the published
 // article) for the pictures in order at their anchors and for the bold and
 // heading formatting. It returns JSON {imgs, misplaced:[...], bold, heads}.
-const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const remote = [...x.attributes].some(a => /^https?:\/\//i.test((a.value || '').trim())); const big = remote || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); if (!remote) pending++; } } } const mis = [], missing = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); missing.push(i); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({missing: missing, quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
+const publishStructureFn = `function(spec) { const n = s => (s || '').replace(/\s+/g, ''); let txt = ''; const imgs = []; let pending = 0; const w = document.createTreeWalker(this, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT); for (let x = w.currentNode; x; x = w.nextNode()) { if (x.nodeType === 3) { const p = x.parentElement; if (p && p.closest('script,style,noscript')) continue; txt += n(x.nodeValue); } else if (x.tagName === 'IMG') { const r = x.getBoundingClientRect(); const remote = [...x.attributes].some(a => /^(?:https?:)?\/\//i.test((a.value || '').trim())); const big = remote || Math.max(x.naturalWidth || 0, r.width || 0) >= 60; if (big) { imgs.push(txt.length); if (!remote) pending++; } } } const mis = [], missing = []; for (let i = 0; i < spec.anchors; i++) { const at = imgs[i]; if (at === undefined) { mis.push('picture ' + (i + 1) + ' missing'); missing.push(i); continue; } const a = n(spec.before[i]).slice(-12), b = n(spec.after[i]).slice(0, 12); const ia = a ? txt.indexOf(a) : 0; const ib = b ? txt.indexOf(b, ia < 0 ? 0 : ia) : txt.length; if (ia < 0 || ib < 0) { mis.push('text around picture ' + (i + 1) + ' not found'); continue; } if (at < ia + a.length - 1 || at > ib + 1) mis.push('picture ' + (i + 1) + ' is not after "' + spec.before[i].slice(-12) + '"'); } const bel = [...this.querySelectorAll('strong,b')].concat([...this.querySelectorAll('span,em')].filter(e => parseInt(getComputedStyle(e).fontWeight) >= 600)); const btxt = n(bel.map(e => e.innerText).join('|')); const boldOK = spec.bold.filter(b => btxt.includes(n(b).slice(0, 8))).length; const qt = n([...this.querySelectorAll('blockquote')].filter(q => !q.parentElement.closest('blockquote')).map(q => q.innerText).join('')).length; return JSON.stringify({missing: missing, quote: txt.length ? qt / txt.length : 0, pending: pending, imgs: imgs.length, misplaced: mis, bold: boldOK, heads: this.querySelectorAll('h1,h2,h3,h4,h5,h6').length}); }`
 
 type structureResult struct {
 	Imgs      int      `json:"imgs"`
@@ -347,10 +347,11 @@ func (p *publishRun) structureSpec() map[string]interface{} {
 }
 
 // checkStructure runs publishStructureFn on obj and names what is wrong.
-// A picture that does not reference a server URL yet is not stored; it is
-// waited for while the page is still uploading (writing requests in flight
-// or recent), and fails as soon as an upload request fails or the page has
-// gone quiet with pictures still local.
+// A picture that does not reference a server URL yet is waited for while
+// the page is still uploading, and fails when an upload request fails.
+// On the editor, a quiet local preview with no upload request is the file
+// the submit will send. On the published page that same preview is missing
+// from the post.
 func (p *publishRun) checkStructure(obj, where string) (string, error) {
 	start := time.Now()
 	fallback := start.Add(minDur(2*p.spec.StepBudget-15*time.Second, 45*time.Second))
@@ -381,6 +382,10 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 				return sum, fmt.Errorf("%s: %d picture(s) not stored: the site's upload failed (%s)", where, n, strings.Join(fails, "; "))
 			}
 			if n, since := p.net.idleFor(); n == 0 && since > publishUploadIdle && !p.progressBusy() {
+				started, _, _, _ := p.net.uploadStats(start.Add(-publishUploadLookback))
+				if localPreviewMaySubmit(where, started) && err == nil {
+					return sum, nil
+				}
 				if err != nil {
 					return sum, err
 				}
@@ -389,6 +394,13 @@ func (p *publishRun) checkStructure(obj, where string) (string, error) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// localPreviewMaySubmit: the editor is holding the file the submit sends
+// when no upload request was seen. The published page is the site's own
+// copy, so a picture still local there is not in the post.
+func localPreviewMaySubmit(where string, uploadsSeen int) bool {
+	return uploadsSeen == 0 && where != "published page"
 }
 
 // publishUploadIdle: pictures still local with no writing request for this

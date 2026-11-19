@@ -86,6 +86,28 @@ func TestCSDNProfileRedirectsRichEditorAndBuildsPublicLink(t *testing.T) {
 	}
 }
 
+func TestZhihuSuccessIDIsTheArticleNotTheQuery(t *testing.T) {
+	p := ProfileForURL("https://zhuanlan.zhihu.com/write")
+	if p == nil {
+		t.Fatal("no zhihu profile")
+	}
+	if id := successPostID(p.SuccessURL, "https://zhuanlan.zhihu.com/p/2097265154266227495?utm=1"); id != "2097265154266227495" {
+		t.Fatalf("id %q", id)
+	}
+	if PublicPostURL("https://editor.csdn.net/md/") != "" {
+		t.Fatal("editor url counted as public")
+	}
+	if PublicPostURL("https://creator.xiaohongshu.com/publish/publish?published=true") != "" {
+		t.Fatal("creator console counted as public")
+	}
+	if got := PublicPostURL("https://www.xiaohongshu.com/explore/6adbf6450000000024036add"); !strings.Contains(got, "/explore/") {
+		t.Fatal(got)
+	}
+	if got := PublicPostURL("https://zhuanlan.zhihu.com/write"); got != "" {
+		t.Fatal(got)
+	}
+}
+
 func TestMarkdownImageURLsAndBodyComplete(t *testing.T) {
 	txt := "a\n![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/a.png)\n![x](https://i-blog.csdnimg.cn/direct/a.png)\n![](blob:xyz)\n<img src=\"https://i-blog.csdnimg.cn/direct/b.jpeg\">"
 	if got := markdownImageURLs(txt); len(got) != 2 {

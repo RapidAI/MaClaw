@@ -1,4 +1,21 @@
-import type { CSSProperties, ReactNode } from "react";
+import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
+
+/**
+ * Assistant conversations draw message frames unless this is false.
+ * The conversation stylesheet paints those frames with !important and must
+ * skip [data-chat-bubble="off"]; an inline transparent fill cannot beat it.
+ */
+const ChatBubblesContext = createContext(true);
+
+export function ChatBubblesProvider({
+    enabled,
+    children,
+}: {
+    enabled: boolean;
+    children: ReactNode;
+}) {
+    return <ChatBubblesContext.Provider value={enabled}>{children}</ChatBubblesContext.Provider>;
+}
 
 export type ChatBubbleSide = "left" | "right";
 /**
@@ -213,7 +230,9 @@ export function ChatBubbleFrame({
     tailPlacement = "top",
     topRight,
 }: ChatBubbleFrameProps) {
-    const { layoutStyle, padding, borderRadius } = sanitizeChatBubbleLayoutStyle(style, { showTail });
+    const framed = useContext(ChatBubblesContext);
+    const tailVisible = showTail && framed;
+    const { layoutStyle, padding, borderRadius } = sanitizeChatBubbleLayoutStyle(style, { showTail: tailVisible });
     const resolvedTailTestId = tailTestId ?? (testId ? `${testId}-tail` : undefined);
     // Empty tokens would produce invalid CSS (`1px solid ` / missing fill); keep paint stable.
     const fill = background?.trim() || "transparent";
@@ -222,20 +241,23 @@ export function ChatBubbleFrame({
     return (
         <div
             data-testid={testId}
+            data-chat-bubble={framed ? "on" : "off"}
             className={className}
             style={{
                 ...layoutStyle,
                 position: "relative",
                 isolation: "isolate",
                 boxSizing: "border-box",
-                overflow: showTail ? "visible" : layoutStyle.overflow,
+                overflow: tailVisible ? "visible" : layoutStyle.overflow,
                 padding: padding ?? DEFAULT_PADDING,
                 borderRadius: borderRadius ?? 8,
-                background: fill,
-                border: `1px solid ${stroke}`,
+                background: framed ? fill : "transparent",
+                ...(framed
+                    ? { border: `1px solid ${stroke}` }
+                    : { borderStyle: "none", borderWidth: 0 }),
             }}
         >
-            {showTail && (
+            {tailVisible && (
                 <span
                     aria-hidden="true"
                     data-testid={resolvedTailTestId}

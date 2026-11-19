@@ -21,7 +21,7 @@ func TestDesktopBotSilenceCases(t *testing.T) {
 		Metadata: map[string]string{"send_to_user": "首页没打开。", "text": "无变化"},
 		Text:     "无变化",
 	})
-	if err != nil || reply.SendToUser != "首页没打开。" || strings.Contains(reply.SendToUser, "无变化") {
+	if err != nil || !strings.Contains(reply.SendToUser, "首页没打开。") || !strings.Contains(reply.SendToUser, desktopUnverifiedSentence) || strings.Contains(reply.SendToUser, "无变化") {
 		t.Fatalf("sentence = %+v err=%v", reply, err)
 	}
 	reply, err = s.settleDesktopCommand("tenant", "user", "bot", "instance", "", false, desktopCommandBody{

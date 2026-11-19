@@ -1,4 +1,5 @@
 import {
+    CancelCodeGenSSOPolling,
     CancelGitHubCopilotOAuth,
     CancelKimiCodeOAuth,
     CancelLobsterAIOAuth,
@@ -12,6 +13,7 @@ import {
     CancelZhipuCodingOAuth,
     CompleteAnthropicOAuth,
     StartAnthropicOAuth,
+    StartCodeGenProviderSSOEmbedded,
     StartGitHubCopilotOAuth,
     StartKimiCodeOAuth,
     StartLobsterAIOAuth,
@@ -23,6 +25,7 @@ import {
     StartWorkBuddyOAuth,
     StartXAIOAuth,
     StartZhipuCodingOAuth,
+    WaitCodeGenSSOResult,
     WaitGitHubCopilotOAuth,
     WaitKimiCodeOAuth,
     WaitLobsterAIOAuth,
@@ -75,6 +78,10 @@ export function traeEdition(providerName?: string): string | null {
 }
 
 export function cancelNamedProviderOAuth(providerName?: string) {
+    if (providerName === "CodeGen") {
+        void CancelCodeGenSSOPolling();
+        return;
+    }
     if (providerName === "GitHub Copilot") {
         CancelGitHubCopilotOAuth();
         return;
@@ -249,6 +256,16 @@ export async function promptZhipuBrowserLogin(t: Translate, onHint: (hint: strin
     onHint(hint);
     if (!info.browser_opened) setTestResult?.({ ok: true, msg: hint });
     return WaitZhipuCodingOAuth();
+}
+
+/**
+ * Runs TigerClaw's local-callback CodeGen SSO without onboarding side effects.
+ * Failures are shown rather than silently starting the legacy polling flow,
+ * which cannot share the browser's SSO session.
+ */
+export async function runCodeGenSSOLogin() {
+    await StartCodeGenProviderSSOEmbedded();
+    return WaitCodeGenSSOResult();
 }
 
 type OAuthTestResult = { ok: boolean; msg: string; retryable?: boolean };

@@ -1,0 +1,905 @@
+{
+  "@@locale": "mn",
+  "tabBots": "Bot",
+  "tabRemote": "远控",
+  "tabAssistant": "助手",
+  "tabStatus": "工作状态",
+  "tabMe": "我的",
+  "errorBotNotFound": "找不到这个 Bot",
+  "backToBots": "返回列表",
+  "errorRoomNotFound": "找不到这个房间",
+  "backToRooms": "返回房间列表",
+  "errorTaskNotFound": "找不到这个远程任务",
+  "backToRemote": "返回远程控制",
+  "settingsLanguage": "语言 / Language",
+  "languageSystem": "跟随系统",
+  "composerAttach": "传送文件",
+  "composerSend": "发送",
+  "composerMicStart": "语音输入",
+  "composerMicStop": "停止语音输入",
+  "composerSupplement": "给当前任务补充说明",
+  "composerStop": "停止当前任务",
+  "addAccountTitle": "添加账号",
+  "reloginTitle": "重新登录",
+  "loginTagline": "随时随地管理和指挥你的桌面 Bot",
+  "loginTabEmail": "邮箱登录",
+  "loginTabPhone": "手机登录",
+  "identityHintEmail": "邮箱地址",
+  "identityHintPhone": "手机号",
+  "identityLabelEmail": "邮箱",
+  "identityLabelPhone": "手机号",
+  "identityRequiredEmail": "请输入邮箱",
+  "identityRequiredPhone": "请输入手机号",
+  "codeLabel": "验证码",
+  "codeRequired": "请输入验证码",
+  "codeSentEmail": "验证码已发送，请查收邮箱",
+  "codeSentSms": "验证码已发送，请查收短信",
+  "codeExpiryEmail": "验证码 5 分钟内有效",
+  "codeExpirySms": "验证码 60 秒内有效",
+  "getCode": "获取验证码",
+  "resendCode": "重新发送",
+  "resendIn": "{seconds}s",
+  "@resendIn": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "signIn": "登录",
+  "signingIn": "登录中",
+  "confirmSignIn": "确认登录",
+  "scanToSignIn": "扫码登录",
+  "sessionExpired": "登录已过期，请重新验证身份",
+  "loginFooter": "登录即表示同意使用该账号下的桌面 Bot 服务。\n未注册的联系方式会自动创建账号。",
+  "pendingApproval": "注册已提交，等待管理员审批后即可使用",
+  "verifyCodeInvalid": "验证码错误或已过期",
+  "phoneFormatInvalid": "手机号格式不正确",
+  "phoneAlreadyRegistered": "该手机号已绑定其他账号",
+  "phoneRegistrationDisabled": "当前 Hub 未开启手机注册，请改用邮箱登录",
+  "ipBlocked": "请求被拦截，请稍后再试",
+  "invalidEmail": "请输入有效的邮箱地址",
+  "invalidPhone": "请输入有效的手机号",
+  "opFailedRetry": "操作失败，请重试",
+  "qrScanTitle": "扫描桌面端的「移动认证二维码」",
+  "qrScanHint": "在电脑端 MaClaw「关于 → Hub 身份 → 移动认证二维码」打开二维码，5 分钟内扫描即可登录同一账号。",
+  "qrPasteLabel": "或粘贴二维码内容",
+  "qrInvalid": "二维码无效、已使用或已过期，请在电脑端重新生成",
+  "qrOwnerUnavailable": "生成该二维码的账号不可用",
+  "qrPhoneRequired": "该账号未绑定手机号，无法使用扫码登录",
+  "qrHubTooOld": "当前 Hub 版本不支持扫码登录，请更新 Hub 或改用验证码登录",
+  "botStatusTitle": "{bot} · 任务状态",
+  "@botStatusTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "notSignedIn": "未登录",
+  "retry": "重试",
+  "cancel": "取消",
+  "resume": "继续",
+  "pause": "暂停",
+  "stop": "停止",
+  "start": "启动",
+  "stRunningCount": "进行中（{count}）",
+  "@stRunningCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stNoRunningTasks": "没有正在运行的任务",
+  "stRecentCount": "最近任务（{count}）",
+  "@stRecentCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stNoTaskHistory": "暂无任务记录",
+  "stPaused": "已暂停",
+  "stCurrent": "当前：{step}",
+  "@stCurrent": {
+    "placeholders": {
+      "step": {
+        "type": "String"
+      }
+    }
+  },
+  "stNext": "下一步：{step}",
+  "@stNext": {
+    "placeholders": {
+      "step": {
+        "type": "String"
+      }
+    }
+  },
+  "stStartedAt": "开始于 {time}",
+  "@stStartedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "stWaitingForYou": "等待你的操作",
+  "stStopRunTitle": "停止这个任务？",
+  "stStopRunBody": "「{name}」将被终止，进行中的工作会中断。",
+  "@stStopRunBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "stProgress": "进展：{text}",
+  "@stProgress": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stError": "错误：{text}",
+  "@stError": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stLeftover": "遗留：{text}",
+  "@stLeftover": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stTitle": "工作状态",
+  "stBotRooms": "Bot 房间",
+  "stSegmentTasks": "任务",
+  "stSegmentFeed": "动态",
+  "stDownloadFailed": "下载附件失败：{reason}",
+  "@stDownloadFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "stSystemName": "系统",
+  "stEmptyFeed": "还没有 Bot 之间的动态",
+  "stSaidHeader": "Bot 对你说",
+  "stCollabHeader": "协作任务",
+  "stKindDelegate": "委托",
+  "stKindDone": "完成",
+  "stKindBlocked": "受阻",
+  "stKindProgress": "进展",
+  "stKindQuestion": "提问",
+  "stKindArtifact": "产物",
+  "stKindReply": "回复",
+  "stKindDefault": "动态",
+  "stStateQueued": "排队中",
+  "stStateRunning": "进行中",
+  "stStateHeld": "已挂起",
+  "stStateWaitingHuman": "等待人工",
+  "stStateBlocked": "受阻",
+  "stStateCompleted": "已完成",
+  "stStateFailed": "失败",
+  "stStateAccepted": "已验收",
+  "stStateReturned": "已退回",
+  "stQuestion": "问题：{text}",
+  "@stQuestion": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  },
+  "stAllQuiet": "一切安静，没有进行中的任务",
+  "stDeliveriesCount": "待查看结果（{count}）",
+  "@stDeliveriesCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "botsTitle": "我的 Bot",
+  "botsCreate": "新建 Bot",
+  "botsCreateAction": "创建",
+  "botsAccessDisabled": "当前账号未开通 Bot 功能",
+  "botsRetry": "重试",
+  "botsEmptyTitle": "还没有 Bot",
+  "botsEmptyHint": "点击右下角创建一个",
+  "botsPrimaryMark": "主",
+  "botsDesktopTooltip": "电脑画面",
+  "botsNameLabel": "名称",
+  "botsNameHint": "给 Bot 起个名字",
+  "botsDescLabel": "简介（可选）",
+  "botsDescHint": "这个 Bot 帮你做什么",
+  "botsNeedsComputer": "这个 bot 需要电脑",
+  "botsNoComputerQuota": "这个账号还没有分配电脑：只能创建无电脑的 Bot",
+  "botsNameTaken": "已经有一个叫这个名字的 Bot 了，换个名字吧",
+  "botsNameRequired": "请输入名称",
+  "shapeBlob": "团子",
+  "shapeCloud": "云朵",
+  "shapeLeaf": "叶子",
+  "shapeSquare": "方块",
+  "shapePill": "胶囊",
+  "shapeCircle": "圆形",
+  "desktopMarkNone": "无电脑",
+  "desktopMarkIsolated": "电脑·独立",
+  "desktopMarkShared": "电脑·共用",
+  "quotaUsed": "已用 {used}",
+  "@quotaUsed": {
+    "placeholders": {
+      "used": {
+        "type": "int"
+      }
+    }
+  },
+  "quotaUsedOf": "已用 {used} / {limit}",
+  "@quotaUsedOf": {
+    "placeholders": {
+      "used": {
+        "type": "int"
+      },
+      "limit": {
+        "type": "int"
+      }
+    }
+  },
+  "workStateIdle": "空闲",
+  "workStateRunning": "运行中",
+  "workStateWaitingUser": "待接管",
+  "workStateAwaitingAnswer": "待回答",
+  "workStateFailed": "失败",
+  "fallbackFileName": "文件",
+  "scheduleEveryMinutes": "每 {minutes} 分钟",
+  "@scheduleEveryMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "scheduleEveryDay": "每天",
+  "scheduleDowSun": "周日",
+  "scheduleDowMon": "周一",
+  "scheduleDowTue": "周二",
+  "scheduleDowWed": "周三",
+  "scheduleDowThu": "周四",
+  "scheduleDowFri": "周五",
+  "scheduleDowSat": "周六",
+  "acCurrentModel": "当前模型",
+  "acCurrentModelHint": "各阶段生效的模型配置",
+  "voiceTitle": "语音引擎",
+  "acVoiceEngineHint": "朗读音色与识别方式 · 本地下载模型",
+  "checkUpdate": "检查更新",
+  "acCheckUpdateHint": "从 GitHub / Cloudflare R2 获取新版本",
+  "acAccountsCount": "账号（{count}）",
+  "@acAccountsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acSignOut": "退出当前账号",
+  "acSignOutConfirm": "退出当前账号？",
+  "acSignOutAction": "退出",
+  "acRemoveBody": "将移除本机上「{account}」的登录信息。",
+  "@acRemoveBody": {
+    "placeholders": {
+      "account": {
+        "type": "String"
+      }
+    }
+  },
+  "acFooter": "MaclawGo · 桌面 Bot 的移动工作台",
+  "acCredits": "Bot 额度",
+  "acCreditsUsedRemain": "已用 {used} / {total}，剩余 {remain}",
+  "@acCreditsUsedRemain": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      },
+      "remain": {
+        "type": "String"
+      }
+    }
+  },
+  "acCreditsUnlimited": "不限量",
+  "acCreditsUsed": "已用 {used}",
+  "@acCreditsUsed": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      }
+    }
+  },
+  "acCurrent": "当前",
+  "acRemoveAccount": "移除账号",
+  "acRemoveConfirm": "移除账号？",
+  "acRemove": "移除",
+  "updCantReachServer": "无法连接更新服务器",
+  "updUpToDateVersion": "当前已是最新版本（{version}）",
+  "@updUpToDateVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updUpToDate": "当前已是最新版本",
+  "updSignatureMismatch": "更新包与当前安装版本签名不一致，系统不允许覆盖安装。\n请先卸载当前版本（账号数据保存在云端，重新登录即可恢复），再到官网下载页安装新版本。",
+  "updCantOpenInstaller": "无法打开安装器",
+  "updCurrentVersion": "当前版本 {version}",
+  "@updCurrentVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updNewVersion": "发现新版本 {version}",
+  "@updNewVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updInstallHint": "将从 GitHub / Cloudflare R2 下载 {name}，校验后由系统安装器完成安装。",
+  "@updInstallHint": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "updDownloadInstall": "下载并安装",
+  "updViewInBrowser": "在浏览器中查看",
+  "updDownloading": "下载中 {percent}%",
+  "@updDownloading": {
+    "placeholders": {
+      "percent": {
+        "type": "String"
+      }
+    }
+  },
+  "updOpeningInstaller": "已下载，正在打开安装器…",
+  "updCheckFailed": "检查更新失败",
+  "updOpenDownloadPage": "在浏览器中打开下载页",
+  "vsTts": "朗读（TTS）",
+  "vsTtsSystem": "系统音色",
+  "vsDownloadKokoro": "下载 Kokoro 模型与音色包",
+  "vsVoices": "音色",
+  "vsAsr": "语音识别（ASR）",
+  "vsAsrSystem": "系统识别",
+  "vsAsrLocal": "本地 SenseVoice",
+  "vsDownloadSenseVoice": "下载 SenseVoice 识别模型",
+  "vsSenseVoiceReady": "模型已就绪——系统识别不可用时自动用它",
+  "vsLocalNote": "本地模型与桌面端 MaClaw 相同（Kokoro-82M / SenseVoice-small），下载后完全离线可用。",
+  "rcTitle": "远程控制",
+  "rcManageDevices": "设备与授权",
+  "rcInviteOthers": "邀请他人",
+  "refresh": "刷新",
+  "rcSectionInvites": "邀请我",
+  "rcSectionMachines": "远程机",
+  "rcNoMachines": "还没有可控制的机器。\n在下面的「我的设备」里挑一台配对，或让别的账号邀请你。",
+  "rcControlledByOthers": "正在远控我的电脑",
+  "rcPendingOutgoing": "等待对方处理",
+  "rcICanControl": "我可以控制",
+  "rcMyDevices": "我的设备",
+  "rcNoRecords": "暂无设备与授权记录",
+  "rcNoBindableMachine": "没有可绑定的电脑，请在桌面端接受",
+  "rcPickMachineTitle": "让哪台电脑接受这次远控？",
+  "rcOffline": "离线",
+  "rcOnline": "在线",
+  "rcCounterparty": "对方",
+  "rcWantsToControl": "{who} 想远控你的电脑（{permission}）",
+  "@rcWantsToControl": {
+    "placeholders": {
+      "who": {
+        "type": "String"
+      },
+      "permission": {
+        "type": "String"
+      }
+    }
+  },
+  "rcAccept": "接受",
+  "rcReject": "拒绝",
+  "rcIgnore": "忽略",
+  "rcEnd": "结束",
+  "rcPendingPermission": "等待对方处理 · {permission}",
+  "@rcPendingPermission": {
+    "placeholders": {
+      "permission": {
+        "type": "String"
+      }
+    }
+  },
+  "rcControlling": "正在远控 {machine}",
+  "@rcControlling": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcMyMachine": "我的电脑",
+  "rcSameAccount": "同账号",
+  "rcRevoke": "取消授权",
+  "rcPairTitle": "配对 {machine}",
+  "@rcPairTitle": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcPairHint": "配对后这台机器会出现在「远程机」里。",
+  "rcViewOnly": "仅查看",
+  "rcOperate": "可操作",
+  "rcPair": "配对",
+  "rcIdentityRequired": "请输入对方帐号（邮箱或手机号）",
+  "rcIdentityLabel": "对方帐号（邮箱或手机号）",
+  "rcSendInvite": "发送邀请",
+  "rcNewTask": "新建任务",
+  "rcViewOnlyTooltip": "当前是「仅查看」授权，不能新建任务",
+  "rcNoTasks": "这台机器还没有任务",
+  "rcNewFirstTask": "新建第一个任务",
+  "rcStateRunning": "运行中",
+  "rcStateCancelled": "已取消",
+  "rcStateInterrupted": "已中断",
+  "rcStateNotStarted": "待开始",
+  "rcPendingReview": "待查看",
+  "rcNameRequired": "请输入任务名称",
+  "rcCreateTaskOn": "在 {machine} 上新建任务",
+  "@rcCreateTaskOn": {
+    "placeholders": {
+      "machine": {
+        "type": "String"
+      }
+    }
+  },
+  "rcTaskNameLabel": "任务名称",
+  "rcModeChat": "对话",
+  "rcModeCoding": "编程",
+  "rcWorkDirLabel": "工作目录（可选）",
+  "rcWorkDirHint": "留空用对方默认目录",
+  "rcBrowseTheirDir": "浏览对方目录",
+  "rcBrowseDir": "浏览目录",
+  "rcPickThis": "选这个",
+  "rcHomeDir": "主目录",
+  "rcParent": "上一级",
+  "rcJumpDefault": "跳到默认目录",
+  "rcTooManyDirs": "子目录太多，只显示了前一部分",
+  "rcNoSubdirs": "这个目录没有子文件夹",
+  "save": "保存",
+  "rtLocalCmdRejected": "远控只能发送任务消息，不能运行本机命令",
+  "rtRename": "重命名",
+  "rtStopTaskTitle": "停止任务",
+  "rtStopTaskBody": "确定要停止这台机器上正在运行的任务吗？",
+  "rtNoFileContent": "远端没有返回文件内容",
+  "rtDownloadFailed": "下载失败：{reason}",
+  "@rtDownloadFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "rtNoAppToOpen": "没有可打开此文件的应用",
+  "rtDefaultTaskName": "远程任务",
+  "rtUnpin": "取消置顶",
+  "rtPin": "置顶",
+  "rtRunningWith": "运行中 · {phase}",
+  "@rtRunningWith": {
+    "placeholders": {
+      "phase": {
+        "type": "String"
+      }
+    }
+  },
+  "rtTimelineDegraded": "时间线已降级",
+  "rtNoTranscript": "还没有对话记录",
+  "rtComposerHint": "给这台机器的任务发消息…",
+  "rtConfirmInvalid": "确认已失效",
+  "rtConfirmRequired": "需要确认",
+  "rtFailures": "失败 {count}",
+  "@rtFailures": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "rtResuming": "正在补齐中断的输出",
+  "rtArtifacts": "产出物",
+  "rtDownload": "Татах",
+  "rtReasoning": "思考过程",
+  "rtThinkingStreaming": "Бодож байна",
+  "rtOpen": "打开",
+  "rcInviteHint": "对方在其中一台电脑上接受后，你就可以远控那台电脑。",
+  "rcTasksTitle": "任务",
+  "chatVoiceInitFailed": "语音朗读初始化失败",
+  "chatVoiceAssistantOn": "语音助手",
+  "chatVoiceAssistantOff": "关闭语音助手",
+  "chatVoiceAssistantStarted": "语音助手已开启：说话自动发送，回复自动朗读",
+  "chatMicPermissionDenied": "没有麦克风权限",
+  "chatMicOpenFailed": "无法打开麦克风录音",
+  "chatAsrUnavailableDownloading": "语音识别不可用，正在后台下载本地模型，稍后再试",
+  "chatNotHeard": "没听清，请再试",
+  "chatAsrFailed": "语音识别失败，请重试",
+  "chatSupplementHint": "例如：只要前 5 条结果",
+  "chatSupplementAppend": "追加",
+  "chatSupplementFailed": "追加失败",
+  "chatSupplementAccepted": "已补充到当前任务",
+  "chatSupplementRejected": "任务已结束，补充未送达",
+  "chatAttachCamera": "拍照",
+  "chatAttachGallery": "相册",
+  "chatAttachFile": "文件",
+  "chatMaterialSent": "素材已传送到 {path}",
+  "@chatMaterialSent": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "chatUploadFailed": "{name} 上传失败：{error}",
+  "@chatUploadFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "chatVoiceSpeaking": "语音播报中…",
+  "chatVoiceListening": "聆听中…",
+  "chatProcessing": "正在处理…",
+  "chatOnline": "在线",
+  "chatStatusTooltip": "任务状态",
+  "chatSettingsTooltip": "设置",
+  "chatAcknowledge": "知道了",
+  "chatUploading": "上传 {name}…",
+  "@chatUploading": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatContinueThreadHint": "下一条消息将继续该任务线程",
+  "chatComposerHint": "给 Bot 下达任务…",
+  "chatAttachTooltip": "传送文件到 Bot 的电脑",
+  "chatEmptyGreeting": "和 {bot} 说点什么开始吧",
+  "@chatEmptyGreeting": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "chatSending": "发送中…",
+  "chatSendFailed": "发送失败",
+  "chatResend": "重发",
+  "chatRunPlan": "按这个安排执行",
+  "chatContinueTask": "继续这个任务",
+  "chatFileParseFailed": "文件解析失败",
+  "chatSecretRequired": "需要输入 {name}",
+  "@chatSecretRequired": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "chatAnswerRequired": "需要你的回答",
+  "chatSecretHint": "输入密钥（不会显示在聊天中）",
+  "chatAnswerHint": "输入回答",
+  "chatSubmit": "提交",
+  "chatHandoffDefault": "Bot 把电脑交给你了",
+  "chatHandoffView": "去查看",
+  "chatTakeover": "接管",
+  "chatAttentionLoginWall": "需要你登录",
+  "chatAttentionCaptcha": "需要人机验证",
+  "chatAttentionMfa": "需要两步验证",
+  "chatAttentionQr": "需要扫码登录",
+  "chatAttentionPayment": "需要确认支付",
+  "chatAttentionTakeover": "需要你接管电脑",
+  "chatQueueHeld": "已暂存（电脑正被你接管中）",
+  "chatQueuedPosition": "排队中 · 第 {position} 位",
+  "@chatQueuedPosition": {
+    "placeholders": {
+      "position": {
+        "type": "int"
+      }
+    }
+  },
+  "chatQueuedBusy": "排队中，Bot 忙完后处理",
+  "dtWakeTimeout": "等了一分钟电脑仍没有起来，请稍后再试",
+  "dtBusyOther": "另一台设备正在操作这台电脑",
+  "dtHandedOver": "控制权已交给另一台设备",
+  "dtProxyAlways": "始终代理",
+  "dtProxyDirect": "直连",
+  "dtProxySmart": "智能（自动选择）",
+  "dtSavedNextOpen": "已保存，下次打开画面时生效",
+  "dtResetWarning": "重置会把电脑恢复到初始镜像，未保存的数据将丢失。",
+  "dtRestartWarning": "重启会中断电脑上正在进行的工作。",
+  "dtForceSkip": "强制（跳过优雅停止）",
+  "dtActionDone": "{title}完成",
+  "@dtActionDone": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "dtProxyMode": "代理模式",
+  "dtProxyLocked": "管理员已锁定代理模式，当前为租户默认。",
+  "dtProxyFollowTenant": "跟随租户默认（{label}）",
+  "@dtProxyFollowTenant": {
+    "placeholders": {
+      "label": {
+        "type": "String"
+      }
+    }
+  },
+  "dtMaintenance": "维护",
+  "dtRestart": "重启电脑",
+  "dtReset": "重置电脑",
+  "dtMaintenanceUnavailable": "当前租户未开放电脑维护操作。",
+  "dtTitle": "{bot} 的电脑",
+  "@dtTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "dtNoComputer": "这个 bot 没有电脑",
+  "dtBack": "返回",
+  "dtHandedBack": "已把电脑交还给 Bot",
+  "dtSwitchToVnc": "切换到 noVNC 画面",
+  "dtSwitchToH264": "切换到 H.264 画面",
+  "dtHandback": "交还电脑",
+  "dtComputerMaintenance": "电脑维护…",
+  "dtControlling": "接管中：可以操作这台电脑",
+  "dtWatching": "观看模式（不操作电脑）",
+  "dtWaking": "正在唤醒电脑…",
+  "dtNoPicture": "电脑还没有画面",
+  "dtWake": "唤醒电脑",
+  "dtLoadFailed": "画面加载失败（{code}）",
+  "@dtLoadFailed": {
+    "placeholders": {
+      "code": {
+        "type": "int"
+      }
+    }
+  },
+  "dtReload": "重新加载",
+  "delete": "删除",
+  "stDeleteScheduleTitle": "删除定时任务",
+  "stDeleteScheduleBody": "确定删除定时任务「{name}」？",
+  "@stDeleteScheduleBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "stNameEmpty": "名称不能为空",
+  "stNameTaken": "已经有一个叫这个名字的 Bot 了，换个名字吧",
+  "stSaved": "已保存",
+  "stSetPrimaryDone": "已设为主 Bot",
+  "stLongTermPrefs": "长期偏好",
+  "stPrefsHint": "写下的偏好会长期生效，之后的每个任务都会遵循（例如「结果用表格呈现」「截图带上关键步骤」）。",
+  "stPrefsFieldHint": "记录一条偏好…",
+  "stWithdrawPrefsTitle": "撤回全部偏好？",
+  "stWithdrawPrefsBody": "将移除这个 Bot 已记录的全部长期偏好，不可恢复。",
+  "stWithdraw": "撤回",
+  "stWithdrawDone": "已撤回全部偏好",
+  "stWithdrawAll": "撤回全部偏好",
+  "stPrefRecorded": "偏好已记录",
+  "stRecord": "记录",
+  "stDeleteBotTitle": "删除 Bot？",
+  "stDeleteBotBody": "将删除「{bot}」及其会话记录，此操作不可撤销。",
+  "@stDeleteBotBody": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "stScreenTitle": "Bot 设置",
+  "stNameLabel": "名称",
+  "stDescLabel": "简介",
+  "stScheduleTitle": "定时任务",
+  "stNoSchedule": "还没有定时任务。",
+  "stAppearance": "外观",
+  "stComputerSection": "电脑",
+  "stModeShared": "共用",
+  "stModeIsolated": "独立",
+  "stModeNone": "无电脑",
+  "stModeNoneHint": "这个 Bot 不使用电脑",
+  "stModeIsolatedHint": "Bot 使用自己的独立电脑画面",
+  "stModeSharedHint": "Bot 使用你账号下的共享电脑画面",
+  "stPersonaMemory": "人格与记忆",
+  "stPersonaMemoryHint": "自定义 Bot 的性格、语气和长期记忆",
+  "stLongTermPrefsHint": "记录 Bot 在每个任务里都要遵循的偏好",
+  "stDemoRecord": "演示录制",
+  "stDemoRecordHint": "录一段操作过程，提炼成 Bot 的技能（需独立电脑）",
+  "stPrimaryTitle": "主 Bot",
+  "stIsPrimaryHint": "已是主 Bot，其他 Bot 的委托由它派发",
+  "stMakePrimaryHint": "设为主 Bot 后，它可以给团队里其他 Bot 派任务",
+  "stMakePrimary": "设为主 Bot",
+  "stDeleteBot": "删除这个 Bot",
+  "stRolledBack": "已回滚到版本 {version}",
+  "@stRolledBack": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "stPersonaDisabled": "当前 Hub 未开启人格设置",
+  "stPersonaLabel": "人格",
+  "stPersonaFieldHint": "这个 Bot 是谁，怎么说话",
+  "stMemoryLabel": "长期记忆",
+  "stMemoryFieldHint": "Bot 应记住的事（偏好、约定、背景）",
+  "stHistoryTitle": "历史版本",
+  "stVersion": "版本 {version}",
+  "@stVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "stRollback": "回滚",
+  "llmCustom": "自定义模型服务",
+  "llmPlatformDefault": "平台默认模型",
+  "llmStages": "各阶段生效",
+  "llmForeground": "前台对话",
+  "llmBackground": "后台任务",
+  "llmComputerUse": "电脑操作",
+  "llmGrounder": "界面定位",
+  "llmNoConfig": "暂无生效配置",
+  "llmNotEnabled": "未启用",
+  "llmOfficialModel": "官方模型",
+  "demoMicDenied": "没有麦克风权限，请在系统设置中授权后重试",
+  "demoTitle": "{bot} · 演示录制",
+  "@demoTitle": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoIntro": "录一段在 {bot} 电脑上的操作过程，加上旁白说明，结束后可以提炼成它能反复使用的技能。\n\n需要这个 Bot 使用独立电脑（desktop_mode=isolated）。",
+  "@demoIntro": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoTitleLabel": "演示标题",
+  "demoTitleHint": "如：在 Excel 里生成周报",
+  "demoStart": "开始录制",
+  "demoRecording": "录制中 — 去 {bot} 的电脑上操作",
+  "@demoRecording": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "demoWatch": "看画面",
+  "demoNarration": "旁白",
+  "demoNarrationHint": "这一步在做什么…",
+  "demoStopRecord": "停止录音",
+  "demoVoiceNarration": "语音旁白",
+  "demoFinish": "结束录制",
+  "demoDone": "录制完成 · {count} 个事件",
+  "@demoDone": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoExtraLabel": "补充说明（可选）",
+  "demoExtraHint": "给提炼模型的额外提示，如注意事项",
+  "demoDistill": "提炼为技能",
+  "demoSkillReady": "技能已提炼",
+  "demoStepCount": "{count} 个步骤",
+  "@demoStepCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoRecordAgain": "再录一段",
+  "asstAnswerFailed": "回答失败，请重试",
+  "asstAnswerTimeout": "回答超时，请重试",
+  "asstAttached": "已附加：{name}",
+  "@asstAttached": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "asstAttachFailed": "附件处理失败",
+  "asstAttachTimeout": "附件处理超时，请重试",
+  "asstAttachUploadFailed": "附件上传失败：{error}",
+  "@asstAttachUploadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "asstReadOutDisable": "关闭语音播报",
+  "asstReadOutEnable": "开启语音播报",
+  "asstNewChat": "新对话",
+  "asstComposerHint": "问点什么…",
+  "asstAttachTooltip": "添加图片或文件",
+  "asstEmptyTitle": "直接提问，无需创建 Bot",
+  "asstEmptyHint": "支持文字、图片、文档与语音",
+  "asstSuggestWeekly": "帮我写一份周报提纲",
+  "asstSuggestExplain": "解释一个技术概念",
+  "asstSuggestSummarize": "总结我发的文档",
+  "roomNew": "新建房间",
+  "roomEdit": "编辑房间",
+  "roomEmptyTitle": "还没有房间",
+  "roomEmptyHint": "建一个让你和几个 Bot 群聊",
+  "roomInitial": "房",
+  "roomUnnamed": "未命名房间",
+  "roomNoMembers": "还没有成员",
+  "roomDeleteTitle": "删除房间？",
+  "roomDeleteBody": "「{name}」及其成员注意力设置将被移除。",
+  "@roomDeleteBody": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "roomDelete": "删除",
+  "roomNameLabel": "房间名",
+  "roomMembers": "成员",
+  "roomAttnAll": "全部",
+  "roomAttnMentions": "仅@提及",
+  "roomAttnOff": "不听",
+  "roomDefaultName": "房间",
+  "roomComposerHint": "在房间里说话，@Bot名 可点名",
+  "roomWoken": "已唤醒：{names}",
+  "@roomWoken": {
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "roomEmptyTranscript": "在房间里说点什么，Bot 们会听到",
+  "rcCreate": "创建"
+}

@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -61,11 +65,15 @@ func TestNotifyMainFileFromDirectRunGoesToThePerson(t *testing.T) {
 		return "黄仁勋_简历.docx", "application/octet-stream", []byte("x"), nil
 	}
 	var delivered []string
-	desktopNotifyDeliverPath = func(_ context.Context, _ agentruntime.Scope, p, _ string) (string, error) {
+	desktopNotifyDeliverPath = func(_ context.Context, _ agentruntime.Scope, p, _, _ string) (string, error) {
 		delivered = append(delivered, p)
 		return desktopDelivered("黄仁勋_简历.docx", 1), nil
 	}
-	defer func() { desktopRemoteNotify = nil; desktopNotifyReadFile = oldRead; desktopNotifyDeliverPath = oldDeliver }()
+	defer func() {
+		desktopRemoteNotify = nil
+		desktopNotifyReadFile = oldRead
+		desktopNotifyDeliverPath = oldDeliver
+	}()
 	inst := agentservice.Instance{ID: "inst_b3", Metadata: map[string]string{"hub_user_id": "alice", "hub_tenant_id": "tenant-a"}}
 	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_direct"}, Input: agentservice.ExecuteRequest{Instance: inst}}
 	out, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "简历好了", "paths": []any{"/home/desktop/Desktop/黄仁勋_简历.docx"}})
@@ -106,15 +114,143 @@ func TestNotifyMainFileFromDelegatedRunStillGoesToMainBot(t *testing.T) {
 	desktopNotifyReadFile = func(_ context.Context, _ agentruntime.Scope, p string) (string, string, []byte, error) {
 		return "a.docx", "application/octet-stream", []byte("x"), nil
 	}
-	desktopNotifyDeliverPath = func(context.Context, agentruntime.Scope, string, string) (string, error) {
+	desktopNotifyDeliverPath = func(context.Context, agentruntime.Scope, string, string, string) (string, error) {
 		t.Fatal("delegated run must not deliver here")
 		return "", nil
 	}
-	defer func() { desktopRemoteNotify = nil; desktopNotifyReadFile = oldRead; desktopNotifyDeliverPath = oldDeliver }()
+	defer func() {
+		desktopRemoteNotify = nil
+		desktopNotifyReadFile = oldRead
+		desktopNotifyDeliverPath = oldDeliver
+	}()
 	inst := agentservice.Instance{ID: "inst_b3", Metadata: map[string]string{"hub_user_id": "alice"}}
 	req := agentruntime.TurnRequest{Scope: agentruntime.Scope{RunID: "run_del"}, Input: agentservice.ExecuteRequest{Instance: inst}}
 	out, err := desktopNotifyMain(context.Background(), req, map[string]any{"kind": "artifact", "message": "好了", "paths": []any{"/tmp/a.docx"}})
 	if err != nil || !strings.Contains(out, "Sent to the main bot") {
 		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+func TestScheduleDeliverRefusesAFileFromThePreviousSlot(t *testing.T) {
+	start := time.Now()
+	old := start.Add(-10 * time.Minute)
+	if !desktopScheduleFileIsStale(old, start) {
+		t.Fatal("a file from the previous slot is this firing's result")
+	}
+	if desktopScheduleFileIsStale(start.Add(time.Second), start) {
+		t.Fatal("a file written during this firing was treated as stale")
+	}
+	runID := "run_stale_pdf"
+	desktopRunStarted.Store(runID, start)
+	t.Cleanup(func() { desktopRunStarted.Delete(runID) })
+	prevBash, prevFile := desktopRemoteBash, desktopRemoteFile
+	desktopRemoteBash = func(_ context.Context, _, _, command string) (string, error) {
+		if !strings.Contains(command, "stat -c %Y") {
+			t.Fatalf("command=%q", command)
+		}
+		return strconv.FormatInt(old.Unix(), 10), nil
+	}
+	desktopRemoteFile = func(context.Context, string, string, string, string, string, string, string) (string, error) {
+		t.Fatal("stale file was read for delivery")
+		return "", nil
+	}
+	t.Cleanup(func() { desktopRemoteBash, desktopRemoteFile = prevBash, prevFile })
+	ctx := context.WithValue(context.Background(), desktopScheduleTurnKey{}, true)
+	_, err := deliverDesktopPath(ctx, agentruntime.Scope{RunID: runID, TenantID: "t", UserID: "u"}, "/home/desktop/work/bot_4/北京天气报告.pdf", "北京天气报告.pdf", "")
+	if err == nil || !strings.Contains(err.Error(), "重新生成") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestScheduleDeliverRefusesTheSameBytesTwice(t *testing.T) {
+	dir := t.TempDir()
+	prevPath := desktopScheduleDeliverPath
+	desktopScheduleDeliverPath = func() string { return filepath.Join(dir, "hashes.json") }
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDelivered = map[string]string{}
+	desktopScheduleDeliverLoaded = false
+	desktopScheduleDeliverFile = ""
+	desktopScheduleDeliverMu.Unlock()
+	t.Cleanup(func() {
+		desktopScheduleDeliverPath = prevPath
+		desktopScheduleDeliverMu.Lock()
+		desktopScheduleDelivered = map[string]string{}
+		desktopScheduleDeliverLoaded = false
+		desktopScheduleDeliverFile = ""
+		desktopScheduleDeliverMu.Unlock()
+	})
+	prevUp, prevSay := desktopSayUploadBytes, desktopDeliverLargeSay
+	desktopSayUploadBytes = func(context.Context, agentruntime.Scope, string, string, []byte) (string, error) {
+		return "ref_weather", nil
+	}
+	desktopDeliverLargeSay = func(context.Context, map[string]any) error { return nil }
+	t.Cleanup(func() { desktopSayUploadBytes, desktopDeliverLargeSay = prevUp, prevSay })
+
+	ctx := context.WithValue(context.Background(), desktopScheduleTurnKey{}, true)
+	ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
+	scope := agentruntime.Scope{RunID: "run_same", TenantID: "t", UserID: "alice", InstanceID: "inst"}
+	same := []byte("%PDF-1.4 same weather")
+	out, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, "")
+	if err != nil || !strings.Contains(out, "Delivered") {
+		t.Fatalf("first out=%q err=%v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "schedule-delivered.json")); err != nil {
+		t.Fatalf("hash file: %v", err)
+	}
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDelivered = map[string]string{}
+	desktopScheduleDeliverLoaded = false
+	desktopScheduleDeliverFile = ""
+	desktopScheduleDeliverMu.Unlock()
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, ""); err == nil || !strings.Contains(err.Error(), "重新生成") {
+		t.Fatalf("repeat err=%v", err)
+	}
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", []byte("%PDF-1.4 newer weather"), ""); err != nil {
+		t.Fatalf("new bytes err=%v", err)
+	}
+	if _, err := deliverFileOnItsOwn(context.Background(), scope, "北京天气报告.pdf", same, ""); err != nil {
+		t.Fatalf("chat err=%v", err)
+	}
+}
+
+func TestResumedScheduleReplyRefusesTheBytesAlreadyDelivered(t *testing.T) {
+	dir := t.TempDir()
+	prevPath := desktopScheduleDeliverPath
+	desktopScheduleDeliverPath = func() string { return filepath.Join(dir, "hashes.json") }
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDelivered = map[string]string{}
+	desktopScheduleDeliverLoaded = false
+	desktopScheduleDeliverFile = ""
+	desktopScheduleDeliverMu.Unlock()
+	t.Cleanup(func() {
+		desktopScheduleDeliverPath = prevPath
+		desktopScheduleDeliverMu.Lock()
+		desktopScheduleDelivered = map[string]string{}
+		desktopScheduleDeliverLoaded = false
+		desktopScheduleDeliverFile = ""
+		desktopScheduleDeliverMu.Unlock()
+	})
+	prevUp, prevSay := desktopSayUploadBytes, desktopDeliverLargeSay
+	desktopSayUploadBytes = func(context.Context, agentruntime.Scope, string, string, []byte) (string, error) {
+		return "ref_weather", nil
+	}
+	desktopDeliverLargeSay = func(context.Context, map[string]any) error { return nil }
+	t.Cleanup(func() { desktopSayUploadBytes, desktopDeliverLargeSay = prevUp, prevSay })
+
+	ctx := context.WithValue(context.Background(), desktopScheduleTurnKey{}, true)
+	ctx = context.WithValue(ctx, desktopDataDirKey{}, dir)
+	scope := agentruntime.Scope{RunID: "run_resume", TenantID: "t", UserID: "alice", InstanceID: "inst"}
+	same := []byte("%PDF-1.4 same weather")
+	if _, err := deliverFileOnItsOwn(ctx, scope, "北京天气报告.pdf", same, ""); err != nil {
+		t.Fatalf("first err=%v", err)
+	}
+	desktopScheduleDeliverMu.Lock()
+	desktopScheduleDelivered = map[string]string{}
+	desktopScheduleDeliverLoaded = false
+	desktopScheduleDeliverFile = ""
+	desktopScheduleDeliverMu.Unlock()
+	ctx, _ = withDesktopShotSlot(ctx)
+	if _, err := deliverHeldBytes(ctx, scope, "北京天气报告.pdf", "application/pdf", same, ""); err == nil || !strings.Contains(err.Error(), "重新生成") {
+		t.Fatalf("reply err=%v", err)
 	}
 }

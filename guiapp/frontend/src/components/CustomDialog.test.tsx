@@ -602,4 +602,47 @@ describe('CustomDialog', () => {
         await pending;
         await waitFor(() => expect(resolveFrontendConfirmMock).toHaveBeenCalledWith('frontend_confirm_1', true));
     });
+
+    it('closes only the confirm whose key matches a resolved critical prompt', async () => {
+        const handlers = new Map<string, (payload: unknown) => unknown>();
+        eventsOnMock.mockImplementation((event: string, handler: (payload: unknown) => unknown) => {
+            handlers.set(event, handler);
+            return vi.fn(() => { handlers.delete(event); });
+        });
+        const onResult = vi.fn();
+        function KeyedConfirmLauncher() {
+            const { showConfirm } = useDialog();
+            return (
+                <button
+                    onClick={() => {
+                        void showConfirm('安装危险技能', '安全风险', {
+                            confirmText: '确认安装',
+                            cancelText: '拒绝安装',
+                            dialogKey: 'crit_mcp',
+                        }).then(onResult);
+                    }}
+                >
+                    open-critical
+                </button>
+            );
+        }
+        try {
+            render(
+                <DialogProvider>
+                    <KeyedConfirmLauncher />
+                </DialogProvider>,
+            );
+            fireEvent.click(screen.getByRole('button', { name: 'open-critical' }));
+            await screen.findByText('安装危险技能');
+            const resolved = handlers.get('critical-risk-confirm-resolved');
+            expect(resolved).toBeTruthy();
+            resolved?.({ confirm_id: 'other' });
+            expect(screen.getByText('安装危险技能')).toBeTruthy();
+            resolved?.({ confirm_id: 'crit_mcp' });
+            await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
+            expect(screen.queryByText('安装危险技能')).toBeNull();
+        } finally {
+            eventsOnMock.mockImplementation(() => vi.fn());
+        }
+    });
 });

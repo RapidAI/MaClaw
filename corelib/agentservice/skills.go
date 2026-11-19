@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -2561,7 +2562,13 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 	if err != nil {
 		return err
 	}
-	return fileutil.AtomicWriteFile(filepath.Join(dir, "skill.yaml"), append(data, '\n'), 0o644)
+	if err := fileutil.AtomicWriteFile(filepath.Join(dir, "skill.yaml"), append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := skill.RepinPackageManifestIfPresent(dir); err != nil {
+		log.Printf("[skills] repin integrity manifest for %s failed: %v", dir, err)
+	}
+	return nil
 }
 
 func isEphemeralSkillDownloadDir(dir string) bool {

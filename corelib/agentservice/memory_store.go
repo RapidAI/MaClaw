@@ -599,13 +599,46 @@ func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID stri
 	return nil
 }
 
+func (s *MemoryStore) reviseMessageLocked(v Message) {
+	items := s.messages[v.SessionID]
+	for i := range items {
+		if items[i].ID == v.ID {
+			items[i] = v
+			s.messages[v.SessionID] = items
+			s.touchMessagesRewrite(v.SessionID)
+			return
+		}
+	}
+	s.messages[v.SessionID] = append(items, v)
+	s.touchMessagesAppend(v.SessionID)
+}
+
+// ReviseMessage replaces one stored message. A missing id is inserted.
+// Finish uses it to persist a receipt that was decided after the first save.
+func (s *MemoryStore) ReviseMessage(v Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviseMessageLocked(freezeMessage(v))
+	return nil
+}
+
+// ReviseRunReceipt replaces the message and the run while holding one lock.
+func (s *MemoryStore) ReviseRunReceipt(msg Message, run Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviseMessageLocked(freezeMessage(msg))
+	s.runs[run.ID] = freezeRun(run)
+	s.touch(collRuns, run.ID)
+	return nil
+}
+
 func (s *MemoryStore) SaveMessage(v Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureUniqueClientMessageLocked(v); err != nil {
 		return err
 	}
-	s.messages[v.SessionID] = append(s.messages[v.SessionID], v)
+	s.messages[v.SessionID] = append(s.messages[v.SessionID], freezeMessage(v))
 	s.touchMessagesAppend(v.SessionID)
 	return nil
 }
@@ -634,7 +667,7 @@ func (s *MemoryStore) GetMessage(sessionID, messageID string) (Message, error) {
 	defer s.mu.RUnlock()
 	for _, message := range s.messages[sessionID] {
 		if message.ID == messageID {
-			return message, nil
+			return freezeMessage(message), nil
 		}
 	}
 	return Message{}, ErrMessageNotFound
@@ -684,7 +717,7 @@ func (s *MemoryStore) DeleteMessages(sessionID string, ids []string) (int, error
 func (s *MemoryStore) SaveRun(v Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.runs[v.ID] = v
+	s.runs[v.ID] = freezeRun(v)
 	s.touch(collRuns, v.ID)
 	return nil
 }
@@ -791,7 +824,7 @@ func (s *MemoryStore) GetRun(tenantID, userID, instanceID, runID string) (Run, e
 	if !ok || v.TenantID != tenantID || v.UserID != userID || v.InstanceID != instanceID {
 		return Run{}, ErrRunNotFound
 	}
-	return v, nil
+	return freezeRun(v), nil
 }
 
 func (s *MemoryStore) ListRuns(tenantID, userID, instanceID string) ([]Run, error) {
@@ -800,7 +833,7 @@ func (s *MemoryStore) ListRuns(tenantID, userID, instanceID string) ([]Run, erro
 	out := make([]Run, 0)
 	for _, v := range s.runs {
 		if v.TenantID == tenantID && v.UserID == userID && v.InstanceID == instanceID {
-			out = append(out, v)
+			out = append(out, freezeRun(v))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
@@ -812,7 +845,7 @@ func (s *MemoryStore) GetRunByUserMessageID(tenantID, userID, instanceID, userMe
 	defer s.mu.RUnlock()
 	for _, v := range s.runs {
 		if v.TenantID == tenantID && v.UserID == userID && v.InstanceID == instanceID && v.UserMessageID == userMessageID {
-			return v, nil
+			return freezeRun(v), nil
 		}
 	}
 	return Run{}, ErrRunNotFound

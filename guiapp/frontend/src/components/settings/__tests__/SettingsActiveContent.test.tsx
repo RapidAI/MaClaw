@@ -62,7 +62,6 @@ const baseProps = {
     config: { language: 'en' } as any,
     setConfig: vi.fn(),
     onLanguageChange: vi.fn(),
-    hasWindowsTerminal: false,
     envCheckInterval: 0,
     setEnvCheckInterval: vi.fn(),
     isWindows: false,

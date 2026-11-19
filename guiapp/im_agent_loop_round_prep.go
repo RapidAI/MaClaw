@@ -299,6 +299,14 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		}
 	}
 
+	if ctx != nil {
+		// Round-prep mutations past the prepare publish — injection
+		// replacement, recover restore, floor unlock, orchestrator step,
+		// light finalize, guided reseal — are all part of the request
+		// surface. Publish the final list so the grant ledger and
+		// discover_tool reporting reflect what the model actually gets.
+		ctx.setExposedToolNames(agentLoopToolNamesForLog(tools))
+	}
 	return agentLoopRoundPrepResult{
 		Conversation:            conversation,
 		Tools:                   tools,

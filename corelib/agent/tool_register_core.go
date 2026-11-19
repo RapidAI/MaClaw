@@ -391,6 +391,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"key_path":        map[string]string{"type": "string", "description": "Private key path"},
 			"password":        map[string]string{"type": "string", "description": "SSH password"},
 			"label":           map[string]string{"type": "string", "description": "Optional host label"},
+			"force_new":       map[string]string{"type": "boolean", "description": "connect only: skip the reused session and open a fresh one; use when the existing session for this host is unresponsive"},
 			"initial_command": map[string]string{"type": "string", "description": "Optional first command typed into the interactive shell after connect; the session remains usable for exec afterwards"},
 			"session_id":      map[string]string{"type": "string", "description": "SSH session ID"},
 			"command":         map[string]string{"type": "string", "description": "Remote command"},
@@ -487,7 +488,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"understanding": map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
 			"steps": map[string]interface{}{
 				"type":        "array",
-				"description": "Ordered steps for plan. Each item needs title.",
+				"description": "Ordered steps for plan. Pass the array of objects itself, never a JSON string. Each item needs title.",
 				"items": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{

@@ -180,7 +180,9 @@ func TestLeftoverGenericChatDoesNotExposeSSH(t *testing.T) {
 	}
 }
 
-func TestSkillPreferenceLeftoverDoesNotApplyDiscoveryGrant(t *testing.T) {
+func TestSkillPreferenceSteerAppliesDiscoveryGrant(t *testing.T) {
+	// A local-skill steer narrows the surface, but a loop-scoped discovery
+	// grant is explicit host adjudication: it must land on the next request.
 	h := leftoverSSHCatalogHandler(t)
 	owner := "desktop-user"
 	loop := leftoverRoutingContext()
@@ -189,9 +191,326 @@ func TestSkillPreferenceLeftoverDoesNotApplyDiscoveryGrant(t *testing.T) {
 	if !strings.Contains(out, "(granted for the next request)") {
 		t.Fatalf("discover should grant ssh on this loop, got %q", out)
 	}
-	set := h.prepareAgentLoopTools(owner, "continue", loop, agentLoopPhase{ForceSkillPreference: true})
+	set := h.prepareAgentLoopTools(owner, "continue", loop, agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"})
+	if !toolListContainsName(set.Tools, "ssh") {
+		t.Fatalf("a discovery grant must land through the skill-preference steer, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestDiscoverGrantPiercesSkillPreferenceSteer(t *testing.T) {
+	// The remote-control incident mechanism: a LocalOnly steer drops
+	// bash/craft_tool, and a discover grant for the blocked name must still
+	// land — the grant is the sanctioned petition for a tool the steer hides.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"}
+	first := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if toolListContainsName(first.Tools, "bash") {
+		t.Fatalf("the steer must drop bash before any grant, got %v", agentLoopToolNamesForLog(first.Tools))
+	}
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "bash compile"})
+	if !strings.Contains(out, "**bash** (granted for the next request)") {
+		t.Fatalf("discover should grant bash on this loop, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if !toolListContainsName(set.Tools, "bash") {
+		t.Fatalf("a granted bash must pierce the skill-preference steer, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestRemoteSkillSearchDefersDiscoveryGrant(t *testing.T) {
+	// A required market-search round is a hard contract, not a steer: the
+	// surface is skill-search-only and the grant waits for the search to
+	// run. The discover output must report the hold, not promise the next
+	// request.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceRemoteRequired}
+	// Build once so the search-required posture is published for discover.
+	h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "bash compile"})
+	if strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("a grant under a required skill search must not promise the next request, got %q", out)
+	}
+	if !strings.Contains(out, "(held until this turn's required skill search runs") {
+		t.Fatalf("a grant under a required skill search must be reported as held, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if toolListContainsName(set.Tools, "bash") {
+		t.Fatalf("a required skill-search round must not apply discovery grants, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestRemoteSkillSearchLandsContractDiscoveryGrant(t *testing.T) {
+	// The search contract defers non-skill grants, but a grant for one of
+	// the contract's own names is how the model reaches a search tool the
+	// router left off the surface. Holding it would report "granted for the
+	// next request" and then never land — the same rediscovery loop the
+	// host-tool deferral message was added to prevent.
+	defs := []map[string]interface{}{
+		toolDef("bash", "run local shell", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("discover_tool", "discover tools", nil, nil),
+		toolDef("ssh", "SSH remote server access", nil, nil),
+		toolDef("search_and_install_skill", "search the skill marketplace and install a matching skill", nil, nil),
+	}
+	registry := NewToolRegistry()
+	for _, name := range []string{"bash", "read_file", "discover_tool", "ssh", "search_and_install_skill"} {
+		if err := registry.Register(RegisteredTool{Name: name, Description: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	gen := NewToolDefinitionGenerator(nil, defs)
+	h := &IMMessageHandler{
+		registry:   registry,
+		toolDefGen: gen,
+		toolRouter: NewToolRouter(gen),
+	}
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceRemoteRequired}
+	h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "search_and_install_skill to find a matching skill"})
+	if !strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("a contract-allowed grant must promise the next request, got %q", out)
+	}
+	if strings.Contains(out, "(held until this turn's required skill search runs") {
+		t.Fatalf("a contract-allowed grant must not be reported held, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if !toolListContainsName(set.Tools, "search_and_install_skill") {
+		t.Fatalf("a granted search tool must land on the search surface, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+	// The contract still holds non-skill grants: a second discovery for a
+	// host tool stays deferred on the same surface.
+	out = h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "(held until this turn's required skill search runs") {
+		t.Fatalf("a non-skill grant must still be reported held, got %q", out)
+	}
+	set = h.prepareAgentLoopTools(owner, "continue", loop, phase)
 	if toolListContainsName(set.Tools, "ssh") {
-		t.Fatalf("skill-preference leftover must not apply discovery grants, got %v", agentLoopToolNamesForLog(set.Tools))
+		t.Fatalf("a required skill-search round must hold a non-skill grant, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+	if !toolListContainsName(set.Tools, "search_and_install_skill") {
+		t.Fatalf("the earlier contract grant must keep landing, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+	// A result carrying both kinds must say so: the contract grant lands on
+	// the next request, the held name joins after the search.
+	loop2 := leftoverRoutingContext()
+	owner2 := "desktop-user-2"
+	h.setSessionLoopCtx(owner2, loop2)
+	h.prepareAgentLoopTools(owner2, "continue", loop2, phase)
+	out = h.toolDiscoverToolForOwner(owner2, map[string]interface{}{"need": "ssh remote server or search_and_install_skill"})
+	if !strings.Contains(out, "**search_and_install_skill** (granted for the next request)") {
+		t.Fatalf("the contract name must be reported granted in a mixed result, got %q", out)
+	}
+	if !strings.Contains(out, "**ssh** (held until this turn's required skill search runs") {
+		t.Fatalf("the non-skill name must be reported held in a mixed result, got %q", out)
+	}
+	if !strings.Contains(out, "held names join the surface after this turn's required skill search runs") {
+		t.Fatalf("a mixed grant+hold result must explain both outcomes, got %q", out)
+	}
+}
+
+func TestAgentGuidedSurfaceDropsSuppressedDiscoveryGrant(t *testing.T) {
+	// The guided reseal drops suppressed names outright, so a grant for
+	// generate_pdf cannot land while the mode holds — discover must report
+	// it blocked, and the surface build must not re-add it. A grant for an
+	// ordinary name still lands: guided mode keeps host tools.
+	defs := []map[string]interface{}{
+		toolDef("bash", "run local shell", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("discover_tool", "discover tools", nil, nil),
+		toolDef("ssh", "SSH remote server access", nil, nil),
+		toolDef("generate_pdf", "render markdown to PDF", nil, nil),
+	}
+	registry := NewToolRegistry()
+	for _, name := range []string{"bash", "read_file", "discover_tool", "ssh", "generate_pdf"} {
+		if err := registry.Register(RegisteredTool{Name: name, Description: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	gen := NewToolDefinitionGenerator(nil, defs)
+	h := &IMMessageHandler{registry: registry, toolDefGen: gen, toolRouter: NewToolRouter(gen)}
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceAgentGuided, PreferredSkillName: "pptx-gen"}
+	h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "generate_pdf report or ssh remote server"})
+	if !strings.Contains(out, "**generate_pdf** (blocked by host policy") {
+		t.Fatalf("a guided-suppressed grant must be reported blocked, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "continue", loop, phase)
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("a guided-suppressed grant must not land, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+	if !toolListContainsName(set.Tools, "ssh") {
+		t.Fatalf("a non-suppressed grant must land through the guided surface, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestInjectionAugmentLandsDiscoveryGrant(t *testing.T) {
+	// A steering injection replaces the whole legacy surface, and that
+	// replacement IS the next model request. A pending discover grant must
+	// land on it too — otherwise the same "granted for the next request"
+	// promise fails on every turn that carries an injection.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("discover should grant ssh on this loop, got %q", out)
+	}
+	current := []map[string]interface{}{
+		toolDef("read_file", "read file", nil, nil),
+	}
+	got, _ := h.augmentToolsFromInjection(loop, owner, "[用户补充] 继续排查", current, h.getTools(), false, agentLoopPhase{})
+	if !toolListContainsName(got, "ssh") {
+		t.Fatalf("the injection replacement surface must carry the pending grant, got %v", agentLoopToolNamesForLog(got))
+	}
+}
+
+func TestFinalSurfaceFenceReportsGrantBlockedNotPromised(t *testing.T) {
+	// A grant the contract allows can still be dropped by a mid-build fence
+	// the contract does not model (workflow, expert, group, direct mode,
+	// plan phase). The last published surface is authoritative: once the
+	// rendered set excludes the granted name, a repeat discovery must say
+	// "blocked" — never re-promise "granted for the next request", which is
+	// the original rediscovery-loop lie.
+	h := leftoverSSHCatalogHandler(t)
+	owner := "desktop-user"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("discover should grant ssh on this loop, got %q", out)
+	}
+	// The next build renders without ssh — a fence the grant contract does
+	// not model removed it after landing eligibility was decided.
+	loop.setExposedToolNames([]string{"read_file", "discover_tool"})
+	out = h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "ssh remote server"})
+	if strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("a fenced grant must not be re-promised for the next request, got %q", out)
+	}
+	if !strings.Contains(out, "**ssh** (blocked by host policy") {
+		t.Fatalf("a fenced grant must be reported blocked, got %q", out)
+	}
+	// A later build that does land the name clears the ledger: the report
+	// goes back to "already in this turn's tools", not stale blocked.
+	loop.setExposedToolNames([]string{"read_file", "discover_tool", "ssh"})
+	out = h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "ssh remote server"})
+	if !strings.Contains(out, "**ssh** (already in this turn's tools") {
+		t.Fatalf("a landed grant must be reported on-surface, got %q", out)
+	}
+}
+
+func TestLightProfileKeepSetDropsRefusedDiscoveryGrant(t *testing.T) {
+	// The keep-set that lets a grant pierce the skill-preference strip must
+	// carry only names the surface contract permits. A bash grant on a
+	// light-profile turn is refused — if the raw grant set were kept, a
+	// router-supplied bash would survive the strip and land on a surface
+	// with no profile filter downstream (the injection light branch).
+	loop := leftoverRoutingContext()
+	loop.Runtime.Execution = ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", IterationBudget: 3}
+	loop.rememberDiscoveredConditionalTool("bash")
+	loop.rememberDiscoveredConditionalTool("web_search")
+	phase := agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly}
+	keep := discoveryGrantNameSetForPhase(loop, phase)
+	if keep["bash"] {
+		t.Fatal("a light-forbidden grant must not be kept through the skill strip")
+	}
+	if !keep["web_search"] {
+		t.Fatal("a light-permitted grant must stay in the keep set")
+	}
+	defs := []map[string]interface{}{
+		toolDef("bash", "run local shell", nil, nil),
+		toolDef("web_search", "search the web", nil, nil),
+	}
+	got := applySkillPreferenceSurface(defs, phase, keep)
+	if toolListContainsName(got, "bash") {
+		t.Fatalf("the refused grant must not keep bash on the surface, got %v", agentLoopToolNamesForLog(got))
+	}
+	if !toolListContainsName(got, "web_search") {
+		t.Fatalf("the permitted grant must keep web_search, got %v", agentLoopToolNamesForLog(got))
+	}
+	// A full profile keeps the same grant — the keep-set still pierces.
+	loop.Runtime.Execution = ExecutionProfile{}
+	got = applySkillPreferenceSurface(defs, phase, discoveryGrantNameSetForPhase(loop, phase))
+	if !toolListContainsName(got, "bash") {
+		t.Fatalf("a full profile must let the granted bash pierce the strip, got %v", agentLoopToolNamesForLog(got))
+	}
+}
+
+func TestHostAuthoredContinuationSkipsSkillPreference(t *testing.T) {
+	h := &IMMessageHandler{}
+	marked := "[系统续接][execute] 按步骤执行目标：编写贪吃蛇游戏说明文档并编译"
+	for _, tc := range []struct {
+		name string
+		ctx  *LoopContext
+	}{
+		{"platform only", &LoopContext{Platform: "goal-continuation"}},
+		{"marker only", &LoopContext{}},
+		{"marker and platform", &LoopContext{Platform: "goal-continuation"}},
+		{"session round platform", &LoopContext{Platform: sessionRoundContinuationPlatform}},
+		{"unattended workflow platform", &LoopContext{Platform: unattendedWorkflowPlatform}},
+	} {
+		if ph := h.initialAgentLoopPhase(marked, tc.ctx); ph.ForceSkillPreference {
+			t.Fatalf("%s: a host-authored continuation wave must not enter skill preference, got %+v", tc.name, ph)
+		}
+	}
+	// An ordinary user turn with the same skill-hint text still prefers a
+	// skill: the exemption is the host author, not the words.
+	if ph := h.initialAgentLoopPhase("生成一份pdf报告文档", &LoopContext{}); !ph.ForceSkillPreference {
+		t.Fatal("a skill-hinting ordinary turn must still enter skill preference")
+	}
+}
+
+func TestSkillPreferenceReleasedOnLoopContextDischargesPhase(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := &LoopContext{}
+	if ph := h.initialAgentLoopPhase("生成一份pdf报告文档", ctx); !ph.ForceSkillPreference {
+		t.Fatal("the un-released loop must still enter skill preference")
+	}
+	ctx.noteSkillPreferenceReleased()
+	ph := h.initialAgentLoopPhase("生成一份pdf报告文档", ctx)
+	if ph.ForceSkillPreference {
+		t.Fatalf("a released loop must not re-force skill preference, got %+v", ph)
+	}
+	if ph.SkillMode != skillPreferenceFallbackAllowed {
+		t.Fatalf("a released loop must report fallback-allowed, got %+v", ph.SkillMode)
+	}
+}
+
+func TestOnToolExecutedReleasesSkillPreferenceLikeDispatcher(t *testing.T) {
+	ctx := &LoopContext{}
+	cb := &sharedAgentLoopCallbacks{
+		loopCtx: ctx,
+		phase:   agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceRemoteRequired},
+	}
+	cb.OnToolExecuted("search_and_install_skill", "{}", "installed", true)
+	if !ctx.skillPreferenceWasReleased() {
+		t.Fatal("a required market-search call must release the skill preference")
+	}
+
+	ctxFailed := &LoopContext{}
+	cbFailed := &sharedAgentLoopCallbacks{
+		loopCtx: ctxFailed,
+		phase:   agentLoopPhase{ForceSkillPreference: true, SkillMode: skillPreferenceLocalOnly, PreferredSkillName: "pptx-gen"},
+	}
+	cbFailed.OnToolExecuted("manage_skill", "{}", "listed", true)
+	if ctxFailed.skillPreferenceWasReleased() {
+		t.Fatal("a successful non-run skill call must not release the preference")
+	}
+	cbFailed.OnToolExecuted("run_skill", "{}", "failed", false)
+	if !ctxFailed.skillPreferenceWasReleased() {
+		t.Fatal("a failed skill-tool call must release the preference")
 	}
 }
 

@@ -829,6 +829,34 @@ func TestBuildVEConversationHistoryFromMessagesPreservesStreamChunks(t *testing.
 	}
 }
 
+func TestBuildVEConversationHistoryFromMessagesFoldsSettledEnding(t *testing.T) {
+	shared := strings.Repeat("重叠", 40)
+	opening := strings.Repeat("甲", 20) + shared
+	rest := strings.Repeat("乙", 20)
+	messages := []a2a.Message{
+		{ID: "m1", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: opening},
+		{ID: "m2", FromID: "local-machine", Kind: a2a.MessageStreamEnd, Content: shared + rest},
+		{ID: "m3", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "Hello"},
+		{ID: "m4", FromID: "local-machine", Kind: a2a.MessageStreamEnd, Content: " world"},
+		{ID: "m5", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "已经写到这里"},
+		{ID: "m6", FromID: "local-machine", Kind: a2a.MessageStreamEnd, Content: "[系统提示] 失败"},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{})
+	if len(history) != 3 {
+		t.Fatalf("history len = %d, want 3: %+v", len(history), history)
+	}
+	if history[0].Content != opening+rest {
+		t.Fatalf("settled ending was not folded once: %q", history[0].Content)
+	}
+	if history[1].Content != "Hello world" {
+		t.Fatalf("short fragment = %q", history[1].Content)
+	}
+	if history[2].Content != "已经写到这里\n\n[系统提示] 失败" {
+		t.Fatalf("notice was glued onto the answer: %q", history[2].Content)
+	}
+}
+
 func TestPrependVEGroupContextSummary(t *testing.T) {
 	history := []agent.ConversationEntry{{Role: "user", Content: "current restored message"}}
 	got := prependVEGroupContextSummary(history, "compressed shared facts")
@@ -1293,6 +1321,109 @@ func TestPendingStreamTextHoldsAShortTailUntilClose(t *testing.T) {
 	if chunk != "BC" || !closed {
 		t.Fatalf("closed take=%q closed=%v", chunk, closed)
 	}
+}
+
+func TestDrainPendingStreamPaintsFirstTokenThenHolds(t *testing.T) {
+	waitFlushes := func(t *testing.T, mu *sync.Mutex, got *[]string, n int, timeout time.Duration) []string {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for {
+			mu.Lock()
+			snap := append([]string(nil), (*got)...)
+			mu.Unlock()
+			if len(snap) >= n {
+				return snap
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("got %q, want %d flushes", snap, n)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	start := func(interval time.Duration, maxBytes int) (*pendingStreamText, *sync.Mutex, *[]string, chan struct{}) {
+		pending := newPendingStreamText()
+		mu := &sync.Mutex{}
+		got := make([]string, 0, 4)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			drainPendingStream(pending, interval, maxBytes, func(chunk string) {
+				mu.Lock()
+				got = append(got, chunk)
+				mu.Unlock()
+			})
+		}()
+		return pending, mu, &got, done
+	}
+
+	t.Run("interval", func(t *testing.T) {
+		pending, mu, got, done := start(300*time.Millisecond, 64)
+		defer pending.close()
+		pending.add("A")
+		first := waitFlushes(t, mu, got, 1, time.Second)
+		if first[0] != "A" {
+			t.Fatalf("first flush=%q, want the first token alone", first[0])
+		}
+		pending.add("B")
+		pending.add("C")
+		heldSince := time.Now()
+		time.Sleep(30 * time.Millisecond)
+		mu.Lock()
+		early := append([]string(nil), (*got)...)
+		mu.Unlock()
+		// A stalled process can overshoot the sleep until the timer is due.
+		// Only a flush that lands well before the interval is the per-token bug.
+		if (len(early) != 1 || early[0] != "A") && time.Since(heldSince) < 150*time.Millisecond {
+			t.Fatalf("short tail flushed before the interval: %q after %s", early, time.Since(heldSince))
+		}
+		held := waitFlushes(t, mu, got, 2, time.Second)
+		if len(held) != 2 || held[1] != "BC" {
+			t.Fatalf("held tail=%q, want one coalesced flush", held)
+		}
+		pending.close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("drain did not return after close")
+		}
+	})
+
+	t.Run("size", func(t *testing.T) {
+		pending, mu, got, done := start(5*time.Second, 4)
+		defer pending.close()
+		pending.add("A")
+		waitFlushes(t, mu, got, 1, time.Second)
+		pending.add("WXYZ")
+		sized := waitFlushes(t, mu, got, 2, time.Second)
+		if len(sized) != 2 || sized[0] != "A" || sized[1] != "WXYZ" {
+			t.Fatalf("size flush=%q, want the capped tail without waiting", sized)
+		}
+		pending.close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("drain did not return after close")
+		}
+	})
+
+	t.Run("close", func(t *testing.T) {
+		pending, mu, got, done := start(5*time.Second, 64)
+		defer pending.close()
+		pending.add("A")
+		waitFlushes(t, mu, got, 1, time.Second)
+		pending.add("B")
+		pending.add("C")
+		pending.close()
+		closed := waitFlushes(t, mu, got, 2, time.Second)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("drain did not return after close")
+		}
+		if strings.Join(closed, "") != "ABC" || len(closed) != 2 || closed[1] != "BC" {
+			t.Fatalf("close flush=%q, want the short tail immediately", closed)
+		}
+	})
 }
 
 func TestBatchStreamDeltasPaintsFirstTokenThenCoalesces(t *testing.T) {

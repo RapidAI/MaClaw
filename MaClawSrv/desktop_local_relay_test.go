@@ -226,6 +226,53 @@ func TestLocalRelayTruthfulFailures(t *testing.T) {
 	}
 }
 
+func TestLocalRelayStatusFullAccessDoesNotAsk(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	summary := &localrelay.Summary{
+		FilesEnabled: true, NetworkEnabled: true, Permission: localrelay.PermissionFull,
+		MaxTransferMB: 200, BotFolder: `C:\Users\ma139\MaClaw\Bot 4`, TunnelIdleMinutes: 30,
+		Roots: []localrelay.Entry{{Name: `C:\Users\ma139\MaClaw`, Write: true}, {Name: `C:\Users\ma139\Downloads`}},
+	}
+	localRelayPost = func(context.Context, map[string]any) (localRelayReply, error) {
+		return localRelayReply{OK: true, Online: true, Summary: summary}, nil
+	}
+	text, err := localRelayStatus(context.Background(), agentruntime.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "asks the person") || strings.Contains(text, "ask the person first") {
+		t.Fatalf("full access still says it asks:\n%s", text)
+	}
+	if !strings.Contains(text, "full access") || !strings.Contains(text, "do not ask") || strings.Contains(text, "(read") {
+		t.Fatalf("status:\n%s", text)
+	}
+
+	summary.Permission = localrelay.PermissionAsk
+	text, err = localRelayStatus(context.Background(), agentruntime.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "asks the person") || !strings.Contains(text, "ask the person first") || !strings.Contains(text, "(read)\n") {
+		t.Fatalf("ask mode dropped the question:\n%s", text)
+	}
+}
+
+func TestLocalRelayListFullAccessDoesNotMarkFoldersReadOnly(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	localRelayPost = func(context.Context, map[string]any) (localRelayReply, error) {
+		return localRelayReply{OK: true, Entries: []localrelay.Entry{{Name: `C:\Users\ma139\Downloads`, Dir: true}}, Summary: &localrelay.Summary{Permission: localrelay.PermissionFull}}, nil
+	}
+	text, err := localRelayList(context.Background(), agentruntime.Scope{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "(read") || !strings.Contains(text, "full access") {
+		t.Fatalf("list:\n%s", text)
+	}
+}
+
 func TestLocalRelayForwardTunnel(t *testing.T) {
 	r := newRelayRig(t)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")

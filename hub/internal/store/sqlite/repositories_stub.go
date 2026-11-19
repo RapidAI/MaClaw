@@ -2461,13 +2461,11 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 }
 
 func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error {
-	// Match enroll/runtime policy: unset → 30s default, tiny values clamp to 5s min.
-	heartbeatSec := metadata.HeartbeatIntervalSec
-	if heartbeatSec <= 0 || heartbeatSec > 3600 {
-		heartbeatSec = 30
-	} else if heartbeatSec < 5 {
-		heartbeatSec = 5
-	}
+	// Older clients do not report every field (app_version predates the
+	// version-reporting rollout): an empty value preserves the stored one
+	// instead of erasing what a newer client already reported.
+	// Heartbeat policy: unset/out-of-range keeps the stored value (30s when
+	// never set), tiny values clamp to 5s min.
 	// Metadata writes are infrequent relative to last-seen heartbeats and must be
 	// durable promptly (enroll path + hello). Do not route through the coalescer.
 	return execWrite(
@@ -2475,14 +2473,26 @@ func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, meta
 		r.batch,
 		r.db,
 		`UPDATE machines
-		 SET name = ?, platform = ?, hostname = ?, arch = ?, app_version = ?, heartbeat_sec = ?, updated_at = ?
+		 SET name = COALESCE(NULLIF(?, ''), name, ''),
+		     platform = COALESCE(NULLIF(?, ''), platform, ''),
+		     hostname = COALESCE(NULLIF(?, ''), hostname, ''),
+		     arch = COALESCE(NULLIF(?, ''), arch, ''),
+		     app_version = COALESCE(NULLIF(?, ''), app_version, ''),
+		     heartbeat_sec = CASE
+		         WHEN ? <= 0 OR ? > 3600 THEN COALESCE(NULLIF(heartbeat_sec, 0), 30)
+		         WHEN ? < 5 THEN 5
+		         ELSE ? END,
+		     updated_at = ?
 		 WHERE id = ?`,
 		metadata.Name,
 		metadata.Platform,
 		metadata.Hostname,
 		metadata.Arch,
 		metadata.AppVersion,
-		heartbeatSec,
+		metadata.HeartbeatIntervalSec,
+		metadata.HeartbeatIntervalSec,
+		metadata.HeartbeatIntervalSec,
+		metadata.HeartbeatIntervalSec,
 		time.Now().Format(time.RFC3339),
 		machineID,
 	)

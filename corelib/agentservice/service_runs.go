@@ -387,6 +387,7 @@ func (s *Service) enrichRun(run Run) (Run, error) {
 	if run.CompletedAt != nil {
 		run.DurationMs = run.CompletedAt.Sub(run.StartedAt).Milliseconds()
 	}
+	s.fillBotTask(&run)
 	if strings.TrimSpace(run.AssistantMessageID) == "" {
 		return run, nil
 	}
@@ -405,4 +406,31 @@ func (s *Service) enrichRun(run Run) (Run, error) {
 		run.WaitingForUser = true
 	}
 	return run, nil
+}
+
+// fillBotTask copies the user line onto a running run that was admitted
+// before the run itself stored one. A missing message leaves the row as it is
+// so one gap cannot blank the whole task list.
+func (s *Service) fillBotTask(run *Run) {
+	if s == nil || run == nil || run.Status != RunStatusRunning {
+		return
+	}
+	task := strings.TrimSpace(run.Metadata[botTaskMetaKey])
+	if task != "" && task != restartNoticeContinue && strings.TrimSpace(run.Metadata["bot_id"]) != "" {
+		return
+	}
+	if strings.TrimSpace(run.UserMessageID) == "" || strings.TrimSpace(run.SessionID) == "" {
+		return
+	}
+	msg, err := s.store.GetMessage(run.SessionID, run.UserMessageID)
+	if err != nil {
+		return
+	}
+	// The store may hand back its live map. Copy before adding the line so a
+	// list does not rewrite the saved run.
+	run.Metadata = cloneMap(run.Metadata)
+	if task == restartNoticeContinue {
+		delete(run.Metadata, botTaskMetaKey)
+	}
+	stampBotRunIdentity(run, msg.Metadata, msg.Content)
 }

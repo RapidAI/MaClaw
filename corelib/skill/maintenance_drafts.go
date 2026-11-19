@@ -307,6 +307,9 @@ func ApplyFileBackedContractPatch(entry *corelib.NLSkillEntry, draft *SkillMaint
 	if err := fileutil.AtomicWriteFile(yamlPath, out, 0o644); err != nil {
 		return ver, "", fmt.Errorf("write %s: %w", yamlPath, err)
 	}
+	if err := RepinPackageManifestIfPresent(skillDir); err != nil {
+		log.Printf("[maintenance-draft] repin integrity manifest for %s failed: %v", skillDir, err)
+	}
 
 	// Update in-memory entry so saveSkills keeps config overlay consistent.
 	entry.RequiredArgs = append([]string(nil), draft.RequiredArgs...)

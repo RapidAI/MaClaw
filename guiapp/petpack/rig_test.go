@@ -76,7 +76,8 @@ func TestRigValidationRejectsTotalKeyframeBudget(t *testing.T) {
 		frames = append(frames, RigKeyframe{AtMS: i * 4})
 	}
 	tracks := make(map[string][]RigKeyframe)
-	for i := 0; i < 6; i++ {
+	// 21 tracks of 240 keyframes is 5,040, past the 4,800 rig budget.
+	for i := 0; i < 21; i++ {
 		name := fmt.Sprintf("bone-%d", i)
 		tracks[name] = frames
 	}

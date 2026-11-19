@@ -25,6 +25,18 @@ func WindowTitleAtPoint(x, y int) string {
 	return windowTitleAtPoint(x, y)
 }
 
+// ForegroundWindowID returns the stable id of the foreground top-level window.
+// Windows reports the HWND. Other platforms return 0, and callers then compare
+// titles. The id survives a title change on that same window.
+func ForegroundWindowID() uint64 {
+	return foregroundWindowID()
+}
+
+// WindowIDAtPoint returns the stable id of the top-level window owning (x, y).
+func WindowIDAtPoint(x, y int) uint64 {
+	return windowIDAtPoint(x, y)
+}
+
 // WindowBounds is a top-level window rectangle in virtual-desktop coordinates.
 type WindowBounds struct {
 	X, Y, Width, Height int

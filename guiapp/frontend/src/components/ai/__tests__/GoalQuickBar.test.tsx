@@ -84,6 +84,21 @@ describe("GoalQuickBar", () => {
         }
     });
 
+    it("unclips and anchors the changed-files popover while hosting the chip", () => {
+        // The bar is overflow:hidden for its rounded corners; the files chip's
+        // popover floats above it, so hosting CSS must unclip and position it.
+        const partial = readFileSync(resolve(process.cwd(), "src/styles/partials/100-pet-store-mc.css"), "utf8");
+        const assembled = readFileSync(resolve(process.cwd(), "src/App.css"), "utf8");
+        for (const css of [partial, assembled]) {
+            expect(css).toContain(".mc-goal-quick-bar:has(.capc-files)");
+            expect(css).toContain(".mc-goal-quick-bar > .capc-files");
+        }
+        const channelsCss = readFileSync(resolve(process.cwd(), "src/styles/partials/90-im-channels-markdown.css"), "utf8");
+        for (const css of [channelsCss, assembled]) {
+            expect(css).toContain(".mc-goal-quick-bar:has(.capc-files.capc-open)");
+        }
+    });
+
     it("shows pause while the goal is running and continue after it stops", async () => {
         const api = installApp();
         const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
@@ -108,6 +123,80 @@ describe("GoalQuickBar", () => {
         fireEvent.click(view.getByTestId("goal-bar-pause"));
         await waitFor(() => expect(api.PauseSessionGoal).toHaveBeenCalledWith("desktop-user"));
         await waitFor(() => expect(view.getByTestId("goal-bar-continue").getAttribute("aria-label")).toBe("继续"));
+    });
+
+    it("hosts the changed-files chip in the right half and reports visibility", async () => {
+        installApp({
+            GetSessionGoalBar: vi.fn().mockResolvedValue({ ...active, created_at: Math.floor(Date.now() / 1000) - 125 }),
+        });
+        const onVisibilityChange = vi.fn();
+        const view = render(
+            <GoalQuickBar
+                lang="zh-Hans"
+                theme={theme}
+                sessionKey="desktop-user"
+                fileChanges={[
+                    { path: "guiapp/file_a.go", added: 47, removed: 0 },
+                    { path: "guiapp/file_b.go", added: 15, removed: 6 },
+                ]}
+                onVisibilityChange={onVisibilityChange}
+            />,
+        );
+        await waitFor(() => expect(view.getByTestId("goal-quick-bar")).toBeTruthy());
+        const files = await view.findByTestId("coding-agent-plan-files");
+        expect(view.getByTestId("coding-agent-plan-files-label").textContent).toContain("2 个文件已修改");
+        expect(files.textContent).toContain("+62");
+        expect(files.textContent).toContain("-6");
+        // Right half: after the objective, before the clock and the action buttons.
+        const objective = view.getByTestId("goal-bar-objective");
+        expect(objective.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(files.compareDocumentPosition(view.getByTestId("goal-bar-elapsed")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(files.compareDocumentPosition(view.getByTestId("goal-bar-cancel")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        await waitFor(() => expect(onVisibilityChange).toHaveBeenCalledWith(true));
+    });
+
+    it("skips the files chip for sessions without changed files", async () => {
+        installApp();
+        const view = render(<GoalQuickBar lang="zh-Hans" theme={theme} sessionKey="desktop-user" />);
+        await waitFor(() => expect(view.getByTestId("goal-quick-bar")).toBeTruthy());
+        expect(view.queryByTestId("coding-agent-plan-files")).toBeNull();
+    });
+
+    it("hands the files chip back when the bar hides or unmounts", async () => {
+        const api = installApp();
+        const onVisibilityChange = vi.fn();
+        const view = render(
+            <GoalQuickBar
+                lang="zh-Hans"
+                theme={theme}
+                sessionKey="desktop-user"
+                fileChanges={[{ path: "guiapp/file_a.go", added: 4, removed: 1 }]}
+                onVisibilityChange={onVisibilityChange}
+            />,
+        );
+        await waitFor(() => expect(onVisibilityChange).toHaveBeenLastCalledWith(true));
+
+        // A cleared goal hides the bar: the checklist must get its chip back.
+        api.GetSessionGoalBar.mockResolvedValue({ ...active, visible: false, status: "cleared" });
+        await act(async () => {
+            handlers.get("goal-state-changed")?.({ ...active, user_id: "desktop-user", status: "cleared", visible: false });
+        });
+        await waitFor(() => expect(view.queryByTestId("goal-quick-bar")).toBeNull());
+        expect(onVisibilityChange).toHaveBeenLastCalledWith(false);
+
+        // Unmount (wizard / remote view takes over) reports hidden too.
+        api.GetSessionGoalBar.mockResolvedValue(active);
+        const again = render(
+            <GoalQuickBar
+                lang="zh-Hans"
+                theme={theme}
+                sessionKey="desktop-user"
+                onVisibilityChange={onVisibilityChange}
+            />,
+        );
+        await waitFor(() => expect(onVisibilityChange).toHaveBeenLastCalledWith(true));
+        again.unmount();
+        expect(onVisibilityChange).toHaveBeenLastCalledWith(false);
     });
 
     it("continues a paused goal and confirms before deleting it", async () => {

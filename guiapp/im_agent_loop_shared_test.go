@@ -3020,3 +3020,45 @@ func TestNilConversationMemoryDoesNotPanicSharedCheckpoint(t *testing.T) {
 	cb.checkpointCommitted = true
 	completeSharedInFlightIfSettled(cb.handler, cb, "desktop-user", "run-1", agent.LoopResult{}, &IMAgentResponse{}, nil, nil)
 }
+
+// A route-fencing failure on the managed surface is the turn losing its
+// durable authority, not a tool failure. It must end the turn outright: a
+// retryable-looking rejection made the 2026-11 ssh deployment turn retry a
+// dead route until the stop guidance detoured it around governed ssh.
+func TestSemanticRouteAuthorityLossEndsTheManagedTurn(t *testing.T) {
+	cb := &sharedAgentLoopCallbacks{
+		loopCtx:         &LoopContext{},
+		semanticSurface: &semanticCallSurface{},
+	}
+	got := cb.semanticRouteAuthorityLossResult(fmt.Errorf("route_revision_superseded"), "fallback")
+	if got != semanticRouteAuthorityLostResult {
+		t.Fatalf("managed supersede result = %q", got)
+	}
+	if !cb.loopCtx.IsCancelled() {
+		t.Fatal("managed supersede left the turn running on a dead route")
+	}
+	if got := cb.semanticRouteAuthorityLossResult(fmt.Errorf("invocation_grant_expired"), "fallback"); got != "fallback" {
+		t.Fatalf("non-route error = %q", got)
+	}
+}
+
+// The discovered-MCP sidecar lives on its own lineage. Its route dying must
+// not end the managed turn; only the sidecar is dropped.
+func TestSemanticRouteAuthorityLossDropsOnlyTheSidecar(t *testing.T) {
+	sidecar := &semanticCallSurface{}
+	cb := &sharedAgentLoopCallbacks{
+		loopCtx:              &LoopContext{},
+		semanticSurface:      sidecar,
+		discoveredMCPSurface: sidecar,
+	}
+	got := cb.semanticRouteAuthorityLossResult(fmt.Errorf("route_revision_cancelled"), "fallback")
+	if got != "fallback" {
+		t.Fatalf("sidecar supersede result = %q", got)
+	}
+	if cb.loopCtx.IsCancelled() {
+		t.Fatal("sidecar supersede cancelled the managed turn")
+	}
+	if cb.discoveredMCPSurface != nil {
+		t.Fatal("dead sidecar was not dropped")
+	}
+}

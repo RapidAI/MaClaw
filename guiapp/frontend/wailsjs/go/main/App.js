@@ -1481,6 +1481,10 @@ export function FileCompanionFolderForPath(arg1) {
   return window['go']['main']['App']['FileCompanionFolderForPath'](arg1);
 }
 
+export function FileCompanionTakeLibraryView() {
+  return window['go']['main']['App']['FileCompanionTakeLibraryView']();
+}
+
 export function FileCompanionTakePlaces() {
   return window['go']['main']['App']['FileCompanionTakePlaces']();
 }
@@ -1661,8 +1665,8 @@ export function FetchNews() {
   return window['go']['main']['App']['FetchNews']();
 }
 
-export function FetchProviderModels(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3, arg4);
+export function FetchProviderModels(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['FetchProviderModels'](arg1, arg2, arg3, arg4, arg5 ?? '');
 }
 
 export function FetchMaclawLLMProfileModels(arg1) {
@@ -1703,6 +1707,22 @@ export function GenerateMobilePWAShell(arg1) {
 
 export function GetACPHostStatus() {
   return window['go']['main']['App']['GetACPHostStatus']();
+}
+
+export function GetMCPHostStatus() {
+  return window['go']['main']['App']['GetMCPHostStatus']();
+}
+
+export function GenerateMCPHostAPIKey() {
+  return window['go']['main']['App']['GenerateMCPHostAPIKey']();
+}
+
+export function GetMCPAccessLog() {
+  return window['go']['main']['App']['GetMCPAccessLog']();
+}
+
+export function ClearMCPAccessLog() {
+  return window['go']['main']['App']['ClearMCPAccessLog']();
 }
 
 export function GetAIAssistantInitStatus() {
@@ -1771,6 +1791,10 @@ export function GetBrowserSessions() {
 
 export function GetCapabilityGapDetector() {
   return window['go']['main']['App']['GetCapabilityGapDetector']();
+}
+
+export function GetChatBubblesEnabled() {
+  return window['go']['main']['App']['GetChatBubblesEnabled']();
 }
 
 export function GetChatFontFamily() {
@@ -2267,6 +2291,10 @@ export function GetCreditsAssetTransactions(arg1) {
 
 export function GetPetStoreCreatorReport(arg1, arg2) {
   return window['go']['main']['App']['GetPetStoreCreatorReport'](arg1, arg2);
+}
+
+export function GetPetStoreInstalledPackDetails(arg1) {
+  return window['go']['main']['App']['GetPetStoreInstalledPackDetails'](arg1);
 }
 
 export function GetPetStoreRankings() {
@@ -2901,8 +2929,12 @@ export function GetExpertMarketAccount() {
   return window['go']['main']['App']['GetExpertMarketAccount']();
 }
 
-export function InstallExpertMarketListing(arg1) {
-  return window['go']['main']['App']['InstallExpertMarketListing'](arg1);
+export function InstallExpertMarketListing(arg1, arg2) {
+  return window['go']['main']['App']['InstallExpertMarketListing'](arg1, arg2);
+}
+
+export function ListExpertMarketCategories() {
+  return window['go']['main']['App']['ListExpertMarketCategories']();
 }
 
 export function UninstallExpertMarketListing(arg1) {
@@ -2917,16 +2949,16 @@ export function PurchaseExpertMarketListing(arg1) {
   return window['go']['main']['App']['PurchaseExpertMarketListing'](arg1);
 }
 
-export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4);
+export function SubmitExpertMarketListing(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SubmitExpertMarketListing'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5);
+export function SubmitExpertMarketListingWithDistribution(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SubmitExpertMarketListingWithDistribution'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
-export function SubmitExpertMarketListingToUsers(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SubmitExpertMarketListingToUsers'](arg1, arg2, arg3);
+export function SubmitExpertMarketListingToUsers(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SubmitExpertMarketListingToUsers'](arg1, arg2, arg3, arg4);
 }
 
 export function PublishExpertMarketListing(arg1) {
@@ -3053,6 +3085,10 @@ export function InstallPetPackZip(arg1) {
   return window['go']['main']['App']['InstallPetPackZip'](arg1);
 }
 
+export function ImportDSHPetFolder(arg1) {
+  return window['go']['main']['App']['ImportDSHPetFolder'](arg1);
+}
+
 export function InstallPetStorePack(arg1) {
   return window['go']['main']['App']['InstallPetStorePack'](arg1);
 }
@@ -3135,10 +3171,6 @@ export function IsToolBeingInstalled(arg1) {
 
 export function IsVirtualRepositoryBackgroundSyncPending() {
   return window['go']['main']['App']['IsVirtualRepositoryBackgroundSyncPending']();
-}
-
-export function IsWindowsTerminalAvailable() {
-  return window['go']['main']['App']['IsWindowsTerminalAvailable']();
 }
 
 export function KeepMainCodingWorkbenchConflict(arg1, arg2, arg3) {
@@ -3633,6 +3665,10 @@ export function ShowFileCompanion() {
   return window['go']['main']['App']['ShowFileCompanion']();
 }
 
+export function ShowFileCompanionLibrary() {
+  return window['go']['main']['App']['ShowFileCompanionLibrary']();
+}
+
 export function LaunchInstallerAndExit(arg1, arg2) {
   return window['go']['main']['App']['LaunchInstallerAndExit'](arg1, arg2);
 }
@@ -3814,6 +3850,9 @@ export function SaveBotMemory(arg1, arg2, arg3, arg4) {
 }
 export function UpdateBotMemory(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['UpdateBotMemory'](arg1, arg2, arg3, arg4, arg5);
+}
+export function UpdateBotMemoryWithVersion(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UpdateBotMemoryWithVersion'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 export function DeleteBotMemory(arg1, arg2) {
   return window['go']['main']['App']['DeleteBotMemory'](arg1, arg2);
@@ -5223,6 +5262,10 @@ export function ListDesktopBots() {
   return window['go']['main']['App']['ListDesktopBots']();
 }
 
+export function GetDesktopBotQuota() {
+  return window['go']['main']['App']['GetDesktopBotQuota']();
+}
+
 export function SetDesktopBotPrimary(arg1) {
   return window['go']['main']['App']['SetDesktopBotPrimary'](arg1);
 }
@@ -5257,6 +5300,10 @@ export function ArmDesktopBotCrossRun(arg1, arg2) {
 
 export function CreateDesktopBot(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateDesktopBot'](arg1, arg2, arg3, arg4);
+}
+
+export function CreateDesktopBotWithComputer(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['CreateDesktopBotWithComputer'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function RenameDesktopBot(arg1, arg2, arg3, arg4, arg5) {
@@ -5297,6 +5344,70 @@ export function GetDesktopBotCredits() {
 
 export function GetDesktopComputer() {
   return window['go']['main']['App']['GetDesktopComputer']();
+}
+
+export function ListDesktopNodes() {
+  return window['go']['main']['App']['ListDesktopNodes']();
+}
+
+export function ListLocalDesktopJobs() {
+  return window['go']['main']['App']['ListLocalDesktopJobs']();
+}
+
+export function UpgradeDesktopNode(arg1, arg2) {
+  return window['go']['main']['App']['UpgradeDesktopNode'](arg1, arg2);
+}
+
+export function DeployDesktopNode(arg1) {
+  return window['go']['main']['App']['DeployDesktopNode'](arg1);
+}
+
+export function DeployHub(arg1) {
+  return window['go']['main']['App']['DeployHub'](arg1);
+}
+
+export function DeployBotNode(arg1) {
+  return window['go']['main']['App']['DeployBotNode'](arg1);
+}
+
+export function RegisterBotNode(arg1) {
+  return window['go']['main']['App']['RegisterBotNode'](arg1);
+}
+
+export function ListBotNodes() {
+  return window['go']['main']['App']['ListBotNodes']();
+}
+
+export function ClearBotNodeResult(arg1) {
+  return window['go']['main']['App']['ClearBotNodeResult'](arg1);
+}
+
+export function ListHubDeploys() {
+  return window['go']['main']['App']['ListHubDeploys']();
+}
+
+export function ClearHubDeployResult(arg1) {
+  return window['go']['main']['App']['ClearHubDeployResult'](arg1);
+}
+
+export function ConfigureDesktopNodeToken(arg1, arg2) {
+  return window['go']['main']['App']['ConfigureDesktopNodeToken'](arg1, arg2);
+}
+
+export function RedeployDesktopNode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RedeployDesktopNode'](arg1, arg2, arg3);
+}
+
+export function ClearDesktopNodeResult(arg1) {
+  return window['go']['main']['App']['ClearDesktopNodeResult'](arg1);
+}
+
+export function ActivateDesktopNode(arg1) {
+  return window['go']['main']['App']['ActivateDesktopNode'](arg1);
+}
+
+export function UseCloudDesktop() {
+  return window['go']['main']['App']['UseCloudDesktop']();
 }
 
 export function RestartDesktopComputer(arg1) {
@@ -5385,6 +5496,10 @@ export function SetAutoCompress(arg1) {
 
 export function SetBugReportEnabled(arg1) {
   return window['go']['main']['App']['SetBugReportEnabled'](arg1);
+}
+
+export function SetChatBubblesEnabled(arg1) {
+  return window['go']['main']['App']['SetChatBubblesEnabled'](arg1);
 }
 
 export function SetChatFontFamily(arg1) {
@@ -5711,6 +5826,10 @@ export function StartCodeGenSSOEmbedded() {
   return window['go']['main']['App']['StartCodeGenSSOEmbedded']();
 }
 
+export function StartCodeGenProviderSSOEmbedded() {
+  return window['go']['main']['App']['StartCodeGenProviderSSOEmbedded']();
+}
+
 export function StartKimiCodeOAuth() {
   return window['go']['main']['App']['StartKimiCodeOAuth']();
 }
@@ -5757,6 +5876,26 @@ export function GitHubAPIRequest(arg1, arg2) {
 
 export function GitHubCloneRepository(arg1, arg2) {
   return window['go']['main']['App']['GitHubCloneRepository'](arg1, arg2);
+}
+
+export function ListGitHubRepoMaintRules() {
+  return window['go']['main']['App']['ListGitHubRepoMaintRules']();
+}
+
+export function SaveGitHubRepoMaintRule(arg1) {
+  return window['go']['main']['App']['SaveGitHubRepoMaintRule'](arg1);
+}
+
+export function DeleteGitHubRepoMaintRule(arg1) {
+  return window['go']['main']['App']['DeleteGitHubRepoMaintRule'](arg1);
+}
+
+export function SetGitHubRepoMaintEnabled(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetGitHubRepoMaintEnabled'](arg1, arg2, arg3);
+}
+
+export function ReplayGitHubRepoMaint(arg1) {
+  return window['go']['main']['App']['ReplayGitHubRepoMaint'](arg1);
 }
 
 export function StartMaclawAppApprovalWorkflow(arg1) {
@@ -6083,6 +6222,10 @@ export function UpdateMemory(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['UpdateMemory'](arg1, arg2, arg3, arg4);
 }
 
+export function UpdateMemoryWithVersion(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateMemoryWithVersion'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function UpdateNLSkill(arg1) {
   return window['go']['main']['App']['UpdateNLSkill'](arg1);
 }
@@ -6355,6 +6498,10 @@ export function TokenBankWithdrawGift(arg1, arg2, arg3) {
   return window['go']['main']['App']['TokenBankWithdrawGift'](arg1, arg2, arg3);
 }
 
+export function SetDesktopBotControl(arg1, arg2) {
+  return window['go']['main']['App']['SetDesktopBotControl'](arg1, arg2);
+}
+
 export function WatchDesktopBot(arg1, arg2) {
   return window['go']['main']['App']['WatchDesktopBot'](arg1, arg2);
 }
@@ -6577,6 +6724,18 @@ export function SyncSharedPageToHub(arg1, arg2) {
 
 export function GetBotLocalAccess() {
   return window['go']['main']['App']['GetBotLocalAccess']();
+}
+
+export function GetDesktopBotCapabilityPage() {
+  return window['go']['main']['App']['GetDesktopBotCapabilityPage']();
+}
+
+export function UpdateDesktopBotCapabilities(arg1) {
+  return window['go']['main']['App']['UpdateDesktopBotCapabilities'](arg1);
+}
+
+export function ImportDesktopBotMCP(arg1) {
+  return window['go']['main']['App']['ImportDesktopBotMCP'](arg1);
 }
 
 export function SaveBotLocalAccess(arg1) {

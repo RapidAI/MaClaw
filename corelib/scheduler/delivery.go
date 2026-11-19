@@ -479,6 +479,16 @@ func HasDeliveryWarning(text string) bool {
 	return strings.Contains(text, DeliveryWarningPrefix) || strings.Contains(text, "[投递警告]")
 }
 
+// StripDeliveryWarning drops a stored push failure. The text before the
+// marker stays. A bot timer does not push, so that note is not its result.
+func StripDeliveryWarning(text string) string {
+	idx := strings.LastIndex(text, "[投递警告]")
+	if idx < 0 {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(text[:idx])
+}
+
 // TruncateLastResult caps LastResult for storage while preserving a trailing
 // soft delivery warning when present (so UI badges / HasDeliveryWarning keep working).
 func TruncateLastResult(result string) string {

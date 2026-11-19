@@ -41,6 +41,9 @@ type UserDataPurger struct {
 	DB                 *sql.DB
 	RouteDeleter       BoundUserRouteDeleter
 	GroupDiscussionSvc *GroupDiscussionService
+	Connections        interface {
+		StopUserConnections(ctx context.Context, tenantID, userID string)
+	}
 
 	// Runtime data roots are kept here so every unlink path (self-service,
 	// invitation-code and administrator deletion) removes the same on-disk data.
@@ -71,6 +74,9 @@ func (p *UserDataPurger) PurgeAll(ctx context.Context, user *store.User) (*Purge
 	email := strings.TrimSpace(strings.ToLower(user.Email))
 	userID := user.ID
 	cleanupEmails, routeIdentities := collectUserPurgeIdentities(ctx, p.Identity, tenantID, user)
+	if p.Connections != nil {
+		p.Connections.StopUserConnections(ctx, tenantID, userID)
+	}
 
 	logErr := func(area string, err error) {
 		if err != nil {

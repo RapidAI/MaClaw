@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
 
@@ -14,6 +14,8 @@ export type DesktopProxyModeState = {
     locked: boolean;
     applied?: boolean;
     warning?: string;
+    /** True when this desktop is a desktopd the user installed. */
+    intranet?: boolean;
 };
 
 export function normalizeDesktopProxyMode(raw: string | undefined | null): DesktopProxyModeValue {
@@ -23,9 +25,9 @@ export function normalizeDesktopProxyMode(raw: string | undefined | null): Deskt
     return 'smart';
 }
 
-export type BotSettingsTab = 'model' | 'network' | 'computer' | 'local' | 'voice';
+export type BotSettingsTab = 'model' | 'network' | 'computer' | 'desktop' | 'local' | 'tools' | 'voice';
 
-export type BotSettingsTabsLabels = { model: string; network: string; computer: string; local?: string; voice?: string };
+export type BotSettingsTabsLabels = { model: string; network: string; computer: string; desktop?: string; local?: string; tools?: string; voice?: string };
 
 function ModelTabIcon() {
     return (
@@ -56,11 +58,31 @@ function ComputerTabIcon() {
     );
 }
 
+function DesktopTabIcon() {
+    return (
+        <svg className="bot-settings-tabs__icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1.8" y="2.2" width="12.4" height="8.2" rx="1.2" />
+            <path d="M5.4 13.6h5.2M8 10.4v3.2" />
+            <path d="M5.2 6.4h5.6M8 4.8v3.2" />
+        </svg>
+    );
+}
+
 function LocalTabIcon() {
     return (
         <svg className="bot-settings-tabs__icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 4.2h4l1.3 1.5H14v6.6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
             <path d="M8 7.6v3.6M6.4 9.6 8 11.2l1.6-1.6" />
+        </svg>
+    );
+}
+
+function ToolsTabIcon() {
+    return (
+        <svg className="bot-settings-tabs__icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 2.2v2.6M10 2.2v2.6" />
+            <rect x="3.2" y="4.6" width="9.6" height="8.6" rx="1.2" />
+            <path d="M6.1 8.4h3.8M8 6.6v3.6" />
         </svg>
     );
 }
@@ -86,7 +108,9 @@ export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
         { id: 'model', icon: <ModelTabIcon /> },
         { id: 'network', icon: <NetworkTabIcon /> },
         { id: 'computer', icon: <ComputerTabIcon /> },
+        ...(labels.desktop ? [{ id: 'desktop' as BotSettingsTab, icon: <DesktopTabIcon /> }] : []),
         ...(labels.local ? [{ id: 'local' as BotSettingsTab, icon: <LocalTabIcon /> }] : []),
+        ...(labels.tools ? [{ id: 'tools' as BotSettingsTab, icon: <ToolsTabIcon /> }] : []),
         ...(labels.voice ? [{ id: 'voice' as BotSettingsTab, icon: <VoiceTabIcon /> }] : []),
     ];
 
@@ -98,6 +122,14 @@ export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
         const next = tabs[(index + step + tabs.length) % tabs.length];
         if (next.id !== active) onSelect(next.id);
     };
+
+    // 七个页签在弹窗里放不下时槽会横向滚动；键盘/点击切换后把新选中的
+    // 页签滚回可视区。jsdom 没有实现 scrollIntoView，探测存在再调。
+    const tabRefs = useRef(new Map<BotSettingsTab, HTMLButtonElement>());
+    useEffect(() => {
+        const el = tabRefs.current.get(active);
+        if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }, [active]);
 
     return (
         <div
@@ -117,6 +149,7 @@ export function BotSettingsTabs({ active, labels, disabled, onSelect }: {
                     key={id}
                     type="button"
                     role="tab"
+                    ref={el => { if (el) tabRefs.current.set(id, el); else tabRefs.current.delete(id); }}
                     aria-selected={active === id}
                     // Only the active tab is tabbable, so the strip is a single stop.
                     tabIndex={active === id ? 0 : -1}
@@ -164,7 +197,8 @@ export function BotNetworkSettingsDialog({ labels, state, notice, saving, tabs, 
     const titleId = useId();
     const current = normalizeDesktopProxyMode(state.mode);
     const [mode, setMode] = useState<DesktopProxyModeValue>(current);
-    const locked = !!state.locked;
+    const intranet = !!state.intranet;
+    const locked = !!state.locked || intranet;
     const canSave = !saving && !locked && mode !== current;
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !saving });
     const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -199,7 +233,7 @@ export function BotNetworkSettingsDialog({ labels, state, notice, saving, tabs, 
                     <h4 className="bot-llm-dialog__section">{labels.title}</h4>
                     <p className="bot-llm-dialog__hint">{labels.hint}</p>
                     <p className="bot-llm-dialog__status" data-testid="bot-network-current">{labels.current(labels.modes[current].name)}</p>
-                    {DESKTOP_PROXY_MODES.map(value => (
+                    {intranet ? null : DESKTOP_PROXY_MODES.map(value => (
                         <div
                             className={`bot-llm-dialog__option${mode === value ? ' is-selected' : ''}${locked ? ' is-disabled' : ''}`}
                             key={value}

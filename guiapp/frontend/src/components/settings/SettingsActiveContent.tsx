@@ -77,7 +77,6 @@ export type SettingsActiveContentProps = {
     config: corelib.AppConfig | null;
     setConfig: Dispatch<SetStateAction<corelib.AppConfig | null>>;
     onLanguageChange: (event: ChangeEvent<HTMLSelectElement>) => void;
-    hasWindowsTerminal: boolean;
     envCheckInterval: number;
     setEnvCheckInterval: Dispatch<SetStateAction<number>>;
     isWindows: boolean;
@@ -90,6 +89,8 @@ export type SettingsActiveContentProps = {
     tokenBankClaimCode?: string;
     /** Increments on every open so the same code is delivered again. */
     tokenBankClaimSeq?: number;
+    /** Increments when the agent model menu asks for provider management; the LLM panel auto-opens that dialog. */
+    llmProviderDialogAutoOpenSeq?: number;
     memoryTraceFocus: { value: string; seq: number };
     imSubTab: IMSubTab;
     setImSubTab: Dispatch<SetStateAction<IMSubTab>>;
@@ -161,6 +162,9 @@ export type SettingsActiveContentProps = {
     setDarkSchemeId: (id: AssistantDarkSchemeId) => void;
     lightSchemeId: AssistantLightSchemeId;
     setLightSchemeId: (id: AssistantLightSchemeId) => void;
+    chatBubblesEnabled?: boolean;
+    setChatBubblesEnabled?: (enabled: boolean) => void;
+    chatBubblesDraftRef?: { current: boolean | null };
 };
 
 function wrapPanel(className: string, children: ReactNode) {
@@ -189,7 +193,6 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         config,
         setConfig,
         onLanguageChange,
-        hasWindowsTerminal,
         envCheckInterval,
         setEnvCheckInterval,
         isWindows,
@@ -200,6 +203,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         showToastMessage,
         tokenBankClaimCode,
         tokenBankClaimSeq,
+        llmProviderDialogAutoOpenSeq,
         memoryTraceFocus,
         imSubTab,
         setImSubTab,
@@ -271,6 +275,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         setDarkSchemeId,
         lightSchemeId,
         setLightSchemeId,
+        chatBubblesEnabled,
+        setChatBubblesEnabled,
+        chatBubblesDraftRef,
     } = props;
 
     // Resolve before switch so invalid / currently-hidden tabs never paint an empty body.
@@ -373,7 +380,6 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 setConfig={setConfig}
                 lang={lang}
                 t={t}
-                hasWindowsTerminal={hasWindowsTerminal}
                 envCheckInterval={envCheckInterval}
                 setEnvCheckInterval={setEnvCheckInterval}
             />
@@ -440,6 +446,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     onStatusChange={onLLMStatusChange}
                     onProviderChanged={onProviderChanged}
                     onRequestIdentityVerification={onRequestIdentityVerification}
+                    autoOpenProviderDialogSeq={llmProviderDialogAutoOpenSeq}
                 />
             ));
             break;
@@ -662,6 +669,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setDarkSchemeId={setDarkSchemeId}
                     lightSchemeId={lightSchemeId}
                     setLightSchemeId={setLightSchemeId}
+                    chatBubblesEnabled={chatBubblesEnabled}
+                    setChatBubblesEnabled={setChatBubblesEnabled}
+                    chatBubblesDraftRef={chatBubblesDraftRef}
                 />
             ));
             break;

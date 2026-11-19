@@ -48,6 +48,12 @@ func TestNoteDesktopToolUseCountsScreenStepsOnly(t *testing.T) {
 			break
 		}
 	}
+	bot := "alice::desk::bot_2"
+	pool.NoteBotGUIUse("tenant-a", bot, "http://d/vnc.html")
+	noteDesktopToolUse(context.Background(), pool, desktopToolCall{Tenant: "tenant-a", User: bot, Action: "stop"}, nil)
+	if at, page := pool.BotGUIUse("tenant-a", bot); at.IsZero() || page == "" {
+		t.Fatalf("isolated bot stop cleared a display that stays up: at=%v page=%q", at, page)
+	}
 }
 
 // MaClawSrv's production screen path goes through Hub's session, app, ctl
@@ -106,6 +112,78 @@ func TestDesktopServiceScreenRoutesNoteBotUse(t *testing.T) {
 	}
 	if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
 		t.Fatal("stop kept the bot-on-screen record")
+	}
+}
+
+func TestStopDesktopKeepsAnIsolatedBotOnScreen(t *testing.T) {
+	var stops []string
+	failNext := false
+	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/desktops/stop" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			UserID string `json:"user_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		stops = append(stops, body.UserID)
+		if failNext {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		status := "stopped"
+		if strings.Contains(body.UserID, "::desk::") {
+			status = "idle"
+		}
+		_, _ = w.Write([]byte(`{"status":"` + status + `","container":"c"}`))
+	}))
+	t.Cleanup(docker.Close)
+	pool := desktopPoolFake(t, newDesktopSettingsMem(), docker.URL)
+	bot := "alice::desk::bot_2"
+	pool.NoteBotGUIUse("tenant-a", bot, "http://d/bot.html")
+	pool.NoteBotGUIUse("tenant-a", "alice", "http://d/owner.html")
+	out, err := pool.StopDesktop(context.Background(), "tenant-a", bot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "idle" {
+		t.Fatalf("bot display stop status=%q", out.Status)
+	}
+	if at, page := pool.BotGUIUse("tenant-a", bot); at.IsZero() || page != "http://d/bot.html" {
+		t.Fatalf("bot display stop cleared use at=%v page=%q", at, page)
+	}
+	if len(stops) != 0 {
+		t.Fatalf("bot display stop dialed desktopd: %v", stops)
+	}
+	if at, _ := pool.BotGUIUse("tenant-a", "alice"); at.IsZero() {
+		t.Fatal("bot stop cleared the owner's screen record")
+	}
+	failNext = true
+	if _, err := pool.StopDesktop(context.Background(), "tenant-a", "alice"); err == nil {
+		t.Fatal("owner stop succeeded against a down desktopd")
+	}
+	if at, page := pool.BotGUIUse("tenant-a", "alice"); at.IsZero() || page != "http://d/owner.html" {
+		t.Fatalf("failed stop cleared a screen that is still up at=%v page=%q", at, page)
+	}
+	failNext = false
+	if _, err := pool.StopDesktop(context.Background(), "tenant-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if at, _ := pool.BotGUIUse("tenant-a", "alice"); !at.IsZero() {
+		t.Fatal("owner stop kept the screen record")
+	}
+	if len(stops) < 1 || stops[0] != "alice" || stops[len(stops)-1] != "alice" {
+		t.Fatalf("stops=%v", stops)
+	}
+	text, _, err := dispatchDesktopTool(context.Background(), pool, desktopToolCall{
+		RunID: "run_1", ToolCallID: "tc", Tenant: "tenant-a", User: bot, Action: "stop",
+	})
+	if err != nil || text != "idle" {
+		t.Fatalf("bot tool stop text=%q err=%v", text, err)
+	}
+	if at, page := pool.BotGUIUse("tenant-a", bot); at.IsZero() || page != "http://d/bot.html" {
+		t.Fatalf("tool stop cleared the bot picture at=%v page=%q", at, page)
 	}
 }
 

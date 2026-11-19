@@ -1625,6 +1625,9 @@ func restoreEvolutionYAML(path string, data []byte) error {
 			return fmt.Errorf("replace rollback target after remove: %w (initial rename: %v)", retryErr, err)
 		}
 	}
+	if err := RepinPackageManifestIfPresent(filepath.Dir(path)); err != nil {
+		log.Printf("[skill-evolution] repin integrity manifest for %s failed: %v", filepath.Dir(path), err)
+	}
 	return nil
 }
 

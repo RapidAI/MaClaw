@@ -231,6 +231,12 @@ func wrapCodingAgentReasoningToken(onToken func(string)) func(string) {
 		if delta == "" {
 			return
 		}
+		// The content-lane reset is not thought prose. Re-prefixing it as
+		// reasoning would leave the rejected draft in the answer bubble.
+		if strings.HasPrefix(delta, "\x02") {
+			onToken(delta)
+			return
+		}
 		body := delta
 		prefixed := strings.HasPrefix(body, "\x01")
 		if prefixed {

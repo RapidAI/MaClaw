@@ -59,6 +59,19 @@ type Session struct {
 	// the tabs are not tracked.
 	tabBot string
 	tabRun string
+
+	// viewportMu serializes the person's preview events. The caret and the
+	// mirror of what they typed have to move in the order the events arrived.
+	viewportMu      sync.Mutex
+	viewportCaretX  float64
+	viewportCaretY  float64
+	viewportCaretOK bool
+	// viewportMirror is the sidecar value last written into the caret.
+	// It is not a log line. The same field keeps it. A different field
+	// clears it and advances viewportGen. Text stamped with an older
+	// generation is not written into the new field.
+	viewportMirror string
+	viewportGen    int
 }
 
 var (
@@ -1111,6 +1124,251 @@ func (s *Session) Screenshot(fullPage bool) (string, error) {
 		return "", fmt.Errorf("parse screenshot: %w", err)
 	}
 	return resp.Data, nil
+}
+
+// ViewportJPEG captures the visible viewport as a base64 JPEG for the in-app
+// preview. It does not change Screenshot, which stays PNG for callers that
+// already depend on that format.
+func (s *Session) ViewportJPEG(quality int) (string, int, int, error) {
+	if s == nil {
+		return "", 0, 0, fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", 0, 0, fmt.Errorf("browser session not connected")
+	}
+	if quality <= 0 || quality > 100 {
+		quality = 55
+	}
+	width, height, sizeErr := s.viewportCSSSize()
+	params := map[string]interface{}{
+		"format":                "jpeg",
+		"quality":               quality,
+		"fromSurface":           true,
+		"captureBeyondViewport": false,
+	}
+	// The click path maps fractions onto this same CSS viewport. A screenshot
+	// of a larger surface would put the phone field somewhere the click misses.
+	if sizeErr == nil && width > 0 && height > 0 {
+		params["clip"] = map[string]interface{}{
+			"x": 0, "y": 0, "width": width, "height": height, "scale": 1,
+		}
+	}
+	result, err := client.Send("Page.captureScreenshot", params, DefaultCmdTimeout)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("viewport screenshot: %w", err)
+	}
+	var resp struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return "", 0, 0, fmt.Errorf("parse viewport screenshot: %w", err)
+	}
+	if resp.Data == "" {
+		return "", 0, 0, fmt.Errorf("viewport screenshot was empty")
+	}
+	w, h := 0, 0
+	if sizeErr == nil {
+		w = int(width + 0.5)
+		h = int(height + 0.5)
+	}
+	return resp.Data, w, h, nil
+}
+
+func (s *Session) viewportCSSSize() (float64, float64, error) {
+	if s == nil {
+		return 0, 0, fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return 0, 0, fmt.Errorf("browser session not connected")
+	}
+	result, err := client.Send("Page.getLayoutMetrics", nil, DefaultCmdTimeout)
+	if err != nil {
+		return 0, 0, err
+	}
+	var metrics struct {
+		CSSVisualViewport struct {
+			ClientWidth  float64 `json:"clientWidth"`
+			ClientHeight float64 `json:"clientHeight"`
+		} `json:"cssVisualViewport"`
+		LayoutViewport struct {
+			ClientWidth  float64 `json:"clientWidth"`
+			ClientHeight float64 `json:"clientHeight"`
+		} `json:"layoutViewport"`
+	}
+	if err := json.Unmarshal(result, &metrics); err != nil {
+		return 0, 0, err
+	}
+	w := metrics.CSSVisualViewport.ClientWidth
+	h := metrics.CSSVisualViewport.ClientHeight
+	if w <= 0 || h <= 0 {
+		w = metrics.LayoutViewport.ClientWidth
+		h = metrics.LayoutViewport.ClientHeight
+	}
+	if w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("viewport size is unknown")
+	}
+	return w, h, nil
+}
+
+// DispatchViewportPointer sends one mouse event. X and Y are fractions of the
+// CSS viewport. This is the person's takeover path and does not wait on the
+// user-hold gate.
+func (s *Session) DispatchViewportPointer(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	width, height, err := s.viewportCSSSize()
+	if err != nil {
+		return err
+	}
+	x, y, ok := MapViewportFraction(in.X, in.Y, width, height)
+	if !ok {
+		return fmt.Errorf("viewport size is unknown")
+	}
+	kind := in.Kind
+	switch kind {
+	case "move", "mousemove":
+		kind = "mouseMoved"
+	case "down", "mousedown":
+		kind = "mousePressed"
+	case "up", "mouseup":
+		kind = "mouseReleased"
+	case "wheel":
+		kind = "mouseWheel"
+	default:
+		return fmt.Errorf("unknown pointer event %q", in.Kind)
+	}
+	button := strings.TrimSpace(in.Button)
+	if button == "" {
+		button = "left"
+	}
+	params := map[string]interface{}{
+		"type": kind,
+		"x":    x,
+		"y":    y,
+	}
+	if kind != "mouseMoved" && kind != "mouseWheel" {
+		clicks := in.ClickCount
+		if clicks <= 0 {
+			clicks = 1
+		}
+		params["button"] = button
+		params["clickCount"] = clicks
+	}
+	if kind == "mouseWheel" {
+		params["deltaX"] = in.DeltaX
+		params["deltaY"] = in.DeltaY
+	}
+	// Headless Chrome does not focus the page, so a click never becomes a
+	// caret and later typing is dropped. A new document drops an earlier
+	// emulation, so every press sends it again. A failed command is not
+	// remembered as success.
+	if kind == "mousePressed" {
+		s.ensurePageFocusEmulation(client)
+	}
+	if _, err := client.Send("Input.dispatchMouseEvent", params, DefaultCmdTimeout); err != nil {
+		return fmt.Errorf("pointer: %w", err)
+	}
+	if button == "left" && kind == "mousePressed" {
+		// The press chooses the field. Release must not pick again: a second
+		// pick can stamp a different control and leave the bar on the old one.
+		s.noteViewportCaretPoint(x, y)
+		same, found := s.focusViewportCaret(client)
+		if found && !same {
+			s.armViewportNewCaret()
+			return errViewportNewCaret
+		}
+	}
+	if button == "left" && kind == "mouseReleased" {
+		s.refocusStampedCaret(client)
+	}
+	return nil
+}
+
+// DispatchViewportKey sends a key or inserts text from the preview.
+func (s *Session) DispatchViewportKey(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	switch in.Kind {
+	case "text", "paste":
+		return s.applyViewportText(client, in.Text, in.Gen)
+	case "down", "keydown":
+		return sendViewportKey(client, "keyDown", in.Key, in.Text)
+	case "up", "keyup":
+		return sendViewportKey(client, "keyUp", in.Key, in.Text)
+	default:
+		return fmt.Errorf("unknown key event %q", in.Kind)
+	}
+}
+
+func sendViewportKey(client *CDPClient, typ, key, text string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = text
+	}
+	if key == "" {
+		return fmt.Errorf("missing key")
+	}
+	params := map[string]interface{}{
+		"type": typ,
+		"key":  key,
+	}
+	if code, vk, ok := viewportKeyCode(key); ok {
+		// Enter, Tab, Escape, and Backspace name the key. They must not
+		// carry text: the field value is already written, and keyDown text
+		// is inserted as a character. Enter's "\r" would submit and also
+		// insert a newline.
+		params["code"] = code
+		params["windowsVirtualKeyCode"] = vk
+		params["nativeVirtualKeyCode"] = vk
+	} else if text != "" && typ == "keyDown" {
+		params["text"] = text
+	}
+	if _, err := client.Send("Input.dispatchKeyEvent", params, DefaultCmdTimeout); err != nil {
+		return fmt.Errorf("key: %w", err)
+	}
+	return nil
+}
+
+// ApplyViewportInput routes one preview event to the connected page.
+// Events are applied in arrival order. A later Enter must not pass the
+// text that was typed into the same field.
+func (s *Session) ApplyViewportInput(in ViewportInput) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.viewportMu.Lock()
+	defer s.viewportMu.Unlock()
+	switch in.Kind {
+	case "move", "mousemove", "down", "mousedown", "up", "mouseup", "wheel":
+		return s.DispatchViewportPointer(in)
+	case "text", "paste", "downkey":
+		return s.DispatchViewportKey(in)
+	case "keydown", "keyup":
+		return s.DispatchViewportKey(in)
+	default:
+		// "down" is a pointer press. Key presses use keydown/keyup/text.
+		return fmt.Errorf("unknown preview input %q", in.Kind)
+	}
 }
 
 // GetText returns the text content of an element matching the CSS selector.

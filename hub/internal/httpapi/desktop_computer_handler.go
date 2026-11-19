@@ -56,7 +56,11 @@ func GetUserDesktopComputerHandler(pool *desktoppool.Pool, identity botAuthentic
 			writeComputerError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"restart_allowed": true, "reset_allowed": !policy.ResetDisabled})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"restart_allowed": true,
+			"reset_allowed":   !policy.ResetDisabled,
+			"intranet":        pool.UserDesktopIntranet(r.Context(), principal.TenantID, principal.UserID),
+		})
 	}
 }
 

@@ -74,67 +74,6 @@ func parseCodingRequestRestatement(raw string) string {
 	return strings.TrimSpace(payload.Restatement)
 }
 
-func firstCodingContextSnippet(s string, maxRunes int) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	if i := strings.IndexAny(s, "\n。！？"); i > 8 {
-		s = strings.TrimSpace(s[:i])
-	}
-	return strings.TrimSpace(truncateRunesV2(s, maxRunes))
-}
-
-func extractCodingRewriteTarget(userText string) string {
-	userText = strings.TrimSpace(userText)
-	lower := strings.ToLower(userText)
-	for _, prefix := range []string{"改为", "改成", "换成", "change to", "port to"} {
-		idx := strings.Index(lower, prefix)
-		if idx < 0 {
-			continue
-		}
-		// Map lower index back onto the original string by rune-safe offset on the
-		// ASCII/same-width prefixes we use here.
-		origIdx := strings.Index(userText, prefix)
-		if origIdx < 0 {
-			origIdx = idx
-		}
-		rest := strings.TrimSpace(userText[origIdx+len(prefix):])
-		rest = strings.Trim(rest, " \t。.!！?？")
-		if rest == "" {
-			continue
-		}
-		if utf8.RuneCountInString(rest) > 24 {
-			rest = truncateRunesV2(rest, 24)
-		}
-		return rest
-	}
-	return ""
-}
-
-func fallbackRewriteRestatement(userText, prior string) (string, bool) {
-	text := strings.TrimSpace(userText)
-	lower := strings.ToLower(text)
-	target := ""
-	switch {
-	case codingTextMentionsGUI(text):
-		target = "图形界面版本"
-	case strings.Contains(text, "重写") || strings.Contains(text, "重寫") || codingHasASCIIWord(lower, "rewrite"):
-		target = "重写后的实现"
-	case strings.Contains(text, "移植") || strings.Contains(lower, "port to"):
-		target = "移植后的实现"
-	default:
-		target = extractCodingRewriteTarget(text)
-	}
-	if target == "" {
-		return "", false
-	}
-	if prior != "" {
-		return "把现有的「" + prior + "」改成" + target + "，保留原有玩法或核心行为，改完后重新构建并确认能运行。", true
-	}
-	return "把当前项目改成" + target + "，保留原有核心行为，改完后重新构建并确认能运行。", true
-}
-
 func codingSessionContextLooksGeneric(s string) bool {
 	trim := strings.TrimSpace(s)
 	if trim == "" {
@@ -154,38 +93,6 @@ func codingSessionContextLooksGeneric(s string) bool {
 		}
 	}
 	return false
-}
-
-func codingHasASCIIWord(lower, word string) bool {
-	if lower == "" || word == "" {
-		return false
-	}
-	start := 0
-	for {
-		idx := strings.Index(lower[start:], word)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		leftOK := idx == 0 || !isASCIIAlphaNumByte(lower[idx-1])
-		right := idx + len(word)
-		rightOK := right == len(lower) || !isASCIIAlphaNumByte(lower[right])
-		if leftOK && rightOK {
-			return true
-		}
-		start = idx + 1
-	}
-}
-
-func isASCIIAlphaNumByte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z'
-}
-
-func codingTextMentionsGUI(text string) bool {
-	if strings.Contains(text, "图形界面") || strings.Contains(text, "图形版") || strings.Contains(text, "圖形界面") || strings.Contains(text, "圖形版") {
-		return true
-	}
-	return codingHasASCIIWord(strings.ToLower(text), "gui")
 }
 
 func codingSourceStemLooksGeneric(stem string) bool {
@@ -224,10 +131,17 @@ func codingReadmeIdentityHint(dir string) string {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
 			line = strings.TrimSpace(strings.TrimLeft(line, "#"))
-			if line == "" || codingReadmeLineLooksGeneric(line) {
+			// A sentence is not a title. Cutting at the first 。 would keep
+			// the words in front of it and hide the project name. A later
+			// short line can still be the title. Other prose stops the
+			// walk so a following fragment does not replace the CMake name.
+			if line == "" || codingReadmeLineLooksGeneric(line) || codingWorkNameIsSentence(line) {
 				continue
 			}
-			return firstCodingContextSnippet(line, 40)
+			if codingShortWorkName(line) == "" {
+				return ""
+			}
+			return line
 		}
 	}
 	return ""
@@ -300,13 +214,42 @@ func codingCMakeProjectIdentityHint(dir string) string {
 	if len(data) > 4096 {
 		data = data[:4096]
 	}
-	raw := string(data)
+	return codingCMakeProjectName(string(data))
+}
+
+// codingCMakeProjectName returns the first literal project() name. A call
+// in a comment, or a ${variable} name, is not that name and must not hide
+// a later project() or the source stem.
+func codingCMakeProjectName(raw string) string {
 	lower := strings.ToLower(raw)
-	idx := strings.Index(lower, "project(")
-	if idx < 0 {
-		return ""
+	from := 0
+	for from < len(lower) {
+		rel := strings.Index(lower[from:], "project(")
+		if rel < 0 {
+			return ""
+		}
+		idx := from + rel
+		restFrom := idx + len("project(")
+		from = restFrom
+		if codingCMakeCallIsCommented(raw, idx) {
+			continue
+		}
+		name := codingCMakeProjectToken(raw[restFrom:])
+		if name == "" || strings.ContainsAny(name, "${}") || codingSourceStemLooksGeneric(name) || codingSessionContextLooksGeneric(name) {
+			continue
+		}
+		return name
 	}
-	rest := strings.TrimSpace(raw[idx+len("project("):])
+	return ""
+}
+
+func codingCMakeCallIsCommented(raw string, idx int) bool {
+	lineStart := strings.LastIndex(raw[:idx], "\n") + 1
+	return strings.Contains(raw[lineStart:idx], "#")
+}
+
+func codingCMakeProjectToken(rest string) string {
+	rest = strings.TrimSpace(rest)
 	rest = strings.TrimLeft(rest, " \t\"'")
 	end := len(rest)
 	for i, r := range rest {
@@ -315,12 +258,7 @@ func codingCMakeProjectIdentityHint(dir string) string {
 			break
 		}
 	}
-	name := strings.TrimSpace(rest[:end])
-	name = strings.Trim(name, "\"'")
-	if codingSourceStemLooksGeneric(name) || codingSessionContextLooksGeneric(name) {
-		return ""
-	}
-	return firstCodingContextSnippet(name, 40)
+	return strings.Trim(strings.TrimSpace(rest[:end]), "\"'")
 }
 
 func codingBinaryIdentityHint(dir string) string {
@@ -362,7 +300,10 @@ func codingBinaryIdentityHint(dir string) string {
 	return codingUniqueMapValue(seen)
 }
 
-func codingWorkspaceIdentityHint(projectPath string) string {
+// codingWorkspaceWorkName is the first project identity that can name the
+// work. A later file is read only when the earlier line is not a usable
+// title, so a readme hit does not scan the source tree or the build dir.
+func codingWorkspaceWorkName(projectPath, userText string) string {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
 		return ""
@@ -371,31 +312,54 @@ func codingWorkspaceIdentityHint(projectPath string) string {
 	if err != nil || !info.IsDir() {
 		return ""
 	}
-	if got := codingReadmeIdentityHint(projectPath); got != "" {
-		return got
-	}
-	if got := codingCMakeProjectIdentityHint(projectPath); got != "" {
-		return got
-	}
-	if got := codingTopLevelSourceIdentityHint(projectPath); got != "" {
-		return got
-	}
-	return codingBinaryIdentityHint(projectPath)
-}
-
-func codingRequestPriorContext(mem stickyCodingWorkbenchMemory) string {
-	// A session plan that is a requirement paragraph is not a work name.
-	// Stuffing a truncated copy into 「…」 or （…） splits lists and parentheses.
-	if name := codingShortWorkName(mem.SessionPlan); name != "" {
-		return name
-	}
-	if name := codingShortWorkName(mem.LastSummary); name != "" {
-		return name
-	}
-	if name := codingShortWorkName(codingWorkspaceIdentityHint(mem.ProjectPath)); name != "" {
-		return name
+	for _, hint := range []func(string) string{
+		codingReadmeIdentityHint,
+		codingCMakeProjectIdentityHint,
+		codingTopLevelSourceIdentityHint,
+		codingBinaryIdentityHint,
+	} {
+		if name := codingUsableWorkName(hint(projectPath), userText); name != "" {
+			return name
+		}
 	}
 	return ""
+}
+
+// codingPriorRepeatsAsk reports a work name that is only the current request.
+// A new task is often titled with the user's own sentence; wrapping that
+// sentence again ("在「同一句话」里，这次同一句话") adds no context.
+func codingPriorRepeatsAsk(name, ask string) bool {
+	a := normalizeCodingRestatementKey(name)
+	b := normalizeCodingRestatementKey(ask)
+	return a != "" && a == b
+}
+
+// codingUsableWorkName is a short title that names something other than the
+// request. The stored text is compared before it is shortened, so a comma
+// note on the same sentence does not become a different name. A requirement
+// paragraph is not a title and returns empty so the next candidate is tried.
+func codingUsableWorkName(raw, userText string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || codingPriorRepeatsAsk(raw, userText) {
+		return ""
+	}
+	name := codingShortWorkName(raw)
+	if name == "" || codingPriorRepeatsAsk(name, userText) {
+		return ""
+	}
+	return name
+}
+
+// codingRequestWorkName is the first stored title that names something other
+// than the sentence the user just sent. A task title equal to that sentence
+// is skipped, and the summary or project identity behind it is still used.
+func codingRequestWorkName(mem stickyCodingWorkbenchMemory, userText string) string {
+	for _, raw := range []string{mem.SessionPlan, mem.LastSummary} {
+		if name := codingUsableWorkName(raw, userText); name != "" {
+			return name
+		}
+	}
+	return codingWorkspaceWorkName(mem.ProjectPath, userText)
 }
 
 // codingShortWorkName is a title that can sit inside parentheses.
@@ -422,6 +386,11 @@ func codingShortWorkName(s string) string {
 		}
 		name = head
 	}
+	// "已完成编译。" and "编译已经完成。详见 simd" are status sentences.
+	// Keeping the words in front of the mark would hide the project name.
+	if codingWorkNameIsSentence(name) {
+		return ""
+	}
 	name = strings.Trim(name, " 。；;")
 	if name == "" || codingSessionContextLooksGeneric(name) {
 		return ""
@@ -431,6 +400,40 @@ func codingShortWorkName(s string) string {
 		return ""
 	}
 	return name
+}
+
+// codingWorkNameIsSentence reports a line that closes a sentence or
+// continues past one. A dot inside snake.cpp or v1.2 joins an identifier
+// and is not that boundary.
+func codingWorkNameIsSentence(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch r {
+		case '。', '！', '？', '；', ';', '…', '!', '?':
+			return true
+		case '.':
+			if !codingDotJoinsIdentifier(s, i) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codingDotJoinsIdentifier(s string, dotByte int) bool {
+	if dotByte <= 0 || dotByte+1 >= len(s) {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(s[:dotByte])
+	next, _ := utf8.DecodeRuneInString(s[dotByte+1:])
+	return codingIdentifierRune(prev) && codingIdentifierRune(next)
+}
+
+func codingIdentifierRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // codingRequirementGoalCut is the byte index where a numbered breakdown
@@ -618,97 +621,36 @@ func attachCodingWorkRoot(mem *stickyCodingWorkbenchMemory, workRoot string) {
 	mem.ProjectPath = workRoot
 }
 
-func codingRequestHasHowOrWhyMarker(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" {
-		return false
-	}
-	lower := strings.ToLower(text)
-	for _, marker := range []string{"怎么", "如何", "为什么", "为何", "為何", "how to", "how do", "how does", "what is", "why "} {
-		if strings.Contains(text, marker) || strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func codingRequestLooksLikeQuestion(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" {
-		return false
-	}
-	if codingRequestHasHowOrWhyMarker(text) {
-		return true
-	}
-	return strings.HasSuffix(text, "?") || strings.HasSuffix(text, "？")
-}
-
-func codingRequestLooksLikeFailure(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" {
-		return false
-	}
-	lower := strings.ToLower(text)
-	for _, marker := range []string{"失败", "失敗", "报错", "報錯", "崩溃", "崩潰"} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return codingHasASCIIWord(lower, "error") || codingHasASCIIWord(lower, "crash") || codingHasASCIIWord(lower, "bug")
-}
-
-func codingRequestLooksRunOnly(userText string) bool {
-	text := strings.TrimSpace(userText)
-	if text == "" || codingTextMentionsGUI(text) || codingRequestLooksLikeQuestion(text) || codingRequestLooksLikeFailure(text) {
-		return false
-	}
-	lower := strings.ToLower(text)
-	for _, marker := range []string{
-		"改", "加", "写", "寫", "实现", "實現", "修", "移植", "重写", "重寫",
-		"add ", "fix ", "implement", "rewrite", "port to",
-	} {
-		if strings.Contains(text, marker) || strings.Contains(lower, marker) {
-			return false
-		}
-	}
-	if strings.Contains(text, "运行一下") || strings.Contains(text, "启动一下") || strings.Contains(text, "跑一下") ||
-		strings.Contains(lower, "run the app") || strings.Contains(lower, "run it") || strings.Contains(lower, "run the program") {
-		return true
-	}
-	if utf8.RuneCountInString(text) <= 16 && (strings.Contains(text, "运行") || strings.Contains(text, "启动") || strings.HasPrefix(lower, "run ")) {
-		return true
-	}
-	return false
-}
-
 func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbenchMemory) string {
+	return fallbackCodingRequestRestatementFor(userText, mem, codingRequestDecision{})
+}
+
+// fallbackCodingRequestRestatementFor names the work from the request decision.
+// That decision judges the whole request. The sentence does not scan the
+// wording for question words, change verbs, or a GUI mention.
+func fallbackCodingRequestRestatementFor(userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision) string {
 	userText = strings.TrimSpace(userText)
-	prior := codingRequestPriorContext(mem)
-	if rewrite, ok := fallbackRewriteRestatement(userText, prior); ok && !codingRequestHasHowOrWhyMarker(userText) {
-		return rewrite
-	}
-	if codingRequestLooksRunOnly(userText) {
-		return "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
-	}
-	// A session that already wrote project files keeps a writable contract.
-	// Do not announce a read-only turn from the wording of this message.
-	if codingRequestLooksLikeQuestion(userText) && !codingSessionHasImplementationTrajectory(mem) {
-		return "先只读相关代码，回答你这次的问题，不改文件。"
-	}
-	if codingRequestLooksLikeQuestion(userText) {
-		// This session already wrote files, so the answer must not claim the
-		// tree is read-only. State the question, then the limit on edits.
-		q := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "？?"))
-		if q == "" {
-			q = strings.TrimSpace(userText)
+	prior := codingRequestWorkName(mem, userText)
+	continueCue := codingWorkbenchContinueCue(userText)
+	if !continueCue {
+		switch decision.Kind {
+		case codingRequestInquiry:
+			return codingDescribeQuestion(prior, userText, codingSessionHasImplementationTrajectory(mem))
+		case codingRequestOperational:
+			if decision.Acceptance != codingOperationalAcceptanceCommand {
+				line := "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+				if prior != "" {
+					return "在" + codingQuoteWorkName(prior) + "里，" + line
+				}
+				return line
+			}
 		}
-		return "对照现有实现，回答「" + q + "」。"
 	}
 	if utf8.RuneCountInString(userText) <= 48 {
 		// A title stays a title. A stored requirement is restated as the
 		// work itself. A new short ask is that ask, not a continue template.
 		ask := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "。！？!?"))
-		if codingWorkbenchContinueCue(userText) {
+		if continueCue {
 			echo := codingClosedRequirementSnippet(mem.SessionPlan)
 			if echo != "" || codingRequirementGoalCut(mem.SessionPlan) >= 0 {
 				if sentence := codingDescribeStoredGoal(echo, mem.SessionPlan); sentence != "" {
@@ -718,13 +660,141 @@ func fallbackCodingRequestRestatement(userText string, mem stickyCodingWorkbench
 			if prior != "" {
 				return "继续做" + codingQuoteWorkName(prior) + "，从上次停下的地方接着做。"
 			}
-		} else if ask != "" && codingClosedRequirementSnippet(mem.SessionPlan) != "" {
-			return codingDescribeNewAsk("", ask)
-		} else if prior != "" && ask != "" {
+			// A bare continue with nothing stored has no ask to name.
+			return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+		}
+		if ask != "" {
+			if codingRequirementGoalCut(ask) >= 0 {
+				// A list-style ask names its goal or items, not the markers.
+				if head, more := codingRequestHeadline(ask); head != "" {
+					return codingDescribeHeadline(prior, head, more)
+				}
+			}
+			// A new ask names itself even with no stored plan or work name.
 			return codingDescribeNewAsk(prior, ask)
 		}
 	}
+	if !continueCue {
+		if head, more := codingRequestHeadline(userText); head != "" {
+			// A long ask still leads with its own first requirement instead of
+			// a process description.
+			return codingDescribeHeadline(prior, head, more)
+		}
+	}
 	return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+}
+
+// codingDescribeHeadline renders a named lead requirement. more keeps the
+// parts past the head acknowledged instead of claiming them out of scope.
+func codingDescribeHeadline(prior, head string, more bool) string {
+	line := "先处理「" + head + "」"
+	if more {
+		line += "，其余要求一并处理"
+	}
+	if prior != "" {
+		return "在" + codingQuoteWorkName(prior) + "里，" + line + "。"
+	}
+	return line + "。"
+}
+
+// codingLeadingInterjection marks a discourse opener that is not itself a
+// requirement; the headline peels it so the head names the real ask.
+func codingLeadingInterjection(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "太好了", "好的", "好", "嗯", "嗯嗯", "谢谢", "多谢", "辛苦了",
+		"帮我", "麻烦", "麻烦你", "ok", "okay", "thanks", "great", "nice":
+		return true
+	}
+	return false
+}
+
+// codingRequestHeadline extracts an ask's lead requirement: the first
+// clause at a sentence boundary, or the first comma clause when that
+// clause is already a usable phrase. Leading interjections and fragments
+// under two runes are peeled. more reports the request continues past head.
+func codingRequestHeadline(userText string) (head string, more bool) {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return "", false
+	}
+	rest := ""
+	head = strings.TrimSpace(strings.TrimRight(text, "。！？!?：:，,、 "))
+	for {
+		i := strings.IndexAny(head, "。！？!?；;\n，,")
+		if i < 0 {
+			break
+		}
+		r, size := utf8.DecodeRuneInString(head[i:])
+		first := strings.TrimSpace(head[:i])
+		if first == "" || codingLeadingInterjection(first) || utf8.RuneCountInString(first) < 2 {
+			head = strings.TrimSpace(head[i+size:])
+			continue
+		}
+		// A sentence boundary always cuts; a comma clause must already be a
+		// usable phrase before it can stand alone.
+		if (r != '，' && r != ',') || utf8.RuneCountInString(first) >= 6 {
+			head, rest = first, head[i:]
+		}
+		break
+	}
+	head = strings.TrimSpace(head)
+	if cut := codingRequirementGoalCut(head); cut >= 0 {
+		// A goal head before a numbered breakdown is the one-line
+		// requirement; the list that follows stays acknowledged via more.
+		goal := strings.TrimRight(strings.TrimSpace(head[:cut]), " ，,、—-：: \t")
+		list := head[cut:]
+		if utf8.RuneCountInString(goal) >= 2 && !codingLeadingInterjection(goal) {
+			head, rest = goal, list
+		} else {
+			head = ""
+			spans := codingNumberedMarkerSpans(list)
+			items := codingNumberedListItems(list)
+			if len(items) > 0 && len(items) == len(spans) {
+				// A bare list of short items names them all — but only
+				// when no item hid a longer clause behind a separator.
+				covered := true
+				for i, item := range items {
+					end := len(list)
+					if i+1 < len(spans) {
+						end = spans[i+1].marker
+					}
+					if raw := strings.Trim(strings.TrimSpace(list[spans[i].content:end]), "、，,；; "); raw != item {
+						covered = false
+						break
+					}
+				}
+				if covered {
+					head = strings.Join(items, "、")
+				}
+			}
+			if head == "" && len(spans) > 0 {
+				// Long items name the first one in full; the rest stays
+				// acknowledged.
+				end := len(list)
+				if len(spans) > 1 {
+					end = spans[1].marker
+				}
+				head = strings.Trim(strings.TrimSpace(list[spans[0].content:end]), "、，,；; ")
+				if tail := list[end:]; strings.TrimSpace(tail) != "" {
+					rest = tail
+				}
+			}
+		}
+	}
+	head = strings.NewReplacer("「", "", "」", "").Replace(head)
+	if utf8.RuneCountInString(head) < 2 {
+		return "", false
+	}
+	if utf8.RuneCountInString(head) > 40 {
+		runes := trimCodingSnippetToBoundary([]rune(truncateRunesV2(head, 40)))
+		runes = trimUnbalancedCodingParens(runes)
+		head = strings.TrimRight(strings.TrimSpace(string(runes)), " ，,、：:；;—")
+		if utf8.RuneCountInString(head) < 2 {
+			return "", false
+		}
+		return head + "…", true
+	}
+	return head, strings.TrimSpace(rest) != ""
 }
 
 // codingDescribeStoredGoal turns a stored requirement into one sentence
@@ -892,6 +962,50 @@ func codingQuoteWorkName(name string) string {
 	return "「" + name + "」"
 }
 
+// codingDescribeQuestion says what the turn will deliver. Quoting the
+// question alone ("这次<问句>，其它先不动") reads as an edit scope and, when
+// the task title is that same sentence, repeats it twice.
+func codingDescribeQuestion(prior, userText string, written bool) string {
+	q := codingQuestionQuote(userText)
+	line := "对照当前实现，回答「" + q + "」"
+	if written {
+		line = "对照现有实现，回答「" + q + "」"
+	}
+	if prior = strings.TrimSpace(prior); prior != "" {
+		line = "在" + codingQuoteWorkName(prior) + "里，" + line
+	}
+	if written {
+		return line + "。"
+	}
+	return line + "，这一步只读不改文件。"
+}
+
+// codingQuestionQuote keeps the question name short enough for the chat
+// bubble. A pasted paragraph must not become the whole reply. Corner quotes
+// are stripped so the wrapper stays one pair.
+func codingQuestionQuote(userText string) string {
+	q := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(userText), "？?。！! "))
+	if q == "" {
+		q = strings.TrimSpace(userText)
+	}
+	q = strings.NewReplacer("「", "", "」", "").Replace(q)
+	q = strings.TrimSpace(q)
+	if q == "" {
+		q = strings.TrimSpace(userText)
+	}
+	const maxRunes = 80
+	if utf8.RuneCountInString(q) <= maxRunes {
+		return q
+	}
+	runes := []rune(q)
+	window := trimUnbalancedCodingParens(trimCodingSnippetToBoundary(runes[:maxRunes]))
+	out := strings.TrimRight(strings.TrimSpace(string(window)), " ，,、：:；;—")
+	if utf8.RuneCountInString(out) < 8 {
+		out = strings.TrimSpace(string(runes[:maxRunes]))
+	}
+	return out + "…"
+}
+
 func codingDescribeNewAsk(name, ask string) string {
 	ask = strings.TrimSpace(ask)
 	if ask == "" {
@@ -953,21 +1067,12 @@ func codingRequestShouldRestateEarly(userText string) bool {
 	return strings.TrimSpace(userText) != "" && !codingRequestLooksExplicitWorkspaceClear(userText)
 }
 
-func codingRestatementFallbackIsSpecific(userText string, mem stickyCodingWorkbenchMemory) bool {
-	if codingRequestHasHowOrWhyMarker(userText) {
-		return false
-	}
-	_, ok := fallbackRewriteRestatement(userText, codingRequestPriorContext(mem))
-	return ok
-}
-
 // codingRequestUnderstandingKeepsHostFallback reports a host restatement that
-// must not be replaced by the restatement model. A run/build follow-up already
-// says the existing program will be launched without source edits. The session
-// record tells that model the workspace is not read-only, and it would
-// otherwise overwrite the launch constraint.
-func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodingWorkbenchMemory) bool {
-	if codingRestatementFallbackIsSpecific(userText, mem) || codingRequestLooksRunOnly(userText) {
+// must not be replaced by the restatement model. Inquiry and a project launch
+// already say what this turn will do. The sentence came from the request
+// decision, and a second model pass would guess it again from the wording.
+func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision) bool {
+	if decision.Kind == codingRequestInquiry || (decision.Kind == codingRequestOperational && decision.Acceptance != codingOperationalAcceptanceCommand) {
 		return true
 	}
 	// A short follow-up already has a host restatement based on the session
@@ -975,10 +1080,11 @@ func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodi
 	// describe a rejected inquiry as a read-only environment, and would
 	// replace that host text.
 	text := strings.TrimSpace(userText)
-	if utf8.RuneCountInString(text) > 48 || codingRequestLooksLikeQuestion(text) {
+	if utf8.RuneCountInString(text) > 48 {
 		return false
 	}
-	if codingSessionHasImplementationTrajectory(mem) && codingRequestPriorContext(mem) != "" {
+	prior := codingRequestWorkName(mem, text)
+	if codingSessionHasImplementationTrajectory(mem) && prior != "" {
 		return true
 	}
 	// A bare continue may still be refined when the only context is a title.
@@ -986,7 +1092,7 @@ func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodi
 	if codingWorkbenchContinueCue(text) {
 		return codingClosedRequirementSnippet(mem.SessionPlan) != ""
 	}
-	return codingClosedRequirementSnippet(mem.SessionPlan) != "" || codingRequestPriorContext(mem) != ""
+	return codingClosedRequirementSnippet(mem.SessionPlan) != "" || prior != ""
 }
 
 func (h *IMMessageHandler) llmCodingRequestRestatement(userText string, mem stickyCodingWorkbenchMemory) string {
@@ -1011,8 +1117,8 @@ func (h *IMMessageHandler) resolveCodingRequestUnderstanding(userText string, me
 	if !codingRequestShouldRestate(decision, userText) {
 		return ""
 	}
-	fallback := fallbackCodingRequestRestatement(userText, mem)
-	if codingRestatementFallbackIsSpecific(userText, mem) {
+	fallback := fallbackCodingRequestRestatementFor(userText, mem, decision)
+	if codingRequestUnderstandingKeepsHostFallback(userText, mem, decision) {
 		return fallback
 	}
 	if got := h.llmCodingRequestRestatement(userText, mem); got != "" {
@@ -1021,14 +1127,14 @@ func (h *IMMessageHandler) resolveCodingRequestUnderstanding(userText string, me
 	return fallback
 }
 
-func (h *IMMessageHandler) publishCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, onToken func(string)) string {
+func (h *IMMessageHandler) publishCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision, onToken func(string)) string {
 	if isGoalSystemContinuation(userText) {
 		return ""
 	}
 	if !codingRequestShouldRestateEarly(userText) {
 		return ""
 	}
-	got := strings.TrimSpace(fallbackCodingRequestRestatement(userText, mem))
+	got := strings.TrimSpace(fallbackCodingRequestRestatementFor(userText, mem, decision))
 	if got == "" {
 		return ""
 	}
@@ -1044,7 +1150,7 @@ func (h *IMMessageHandler) refineCodingRequestUnderstanding(userID, userText str
 	if isGoalSystemContinuation(userText) {
 		return ""
 	}
-	if !codingRequestShouldRestate(decision, userText) || codingRequestUnderstandingKeepsHostFallback(userText, mem) {
+	if !codingRequestShouldRestate(decision, userText) || codingRequestUnderstandingKeepsHostFallback(userText, mem, decision) {
 		return strings.TrimSpace(mem.RequirementRestatement)
 	}
 	got := h.llmCodingRequestRestatement(userText, mem)
@@ -1059,7 +1165,7 @@ func (h *IMMessageHandler) refineCodingRequestUnderstanding(userID, userText str
 }
 
 func (h *IMMessageHandler) resolveAndStoreCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision, onToken func(string)) string {
-	shown := h.publishCodingRequestUnderstanding(userID, userText, mem, onToken)
+	shown := h.publishCodingRequestUnderstanding(userID, userText, mem, decision, onToken)
 	if shown != "" {
 		if strings.TrimSpace(userID) != "" {
 			mem = h.getStickyCodingWorkbenchMemory(userID)

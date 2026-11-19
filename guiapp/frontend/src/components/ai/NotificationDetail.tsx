@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
-import { companionHostTransferToken, companionShareToken } from "./AssistantTitleBarNotifications.companionShare";
+import { companionHostTransferToken, companionShareToken, isCompanionGroupDigestNotice } from "./AssistantTitleBarNotifications.companionShare";
 import { localizeText } from "../../i18n";
 import { tailText } from "../../i18n/mnTail"
 
@@ -23,6 +23,8 @@ export interface NotificationDetailProps {
   groupInviteError?: string;
   /** Opens the share delivered by this notice in the companion reader. */
   onShareOpen?: (token: string) => void;
+  /** Opens the companion's 文档管理 for a group join digest's 确认. */
+  onDigestOpen?: () => void;
   shareOpenBusy?: boolean;
   shareOpenError?: string;
   /** Accepts or declines a pending host transfer for this share. */
@@ -69,6 +71,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   groupInviteActionError = "",
   groupInviteError = "",
   onShareOpen,
+  onDigestOpen,
   shareOpenBusy = false,
   shareOpenError = "",
   onHostTransfer,
@@ -83,6 +86,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   const catLabel = CATEGORY_LABELS[notification.category] || CATEGORY_LABELS.custom;
   const shareToken = companionShareToken(notification);
   const hostTransferToken = companionHostTransferToken(notification);
+  const isGroupDigest = isCompanionGroupDigestNotice(notification);
 
   const formattedDate = formatDate(notification.created_at, lang);
   const titleText = (notification.title || "").trim();
@@ -146,7 +150,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           </span>
         </div>
 
-        {(notification.groupInviteId || shareToken || hostTransferToken) && bodyText ? (
+        {(notification.groupInviteId || shareToken || hostTransferToken || isGroupDigest) && bodyText ? (
           <div data-testid="notification-detail-content" className="ndet-invite-body">
             {bodyText}
           </div>
@@ -212,6 +216,25 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         ) : null}
         {notification.groupInviteId && groupInviteError ? (
           <p className="ndet-invite-error" data-testid="notification-group-invite-error" role="status">{groupInviteError}</p>
+        ) : null}
+        {isGroupDigest && onDigestOpen ? (
+          <div className="ndet-invite-actions">
+            <button
+              type="button"
+              className="ndet-invite-accept"
+              data-testid="notification-digest-open"
+              disabled={shareOpenBusy}
+              aria-busy={shareOpenBusy}
+              onClick={() => onDigestOpen?.()}
+            >
+              {shareOpenBusy
+                ? localizeText(lang, "Opening…", "打开中…", "開啟中…")
+                : localizeText(lang, "Confirm", "确认", "確認")}
+            </button>
+          </div>
+        ) : null}
+        {isGroupDigest && shareOpenError.trim() ? (
+          <p className="ndet-invite-error" data-testid="notification-share-error" role="alert">{shareOpenError.trim()}</p>
         ) : null}
         {shareToken && onShareOpen ? (
           <div className="ndet-invite-actions">

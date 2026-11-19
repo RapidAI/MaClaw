@@ -191,6 +191,98 @@ describe('AssistantQuickSettingsBar', () => {
         expect(screen.getByText('gpt-4o')).toBeTruthy();
     });
 
+    it('appends the add-custom-model entry after the provider list and deep-links on click', () => {
+        const onAddCustomModel = vi.fn();
+        const onDismissModelMenu = vi.fn();
+        renderBar({
+            availableProviders: [
+                { name: 'hub-official', url: '', isHubService: true, configured: true },
+                { name: 'openai-custom', url: 'https://api.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5', 'gpt-4o'],
+            onSwitchProvider: vi.fn(),
+            onSwitchModel: vi.fn(),
+            onAddCustomModel,
+            onDismissModelMenu,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        const menu = screen.getByTestId('qs-model-menu');
+        const addRow = screen.getByTestId('qs-model-menu-add-custom');
+        expect(addRow.textContent).toContain('添加自定义模型');
+        // Sits at the end of the provider section: after the switchable
+        // provider, before the model rows.
+        const rows = Array.from(menu.querySelectorAll('[role="option"]'));
+        const addIdx = rows.indexOf(addRow);
+        expect(addIdx).toBeGreaterThan(0);
+        expect(rows[addIdx - 1].textContent).toContain('openai-custom');
+        expect(rows[addIdx + 1].textContent).toContain('gpt-5');
+
+        fireEvent.click(addRow);
+        expect(onAddCustomModel).toHaveBeenCalledTimes(1);
+        // Navigating away closes the picker and drops any staged provider draft.
+        expect(screen.queryByRole('listbox')).toBeNull();
+        expect(onDismissModelMenu).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the add-custom-model entry when no deep link is provided', () => {
+        renderBar({
+            availableProviders: [
+                { name: 'hub-official', url: '', isHubService: true, configured: true },
+                { name: 'openai-custom', url: 'https://api.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5'],
+            onSwitchProvider: vi.fn(),
+            onSwitchModel: vi.fn(),
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        expect(screen.queryByTestId('qs-model-menu-add-custom')).toBeNull();
+    });
+
+    it('activates the add-custom-model entry with keyboard navigation', () => {
+        const onAddCustomModel = vi.fn();
+        renderBar({
+            availableProviders: [
+                { name: 'hub-official', url: '', isHubService: true, configured: true },
+                { name: 'openai-custom', url: 'https://api.example.com', isHubService: false, configured: true },
+            ],
+            currentModel: 'gpt-5',
+            modelOptions: ['gpt-5', 'gpt-4o'],
+            onSwitchProvider: vi.fn(),
+            onSwitchModel: vi.fn(),
+            onAddCustomModel,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        const listbox = screen.getByRole('listbox');
+        // Opening highlights the current model (gpt-5); walk down past gpt-4o,
+        // wrap to the provider row, then reach the add entry.
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' });
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' });
+        fireEvent.keyDown(listbox, { key: 'ArrowDown' });
+        fireEvent.keyDown(listbox, { key: 'Enter' });
+        expect(onAddCustomModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('still offers the add entry when it is the only interactive menu row', () => {
+        const onAddCustomModel = vi.fn();
+        renderBar({
+            // Single provider, no switchable targets, no model list loaded:
+            // the section resolver keeps providers visible so the popover is
+            // not empty, and the add entry becomes the only option.
+            availableProviders: [{ name: 'xAI-Grok', url: '', isHubService: false, configured: true }],
+            onSwitchProvider: vi.fn(),
+            onAddCustomModel,
+        });
+        fireEvent.click(screen.getByTestId('qs-model-chip'));
+        const menu = screen.getByTestId('qs-model-menu');
+        const addRow = screen.getByTestId('qs-model-menu-add-custom');
+        // Only interactive row: it is auto-highlighted on open.
+        expect(menu.getAttribute('aria-activedescendant')).toBe(addRow.id);
+        fireEvent.keyDown(menu, { key: 'Enter' });
+        expect(onAddCustomModel).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps the picker open after staging a provider so its model can be chosen next', () => {
         const onSwitchProvider = vi.fn();
         renderBar({

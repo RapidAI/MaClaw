@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SubmitExpertMarketListing, SubmitExpertMarketListingToUsers, SubmitExpertMarketListingWithDistribution } from '../../wailsjs/go/main/App';
+import { ListExpertMarketCategories, SubmitExpertMarketListing, SubmitExpertMarketListingToUsers, SubmitExpertMarketListingWithDistribution } from '../../wailsjs/go/main/App';
 import { useDialog } from './CustomDialog';
 import type { ExpertDefinition } from './ai/expertTypes';
 import { tailText } from '../i18n/mnTail'
@@ -77,6 +77,13 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     const [price, setPrice] = useState('0');
     const [visibility, setVisibility] = useState<'public' | 'private' | 'users'>('public');
     const [shareTargets, setShareTargets] = useState('');
+    // HubCenter's administrator-curated taxonomy. A non-empty list makes the
+    // category a required choice; an empty list or a failed fetch (HubCenter
+    // unreachable) keeps the submission untagged and the row hidden, so the
+    // listing lands in the catch-all 其它 instead of blocking the share.
+    const [categoryNames, setCategoryNames] = useState<string[]>([]);
+    const [category, setCategory] = useState('');
+    const [categoryError, setCategoryError] = useState(false);
     // A public share opts into industry distribution by default. Keep an
     // author's public preference separate from the effective permission: a
     // private share must submit false, but changing back to public should
@@ -91,6 +98,20 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     const dialogRef = useRef<HTMLElement | null>(null);
     const closeRef = useRef(onClose);
     closeRef.current = onClose;
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const names = await ListExpertMarketCategories();
+                if (cancelled) return;
+                setCategoryNames(Array.isArray(names) ? names.map(String).map(name => name.trim()).filter(Boolean) : []);
+            } catch {
+                if (!cancelled) setCategoryNames([]);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
 
     useEffect(() => {
         const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -132,6 +153,11 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
             await showAlert(t(lang, '请输入 0 到 999999 之间的整数 Credits。', 'Enter an integer number of Credits between 0 and 999999.'), t(lang, '价格无效', 'Invalid price'));
             return;
         }
+        if (categoryNames.length > 0 && !categoryNames.includes(category)) {
+            setCategoryError(true);
+            await showAlert(t(lang, '请选择一个分类。', 'Pick a category.'), t(lang, '缺少分类', 'Category required'));
+            return;
+        }
         const parsedTargets = visibility === 'users' ? parseShareTargets(shareTargets) : null;
         if (parsedTargets?.error === 'empty') {
             await showAlert(t(lang, '请至少填写一个手机号或邮箱。可以一次分享给多个用户。', 'Enter at least one phone number or email. You can share with more than one user.'), t(lang, '缺少指定用户', 'Recipients required'));
@@ -150,10 +176,10 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
         setSubmitting(true);
         try {
             const listing = visibility === 'users'
-                ? await SubmitExpertMarketListingToUsers(expert.id, version.trim() || '1.0.0', parsedTargets?.targets.join('\n') || '')
+                ? await SubmitExpertMarketListingToUsers(expert.id, version.trim() || '1.0.0', parsedTargets?.targets.join('\n') || '', category)
                 : platformDistribution
-                ? await SubmitExpertMarketListingWithDistribution(expert.id, version.trim() || '1.0.0', parsedPrice, visibility, true)
-                : await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice, visibility);
+                ? await SubmitExpertMarketListingWithDistribution(expert.id, version.trim() || '1.0.0', parsedPrice, visibility, true, category)
+                : await SubmitExpertMarketListing(expert.id, version.trim() || '1.0.0', parsedPrice, visibility, category);
             onSubmitted?.(listing || {});
             onClose();
             if (visibility === 'users') {
@@ -197,6 +223,18 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
                             <label><input type="radio" name="expert-visibility" disabled={submitting} aria-label={t(lang, '指定用户（无需审核，可填写多个手机号或邮箱）', 'Selected users (no review, enter one or more phone numbers or emails)')} checked={visibility === 'users'} onChange={() => setVisibility('users')} /><span><b>{t(lang, '指定用户', 'Selected users')}</b><small>{t(lang, '无需审核，仅这些账号可见', 'No review, visible only to these accounts')}</small></span></label>
                         </div>
                     </fieldset>
+                    {categoryNames.length > 0 ? <fieldset className="expert-share-categories" data-invalid={categoryError && !categoryNames.includes(category) ? 'true' : undefined}>
+                        <legend>{t(lang, '分类（必选）', 'Category (required)')}</legend>
+                        <div className="expert-share-categories__options" role="radiogroup" aria-label={t(lang, '分类', 'Category')}>
+                            {categoryNames.map(name => (
+                                <label key={name}>
+                                    <input type="radio" name="expert-share-category" disabled={submitting} aria-label={name} checked={category === name} onChange={() => { setCategory(name); setCategoryError(false); }} />
+                                    <span>{name}</span>
+                                </label>
+                            ))}
+                        </div>
+                        <small>{t(lang, '分类由 HubCenter 管理员维护，用于 AI 专家界面顶部的筛选。', 'Categories are maintained by HubCenter administrators and drive the AI expert library filters.')}</small>
+                    </fieldset> : null}
                     {visibility === 'users' ? <label className="expert-share-targets">{t(lang, '手机号或邮箱', 'Phone numbers or emails')}<textarea aria-label={t(lang, '指定用户的手机号或邮箱', 'Phone numbers or emails of selected users')} disabled={submitting} value={shareTargets} placeholder={t(lang, '13800138000，name@example.com', '13800138000, name@example.com')} onChange={event => setShareTargets(event.target.value)} /><small>{t(lang, '可填写多个，用逗号或换行分隔。按手机号或邮箱匹配账号，不限 Hub 或租户。', 'Enter more than one, separated by commas or new lines. Accounts are matched by phone number or email, with no Hub or tenant limit.')}</small></label> : null}
                     <label className="expert-share-distribution" title={t(lang, '允许 HubCenter 将审核通过的公开版本获取为行业默认专家资产；不会替用户购买或授予收费专家。', 'Allow HubCenter to acquire an approved public version as an industry-default expert asset. This never purchases or grants a paid expert to users.')}>
                         <input type="checkbox" checked={platformDistribution} disabled={submitting || visibility !== 'public'} onChange={event => setPublicDistributionPreference(event.target.checked)} />

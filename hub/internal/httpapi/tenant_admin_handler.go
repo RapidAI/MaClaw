@@ -427,15 +427,15 @@ func adminTenantDomainsUpdateHandler(system store.SystemSettingsRepository, tena
 	}
 }
 
-func AdminTenantStatusUpdateHandler(tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func AdminTenantStatusUpdateHandler(tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	return adminTenantStatusUpdateHandler(nil, nil, tenants, runtimeStoppers...)
 }
 
-func AdminTenantStatusUpdateWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func AdminTenantStatusUpdateWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	return adminTenantStatusUpdateHandler(system, audit, tenants, runtimeStoppers...)
 }
 
-func adminTenantStatusUpdateHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func adminTenantStatusUpdateHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	runtimeStopper := firstTenantIMRuntimeStopper(runtimeStoppers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
@@ -476,8 +476,11 @@ func adminTenantStatusUpdateHandler(system store.SystemSettingsRepository, audit
 			writeError(w, http.StatusInternalServerError, "TENANT_STATUS_UPDATE_FAILED", err.Error())
 			return
 		}
-		if status != "active" && runtimeStopper != nil {
-			runtimeStopper.StopTenantIMs(r.Context(), tenantID)
+		if status != "active" {
+			if runtimeStopper != nil {
+				runtimeStopper.StopTenantIMs(r.Context(), tenantID)
+			}
+			stopTenantConnections(r.Context(), tenantID, runtimeStoppers)
 		}
 		updated, _ := tenants.GetByID(r.Context(), tenantID)
 		writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.status_updated", map[string]any{"tenant_id": tenantID, "status": status})
@@ -495,15 +498,15 @@ type tenantHardDeleter interface {
 	DeleteByID(ctx context.Context, id string) error
 }
 
-func AdminTenantDeleteHandler(tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func AdminTenantDeleteHandler(tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	return adminTenantDeleteHandler(nil, nil, nil, nil, nil, tenants, runtimeStoppers...)
 }
 
-func AdminTenantDeleteWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, centerSvc BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func AdminTenantDeleteWithPlatformCallbackHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, centerSvc BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	return adminTenantDeleteHandler(system, audit, admins, db, centerSvc, tenants, runtimeStoppers...)
 }
 
-func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, routeDeleter BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository, admins *auth.AdminService, db *sql.DB, routeDeleter BoundUserRouteDeleter, tenants store.TenantRepository, runtimeStoppers ...any) http.HandlerFunc {
 	runtimeStopper := firstTenantIMRuntimeStopper(runtimeStoppers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
@@ -550,6 +553,7 @@ func adminTenantDeleteHandler(system store.SystemSettingsRepository, audit store
 		if runtimeStopper != nil {
 			runtimeStopper.StopTenantIMs(r.Context(), tenantID)
 		}
+		stopTenantConnections(r.Context(), tenantID, runtimeStoppers)
 
 		// Delete HubCenter routes for all tenant identities (best-effort, errors
 		// logged but not blocking). Tenant administrators do not necessarily have
@@ -678,7 +682,7 @@ func purgeTenantUserRoutes(ctx context.Context, db *sql.DB, tenantID string, rou
 	wg.Wait()
 }
 
-func AdminTenantMergeHandler(db *sql.DB, tenants store.TenantRepository, audit store.AdminAuditRepository, runtimeStoppers ...TenantIMRuntimeStopper) http.HandlerFunc {
+func AdminTenantMergeHandler(db *sql.DB, tenants store.TenantRepository, audit store.AdminAuditRepository, runtimeStoppers ...any) http.HandlerFunc {
 	runtimeStopper := firstTenantIMRuntimeStopper(runtimeStoppers)
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor := AdminFromContext(r.Context())
@@ -736,8 +740,11 @@ func AdminTenantMergeHandler(db *sql.DB, tenants store.TenantRepository, audit s
 			return
 		}
 		if !req.DryRun {
-			if deleteSource && runtimeStopper != nil && sourceTenantID != store.DefaultTenantID {
-				runtimeStopper.StopTenantIMs(r.Context(), sourceTenantID)
+			if deleteSource && sourceTenantID != store.DefaultTenantID {
+				if runtimeStopper != nil {
+					runtimeStopper.StopTenantIMs(r.Context(), sourceTenantID)
+				}
+				stopTenantConnections(r.Context(), sourceTenantID, runtimeStoppers)
 			}
 			writeAdminAuditLog(r.Context(), audit, actor.ID, "tenant.merged", map[string]any{"source_tenant_id": sourceTenantID, "target_tenant_id": targetTenantID, "delete_source": deleteSource})
 		}

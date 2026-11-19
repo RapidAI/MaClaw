@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { useDialog } from '../CustomDialog';
 import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTaskLaunch';
@@ -282,15 +282,49 @@ type CodingTaskLaunch = {
     remote_host?: SharedCodingTaskLaunch['remoteHost'];
 };
 
-type RepositoryContextMenu = {
-	item: any;
-	key: string;
-	x: number;
-	y: number;
+// Shared context-menu model for the repository list and the virtual directory
+// tree. Items are plain data so each surface can build its own entries while
+// one renderer owns dismissal, focus, and keyboard navigation.
+type VRepoMenuItem = {
+	id: string;
+	label: string;
+	title: string;
+	icon?: string;
+	danger?: boolean;
+	disabled?: boolean;
+	className?: string;
+	separatorBefore?: boolean;
+	onSelect: () => void;
 };
 
-const repositoryContextMenuWidth = 232;
-const repositoryContextMenuHeight = 92;
+type VRepoMenuState = {
+	key: string;
+	heading: string;
+	name: string;
+	items: VRepoMenuItem[];
+	x: number;
+	y: number;
+	restore?: () => void;
+};
+
+const vrepoMenuWidth = 248;
+// 16x16 stroke icons keyed by name; paths stay minimal so menus read at 15px.
+const vrepoMenuIconPaths: Record<string, string> = {
+	trash: 'M3 4.5h10M6.25 2.5h3.5M5 4.5l.6 8h4.8l.6-8M6.75 7v3M9.25 7v3',
+	'folder-plus': 'M2.5 4h4l1.2 1.5h5.8v7H2.5zM2.5 6h11M8 8v4M6 10h4',
+	plus: 'M8 3.5v9M3.5 8h9',
+	pencil: 'M3 13h2.6L13 5.6 10.4 3 3 10.4zM10.4 3 13 5.6',
+	download: 'M8 2.5v7M5 6.5 8 9.5l3-3M3 11.5v2h10v-2',
+	diff: 'M4.5 2.5v11M2.5 4.5h4M9.5 11.5h4M11.5 9.5v4',
+	'folder-open': 'M4.5 6.5V4h4l1.2 1.5h5.8V8M2.5 12.5 4 6.5h9.5l-1.6 6zM4.5 6.5h10.8',
+	gauge: 'M2.5 12.5a5.5 5.5 0 1 1 11 0M8 12.5 10.5 8',
+	refresh: 'M13.5 8a5.5 5.5 0 1 1-1.9-4.1M13.5 3v3h-3',
+};
+
+const vrepoMenuIcon = (name?: string) => {
+	const path = name ? vrepoMenuIconPaths[name] : '';
+	return path ? <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d={path} /></svg> : null;
+};
 
 const parseJSON = <T,>(raw: unknown, fallback: T): T => {
     if (typeof raw === 'string') {
@@ -379,6 +413,10 @@ const nodeId = () => `node_${Date.now()}_${Math.random().toString(36).slice(2, 8
 const errorMessage = (error: unknown) => String((error as any)?.message || error);
 type BackgroundSyncPhase = 'idle' | 'queued' | 'running' | 'retry_wait' | 'failed' | 'conflict';
 const BACKGROUND_SYNC_PHASES: ReadonlySet<string> = new Set(['idle', 'queued', 'running', 'retry_wait', 'failed', 'conflict']);
+// The full "connection is usable" probe result. A repair persists credentials
+// only under this condition; it is also what gates saving a remote draft.
+const remoteConnectionStatusVerified = (status: any) =>
+	!!(status?.connected && status?.host_key_trusted && status?.root_exists && !status?.error_code);
 const localizeVRepoError = (value: unknown, isZh: boolean | string) => {
 	const message = errorMessage(value).trim();
 	const chinese = typeof isZh === "string" ? (normalizeLang(isZh) === "zh-Hans" || normalizeLang(isZh) === "zh-Hant") : !!isZh;
@@ -671,7 +709,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     localLocation: tailText(lang, 'This computer', '本机'),
     remoteLocation: tailText(lang, 'Remote SSH', '远程 SSH'),
     editConnection: tailText(lang, 'Edit connection', '编辑连接'),
-    repairConnectionHint: tailText(lang, 'This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.', '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。'),
+    repairConnectionHint: tailText(lang, 'Click "Test & repair" below: it verifies the SSH connection, saves a newly entered password on success, and resumes syncing automatically.', '点击下方「测试并修复」：验证 SSH 连接，成功时自动保存新填的密码并恢复同步。'),
+    repairSucceeded: tailText(lang, 'Repair succeeded — syncing has resumed in the background. You can close this dialog.', '修复成功，已自动恢复同步。可以关闭此窗口。'),
     moveRoot: tailText(lang, 'Move root', '迁移根目录'),
     moveRootTitle: tailText(lang, 'Move repository root', '迁移仓库根目录'),
     moveRootHint: tailText(lang, 'Files are copied and the manifest is verified before switching to the new location. The old root is kept for review.', '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。'),
@@ -710,6 +749,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     sshPassword: tailText(lang, 'SSH password', 'SSH 密码'),
     remoteRoot: tailText(lang, 'Remote root directory', '远程根目录'),
     testConnection: tailText(lang, 'Test connection', '测试连接'),
+    testAndRepair: tailText(lang, 'Test & repair', '测试并修复'),
     trustHostKey: tailText(lang, 'Trust and save host key', '首次创建时设置信任主机密钥'),
     hostKeyPrompt: tailText(lang, 'First connection: verify and trust this server fingerprint', '首次连接，请核对并信任服务器指纹'),
     hostKeyChangedPrompt: tailText(lang, 'The server host key differs from the saved fingerprint. Verify the fingerprint independently, then remove the old saved key, test again, and explicitly save the new key.', '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。'),
@@ -771,7 +811,11 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     mappingRootRequired: tailText(lang, 'Choose a local root directory.', '请选择本机根目录。'),
     mappingRemoteRequired: tailText(lang, 'Server, username and remote root are required.', '请填写服务器、用户名和远程根目录。'),
     mappingTestRequired: tailText(lang, 'Test the connection successfully before saving.', '请先测试连接，成功后再保存。'),
-    mappingTesting: tailText(lang, 'Testing…', '正在测试…')
+    mappingTesting: tailText(lang, 'Testing…', '正在测试…'),
+    folderNoun: tailText(lang, 'Virtual folder', '虚拟目录'),
+    mappingNoun: tailText(lang, 'Mapping', '映射'),
+    addGroupShort: tailText(lang, '+ Folder', '＋ 目录'),
+    addRepoShort: tailText(lang, '+ Mapping', '＋ 映射')
 };
 
 	// Hover/title strings for toolbar and dialog actions. Kept separate from
@@ -815,6 +859,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     chooseRoot: tailText(lang, 'Choose a local directory', '选择本机目录'),
     chooseDest: tailText(lang, 'Choose the destination directory', '选择目标目录'),
     testConn: tailText(lang, 'Test the remote SSH connection', '测试远程 SSH 连接'),
+    testAndRepair: tailText(lang, 'Test the SSH connection; a newly entered password is saved on success', '测试 SSH 连接；成功时自动保存新填的密码'),
     createRemoteRoot: tailText(lang, 'Create the root directory on the remote server', '在远程服务器创建根目录'),
     inspectMigration: tailText(lang, 'Check whether the migration can proceed', '检查迁移是否可行'),
     migrateNow: tailText(lang, 'Start migration to the new root', '开始迁移到新根目录'),
@@ -832,7 +877,13 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     testMapping: tailText(lang, 'Test this mapping’s connection or path', '测试此映射的连接或路径'),
     codingTarget: tailText(lang, 'Choose the coding task target: local mappings start local coding, SSH mappings start remote coding', '选择编程任务的目标机器：本机映射启动本地开发，SSH 映射启动远程编程'),
     startLocalCoding: tailText(lang, 'Start a local coding agent at this computer root', '在此本机根目录启动本地编程 agent'),
-    startRemoteCoding: tailText(lang, 'Start a remote coding agent at this SSH root', '在此 SSH 根目录启动远程编程 agent')
+    startRemoteCoding: tailText(lang, 'Start a remote coding agent at this SSH root', '在此 SSH 根目录启动远程编程 agent'),
+    addGroupIn: tailText(lang, 'Create a virtual folder inside this one', '在此目录内新建虚拟目录'),
+    addRepoIn: tailText(lang, 'Add a Git/SVN/local directory mapping inside this folder', '在此目录内添加 Git/SVN/本地目录映射'),
+    editFolder: tailText(lang, 'Edit this virtual folder', '编辑此虚拟目录'),
+    editMapping: tailText(lang, 'Edit this mapping', '编辑此映射'),
+    nodeChanges: tailText(lang, 'Review working-tree changes for this mapping', '查看此映射的工作区变更'),
+    rootMenu: tailText(lang, 'Virtual repository actions', '虚拟仓库操作')
 };
 
     const [repos, setRepos] = useState<any[]>([]);
@@ -862,6 +913,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     const [directoryStats, setDirectoryStats] = useState<any>(null);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 	    const [remoteConnection, setRemoteConnection] = useState<any>(null);
+	const remoteConnectionVerified = remoteConnectionStatusVerified(remoteConnection);
 		const [migrationDestination, setMigrationDestination] = useState('');
 		const [migrationPreview, setMigrationPreview] = useState<RootMigrationPreview | null>(null);
 		const [migrationComplete, setMigrationComplete] = useState(false);
@@ -872,7 +924,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const [repositoryQuery, setRepositoryQuery] = useState('');
 	const deferredRepositoryQuery = useDeferredValue(repositoryQuery);
 	const [removedRepositoryIDs, setRemovedRepositoryIDs] = useState<Set<string>>(() => new Set());
-	const [repositoryContextMenu, setRepositoryContextMenu] = useState<RepositoryContextMenu | null>(null);
+	const [menu, setMenu] = useState<VRepoMenuState | null>(null);
+	const [menuHeight, setMenuHeight] = useState(0);
 	const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'conflict' | 'error'>('idle');
 	const [syncMessage, setSyncMessage] = useState('');
 	const [backgroundSyncPending, setBackgroundSyncPending] = useState(false);
@@ -912,9 +965,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const machineMappingsRequestRef = useRef(0);
 	const recentRepositoriesRequestRef = useRef(0);
 	const directoryStatsRequestRef = useRef(0);
+	const directoryStatsTargetRef = useRef('');
 		const remoteConnectionRequestRef = useRef(0);
-		const repositoryContextMenuRef = useRef<HTMLDivElement | null>(null);
-		const repositoryContextMenuActionRef = useRef<HTMLButtonElement | null>(null);
+		const menuRef = useRef<HTMLDivElement | null>(null);
+		const menuFirstItemRef = useRef<HTMLButtonElement | null>(null);
 	const workspaceMountedRef = useRef(false);
 	const backgroundSyncRequestRef = useRef(0);
 
@@ -1169,7 +1223,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				const opening = openingRepositoryKey === itemKey;
 				const active = !!repo && (repo.id === item.id || (!repo.id && repo.root_path === item.root_path));
 					return <div className="vrepo-repository-list__record" key={itemKey} onContextMenu={(event) => (item.unbound || item.root_repair) ? event.preventDefault() : openRepositoryContextMenu(event, item, itemKey)}>
-						<button className={`vrepo-repository-list__item${active ? ' is-active' : ''}`} type="button" title={`${tips.openRecent}${item.name ? ` · ${item.name}` : ''}`} data-vrepo-repository-key={itemKey} aria-pressed={active} aria-haspopup="menu" aria-expanded={repositoryContextMenu?.key === itemKey} disabled={!!openingRepositoryKey || selectingRoot || mutationLocked || item.unbound || item.root_repair} onClick={() => void openRecentRepository(item)} onKeyDown={(event) => {
+						<button className={`vrepo-repository-list__item${active ? ' is-active' : ''}`} type="button" title={`${tips.openRecent}${item.name ? ` · ${item.name}` : ''}`} data-vrepo-repository-key={itemKey} aria-pressed={active} aria-haspopup="menu" aria-expanded={menu?.key === itemKey} disabled={!!openingRepositoryKey || selectingRoot || mutationLocked || item.unbound || item.root_repair} onClick={() => void openRecentRepository(item)} onKeyDown={(event) => {
 							if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
 							event.preventDefault();
 							const bounds = event.currentTarget.getBoundingClientRect();
@@ -1203,29 +1257,49 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
 	const repositoryIDsMatch = (left: unknown, right: unknown) => String(left || '').trim() === String(right || '').trim();
 
+	// Clamp against the fixed menu width immediately, then correct the vertical
+	// position once the real height has been measured after mount.
+	const clampMenuPosition = (position: { x: number; y: number }, estimatedHeight: number) => ({
+		x: Math.max(8, Math.min(position.x, window.innerWidth - vrepoMenuWidth - 8)),
+		y: Math.max(8, Math.min(position.y, Math.max(8, window.innerHeight - estimatedHeight - 8))),
+	});
+
+	const estimateMenuHeight = (items: VRepoMenuItem[]) =>
+		52 + items.reduce((height, item) => height + (item.separatorBefore ? 9 : 33), 0) + 8;
+
 	const openRepositoryContextMenu = (event: { preventDefault: () => void; clientX?: number; clientY?: number }, item: any, key: string, position?: { x: number; y: number }) => {
 		event.preventDefault();
 		if (repositoryDeletionRef.current || mutationLocked || selectingRoot) return;
-		const x = position?.x ?? event.clientX ?? 0;
-		const y = position?.y ?? event.clientY ?? 0;
-		setRepositoryContextMenu({
-			item,
+		const items: VRepoMenuItem[] = [{
+			id: 'delete-repository',
+			label: text.deleteRepository,
+			title: tips.deleteRepo,
+			icon: 'trash',
+			danger: true,
+			className: 'vrepo-repository-menu__delete',
+			onSelect: () => void deleteRecentRepository(item),
+		}];
+		const anchor = position || { x: event.clientX ?? 0, y: event.clientY ?? 0 };
+		setMenu({
 			key,
-			x: Math.max(8, Math.min(x, window.innerWidth - repositoryContextMenuWidth - 8)),
-			y: Math.max(8, Math.min(y, window.innerHeight - repositoryContextMenuHeight - 8)),
+			heading: text.repositoryList,
+			name: String(item?.name || ''),
+			items,
+			...clampMenuPosition(anchor, estimateMenuHeight(items)),
+			restore: () => {
+				window.requestAnimationFrame(() => {
+					Array.from(document.querySelectorAll<HTMLElement>('[data-vrepo-repository-key]'))
+						.find((entry) => entry.dataset.vrepoRepositoryKey === key)
+						?.focus();
+				});
+			},
 		});
 	};
 
-	const closeRepositoryContextMenu = (restoreFocus = false) => {
-		const key = repositoryContextMenu?.key;
-		setRepositoryContextMenu(null);
-		if (restoreFocus && key) {
-			window.requestAnimationFrame(() => {
-				Array.from(document.querySelectorAll<HTMLElement>('[data-vrepo-repository-key]'))
-					.find((item) => item.dataset.vrepoRepositoryKey === key)
-					?.focus();
-			});
-		}
+	const closeMenu = (restoreFocus = false) => {
+		const restore = menu?.restore;
+		setMenu(null);
+		if (restoreFocus && restore) restore();
 	};
 
 	const loadRecent = useCallback(async () => {
@@ -1362,7 +1436,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const deleteRecentRepository = async (item: any) => {
 		if (repositoryDeletionRef.current || busyRef.current || operationResultRef.current?.status === 'running') return;
 		const id = String(item?.id || '').trim();
-		closeRepositoryContextMenu();
+		closeMenu();
 		if (!id) {
 			setError(tailText(lang, 'This virtual repository has no identifier and cannot be removed from the list.', '该虚拟仓库缺少标识，无法从列表中删除。'));
 			return;
@@ -1409,25 +1483,45 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	};
 
 	useEffect(() => {
-		if (!repositoryContextMenu) return;
-		const focusID = window.setTimeout(() => repositoryContextMenuActionRef.current?.focus(), 0);
+		if (!menu) { setMenuHeight(0); return; }
+		const focusID = window.setTimeout(() => menuFirstItemRef.current?.focus(), 0);
 		const dismiss = (event: MouseEvent) => {
-			if (!repositoryContextMenuRef.current?.contains(event.target as Node)) closeRepositoryContextMenu();
+			if (!menuRef.current?.contains(event.target as Node)) closeMenu();
 		};
-		const dismissOnEscape = (event: KeyboardEvent) => {
+		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') {
 				event.preventDefault();
-				closeRepositoryContextMenu(true);
+				closeMenu(true);
+				return;
 			}
+			if (event.key === 'Tab') { closeMenu(); return; }
+			if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+			const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') || []);
+			if (!items.length) return;
+			event.preventDefault();
+			const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+			let nextIndex = currentIndex;
+			if (event.key === 'Home') nextIndex = 0;
+			else if (event.key === 'End') nextIndex = items.length - 1;
+			else if (event.key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : Math.min(items.length - 1, currentIndex + 1);
+			else nextIndex = currentIndex < 0 ? items.length - 1 : Math.max(0, currentIndex - 1);
+			items[nextIndex]?.focus();
 		};
 		window.addEventListener('mousedown', dismiss, true);
-		window.addEventListener('keydown', dismissOnEscape, true);
+		window.addEventListener('keydown', onKeyDown, true);
 		return () => {
 			window.clearTimeout(focusID);
 			window.removeEventListener('mousedown', dismiss, true);
-			window.removeEventListener('keydown', dismissOnEscape, true);
+			window.removeEventListener('keydown', onKeyDown, true);
 		};
-	}, [repositoryContextMenu]);
+	}, [menu]);
+
+	// Correct the provisional vertical clamp with the menu's real rendered height.
+	useLayoutEffect(() => {
+		if (!menu || !menuRef.current) return;
+		const measured = menuRef.current.offsetHeight;
+		if (measured && measured !== menuHeight) setMenuHeight(measured);
+	}, [menu, menuHeight]);
 
     const loadSVN = useCallback(async (search = false) => {
         const backend = app();
@@ -1570,6 +1664,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			if (request !== remoteConnectionRequestRef.current) return;
 	            setRemoteConnection(status);
 	            if (status?.error_code && status.error_code !== 'host_key_untrusted' && status.error_code !== 'host_key_changed') setError(status.error || status.error_code);
+			// A fully verified repair means credentials and host key now work:
+			// resume the paused sync right away, so the failure banner turns into
+			// a real result instead of waiting for the user to find Sync now.
+			if (draft.repair_only && remoteConnectionStatusVerified(status)) void runRepositorySync();
 	        } catch (e: any) { if (request === remoteConnectionRequestRef.current) setError(String(e?.message || e)); } finally { busyRef.current = false; setBusy(false); }
 	    };
 
@@ -1863,10 +1961,9 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			|| (original.port || 22) !== Number(draft.ssh_port || 22)
 			|| (original.user || '') !== String(draft.ssh_user || '');
 	};
-	const mappingTargetConnectionVerified = !!(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code);
 	const mappingTargetTestRequired = draft.mapping_kind === 'remote'
 		&& (!draft.mapping_id || mappingDraftCoordinatesChanged())
-		&& !mappingTargetConnectionVerified;
+		&& !remoteConnectionVerified;
 
 	const saveMachineMapping = async () => {
 		if (!repo?.id || busyRef.current) return;
@@ -2009,15 +2106,18 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 	}, [isZh]);
 
-	const openChanges = useCallback(async () => {
-		const selectedMapping = repo?.nodes.find((node) => node.id === selectedId);
-		if (!repo || !selectedMapping?.repository || selectedMapping.repository.kind !== 'git' || !statuses[selectedMapping.id]?.is_repository) {
+	// Accepts an explicit node id so the tree context menu can target a node the
+	// user right-clicked; the detail panel calls it without one (active selection).
+	const openChanges = useCallback(async (targetNodeID = '') => {
+		const nodeID = targetNodeID || selectedId;
+		const targetMapping = repo?.nodes.find((node) => node.id === nodeID);
+		if (!repo || !targetMapping?.repository || targetMapping.repository.kind !== 'git' || !statuses[targetMapping.id]?.is_repository) {
 			setError(text.changesUnavailable);
 			return;
 		}
 		setError('');
 		try {
-			await loadChanges(repo, selectedMapping.id, '', repositorySessionRef.current, activeMapping);
+			await loadChanges(repo, targetMapping.id, '', repositorySessionRef.current, activeMapping);
 		} catch (changeError) {
 			setError(localizeVRepoError(changeError, isZh));
 		}
@@ -2262,9 +2362,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         setSelectedId('');
     };
 
-    const openMappedFolder = async () => {
-        if (!repo || !selected?.repository) return;
-        const path = selectedStatus?.path || `${(activeMappingRootPath || repo.root_path).replace(/[\\/]$/, '')}/${selected.repository.relative_path || relativePathForTreeNode(repo.nodes, selected.id)}`;
+    const openMappedFolder = async (node?: VRepoNode) => {
+        const target = node || selected;
+        if (!repo || !target?.repository) return;
+        const path = statuses[target.id]?.path || `${(activeMappingRootPath || repo.root_path).replace(/[\\/]$/, '')}/${target.repository.relative_path || relativePathForTreeNode(repo.nodes, target.id)}`;
         try { await app()?.OpenFileOrShowInFolder?.(path); } catch (e: any) { setError(String(e?.message || e)); }
     };
 
@@ -2388,7 +2489,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         const isLast = index === siblings.length - 1;
 		const nodeLabel = node.repository ? `${node.name} · ${node.repository.kind.toUpperCase()}` : node.name;
         return <div key={node.id} className="vrepo-tree__branch" role="none">
-	            <div role="treeitem" aria-label={nodeLabel} draggable={!mutationLocked} data-vrepo-node-id={node.id} tabIndex={selectedId === node.id ? 0 : -1} aria-level={depth + 1} aria-selected={selectedId === node.id} aria-expanded={hasChildren ? isExpanded : undefined} className={`vrepo-tree__item${selectedId === node.id ? ' is-selected' : ''}${draggedNodeID === node.id ? ' is-dragging' : ''}${dropTargetID === node.id ? ' is-drop-target' : ''}`} onDragStart={(event) => { if (mutationLocked) { event.preventDefault(); return; } setDraggedNodeID(node.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', node.id); }} onDragEnd={() => { setDraggedNodeID(''); setDropTargetID(null); }} onDragOver={(event) => { if (!node.repository && canMoveTreeNode(draggedNodeID, node.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(node.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === node.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, node.id); }} onClick={(event) => { event.currentTarget.focus(); setSelectedId(node.id); }} onKeyDown={(event) => {
+	            <div role="treeitem" aria-label={nodeLabel} draggable={!mutationLocked} data-vrepo-node-id={node.id} tabIndex={selectedId === node.id ? 0 : -1} aria-level={depth + 1} aria-selected={selectedId === node.id} aria-expanded={hasChildren ? isExpanded : undefined} className={`vrepo-tree__item${selectedId === node.id ? ' is-selected' : ''}${draggedNodeID === node.id ? ' is-dragging' : ''}${dropTargetID === node.id ? ' is-drop-target' : ''}`} onDragStart={(event) => { if (mutationLocked) { event.preventDefault(); return; } setDraggedNodeID(node.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', node.id); }} onDragEnd={() => { setDraggedNodeID(''); setDropTargetID(null); }} onDragOver={(event) => { if (!node.repository && canMoveTreeNode(draggedNodeID, node.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(node.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === node.id ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, node.id); }} onClick={(event) => { event.currentTarget.focus(); setSelectedId(node.id); }} onContextMenu={(event) => { event.currentTarget.focus(); openTreeContextMenu(event, node); }} onKeyDown={(event) => {
+                if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                    event.preventDefault();
+                    openTreeContextMenu(event, node);
+                    return;
+                }
                 const index = visibleNodeIDs.indexOf(node.id);
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
                     event.preventDefault();
@@ -2423,7 +2529,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	            }}>
                     <span className="vrepo-tree__guides" aria-hidden>{ancestorHasNext.map((hasNext, guideIndex) => <span key={guideIndex} className={hasNext ? 'is-active' : ''} />)}</span>
 					{depth > 1 ? <span className={`vrepo-tree__elbow${isLast ? ' is-last' : ''}`} aria-hidden /> : null}
-			{hasChildren ? <button type="button" tabIndex={-1} className="vrepo-tree__chevron" aria-label={`${isExpanded ? tips.collapse : tips.expand} ${node.name}`} title={`${isExpanded ? tips.collapse : tips.expand} ${node.name}`} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggleTreeNode(node.id, isExpanded); }}>{isExpanded ? '▾' : '▸'}</button> : <span className="vrepo-tree__chevron" aria-hidden />}
+			{hasChildren ? <button type="button" tabIndex={-1} className={`vrepo-tree__chevron${isExpanded ? '' : ' is-collapsed'}`} aria-label={`${isExpanded ? tips.collapse : tips.expand} ${node.name}`} title={`${isExpanded ? tips.collapse : tips.expand} ${node.name}`} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggleTreeNode(node.id, isExpanded); }}><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6.5 8 10.5l4-4" /></svg></button> : <span className="vrepo-tree__chevron" aria-hidden />}
                     <span className={`vrepo-tree__icon${node.repository ? ` is-${node.repository.kind}` : ''}`}>{treeNodeIcon(node.repository?.kind)}</span>
                     <span className={`vrepo-tree__label${selectedId === node.id ? ' is-selected' : ''}${draggedNodeID === node.id ? ' is-dragging' : ''}${dropTargetID === node.id ? ' is-drop-target' : ''}`} title={node.repository?.description || undefined}>{node.name}</span>
 				{status ? <span className={`vrepo-tree__state ${status.error ? 'is-error' : status.clean ? 'is-clean' : 'is-dirty'}`} role="img" aria-label={status.error ? `${text.errorStatus}: ${status.error}` : status.clean ? text.cleanStatus : text.changedStatus}>{status.error ? '!' : status.clean ? '✓' : '●'}</span> : null}
@@ -2465,29 +2571,168 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     }, []);
 
 	useEffect(() => {
-		directoryStatsRequestRef.current += 1;
-		setDirectoryStats(null);
+		// A stats request aimed at the incoming selection must survive the
+		// selection-change reset; only a request for a DIFFERENT node is stale.
+		if (directoryStatsTargetRef.current !== selectedId) {
+			directoryStatsRequestRef.current += 1;
+			setDirectoryStats(null);
+		}
 	}, [selectedId]);
 
-	const loadDirectoryStats = async () => {
-		if (!repo || !selected?.repository || selected.repository.kind !== 'local') return;
+	const loadDirectoryStats = async (node?: VRepoNode) => {
+		const target = node || selected;
+		if (!repo || !target?.repository || target.repository.kind !== 'local') return;
 		const requestID = ++directoryStatsRequestRef.current;
 		const repositorySession = repositorySessionRef.current;
-		const selectedNodeID = selected.id;
+		const targetNodeID = target.id;
+		directoryStatsTargetRef.current = targetNodeID;
 		setError('');
 		try {
-			const relativePath = relativePathForTreeNode(repo.nodes, selected.id);
+			const relativePath = relativePathForTreeNode(repo.nodes, target.id);
 			const raw = activeMappingIsRemote
 				? await app()?.GetRemoteVirtualRepositoryDirectoryStats?.(repo.id, relativePath, activeMapping?.id || '')
 				: await app()?.GetVirtualRepositoryDirectoryStats?.(activeMappingRootPath || repo.root_path, relativePath);
-			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && selectedNodeID === selectedId) {
+			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && targetNodeID === selectedId) {
 				setDirectoryStats(parseJSON(raw, null));
 			}
 		} catch (e: any) {
-			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && selectedNodeID === selectedId) {
+			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && targetNodeID === selectedId) {
 				setError(String(e?.message || e));
 			}
 		}
+	};
+
+	// Right-click menu for the virtual directory tree. Entries follow the node
+	// type: the repository root and folders offer creation actions, mappings
+	// expose their per-node operations (checkout/changes/open/size), and both
+	// tree nodes end with the destructive remove. Mutating entries stay disabled
+	// while an operation or save is in flight; read-only ones remain usable.
+	const openTreeContextMenu = (event: { preventDefault: () => void; currentTarget?: EventTarget | null; clientX?: number; clientY?: number }, node: VRepoNode | null, position?: { x: number; y: number }) => {
+		event.preventDefault();
+		if (repositoryDeletionRef.current || !repo) return;
+		const nodeID = node?.id || '';
+		if (nodeID !== selectedId) setSelectedId(nodeID);
+		const target = event.currentTarget as HTMLElement | null;
+		const bounds = target?.getBoundingClientRect?.();
+		const anchor = position || {
+			x: event.clientX ?? (bounds ? bounds.left + Math.min(bounds.width / 2, 40) : 0),
+			y: event.clientY ?? (bounds ? bounds.top + Math.min(bounds.height, 36) : 0),
+		};
+		const status = node ? statuses[node.id] : undefined;
+		const binding = node?.repository;
+		const locked = mutationLocked;
+		const checkingOutNode = Boolean(node && checkoutNodeID === node.id);
+		const items: VRepoMenuItem[] = [];
+		if (!binding) {
+			// Repository root and virtual folders: creation actions first.
+			items.push(
+				{
+					id: 'add-group',
+					label: text.addGroup,
+					title: node ? tips.addGroupIn : tips.addGroup,
+					icon: 'folder-plus',
+					disabled: locked,
+					onSelect: () => { setMode('group'); setDraft({ parent_id: nodeID }); },
+				},
+				{
+					id: 'add-mapping',
+					label: text.addRepo,
+					title: node ? tips.addRepoIn : tips.addRepo,
+					icon: 'plus',
+					disabled: locked,
+					onSelect: () => { setMode('mapping'); setDraft({ parent_id: nodeID, kind: 'git', enabled: true }); },
+				},
+			);
+			if (node) {
+				items.push({
+					id: 'edit',
+					label: text.edit,
+					title: tips.editFolder,
+					icon: 'pencil',
+					disabled: locked,
+					onSelect: () => { setMode('group'); setDraft({ ...node }); },
+				});
+			}
+		}
+		if (binding && node) {
+			items.push({
+				id: 'edit',
+				label: text.edit,
+				title: tips.editMapping,
+				icon: 'pencil',
+				disabled: locked,
+				onSelect: () => { setMode('mapping'); setDraft({ ...node, ...binding }); },
+			});
+			if (binding.kind !== 'local' && !status?.is_repository) {
+				items.push({
+					id: 'checkout',
+					label: checkingOutNode ? text.checkingOut : text.checkout,
+					title: tips.checkout,
+					icon: 'download',
+					disabled: locked || checkingOutNode || checkoutInFlightRef.current,
+					onSelect: () => void checkoutSelectedRepositoryNode(repo, node.id),
+				});
+			}
+			if (binding.kind === 'git' && status?.is_repository) {
+				items.push({
+					id: 'changes',
+					label: text.changes,
+					title: tips.nodeChanges,
+					icon: 'diff',
+					disabled: changesLoading,
+					onSelect: () => void openChanges(node.id),
+				});
+			}
+			if (!activeMappingIsRemote) {
+				items.push({
+					id: 'open-folder',
+					label: text.openFolder,
+					title: tips.openFolder,
+					icon: 'folder-open',
+					onSelect: () => void openMappedFolder(node),
+				});
+			}
+			if (binding.kind === 'local') {
+				items.push({
+					id: 'stats',
+					label: text.calculateSize,
+					title: tips.calcSize,
+					icon: 'gauge',
+					disabled: locked,
+					onSelect: () => void loadDirectoryStats(node),
+				});
+			}
+		}
+		if (!node) {
+			items.push({
+				id: 'refresh',
+				label: text.refresh,
+				title: tips.refresh,
+				icon: 'refresh',
+				disabled: locked,
+				onSelect: () => void refreshStatus(),
+			});
+		}
+		if (node) {
+			items.push({
+				id: 'remove',
+				label: text.remove,
+				title: tips.removeNode,
+				icon: 'trash',
+				danger: true,
+				separatorBefore: true,
+				disabled: locked,
+				onSelect: () => void removeNode(node.id),
+			});
+		}
+		setMenu({
+			key: `tree:${nodeID}`,
+			heading: binding ? `${binding.kind.toUpperCase()} · ${text.mappingNoun}` : node ? text.folderNoun : tips.rootMenu,
+			name: node?.name || repo.name,
+			items,
+			...clampMenuPosition(anchor, estimateMenuHeight(items)),
+			restore: node ? () => focusTreeItem(node.id) : focusTreeRoot,
+		});
 	};
 
 	const startCredentialManager = async (returnToMapping = false) => {
@@ -2791,6 +3036,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	};
 
 	const errorBanner = error ? <p className="utilities-error" role="alert">{localizeVRepoError(error, isZh)}</p> : null;
+	const menuFirstEnabledIndex = menu ? menu.items.findIndex((item) => !item.disabled) : -1;
+	const menuPosition = menu ? clampMenuPosition({ x: menu.x, y: menu.y }, menuHeight) : null;
 	const startCodingTitle = machineMappings.length > 1
 		? tips.codingTarget
 		: mappingStartsRemoteCoding(activeMapping)
@@ -2837,9 +3084,15 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			{renderVCSClientStatus('git', false)}
 			{renderVCSClientStatus('svn', false)}
 		</> : null}
-		{repositoryContextMenu ? <div ref={repositoryContextMenuRef} className="vrepo-repository-menu" role="menu" aria-label={repositoryContextMenu.item?.name || text.repositoryList} style={{ left: repositoryContextMenu.x, top: repositoryContextMenu.y }}>
-			<div className="vrepo-repository-menu__context"><span>{text.repositoryList}</span><strong>{repositoryContextMenu.item?.name}</strong></div>
-			<button ref={repositoryContextMenuActionRef} type="button" role="menuitem" className="vrepo-repository-menu__delete" disabled={mutationLocked} title={tips.deleteRepo} onClick={() => void deleteRecentRepository(repositoryContextMenu.item)}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.25 2.5h3.5M5 4.5l.6 8h4.8l.6-8M6.75 7v3M9.25 7v3" /></svg><span>{text.deleteRepository}</span></button>
+		{menu && menuPosition ? <div ref={menuRef} className="vrepo-menu" role="menu" aria-label={menu.name || text.repositoryList} style={{ left: menuPosition.x, top: menuPosition.y }}>
+			<div className="vrepo-menu__context"><span>{menu.heading}</span><strong>{menu.name}</strong></div>
+			{menu.items.map((item, index) => <Fragment key={item.id}>
+				{item.separatorBefore ? <div className="vrepo-menu__separator" role="separator" /> : null}
+				<button ref={index === menuFirstEnabledIndex ? menuFirstItemRef : undefined} type="button" role="menuitem" className={`vrepo-menu__item${item.danger ? ' vrepo-menu__item--danger' : ''}${item.className ? ` ${item.className}` : ''}`} disabled={item.disabled} title={item.title || item.label} onClick={() => { closeMenu(); item.onSelect(); }}>
+					{vrepoMenuIcon(item.icon)}
+					<span>{item.label}</span>
+				</button>
+			</Fragment>)}
 		</div> : null}
 
         {!repos.length && !repo ? <section className="vrepo-empty">
@@ -2854,7 +3107,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
         {mode === 'repo' ? <VRepoDialog title={draft.repair_only ? text.repairRemoteConnection : draft.id ? text.editConnection : text.newRepo} titleId="vrepo-repo-dialog-title" className="vrepo-dialog--repo" closeLabel={text.close} closeDisabled={busy || selectingRoot} onClose={() => setMode('none')} footer={<>
 			<button type="button" className="secondary" title={tips.cancel} disabled={busy || selectingRoot} onClick={() => setMode('none')}>{text.cancel}</button>
-			{draft.repair_only ? null : <button type="button" title={tips.save} onClick={() => void saveRepo({ ...draft, version: draft.version || 1, name: draft.name || '', root_path: draft.root_path || '', remote: draft.location === 'remote' ? { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' } : undefined, nodes: draft.nodes || [] })} disabled={busy || selectingRoot || (draft.location === 'remote' && !(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code))}>{text.save}</button>}
+			{draft.repair_only ? null : <button type="button" title={tips.save} onClick={() => void saveRepo({ ...draft, version: draft.version || 1, name: draft.name || '', root_path: draft.root_path || '', remote: draft.location === 'remote' ? { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' } : undefined, nodes: draft.nodes || [] })} disabled={busy || selectingRoot || (draft.location === 'remote' && !remoteConnectionVerified)}>{text.save}</button>}
 		</>}>
 			{errorBanner}
 			<div className="vrepo-editor">
@@ -2869,7 +3122,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				{remoteConnection?.error_code === 'host_key_changed' ? <div className="vrepo-host-key" role="alert"><strong>{text.hostKeyChangedPrompt}</strong><code>{remoteConnection.host_key_algorithm} {remoteConnection.host_key_fingerprint}</code><button type="button" className="danger" disabled={busy || !draft.id} onClick={() => void resetRemoteHostKey()}>{text.removeSavedHostKey}</button></div> : null}
 				{!draft.repair_only && remoteConnection?.connected && remoteConnection?.error_code === 'root_not_found' ? <div className="vrepo-root-missing" role="alert"><span>{text.rootMissingPrompt}</span><button type="button" disabled={busy} title={tips.createRemoteRoot} onClick={() => void createRemoteRoot()}>{text.createRemoteRoot}</button></div> : null}
                 {remoteConnection?.connected && remoteConnection?.root_exists ? <p className="vrepo-connection-ok">{text.connected} · Git {remoteConnection.git_version || '—'} · SVN {remoteConnection.svn_version || '—'}</p> : null}
-                <button type="button" className="secondary" disabled={busy} title={tips.testConn} onClick={() => void testRemoteConnection()}>{text.testConnection}</button>
+				{draft.repair_only && remoteConnectionVerified ? <p className="vrepo-repair-hint" role="status">{text.repairSucceeded}</p> : null}
+                <button type="button" className="secondary" disabled={busy || (draft.repair_only && syncStatus === 'syncing')} title={draft.repair_only ? tips.testAndRepair : tips.testConn} onClick={() => void testRemoteConnection()}>{draft.repair_only ? text.testAndRepair : text.testConnection}</button>
             </> : <label>{text.root}<div className="vrepo-inline"><input value={draft.root_path || ''} readOnly /><button type="button" className="secondary" disabled={busy || selectingRoot} title={tips.chooseRoot} onClick={() => void selectRoot()}>{selectingRoot ? text.loading : text.choose}</button></div></label>}
 			</div>
         </VRepoDialog> : null}
@@ -2937,10 +3191,10 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
             {repositoryList}
             {repo ? <div className="vrepo-layout">
             <aside className="vrepo-tree" aria-label={repo.name}>
-				<div className="vrepo-tree__head"><div><strong>{text.repositoryList}</strong><span>{repo.root_path}</span></div><div><button type="button" aria-label={text.addGroup} title={tips.addGroup} disabled={mutationLocked} onClick={() => { setMode('group'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId }); }}>+DIR</button><button type="button" aria-label={text.addRepo} title={tips.addRepo} disabled={mutationLocked} onClick={() => { if (selected && !selected.repository) { setMode('mapping'); setDraft({ ...selected, kind: 'git', enabled: true }); return; } setMode('mapping'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId, kind: 'git', enabled: true }); }}>+MAP</button></div></div>
+				<div className="vrepo-tree__head"><div><strong>{text.repositoryList}</strong><span>{repo.root_path}</span></div><div><button type="button" aria-label={text.addGroup} title={tips.addGroup} disabled={mutationLocked} onClick={() => { setMode('group'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId }); }}>{text.addGroupShort}</button><button type="button" aria-label={text.addRepo} title={tips.addRepo} disabled={mutationLocked} onClick={() => { if (selected && !selected.repository) { setMode('mapping'); setDraft({ parent_id: selected.id, kind: 'git', enabled: true }); return; } setMode('mapping'); setDraft({ parent_id: selected?.repository ? selected.parent_id : selectedId, kind: 'git', enabled: true }); }}>{text.addRepoShort}</button></div></div>
                 <div role="tree" aria-label={repo.name} className={dropTargetID === '' ? 'is-root-drop-target' : ''} onDragOver={(event) => { if (event.target === event.currentTarget && canMoveTreeNode(draggedNodeID, '')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(''); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === '' ? null : current); }} onDrop={(event) => { if (event.target !== event.currentTarget) return; event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, ''); }}>
-					<div role="treeitem" aria-level={1} aria-selected={!selectedId} aria-expanded="true" data-vrepo-tree-root tabIndex={!selectedId ? 0 : -1} className={`vrepo-tree__item vrepo-tree__root-item${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`} onClick={(event) => { event.currentTarget.focus(); setSelectedId(''); }} onKeyDown={(event) => { const firstNodeID = visibleNodeIDs[0]; const lastNodeID = visibleNodeIDs[visibleNodeIDs.length - 1]; if ((event.key === 'ArrowDown' || event.key === 'ArrowRight') && firstNodeID) { event.preventDefault(); setSelectedId(firstNodeID); focusTreeItem(firstNodeID); } else if (event.key === 'End' && lastNodeID) { event.preventDefault(); setSelectedId(lastNodeID); focusTreeItem(lastNodeID); } }} onDragOver={(event) => { if (canMoveTreeNode(draggedNodeID, '')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(''); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === '' ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, ''); }}>
-                        <span className="vrepo-tree__chevron" aria-hidden>▾</span><span className="vrepo-tree__icon">{treeNodeIcon()}</span><span className={`vrepo-tree__label${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`}>{repo.name}</span>
+					<div role="treeitem" aria-level={1} aria-selected={!selectedId} aria-expanded="true" data-vrepo-tree-root tabIndex={!selectedId ? 0 : -1} className={`vrepo-tree__item vrepo-tree__root-item${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`} onClick={(event) => { event.currentTarget.focus(); setSelectedId(''); }} onContextMenu={(event) => { event.currentTarget.focus(); openTreeContextMenu(event, null); }} onKeyDown={(event) => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); openTreeContextMenu(event, null); return; } const firstNodeID = visibleNodeIDs[0]; const lastNodeID = visibleNodeIDs[visibleNodeIDs.length - 1]; if ((event.key === 'ArrowDown' || event.key === 'ArrowRight') && firstNodeID) { event.preventDefault(); setSelectedId(firstNodeID); focusTreeItem(firstNodeID); } else if (event.key === 'End' && lastNodeID) { event.preventDefault(); setSelectedId(lastNodeID); focusTreeItem(lastNodeID); } }} onDragOver={(event) => { if (canMoveTreeNode(draggedNodeID, '')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTargetID(''); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetID((current) => current === '' ? null : current); }} onDrop={(event) => { event.preventDefault(); const sourceID = draggedNodeID || event.dataTransfer.getData('text/plain'); void moveTreeNode(sourceID, ''); }}>
+                        <span className="vrepo-tree__chevron" aria-hidden><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6.5 8 10.5l4-4" /></svg></span><span className="vrepo-tree__icon">{treeNodeIcon()}</span><span className={`vrepo-tree__label${!selectedId ? ' is-selected' : ''}${dropTargetID === '' ? ' is-drop-target' : ''}`}>{repo.name}</span>
 					</div>
 					{renderNodes('', 1)}
 				</div>

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -504,5 +505,31 @@ func TestDeleteMemoriesInvalidatesFrozenMemorySnapshot(t *testing.T) {
 	}
 	if _, ok := handler.frozenMemorySnapshots.Load(ownerID); ok {
 		t.Fatal("expected frozen snapshot deleted after the /new refresh")
+	}
+}
+
+func TestUpdateMemoryWithVersionRejectsStaleOpenedEntry(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	if err := store.Save(memory.Entry{ID: "versioned", Content: "opened", Category: memory.CategoryUserFact, OwnerID: desktopUserID}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{memoryStore: store, testHomeDir: t.TempDir()}
+	opened := store.SearchDirectByID("versioned")[0]
+	if err := store.UpdateManualMemory("versioned", "background", memory.CategoryUserFact, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.UpdateMemoryWithVersion("versioned", "stale edit", string(memory.CategoryUserFact), nil, opened.UpdatedAt.Format(time.RFC3339Nano)); err == nil {
+		t.Fatal("stale opened version should be rejected")
+	}
+	if got := store.SearchDirectByID("versioned")[0].Content; got != "background" {
+		t.Fatalf("background content was overwritten: %q", got)
+	}
+	latest := store.SearchDirectByID("versioned")[0]
+	if err := app.UpdateMemoryWithVersion("versioned", "current edit", string(memory.CategoryUserFact), nil, latest.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
 	}
 }

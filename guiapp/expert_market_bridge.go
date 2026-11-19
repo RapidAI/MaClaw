@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -134,14 +135,18 @@ func (a *App) PurchaseExpertMarketListing(id string) (map[string]interface{}, er
 
 // InstallExpertMarketListing downloads an entitlement into a staging file and
 // calls the existing hardened package importer. A successful install returns
-// the imported Expert definition and any dependency installation summary.
-func (a *App) InstallExpertMarketListing(id string) (*ExpertPackageImportResult, error) {
-	return a.InstallExpertMarketListingWithExpectedHash(id, "")
+// the imported Expert definition and any dependency installation summary. The
+// listing's category rides along so the installed card lands in the right
+// library filter; a public-listing install passes "" and inherits nothing.
+func (a *App) InstallExpertMarketListing(id, category string) (*ExpertPackageImportResult, error) {
+	return a.InstallExpertMarketListingWithExpectedHash(id, "", category)
 }
 
 // InstallExpertMarketListingWithExpectedHash pins a platform-selected asset to
 // the exact archive HubCenter acquired. Normal market installs pass no hash.
-func (a *App) InstallExpertMarketListingWithExpectedHash(id, expectedHash string) (*ExpertPackageImportResult, error) {
+// The category tag from the caller's listing object is stamped onto the local
+// expert after the import so the library's category chips see it immediately.
+func (a *App) InstallExpertMarketListingWithExpectedHash(id, expectedHash, category string) (*ExpertPackageImportResult, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("expert market listing id is required")
@@ -215,6 +220,12 @@ func (a *App) InstallExpertMarketListingWithExpectedHash(id, expectedHash string
 		return nil, err
 	}
 	report("installed", "", result, nil)
+	// The import result carries no market metadata; stamp the caller's listing
+	// category onto the fresh local expert. Best-effort for the same reason as
+	// the share path.
+	if category = strings.TrimSpace(category); category != "" && result != nil {
+		a.setExpertCategoryLocal(result.Expert.ID, category)
+	}
 	a.emitEvent(EventExpertsChanged)
 	return result, nil
 }
@@ -253,29 +264,55 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 	return nil
 }
 
+// ListExpertMarketCategories fetches the administrator-curated category
+// taxonomy from HubCenter. The desktop AI expert library renders it as the
+// top-level filter chips and the share dialog offers it as the required
+// category picker; an unreachable HubCenter simply yields an empty list.
+func (a *App) ListExpertMarketCategories() ([]string, error) {
+	data, err := a.expertMarketRequest(http.MethodGet, "/api/v1/expert-market/categories", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Categories []struct {
+			Name string `json:"name"`
+		} `json:"categories"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(payload.Categories))
+	for _, item := range payload.Categories {
+		if name := strings.TrimSpace(item.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // SubmitExpertMarketListing exports a local custom Expert only after the
 // caller has selected it in the native UI. Builtins are rejected by the
 // existing package exporter, and the package never crosses into the WebView.
-func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, visibility string) (map[string]interface{}, error) {
-	return a.submitExpertMarketListing(expertID, version, price, visibility, false, "")
+func (a *App) SubmitExpertMarketListing(expertID, version string, price int64, visibility, category string) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, price, visibility, false, "", category)
 }
 
 // SubmitExpertMarketListingWithDistribution is an explicit author grant for
 // HubCenter to acquire the submitted public listing as a fixed industry asset.
 // It is deliberately a separate method so older GUI builds keep the safe
 // default (no platform distribution) without changing their wire contract.
-func (a *App) SubmitExpertMarketListingWithDistribution(expertID, version string, price int64, visibility string, platformDistribution bool) (map[string]interface{}, error) {
-	return a.submitExpertMarketListing(expertID, version, price, visibility, platformDistribution, "")
+func (a *App) SubmitExpertMarketListingWithDistribution(expertID, version string, price int64, visibility string, platformDistribution bool, category string) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, price, visibility, platformDistribution, "", category)
 }
 
 // SubmitExpertMarketListingToUsers shares a local expert with one or more
 // people identified by phone number or email. The identifiers are global and
 // are not limited to a Hub or tenant.
-func (a *App) SubmitExpertMarketListingToUsers(expertID, version, targets string) (map[string]interface{}, error) {
-	return a.submitExpertMarketListing(expertID, version, 0, "users", false, targets)
+func (a *App) SubmitExpertMarketListingToUsers(expertID, version, targets, category string) (map[string]interface{}, error) {
+	return a.submitExpertMarketListing(expertID, version, 0, "users", false, targets, category)
 }
 
-func (a *App) submitExpertMarketListing(expertID, version string, price int64, visibility string, platformDistribution bool, targets string) (map[string]interface{}, error) {
+func (a *App) submitExpertMarketListing(expertID, version string, price int64, visibility string, platformDistribution bool, targets, category string) (map[string]interface{}, error) {
 	if price < 0 || price > 999999 {
 		return nil, fmt.Errorf("price must be 0-999999 credits")
 	}
@@ -290,6 +327,10 @@ func (a *App) submitExpertMarketListing(expertID, version string, price int64, v
 	if visibility == "users" && targets == "" {
 		return nil, fmt.Errorf("enter at least one phone number or email")
 	}
+	// A non-empty category is validated by HubCenter against its taxonomy. The
+	// local expert carries the same tag immediately so the library's category
+	// chips include the card even while the listing is still pending review.
+	category = strings.TrimSpace(category)
 	dir := filepath.Join(a.GetDataDir(), "expert-market-drafts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -327,6 +368,11 @@ func (a *App) submitExpertMarketListing(expertID, version string, price int64, v
 	if err := mw.WriteField("platform_distribution", strconv.FormatBool(platformDistribution)); err != nil {
 		return nil, err
 	}
+	if category != "" {
+		if err := mw.WriteField("category", category); err != nil {
+			return nil, err
+		}
+	}
 	if visibility == "users" {
 		if err := mw.WriteField("share_targets", targets); err != nil {
 			return nil, err
@@ -346,8 +392,33 @@ func (a *App) submitExpertMarketListing(expertID, version string, price int64, v
 	if err != nil {
 		return nil, err
 	}
+	if category != "" {
+		a.setExpertCategoryLocal(expertID, category)
+	}
 	var result map[string]interface{}
 	return result, json.Unmarshal(data, &result)
+}
+
+// setExpertCategoryLocal tags the local expert with the share's category so
+// the library filter matches it. Best-effort: the market listing already
+// carries the tag, so a local store failure must not fail the share.
+func (a *App) setExpertCategoryLocal(expertID, category string) {
+	expertID = strings.TrimSpace(expertID)
+	if expertID == "" {
+		return
+	}
+	expert, ok, err := defaultExpertStore.Get(expertID)
+	if err != nil || !ok {
+		return
+	}
+	if strings.TrimSpace(expert.Category) == category {
+		return
+	}
+	expert.Category = category
+	expert.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := defaultExpertStore.Save(expert); err == nil {
+		a.emitEvent(EventExpertsChanged)
+	}
 }
 
 func (a *App) WithdrawExpertMarketListing(id string) error {

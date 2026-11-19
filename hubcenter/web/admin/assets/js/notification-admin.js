@@ -45,6 +45,13 @@ Object.assign(I18N_EN, {
   notifFormPublishAt: 'Publish at',
   notifFormExpireAt: 'Expire at',
   notifFormImPush: 'Also push to IM channels',
+  notifFormPinned: 'Pinned message (floating banner)',
+  notifFormPinnedForever: 'Permanent pin (always leftmost)',
+  notifFormLink: 'Link (optional)',
+  notifFormLinkPlaceholder: 'https://... opened by the banner button',
+  notifFormButtonText: 'Button label',
+  notifFormButtonTextPlaceholder: 'View details',
+  notifBadgePinned: 'PINNED',
   notifFormPublishNow: 'Publish Now',
   notifFormSaveDraft: 'Save Draft',
   notifFormCancel: 'Cancel',
@@ -126,6 +133,13 @@ Object.assign(I18N_ZH, {
   notifFormPublishAt: '发布时间',
   notifFormExpireAt: '过期时间',
   notifFormImPush: '同时推送到 IM 通道',
+  notifFormPinned: '置顶消息（浮窗展示）',
+  notifFormPinnedForever: '永久置顶（始终最左）',
+  notifFormLink: '链接（可选）',
+  notifFormLinkPlaceholder: 'https://... 由浮窗按钮打开',
+  notifFormButtonText: '按钮名称',
+  notifFormButtonTextPlaceholder: '查看详情',
+  notifBadgePinned: '置顶',
   notifFormPublishNow: '立即发布',
   notifFormSaveDraft: '保存草稿',
   notifFormCancel: '取消',
@@ -383,6 +397,7 @@ function notifCardHtml(n) {
   var catLabel = notifCategoryLabel(n.category);
   var prioLabel = n.priority === 'urgent' ? '<span class="badge danger">' + tr('notifPriorityUrgent') + '</span>' :
     n.priority === 'important' ? '<span class="badge warn">' + tr('notifPriorityImportant') + '</span>' : '';
+  var pinnedLabel = n.pinned ? '<span class="badge warn">' + tr('notifBadgePinned') + '</span>' : '';
   var time = n.created_at ? new Date(n.created_at).toLocaleString() : '';
   var cascadeCount = (n.cascade_results || []).length;
   var cascadeHint = cascadeCount > 0 ? ' <span class="item-meta">(' + cascadeCount + ' Hubs)</span>' : '';
@@ -392,7 +407,7 @@ function notifCardHtml(n) {
   return '<div class="item news-card notif-card" onclick="renderNotifDetail(' + notifJsArg(n.id) + ')">'
     + '<div class="notif-card-row">'
     + '<div class="notif-card-main"><div class="news-title">' + escapeHtml(n.title || '') + '</div>'
-    + '<div class="news-meta">' + catLabel + ' ' + statusBadge + ' ' + prioLabel + cascadeHint + '</div>'
+    + '<div class="news-meta">' + catLabel + ' ' + statusBadge + ' ' + pinnedLabel + ' ' + prioLabel + cascadeHint + '</div>'
     + '<div class="item-meta">' + escapeHtml(time) + '</div></div>'
     + (deleteBtn ? '<div class="actions notif-card-actions">' + deleteBtn + '</div>' : '')
     + '</div>'
@@ -430,8 +445,11 @@ function renderNotifDetail(id) {
       + '<div class="item"><div class="item-title">' + tr('notifDetailRead') + '</div><strong>' + (n.read_count || 0) + '</strong></div>'
       + '<div class="item"><div class="item-title">' + tr('notifDetailReadRate') + '</div><strong>' + (n.read_rate || '0%') + '</strong></div></div>';
     var cascadeHtml = notifCascadeTableHtml(n.cascade_results || []);
-    var contentHtml = '<div class="item section-gap"><div class="item-title" data-icon="file">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div></div>';
-    root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + '</div></div>'
+    var contentHtml = '<div class="item section-gap"><div class="item-title" data-icon="file">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div>'
+      + (n.link_url ? '<div class="item-meta section-gap-sm">' + tr('notifFormLink') + ': <a href="' + escapeHtml(n.link_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(n.link_url) + '</a>'
+        + (n.button_text ? ' &nbsp;|&nbsp; ' + tr('notifFormButtonText') + ': ' + escapeHtml(n.button_text) : '') + '</div>' : '')
+      + '</div>';
+    root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + (n.pinned ? ' <span class="badge warn">' + tr('notifBadgePinned') + '</span>' : '') + '</div></div>'
       + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + deleteBtn + '</div></div>'
       + contentHtml
       + '<div class="item section-gap"><div class="item-title" data-icon="chart">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
@@ -508,6 +526,14 @@ function renderNotifCreate() {
     + '</div><div class="item-meta section-gap-sm">' + tr('notifFormSelectedTenants') + '</div><div id="notifTenantTargets" class="notif-tenant-targets"></div></div>'
     + '<div id="notifImPushRow" class="hidden inline-check"><label for="notifImPush" class="inline-label">' + tr('notifFormImPush') + '</label>'
     + '<input type="checkbox" id="notifImPush" class="auto-check"></div>'
+    + '<div><label class="inline-label"><input type="checkbox" id="notifPinned" class="auto-check" onchange="notifTogglePinned()"> ' + tr('notifFormPinned') + '</label></div>'
+    + '<div id="notifPinnedExtras" class="hidden notif-form">'
+    + '<div><label class="inline-label"><input type="checkbox" id="notifPinnedForever" class="auto-check"> ' + tr('notifFormPinnedForever') + '</label></div>'
+    + '<div><label for="notifLinkUrlInput">' + tr('notifFormLink') + '</label>'
+    + '<input id="notifLinkUrlInput" maxlength="500" placeholder="' + tr('notifFormLinkPlaceholder') + '"></div>'
+    + '<div><label for="notifButtonTextInput">' + tr('notifFormButtonText') + '</label>'
+    + '<input id="notifButtonTextInput" maxlength="20" placeholder="' + tr('notifFormButtonTextPlaceholder') + '"></div>'
+    + '</div>'
     + '<div class="actions section-gap">'
     + '<button class="btn-primary" onclick="notifSubmit(\'published\')">' + tr('notifFormPublishNow') + '</button>'
     + '<button class="btn-secondary" onclick="notifSubmit(\'draft\')">' + tr('notifFormSaveDraft') + '</button>'
@@ -537,6 +563,12 @@ function notifTogglePriorityIM() {
   var sel = document.getElementById('notifPrioritySelect');
   var row = document.getElementById('notifImPushRow');
   if (row) row.classList.toggle('hidden', !sel || sel.value !== 'urgent');
+}
+
+function notifTogglePinned() {
+  var pinned = document.getElementById('notifPinned');
+  var extras = document.getElementById('notifPinnedExtras');
+  if (pinned && extras) extras.classList.toggle('hidden', !pinned.checked);
 }
 
 function notifLoadHubCheckboxes() {
@@ -635,10 +667,18 @@ function notifSubmit(status) {
   var publishAt = publishSelect === 'scheduled' ? (document.getElementById('notifPublishAtInput') || {}).value || '' : '';
   var expireAt = (document.getElementById('notifExpireAtInput') || {}).value || '';
   var imPush = priority === 'urgent' && (document.getElementById('notifImPush') || {}).checked;
+  var pinnedForever = !!(document.getElementById('notifPinnedForever') || {}).checked;
+  var pinned = pinnedForever || !!(document.getElementById('notifPinned') || {}).checked;
+  var linkUrl = ((document.getElementById('notifLinkUrlInput') || {}).value || '').trim();
+  var buttonText = ((document.getElementById('notifButtonTextInput') || {}).value || '').trim();
 
   // Validation
   if (!title || title.length > 100) { notifToast(tr('notifValidationTitle'), 'warn'); return; }
   if (!content || content.length > 2000) { notifToast(tr('notifValidationContent'), 'warn'); return; }
+  if (linkUrl && !/^https?:\/\//i.test(linkUrl)) {
+    notifToast(tr('notifFormLink') + ': http(s)://', 'warn');
+    return;
+  }
 
   // Build audience_ids based on audience type
   var audienceIds = [];
@@ -659,7 +699,11 @@ function notifSubmit(status) {
     audience_type: audienceType,
     audience_ids: audienceIds,
     status: status,
-    im_push: imPush
+    im_push: imPush,
+    pinned: pinned,
+    pinned_forever: pinnedForever,
+    link_url: linkUrl,
+    button_text: buttonText
   };
   if (publishAt) body.publish_at = new Date(publishAt).toISOString();
   if (expireAt) body.expire_at = new Date(expireAt).toISOString();
@@ -702,6 +746,7 @@ Object.assign(window, {
   renderNotifCreate: renderNotifCreate,
   notifToggleSchedule: notifToggleSchedule,
   notifToggleAudience: notifToggleAudience,
+  notifTogglePinned: notifTogglePinned,
   notifSyncTenantSelect: notifSyncTenantSelect,
   notifAddTenantTarget: notifAddTenantTarget,
   notifRemoveTenantTarget: notifRemoveTenantTarget,

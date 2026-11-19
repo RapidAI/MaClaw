@@ -2973,6 +2973,158 @@ func TestHeartbeatWithoutPublicSignupPreservesExistingValue(t *testing.T) {
 	}
 }
 
+func TestAdminVisibilityOverrideSurvivesHeartbeatUntilHubConverges(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail: "owner@example.com",
+		Name:       "Locked Hub",
+		BaseURL:    "https://locked.example.com",
+		Visibility: "private",
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	if err := svc.ConfirmHubRegistrationByAdmin(ctx, result.HubID); err != nil {
+		t.Fatalf("ConfirmHubRegistrationByAdmin: %v", err)
+	}
+
+	if err := svc.UpdateVisibility(ctx, result.HubID, "shared", "root"); err != nil {
+		t.Fatalf("UpdateVisibility: %v", err)
+	}
+	hub, err := st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "shared" || !hub.VisibilityLocked || hub.VisibilityLockedBy != "root" {
+		t.Fatalf("admin update should set shared + lock, got visibility=%q locked=%v lockedBy=%q", hub.Visibility, hub.VisibilityLocked, hub.VisibilityLockedBy)
+	}
+	va, err := svc.HubVisibilityAuthority(ctx, result.HubID)
+	if err != nil || va == nil {
+		t.Fatalf("HubVisibilityAuthority: %v", err)
+	}
+	if va.Visibility != "shared" || !va.Locked || va.LockedBy != "root" {
+		t.Fatalf("authority should report locked shared by root, got %+v", va)
+	}
+
+	// A heartbeat still reporting the hub's old private value must not clobber
+	// the admin override.
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, &HeartbeatHubUpdate{BaseURL: "https://locked.example.com", Visibility: "private", EnrollmentMode: "open"}); err != nil {
+		t.Fatalf("HeartbeatHubWithSecret private: %v", err)
+	}
+	hub, err = st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "shared" || !hub.VisibilityLocked {
+		t.Fatalf("heartbeat must not override admin visibility, got visibility=%q locked=%v", hub.Visibility, hub.VisibilityLocked)
+	}
+
+	// Once the hub reports the same value the override converges: the lock
+	// clears and hub-reported values own the field again.
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, &HeartbeatHubUpdate{BaseURL: "https://locked.example.com", Visibility: "shared", EnrollmentMode: "open"}); err != nil {
+		t.Fatalf("HeartbeatHubWithSecret shared: %v", err)
+	}
+	hub, err = st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "shared" || hub.VisibilityLocked || hub.VisibilityLockedBy != "" {
+		t.Fatalf("converged report should clear the lock, got visibility=%q locked=%v lockedBy=%q", hub.Visibility, hub.VisibilityLocked, hub.VisibilityLockedBy)
+	}
+	va, err = svc.HubVisibilityAuthority(ctx, result.HubID)
+	if err != nil || va == nil {
+		t.Fatalf("HubVisibilityAuthority: %v", err)
+	}
+	if va.Locked || va.LockedBy != "" {
+		t.Fatalf("authority should be unlocked after convergence, got %+v", va)
+	}
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil, &HeartbeatHubUpdate{BaseURL: "https://locked.example.com", Visibility: "private", EnrollmentMode: "open"}); err != nil {
+		t.Fatalf("HeartbeatHubWithSecret private: %v", err)
+	}
+	hub, err = st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "private" || hub.VisibilityLocked {
+		t.Fatalf("unlocked hub report should apply, got visibility=%q locked=%v", hub.Visibility, hub.VisibilityLocked)
+	}
+}
+
+func TestAdminVisibilityOverrideSurvivesReRegistration(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	first, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_vislock_rereg",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Locked Hub",
+		BaseURL:        "https://locked.example.com",
+		Visibility:     "private",
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	if err := svc.ConfirmHubRegistrationByAdmin(ctx, first.HubID); err != nil {
+		t.Fatalf("ConfirmHubRegistrationByAdmin: %v", err)
+	}
+	if err := svc.UpdateVisibility(ctx, first.HubID, "shared", "root"); err != nil {
+		t.Fatalf("UpdateVisibility: %v", err)
+	}
+
+	// A re-registration reporting the hub's private value must not clobber
+	// the admin override.
+	rereg, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_vislock_rereg",
+		OwnerEmail:     "owner@example.com",
+		RecoverySecret: first.HubSecret,
+		Name:           "Locked Hub",
+		BaseURL:        "https://locked.example.com",
+		Visibility:     "private",
+	})
+	if err != nil {
+		t.Fatalf("re-RegisterHub private: %v", err)
+	}
+	hub, err := st.Hubs.GetByID(ctx, first.HubID)
+	if err != nil || hub == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "shared" || !hub.VisibilityLocked {
+		t.Fatalf("re-registration must not override admin visibility, got visibility=%q locked=%v", hub.Visibility, hub.VisibilityLocked)
+	}
+	if rereg.VisibilityLock == nil || !rereg.VisibilityLock.Locked || rereg.VisibilityLock.LockedBy != "root" || rereg.VisibilityLock.Visibility != "shared" {
+		t.Fatalf("re-registration response should report the held lock, got %+v", rereg.VisibilityLock)
+	}
+
+	// A re-registration reporting the same value converges the lock away.
+	convergedReg, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_vislock_rereg",
+		OwnerEmail:     "owner@example.com",
+		RecoverySecret: rereg.HubSecret,
+		Name:           "Locked Hub",
+		BaseURL:        "https://locked.example.com",
+		Visibility:     "shared",
+	})
+	if err != nil {
+		t.Fatalf("re-RegisterHub shared: %v", err)
+	}
+	if convergedReg.VisibilityLock == nil || convergedReg.VisibilityLock.Locked || convergedReg.VisibilityLock.LockedBy != "" {
+		t.Fatalf("converged re-registration response should report unlocked, got %+v", convergedReg.VisibilityLock)
+	}
+	hub, err = st.Hubs.GetByID(ctx, first.HubID)
+	if err != nil || hub == nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub.Visibility != "shared" || hub.VisibilityLocked {
+		t.Fatalf("converged re-registration should clear the lock, got visibility=%q locked=%v", hub.Visibility, hub.VisibilityLocked)
+	}
+}
+
 func TestConfirmHubRegistrationByAdmin(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

@@ -782,8 +782,8 @@ func (a *App) ContinueSessionGoal(sessionKey string) map[string]interface{} {
 }
 
 // CancelSessionGoal deletes the goal. The bar hides; a running goal's live
-// step checklist retires. The checklist card already in the transcript is
-// left in place.
+// step checklist retires. The frontend also retires the transcript checklist
+// card on the goal-cleared event, so the floating checklist goes with it.
 func (a *App) CancelSessionGoal(sessionKey string) map[string]interface{} {
 	hit := a.goalBarHit(sessionKey)
 	userID := hit.id

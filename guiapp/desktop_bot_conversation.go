@@ -21,8 +21,9 @@ import (
 // acknowledgement, the reply, an ask card and its answer, the run's progress
 // all lived only where they happened, and the finished-run delivery is
 // consumed by the first GUI that acks it. Hub now keeps one journal per
-// person (GET/POST /api/v1/bots/conversation, a sequence per change). This
-// process writes what its page shows and replays what other clients wrote.
+// person (GET/POST /api/v1/bots/conversation, a sequence per change). The
+// write reply names each message's created_seq — the order every GUI shows.
+// This process writes what its page shows and replays what other clients wrote.
 //
 // Entry kinds:
 //   message  one chat bubble, keyed by its message id; the page merges it.
@@ -198,7 +199,7 @@ func (a *App) PublishDesktopBotConversation(owner string, entries []DesktopBotCo
 		if n > desktopConvBatch {
 			n = desktopConvBatch
 		}
-		if err := a.postDesktopConv(clean[:n]); err != nil {
+		if err := a.postDesktopConv(owner, clean[:n]); err != nil {
 			return err
 		}
 		clean = clean[n:]
@@ -206,9 +207,20 @@ func (a *App) PublishDesktopBotConversation(owner string, entries []DesktopBotCo
 	return nil
 }
 
-func (a *App) postDesktopConv(entries []DesktopBotConversationWrite) error {
+type desktopConvAssignment struct {
+	BotID      string `json:"bot_id"`
+	ID         string `json:"id"`
+	Seq        int64  `json:"seq"`
+	CreatedSeq int64  `json:"created_seq"`
+}
+
+func (a *App) postDesktopConv(owner string, entries []DesktopBotConversationWrite) error {
 	body := map[string]any{"client_id": desktopBotClientID(), "entries": entries}
-	status, err := a.desktopBotExchange(context.Background(), http.MethodPost, "/api/v1/bots/conversation", body, nil, 15*time.Second, nil)
+	var saved struct {
+		Head     int64                    `json:"head"`
+		Assigned []desktopConvAssignment `json:"assigned"`
+	}
+	status, err := a.desktopBotExchange(context.Background(), http.MethodPost, "/api/v1/bots/conversation", body, &saved, 15*time.Second, nil)
 	if status == http.StatusNotFound {
 		// An older Hub, or a bot this account does not own on Hub (a local
 		// bot). Neither is an error for the page.
@@ -220,7 +232,46 @@ func (a *App) postDesktopConv(entries []DesktopBotConversationWrite) error {
 		log.Printf("[desktop-bot-sync] hub refused %d entries: %v", len(entries), err)
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	a.emitDesktopConvOrder(owner, saved.Head, saved.Assigned)
+	return nil
+}
+
+// emitDesktopConvOrder tells the page which sequence Hub gave each message
+// this process just wrote. The page keeps that number on its own bubble and
+// shows the chat in that order. An older Hub omits the list; the page then
+// keeps placing bubbles by the clock in the message id.
+func (a *App) emitDesktopConvOrder(owner string, head int64, assigned []desktopConvAssignment) {
+	if a == nil || len(assigned) == 0 {
+		return
+	}
+	entries := make([]map[string]any, 0, len(assigned))
+	for _, item := range assigned {
+		seq := item.CreatedSeq
+		if seq <= 0 {
+			seq = item.Seq
+		}
+		if strings.TrimSpace(item.BotID) == "" || strings.TrimSpace(item.ID) == "" || seq <= 0 {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"bot_id":      item.BotID,
+			"id":          item.ID,
+			"seq":         item.Seq,
+			"created_seq": seq,
+			"own":         true,
+		})
+	}
+	if len(entries) == 0 {
+		return
+	}
+	a.emitDesktopConv("desktop-bot-sync", map[string]any{
+		"owner_id": owner,
+		"entries":  entries,
+		"head":     head,
+	})
 }
 
 // publishDesktopRunState tells other clients this turn is on the desktop.
@@ -346,13 +397,36 @@ func (a *App) applyDesktopConvPage(owner string, page desktopBotConversationPage
 	self := desktopBotClientID()
 	messages := make([]map[string]any, 0, len(page.Entries))
 	for _, e := range page.Entries {
-		// This client's own change is already on its page. Another client's
-		// change to a bubble this client wrote (an answered card) is not.
+		// This client's own text is already on its page. The sequence Hub
+		// assigned still has to come back: the write reply can be missed, and
+		// without that number a later line from a slower clock stays in front.
+		// Another client's change to a bubble this client wrote (an answered
+		// card) is not an own line.
 		by := e.By
 		if by == "" {
 			by = e.Origin
 		}
-		if by == self || strings.TrimSpace(e.BotID) == "" {
+		if strings.TrimSpace(e.BotID) == "" {
+			continue
+		}
+		if by == self {
+			if e.Kind != "message" {
+				continue
+			}
+			seq := e.CreatedSeq
+			if seq <= 0 {
+				seq = e.Seq
+			}
+			if seq <= 0 {
+				continue
+			}
+			messages = append(messages, map[string]any{
+				"bot_id":      e.BotID,
+				"id":          e.ID,
+				"seq":         e.Seq,
+				"created_seq": seq,
+				"own":         true,
+			})
 			continue
 		}
 		switch e.Kind {

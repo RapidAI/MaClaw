@@ -95,6 +95,10 @@ function createHarness(options) {
   const usersGate = opts.delayUsers ? new Promise(function (resolve) { releaseUsers = resolve; }) : Promise.resolve();
   let releaseSettings = function () {};
   const settingsGate = opts.delaySettings ? new Promise(function (resolve) { releaseSettings = resolve; }) : Promise.resolve();
+  let releaseModels = function () {};
+  const modelsGate = opts.modelsGate ? new Promise(function (resolve) { releaseModels = resolve; }) : Promise.resolve();
+  let releaseVision = function () {};
+  const visionGate = opts.visionGate ? new Promise(function (resolve) { releaseVision = resolve; }) : Promise.resolve();
 
   function registerIds(html, parent) {
     const re = /id="([^"]+)"/g;
@@ -173,7 +177,8 @@ function createHarness(options) {
             model: item.model,
             key_set: !!item.key || !!(prior && prior.key_set)
           };
-        })
+        }),
+        roles: body.roles || { foreground: { mode: 'inherit' }, background: { mode: 'inherit' }, computer_use: { mode: 'inherit' }, grounder: { mode: 'unused' } }
       };
       return Promise.resolve(settings);
     }
@@ -205,10 +210,29 @@ function createHarness(options) {
         assignments: [{ id: 'a1', scope: 'department', target_id: 'dept-finance', server_id: 's1' }]
       });
     }
+    if (request && request.method === 'PATCH' && /^\/api\/admin\/bots\/grants\//.test(url)) {
+      if (opts.failGrantPatch) return Promise.reject(new Error('cap rejected'));
+      const id = decodeURIComponent(String(url).split('/').pop());
+      const body = JSON.parse(request.body);
+      const grant = settings.grants.filter(function (item) { return item.id === id; })[0];
+      if (!grant) return Promise.reject(new Error('missing grant'));
+      grant.desktop_bot_limit = body.desktop_bot_limit;
+      return Promise.resolve(grant);
+    }
     if (url === '/api/admin/bots/grants' && request && request.method === 'POST') {
       const body = JSON.parse(request.body);
       settings.grants.push({ id: 'g' + settings.grants.length, scope: body.scope, target_id: body.target_id });
       return Promise.resolve({ id: 'g' + (settings.grants.length - 1) });
+    }
+    if (url === '/api/admin/bots/llm/models' && request && request.method === 'POST') {
+      if (opts.modelsError) return Promise.reject(new Error(opts.modelsError));
+      if (opts.modelsGate) return modelsGate.then(function () { return { models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] }; });
+      return Promise.resolve({ models: opts.modelsResult || [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-flash', name: 'DeepSeek Flash' }] });
+    }
+    if (url === '/api/admin/bots/llm/vision' && request && request.method === 'POST') {
+      if (opts.visionError) return Promise.reject(new Error(opts.visionError));
+      if (opts.visionGate) return visionGate.then(function () { return opts.visionResult || settings; });
+      return Promise.resolve(opts.visionResult || settings);
     }
     return Promise.reject(new Error('unexpected ' + url));
   }
@@ -250,6 +274,8 @@ function createHarness(options) {
     succeedGroups: function () { failGroups = false; },
     releaseUsers: function () { releaseUsers(); },
     releaseSettings: function () { releaseSettings(); },
+    releaseModels: function () { releaseModels(); },
+    releaseVision: function () { releaseVision(); },
     open: function () { return context.AdminTabRegistry.getTab('bots').onOpen(); }
   };
 }
@@ -661,7 +687,13 @@ async function testConnectionAndDockerUrls() {
   harness.elements.desktopName.value = 'dockerd';
   harness.elements.desktopUrl.value = 'docker-host:18081';
   harness.elements.desktopAdd.listeners.click[0]();
-  assert(puts().length === 0, 'does not save an empty or non-http address');
+  harness.elements.desktopName.value = 'lab';
+  harness.elements.desktopUrl.value = 'http://desktopd.abc.NODE.INVALID';
+  harness.elements.desktopToken.value = 'secret';
+  harness.elements.desktopAdd.listeners.click[0]();
+  harness.elements.botBaseUrl.value = 'https://srv.abc.Node.Invalid/v1';
+  harness.elements.botSave.listeners.click[0]();
+  assert(puts().length === 0, 'does not save an empty, non-http, or virtual node address');
   assert(harness.toasts.filter(function (toast) { return toast.kind === 'error'; }).length >= 3, 'explains why the save did not run');
   harness.elements.botBaseUrl.value = 'http://maclaw.example';
   harness.elements.botSave.listeners.click[0]();
@@ -738,11 +770,11 @@ async function testConnectionUsesSavedSettings() {
   harness.elements.botBaseUrl.value = 'http://other.example';
   harness.elements.botTest.listeners.click[0]();
   harness.elements.botBaseUrl.value = 'http://maclaw.example';
-  harness.elements.botAccessToken.value = 'new-token';
+  harness.elements.botAdminSecret.value = 'new-secret';
   harness.elements.botTest.listeners.click[0]();
-  assert(tests().length === 0, 'does not test an address or token that is not saved');
+  assert(tests().length === 0, 'does not test an address or secret that is not saved');
   assert(harness.toasts.filter(function (toast) { return toast.msg.indexOf('\u8fd8\u6ca1\u4fdd\u5b58') !== -1; }).length === 2, 'asks to save before testing');
-  harness.elements.botAccessToken.value = '';
+  harness.elements.botAdminSecret.value = '';
   harness.elements.botTest.listeners.click[0]();
   await flush();
   assert(tests().length === 1, 'tests the saved connection');
@@ -760,7 +792,7 @@ async function testConnectionFailureIsExplainedInChinese() {
   await flush();
   const shown = harness.elements.botConnStatus.textContent;
   assertIncludes(shown, 'HTTP 401', 'names the status code');
-  assertIncludes(shown, '\u8bbf\u95ee\u4ee4\u724c', 'explains it in Chinese');
+  assertIncludes(shown, '\u51ed\u8bc1', 'explains it in Chinese');
   assertIncludes(shown, 'unauthorized', 'keeps what MaClawSrv said');
   assertNotIncludes(shown, 'the access token was rejected', 'drops the English hint');
 
@@ -802,6 +834,84 @@ async function testDesktopCheckKeepsTheError() {
   assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u8fd8\u6ca1\u6709\u5206\u914d') !== -1; }), 'also toasts the failure');
 }
 
+async function testDesktopQuotaColumnAndGrantLimit() {
+  console.log('  Test: grant rows edit the desktop-bot cap and the list marks an over-quota desktop');
+  const harness = createHarness();
+  harness.settings.grants = [
+    { id: 'g-global', scope: 'global' },
+    { id: 'g-alice', scope: 'user', target_id: 'u_alice', desktop_bot_limit: 1 }
+  ];
+  harness.settings.bots = [
+    { name: 'desk', owner_user_id: 'u_alice', desktop_mode: 'shared', desktop_over: true, instance_id: 'inst-desk' },
+    { name: 'plain', owner_user_id: 'u_alice', desktop_mode: 'none', instance_id: 'inst-none' },
+    { name: 'own', owner_user_id: 'u_carol', desktop_mode: 'isolated', instance_id: 'inst-own' }
+  ];
+  await harness.open();
+  await flush();
+  const grants = harness.elements.botGrants._html;
+  assertIncludes(grants, 'data-grant-limit="g-alice"', 'a user grant has a desktop-bot limit field');
+  assertIncludes(grants, 'value="1"', 'the saved cap is shown');
+  assertIncludes(grants, '\u8ddf\u968f\u4e0a\u7ea7', 'an empty cap inherits the next level');
+  assertIncludes(grants, '\u7535\u8111\u6570', 'the row uses a short label so the name still fits');
+  assertIncludes(grants, 'title="\u9650\u989d\u6309 \u7528\u6237 \u2192 \u90e8\u95e8 \u2192 \u5168\u5c40 \u2192 \u9ed8\u8ba4 \u9010\u7ea7\u751f\u6548\uff0c\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u4e0a\u4e00\u7ea7"', 'the cascade phrase stays on the field');
+  assert(harness.elements.botGlobalLimitRow.hidden === false, 'the everyone grant also has a cap');
+  assert(harness.elements.botOrgPane.hidden === true, 'the picker stays hidden while everyone is enabled');
+  assert(harness.elements.botAccessBody.hidden !== true, 'existing caps stay visible while everyone is enabled');
+  assertIncludes(harness.elements.botList._html, '\u5171\u7528 \u00b7 \u8d85\u989d', 'a desktop bot past the grant is marked over');
+  assertIncludes(harness.elements.botList._html, '\u65e0', 'a bot with no desktop is labeled none');
+  assertIncludes(harness.elements.botList._html, '\u72ec\u7acb', 'an isolated desktop is labeled own');
+  const before = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({
+    target: { value: '3', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } }
+  });
+  await flush();
+  const patch = harness.calls.slice(before).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(patch && JSON.parse(patch.body).desktop_bot_limit === 3, 'a number saves that cap');
+  harness.elements.botGlobalLimit.value = '2';
+  harness.elements.botGlobalLimit.setAttribute('data-grant-limit', 'g-global');
+  const beforeSet = harness.calls.length;
+  harness.elements.botGlobalLimit.listeners.change[0]();
+  await flush();
+  const setGlobal = harness.calls.slice(beforeSet).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(setGlobal && JSON.parse(setGlobal.body).desktop_bot_limit === 2, 'the everyone grant saves a cap');
+  harness.elements.botGlobalLimit.value = '';
+  const beforeClear = harness.calls.length;
+  harness.elements.botGlobalLimit.listeners.change[0]();
+  await flush();
+  const cleared = harness.calls.slice(beforeClear).filter(function (call) { return call.method === 'PATCH'; })[0];
+  assert(cleared && JSON.parse(cleared.body).desktop_bot_limit === null, 'a blank field clears the cap');
+  const bad = { value: '-1', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } };
+  const beforeBad = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({ target: bad });
+  await flush();
+  assert(harness.calls.length === beforeBad, 'a negative cap is not sent');
+  assert(bad.value === '3', 'a rejected cap is put back');
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error'; }), 'a negative cap explains the problem');
+  const padded = { value: '03', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } };
+  const beforePadded = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({ target: padded });
+  await flush();
+  assert(harness.calls.length === beforePadded, 'a leading zero is the same cap');
+  assert(padded.value === '3', 'a leading zero is shown as the stored number');
+}
+
+async function testDesktopCapSaveFailureRestoresTheOldNumber() {
+  console.log('  Test: a rejected cap save puts the previous number back');
+  const harness = createHarness({ failGrantPatch: true });
+  harness.settings.grants = [{ id: 'g-alice', scope: 'user', target_id: 'u_alice', desktop_bot_limit: 1 }];
+  await harness.open();
+  await flush();
+  const before = harness.calls.length;
+  harness.elements.botGrants.listeners.change[0]({
+    target: { value: '4', getAttribute: function (name) { return name === 'data-grant-limit' ? 'g-alice' : null; } }
+  });
+  await flush();
+  assert(harness.calls.slice(before).some(function (call) { return call.method === 'PATCH'; }), 'the new cap is sent');
+  assert(harness.settings.grants[0].desktop_bot_limit === 1, 'a failed save keeps the stored cap');
+  assertIncludes(harness.elements.botGrants._html, 'value="1"', 'the field shows the stored cap again');
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error'; }), 'the failure is explained');
+}
+
 async function testBotOwnerUsesDirectoryName() {
   console.log('  Test: a bot lists its owner by email after the directory arrives');
   const harness = createHarness({ delayUsers: true });
@@ -824,8 +934,8 @@ async function testBotOwnerUsesDirectoryName() {
   assertNotIncludes(harness.elements['tab-bots']._html, 'botName', 'does not offer a create form');
 }
 
-async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
-  console.log('  Test: LLM settings default to the MaClaw official group and save an OpenAI or Anthropic provider');
+async function testLLMSettingsProvidersAreManagedAndRolesPickTheModel() {
+  console.log('  Test: providers are added and edited in a dialog; the foreground role picks the provider and model');
   const harness = createHarness();
   harness.settings.llm = {
     default_service_group: 'maclaw_official_group',
@@ -835,87 +945,200 @@ async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
   await harness.open();
   await flush();
   const list = harness.elements.botLLMList._html;
-  assertIncludes(list, 'maclaw_official_group', 'shows the official service group');
-  assertIncludes(list, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'shows the official service group name');
-  assertIncludes(list, 'value="anthropic" selected', 'shows the saved Anthropic protocol');
-  assertIncludes(list, 'Claude', 'shows the saved provider name');
+  assertNotIncludes(list, 'botLLMName_', 'the list renders no inline edit fields');
+  assertIncludes(list, 'botLLMEdit_lp_abcdef0123456789', 'offers an edit action per provider');
+  assertIncludes(list, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the default note names the official group');
   assertNotIncludes(list, 'sk-', 'does not render a provider key');
-  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'keeps the official group selected');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the badge shows the foreground provider (official default)');
+  assertIncludes(harness.elements.botLLMRoles._html, 'value="maclaw_official_group" selected', 'the foreground role defaults to the official group');
+  assertIncludes(harness.elements.botLLMRoles._html, 'botLLMRoleModel_foreground', 'the foreground row carries a model field');
 
-  const before = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0;
-  });
+  // Add via the dialog: rejections keep it open, a valid save closes it.
   harness.elements.botLLMAdd.listeners.click[0]();
-  const added = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0 && before.indexOf(value) === -1;
-  });
-  assert(added.length === 1, 'adds a provider row');
-  const id = added[0].slice('botLLMName_'.length);
-  function edit(field, value) {
-    const input = harness.elements['botLLM' + field + '_' + id];
-    input.value = value;
-    harness.elements.botLLMList.listeners.input[0]({ target: input });
-  }
-  edit('Name', 'Claude');
-  harness.elements.botLLMSave.listeners.click[0]();
-  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects a duplicate provider name');
-  edit('Name', 'Zhipu GLM Coding');
-  const savedName = harness.elements.botLLMName_lp_abcdef0123456789;
-  savedName.value = '\u667a\u8c31\u7f16\u7a0b';
-  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
-  const aliasToasts = harness.toasts.length;
-  harness.elements.botLLMSave.listeners.click[0]();
-  assert(harness.toasts.slice(aliasToasts).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects Zhipu names MaClaw treats as one provider');
-  savedName.value = 'Claude';
-  harness.elements.botLLMList.listeners.input[0]({ target: savedName });
-  edit('Name', 'OpenAI');
-  assertIncludes(harness.elements['botLLMUse_' + id].textContent, 'OpenAI', 'renames the choice without rebuilding the row');
-  edit('Url', 'https://api.openai.com/v1');
-  edit('Model', 'gpt-4o');
-  harness.elements.botLLMSave.listeners.click[0]();
+  const modal = harness.elements.botLLMPModal;
+  assert(modal.hidden === false, 'the add action opens the provider dialog');
+  assertIncludes(harness.elements.botLLMPModalTitle.textContent, '\u6dfb\u52a0\u670d\u52a1\u5546', 'titles the create dialog');
+  const dialogSet = function (id, value) { harness.elements[id].value = value; };
+  dialogSet('botLLMPName', 'Claude');
+  dialogSet('botLLMPUrl', 'https://api.openai.com/v1');
+  dialogSet('botLLMPModel', 'gpt-4o');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u670d\u52a1\u5546\u540d\u79f0\u4e0d\u80fd\u91cd\u590d') !== -1; }), 'rejects a duplicate provider name in the dialog');
+  assert(modal.hidden === false, 'a rejected dialog stays open');
+  dialogSet('botLLMPName', 'hub-llm');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('\u4fdd\u7559') !== -1; }), 'rejects the reserved name');
+  dialogSet('botLLMPName', 'OpenAI');
+  harness.elements.botLLMPProtocol.value = 'openai';
+  harness.elements.botLLMPSave.listeners.click[0]();
   assert(harness.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'asks for a key before saving a new provider');
-  assert(!harness.calls.some(function (call) { return call.path === '/api/admin/bots/llm'; }), 'does not save a new provider without a key');
+  dialogSet('botLLMPKey', 'sk-live-secret');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(modal.hidden === true, 'a saved dialog closes');
+  const rows = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMUse_') === 0;
+  });
+  assert(rows.length === 2, 'the saved provider joins the list');
+  const id = rows.filter(function (value) { return value !== 'botLLMUse_lp_abcdef0123456789'; })[0].slice('botLLMUse_'.length);
 
-  edit('Key', 'sk-live-secret');
-  const protocol = harness.elements['botLLMProtocol_' + id];
-  protocol.value = 'openai';
-  harness.elements.botLLMList.listeners.change[0]({ target: protocol });
-  const current = harness.elements['botLLMCurrent_' + id];
-  current.value = id;
-  harness.elements.botLLMList.listeners.change[0]({ target: current });
-  assert(harness.elements['botLLMKey_' + id].value === 'sk-live-secret', 'keeps a typed key when the selection changes');
-  assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'shows the selected provider on the badge');
+  // Edit via the dialog: prefilled, and a saved key starts blank with the
+  // keep-on-blank placeholder while a typed-but-unsaved key is prefilled.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_lp_abcdef0123456789'] });
+  assert(modal.hidden === false, 'the edit action opens the dialog');
+  assertIncludes(harness.elements.botLLMPModalTitle.textContent, '\u7f16\u8f91', 'titles the edit dialog');
+  assert(harness.elements.botLLMPName.value === 'Claude', 'the edit dialog prefills the provider');
+  assertIncludes(harness.elements.botLLMPKey.placeholder, '\u7559\u7a7a', 'a saved key keeps blank with the placeholder');
+  assert(harness.elements.botLLMPKey.value === '', 'a saved key is never rendered');
+  harness.elements.botLLMPCancel.listeners.click[0]();
+  assert(modal.hidden === true, 'cancel closes the dialog without edits');
+  harness.elements.botLLMAdd.listeners.click[0]();
+  assert(modal.hidden === false, 'the dialog opens again');
+  assert(harness.elements.botLLMPSave.textContent === '\u4fdd\u5b58', 'the dialog save button reads plain save');
+  // A click on the dimmed backdrop (the overlay itself) dismisses the dialog.
+  harness.elements.botLLMPModal.listeners.click[0]({ target: harness.elements.botLLMPModal });
+  assert(modal.hidden === true, 'a backdrop click dismisses the dialog');
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  assert(harness.elements.botLLMPKey.value === 'sk-live-secret', 'a typed-but-unsaved key is prefilled');
+  dialogSet('botLLMPModel', 'gpt-4o-mini');
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(modal.hidden === true, 'the edit dialog closes on save');
   harness.elements.botLLMSave.listeners.click[0]();
   await flush();
   const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
   assert(saved.length === 1, 'saves the LLM settings once');
   const body = JSON.parse(saved[0].body);
-  assert(body.current === id, 'selects the new provider');
   const created = body.providers.filter(function (item) { return item.id === id; })[0];
   const kept = body.providers.filter(function (item) { return item.id === 'lp_abcdef0123456789'; })[0];
-  assert(created && created.protocol === 'openai' && created.key === 'sk-live-secret' && created.model === 'gpt-4o', 'sends the OpenAI provider and its key');
+  assert(created && created.protocol === 'openai' && created.model === 'gpt-4o-mini' && created.key === 'sk-live-secret', 'sends the dialog-saved provider and its key');
   assert(kept && !Object.prototype.hasOwnProperty.call(kept, 'key'), 'leaves a saved key out of the request when the field is blank');
-  assertNotIncludes(harness.elements.botLLMList._html, 'sk-live-secret', 'clears the key field after a successful save');
-  const callsBeforeEdit = harness.calls.length;
-  harness.elements.botLLMSave.listeners.click[0]();
-  edit('Model', 'gpt-4o-later');
+  assert(body.current === 'maclaw_official_group' && body.roles.foreground.provider === 'maclaw_official_group', 'the untouched foreground stays official');
+
+  // The foreground role drives the default route: pin it to the new provider.
+  const foreground = harness.elements.botLLMRole_foreground;
+  foreground.value = id;
+  harness.elements.botLLMRoles.listeners.change[0]({ target: foreground });
   await flush();
-  const raced = harness.calls.slice(callsBeforeEdit).filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
-  assert(raced.length === 1 && JSON.parse(raced[0].body).providers.some(function (item) { return item.id === id && item.model === 'gpt-4o'; }), 'sends the model from when save was clicked');
-  assert(harness.elements['botLLMModel_' + id].value === 'gpt-4o-later', 'keeps a model typed while the save was in flight');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'OpenAI', 'the badge follows the foreground provider');
+  assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o-mini\uff0c\u53ef\u8986\u76d6"', 'the foreground model field suggests the provider default');
+  // The provider rows keep their "in use" marker in sync without a rebuild:
+  // the chip moves off the old provider onto the new foreground route.
+  const prevRow = harness.elements['botLLMRow_lp_abcdef0123456789'];
+  const newRow = harness.elements['botLLMRow_' + id];
+  assert(!prevRow.className.includes('bot-llm-row-active'), 'the old foreground row loses its active highlight');
+  assert(newRow.className.includes('bot-llm-row-active'), 'the new foreground row gains the active highlight');
+  assert(!harness.elements['botLLMTags_lp_abcdef0123456789']._html.includes('bot-llm-tag-use'), 'the old row drops the in-use chip');
+  assertIncludes(harness.elements['botLLMTags_' + id]._html, 'bot-llm-tag-use', 'the new row shows the in-use chip');
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const second = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; })[1];
+  const secondBody = JSON.parse(second.body);
+  assert(secondBody.current === id && secondBody.roles.foreground.mode === 'pin' && secondBody.roles.foreground.provider === id, 'the foreground provider becomes the default route');
+  assert(!Object.prototype.hasOwnProperty.call(secondBody.roles.foreground, 'model'), 'an empty role model keeps the provider default');
+
+  // A typed model on the foreground row rides the same save.
+  const fgModel = harness.elements['botLLMRoleModel_foreground'];
+  fgModel.value = 'gpt-4o-latest';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: fgModel });
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const third = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; })[2];
+  assert(JSON.parse(third.body).roles.foreground.model === 'gpt-4o-latest', 'sends the foreground model override');
+
+  // A draft edit after the save click does not change what the click sent.
+  const callsBeforeRace = harness.calls.length;
+  harness.elements.botLLMSave.listeners.click[0]();
+  fgModel.value = 'gpt-4o-race';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: fgModel });
+  await flush();
+  const raced = harness.calls.slice(callsBeforeRace).filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(raced.length === 1 && JSON.parse(raced[0].body).roles.foreground.model === 'gpt-4o-latest', 'sends the role model from when save was clicked');
+  assert(fgModel.value === 'gpt-4o-race', 'keeps a role model typed while the save was in flight');
   assert(harness.elements['tab-bots']._llmDirty === true, 'leaves the newer edit unsaved');
-  const racedToast = harness.toasts[harness.toasts.length - 1];
-  assert(racedToast && racedToast.kind === 'info' && racedToast.msg.indexOf('\u5c1a\u672a\u5199\u5165') !== -1, 'says the later edit is not saved yet');
+
+  // Removing the foreground provider falls the route back to the official
+  // group: the stored role coerces to inherit and the badge follows.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMRemove_' + id] });
+  const left = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
+    return value.indexOf('botLLMUse_') === 0;
+  });
+  assert(left.length === 1, 'the removed provider leaves the list');
+  assert(harness.elements['tab-bots']._llmDraft.roles.foreground.mode === 'inherit', 'the orphaned foreground pin coerces to follow');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'the route falls back to the official group');
+
+  // The dialog enforces the eight-provider limit.
   let guard = 0;
   while (attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
-    return value.indexOf('botLLMName_') === 0;
+    return value.indexOf('botLLMUse_') === 0;
   }).length < 8 && guard < 8) {
     harness.elements.botLLMAdd.listeners.click[0]();
+    dialogSet('botLLMPName', 'P' + guard);
+    dialogSet('botLLMPUrl', 'https://p' + guard + '.example/v1');
+    dialogSet('botLLMPModel', 'm-' + guard);
+    dialogSet('botLLMPKey', 'sk-p' + guard);
+    harness.elements.botLLMPSave.listeners.click[0]();
     guard += 1;
   }
   const beforeLimit = harness.toasts.length;
   harness.elements.botLLMAdd.listeners.click[0]();
   assert(harness.toasts.slice(beforeLimit).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('8') !== -1; }), 'stops at eight providers');
+}
+
+async function testLLMRoleSettingsFollowForegroundAndPinSeparately() {
+  console.log('  Test: role rows follow the foreground by default and pin provider plus model separately');
+  const harness = createHarness();
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'maclaw_official_group',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'OpenAI', protocol: 'openai', url: 'https://api.openai.com/v1', model: 'gpt-4o', key_set: true }]
+  };
+  await harness.open();
+  await flush();
+  const rolesHtml = harness.elements.botLLMRoles._html;
+  assertIncludes(rolesHtml, 'botLLMRole_foreground', 'shows the chat role');
+  assertIncludes(rolesHtml, 'botLLMRole_background', 'shows the background role');
+  assertIncludes(rolesHtml, 'botLLMRole_computer_use', 'shows the computer-use role');
+  assertIncludes(rolesHtml, 'botLLMRole_grounder', 'shows the grounding role');
+  assertIncludes(rolesHtml, '\u8ddf\u968f\u524d\u53f0\u4ea4\u4e92', 'offers follow-foreground');
+  assertIncludes(rolesHtml, '\u4e0d\u4f7f\u7528', 'offers unused for the grounder');
+  assert(/value="__unused__"[^>]*selected|selected[^>]*value="__unused__"/.test(rolesHtml), 'grounder defaults to unused');
+  assertIncludes(rolesHtml, 'value="__inherit__" selected', 'background follows the foreground by default');
+  assert(!harness.elements['botLLMRoleModel_background'], 'a following role hides its model field');
+
+  const background = harness.elements.botLLMRole_background;
+  background.value = 'lp_abcdef0123456789';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: background });
+  await flush();
+  assertIncludes(harness.elements.botLLMRoles._html, 'placeholder="\u9ed8\u8ba4 gpt-4o\uff0c\u53ef\u8986\u76d6"', 'the pinned background row shows the provider default model');
+  assertIncludes(harness.elements.botLLMRoles._html, 'botLLMRoleVision_background', 'a custom pin shows the image-input override');
+  const bgModel = harness.elements['botLLMRoleModel_background'];
+  bgModel.value = 'gpt-4o-mini';
+  harness.elements.botLLMRoles.listeners.input[0]({ target: bgModel });
+  const official = harness.elements.botLLMRole_computer_use;
+  official.value = 'maclaw_official_group';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: official });
+  await flush();
+  const follow = harness.elements.botLLMRole_grounder;
+  follow.value = '__inherit__';
+  harness.elements.botLLMRoles.listeners.change[0]({ target: follow });
+  await flush();
+  harness.elements.botLLMSave.listeners.click[0]();
+  await flush();
+  const saved = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm' && call.method === 'PUT'; });
+  assert(saved.length === 1, 'saves role settings once');
+  const body = JSON.parse(saved[0].body);
+  assert(body.roles.foreground.mode === 'pin' && body.roles.foreground.provider === 'maclaw_official_group', 'chat pins the official group by default');
+  assert(!Object.prototype.hasOwnProperty.call(body.roles.foreground, 'model'), 'the official group carries no model');
+  assert(body.roles.background.mode === 'pin' && body.roles.background.provider === 'lp_abcdef0123456789', 'pins background to the custom provider');
+  assert(body.roles.background.model === 'gpt-4o-mini', 'pins the background model override');
+  const vision = (body.providers[0].vision || []).map(function (row) { return row.model; });
+  assert(vision.indexOf('gpt-4o') !== -1 && vision.indexOf('gpt-4o-mini') !== -1, 'saves image capability per provider model');
+  assert(body.roles.computer_use.mode === 'pin' && body.roles.computer_use.provider === 'maclaw_official_group', 'pins computer use to the official group');
+  assert(body.roles.grounder.mode === 'inherit' && !body.roles.grounder.provider, 'grounder can follow the foreground');
+  const encoded = JSON.stringify(body.roles);
+  assert(encoded.indexOf('sk-') === -1 && encoded.indexOf('key') === -1, 'role payload has no key');
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements.botLLMRemove_lp_abcdef0123456789 });
+  assert(JSON.parse(JSON.stringify(harness.elements['tab-bots']._llmDraft.roles)).background.mode === 'inherit', 'removing a provider falls that role back to follow-foreground');
+  assert(harness.elements['tab-bots']._llmDraft.roles.computer_use.mode === 'pin', 'keeps a pin to the official group');
 }
 
 async function testReloadAfterDirectoryFailure() {
@@ -931,6 +1154,181 @@ async function testReloadAfterDirectoryFailure() {
   await flush();
   assertIncludes(harness.elements.botOrgTree._html, 'Company', 'reload renders the organization');
   assert(harness.toasts.length === 0, 'reload does not toast after success');
+}
+
+async function testLLMModelFetchPopulatesThePicker() {
+  console.log('  Test: fetching models lists the provider catalog in the dialog and the role pickers');
+  const harness = createHarness();
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: 'deepseek-flash', key_set: true }],
+    roles: { foreground: { mode: 'pin', provider: 'lp_abcdef0123456789' } }
+  };
+  await harness.open();
+  await flush();
+  const id = 'lp_abcdef0123456789';
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  assert(harness.elements.botLLMPModal.hidden === false, 'the edit action opens the dialog');
+  harness.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  const fetches = harness.calls.filter(function (call) { return call.path === '/api/admin/bots/llm/models'; });
+  assert(fetches.length === 1, 'posts one model list request');
+  const body = JSON.parse(fetches[0].body);
+  assert(body.provider_id === id && body.protocol === 'openai' && body.url === 'https://api.deepseek.com/v1', 'names the provider, protocol, and url');
+  assert(!Object.prototype.hasOwnProperty.call(body, 'key'), 'omits the key so the hub reuses the saved one');
+  assertIncludes(harness.elements.botLLMPModelList._html, 'value="deepseek-chat"', 'lists a fetched model id');
+  assertIncludes(harness.elements.botLLMPModelList._html, 'value="deepseek-flash"', 'lists the other fetched model id');
+  assertIncludes(harness.elements.botLLMPModelsStatus.textContent, '2', 'reports how many models arrived');
+  assertIncludes(harness.elements['botLLMRoleModelList_foreground']._html, 'value="deepseek-chat"', 'the foreground role picker shares the catalog');
+
+  // Saving changed coordinates through the dialog retires the catalog: the
+  // role pickers referencing the provider lose their suggestions.
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  harness.elements.botLLMPUrl.value = 'https://api.other.example/v1';
+  harness.elements.botLLMPSave.listeners.click[0]();
+  assert(harness.elements.botLLMPModal.hidden === true, 'the coordinate edit closes the dialog');
+  assert(harness.elements['botLLMRoleModelList_foreground']._html === '', 'the stale catalog leaves the role picker after the coordinate edit');
+}
+
+async function testLLMModelFetchDropsAResultWhoseCoordinatesChanged() {
+  console.log('  Test: a model list that resolves after the endpoint changed does not fill the dialog');
+  const harness = createHarness({ modelsGate: true });
+  harness.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: '', key_set: true }]
+  };
+  await harness.open();
+  await flush();
+  const id = 'lp_abcdef0123456789';
+  harness.elements.botLLMList.listeners.click[0]({ target: harness.elements['botLLMEdit_' + id] });
+  harness.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(harness.elements.botLLMPFetch.disabled === true, 'the fetch button is busy while the request is in flight');
+
+  // The endpoint changes while the first request is still pending: its answer
+  // describes an endpoint the form no longer holds.
+  harness.elements.botLLMPUrl.value = 'https://api.other.example/v1';
+  harness.elements.botLLMPModal.listeners.input[0]({ target: harness.elements.botLLMPUrl });
+  await flush();
+  harness.releaseModels();
+  await flush();
+  assert(harness.elements.botLLMPModelList._html === '', 'the stale result stays out of the suggestions');
+  assert(harness.elements.botLLMPFetch.disabled === false, 'the button recovers after the stale result');
+  assertIncludes(harness.elements.botLLMPFetch.textContent, '\u83b7\u53d6\u6a21\u578b\u5217\u8868', 'the button label resets after the stale result');
+}
+
+async function testLLMModelFetchExplainsFailuresAndRequiresCredentials() {
+  console.log('  Test: dialog fetch failures reach the status line and new providers need credentials first');
+  const failing = createHarness({ modelsError: 'invalid bot settings: llm provider key is invalid (HTTP 401)' });
+  failing.settings.llm = {
+    default_service_group: 'maclaw_official_group',
+    current: 'lp_abcdef0123456789',
+    providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: '', key_set: true }]
+  };
+  await failing.open();
+  await flush();
+  failing.elements.botLLMList.listeners.click[0]({ target: failing.elements['botLLMEdit_lp_abcdef0123456789'] });
+  failing.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assertIncludes(failing.elements.botLLMPModelsStatus.textContent, 'API Key', 'explains a rejected key on the dialog status line');
+  assert(failing.toasts.some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'toasts the rejected key');
+
+  const draft = createHarness({ modelsResult: [{ id: 'glm-4.7' }] });
+  await draft.open();
+  await flush();
+  draft.elements.botLLMAdd.listeners.click[0]();
+  assert(draft.elements.botLLMPModal.hidden === false, 'the add action opens the dialog');
+  const toastsBefore = draft.toasts.length;
+  const callsBefore = draft.calls.length;
+  // Nothing filled: the endpoint check speaks first.
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(draft.toasts.slice(toastsBefore).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('http') !== -1; }), 'an empty dialog is asked for the url first');
+  assert(draft.calls.length === callsBefore, 'an empty dialog sends no request');
+  // A url without a key: the credentials check follows.
+  draft.elements.botLLMPUrl.value = 'https://api.example.com/v1';
+  draft.elements.botLLMPModal.listeners.input[0]({ target: draft.elements.botLLMPUrl });
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  assert(draft.toasts.slice(toastsBefore).some(function (toast) { return toast.kind === 'error' && toast.msg.indexOf('API Key') !== -1; }), 'a new provider without a key cannot fetch');
+  assert(draft.calls.length === callsBefore, 'a new provider without a key sends no request');
+
+  draft.elements.botLLMPKey.value = 'sk-typed';
+  draft.elements.botLLMPFetch.listeners.click[0]();
+  await flush();
+  const sent = draft.calls.slice(callsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/models'; });
+  assert(sent.length === 1, 'sends the fetch once the dialog has coordinates');
+  const sentBody = JSON.parse(sent[0].body);
+  assert(!Object.prototype.hasOwnProperty.call(sentBody, 'provider_id'), 'does not name an unsaved provider');
+  assert(sentBody.key === 'sk-typed' && sentBody.url === 'https://api.example.com/v1', 'rides the typed key for an unsaved provider');
+  assertIncludes(draft.elements.botLLMPModelList._html, 'value="glm-4.7"', 'fills the dialog picker from the response');
+}
+
+async function testLLMVisionDetectShowsBusyAndAnnouncesInconclusive() {
+  console.log('  Test: the vision detect button goes busy and an inconclusive probe is announced');
+  const settings = function () {
+    return {
+      default_service_group: 'maclaw_official_group',
+      current: 'lp_abcdef0123456789',
+      providers: [{ id: 'lp_abcdef0123456789', name: 'DeepSeek', protocol: 'openai', url: 'https://api.deepseek.com/v1', model: 'm-base', key_set: true }],
+      roles: {
+        foreground: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm1' },
+        background: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm1' },
+        computer_use: { mode: 'pin', provider: 'lp_abcdef0123456789', model: 'm2' },
+        grounder: { mode: 'unused' }
+      }
+    };
+  };
+
+  // An inconclusive probe (no known record in the answer) used to be a
+  // silent no-op that made the button look dead.
+  const inconclusive = createHarness({
+    visionResult: { llm: { providers: [{ id: 'lp_abcdef0123456789', vision: [] }] } }
+  });
+  inconclusive.settings.llm = settings();
+  await inconclusive.open();
+  await flush();
+  const callsBefore = inconclusive.calls.length;
+  inconclusive.elements.botLLMRoles.listeners.click[0]({ target: inconclusive.elements.botLLMRoleVisionDetect_foreground });
+  await flush();
+  const sent = inconclusive.calls.slice(callsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/vision'; });
+  assert(sent.length === 1, 'the detect click probes the pinned model');
+  assert(sent[0].body && JSON.parse(sent[0].body).model === 'm1', 'the probe names the role model');
+  assert(inconclusive.toasts.some(function (toast) { return toast.kind === 'info'; }), 'an inconclusive probe toasts instead of staying silent');
+  assert(inconclusive.elements.botLLMRoleVisionDetect_foreground.disabled === false, 'the button recovers after an inconclusive answer');
+
+  // The busy label covers every role row pinned to the same provider+model;
+  // a different model stays clickable and may probe concurrently, and the
+  // answers refresh each row with its own state.
+  const gated = createHarness({
+    visionGate: true,
+    visionResult: { llm: { providers: [{ id: 'lp_abcdef0123456789', vision: [
+      { model: 'm1', known: true, supported: true, detected_at: '2026-11-14 09:00' },
+      { model: 'm2', known: true, supported: false, detected_at: '2026-11-14 09:00' }
+    ] }] } }
+  });
+  gated.settings.llm = settings();
+  await gated.open();
+  await flush();
+  const visionCallsBefore = gated.calls.length;
+  gated.elements.botLLMRoles.listeners.click[0]({ target: gated.elements.botLLMRoleVisionDetect_foreground });
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.disabled === true, 'the clicked button goes busy while the probe runs');
+  assertIncludes(gated.elements.botLLMRoleVisionDetect_foreground.textContent, '\u6b63\u5728\u68c0\u6d4b', 'the busy label replaces the detect label');
+  assert(gated.elements.botLLMRoleVisionDetect_background.disabled === true, 'the same model on another role goes busy too');
+  assert(gated.elements.botLLMRoleVisionDetect_computer_use.disabled === false, 'a different model on another role stays clickable');
+  gated.elements.botLLMRoles.listeners.click[0]({ target: gated.elements.botLLMRoleVisionDetect_computer_use });
+  assert(gated.elements.botLLMRoleVisionDetect_computer_use.disabled === true, 'a second model probes concurrently');
+  assert(gated.calls.slice(visionCallsBefore).filter(function (call) { return call.path === '/api/admin/bots/llm/vision'; }).length === 2, 'both probes reach the endpoint');
+  gated.releaseVision();
+  await flush();
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.disabled === false, 'the button recovers after the answer');
+  assert(gated.elements.botLLMRoleVisionDetect_foreground.textContent === '\u68c0\u6d4b', 'the detect label resets after the answer');
+  assert(gated.elements.botLLMRoleVisionStatus_foreground.className.indexOf('bot-llm-vision-yes') !== -1, 'a supported answer colors the chip green');
+  assert(gated.elements.botLLMRoleVisionStatus_background.className.indexOf('bot-llm-vision-yes') !== -1, 'the shared answer refreshes every row showing the model');
+  assert(gated.elements.botLLMRoleVisionStatus_computer_use.className.indexOf('bot-llm-vision-no') !== -1, 'an unsupported answer colors the chip amber');
+  assert(gated.toasts.every(function (toast) { return toast.kind !== 'info'; }), 'a conclusive answer needs no extra toast');
 }
 
 Promise.resolve()
@@ -957,8 +1355,15 @@ Promise.resolve()
   .then(testConnectionFailureIsExplainedInChinese)
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
+  .then(testDesktopQuotaColumnAndGrantLimit)
+  .then(testDesktopCapSaveFailureRestoresTheOldNumber)
   .then(testBotOwnerUsesDirectoryName)
-  .then(testLLMSettingsKeepTheDefaultAndSaveAProvider)
+  .then(testLLMSettingsProvidersAreManagedAndRolesPickTheModel)
+  .then(testLLMRoleSettingsFollowForegroundAndPinSeparately)
+  .then(testLLMModelFetchPopulatesThePicker)
+  .then(testLLMModelFetchDropsAResultWhoseCoordinatesChanged)
+  .then(testLLMModelFetchExplainsFailuresAndRequiresCredentials)
+  .then(testLLMVisionDetectShowsBusyAndAnnouncesInconclusive)
   .then(testReloadAfterDirectoryFailure)
   .then(function () {
     console.log('bot-tab tests: ' + passed + ' passed, ' + failed + ' failed');

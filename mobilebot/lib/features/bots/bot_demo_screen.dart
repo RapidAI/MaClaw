@@ -9,7 +9,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/platform.dart';
 import 'bot_models.dart';
+import '../../core/locale.dart';
 import 'bots_controller.dart';
 
 /// 演示录制 — 桌面 GUI 演示功能（demo/start|narrate|stop|distill）的手机版：
@@ -33,6 +35,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   final _notesCtrl = TextEditingController();
   final _recorder = AudioRecorder();
   final _shotCache = <String, Uint8List>{};
+  final _shotFutures = <String, Future<Uint8List?>>{};
 
   _DemoPhase _phase = _DemoPhase.idle;
   bool _busy = false;
@@ -69,7 +72,8 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   }
 
   Future<void> _start() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoStart(widget.bot.id, _titleCtrl.text.trim());
     if (!mounted) return;
     setState(() {
@@ -79,24 +83,30 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   });
 
   Future<void> _narrateText() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final text = _narrateCtrl.text.trim();
     if (text.isEmpty) return;
     final out = await api.demoNarrate(widget.bot.id, text: text);
     if (!mounted) return;
     _narrateCtrl.clear();
-    setState(
-      () => _narrations.add((out['text'] as String? ?? text).toString()),
-    );
+    setState(() => _narrations.add(syncTextOr(out['text'], text)));
   });
 
   Future<void> _toggleMic() async {
     if (_micRecording) {
       setState(() => _micRecording = false);
-      final path = await _recorder.stop();
-      if (path == null || path.isEmpty || !mounted) return;
+      final String path;
+      try {
+        path = await _recorder.stop() ?? '';
+      } on Object catch (error) {
+        if (mounted) setState(() => _error = failureMessage(error));
+        return;
+      }
+      if (path.isEmpty || !mounted) return;
       await _run(() async {
-        final api = ref.read(botApiProvider)!;
+        final api = ref.read(botApiProvider);
+        if (api == null) return;
         final file = File(path);
         final bytes = await file.readAsBytes();
         await file.delete().onError((_, _) => file); // temp clip — best effort
@@ -106,27 +116,34 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
           mime: 'audio/wav',
         );
         if (!mounted) return;
-        setState(
-          () => _narrations.add(
-            '🎙 ${(out['text'] as String? ?? '').toString()}',
-          ),
-        );
+        setState(() => _narrations.add('🎙 ${syncText(out['text'])}'));
       });
       return;
     }
-    if (!await _recorder.hasPermission()) return;
-    final dir = await getTemporaryDirectory();
-    final path =
-        '${dir.path}${Platform.pathSeparator}narrate-${const Uuid().v4()}.wav';
-    await _recorder.start(
-      const RecordConfig(encoder: AudioEncoder.wav),
-      path: path,
-    );
+    if (!await _recorder.hasPermission()) {
+      if (mounted) {
+        setState(() => _error = context.S.demoMicDenied);
+      }
+      return;
+    }
+    try {
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}${Platform.pathSeparator}narrate-${const Uuid().v4()}.wav';
+      await _recorder.start(
+        const RecordConfig(encoder: AudioEncoder.wav),
+        path: path,
+      );
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = failureMessage(error));
+      return;
+    }
     if (mounted) setState(() => _micRecording = true);
   }
 
   Future<void> _stop() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoStop(widget.bot.id);
     if (!mounted) return;
     final timeline = out['timeline'] is Map
@@ -135,16 +152,17 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     setState(() {
       _phase = _DemoPhase.stopped;
       _timeline = timeline;
-      _demoId = (timeline['id'] as String? ?? '').toString();
+      _demoId = syncText(timeline['id']);
       _events = [
-        for (final e in (timeline['events'] as List? ?? const []))
+        for (final e in syncList(timeline['events']))
           if (e is Map) Map<String, dynamic>.from(e),
       ];
     });
   });
 
   Future<void> _distill() => _run(() async {
-    final api = ref.read(botApiProvider)!;
+    final api = ref.read(botApiProvider);
+    if (api == null) return;
     final out = await api.demoDistill(
       widget.bot.id,
       _timeline,
@@ -166,11 +184,11 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   };
 
   String _eventLabel(Map<String, dynamic> e) {
-    final kind = (e['kind'] as String? ?? '').toString();
-    final action = (e['action'] as String? ?? '').toString();
-    final text = (e['text'] as String? ?? '').toString();
-    final app = (e['app'] as String? ?? '').toString();
-    final window = (e['window'] as String? ?? '').toString();
+    final kind = syncText(e['kind']);
+    final action = syncText(e['action']);
+    final text = syncText(e['text']);
+    final app = syncText(e['app']);
+    final window = syncText(e['window']);
     return [
       if (action.isNotEmpty) action,
       if (text.isNotEmpty) text,
@@ -190,11 +208,15 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         errorBuilder: (_, _, _) => const SizedBox.shrink(),
       );
     }
-    return FutureBuilder<Uint8List?>(
-      future: ref
-          .read(botApiProvider)!
+    final future = _shotFutures.putIfAbsent(shotRef, () {
+      final api = ref.read(botApiProvider);
+      if (api == null) return Future<Uint8List?>.value();
+      return api
           .demoShot(widget.bot.id, _demoId, shotRef)
-          .then((s) => s.data.isEmpty ? null : base64Decode(s.data)),
+          .then((s) => s.data.isEmpty ? null : base64Decode(s.data));
+    });
+    return FutureBuilder<Uint8List?>(
+      future: future,
       builder: (context, snap) {
         final data = snap.data;
         if (data == null) {
@@ -220,7 +242,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text('${widget.bot.title} · 演示录制')),
+      appBar: AppBar(title: Text(context.S.demoTitle(widget.bot.title))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -254,7 +276,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         ),
         const SizedBox(height: 12),
         Text(
-          '录一段在 ${widget.bot.title} 电脑上的操作过程，加上旁白说明，结束后可以提炼成它能反复使用的技能。\n\n需要这个 Bot 使用独立电脑（desktop_mode=isolated）。',
+          context.S.demoIntro(widget.bot.title),
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
@@ -262,9 +284,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         const SizedBox(height: 20),
         TextField(
           controller: _titleCtrl,
-          decoration: const InputDecoration(
-            labelText: '演示标题',
-            hintText: '如：在 Excel 里生成周报',
+          decoration: InputDecoration(
+            labelText: context.S.demoTitleLabel,
+            hintText: context.S.demoTitleHint,
             border: OutlineInputBorder(),
           ),
         ),
@@ -272,7 +294,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.icon(
           onPressed: _busy ? null : _start,
           icon: const Icon(Icons.fiber_manual_record, size: 16),
-          label: const Text('开始录制'),
+          label: Text(context.S.demoStart),
         ),
       ],
     );
@@ -298,7 +320,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '录制中 — 去 ${widget.bot.title} 的电脑上操作',
+                  context.S.demoRecording(widget.bot.title),
                   style: TextStyle(color: theme.colorScheme.onErrorContainer),
                 ),
               ),
@@ -306,29 +328,31 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                 onPressed: () => context.push(
                   '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
                 ),
-                child: const Text('看画面'),
+                child: Text(context.S.demoWatch),
               ),
             ],
           ),
         ),
         const SizedBox(height: 16),
-        Text('旁白', style: theme.textTheme.titleSmall),
+        Text(context.S.demoNarration, style: theme.textTheme.titleSmall),
         const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: _narrateCtrl,
-                decoration: const InputDecoration(
-                  hintText: '这一步在做什么…',
+                decoration: InputDecoration(
+                  hintText: context.S.demoNarrationHint,
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
               ),
             ),
-            if (_asrAvailable)
+            if (_asrAvailable && supportsVoiceInput)
               IconButton(
-                tooltip: _micRecording ? '停止录音' : '语音旁白',
+                tooltip: _micRecording
+                    ? context.S.demoStopRecord
+                    : context.S.demoVoiceNarration,
                 icon: Icon(
                   _micRecording ? Icons.stop : Icons.mic,
                   color: _micRecording ? theme.colorScheme.error : null,
@@ -364,7 +388,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.tonalIcon(
           onPressed: _busy ? null : _stop,
           icon: const Icon(Icons.stop),
-          label: const Text('结束录制'),
+          label: Text(context.S.demoFinish),
         ),
       ],
     );
@@ -374,7 +398,10 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('录制完成 · ${_events.length} 个事件', style: theme.textTheme.titleSmall),
+        Text(
+          context.S.demoDone(_events.length),
+          style: theme.textTheme.titleSmall,
+        ),
         const SizedBox(height: 8),
         for (final e in _events)
           Card(
@@ -384,7 +411,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(
-                    _eventIcon((e['kind'] as String? ?? '')),
+                    _eventIcon(syncText(e['kind'])),
                     size: 18,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -395,10 +422,10 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                       style: theme.textTheme.bodySmall,
                     ),
                   ),
-                  if ((e['ref'] as String? ?? '').isNotEmpty)
+                  if (syncText(e['ref']).isNotEmpty)
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
-                      child: _shot((e['ref'] as String).toString()),
+                      child: _shot(syncText(e['ref'])),
                     ),
                 ],
               ),
@@ -407,9 +434,9 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         const SizedBox(height: 16),
         TextField(
           controller: _notesCtrl,
-          decoration: const InputDecoration(
-            labelText: '补充说明（可选）',
-            hintText: '给提炼模型的额外提示，如注意事项',
+          decoration: InputDecoration(
+            labelText: context.S.demoExtraLabel,
+            hintText: context.S.demoExtraHint,
             border: OutlineInputBorder(),
           ),
           maxLines: 3,
@@ -418,15 +445,15 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         FilledButton.icon(
           onPressed: _busy || _timeline.isEmpty ? null : _distill,
           icon: const Icon(Icons.auto_fix_high),
-          label: const Text('提炼为技能'),
+          label: Text(context.S.demoDistill),
         ),
       ],
     );
   }
 
   Widget _buildSkill(ThemeData theme) {
-    final name = (_skill['name'] as String? ?? '').toString();
-    final goal = (_skill['goal'] as String? ?? '').toString();
+    final name = syncText(_skill['name']);
+    final goal = syncText(_skill['goal']);
     final steps = _skill['steps'] is List ? _skill['steps'] as List : const [];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -434,7 +461,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
         Icon(Icons.task_alt, size: 56, color: theme.colorScheme.primary),
         const SizedBox(height: 12),
         Text(
-          '技能已提炼',
+          context.S.demoSkillReady,
           style: theme.textTheme.titleMedium,
           textAlign: TextAlign.center,
         ),
@@ -456,7 +483,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      '${steps.length} 个步骤',
+                      context.S.demoStepCount(steps.length),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -478,7 +505,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
             _titleCtrl.clear();
             _notesCtrl.clear();
           }),
-          child: const Text('再录一段'),
+          child: Text(context.S.demoRecordAgain),
         ),
       ],
     );

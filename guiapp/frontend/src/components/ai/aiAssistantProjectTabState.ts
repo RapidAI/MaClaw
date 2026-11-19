@@ -123,7 +123,7 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
             if (id) {
                 const existingIndex = indexById.get(id);
                 if (existingIndex !== undefined) {
-                    merged[existingIndex] = chatMessage;
+                    merged[existingIndex] = withKeptGoalStageFields(merged[existingIndex], chatMessage);
                     anchor = existingIndex;
                     continue;
                 }
@@ -140,6 +140,20 @@ export function mergeChatMessages(...groups: Array<unknown[] | undefined>): Chat
         }
     }
     return merged;
+}
+
+/** A thinner later row must not drop the stage command or the filed-report flag. */
+function withKeptGoalStageFields(earlier: ChatMessage, later: ChatMessage): ChatMessage {
+    const goalStageCommand = later.goalStageCommand || earlier.goalStageCommand;
+    const goalStageSettled = !!(later.goalStageSettled || earlier.goalStageSettled);
+    if ((goalStageCommand || undefined) === (later.goalStageCommand || undefined) && goalStageSettled === !!later.goalStageSettled) {
+        return later;
+    }
+    return {
+        ...later,
+        ...(goalStageCommand ? { goalStageCommand } : {}),
+        ...(goalStageSettled ? { goalStageSettled: true } : {}),
+    };
 }
 
 type CodingTrail = NonNullable<ChatMessage["codingTimeline"]>;
@@ -322,7 +336,13 @@ export function projectHistorySubstantiveDelta(previous: ChatMessage[] | undefin
             if (message.role !== "assistant" || assistantSubstantiveBody(message)) return true;
             continue;
         }
-        if (message.role !== "assistant") continue;
+        if (message.role !== "assistant") {
+            // The goal checklist card updates in place (same id, new body).
+            // Its completion flip must reach the visible transcript even
+            // mid-stream, or the float keeps a finished goal's stale card.
+            if (message.kind === "goalChecklist" && (before.content || "") !== (message.content || "")) return true;
+            continue;
+        }
         const prevContent = before.content || "";
         const nextContent = message.content || "";
         if (nextContent !== prevContent) {

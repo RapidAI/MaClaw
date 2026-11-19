@@ -14,6 +14,24 @@ func TestHubBotInstanceFallsBackToInstance(t *testing.T) {
 	}
 }
 
+func TestPromptPrefixMetaFollowsTheDesktopMode(t *testing.T) {
+	none := &coreAgentCallbacks{
+		botID:           "bot_none",
+		messageMetadata: map[string]string{"bot_desktop": "none"},
+		runtimeRequest:  ExecuteRequest{Instance: Instance{Metadata: map[string]string{"hub_bot": "1", "hub_bot_desktop": "none"}}},
+	}
+	if none.promptPrefixMeta().DesktopMode != "none" {
+		t.Fatalf("none mode = %q", none.promptPrefixMeta().DesktopMode)
+	}
+	desk := &coreAgentCallbacks{instance: Instance{Metadata: map[string]string{"hub_bot": "1"}}}
+	if desk.promptPrefixMeta().DesktopMode != "desktop" {
+		t.Fatalf("desktop mode = %q", desk.promptPrefixMeta().DesktopMode)
+	}
+	if (&coreAgentCallbacks{}).promptPrefixMeta().DesktopMode != "" {
+		t.Fatal("a digital employee was given a desktop mode")
+	}
+}
+
 func TestWakeTurnSkipsDesktopOutcomeCheck(t *testing.T) {
 	c := &coreAgentCallbacks{messageMetadata: map[string]string{"bot_phase": "execute", "bot_wake": "1"}}
 	d := c.ReviewDesktopOutcome("mailbox", "一句话", nil, nil)

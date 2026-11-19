@@ -37,6 +37,10 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 			audience_ids    TEXT NOT NULL DEFAULT '[]',
 			status          TEXT NOT NULL DEFAULT 'draft',
 			im_push         INTEGER NOT NULL DEFAULT 0,
+			pinned          INTEGER NOT NULL DEFAULT 0,
+			pinned_forever  INTEGER NOT NULL DEFAULT 0,
+			link_url        TEXT NOT NULL DEFAULT '',
+			button_text     TEXT NOT NULL DEFAULT '',
 			created_by      TEXT NOT NULL DEFAULT '',
 			publish_at      TEXT,
 			expire_at       TEXT,
@@ -60,8 +64,26 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("init hc notification schema: %w", err)
 		}
 	}
+	// Additive upgrades keep databases created before pinned messages readable.
+	// Duplicate-column errors on already-migrated schemas are ignored.
+	for _, stmt := range []string{
+		`ALTER TABLE hc_notifications ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE hc_notifications ADD COLUMN pinned_forever INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE hc_notifications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hc_notifications ADD COLUMN button_text TEXT NOT NULL DEFAULT ''`,
+	} {
+		_, _ = s.db.ExecContext(ctx, stmt)
+	}
 	return nil
 }
+
+// Shared column lists so every read of hc_notifications carries the same
+// fields (scanNotificationRow expects exactly this order).
+const (
+	hcNotificationColumns = `id, title, content, category, priority, audience_type, audience_ids, status, im_push, ` +
+		`pinned, pinned_forever, link_url, button_text, ` +
+		`created_by, publish_at, expire_at, created_at, updated_at`
+)
 
 // Create inserts a new HubCenter notification into the database.
 func (s *SQLiteStore) Create(ctx context.Context, n *Notification) error {
@@ -71,9 +93,8 @@ func (s *SQLiteStore) Create(ctx context.Context, n *Notification) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO hc_notifications
-				(id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args...,
 	)
 	return err
@@ -88,9 +109,8 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO hc_notifications
-			(id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			title = excluded.title,
 			content = excluded.content,
@@ -100,6 +120,10 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 			audience_ids = excluded.audience_ids,
 			status = excluded.status,
 			im_push = excluded.im_push,
+			pinned = excluded.pinned,
+			pinned_forever = excluded.pinned_forever,
+			link_url = excluded.link_url,
+			button_text = excluded.button_text,
 			created_by = excluded.created_by,
 			publish_at = excluded.publish_at,
 			expire_at = excluded.expire_at,
@@ -113,8 +137,7 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 // GetByID retrieves a single notification by its ID.
 func (s *SQLiteStore) GetByID(ctx context.Context, id string) (*Notification, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at
-		 FROM hc_notifications WHERE id = ?`, id)
+		`SELECT `+hcNotificationColumns+` FROM hc_notifications WHERE id = ?`, id)
 	return scanNotification(row)
 }
 
@@ -144,7 +167,7 @@ func (s *SQLiteStore) List(ctx context.Context, filter ListFilter) ([]*Notificat
 		return nil, 0, err
 	}
 
-	query := "SELECT id, title, content, category, priority, audience_type, audience_ids, status, im_push, created_by, publish_at, expire_at, created_at, updated_at FROM hc_notifications" + whereClause
+	query := "SELECT " + hcNotificationColumns + " FROM hc_notifications" + whereClause
 	query += " ORDER BY created_at DESC"
 
 	limit := filter.Limit
@@ -251,26 +274,33 @@ func (s *SQLiteStore) GetCascadeResults(ctx context.Context, notificationID stri
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-func scanNotification(row *sql.Row) (*Notification, error) {
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanNotificationRow scans one hc_notifications row in the
+// hcNotificationColumns order and applies the parsed values to a Notification.
+func scanNotificationRow(scan rowScanner) (*Notification, error) {
 	var (
 		n                                Notification
 		category, priority, audienceType string
 		audienceJSON, status             string
 		createdBy                        string
 		imPush                           int
+		pinned, pinnedForever            int
+		linkURL, buttonText              string
 		publishAt, expireAt              sql.NullString
 		createdAt, updatedAt             string
 	)
-	err := row.Scan(
+	err := scan.Scan(
 		&n.ID, &n.Title, &n.Content,
 		&category, &priority, &audienceType, &audienceJSON,
-		&status, &imPush, &createdBy,
+		&status, &imPush, &pinned, &pinnedForever, &linkURL, &buttonText,
+		&createdBy,
 		&publishAt, &expireAt, &createdAt, &updatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, err
 	}
 	n.Category = Category(category)
@@ -278,6 +308,10 @@ func scanNotification(row *sql.Row) (*Notification, error) {
 	n.AudienceType = AudienceType(audienceType)
 	n.Status = Status(status)
 	n.IMPush = imPush != 0
+	n.Pinned = pinned != 0
+	n.PinnedForever = pinnedForever != 0
+	n.LinkURL = linkURL
+	n.ButtonText = buttonText
 	n.CreatedBy = createdBy
 	n.CreatedAt = mustParseTime(createdAt)
 	n.UpdatedAt = mustParseTime(updatedAt)
@@ -295,45 +329,19 @@ func scanNotification(row *sql.Row) (*Notification, error) {
 	return &n, nil
 }
 
-func scanNotificationFromRows(rows *sql.Rows) (*Notification, error) {
-	var (
-		n                                Notification
-		category, priority, audienceType string
-		audienceJSON, status             string
-		createdBy                        string
-		imPush                           int
-		publishAt, expireAt              sql.NullString
-		createdAt, updatedAt             string
-	)
-	err := rows.Scan(
-		&n.ID, &n.Title, &n.Content,
-		&category, &priority, &audienceType, &audienceJSON,
-		&status, &imPush, &createdBy,
-		&publishAt, &expireAt, &createdAt, &updatedAt,
-	)
+func scanNotification(row *sql.Row) (*Notification, error) {
+	n, err := scanNotificationRow(row)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
-	n.Category = Category(category)
-	n.Priority = Priority(priority)
-	n.AudienceType = AudienceType(audienceType)
-	n.Status = Status(status)
-	n.IMPush = imPush != 0
-	n.CreatedBy = createdBy
-	n.CreatedAt = mustParseTime(createdAt)
-	n.UpdatedAt = mustParseTime(updatedAt)
-	if publishAt.Valid {
-		t := mustParseTime(publishAt.String)
-		n.PublishAt = &t
-	}
-	if expireAt.Valid {
-		t := mustParseTime(expireAt.String)
-		n.ExpireAt = &t
-	}
-	if err := json.Unmarshal([]byte(audienceJSON), &n.AudienceIDs); err != nil {
-		n.AudienceIDs = nil
-	}
-	return &n, nil
+	return n, nil
+}
+
+func scanNotificationFromRows(rows *sql.Rows) (*Notification, error) {
+	return scanNotificationRow(rows)
 }
 
 func scanCascadeResult(rows *sql.Rows) (*CascadeResult, error) {
@@ -381,10 +389,20 @@ func notificationSQLArgs(n *Notification) ([]interface{}, error) {
 	if n.IMPush {
 		imPush = 1
 	}
+	pinned := 0
+	if n.Pinned {
+		pinned = 1
+	}
+	pinnedForever := 0
+	if n.PinnedForever {
+		pinnedForever = 1
+	}
 	return []interface{}{
 		n.ID, n.Title, n.Content,
 		string(n.Category), string(n.Priority), string(n.AudienceType),
-		string(audienceJSON), string(n.Status), imPush, n.CreatedBy,
+		string(audienceJSON), string(n.Status), imPush,
+		pinned, pinnedForever, n.LinkURL, n.ButtonText,
+		n.CreatedBy,
 		formatNullableTime(n.PublishAt), formatNullableTime(n.ExpireAt),
 		n.CreatedAt.UTC().Format(time.RFC3339), n.UpdatedAt.UTC().Format(time.RFC3339),
 	}, nil

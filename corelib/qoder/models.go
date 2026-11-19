@@ -78,7 +78,14 @@ func ListModels(ctx context.Context, profile Profile, uid, accessToken string) (
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("获取 Qoder 模型列表失败 (HTTP %d): %s", resp.StatusCode, truncateForError(body))
 	}
-	return parseCatalog(body)
+	models, defaultKey, err := parseCatalog(body)
+	if err != nil {
+		return nil, "", err
+	}
+	// Remember after a successful live fetch only. Parsing a fixture must
+	// not rewrite the process-wide name map.
+	RememberModels(models)
+	return models, defaultKey, nil
 }
 
 // parseCatalog accepts {scene: [entry...]} where every scene name is allowed.
@@ -121,6 +128,70 @@ func parseCatalog(body []byte) ([]Model, string, error) {
 		defaultKey = fallbackKey
 	}
 	return models, defaultKey, nil
+}
+
+// ModelLabel is the name shown in provider settings. The catalog key
+// (dfmodel, qmodel_38max, auto) stays on the chat wire.
+func ModelLabel(model Model) string {
+	key := strings.TrimSpace(model.Key)
+	name := strings.TrimSpace(model.DisplayName)
+	if name == "" || strings.EqualFold(name, key) {
+		return key
+	}
+	return name
+}
+
+// EnabledCatalog returns one display name per enabled model, in catalog
+// order, plus the display name of the default model. The same model listed
+// under several scenes is kept once.
+func EnabledCatalog(models []Model) (labels []string, defaultLabel string) {
+	// The default flag can sit on a later scene's copy of a key that was
+	// already listed. Pick that key before dedupe, matching parseCatalog.
+	defaultKey := ""
+	for _, model := range models {
+		if !model.Enabled || !model.IsDefault {
+			continue
+		}
+		if key := strings.TrimSpace(model.Key); key != "" {
+			defaultKey = key
+			break
+		}
+	}
+	seenKey := make(map[string]struct{}, len(models))
+	seenLabel := make(map[string]struct{}, len(models))
+	labelByKey := make(map[string]string, len(models))
+	var first string
+	for _, model := range models {
+		if !model.Enabled {
+			continue
+		}
+		key := strings.TrimSpace(model.Key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seenKey[key]; ok {
+			continue
+		}
+		seenKey[key] = struct{}{}
+		label := ModelLabel(model)
+		if label == "" {
+			continue
+		}
+		fold := strings.ToLower(label)
+		if _, ok := seenLabel[fold]; ok {
+			continue
+		}
+		seenLabel[fold] = struct{}{}
+		labels = append(labels, label)
+		labelByKey[key] = label
+		if first == "" {
+			first = label
+		}
+	}
+	if label := labelByKey[defaultKey]; label != "" {
+		return labels, label
+	}
+	return labels, first
 }
 
 // sortedScenes orders the catalog scenes deterministically: the device

@@ -349,17 +349,25 @@ func agentChatModel(bodyJSON string) string {
 	return canonicalQoderModelKey(DefaultModel)
 }
 
-// canonicalQoderModelKey maps legacy display-style names onto the real
-// catalog keys; unknown names pass through (the agent_chat node validates).
+// canonicalQoderModelKey maps a settings name onto the catalog key the
+// agent_chat node accepts. Display names remembered from the catalog
+// (Qwen3.8-Max, DeepSeek-V4-Pro) win over the short key; unknown names
+// pass through.
 func canonicalQoderModelKey(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "qwen3.8-max", "qwen 3.8 max", "qwen3.8 max":
-		return "qmodel_38max"
-	case "qwen3.8-flash", "qwen 3.8 flash", "qwen3.8 flash":
-		return "qfmodel"
-	default:
-		return strings.TrimSpace(model)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
 	}
+	switch strings.ToLower(model) {
+	case "qwen3.8-max", "qwen 3.8 max", "qwen3.8 max":
+		model = "qmodel_38max"
+	case "qwen3.8-flash", "qwen 3.8 flash", "qwen3.8 flash":
+		model = "qfmodel"
+	}
+	if key := lookupAliasKey(model); key != "" {
+		return key
+	}
+	return model
 }
 
 // canonicalChatBody returns the JSON PrepareInferRequest must sign. After the

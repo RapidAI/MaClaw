@@ -28,9 +28,22 @@ func TestToolCallContentProjectsTextAndRejectsToolErrors(t *testing.T) {
 	if err != nil || quoted != "直接文本" {
 		t.Fatalf("result string=%q err=%v", quoted, err)
 	}
+	fileBody, err := ToolCallContent(`{"content":[{"type":"resource","resource":{"uri":"file:///tmp/a.txt","text":"文件正文"}}]}`)
+	if err != nil || fileBody != "文件正文" {
+		t.Fatalf("resource content=%q err=%v", fileBody, err)
+	}
+	linkOnly, err := ToolCallContent(`{"content":[{"type":"resource","resource":{"uri":"file:///tmp/a.bin"}}]}`)
+	if err != nil || linkOnly != "file:///tmp/a.bin" {
+		t.Fatalf("resource link=%q err=%v", linkOnly, err)
+	}
 	imageOnly, err := ToolCallContent(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"abc"}]}}`)
-	if err != nil || strings.Contains(imageOnly, "jsonrpc") || !strings.Contains(imageOnly, `"type":"image"`) {
+	if err != nil || strings.Contains(imageOnly, "jsonrpc") || !strings.Contains(imageOnly, `"type":"image"`) || !strings.Contains(imageOnly, "abc") {
 		t.Fatalf("image fallback=%q err=%v", imageOnly, err)
+	}
+	long := strings.Repeat("A", 500)
+	imageLong, err := ToolCallContent(`{"content":[{"type":"image","data":"` + long + `"}]}`)
+	if err != nil || strings.Contains(imageLong, long) || !strings.Contains(imageLong, `"type":"image"`) {
+		t.Fatalf("long image leaked=%t err=%v", strings.Contains(imageLong, long), err)
 	}
 	raw, err := ToolCallContent("not json")
 	if err != nil || raw != "not json" {

@@ -79,7 +79,7 @@ func TestHandBackDesktopBotOmitsTheBody(t *testing.T) {
 	}
 }
 
-func TestSetDesktopBotDesktopModeUsesTheAdminRoute(t *testing.T) {
+func TestSetDesktopBotDesktopModeUsesTheOwnerRoute(t *testing.T) {
 	t.Cleanup(func() { desktopBotExchangeOverride = nil })
 	var method, path string
 	var raw []byte
@@ -97,7 +97,7 @@ func TestSetDesktopBotDesktopModeUsesTheAdminRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if method != http.MethodPut || path != "/api/admin/bots/bot_1/desktop-mode" {
+	if method != http.MethodPut || path != "/api/v1/bots/bot_1/desktop-mode" {
 		t.Fatalf("call = %s %s", method, path)
 	}
 	if string(raw) != `{"desktop_mode":"isolated"}` {
@@ -105,6 +105,20 @@ func TestSetDesktopBotDesktopModeUsesTheAdminRoute(t *testing.T) {
 	}
 	if mode != "isolated" {
 		t.Fatalf("mode = %q", mode)
+	}
+	desktopBotExchangeOverride = func(_ context.Context, gotMethod, gotPath string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if gotMethod != http.MethodGet || gotPath != "/api/v1/bots/bot_1/desktop" || body != nil {
+			t.Fatalf("call = %s %s body=%v", gotMethod, gotPath, body)
+		}
+		fillDesktopBotDest(t, dest, map[string]any{"desktop_mode": "none"})
+		return http.StatusOK, nil
+	}
+	screen, err := (&App{}).GetDesktopBotScreen("bot_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if screen.DesktopMode != "none" {
+		t.Fatalf("no-computer screen mode = %q", screen.DesktopMode)
 	}
 	if _, err := (&App{}).SetDesktopBotDesktopMode("bot_1", "own"); err == nil {
 		t.Fatal("unknown mode should be rejected")

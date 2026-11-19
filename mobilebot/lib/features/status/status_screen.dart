@@ -11,7 +11,10 @@ import 'package:share_plus/share_plus.dart';
 import '../bots/bot_api.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
-import '../bots/widgets.dart';
+import '../../core/locale.dart';
+import '../../l10n/gen/app_localizations.dart';
+import '../../core/ui_kit.dart';
+import '../bots/widgets.dart' show runStatusColor;
 
 /// Per-bot work status — 对应 GUI 任务 tab：进行中的 run + 最近任务状态。
 class BotStatusScreen extends ConsumerWidget {
@@ -23,9 +26,9 @@ class BotStatusScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.watch(botApiProvider);
     return Scaffold(
-      appBar: AppBar(title: Text('${bot.title} · 任务状态')),
+      appBar: AppBar(title: Text(context.S.botStatusTitle(bot.title))),
       body: api == null
-          ? const Center(child: Text('未登录'))
+          ? Center(child: Text(context.S.notSignedIn))
           : RefreshIndicator(
               onRefresh: () async {
                 ref.invalidate(_botStatusProvider(bot.id));
@@ -50,9 +53,9 @@ final _botStatusProvider = FutureProvider.autoDispose
       if (api == null) {
         return (runs: const <ActiveRun>[], tasks: const <DesktopTaskStatus>[]);
       }
-      final runs = await api.activeRuns(botId);
-      final tasks = await api.taskStatuses(botId);
-      return (runs: runs, tasks: tasks);
+      final runsFuture = api.activeRuns(botId);
+      final tasksFuture = api.taskStatuses(botId);
+      return (runs: await runsFuture, tasks: await tasksFuture);
     });
 
 class _BotStatusBody extends ConsumerWidget {
@@ -65,22 +68,29 @@ class _BotStatusBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(_botStatusProvider(bot.id));
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 3),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_botStatusProvider(bot.id)),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (status) => ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          _SectionTitle('进行中（${status.runs.length}）'),
-          if (status.runs.isEmpty) const _EmptyHint('没有正在运行的任务'),
+          SectionHeader(title: context.S.stRunningCount(status.runs.length)),
+          if (status.runs.isEmpty) _MutedHint(context.S.stNoRunningTasks),
           for (final run in status.runs) _ActiveRunCard(bot: bot, run: run),
           const SizedBox(height: 20),
-          _SectionTitle('最近任务（${status.tasks.length}）'),
-          if (status.tasks.isEmpty) const _EmptyHint('暂无任务记录'),
+          SectionHeader(title: context.S.stRecentCount(status.tasks.length)),
+          if (status.tasks.isEmpty) _MutedHint(context.S.stNoTaskHistory),
           for (final task in status.tasks) _TaskStatusCard(task: task),
         ],
       ),
@@ -88,31 +98,18 @@ class _BotStatusBody extends ConsumerWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
+/// Inline muted hint — the light placeholder for sections that need one
+/// sentence, not the full EmptyState treatment.
+class _MutedHint extends StatelessWidget {
   final String text;
 
-  const _SectionTitle(this.text);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8, top: 4),
-    child: Text(text, style: Theme.of(context).textTheme.titleSmall),
-  );
-}
-
-class _EmptyHint extends StatelessWidget {
-  final String text;
-
-  const _EmptyHint(this.text);
+  const _MutedHint(this.text);
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 12),
     child: Center(
-      child: Text(
-        text,
-        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-      ),
+      child: Text(text, style: Theme.of(context).textTheme.bodySmall),
     ),
   );
 }
@@ -143,21 +140,32 @@ class _ActiveRunCard extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                StateChip(label: run.paused ? '已暂停' : run.status, color: color),
+                StateChip(
+                  label: run.paused ? context.S.stPaused : run.status,
+                  color: color,
+                ),
               ],
             ),
             if (run.step.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
-                child: Text('当前：${run.step}', style: theme.textTheme.bodySmall),
+                child: Text(
+                  context.S.stCurrent(run.step),
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
             if (run.nextStep.isNotEmpty)
-              Text('下一步：${run.nextStep}', style: theme.textTheme.bodySmall),
+              Text(
+                context.S.stNext(run.nextStep),
+                style: theme.textTheme.bodySmall,
+              ),
             if (run.startedAt != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '开始于 ${DateFormat('MM-dd HH:mm').format(run.startedAt!.toLocal())}',
+                  context.S.stStartedAt(
+                    DateFormat('MM-dd HH:mm').format(run.startedAt!.toLocal()),
+                  ),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -167,7 +175,7 @@ class _ActiveRunCard extends ConsumerWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '等待你的操作',
+                  context.S.stWaitingForYou,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.tertiary,
                     fontWeight: FontWeight.w600,
@@ -181,17 +189,17 @@ class _ActiveRunCard extends ConsumerWidget {
                 if (run.paused)
                   TextButton(
                     onPressed: () => _act(context, ref, 'resume'),
-                    child: const Text('继续'),
+                    child: Text(context.S.resume),
                   )
                 else
                   TextButton(
                     onPressed: () => _act(context, ref, 'pause'),
-                    child: const Text('暂停'),
+                    child: Text(context.S.pause),
                   ),
                 TextButton(
-                  onPressed: () => _act(context, ref, 'cancel'),
+                  onPressed: () => _confirmCancel(context, ref),
                   child: Text(
-                    '停止',
+                    context.S.stop,
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                 ),
@@ -201,6 +209,33 @@ class _ActiveRunCard extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Stopping a run kills work in progress on the bot's computer — confirm
+  /// first, same as the remote task screen does.
+  Future<void> _confirmCancel(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.S.stStopRunTitle),
+        content: Text(
+          context.S.stStopRunBody(run.task.isNotEmpty ? run.task : run.runId),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(context.S.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(context.S.stop),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      await _act(context, ref, 'cancel');
+    }
   }
 
   Future<void> _act(BuildContext context, WidgetRef ref, String op) async {
@@ -260,7 +295,7 @@ class _TaskStatusCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  '进展：${task.whereWeAre}',
+                  context.S.stProgress(task.whereWeAre),
                   style: theme.textTheme.bodySmall,
                 ),
               ),
@@ -273,7 +308,7 @@ class _TaskStatusCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '错误：${task.error}',
+                  context.S.stError(task.error),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.error,
                   ),
@@ -283,7 +318,7 @@ class _TaskStatusCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '遗留：${task.openProblems}',
+                  context.S.stLeftover(task.openProblems),
                   style: theme.textTheme.bodySmall,
                 ),
               ),
@@ -310,10 +345,10 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
     final bots = ref.watch(botsProvider).bots;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('工作状态'),
+        title: Text(context.S.stTitle),
         actions: [
           IconButton(
-            tooltip: 'Bot 房间',
+            tooltip: context.S.stBotRooms,
             icon: const Icon(Icons.groups_outlined),
             onPressed: () => context.push('/rooms'),
           ),
@@ -323,13 +358,19 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 0, label: Text('任务')),
-                ButtonSegment(value: 1, label: Text('动态')),
-              ],
-              selected: {_segment},
-              onSelectionChanged: (v) => setState(() => _segment = v.first),
+            child: SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<int>(
+                segments: [
+                  ButtonSegment(
+                    value: 0,
+                    label: Text(context.S.stSegmentTasks),
+                  ),
+                  ButtonSegment(value: 1, label: Text(context.S.stSegmentFeed)),
+                ],
+                selected: {_segment},
+                onSelectionChanged: (v) => setState(() => _segment = v.first),
+              ),
             ),
           ),
           Expanded(
@@ -418,7 +459,11 @@ Future<void> shareInboxFile(
     if (file.data.isEmpty || !context.mounted) return;
     final bytes = base64Decode(file.data);
     final dir = await getTemporaryDirectory();
-    final safe = file.displayName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    // Keep the requested artifact name (extension included): a server-side
+    // empty name would otherwise save an extensionless "文件" the system
+    // share sheet cannot open.
+    final rawName = file.name.trim().isNotEmpty ? file.name.trim() : name;
+    final safe = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final path = '${dir.path}${Platform.pathSeparator}$safe';
     await File(path).writeAsBytes(bytes, flush: true);
     await SharePlus.instance.share(
@@ -429,7 +474,9 @@ Future<void> shareInboxFile(
   } on Object catch (error) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('下载附件失败：${failureMessage(error)}')),
+        SnackBar(
+          content: Text(context.S.stDownloadFailed(failureMessage(error))),
+        ),
       );
     }
   }
@@ -440,23 +487,23 @@ class _FeedBody extends ConsumerWidget {
 
   const _FeedBody({required this.bots});
 
-  String _botName(String id) {
+  String _botName(String id, AppLocalizations S) {
     for (final bot in bots) {
       if (bot.id == id) return bot.title;
     }
-    return id.isEmpty ? '系统' : id;
+    return id.isEmpty ? S.stSystemName : id;
   }
 
-  String _kindLabel(FeedNote note) {
-    if (note.kind == 'delegate') return '委托';
+  String _kindLabel(FeedNote note, AppLocalizations S) {
+    if (note.kind == 'delegate') return S.stKindDelegate;
     return switch (note.topic) {
-      'done' => '完成',
-      'blocked' => '受阻',
-      'progress' => '进展',
-      'question' => '提问',
-      'artifact' => '产物',
-      'reply' => '回复',
-      _ => note.kind.isNotEmpty ? note.kind : '动态',
+      'done' => S.stKindDone,
+      'blocked' => S.stKindBlocked,
+      'progress' => S.stKindProgress,
+      'question' => S.stKindQuestion,
+      'artifact' => S.stKindArtifact,
+      'reply' => S.stKindReply,
+      _ => note.kind.isNotEmpty ? note.kind : S.stKindDefault,
     };
   }
 
@@ -467,11 +514,18 @@ class _FeedBody extends ConsumerWidget {
         ref.watch(_assignmentsProvider).value ?? const <BotAssignment>[];
     final said = ref.watch(_saidProvider).value ?? const <SaidNote>[];
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 4),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_feedProvider),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (notes) {
@@ -484,13 +538,15 @@ class _FeedBody extends ConsumerWidget {
           return ListView(
             children: [
               const SizedBox(height: 140),
-              Icon(Icons.forum_outlined, size: 56, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              const Center(child: Text('还没有 Bot 之间的动态')),
+              EmptyState(
+                icon: Icons.forum_outlined,
+                title: context.S.stEmptyFeed,
+              ),
             ],
           );
         }
         final theme = Theme.of(context);
+        final S = context.S;
         final openAssignments = [
           for (final a in assignments)
             if (a.state != 'completed' && a.state != 'failed') a,
@@ -505,30 +561,24 @@ class _FeedBody extends ConsumerWidget {
           itemBuilder: (context, index) {
             if (direct.isNotEmpty) {
               if (index == 0) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('Bot 对你说', style: theme.textTheme.titleSmall),
-                );
+                return SectionHeader(title: context.S.stSaidHeader);
               }
               if (index <= direct.length) {
                 return _SaidCard(
                   note: direct[direct.length - index],
-                  botName: _botName,
+                  botName: (id) => _botName(id, S),
                 );
               }
               index -= saidCount;
             }
             if (openAssignments.isNotEmpty) {
               if (index == 0) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('协作任务', style: theme.textTheme.titleSmall),
-                );
+                return SectionHeader(title: context.S.stCollabHeader);
               }
               if (index <= openAssignments.length) {
                 return _AssignmentCard(
                   assignment: openAssignments[index - 1],
-                  botName: _botName,
+                  botName: (id) => _botName(id, S),
                 );
               }
               index -= assignCount;
@@ -548,7 +598,7 @@ class _FeedBody extends ConsumerWidget {
                   ),
                 ),
                 title: Text(
-                  '${_botName(note.from)} → ${_botName(note.target)}',
+                  '${_botName(note.from, S)} → ${_botName(note.target, S)}',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -557,7 +607,7 @@ class _FeedBody extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (note.text.isNotEmpty)
-                      Text(
+                      LinkifiedText(
                         note.text,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
@@ -590,7 +640,7 @@ class _FeedBody extends ConsumerWidget {
                       ),
                     Text(
                       [
-                        _kindLabel(note),
+                        _kindLabel(note, S),
                         if (note.at != null)
                           DateFormat('MM-dd HH:mm').format(note.at!.toLocal()),
                       ].join(' · '),
@@ -617,7 +667,7 @@ class _FeedBody extends ConsumerWidget {
                             }
                           }
                         },
-                        child: const Text('启动'),
+                        child: Text(context.S.start),
                       )
                     : null,
                 onTap: note.target.isNotEmpty
@@ -664,7 +714,11 @@ class _SaidCard extends ConsumerWidget {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(note.text, maxLines: 3, overflow: TextOverflow.ellipsis),
+            LinkifiedText(
+              note.text,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
             if (note.files.isNotEmpty)
               Wrap(
                 spacing: 6,
@@ -712,16 +766,16 @@ class _AssignmentCard extends StatelessWidget {
 
   const _AssignmentCard({required this.assignment, required this.botName});
 
-  String _stateLabel(String state) => switch (state) {
-    'queued' => '排队中',
-    'running' => '进行中',
-    'held' => '已挂起',
-    'waiting_human' => '等待人工',
-    'blocked' => '受阻',
-    'completed' => '已完成',
-    'failed' => '失败',
-    'accepted' => '已验收',
-    'returned' => '已退回',
+  String _stateLabel(String state, AppLocalizations S) => switch (state) {
+    'queued' => S.stStateQueued,
+    'running' => S.stStateRunning,
+    'held' => S.stStateHeld,
+    'waiting_human' => S.stStateWaitingHuman,
+    'blocked' => S.stStateBlocked,
+    'completed' => S.stStateCompleted,
+    'failed' => S.stStateFailed,
+    'accepted' => S.stStateAccepted,
+    'returned' => S.stStateReturned,
     _ => state,
   };
 
@@ -753,13 +807,13 @@ class _AssignmentCard extends StatelessWidget {
               Text(a.task, maxLines: 2, overflow: TextOverflow.ellipsis),
             if (a.openQuestion.isNotEmpty)
               Text(
-                '问题：${a.openQuestion}',
+                context.S.stQuestion(a.openQuestion),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
             Text(
               [
-                _stateLabel(a.state),
+                _stateLabel(a.state, context.S),
                 if (a.createdAt != null)
                   DateFormat('MM-dd HH:mm').format(a.createdAt!.toLocal()),
               ].join(' · '),
@@ -790,21 +844,22 @@ final _globalStatusProvider =
           deliveries: const <PendingDelivery>[],
         );
       }
-      final runs = <ActiveRun>[];
-      for (final bot in bots) {
-        try {
-          runs.addAll(await api.activeRuns(bot.id));
-        } on Object {
-          // One failing bot must not hide the others.
-        }
-      }
-      var deliveries = const <PendingDelivery>[];
-      try {
-        deliveries = await api.pendingDeliveries();
-      } on Object {
-        // Same isolation: a pending-pull outage must not blank the runs.
-      }
-      return (runs: runs, deliveries: deliveries);
+      // Fan out across bots in parallel — a serial loop makes the page
+      // wait on N round trips even though the runs are independent. One
+      // failing bot (or a pending-pull outage) must not hide the rest.
+      final runListsFuture = Future.wait([
+        for (final bot in bots)
+          api.activeRuns(bot.id).onError((_, _) => const <ActiveRun>[]),
+      ]);
+      final deliveriesFuture = api.pendingDeliveries().onError(
+        (_, _) => const <PendingDelivery>[],
+      );
+      final runLists = await runListsFuture;
+      final deliveries = await deliveriesFuture;
+      return (
+        runs: [for (final list in runLists) ...list],
+        deliveries: deliveries,
+      );
     });
 
 class _GlobalStatusBody extends ConsumerWidget {
@@ -812,22 +867,30 @@ class _GlobalStatusBody extends ConsumerWidget {
 
   const _GlobalStatusBody({required this.bots});
 
-  String _botName(String id) {
+  String _botName(String id, AppLocalizations S) {
     for (final bot in bots) {
       if (bot.id == id) return bot.title;
     }
-    return id;
+    return id.isEmpty ? S.stSystemName : id;
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(_globalStatusProvider);
+    final S = context.S;
     return data.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
+      loading: () => const SkeletonList(itemCount: 4),
       error: (error, _) => ListView(
         children: [
           const SizedBox(height: 120),
-          Center(child: Text(failureMessage(error))),
+          EmptyState(
+            icon: Icons.cloud_off,
+            title: failureMessage(error),
+            action: FilledButton.tonal(
+              onPressed: () => ref.invalidate(_globalStatusProvider),
+              child: Text(context.S.retry),
+            ),
+          ),
         ],
       ),
       data: (status) {
@@ -835,20 +898,17 @@ class _GlobalStatusBody extends ConsumerWidget {
           return ListView(
             children: [
               const SizedBox(height: 140),
-              Icon(
-                Icons.check_circle_outline,
-                size: 56,
-                color: Colors.grey.shade400,
+              EmptyState(
+                icon: Icons.check_circle_outline,
+                title: context.S.stAllQuiet,
               ),
-              const SizedBox(height: 16),
-              const Center(child: Text('一切安静，没有进行中的任务')),
             ],
           );
         }
         return ListView(
           padding: const EdgeInsets.all(12),
           children: [
-            _SectionTitle('进行中（${status.runs.length}）'),
+            SectionHeader(title: context.S.stRunningCount(status.runs.length)),
             for (final run in status.runs)
               Card(
                 child: ListTile(
@@ -866,7 +926,7 @@ class _GlobalStatusBody extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${_botName(run.botId)} · ${run.step.isNotEmpty ? run.step : run.status}',
+                    '${_botName(run.botId, S)} · ${run.step.isNotEmpty ? run.step : run.status}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -877,7 +937,9 @@ class _GlobalStatusBody extends ConsumerWidget {
                 ),
               ),
             const SizedBox(height: 20),
-            _SectionTitle('待查看结果（${status.deliveries.length}）'),
+            SectionHeader(
+              title: context.S.stDeliveriesCount(status.deliveries.length),
+            ),
             for (final delivery in status.deliveries)
               Card(
                 child: ListTile(
@@ -891,7 +953,7 @@ class _GlobalStatusBody extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${_botName(delivery.botId)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
+                    '${_botName(delivery.botId, S)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),

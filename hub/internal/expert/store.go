@@ -166,6 +166,7 @@ func (s *Store) Upsert(ctx context.Context, tenantID string, in CreateInput) (*E
 		Skills:          normalizeList(in.Skills),
 		OptimizedFromID: strings.TrimSpace(in.OptimizedFromID),
 		About:           strings.TrimSpace(in.About),
+		Category:        strings.TrimSpace(in.Category),
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,
 	}

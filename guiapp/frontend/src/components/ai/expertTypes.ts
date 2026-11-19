@@ -42,6 +42,12 @@ export interface ExpertDefinition {
     optimized_from_id?: string;
     /** Free-form "关于" text (author, copyright, notes) shown via the card's About button. */
     about?: string;
+    /**
+     * AI expert market category chosen at share time (or inherited from an
+     * installed listing). Drives the library's top-level category chips; a
+     * name outside the HubCenter taxonomy renders as the catch-all 其它.
+     */
+    category?: string;
     created_at: string;
     updated_at: string;
     /** HubCenter industry-management metadata. These entries are read-only. */
@@ -154,6 +160,7 @@ export function expertDefinitionFromInstallResult(raw: unknown): ExpertDefinitio
         builtin: false,
         optimized_from_id: String(item.optimized_from_id || ""),
         about: String(item.about || ""),
+        category: String(item.category || "").trim() || undefined,
         created_at: String(item.created_at || ""),
         updated_at: String(item.updated_at || ""),
     };

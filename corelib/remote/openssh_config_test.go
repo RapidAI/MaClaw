@@ -1,9 +1,12 @@
 package remote
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -132,9 +135,9 @@ func TestApplyOpenSSHClientConfigKeepsExplicitUserAndKey(t *testing.T) {
 }
 
 func TestApplyOpenSSHClientConfigIgnoresGlobalJumpAndDottedHost(t *testing.T) {
-	var calls int
+	var calls atomic.Int32
 	restore := SetOpenSSHConfigQueryForTest(func(host, user string, port int) (string, error) {
-		calls++
+		calls.Add(1)
 		return "user bob\nhostname " + host + "\nport 22\nproxyjump bastion\nidentityfile ~/.ssh/id_rsa\n", nil
 	})
 	defer restore()
@@ -147,19 +150,53 @@ func TestApplyOpenSSHClientConfigIgnoresGlobalJumpAndDottedHost(t *testing.T) {
 		t.Fatalf("global ProxyJump must not attach to an unconfigured alias: %+v", got)
 	}
 
-	calls = 0
+	calls.Store(0)
 	ip, err := ApplyOpenSSHClientConfig(SSHHostConfig{Host: "10.247.16.143", User: "wangqian"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 0 || ip.Host != "10.247.16.143" {
-		t.Fatalf("IP dial consulted ssh -G %d times: %+v", calls, ip)
+	if calls.Load() != 0 || ip.Host != "10.247.16.143" {
+		t.Fatalf("IP dial consulted ssh -G %d times: %+v", calls.Load(), ip)
 	}
 
-	calls = 0
+	calls.Store(0)
 	bracket, err := ApplyOpenSSHClientConfig(SSHHostConfig{Host: "[2001:db8::1]", User: " root ", Label: " loong "})
-	if err != nil || calls != 0 || bracket.Host != "2001:db8::1" || bracket.User != "root" || bracket.Label != "loong" {
-		t.Fatalf("bracketed IP consulted ssh -G %d times: %+v %v", calls, bracket, err)
+	if err != nil || calls.Load() != 0 || bracket.Host != "2001:db8::1" || bracket.User != "root" || bracket.Label != "loong" {
+		t.Fatalf("bracketed IP consulted ssh -G %d times: %+v %v", calls.Load(), bracket, err)
+	}
+}
+
+func TestApplyOpenSSHClientConfigConcurrentCalls(t *testing.T) {
+	var calls atomic.Int32
+	restore := SetOpenSSHConfigQueryForTest(func(host, user string, port int) (string, error) {
+		calls.Add(1)
+		return "user bob\nhostname " + host + "\nport 22\n", nil
+	})
+	defer restore()
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg, err := ApplyOpenSSHClientConfig(SSHHostConfig{Host: "gpu84", User: "wangqian"})
+			if err == nil && cfg.Host != "gpu84" {
+				err = fmt.Errorf("unexpected host %q", cfg.Host)
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() == 0 {
+		t.Fatal("concurrent calls did not exercise the OpenSSH query")
 	}
 }
 

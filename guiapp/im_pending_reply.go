@@ -229,7 +229,7 @@ func isHostGoalContinuationEntry(entry agent.ConversationEntry) bool {
 	if !ok {
 		return false
 	}
-	return isGoalSystemContinuation(text) || isSessionRoundContinuation(text)
+	return isGoalSystemContinuation(text) || isSessionRoundContinuation(text) || repoMaintHostTurn(text, "")
 }
 
 func formatPendingReplyHistoryExtension(current, prefix []agent.ConversationEntry) string {
@@ -334,7 +334,7 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	}
 	// The goal engine speaks next. That message is not the user's answer, so
 	// it must not consume a question that is still waiting for them.
-	if goalContinuationTurn(trimmed, msg.Platform) || sessionRoundTurn(trimmed, msg.Platform) {
+	if goalContinuationTurn(trimmed, msg.Platform) || sessionRoundTurn(trimmed, msg.Platform) || repoMaintHostTurn(trimmed, msg.Platform) {
 		return "", false
 	}
 	if h.discardStoppedRunQuestion(msg.UserID) {
@@ -435,7 +435,7 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	}
 	// The goal engine speaks next. That message is not the user's answer, so
 	// it must not resume the question that is still waiting for them.
-	if goalContinuationTurn(trimmed, "") || isSessionRoundContinuation(trimmed) {
+	if goalContinuationTurn(trimmed, "") || isSessionRoundContinuation(trimmed) || repoMaintHostTurn(trimmed, "") {
 		return "", nil, false, false
 	}
 	if h.discardStoppedRunQuestion(userID) {

@@ -2,6 +2,8 @@
 
 export type BotLocalAccessRoot = { path: string; write: boolean };
 
+export type BotLocalPermission = 'ask' | 'full';
+
 export type BotLocalAccessSettings = {
     files_enabled: boolean;
     roots: BotLocalAccessRoot[] | null;
@@ -10,8 +12,14 @@ export type BotLocalAccessSettings = {
     net_allow: string[] | null;
     tunnel_idle_minutes: number;
     confirm_seconds: number;
+    /** ask confirms each new folder or host; full writes and reaches local resources without asking. */
+    permission?: BotLocalPermission | string;
     approved: string[] | null;
 };
+
+export function localPermission(value: string | undefined | null): BotLocalPermission {
+    return value?.trim().toLowerCase() === 'full' ? 'full' : 'ask';
+}
 
 export type BotLocalAccessState = {
     settings: BotLocalAccessSettings;

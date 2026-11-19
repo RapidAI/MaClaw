@@ -31,6 +31,57 @@ describe("shouldIgnoreNestedScrollIntent", () => {
         expect(shouldIgnoreNestedScrollIntent({ type: "pointerdown", currentTarget: scroller, target: scroller })).toBe(false);
         expect(shouldIgnoreNestedScrollIntent({ type: "touchmove" })).toBe(false);
     });
+
+    it("counts an upward wheel on a nested pane that is already at its top", () => {
+        const pane = document.createElement("div");
+        pane.setAttribute("data-nested-scroll", "");
+        Object.defineProperty(pane, "scrollTop", { configurable: true, value: 0 });
+        const row = document.createElement("div");
+        pane.appendChild(row);
+        document.body.appendChild(pane);
+        // The gesture chains to the transcript: it is a real leave-the-tail
+        // intent, so the latch must be able to catch it.
+        expect(shouldIgnoreUserScrollIntent({ type: "wheel", deltaY: -40, target: row })).toBe(false);
+        pane.remove();
+    });
+
+    it("still ignores wheels a nested pane can consume itself", () => {
+        const pane = document.createElement("div");
+        pane.setAttribute("data-nested-scroll", "");
+        Object.defineProperty(pane, "scrollTop", { configurable: true, value: 120 });
+        const row = document.createElement("div");
+        pane.appendChild(row);
+        document.body.appendChild(pane);
+        expect(shouldIgnoreUserScrollIntent({ type: "wheel", deltaY: -40, target: row })).toBe(true);
+        expect(shouldIgnoreUserScrollIntent({ type: "wheel", deltaY: 40, target: row })).toBe(true);
+        pane.remove();
+    });
+
+    it("ignores a downward wheel even at the nested pane's top edge", () => {
+        const pane = document.createElement("div");
+        pane.setAttribute("data-nested-scroll", "");
+        Object.defineProperty(pane, "scrollTop", { configurable: true, value: 0 });
+        const row = document.createElement("div");
+        pane.appendChild(row);
+        document.body.appendChild(pane);
+        expect(shouldIgnoreUserScrollIntent({ type: "wheel", deltaY: 40, target: row })).toBe(true);
+        pane.remove();
+    });
+
+    it("counts a content-upward touch drag on a topped nested pane, not a scroll-down one", () => {
+        const pane = document.createElement("div");
+        pane.setAttribute("data-nested-scroll", "");
+        Object.defineProperty(pane, "scrollTop", { configurable: true, value: 0 });
+        const row = document.createElement("div");
+        pane.appendChild(row);
+        document.body.appendChild(pane);
+        // A downward finger pull (negative delta, wheel-up sign) on a pane
+        // at its top chains to the transcript — a real leave-the-tail intent.
+        expect(shouldIgnoreUserScrollIntent({ type: "touchmove", deltaY: -8, target: row })).toBe(false);
+        // The opposite drag scrolls content the pane or the tail still owns.
+        expect(shouldIgnoreUserScrollIntent({ type: "touchmove", deltaY: 8, target: row })).toBe(true);
+        pane.remove();
+    });
 });
 
 describe("pinAssistantOutputToBottom", () => {

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -96,9 +98,13 @@ func (c *desktopHubClient) Memory(ctx context.Context, tenantID, userID string) 
 	return out.Used, out.Limit, nil
 }
 
-// errDesktopKept means Hub left the desktop running. The person may be
-// logging in, so the logged-in page must stay locked to this browser.
+// errDesktopKept means Hub left the desktop running for a login that is
+// still in progress. The handoff markers stay.
+// errDesktopIdle means an isolated bot display was left running after the
+// run finished. A finished login is cleared, and the logged-in page stays
+// locked so the next command does not open a second browser.
 var errDesktopKept = errors.New("desktop kept")
+var errDesktopIdle = errors.New("desktop idle")
 
 type desktopStopInstanceKey struct{}
 
@@ -116,8 +122,11 @@ func (c *desktopHubClient) Stop(ctx context.Context, tenantID, userID string) er
 	if err := c.post(ctx, "/api/v1/desktop-services/stop", body, &out); err != nil {
 		return err
 	}
-	if out.Status == "kept" {
+	switch out.Status {
+	case "kept":
 		return errDesktopKept
+	case "idle":
+		return errDesktopIdle
 	}
 	return nil
 }
@@ -205,11 +214,17 @@ func (c *desktopHubClient) Install(ctx context.Context, tenantID, userID string,
 	return out.Output, nil
 }
 
+// localFileProbeBytes is how big a file write has to be before MaClawSrv
+// asks Hub for a same-machine path without uploading the bytes. Smaller
+// writes stay one request, which is what a public desktop already does.
+const localFileProbeBytes = 32 << 10
+
 func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
 	var out struct {
-		Output string `json:"output"`
+		Output    string `json:"output"`
+		DirectURL string `json:"direct_url"`
 	}
-	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", map[string]any{
+	body := map[string]any{
 		"tenant_id":  tenantID,
 		"user_id":    userID,
 		"action":     action,
@@ -217,10 +232,58 @@ func (c *desktopHubClient) File(ctx context.Context, tenantID, userID, action, f
 		"content":    content,
 		"old_string": oldString,
 		"new_string": newString,
-	}, &out, 1<<20); err != nil {
+	}
+	if len(content)+len(oldString)+len(newString) >= localFileProbeBytes {
+		probe := map[string]any{
+			"tenant_id": tenantID,
+			"user_id":   userID,
+			"action":    "read",
+			"path":      filePath,
+		}
+		err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/file", probe, &out, 1<<20, map[string]string{"X-Maclaw-Local-Probe": "1"})
+		if err == nil && strings.TrimSpace(out.DirectURL) != "" {
+			out.Output = ""
+			if err := c.recoverDirect(ctx, "/api/v1/desktop-services/file", body, body, &out, 1<<20, out.DirectURL); err != nil {
+				return "", err
+			}
+			return out.Output, nil
+		}
+		if err != nil && !localProbeContinue(err) {
+			return "", err
+		}
+		out = struct {
+			Output    string `json:"output"`
+			DirectURL string `json:"direct_url"`
+		}{}
+		if err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/file", body, &out, 1<<20, map[string]string{"X-Maclaw-Skip-Local": "1"}); err != nil {
+			return "", err
+		}
+		return out.Output, nil
+	}
+	if err := c.postLimit(ctx, "/api/v1/desktop-services/file", body, &out, 1<<20); err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(out.DirectURL) != "" {
+		out.DirectURL = strings.TrimSpace(out.DirectURL)
+		out.Output = ""
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/file", body, body, &out, 1<<20, out.DirectURL); err != nil {
+			return "", err
+		}
+	}
 	return out.Output, nil
+}
+
+// localProbeContinue is a probe that learned the bytes cannot stay local.
+// A missing file on an older Hub is the same: the write itself still goes.
+func localProbeContinue(err error) bool {
+	var api *desktopAPIError
+	if !errors.As(err, &api) {
+		return false
+	}
+	if api.Code == "LOCAL_UNAVAILABLE" {
+		return true
+	}
+	return api.Status == http.StatusNotFound
 }
 
 func (c *desktopHubClient) Bash(ctx context.Context, tenantID, userID, command string) (string, error) {
@@ -282,9 +345,10 @@ func (c *desktopHubClient) Screenshot(ctx context.Context, tenantID, userID, dis
 // An empty path means the image was captured and no file was written.
 func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
 	var out struct {
-		MIME  string `json:"mime"`
-		Image string `json:"image_base64"`
-		Saved string `json:"saved_path"`
+		MIME      string `json:"mime"`
+		Image     string `json:"image_base64"`
+		Saved     string `json:"saved_path"`
+		DirectURL string `json:"direct_url"`
 	}
 	body := map[string]string{
 		"tenant_id": tenantID,
@@ -296,6 +360,11 @@ func (c *desktopHubClient) screenshot(ctx context.Context, tenantID, userID, dis
 	}
 	if err := c.postLimit(ctx, "/api/v1/desktop-services/screenshot", body, &out, desktop.MaxScreenshotBytes*2); err != nil {
 		return nil, "", err
+	}
+	if strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Image) == "" {
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/screenshot", body, body, &out, desktop.MaxScreenshotBytes*2, out.DirectURL); err != nil {
+			return nil, "", err
+		}
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out.Image))
 	if err != nil || !desktop.IsPNG(data) || len(data) > desktop.MaxScreenshotBytes {
@@ -387,21 +456,144 @@ func (c *desktopHubClient) postDesktopTool(ctx context.Context, call desktopTool
 		ExecutorID   string `json:"executor_id"`
 		Volumes      string `json:"volumes"`
 		Replaced     bool   `json:"replaced"`
+		DirectURL    string `json:"direct_url"`
+	}
+	if fileArgsNeedProbe(payload) {
+		err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/tool", fileProbePayload(payload), &out, 1<<20, map[string]string{"X-Maclaw-Local-Probe": "1"})
+		if err == nil && strings.TrimSpace(out.DirectURL) != "" {
+			var local struct {
+				Output string `json:"output"`
+			}
+			if err := c.recoverDirect(ctx, "/api/v1/desktop-services/tool", payload, desktopToolLocalFileBody(payload), &local, 1<<20, out.DirectURL); err != nil {
+				return desktopToolOutcome{}, err
+			}
+			out.Output = local.Output
+			return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
+		}
+		if err != nil && !localProbeContinue(err) {
+			return desktopToolOutcome{}, err
+		}
+		out = struct {
+			Output       string `json:"output"`
+			AttachmentID string `json:"attachment_id"`
+			Error        string `json:"error"`
+			ExecutorID   string `json:"executor_id"`
+			Volumes      string `json:"volumes"`
+			Replaced     bool   `json:"replaced"`
+			DirectURL    string `json:"direct_url"`
+		}{}
+		if err := c.postLimitHeaders(ctx, "/api/v1/desktop-services/tool", payload, &out, 1<<20, map[string]string{"X-Maclaw-Skip-Local": "1"}); err != nil {
+			return desktopToolOutcome{}, err
+		}
+		return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
 	}
 	if err := c.post(ctx, "/api/v1/desktop-services/tool", payload, &out); err != nil {
 		return desktopToolOutcome{}, err
 	}
+	action, _ := payload["action"].(string)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "file_") && strings.TrimSpace(out.DirectURL) != "" && strings.TrimSpace(out.Output) == "" {
+		var local struct {
+			Output string `json:"output"`
+		}
+		if err := c.recoverDirect(ctx, "/api/v1/desktop-services/tool", payload, desktopToolLocalFileBody(payload), &local, 1<<20, out.DirectURL); err != nil {
+			return desktopToolOutcome{}, err
+		}
+		out.Output = local.Output
+	}
+	return toolOutcome(out.Output, out.AttachmentID, out.Error, out.ExecutorID, out.Volumes, out.Replaced), nil
+}
+
+func toolOutcome(output, attachment, errText, executor, volumes string, replaced bool) desktopToolOutcome {
 	return desktopToolOutcome{
-		Text:         out.Output,
-		AttachmentID: out.AttachmentID,
-		Err:          strings.TrimSpace(out.Error),
-		ExecutorID:   strings.TrimSpace(out.ExecutorID),
-		Volumes:      strings.TrimSpace(out.Volumes),
-		Replaced:     out.Replaced,
-	}, nil
+		Text:         output,
+		AttachmentID: attachment,
+		Err:          strings.TrimSpace(errText),
+		ExecutorID:   strings.TrimSpace(executor),
+		Volumes:      strings.TrimSpace(volumes),
+		Replaced:     replaced,
+	}
+}
+
+func fileArgsNeedProbe(payload map[string]any) bool {
+	action, _ := payload["action"].(string)
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "file_") {
+		return false
+	}
+	args, _ := payload["args"].(map[string]any)
+	n := 0
+	for _, key := range []string{"content", "old_string", "new_string"} {
+		text, _ := args[key].(string)
+		n += len(text)
+	}
+	return n >= localFileProbeBytes
+}
+
+// fileProbePayload asks whether the write can stay on the machine. It is a
+// read, so an older Hub that ignores the probe header does not write an
+// empty file.
+func fileProbePayload(payload map[string]any) map[string]any {
+	probe := map[string]any{}
+	for key, value := range payload {
+		if key != "args" {
+			probe[key] = value
+		}
+	}
+	probe["action"] = "file_read"
+	args, _ := payload["args"].(map[string]any)
+	path, _ := args["path"].(string)
+	probe["args"] = map[string]any{"path": path}
+	return probe
+}
+
+// desktopToolLocalFileBody is the file call desktopd accepts on the
+// same-machine path. The tool name file_read becomes the action read.
+func desktopToolLocalFileBody(payload map[string]any) map[string]any {
+	action, _ := payload["action"].(string)
+	wire := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(action)), "file_")
+	body := map[string]any{
+		"tenant_id": payload["tenant"],
+		"user_id":   payload["user"],
+		"action":    wire,
+	}
+	args, _ := payload["args"].(map[string]any)
+	if args == nil {
+		return body
+	}
+	for _, key := range []string{"path", "content", "old_string", "new_string"} {
+		if value, ok := args[key]; ok {
+			body[key] = value
+		}
+	}
+	return body
 }
 
 func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any, dest any, limit int64) error {
+	return c.postLimitHeaders(ctx, path, body, dest, limit, nil)
+}
+
+// recoverDirect reads the same-machine desktopd. When that address does not
+// answer, Hub carries the bytes on the tunnel instead of failing the call.
+func (c *desktopHubClient) recoverDirect(ctx context.Context, path string, hubBody, localBody any, dest any, limit int64, direct string) error {
+	err := c.postDirect(ctx, strings.TrimSpace(direct), localBody, dest, limit)
+	if err == nil || ctx.Err() != nil || !directNeedsHub(err) {
+		return err
+	}
+	return c.postLimitHeaders(ctx, path, hubBody, dest, limit, map[string]string{"X-Maclaw-Skip-Local": "1"})
+}
+
+// directNeedsHub is a shortcut that never ran: the address did not answer,
+// or desktopd rejected the ticket. A container error already happened there
+// and must not be run a second time through the tunnel.
+func directNeedsHub(err error) bool {
+	var api *desktopAPIError
+	if errors.As(err, &api) {
+		return api.Status == http.StatusNotFound
+	}
+	text := err.Error()
+	return strings.Contains(text, "desktop service is unreachable") || strings.Contains(text, "desktop direct url is invalid")
+}
+
+func (c *desktopHubClient) postLimitHeaders(ctx context.Context, path string, body any, dest any, limit int64, headers map[string]string) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -412,7 +604,58 @@ func (c *desktopHubClient) postLimit(ctx context.Context, path string, body any,
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return desktopStatusError(resp.StatusCode, payload)
+	}
+	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
+		if err := json.Unmarshal(payload, dest); err != nil {
+			return fmt.Errorf("desktop service returned invalid status")
+		}
+	}
+	return nil
+}
+
+// desktopDirectHTTP stays on the machine. The srv process proxy is how
+// Hub is reached; a same-node screenshot or file must not follow it.
+var desktopDirectHTTP = &http.Client{
+	Timeout: 2 * time.Minute,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		Proxy:           func(*http.Request) (*url.URL, error) { return nil, nil },
+		DialContext:     (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns:    4,
+	},
+}
+
+// postDirect reads a screenshot or a file from the machine's own desktopd.
+// The ticket in the URL is the authorization. The Hub bearer is not sent.
+func (c *desktopHubClient) postDirect(ctx context.Context, rawURL string, body any, dest any, limit int64) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("desktop direct url is invalid")
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := desktopDirectHTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("desktop service is unreachable: %s", err.Error())
 	}
@@ -495,6 +738,13 @@ var desktopUserByInstance sync.Map
 // 32 of 32 jobs had no principal, "resume not started").
 var desktopPrincipalByInstance sync.Map
 
+// desktopNoDesktopByInstance maps an instance to the hub_bot_desktop mark
+// seen on its record. A bot created without a computer never joins the
+// desktop lifecycle: its run holds no slot, records no handoff baseline,
+// and its release can neither stop the owner's desktop nor drop a login
+// in progress on it.
+var desktopNoDesktopByInstance sync.Map
+
 func desktopInstancePrincipal(instanceID string) (desktopAccount, bool) {
 	value, ok := desktopPrincipalByInstance.Load(strings.TrimSpace(instanceID))
 	if !ok {
@@ -515,6 +765,9 @@ func rememberDesktopOwner(instanceID string, metadata map[string]string, fallbac
 	}
 	bound := false
 	if metadata != nil {
+		if instanceID != "" {
+			desktopNoDesktopByInstance.Store(instanceID, strings.TrimSpace(metadata["hub_bot_desktop"]) == desktop.BotDesktopModeNone)
+		}
 		if user := strings.TrimSpace(metadata["hub_user_id"]); desktop.ValidUserID(user) {
 			account.UserID = desktopBotUser(user, metadata)
 			bound = true
@@ -727,6 +980,13 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 	if userID == "" {
 		return func() {}, nil
 	}
+	if none, _ := desktopNoDesktopByInstance.Load(instanceID); none == true {
+		// A computerless bot's run can never use this desktop, so it must
+		// not count toward the owner's desktop holds: releasing it could
+		// stop a desktop kept up for a real login, or clear the
+		// still-logging-in marker another bot's continuation needs.
+		return func() {}, nil
+	}
 	if desktopRemoteSession == nil && desktopRemoteStop == nil && !desktopHubConfigured() {
 		return func() { releaseLoggedInDocument(tenantID, userID) }, nil
 	}
@@ -839,10 +1099,11 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 		if busy {
 			return
 		}
-		if err := releaseUserDesktop(context.Background(), stopTenant, stopUser, stopInstance); err != nil {
-			// Hub kept the desktop, or the stop did not land. A login
-			// set aside for this open is still the one a later release
-			// must not shut down.
+		err := releaseUserDesktop(context.Background(), stopTenant, stopUser, stopInstance)
+		if err != nil && !errors.Is(err, errDesktopIdle) {
+			// Hub kept the desktop for a login still in progress, or the
+			// stop did not land. A login set aside for this open is still
+			// the one a later release must not shut down.
 			desktopRunsMu.Lock()
 			restoreRetiredDesktopLogin(key)
 			desktopRunsMu.Unlock()
@@ -852,13 +1113,27 @@ func occupyUserDesktopRun(ctx context.Context, tenantID, userID, instanceID stri
 		// the desktop, and a disconnect skips the stop. Those paths
 		// put a set-aside login back, so the count and the person stay.
 		// Clearing earlier lets the next repeated admission shut a
-		// desktop that is still up.
+		// desktop that is still up. An isolated display stays up (idle):
+		// the finished login is cleared, and the page lock is not. A login
+		// that started while that stop was in flight changed the count or
+		// the person, and stays.
 		desktopRunsMu.Lock()
+		if errors.Is(err, errDesktopIdle) {
+			current, held := desktopPersonInstance.Load(key)
+			currentID, _ := current.(string)
+			if desktopHolds[key] != stopHolds || held != stopPersonHeld || currentID != stopPerson {
+				desktopRunsMu.Unlock()
+				return
+			}
+		}
 		desktopHolds[key] = 0
 		delete(desktopSpentHolds, key)
 		delete(desktopRetiredLogins, key)
 		desktopPersonInstance.Delete(key)
 		desktopRunsMu.Unlock()
+		if errors.Is(err, errDesktopIdle) {
+			return
+		}
 		releaseLoggedInDocument(stopTenant, stopUser)
 	}, &owned
 }

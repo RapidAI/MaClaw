@@ -47,13 +47,13 @@ class HubRoute {
   });
 
   factory HubRoute.fromJson(Map<String, dynamic> json) => HubRoute(
-        hubId: json['hub_id'] as String? ?? '',
-        tenantId: json['tenant_id'] as String? ?? '',
-        tenantName: json['tenant_name'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        baseUrl: json['base_url'] as String? ?? '',
-        status: json['status'] as String? ?? '',
-      );
+    hubId: (json['hub_id'] ?? '').toString(),
+    tenantId: (json['tenant_id'] ?? '').toString(),
+    tenantName: (json['tenant_name'] ?? '').toString(),
+    name: (json['name'] ?? '').toString(),
+    baseUrl: (json['base_url'] ?? '').toString(),
+    status: (json['status'] ?? '').toString(),
+  );
 
   int get completenessScore =>
       (status == 'online' ? 8 : 0) +
@@ -79,14 +79,14 @@ class EntryResolveResult {
   factory EntryResolveResult.fromJson(Map<String, dynamic> json) {
     final raw = json['hubs'];
     return EntryResolveResult(
-      mode: json['mode'] as String? ?? '',
-      message: json['message'] as String? ?? '',
-      defaultHubId: json['default_hub_id'] as String? ?? '',
+      mode: (json['mode'] ?? '').toString(),
+      message: (json['message'] ?? '').toString(),
+      defaultHubId: (json['default_hub_id'] ?? '').toString(),
       hubs: raw is List
           ? raw
-              .whereType<Map>()
-              .map((e) => HubRoute.fromJson(Map<String, dynamic>.from(e)))
-              .toList(growable: false)
+                .whereType<Map>()
+                .map((e) => HubRoute.fromJson(Map<String, dynamic>.from(e)))
+                .toList(growable: false)
           : const [],
     );
   }
@@ -125,22 +125,22 @@ String normalizeHubUrl(String raw) {
 }
 
 Dio hubCenterDio({String? baseUrl}) => Dio(
-      BaseOptions(
-        baseUrl: normalizeHubUrl(baseUrl ?? maclawDefaultHubCenterUrl),
-        connectTimeout: hubCenterConnectTimeout,
-        sendTimeout: hubCenterSendTimeout,
-        receiveTimeout: hubCenterReceiveTimeout,
-      ),
-    );
+  BaseOptions(
+    baseUrl: normalizeHubUrl(baseUrl ?? maclawDefaultHubCenterUrl),
+    connectTimeout: hubCenterConnectTimeout,
+    sendTimeout: hubCenterSendTimeout,
+    receiveTimeout: hubCenterReceiveTimeout,
+  ),
+);
 
 Dio hubDio(String hubUrl) => Dio(
-      BaseOptions(
-        baseUrl: normalizeHubUrl(hubUrl),
-        connectTimeout: hubConnectTimeout,
-        sendTimeout: hubSendTimeout,
-        receiveTimeout: hubReceiveTimeout,
-      ),
-    );
+  BaseOptions(
+    baseUrl: normalizeHubUrl(hubUrl),
+    connectTimeout: hubConnectTimeout,
+    sendTimeout: hubSendTimeout,
+    receiveTimeout: hubReceiveTimeout,
+  ),
+);
 
 /// Error shape Hub answers with: `{"error": CODE, "message": "…"}`.
 class HubApiException implements Exception {
@@ -176,16 +176,29 @@ HubApiException hubExceptionFrom(Object error) {
     var code = '';
     var message = '';
     if (data is Map) {
-      code = (data['error'] as String? ?? data['code'] as String? ?? '').trim();
-      message = (data['message'] as String? ?? '').trim();
+      final rawError = data['error'];
+      // Most Hub errors are {"error":"CODE"}; gateways/proxies may nest a
+      // structured {"error":{...}} object instead — unwrap it rather than
+      // throwing a TypeError that hides the real failure.
+      if (rawError is Map) {
+        code = (rawError['code'] ?? rawError['name'] ?? rawError['error'] ?? '')
+            .toString()
+            .trim();
+        message = (rawError['message'] ?? '').toString().trim();
+      } else {
+        final rawCode = rawError ?? data['code'];
+        if (rawCode != null) code = rawCode.toString().trim();
+      }
+      if (message.isEmpty) {
+        message = (data['message'] ?? '').toString().trim();
+      }
     }
     final status = error.response?.statusCode;
     if (message.isEmpty) {
       message = switch (error.type) {
         DioExceptionType.connectionTimeout ||
         DioExceptionType.receiveTimeout ||
-        DioExceptionType.sendTimeout =>
-          '网络超时，请稍后重试',
+        DioExceptionType.sendTimeout => '网络超时，请稍后重试',
         DioExceptionType.connectionError => '无法连接服务器，请检查网络',
         DioExceptionType.badCertificate => '服务器证书不受信任',
         _ => (status != null && status >= 500) ? '服务器异常，请稍后重试' : '请求失败，请稍后重试',

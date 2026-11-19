@@ -89,12 +89,6 @@ function registrationPhoneFromConfig(remoteMobile: unknown, remoteEmail: unknown
     return '';
 }
 
-/** Matches Hub/GUI bound-phone rules: 8–15 digits after stripping non-digits. */
-function registrationPhoneDigits(value: string): string {
-    const digits = String(value || '').replace(/\D/g, '');
-    return digits.length >= 8 && digits.length <= 15 ? digits : '';
-}
-
 function formatMobileAuthQRExpiresAt(value: string): string {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -299,7 +293,9 @@ export function AboutPanel({
     const remoteEmail = remoteEmailRaw || emptyValue;
     const remoteMobile = remoteMobileRaw || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
-    const canCreateMobileAuthQR = hasRegisteredMachine && registrationPhoneDigits(remoteMobileRaw) !== '';
+    // Machine registration is the only prerequisite: the QR logs the mobile
+    // app into this Hub account and works without a bound phone.
+    const canCreateMobileAuthQR = hasRegisteredMachine;
     const [showMobileAuthQR, setShowMobileAuthQR] = useState(false);
     const [mobileAuthQRValue, setMobileAuthQRValue] = useState('');
     const [mobileAuthQRExpiresAt, setMobileAuthQRExpiresAt] = useState('');

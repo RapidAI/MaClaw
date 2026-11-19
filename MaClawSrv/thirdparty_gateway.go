@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -51,7 +52,10 @@ type srvThirdPartyGatewayManager struct {
 	clients          map[string]*srvThirdPartyClientState
 	runtimeInstances map[string]srvThirdPartyRuntimeInstance
 	media            map[string]*srvThirdPartyMediaObject
+	incomingSlots    chan struct{}
 }
+
+const srvThirdPartyMaxIncomingInFlight = 64
 
 type srvThirdPartyRuntimeInstance struct {
 	InstanceID         string
@@ -129,7 +133,7 @@ func newSrvThirdPartyGatewayManager(svc *agentservice.Service, dependencies ...a
 	if bindings == nil && svc != nil {
 		bindings = newSrvDeviceAgentBindingStore(svc.DataRoot())
 	}
-	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, bindings: bindings, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}}
+	return &srvThirdPartyGatewayManager{svc: svc, aiModels: asrManager, bindings: bindings, clients: map[string]*srvThirdPartyClientState{}, runtimeInstances: map[string]srvThirdPartyRuntimeInstance{}, media: map[string]*srvThirdPartyMediaObject{}, incomingSlots: make(chan struct{}, srvThirdPartyMaxIncomingInFlight)}
 }
 
 func (s *HTTPServer) handleThirdPartyGatewayHealth(w http.ResponseWriter, r *http.Request) {
@@ -295,11 +299,12 @@ func (s *HTTPServer) handleThirdPartyGatewayIncoming(w http.ResponseWriter, r *h
 	}
 	maclawID := fmt.Sprintf("mc_in_%d_%s", time.Now().UnixMilli(), sanitizeThirdPartyGatewayID(req.EventID))
 	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
-	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, req.EventID, maclawID)
-	maclawID = storedID
-	if !duplicate {
-		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, req, maclawID)
+	duplicate, storedID, admitted := s.thirdPartyIM.scheduleIncoming(tp.Principal, clientKey, req, maclawID)
+	if !admitted {
+		writeThirdPartyGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many incoming messages in progress; retry later")
+		return
 	}
+	maclawID = storedID
 	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(coreim.NewThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
@@ -403,11 +408,12 @@ func (s *HTTPServer) handleThirdPartyGatewayToolResult(w http.ResponseWriter, r 
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	clientKey := thirdPartyClientKey(tp.Principal, req.ClientID)
-	duplicate, storedID := s.thirdPartyIM.markIncoming(clientKey, incoming.EventID, maclawID)
-	maclawID = storedID
-	if !duplicate {
-		go s.thirdPartyIM.processIncoming(context.Background(), tp.Principal, incoming, maclawID)
+	duplicate, storedID, admitted := s.thirdPartyIM.scheduleIncoming(tp.Principal, clientKey, incoming, maclawID)
+	if !admitted {
+		writeThirdPartyGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many incoming messages in progress; retry later")
+		return
 	}
+	maclawID = storedID
 	writeJSON(w, http.StatusOK, coreim.NewThirdPartyIncomingAcceptedResponse(coreim.NewThirdPartyGatewayRequestID(), maclawID, duplicate))
 }
 
@@ -426,6 +432,14 @@ func (s *HTTPServer) authorizeThirdPartyGateway(w http.ResponseWriter, r *http.R
 }
 
 func (s *HTTPServer) thirdPartyPrincipalByToken(ctx context.Context, token string) (srvThirdPartyPrincipal, error) {
+	cacheKey := sha256.Sum256([]byte(token))
+	s.thirdPartyAuthMu.RLock()
+	cached, ok := s.thirdPartyAuthCache[cacheKey]
+	authVersion := s.thirdPartyAuthVersion
+	s.thirdPartyAuthMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
 	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
 	if err != nil {
 		return srvThirdPartyPrincipal{}, err
@@ -453,9 +467,35 @@ func (s *HTTPServer) thirdPartyPrincipalByToken(ctx context.Context, token strin
 		}
 	}
 	if matched != nil {
+		if err := s.cacheThirdPartyPrincipal(cacheKey, authVersion, *matched); err != nil {
+			return srvThirdPartyPrincipal{}, err
+		}
 		return *matched, nil
 	}
 	return srvThirdPartyPrincipal{}, errors.New("third-party gateway token not found")
+}
+
+func (s *HTTPServer) cacheThirdPartyPrincipal(cacheKey [32]byte, authVersion uint64, principal srvThirdPartyPrincipal) error {
+	s.thirdPartyAuthMu.Lock()
+	defer s.thirdPartyAuthMu.Unlock()
+	if authVersion != s.thirdPartyAuthVersion {
+		return errors.New("third-party gateway authentication state changed")
+	}
+	if s.thirdPartyAuthCache == nil {
+		s.thirdPartyAuthCache = map[[32]byte]srvThirdPartyPrincipal{}
+	}
+	s.thirdPartyAuthCache[cacheKey] = principal
+	return nil
+}
+
+func (s *HTTPServer) invalidateThirdPartyAuthCache() {
+	if s == nil {
+		return
+	}
+	s.thirdPartyAuthMu.Lock()
+	s.thirdPartyAuthCache = nil
+	s.thirdPartyAuthVersion++
+	s.thirdPartyAuthMu.Unlock()
 }
 
 func (s *HTTPServer) validateThirdPartyGatewayTokenUnique(ctx context.Context, p agentservice.Principal, cfg corelib.AppConfig) error {
@@ -1283,6 +1323,24 @@ func (m *srvThirdPartyGatewayManager) stopDeviceClient(p agentservice.Principal,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.clients, clientKey)
+}
+
+func (m *srvThirdPartyGatewayManager) scheduleIncoming(p agentservice.Principal, clientKey string, req srvThirdPartyIncomingRequest, maclawID string) (duplicate bool, storedID string, admitted bool) {
+	select {
+	case m.incomingSlots <- struct{}{}:
+	default:
+		return false, maclawID, false
+	}
+	duplicate, storedID = m.markIncoming(clientKey, req.EventID, maclawID)
+	if duplicate {
+		<-m.incomingSlots
+		return true, storedID, true
+	}
+	go func() {
+		defer func() { <-m.incomingSlots }()
+		m.processIncoming(context.Background(), p, req, storedID)
+	}()
+	return false, storedID, true
 }
 
 func (m *srvThirdPartyGatewayManager) markIncoming(clientKey, eventID, maclawID string) (bool, string) {

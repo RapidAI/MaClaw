@@ -95,8 +95,9 @@ class SessionController extends Notifier<SessionState> {
   }
 }
 
-final sessionProvider =
-    NotifierProvider<SessionController, SessionState>(SessionController.new);
+final sessionProvider = NotifierProvider<SessionController, SessionState>(
+  SessionController.new,
+);
 
 /// API client for the active account; rebuilt on every account switch.
 final apiClientProvider = Provider<ApiClient?>((ref) {

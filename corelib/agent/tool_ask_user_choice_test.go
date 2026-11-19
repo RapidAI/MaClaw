@@ -53,3 +53,26 @@ func TestFormatAskUserSelectedReplyJoins(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// A desktop handoff ask points at the takeover button instead of a typed
+// reply: the person acts on the computer screen, not in this chat.
+func TestFormatAskUserTakeoverHint(t *testing.T) {
+	shown := FormatAskUserForDisplay(&AskUserRequest{
+		Question:  "这一步需要你在当前桌面的浏览器里完成登录或验证。",
+		InputType: "text",
+		Takeover:  true,
+	})
+	if !strings.Contains(shown, "请在电脑上完成，或点「接管」继续。") || strings.Contains(shown, "请直接输入您的回复") {
+		t.Fatalf("takeover display=%q", shown)
+	}
+	plain := FormatAskUserForDisplay(&AskUserRequest{Question: "站点密码是多少?", InputType: "text"})
+	if !strings.Contains(plain, "请直接输入您的回复") {
+		t.Fatalf("plain display=%q", plain)
+	}
+	// The field rides the stable marker so hosts can tell a handoff ask apart.
+	raw := AskUserResultMarker(&AskUserRequest{Question: "q", InputType: "text", Takeover: true})
+	parsed, ok := ParseAskUserResult(raw)
+	if !ok || !parsed.Takeover {
+		t.Fatalf("marker lost takeover: %q", raw)
+	}
+}

@@ -322,9 +322,11 @@ func (m *SSHSessionManager) AttachOpenSession(hostID, label, ownerID, requestedP
 	}
 	summary := existing.GetSummary()
 	handle := existing.PTY()
-	// IsAlive waits on the keepalive. The shell can exit during that wait,
+	// TransportLive waits on the keepalive and requires a positive answer:
+	// attaching a half-open session would leave the caller on a transport
+	// that cannot take its commands. The shell can exit during that wait,
 	// so the open handle that was probed has to still be the current shell.
-	if SessionStatus(summary.Status).IsOpen() && handle != nil && handle.IsAlive() &&
+	if SessionStatus(summary.Status).IsOpen() && handle != nil && handle.TransportLive() &&
 		SessionStatus(existing.GetSummary().Status).IsOpen() && existing.PTY() == handle {
 		return existing, false, ""
 	}
@@ -449,51 +451,52 @@ func (m *SSHSessionManager) WriteInput(sessionID, text string) error {
 	if !ok {
 		return fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
-	return s.Handle.Write([]byte(text + "\n"))
+	return h.Write([]byte(text + "\n"))
 }
 
 // WriteInputChecked 向 SSH 会话写入命令，写入前检查连接存活。
 // 如果连接已断，尝试自动重连。返回是否发生了重连。
 //
 // 对半开连接：Write 可能“成功”但数据到不了远端。若会话已空闲较久，
-// 先做 IsAlive 探测，死连接则重连后再写，降低“命令发出却无输出”的假象。
+// 先做正向探测，不能应答的连接重连后再写，降低“命令发出却无输出”的假象。
 func (m *SSHSessionManager) WriteInputChecked(sessionID, text string) (reconnected bool, err error) {
 	s, ok := m.Get(sessionID)
 	if !ok {
 		return false, fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return false, fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
 
-	// 空闲超过 45s 的会话：写前探测，避免半开 TCP 静默吞命令
+	// 空闲超过 45s 的会话：写前探测，避免半开 TCP 静默吞命令。
+	// TransportLive 要求正向应答：一个在途未决的 keepalive 对“马上要写”
+	// 的调用者不算活着，写进去就是写进一条将死的连接。
 	s.mu.Lock()
 	idle := time.Since(s.LastOutputAt)
 	if s.LastOutputAt.IsZero() {
 		idle = time.Since(s.CreatedAt)
 	}
 	s.mu.Unlock()
-	if idle > 45*time.Second && !s.Handle.IsAlive() {
+	if idle > 45*time.Second && !h.TransportLive() {
 		if err := m.reconnectSession(s); err != nil {
 			return false, fmt.Errorf("空闲会话探测失败且自动重连失败: %w", err)
 		}
-		if err := s.Handle.Write([]byte(text + "\n")); err != nil {
-			return true, fmt.Errorf("重连后写入失败: %w", err)
-		}
-		return true, nil
+		return writeAfterReconnect(s, text)
 	}
 
 	// 先尝试直接写入
-	writeErr := s.Handle.Write([]byte(text + "\n"))
+	writeErr := h.Write([]byte(text + "\n"))
 	if writeErr == nil {
 		return false, nil
 	}
 
-	// 写入失败，检查连接是否存活
-	if s.Handle.IsAlive() {
+	// 写入失败，检查连接是否还能应答
+	if h.TransportLive() {
 		return false, writeErr
 	}
 
@@ -501,9 +504,17 @@ func (m *SSHSessionManager) WriteInputChecked(sessionID, text string) (reconnect
 	if err := m.reconnectSession(s); err != nil {
 		return false, fmt.Errorf("自动重连失败: %w (原始错误: %v)", err, writeErr)
 	}
+	return writeAfterReconnect(s, text)
+}
 
-	// 重连成功，重试写入
-	if err := s.Handle.Write([]byte(text + "\n")); err != nil {
+// writeAfterReconnect writes to the session's current handle after a
+// reconnect swapped it. The caller reports reconnected=true either way.
+func writeAfterReconnect(s *SSHManagedSession, text string) (bool, error) {
+	h := s.PTY()
+	if h == nil {
+		return true, fmt.Errorf("重连后无可用会话句柄")
+	}
+	if err := h.Write([]byte(text + "\n")); err != nil {
 		return true, fmt.Errorf("重连后写入失败: %w", err)
 	}
 	return true, nil
@@ -544,6 +555,16 @@ func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	if oldHandle != nil {
 		transportDead = oldHandle.ObservedTransportFailure()
 		oldClient = oldHandle.SSHClient()
+		// A pooled client survives this shell and acquireReferenced hands it
+		// back without probing. A client that cannot answer a keepalive in
+		// sshProbeWait — dead, half-open, or parked behind a stuck request —
+		// would then stall ptySession.Start on its globalSentMu until the
+		// pool keepalive kills it (~30-60s). Close it first: that unblocks
+		// every queued request, including this handle's own Close below.
+		if !transportDead && oldClient != nil && !sshClientTransportLive(oldClient) {
+			transportDead = true
+			_ = oldClient.Close()
+		}
 		_ = oldHandle.Close()
 	}
 
@@ -570,17 +591,34 @@ func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	// Acquire does not probe a client this session still holds, so a failed
 	// shell on that same client would be handed out on every later call.
 	// Drop both refs and dial one replacement. A client this call just dialed
-	// is already that replacement: its start failure is the result.
-	if err != nil && !transportDead && oldClient == client {
-		m.pool.Release(spec.HostConfig, client)
-		m.pool.Release(spec.HostConfig, oldClient)
-		client, err = m.pool.Reconnect(spec.HostConfig)
-		if err != nil {
-			return err
+	// is already that replacement: its start failure is the result. A pooled
+	// client borrowed with no old handle to compare against gets the same
+	// treatment when it cannot answer a keepalive.
+	if err != nil && !transportDead {
+		retry := false
+		if oldClient == client {
+			retry = true
+			m.pool.Release(spec.HostConfig, client)
+			m.pool.Release(spec.HostConfig, oldClient)
+			// Both refs on that client are already gone.
+			oldClient = nil
+		} else if !sshClientTransportLive(client) {
+			retry = true
+			m.pool.Release(spec.HostConfig, client)
+			// oldClient still holds the session's ref; the shared tail
+			// releases it under oldCfg.
 		}
-		oldClient = nil
-		ptySession = NewSSHPTYSession(client, hostID)
-		err = ptySession.Start(spec)
+		if retry {
+			client, err = m.pool.Reconnect(spec.HostConfig)
+			if err != nil {
+				if oldClient != nil {
+					m.pool.Release(oldCfg, oldClient)
+				}
+				return err
+			}
+			ptySession = NewSSHPTYSession(client, hostID)
+			err = ptySession.Start(spec)
+		}
 	}
 	if err != nil {
 		m.pool.Release(spec.HostConfig, client)
@@ -632,10 +670,11 @@ func (m *SSHSessionManager) InterruptByID(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
-	return s.Handle.Interrupt()
+	return h.Interrupt()
 }
 
 // CheckShellResponsive 验证 SSH 会话的 shell 是否真正可响应命令。
@@ -651,35 +690,36 @@ func (m *SSHSessionManager) CheckShellResponsive(sessionID string) bool {
 	if !ok {
 		return false
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return false
 	}
 
 	// 先检查连接级别是否存活
-	if !s.Handle.IsAlive() {
+	if !h.IsAlive() {
 		return false
 	}
 
 	marker := fmt.Sprintf("__mclw_%d__", time.Now().UnixNano()%1000000)
 
 	// 第一次探测
-	if m.probeShell(s, marker) {
+	if m.probeShell(s, h, marker) {
 		return true
 	}
 
 	// Shell 无响应，尝试发送 Ctrl+C 中断可能挂起的命令
-	_ = s.Handle.Interrupt()
+	_ = h.Interrupt()
 	time.Sleep(500 * time.Millisecond)
 
 	// 第二次探测
-	return m.probeShell(s, marker)
+	return m.probeShell(s, h, marker)
 }
 
 // probeShell 发送一个带标记的 echo 命令并等待输出。
-func (m *SSHSessionManager) probeShell(s *SSHManagedSession, marker string) bool {
+func (m *SSHSessionManager) probeShell(s *SSHManagedSession, h *SSHPTYSession, marker string) bool {
 	probe := fmt.Sprintf("echo %s", marker)
 	linesBefore := s.LineCount()
-	if err := s.Handle.Write([]byte(probe + "\n")); err != nil {
+	if err := h.Write([]byte(probe + "\n")); err != nil {
 		return false
 	}
 
@@ -793,12 +833,15 @@ func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID 
 		// line or the same pending prompt the command already showed is not
 		// the shell coming back.
 		mark, pendingBefore := s.outputCursor()
-		if s.Handle != nil {
-			_ = s.Handle.Interrupt()
+		// A transport that cannot positively answer cannot take the
+		// interrupt either; the write would park on its mutex behind a
+		// stuck request until the pool keepalive closes the connection.
+		if h := s.PTY(); h != nil && h.TransportLive() {
+			_ = h.Interrupt()
 			time.Sleep(500 * time.Millisecond)
 		}
 		lines, status := s.NewLinesSince(afterLine)
-		recovered := s.Handle != nil && s.promptAppearedAfter(mark, pendingBefore)
+		recovered := s.PTY() != nil && s.promptAppearedAfter(mark, pendingBefore)
 		notice := SSHWaitTimeoutShellBusyNotice
 		if recovered && len(lines) == 0 {
 			notice = "[maclaw] 命令执行超时（无输出），已发送 Ctrl+C 中断"
@@ -848,6 +891,13 @@ func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID 
 		if status == SessionExited || status == SessionError {
 			lines, st := s.NewLinesSince(afterLine)
 			return lines, st
+		}
+		// A keepalive already finished with a transport error means no
+		// output can arrive again, while the channel's own exit may lag the
+		// full wait behind a half-open connection.
+		if h := s.PTY(); h != nil && h.ObservedTransportFailure() {
+			lines, _ := s.NewLinesSince(afterLine)
+			return lines, SessionError
 		}
 
 		currentCount := s.LineCount()
@@ -1163,10 +1213,11 @@ func (m *SSHSessionManager) Interrupt(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
-	return s.Handle.Interrupt()
+	return h.Interrupt()
 }
 
 // Kill 终止 SSH 会话。
@@ -1175,10 +1226,11 @@ func (m *SSHSessionManager) Kill(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
-	return s.Handle.Kill()
+	return h.Kill()
 }
 
 // GetSessionStatus 实现 SessionProvider 接口。
@@ -1233,8 +1285,8 @@ func (m *SSHSessionManager) Close() {
 	m.mu.Unlock()
 
 	for _, s := range sessions {
-		if s.Handle != nil {
-			_ = s.Handle.Close()
+		if h := s.PTY(); h != nil {
+			_ = h.Close()
 		}
 	}
 	m.pool.CloseAll()

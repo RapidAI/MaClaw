@@ -1760,6 +1760,89 @@ func TestRemoteSessionManagerRunExitLoopUpdatesExitState(t *testing.T) {
 	}
 }
 
+func TestExitLoopWaitsForTheOutputTailBeforeClose(t *testing.T) {
+	client, msgs, cleanup := previewDeltaTestPair(t)
+	defer cleanup()
+
+	manager := NewRemoteSessionManager(&App{})
+	manager.hubClient = client
+	manager.pipelineFactory = func() *OutputPipeline {
+		return &OutputPipeline{
+			buffer:  &stubPreviewBuffer{delta: &SessionPreviewDelta{OutputSeq: 2, AppendLines: []string{"tail"}, UpdatedAt: 1}},
+			extract: &stubEventExtractor{},
+			reducer: &stubSummaryReducer{summary: SessionSummary{Status: string(SessionBusy), Severity: "info"}},
+		}
+	}
+
+	execHandle := newFakeExecutionHandle(11)
+	outputDone := make(chan struct{})
+	session := &RemoteSession{
+		ID:         "s",
+		Tool:       "claude",
+		Status:     SessionBusy,
+		Exec:       execHandle,
+		outputDone: outputDone,
+		Summary:    SessionSummary{SessionID: "s", Status: string(SessionBusy)},
+	}
+
+	go func() {
+		defer close(outputDone)
+		manager.runOutputLoop(session)
+	}()
+	exitDone := make(chan struct{})
+	go func() {
+		manager.runExitLoop(session)
+		close(exitDone)
+	}()
+
+	exitCode := 2
+	execHandle.exitCh <- PTYExit{Code: &exitCode}
+
+	select {
+	case msg := <-msgs:
+		t.Fatalf("hub frame before the output tail: %v", msg["type"])
+	case <-exitDone:
+		t.Fatal("exit finished while the output loop was still reading")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	execHandle.outputCh <- []byte("tail line\n")
+	close(execHandle.outputCh)
+
+	sawTail := false
+	var got []string
+	deadline := time.After(8 * time.Second)
+	for {
+		select {
+		case msg, ok := <-msgs:
+			if !ok {
+				t.Fatal("preview connection closed")
+			}
+			typ, _ := msg["type"].(string)
+			got = append(got, typ)
+			switch typ {
+			case "session.preview_delta":
+				lines := previewDeltaLines(t, msg)
+				if len(lines) == 1 && lines[0] == "tail" {
+					sawTail = true
+				}
+			case "session.closed":
+				if !sawTail {
+					t.Fatalf("session.closed arrived before the output tail, frames=%v", got)
+				}
+				select {
+				case <-exitDone:
+				case <-time.After(time.Second):
+					t.Fatal("exit loop did not finish")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("session.closed did not follow the output tail (tail=%v frames=%v)", sawTail, got)
+		}
+	}
+}
+
 func TestBuildSessionInitEvent(t *testing.T) {
 	session := &RemoteSession{
 		ID:          "sess-1",

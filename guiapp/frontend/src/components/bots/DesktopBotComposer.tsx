@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { InputHistoryAutocomplete } from '../ai/InputHistoryAutocomplete';
 import { useAssistantInputHistory } from '../ai/useAssistantInputHistory';
+import { useBufferedComposerValue } from '../ai/useBufferedComposerValue';
 import { useInputHistoryAutocomplete } from '../ai/useInputHistoryAutocomplete';
 import { useTextCompositionGuard } from '../ai/useTextCompositionGuard';
 import { AssistantInputIcon, lightTheme } from '../ai/aiAssistantPanelTheme';
@@ -71,7 +72,6 @@ export function DesktopBotComposer({
     const [dragging, setDragging] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const textComposition = useTextCompositionGuard();
-    const [isComposing, setIsComposing] = useState(false);
     const [history, setHistory] = useState<string[]>(() => botInputHistory(userId));
     const seenScope = useRef({ userId, botId });
     const exitHistoryRef = useRef<() => boolean>(() => false);
@@ -95,6 +95,10 @@ export function DesktopBotComposer({
         submittedPrompts: history,
     });
 
+    const buffered = useBufferedComposerValue(value, useCallback((next: string) => {
+        rememberHistoryEdit(next);
+        onChange(next);
+    }, [onChange, rememberHistoryEdit]));
     exitHistoryRef.current = exitHistoryBrowsing;
     // Mount already read this account. A later account loads its own cache.
     // Switching bots leaves the ↑↓ walk and puts back the draft from before it,
@@ -115,11 +119,11 @@ export function DesktopBotComposer({
     }, [onChange, rememberHistoryEdit]);
 
     const autocomplete = useInputHistoryAutocomplete({
-        inputValue: value,
+        inputValue: buffered.value,
         submittedPrompts: history,
         applyInputValue: applyAutocompleteValue,
         inputRef,
-        disabled: isComposing,
+        disabled: buffered.isComposing,
     });
 
     // Voice input shares the assistant's ASR pipeline but never the pet: no
@@ -232,7 +236,7 @@ export function DesktopBotComposer({
                 open={autocomplete.open}
                 matches={autocomplete.matches}
                 selectedIndex={autocomplete.selectedIndex}
-                prefix={value}
+                prefix={buffered.value}
                 listboxId={historyListboxId}
                 onSelectIndex={autocomplete.setSelectedIndex}
                 onAccept={autocomplete.accept}
@@ -250,17 +254,14 @@ export function DesktopBotComposer({
                 aria-controls={autocomplete.open ? historyListboxId : undefined}
                 aria-activedescendant={autocomplete.open ? `${historyListboxId}-option-${autocomplete.selectedIndex}` : undefined}
                 placeholder={placeholder}
-                value={value}
-                onChange={event => {
-                    rememberHistoryEdit(event.target.value);
-                    onChange(event.target.value);
-                }}
-                onCompositionStart={() => {
-                    setIsComposing(true);
+                value={buffered.value}
+                onChange={buffered.onChange}
+                onCompositionStart={(event) => {
+                    buffered.onCompositionStart(event);
                     textComposition.onCompositionStart();
                 }}
-                onCompositionEnd={() => {
-                    setIsComposing(false);
+                onCompositionEnd={(event) => {
+                    buffered.onCompositionEnd(event);
                     textComposition.onCompositionEnd();
                 }}
                 onKeyDown={onKeyDown}

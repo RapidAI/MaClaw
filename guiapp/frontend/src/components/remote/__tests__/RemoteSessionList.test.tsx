@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemoteSessionList } from '../RemoteSessionList';
-import { DesktopBotAccess, ListDesktopBots } from '../../../../wailsjs/go/main/App';
+import { DesktopBotAccess, ListDesktopBots, ListLocalDesktopJobs } from '../../../../wailsjs/go/main/App';
 import { saveBotMessages } from '../../bots/desktopBots';
 import { DialogProvider } from '../../CustomDialog';
 
@@ -20,12 +20,14 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetBackgroundLoopOutput: vi.fn().mockResolvedValue([]),
     DesktopBotAccess: vi.fn().mockResolvedValue({ enabled: false }),
     ListDesktopBots: vi.fn().mockResolvedValue([]),
+    ListLocalDesktopJobs: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../../../wailsjs/runtime', () => ({ EventsOn: vi.fn(), EventsOff: vi.fn() }));
 
 beforeEach(() => {
     vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
     vi.mocked(ListDesktopBots).mockResolvedValue([]);
+    vi.mocked(ListLocalDesktopJobs).mockResolvedValue([]);
     localStorage.clear();
 });
 
@@ -129,6 +131,9 @@ describe('RemoteSessionList initial tab', () => {
         vi.mocked(ListDesktopBots).mockResolvedValue([
             { id: 'bot_1', title: '码卡龙本龙', description: '', instance_id: '', created_at: '' },
         ]);
+        vi.mocked(ListLocalDesktopJobs).mockResolvedValue([
+            { id: 'dn_1', title: '部署 desktopd · znsoft@192.168.1.49', status: 'deploying', started_at: new Date().toISOString() },
+        ]);
         const started = Date.now();
         saveBotMessages('alice', 'bot_1', [
             { id: `m-${started.toString(36)}-user`, role: 'user', content: '看看北京天气', phase: 'execute' },
@@ -155,11 +160,38 @@ describe('RemoteSessionList initial tab', () => {
         expect(botTab.getAttribute('aria-selected')).toBe('true');
         expect(await screen.findByText('码卡龙本龙')).toBeTruthy();
         expect(screen.getByText('看看北京天气')).toBeTruthy();
-        expect(screen.getByText('进行中')).toBeTruthy();
-        expect(screen.getByText('执行')).toBeTruthy();
+        expect(screen.getAllByText('进行中').length).toBe(2);
+        expect(screen.getAllByText('执行').length).toBe(1);
+        expect(screen.getByText('部署')).toBeTruthy();
+
+        expect(await screen.findByText('（本地管理）')).toBeTruthy();
+        expect(screen.getByText('部署 desktopd · znsoft@192.168.1.49')).toBeTruthy();
 
         fireEvent.keyDown(botTab, { key: 'ArrowLeft' });
         expect(screen.getByRole('tab', { name: '直通任务' }).getAttribute('aria-selected')).toBe('true');
         expect(screen.getByRole('tab', { name: /Bot任务/ })).toBeTruthy();
+    });
+
+    it('shows a local install when hub has not granted bots', async () => {
+        vi.mocked(DesktopBotAccess).mockResolvedValue({ enabled: false });
+        vi.mocked(ListLocalDesktopJobs).mockResolvedValue([
+            { id: 'dn_9', title: '更新 desktopd · znsoft@192.168.1.49', status: 'upgrading', started_at: '2026-11-15T07:00:00Z' },
+        ]);
+        const props = {
+            lang: 'zh-Hans',
+            remoteSessions: [],
+            remoteInputDrafts: {},
+            setRemoteInputDrafts: vi.fn(),
+            killRemoteSession: vi.fn(),
+            refreshSessionsOnly: vi.fn(),
+            showToastMessage: vi.fn(),
+            localizeText: (en: string, zhHans: string) => zhHans || en,
+        };
+        render(<DialogProvider><RemoteSessionList {...props} /></DialogProvider>);
+        const botTab = await screen.findByRole('tab', { name: /Bot任务/ });
+        fireEvent.click(botTab);
+        expect(await screen.findByText('（本地管理）')).toBeTruthy();
+        expect(screen.getByText('更新 desktopd · znsoft@192.168.1.49')).toBeTruthy();
+        expect(screen.getByText('更新')).toBeTruthy();
     });
 });

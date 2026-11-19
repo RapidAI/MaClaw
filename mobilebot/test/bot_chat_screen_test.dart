@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'l10n_test_helper.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/core/providers.dart';
@@ -21,6 +22,10 @@ final _account = Account(
 
 const _bot = Bot(id: 'b1', name: '小助', description: 'd');
 
+/// 1×1 PNG — the wall screenshot a handoff ask carries.
+const _tinyPng =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 class _FakeApi extends BotApi {
   _FakeApi() : super(ApiClient(_account));
 
@@ -32,8 +37,7 @@ class _FakeApi extends BotApi {
     int after = 0,
     int limit = 200,
     int waitSeconds = 0,
-  }) async =>
-      page;
+  }) async => page;
 
   String? lastSent;
   BotPhase? lastPhase;
@@ -59,13 +63,14 @@ class _FakeApi extends BotApi {
   Future<List<ActiveRun>> activeRuns(String botId) async => const [];
 
   @override
-  Future<QueueView> queueStatus(
-          String botId, String clientMessageId) async =>
+  Future<QueueView> queueStatus(String botId, String clientMessageId) async =>
       const QueueView(state: 'queued', position: 1);
 
   @override
   Future<void> writeConversation(
-      String clientId, List<Map<String, dynamic>> entries) async {}
+    String clientId,
+    List<Map<String, dynamic>> entries,
+  ) async {}
 
   @override
   Future<void> ackRun(String botId, String runId) async {}
@@ -73,11 +78,8 @@ class _FakeApi extends BotApi {
 
 class _FakeSession extends SessionController {
   @override
-  SessionState build() => SessionState(
-        loaded: true,
-        accounts: [_account],
-        active: _account,
-      );
+  SessionState build() =>
+      SessionState(loaded: true, accounts: [_account], active: _account);
 }
 
 ConversationEntry _msg(int seq, String id, Map<String, dynamic> data) =>
@@ -91,21 +93,24 @@ ConversationEntry _msg(int seq, String id, Map<String, dynamic> data) =>
     );
 
 Widget _app(_FakeApi api) => ProviderScope(
-      overrides: [
-        botApiProvider.overrideWithValue(api),
-        sessionProvider.overrideWith(_FakeSession.new),
-        botChatBotIdProvider.overrideWithValue('b1'),
-      ],
-      child: const MaterialApp(home: BotChatScreen(bot: _bot)),
-    );
+  overrides: [
+    botApiProvider.overrideWithValue(api),
+    sessionProvider.overrideWith(_FakeSession.new),
+    botChatBotIdProvider.overrideWithValue('b1'),
+  ],
+  child: l10nApp(child: const BotChatScreen(bot: _bot)),
+);
 
 void main() {
   testWidgets('renders history messages and the composer', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 2, entries: [
-        _msg(1, 'u1', {'role': 'user', 'content': '做个表格'}),
-        _msg(2, 'a1', {'role': 'assistant', 'content': '好了'}),
-      ]);
+      ..page = ConversationPage(
+        head: 2,
+        entries: [
+          _msg(1, 'u1', {'role': 'user', 'content': '做个表格'}),
+          _msg(2, 'a1', {'role': 'assistant', 'content': '好了'}),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -117,9 +122,12 @@ void main() {
 
   testWidgets('shows the queue tag on a queued user bubble', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'u1', {'role': 'user', 'content': '排队的事', 'queued': true}),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'u1', {'role': 'user', 'content': '排队的事', 'queued': true}),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -128,14 +136,17 @@ void main() {
 
   testWidgets('plan replies offer the run-it chip', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'a1', {
-          'role': 'assistant',
-          'content': '安排：先搜集资料再写成表格',
-          'phase': 'plan',
-          'workOrder': '搜集资料并写成表格',
-        }),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '安排：先搜集资料再写成表格',
+            'phase': 'plan',
+            'workOrder': '搜集资料并写成表格',
+          }),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -152,13 +163,16 @@ void main() {
 
   testWidgets('per-run thread replies offer the continue chip', (tester) async {
     final api = _FakeApi()
-      ..page = ConversationPage(head: 1, entries: [
-        _msg(1, 'a1', {
-          'role': 'assistant',
-          'content': '任务线程的回复',
-          'conversation': 'b1#run-9',
-        }),
-      ]);
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '任务线程的回复',
+            'conversation': 'b1#run-9',
+          }),
+        ],
+      );
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
@@ -168,5 +182,87 @@ void main() {
     await tester.tap(find.text('继续这个任务'));
     await tester.pumpAndSettle();
     expect(find.text('下一条消息将继续该任务线程'), findsOneWidget);
+  });
+
+  testWidgets('a login-wall ask renders the takeover card, not an answer field', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '这一步需要你在当前桌面的浏览器里完成登录或验证。',
+            'attentionReason': 'login_wall',
+            'askUser': {
+              'inputType': 'text',
+              'question': '这一步需要你在当前桌面的浏览器里完成登录或验证。',
+            },
+            'images': [
+              {'mime': 'image/png', 'data': _tinyPng},
+            ],
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    // The localized reason and the takeover button replace the input card.
+    expect(find.text('需要你登录'), findsOneWidget);
+    expect(find.text('接管'), findsOneWidget);
+    expect(find.text('输入回答'), findsNothing);
+    expect(find.text('提交'), findsNothing);
+  });
+
+  testWidgets('a plain ask keeps the answer field and gains no takeover button', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '站点密码是多少?',
+            'askUser': {'inputType': 'text', 'question': '站点密码是多少?'},
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    expect(find.text('输入回答'), findsOneWidget);
+    expect(find.text('提交'), findsOneWidget);
+    expect(find.text('接管'), findsNothing);
+  });
+
+  testWidgets('a choice ask that rides with a handoff keeps its option chips', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'a1', {
+            'role': 'assistant',
+            'content': '登录方式选哪个?',
+            'attentionReason': 'login_wall',
+            'askUser': {
+              'inputType': 'choice',
+              'question': '登录方式选哪个?',
+              'options': ['扫码登录', '密码登录'],
+            },
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    // The chips stay tappable — a handoff ask is always free text, so an
+    // options ask is never treated as one.
+    expect(find.text('扫码登录'), findsOneWidget);
+    expect(find.text('密码登录'), findsOneWidget);
+    expect(find.text('接管'), findsNothing);
   });
 }

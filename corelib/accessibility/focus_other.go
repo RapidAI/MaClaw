@@ -16,6 +16,10 @@ func windowTitleAtPoint(x, y int) string {
 	return ""
 }
 
+func foregroundWindowID() uint64 { return 0 }
+
+func windowIDAtPoint(x, y int) uint64 { return 0 }
+
 func foregroundWindowBounds() (WindowBounds, bool) {
 	return WindowBounds{}, false
 }

@@ -1,5 +1,5 @@
 import type { ChatMessage } from "./useAIAssistant";
-import { omitGoalContinuationHeader } from "./visibleChatText";
+import { omitGoalContinuationHeader, sanitizeVisibleChatText } from "./visibleChatText";
 import { legacyMarkVisual } from "../remote/remoteStreamMarks";
 import { displayMathAfterLine, markdownFenceAfterLine } from "./aiAssistantMarkdownNormalize";
 import { isChineseLang, localizeText } from "../../i18n";
@@ -247,13 +247,16 @@ function mayContainPictograph(text: string): boolean {
  */
 export function prepareChatBodyForDisplay(text: string): string {
     // Display only. Stored text keeps the phase line so a reopened task can
-    // still hand the model the continuation contract.
-    const source = text && text.includes("[系统续接]") ? omitGoalContinuationHeader(text) : text;
-    if (!source || !mayContainPictograph(source)) return source;
-    const lines = source.split("\n");
+    // still hand the model the continuation contract. Strip lane sentinels
+    // before the header check: a leading U+0001 is not whitespace, so the
+    // line would no longer start with "[系统续接]" and the header would show.
+    const source = sanitizeVisibleChatText(text);
+    const withoutHeader = source.includes("[系统续接]") ? omitGoalContinuationHeader(source) : source;
+    if (!withoutHeader || !mayContainPictograph(withoutHeader)) return withoutHeader;
+    const lines = withoutHeader.split("\n");
     const prepared = prepareChatBodyLines(lines);
-    // No decorative pictographs removed → keep original text identity.
-    if (prepared === lines) return source;
+    // No decorative pictographs removed → keep the header-stripped text.
+    if (prepared === lines) return withoutHeader;
     return prepared.join("\n");
 }
 

@@ -3346,6 +3346,7 @@ func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 		time.Sleep(2 * time.Second)
 	}
 	linesBefore := session.LineCount()
+	handleBefore := session.PTY()
 	if sessionDead {
 		if err := mgr.WriteInput(sessionID, command); err != nil {
 			return fmt.Sprintf("%sssh write failed: %v", reconnectNote, err)
@@ -3358,8 +3359,12 @@ func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 		if reconnected {
 			reconnectNote = "reconnected; "
 			time.Sleep(2 * time.Second)
-			linesBefore = session.LineCount()
 		}
+	}
+	if session.PTY() != handleBefore {
+		// A reconnect — inside WriteInputChecked or a concurrent one — swapped
+		// the PTY and cleared the preview. The captured baseline is stale.
+		linesBefore = session.LineCount()
 	}
 	if waitSec > 600 {
 		waitSec = 600
@@ -4307,7 +4312,7 @@ func recordMaclawSingleAppRunEvidence(skillName string, skillDir string, appID s
 	// app definition for every successful execution changes the packaged app
 	// checksum, which makes Hub/HubCenter create a needless new version. One
 	// successful proof is sufficient for an unchanged definition; detailed
-	// per-run evidence is stored separately in app_run_history.json.
+	// per-run evidence is stored separately in app_run_history.db.
 	if maclawAppRunEvidenceAlreadyProvesDefinition(maclawAppExistingRunEvidence(governance), evidence) {
 		result := maclawAppRunEvidenceResult(skillName, "maclaw.app.json", data, evidence, artifactName)
 		result["manifest_updated"] = false
@@ -5847,6 +5852,9 @@ func restoreSkillDefinitionBytes(skillDir string, data []byte) error {
 			if err := os.Rename(tmp, path); err != nil {
 				_ = os.Remove(tmp)
 				return err
+			}
+			if err := skill.RepinPackageManifestIfPresent(skillDir); err != nil {
+				log.Printf("[skill] repin integrity manifest for %s failed: %v", skillDir, err)
 			}
 			return nil
 		}

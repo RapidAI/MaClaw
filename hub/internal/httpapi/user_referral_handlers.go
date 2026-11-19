@@ -1798,18 +1798,15 @@ type publicReferralEmailEnrollRequest struct {
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
 }
 
-// updateReferralEnrollmentMachineMetadata keeps a referral-created desktop as
-// observable as a normal enrollment. Machine credentials are already durable
-// at this point, so metadata remains best-effort and must not turn a successful
-// device bind into an error merely because a secondary update fails.
-func updateReferralEnrollmentMachineMetadata(ctx context.Context, identity *auth.IdentityService, machineID, name, platform, hostname, arch, appVersion string, heartbeatSec int) {
+// updateEnrolledMachineMetadata keeps every enrollment-created machine as
+// observable as a normal /api/enroll/start enrollment. Machine credentials
+// are already durable at this point, so metadata remains best-effort and must
+// not turn a successful device bind into an error merely because a secondary
+// update fails. Empty fields preserve the stored values so an older client
+// that does not report them cannot erase what a newer client already sent.
+func updateEnrolledMachineMetadata(ctx context.Context, identity *auth.IdentityService, machineID, name, platform, hostname, arch, appVersion string, heartbeatSec int) {
 	if identity == nil || strings.TrimSpace(machineID) == "" {
 		return
-	}
-	if heartbeatSec <= 0 || heartbeatSec > 3600 {
-		heartbeatSec = 30
-	} else if heartbeatSec < 5 {
-		heartbeatSec = 5
 	}
 	if err := identity.UpdateMachineMetadata(ctx, machineID, auth.MachineMetadata{
 		Name:                 name,
@@ -1819,7 +1816,7 @@ func updateReferralEnrollmentMachineMetadata(ctx context.Context, identity *auth
 		AppVersion:           appVersion,
 		HeartbeatIntervalSec: heartbeatSec,
 	}); err != nil {
-		log.Printf("[referral-enroll] update machine metadata failed for %s: %v", machineID, err)
+		log.Printf("[enroll] update machine metadata failed for %s: %v", machineID, err)
 	}
 }
 
@@ -2573,7 +2570,7 @@ func PublicUserReferralPhoneEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", "Desktop enrollment is unavailable")
 			return
 		}
-		updateReferralEnrollmentMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
+		updateEnrolledMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
 		payload := enrollmentStartResponseMap(result)
 		payload["phone_number"] = phone
 		writeJSON(w, http.StatusOK, payload)
@@ -2629,7 +2626,7 @@ func PublicUserReferralEmailEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", "Desktop enrollment is unavailable")
 			return
 		}
-		updateReferralEnrollmentMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
+		updateEnrolledMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
 		payload := enrollmentStartResponseMap(result)
 		payload["email"] = email
 		writeJSON(w, http.StatusOK, payload)

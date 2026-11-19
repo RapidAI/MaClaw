@@ -94,6 +94,30 @@ func TestDesktopPublishIntentApprovesAndSticks(t *testing.T) {
 	}
 }
 
+func TestRestartKeepsPublishApprovalFromTheOriginalAsk(t *testing.T) {
+	turn := contTurn("u_re", "服务刚重启，这项任务接着做。", "execute")
+	_, meta := desktopTurnMessage(turn)
+	meta["task_request"] = "把综述发到知乎、CSDN和小红书"
+	if !desktopTurnPublishApproved(turn) {
+		t.Fatal("restart lost the original publish ask")
+	}
+	if desktopTurnPublishApproved(contTurn("u_re2", "服务刚重启，这项任务接着做。", "execute")) {
+		t.Fatal("the restart sentence alone approved publishing")
+	}
+	if got := desktopTaskRequestText(turn); !strings.Contains(got, "知乎") || !strings.Contains(got, "小红书") {
+		t.Fatal(got)
+	}
+	run := "run-sites-restart"
+	desktopNoteTaskSpec(run, "服务刚重启，这项任务接着做。")
+	if n := len(desktopTaskSpecBase(run).Sites); n != 0 {
+		t.Fatalf("restart sentence stored %d sites", n)
+	}
+	desktopNoteTaskSpec(run, desktopTaskRequestText(turn))
+	if n := len(desktopTaskSpecBase(run).Sites); n < 3 {
+		t.Fatalf("sites %d", n)
+	}
+}
+
 func TestDesktopNoPhaseRunsButPublishStillAsks(t *testing.T) {
 	turn := contTurn("u_np", "打开 example.com，点 Learn more，告诉我到了哪", "")
 	if got := desktopTurnPhase(turn); got != "execute" {

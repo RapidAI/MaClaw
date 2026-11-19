@@ -60,6 +60,39 @@ func TestCoalesceAssistantTokenDeltasSettledTextAndFewerEmits(t *testing.T) {
 	}
 }
 
+func TestCoalesceAssistantTokenDeltasDropsInteriorSentinels(t *testing.T) {
+	deltas := []string{"\x01The\x01 user", "\x01 wants", "desktop\x01d", "Ma\x01Cl"}
+	got := coalesceAssistantTokenDeltas(deltas)
+	if !sameStrings(coalescedTokenTexts(got), []string{"\x01The user wants", "desktopdMaCl"}) {
+		t.Fatalf("texts = %#v", got)
+	}
+	for _, item := range got {
+		body := strings.TrimPrefix(item.Text, "\x01")
+		if strings.Contains(body, "\x01") || strings.Count(item.Text, "\x01") > 1 {
+			t.Fatalf("interior sentinel in %#v", item)
+		}
+	}
+
+	var n aiAssistantStreamDeltaNormalizer
+	reasoning := n.Normalize("\x01The\x01 user\x01 wants")
+	if reasoning != "\x01The user wants" || n.reasoning != "The user wants" {
+		t.Fatalf("reasoning delta=%q state=%q", reasoning, n.reasoning)
+	}
+	content := n.Normalize("desktop\x01d and Ma\x01Cl")
+	if content != "desktopd and MaCl" || n.content != "desktopd and MaCl" {
+		t.Fatalf("content delta=%q state=%q", content, n.content)
+	}
+	if n.Normalize("\x02") != "\x02" || n.content != "" {
+		t.Fatalf("reject token changed content=%q", n.content)
+	}
+	if got := n.Normalize("\x02kept"); got != "\x02kept" || n.content != "" {
+		t.Fatalf("prefixed reject = %q content=%q", got, n.content)
+	}
+	t.Run("persisted", func(t *testing.T) {
+		TestNormalizeAIAssistantUIMessageRemovesControlCharacters(t)
+	})
+}
+
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

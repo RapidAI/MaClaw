@@ -9,14 +9,119 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
+
+func TestLoginFlagsStayAheadOfTheScreenshot(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "tenant-shot", UserID: "alice", InstanceID: "shot-bot"}
+	key := desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID)
+	old := desktopReadPageFlags
+	t.Cleanup(func() {
+		desktopReadPageFlags = old
+		desktopPageNeed.Delete(key)
+		desktopHandoff.Delete(key)
+		desktopAttention.Delete(key)
+	})
+	desktopReadPageFlags = func(*browser.BrowserAgentSession) (browser.BrowserPageFlags, error) {
+		return browser.BrowserPageFlags{LoginWall: true}, nil
+	}
+	// A flag glued on after the screenshot is not the page. Words in the
+	// reading, including "page flags:", are not a flag either.
+	late := "clicked Continue\nscreen_vision:\n  e0 [text] \"Sign in\" center=1,2\n\x00[maclaw-model-image jpeg]"
+	if got := desktopAttentionReason(appendDesktopPageFlags(late, map[string]interface{}{"page_flags": browser.BrowserPageFlags{LoginWall: true}})); got != "" {
+		t.Fatalf("a flag after the screenshot counted as the page: %q", got)
+	}
+	shot := "clicked Continue\nscreen_vision:\n  e0 [text] \"page flags: mfa\" center=1,2\n\x00[maclaw-model-image jpeg]"
+	out, err := desktopFinishObserved(context.Background(), scope, &browser.BrowserAgentSession{}, shot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked, ok := agent.ParseAskUserResult(out)
+	if !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" {
+		t.Fatalf("screenshot of a login page did not hand over: %q", out)
+	}
+	if !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("the desktop stayed with the bot")
+	}
+	if got := desktopPageNeedFor(scope); got != "login_wall" {
+		t.Fatalf("page need=%q", got)
+	}
+}
+
+func TestLoginPageIsNotClickedOrLeft(t *testing.T) {
+	for _, action := range []string{"click", "type", "press", "script", "skill_run", "task_run", "upload", "publish"} {
+		if !desktopNeedsClearPage(action) {
+			t.Fatalf("%s still runs on a login page", action)
+		}
+	}
+	for _, action := range []string{"probe", "shop_readback", "screenshot", "app_list", "navigate"} {
+		if desktopNeedsClearPage(action) {
+			t.Fatalf("%s was blocked outright", action)
+		}
+	}
+	if !desktopSameSite("https://www.amazon.com/ap/signin", "https://amazon.com/gp/cart") {
+		t.Fatal("another amazon page was treated as a different site")
+	}
+	if !desktopSameSite("https://www.amazon.com/ap/signin", "") {
+		t.Fatal("an empty address was treated as leaving")
+	}
+	if desktopSameSite("https://www.amazon.com/ap/signin", "https://www.youtube.com/") {
+		t.Fatal("youtube was kept on the amazon sign-in page")
+	}
+	if !desktopSameSite("https://accounts.google.com/signin", "https://mail.google.com/") {
+		t.Fatal("a sign-in subdomain was treated as leaving the site")
+	}
+	if !desktopSameSite("https://signin.amazon.com/ap/signin", "https://www.amazon.com/") {
+		t.Fatal("signin.amazon.com was treated as another site")
+	}
+	if desktopSameSite("https://www.amazon.co.uk/ap/signin", "https://www.bbc.co.uk/") {
+		t.Fatal("amazon.co.uk and bbc.co.uk were one site")
+	}
+}
+
+func TestLoginPageStopsTheComputerBeforeItTypes(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "tenant-hold", UserID: "alice", InstanceID: "hold-bot"}
+	key := desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID)
+	old := desktopReadPageFlags
+	t.Cleanup(func() {
+		desktopReadPageFlags = old
+		desktopPageNeed.Delete(key)
+		desktopHandoff.Delete(key)
+		desktopAttention.Delete(key)
+	})
+	desktopReadPageFlags = func(*browser.BrowserAgentSession) (browser.BrowserPageFlags, error) {
+		return browser.BrowserPageFlags{LoginWall: true}, nil
+	}
+	held, text, err := desktopHoldForPage(context.Background(), scope, &browser.BrowserAgentSession{})
+	if !held || err != nil {
+		t.Fatalf("held=%v err=%v text=%q", held, err, text)
+	}
+	asked, ok := agent.ParseAskUserResult(text)
+	if !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" {
+		t.Fatalf("ask=%q", text)
+	}
+	if !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("the login page did not hand over the desktop")
+	}
+	if got := desktopPageNeedFor(scope); got != "login_wall" {
+		t.Fatalf("page need=%q", got)
+	}
+	desktopReadPageFlags = func(*browser.BrowserAgentSession) (browser.BrowserPageFlags, error) {
+		return browser.BrowserPageFlags{}, nil
+	}
+	held, _, err = desktopHoldForPage(context.Background(), scope, &browser.BrowserAgentSession{})
+	if held || err != nil || desktopPageNeedFor(scope) != "" {
+		t.Fatalf("cleared held=%v err=%v need=%q", held, err, desktopPageNeedFor(scope))
+	}
+}
 
 func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 	scope := agentruntime.Scope{TenantID: "tenant-phase", UserID: "alice", InstanceID: "phase-bot"}
 	t.Cleanup(func() {
 		desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 		desktopAttention.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopPageNeed.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 	})
 	plan := agentruntime.TurnRequest{
 		Scope: scope,
@@ -47,11 +152,32 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked, ok := agent.ParseAskUserResult(login)
-	if !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_LOGIN" {
+	if !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" {
 		t.Fatalf("execute login=%q", login)
 	}
-	if takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) || takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID) != "" {
-		t.Fatal("a password login handed the desktop back")
+	if !asked.Takeover {
+		t.Fatal("login ask is not marked as a takeover handoff")
+	}
+	if !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("a login page did not hand the desktop to the person")
+	}
+	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "login_wall" {
+		t.Fatalf("login attention=%q", reason)
+	}
+	blank, err := finishDesktopActionPhase(scope, "navigated\n"+browser.LoginWallMarker+" blank: needs the person", nil, "execute")
+	if err != nil || strings.Contains(blank, "需要你") || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatalf("blank=%q err=%v", blank, err)
+	}
+	wall, err := finishDesktopActionPhase(scope, "navigated to https://www.amazon.com/ap/signin\n"+browser.LoginWallMarker+" login_url: this page needs the person", nil, "execute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked, ok = agent.ParseAskUserResult(wall)
+	if !ok || asked.Question != desktopLoginQuestion || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatalf("sign-in url=%q", wall)
+	}
+	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "login_wall" {
+		t.Fatalf("sign-in url attention=%q", reason)
 	}
 }
 
@@ -60,6 +186,7 @@ func TestPaymentConfirmHandsOffOnlyDuringExecution(t *testing.T) {
 	t.Cleanup(func() {
 		desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 		desktopAttention.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopPageNeed.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
 	})
 	for _, text := range []string{"确认支付", "价格 99 元", "nav 支付", "page flags: canvas"} {
 		if reason := desktopAttentionReason(text); reason != "" {
@@ -87,18 +214,11 @@ func TestPaymentConfirmHandsOffOnlyDuringExecution(t *testing.T) {
 	}
 	code, err := finishDesktopActionPhase(scope, "page flags: mfa", nil, "execute")
 	asked, ok = agent.ParseAskUserResult(code)
-	if err != nil || !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_CODE" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+	if err != nil || !ok || asked.Question != desktopLoginQuestion || asked.InputType == "secret_fill" || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
 		t.Fatalf("code=%q err=%v", code, err)
 	}
-	if got := desktopFillSecretName("login_wall", "script ok: url https://www.docs.example.com/draft"); got != "SITE_LOGIN_DOCS_EXAMPLE_COM" {
-		t.Fatalf("secret name=%s", got)
-	}
-	listed := "probed page Sign in (https://login.example/a); page flags: login_wall\nOpen browser pages (2), including tabs behind the front window:\n- attached Sign in — https://login.example/a\n- Mail — https://mail.example.com/inbox"
-	if got := desktopFillSecretName("login_wall", listed); got != "SITE_LOGIN_LOGIN_EXAMPLE" {
-		t.Fatalf("open tabs changed the secret name: %s", got)
-	}
-	if got := desktopFillSecretName("mfa", "https://accounts.example.com/mfa page flags: mfa"); got != "SITE_CODE_ACCOUNTS_EXAMPLE_COM" {
-		t.Fatalf("code name=%s", got)
+	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "mfa" {
+		t.Fatalf("code attention=%q", reason)
 	}
 	if got := desktopAttentionReason("page flags: mfa,login_wall"); got != "login_wall" {
 		t.Fatalf("both flags attention=%s", got)

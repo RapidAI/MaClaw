@@ -95,7 +95,9 @@ func connectionMatchesToken(rec record) bool {
 
 // issueConnectionCredential creates a fresh MaClawSrv API credential for the
 // shared connection user. An existing (broken) connection credential carries
-// that user; otherwise the saved access token's claims do.
+// that user; otherwise the saved access token's claims do. With only the
+// admin secret on file there is no token to ask, so the hub provisions its
+// own dedicated user instead.
 func (s *Service) issueConnectionCredential(ctx context.Context, rec record) (connectionCredential, error) {
 	target := connectionCredential{}
 	if rec.Connection != nil {
@@ -107,7 +109,9 @@ func (s *Service) issueConnectionCredential(ctx context.Context, rec record) (co
 		target.TenantID = tenantID
 	}
 	if target.TenantID == "" || target.UserID == "" {
-		return connectionCredential{}, fmt.Errorf("%w: cannot tell which MaClawSrv user the connection belongs to", ErrSrv)
+		if err := s.provisionConnectionUser(ctx, rec, &target); err != nil {
+			return connectionCredential{}, err
+		}
 	}
 	var issued struct {
 		ID        string `json:"id"`
@@ -125,6 +129,71 @@ func (s *Service) issueConnectionCredential(ctx context.Context, rec record) (co
 	target.APIKey = strings.TrimSpace(issued.APIKey)
 	target.APISecret = strings.TrimSpace(issued.APISecret)
 	return target, nil
+}
+
+// provisionConnectionUser fills in the MaClawSrv tenant and user the shared
+// connection belongs to when no credential and no decodable token can name
+// them. The tenant on record wins, then the server's first tenant, then a
+// fresh "hub" tenant on an empty server. The user is a dedicated
+// hub-connection account, found by email before a new one is created.
+func (s *Service) provisionConnectionUser(ctx context.Context, rec record, target *connectionCredential) error {
+	if strings.TrimSpace(target.TenantID) == "" {
+		var listed struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		if err := s.doAdmin(ctx, rec, http.MethodGet, "/api/v1/admin/tenants", nil, &listed); err != nil {
+			return err
+		}
+		if len(listed.Items) > 0 {
+			target.TenantID = strings.TrimSpace(listed.Items[0].ID)
+		}
+		if target.TenantID == "" {
+			var created struct {
+				ID string `json:"id"`
+			}
+			if err := s.doAdmin(ctx, rec, http.MethodPost, "/api/v1/admin/tenants", map[string]string{"name": "hub"}, &created); err != nil {
+				return err
+			}
+			target.TenantID = strings.TrimSpace(created.ID)
+		}
+		if target.TenantID == "" {
+			return fmt.Errorf("%w: maclawsrv tenant missing", ErrSrv)
+		}
+	}
+	if strings.TrimSpace(target.UserID) != "" {
+		return nil
+	}
+	usersPath := "/api/v1/admin/tenants/" + url.PathEscape(target.TenantID) + "/users"
+	var users struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := s.doAdmin(ctx, rec, http.MethodGet, usersPath+"?email="+url.QueryEscape(nodeConnectionEmail), nil, &users); err != nil {
+		return err
+	}
+	for _, item := range users.Items {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			target.UserID = id
+			return nil
+		}
+	}
+	var user struct {
+		ID string `json:"id"`
+	}
+	if err := s.doAdmin(ctx, rec, http.MethodPost, usersPath, map[string]string{
+		"name":  "hub-connection",
+		"email": nodeConnectionEmail,
+	}, &user); err != nil {
+		return err
+	}
+	target.UserID = strings.TrimSpace(user.ID)
+	if target.UserID == "" {
+		return fmt.Errorf("%w: maclawsrv user id missing", ErrSrv)
+	}
+	return nil
 }
 
 // provisionConnectionCredential issues and stores a fresh connection
@@ -181,20 +250,20 @@ func (s *Service) mergeConnection(ctx context.Context, tenantID string, cred con
 		return err
 	}
 	fresh.Connection = &cred
+	if strings.TrimSpace(fresh.MaClawTenantID) == "" {
+		fresh.MaClawTenantID = cred.TenantID
+	}
 	return s.save(ctx, tenantID, fresh)
 }
 
 // bootstrapConnection provisions the connection credential as soon as the
-// admin secret and an access token are both on file, so the expiring pasted
-// token stops being load-bearing. Best effort: a failure surfaces the next
-// time the connection is tested. Callers must not hold s.mu.
+// admin secret is on file, so the expiring pasted token — when one is saved
+// at all — stops being load-bearing. Best effort: a failure surfaces the
+// next time the connection is tested. Callers must not hold s.mu.
 func (s *Service) bootstrapConnection(ctx context.Context, tenantID string) {
 	rec, err := s.load(ctx, tenantID)
 	if err != nil || rec.Connection != nil ||
-		strings.TrimSpace(rec.AdminSecret) == "" || strings.TrimSpace(rec.AccessToken) == "" {
-		return
-	}
-	if _, ok := decodeTokenClaims(rec.AccessToken); !ok {
+		strings.TrimSpace(rec.AdminSecret) == "" || strings.TrimSpace(rec.BaseURL) == "" {
 		return
 	}
 	_, _ = s.provisionConnectionCredential(ctx, tenantID)

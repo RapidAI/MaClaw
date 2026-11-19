@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/botcapability"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
@@ -45,6 +48,19 @@ var (
 	// ErrDesktopNotRunning: the bot's own display is asleep, so a demo
 	// recording would capture nothing.
 	ErrDesktopNotRunning = errors.New("这个 Bot 的桌面现在没有运行，先打开它的桌面，再开始录制。")
+	// ErrNoDesktop is a wake or watch of a bot that was created without a
+	// cloud desktop. Callers must not start a container for it.
+	ErrNoDesktop = errors.New("这个 bot 没有电脑")
+	// ErrNoDesktopTurn is a second message to a bot with no computer while
+	// its previous answer is still running. It is not parked on the desktop
+	// queue and it does not say the cloud desktop is busy.
+	ErrNoDesktopTurn = errors.New("这个 bot 还在回答上一条。")
+	// ErrDesktopQuota is a desktop bot past the grant's desktop-bot limit.
+	ErrDesktopQuota = errors.New("电脑额度已用完，请在新版客户端里创建无电脑 bot")
+	// ErrCloudDesktopUnassigned is a computer request from an account with
+	// no assigned cloud desktop and no usable LAN node. Clients surface it so
+	// the person picks a no-desktop bot or installs a LAN node.
+	ErrCloudDesktopUnassigned = errors.New("你的账号还没有分配云端电脑，只能创建无电脑的 bot")
 	// ErrNotPrimary is a bot other than this account's primary trying to
 	// notify or hand work to another bot.
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
@@ -59,6 +75,14 @@ var (
 	// text to explain what is missing.
 	ErrAdminSecretMissing = fmt.Errorf("%w: maclawsrv admin secret missing", ErrNotConfigured)
 )
+
+// turnBusy reports the retry-later kind of busy: one run holding a shared
+// cloud desktop, or a computerless bot still answering its previous message.
+// Dispatch and queue code treat the two the same; only the person-facing
+// wording differs.
+func turnBusy(err error) bool {
+	return errors.Is(err, ErrDesktopBusy) || errors.Is(err, ErrNoDesktopTurn)
+}
 
 // SrvRejectionMessage turns a MaClawSrv failure into a message an admin can
 // act on, instead of the generic "rejected the instance request".
@@ -85,8 +109,14 @@ type Bot struct {
 	CreatedAt   string `json:"created_at"`
 	// DesktopMode is "isolated" when this bot drives its own virtual display
 	// in the owner's desktop container; empty or "shared" is the owner's
-	// desktop, as before.
+	// desktop, as before. "none" is a bot with no desktop.
 	DesktopMode string `json:"desktop_mode,omitempty"`
+	// DesktopOver is set only on the admin list when this owner's desktop
+	// bots already exceed the matching grant. It is not stored.
+	DesktopOver bool `json:"desktop_over,omitempty"`
+	// NodeID is the Bot node whose srv owns this bot. Empty keeps the
+	// tenant's public MaClawSrv connection.
+	NodeID string `json:"node_id,omitempty"`
 	// Color and Shape are the bot's badge look chosen in the GUI, stored
 	// here so it follows the account across computers. Empty is "not set";
 	// the GUI then derives a default. See bot_appearance.go.
@@ -108,10 +138,14 @@ type record struct {
 	// part overrides with their history, keyed by bot id (bot_style.go).
 	Styles map[string]*botStyleRecord `json:"styles,omitempty"`
 	// Rooms are group conversations between the person and their bots.
-	Rooms   map[string]*BotRoom `json:"rooms,omitempty"`
-	Grants  []Grant             `json:"grants,omitempty"`
-	Desktop *desktopStateRecord `json:"desktop,omitempty"`
-	LLM     llmSettings         `json:"llm,omitempty"`
+	Rooms  map[string]*BotRoom `json:"rooms,omitempty"`
+	Grants []Grant             `json:"grants,omitempty"`
+	// DefaultDesktopBotLimit is the tenant-wide fallback cap on desktop
+	// bots per user, applied when no covering grant sets a limit. Nil is
+	// unlimited, matching records saved before the field existed.
+	DefaultDesktopBotLimit *int                `json:"default_desktop_bot_limit,omitempty"`
+	Desktop                *desktopStateRecord `json:"desktop,omitempty"`
+	LLM                    llmSettings         `json:"llm,omitempty"`
 	// SystemFreeCreditsUsed is the credits each bot owner has spent on
 	// system-free, keyed by hub user id. It is independent of new-user benefits.
 	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
@@ -128,25 +162,44 @@ type record struct {
 	// principal so the choice survives a principal that has not been
 	// provisioned yet; it is applied on that owner's first bot open.
 	OwnerBotLLMs map[string]*ownerBotLLM `json:"owner_bot_llms,omitempty"`
+	// OwnerCapabilities is the MCP servers and skills every bot of that owner
+	// may use, keyed by hub user id. Stdio env is not stored.
+	OwnerCapabilities map[string]*botcapability.Document `json:"owner_capabilities,omitempty"`
+	// OwnerCapabilityStamps is the hash last pushed into MaClawSrv. A mismatch
+	// means the next bot open pushes again.
+	OwnerCapabilityStamps map[string]string `json:"owner_capability_stamps,omitempty"`
 	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
-	// starts with, keyed by hub user id. Absent means shared, as before; it
-	// does not change existing bots or other owners.
+	// starts with, keyed by hub user id. Absent means isolated: each new bot
+	// gets its own screen in the owner's container. An explicit "shared"
+	// keeps new bots on the owner's one screen. It does not change existing
+	// bots or other owners.
 	OwnerDesktopModeDefaults map[string]string `json:"owner_desktop_mode_defaults,omitempty"`
 	// PrimaryBot maps a hub user id to that account's one primary bot id.
 	// Empty means the client-visible primary is the earliest CreatedAt.
 	PrimaryBot map[string]string `json:"primary_bot,omitempty"`
 	// CrossNotes are messages one bot left for another. They are not runs.
 	CrossNotes []BotCrossNote `json:"cross_notes,omitempty"`
+	// NodeLinks are extra MaClawSrv connections, one per Bot node. The
+	// fields above stay the public connection, so a tenant with no node
+	// reads and writes exactly as before.
+	NodeLinks []nodeLink `json:"node_links,omitempty"`
+	// OwnerNode pins a hub user to a node srv. Empty keeps that user on
+	// the public connection. A bot stores the same choice on Bot.NodeID.
+	OwnerNode map[string]string `json:"owner_node,omitempty"`
+	// DialNode is set on a record copied for one call into a node srv.
+	// It is not stored. save folds such a copy back onto NodeLinks.
+	DialNode string `json:"-"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.
 type SettingsView struct {
-	BaseURL        string          `json:"base_url"`
-	TokenSet       bool            `json:"token_set"`
-	AdminSecretSet bool            `json:"admin_secret_set"`
-	Bots           []Bot           `json:"bots"`
-	Grants         []Grant         `json:"grants"`
-	LLM            LLMSettingsView `json:"llm"`
+	BaseURL                string          `json:"base_url"`
+	TokenSet               bool            `json:"token_set"`
+	AdminSecretSet         bool            `json:"admin_secret_set"`
+	Bots                   []Bot           `json:"bots"`
+	Grants                 []Grant         `json:"grants"`
+	DefaultDesktopBotLimit *int            `json:"default_desktop_bot_limit,omitempty"`
+	LLM                    LLMSettingsView `json:"llm"`
 }
 
 // Service stores the tenant MaClawSrv connection and the bots created there.
@@ -157,6 +210,13 @@ type Service struct {
 	convJournal *convHub
 	Directory   Directory
 	Desktop     DesktopControl
+	// NodeTransport carries a handoff whose noVNC origin is a Bot node's
+	// virtual host (desktopd.<id>.node.invalid). Nil leaves those pages
+	// unavailable; every other origin keeps the default transport.
+	NodeTransport func(host string) http.RoundTripper
+	// NodeHTTP dials a node's srv. An empty DialNode keeps s.HTTP. A node
+	// call does not use s.HTTP when this is missing or returns nil.
+	NodeHTTP func(nodeID string) *http.Client
 	// MaterialStageDir holds partial material uploads; empty is a temp dir.
 	MaterialStageDir string
 	// MailFileDir keeps files shared in bot messages; empty is a temp dir.
@@ -173,9 +233,22 @@ type Service struct {
 	// ProbeVision asks whether one provider model accepts an image.
 	// Nil skips detection; MaClawSrv then probes on the first turn that needs it.
 	ProbeVision func(ctx context.Context, cfg corelib.MaclawLLMConfig) (supported, known bool)
+	// CloudDesktopAssigned resolves the cloud computer a user's desktop bots
+	// would land on: nil when a user, department, or global assignment names
+	// a cloud server, the resolution error otherwise. A nil hook leaves
+	// creation ungated. The departments slice is the caller-prefetched chain
+	// so the check does not repeat a directory round trip under s.mu.
+	CloudDesktopAssigned func(ctx context.Context, tenantID, userID string, departments []string) error
+	// LanDesktopAvailable reports whether a node id is a registered edge node
+	// of this tenant carrying MaClawSrv — i.e. a usable LAN computer. A nil
+	// hook reports no LAN desktop.
+	LanDesktopAvailable func(ctx context.Context, tenantID, nodeID string) bool
 
 	mu       sync.RWMutex
 	bearerMu sync.Mutex
+	// desktopMetaMu keeps two mode changes from writing instance metadata
+	// out of order. The later change reloads the bot and writes last.
+	desktopMetaMu sync.Mutex
 	// ownerBearers keeps a MaClaw access token for an owner API key. Issuing
 	// one verifies the API secret with scrypt and is rate-limited, so a bot
 	// command reuses the token until shortly before it expires.
@@ -210,15 +283,22 @@ type Service struct {
 	// persisted: after a restart they are empty and the old rules apply.
 	desktopHoldTurn     map[string]string
 	desktopKeyboardTurn map[string]string
+	// desktopControl is the one machine allowed to type on a desktop screen.
+	// Not persisted: a restart drops the hold, and a quiet holder expires.
+	desktopControl map[string]desktopControlHold
 	// desktopAskSession is, per bot, the conversation a later message may
 	// continue: a question just asked, or a recently finished task thread.
 	desktopAskSession map[string]desktopAskOwner
 	// desktopQueues is the per-bot FIFO of messages waiting for a free slot
 	// or for the person to return the keyboard. desktop queue keys are
 	// tenant, user, bot.
-	desktopQueues  map[string][]*desktopQueueItem
-	queueDraining  map[string]bool
-	queueDrainOnce sync.Once
+	desktopQueues map[string][]*desktopQueueItem
+	// desktopStarting is the item a drain popped and is admitting now. Until
+	// finishQueued records it again, a status poll for its turn key would
+	// read "missing" even though the message is starting — not gone.
+	desktopStarting map[string]*desktopQueueItem
+	queueDraining   map[string]bool
+	queueDrainOnce  sync.Once
 	// queueDrainOff skips the background drain timer. Tests that park a
 	// message and assert it was not posted set this.
 	queueDrainOff bool
@@ -231,6 +311,9 @@ type Service struct {
 	// from the Bot page. The hold keeps that live picture up after a run
 	// finishes; without it the VNC frame goes black mid-watch.
 	desktopUserView map[string]time.Time
+	// desktopRecoverAttempt is the last time a stopped login screen was
+	// started again. It is not persisted: a restart may try once more.
+	desktopRecoverAttempt map[string]time.Time
 	// desktopWatchGen is the newest watch generation a poll has noted.
 	// desktopWatchClosed is the newest generation whose panel has released.
 	// A release only drops a view that is still that generation, so a page
@@ -257,14 +340,22 @@ type Service struct {
 	// BotParallelRuns caps how many runs one bot may have going at once
 	// (0: MACLAW_BOT_PARALLEL_RUNS or 3; see botParallelRuns).
 	BotParallelRuns int
-	// admitPollInterval and admitReadyGrace shorten the background run
-	// follow-up in tests. Production waits one second between reads and
-	// gives the result a few seconds to land after the run becomes terminal.
+	// admitPollInterval, admitReadyGrace, and admitReceiptGrace shorten the
+	// background run follow-up in tests. Production waits one second between
+	// reads, gives a finished run a few seconds to publish desktop_ready,
+	// and waits longer while receipt_pending is still set.
 	admitPollInterval time.Duration
 	admitReadyGrace   time.Duration
+	admitReceiptGrace time.Duration
 	// desktopAdmits is the reply of a run that was accepted and is still
 	// executing, or has finished, after the admitting call returned.
 	desktopAdmits map[string]*desktopAdmitState
+	// desktopContinues is the turn key of the last login/captcha continuation
+	// per tenant, user, bot. Guarded by mu (desktop_handoff_continue.go).
+	desktopContinues map[string]desktopContinueMark
+	// desktopHandoffSeq numbers the handoffs of one bot's display: bumped
+	// when its pin opens or a takeover begins. Guarded by mu.
+	desktopHandoffSeq map[string]uint64
 	// BotDispatch lets Hub itself start delegated work and wake idle
 	// server-side bots when mail arrives (bot_dispatch.go). Off in tests.
 	BotDispatch bool
@@ -277,8 +368,12 @@ type Service struct {
 	patrolOnce  sync.Once
 	patrolMu    sync.Mutex
 	patrolSight map[string]*patrolSight
-	routerOnce  sync.Once
-	router      *routerInbox
+	// scheduleSweep is the last time this user asked the host to drop timers
+	// whose bot id is gone. Listing the panel does it, and not on every poll.
+	scheduleSweepMu sync.Mutex
+	scheduleSweep   map[string]time.Time
+	routerOnce      sync.Once
+	router          *routerInbox
 }
 
 // asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
@@ -371,6 +466,26 @@ func (s *Service) SaveAdminSecret(ctx context.Context, tenantID, secret string) 
 	return viewOf(rec), nil
 }
 
+// SaveDefaultDesktopBotLimit stores the tenant-wide fallback cap used when
+// no covering grant sets a desktop-bot limit. A nil limit clears it back
+// to unlimited.
+func (s *Service) SaveDefaultDesktopBotLimit(ctx context.Context, tenantID string, limit *int) (SettingsView, error) {
+	if limit != nil && *limit < 0 {
+		return SettingsView{}, ErrInvalidInput
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return SettingsView{}, err
+	}
+	rec.DefaultDesktopBotLimit = limit
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return SettingsView{}, err
+	}
+	return viewOf(rec), nil
+}
+
 func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, error) {
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {
@@ -379,7 +494,20 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 	if err := configured(rec); err != nil {
 		return 0, err
 	}
-	count, err := s.countInstances(ctx, rec, s.sharedBearer(ctx, rec))
+	bearer := s.sharedBearer(ctx, rec)
+	if strings.TrimSpace(bearer) == "" {
+		// Admin-secret-only setup: there is no bearer to probe with, so skip
+		// the pointless unauthenticated request and provision the credential
+		// right away.
+		cred, err := s.provisionConnectionCredential(ctx, tenantID)
+		if err != nil {
+			return 0, err
+		}
+		if bearer, _, err = s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID); err != nil {
+			return 0, err
+		}
+	}
+	count, err := s.countInstances(ctx, rec, bearer)
 	if err == nil {
 		s.probeStoredProviders(ctx, tenantID)
 		return count, nil
@@ -402,7 +530,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, err
 		}
 		return 0, err
 	}
-	bearer, _, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
+	bearer, _, err = s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
 	if err != nil {
 		return 0, err
 	}
@@ -428,7 +556,7 @@ func (s *Service) countInstances(ctx context.Context, rec record, bearer string)
 }
 
 func (s *Service) CreateBot(ctx context.Context, tenantID, name, description string) (Bot, error) {
-	return s.createBot(ctx, tenantID, "", name, description, false)
+	return s.createBot(ctx, tenantID, "", name, description, false, nil, nil)
 }
 
 func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, description string) (Bot, error) {
@@ -447,19 +575,38 @@ func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, descript
 	if index < 0 {
 		return Bot{}, ErrNotFound
 	}
-	if err := configured(rec); err != nil {
-		return Bot{}, err
-	}
 	bot := rec.Bots[index]
-	if err := botNameConflict(rec, bot.OwnerUserID, name, bot.ID); err != nil {
-		return Bot{}, err
-	}
-	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	callRec, err := callTarget(rec, bot.NodeID)
 	if err != nil {
 		return Bot{}, err
 	}
+	if err := botNameConflict(rec, bot.OwnerUserID, name, bot.ID); err != nil {
+		return Bot{}, err
+	}
+	var token string
+	if strings.TrimSpace(bot.NodeID) != "" {
+		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID, bot.NodeID)
+	} else {
+		// Empty NodeID is the cloud computer, even when this owner is pinned
+		// to a local node. ensureOwnerToken would follow that pin.
+		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	}
+	if err != nil {
+		return Bot{}, err
+	}
+	if strings.TrimSpace(bot.NodeID) != "" {
+		view, ok := nodeView(rec, bot.NodeID)
+		if !ok {
+			return Bot{}, fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
+		}
+		callRec = view
+		index = indexOf(rec.Bots, botID)
+		if index < 0 {
+			return Bot{}, ErrNotFound
+		}
+	}
 	body := map[string]any{"name": name, "description": description}
-	if err := s.doAuth(ctx, rec, token, http.MethodPatch, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), body, nil); err != nil {
+	if err := s.doAuth(ctx, callRec, token, http.MethodPatch, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), body, nil); err != nil {
 		return Bot{}, err
 	}
 	bot.Name = name
@@ -483,17 +630,45 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		return ErrNotFound
 	}
 	bot := rec.Bots[index]
-	if err := configured(rec); err != nil {
-		return err
-	}
-	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	callRec, err := callTarget(rec, bot.NodeID)
 	if err != nil {
 		return err
 	}
-	if err := s.deleteInstanceAfterStoppingRuns(ctx, rec, token, bot.InstanceID); err != nil && !errors.Is(err, ErrSrvNotFound) {
+	var token string
+	if strings.TrimSpace(bot.NodeID) != "" {
+		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID, bot.NodeID)
+	} else {
+		// Empty NodeID is the cloud computer, even when this owner is pinned
+		// to a local node. ensureOwnerToken would follow that pin and send
+		// the node's bearer to the public srv.
+		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(bot.NodeID) != "" {
+		view, ok := nodeView(rec, bot.NodeID)
+		if !ok {
+			return fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
+		}
+		callRec = view
+		index = indexOf(rec.Bots, botID)
+		if index < 0 {
+			return ErrNotFound
+		}
+		bot = rec.Bots[index]
+	}
+	// The clock is the host's. Drop this id's timers before the instance so
+	// a recreated bot that reuses the display name does not keep firing them.
+	if err := s.cancelBotSchedules(ctx, callRec, token, bot); err != nil {
+		log.Printf("[botmgmt] cancel schedules bot=%s: %v", bot.ID, err)
+	}
+	if err := s.deleteInstanceAfterStoppingRuns(ctx, callRec, token, bot.InstanceID); err != nil && !errors.Is(err, ErrSrvNotFound) {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	rec.CrossNotes = dropOrphanSays(rec.CrossNotes, rec, bot.OwnerUserID)
+	dropBotFromRooms(&rec, bot.OwnerUserID, bot.ID)
 	// The slot is cleared in this same save. The next earliest remaining bot
 	// becomes primary by the read rule. The next id is not written here.
 	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {
@@ -510,20 +685,20 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		stopHeld = true
 	}
 	s.persistDesktopState(tenantID)
-	// The desktop belongs to the user, not this bot. Another bot of the same
-	// user may still be logged in there. MaClawSrv stops it when no run is left.
-	shared := false
+	// The container belongs to the user on that computer. Another bot of the
+	// same user on the same computer may still be logged in there.
+	sameComputer := false
 	for _, item := range rec.Bots {
-		if item.OwnerUserID != "" && item.OwnerUserID == bot.OwnerUserID {
-			shared = true
+		if item.OwnerUserID == bot.OwnerUserID && strings.TrimSpace(item.NodeID) == strings.TrimSpace(bot.NodeID) {
+			sameComputer = true
 			break
 		}
 	}
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return err
 	}
-	if stopHeld && !shared && s.Desktop != nil {
-		_ = s.Desktop.Stop(ctx, tenantID, bot.OwnerUserID)
+	if stopHeld && !sameComputer && s.Desktop != nil {
+		_ = s.Desktop.Stop(desktoppool.WithComputer(ctx, bot.NodeID), tenantID, bot.OwnerUserID)
 	}
 	var keep []string
 	for _, item := range rec.Bots {
@@ -531,7 +706,7 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 			keep = append(keep, item.ID)
 		}
 	}
-	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, keep)
+	s.releaseBotDesktopLater(tenantID, bot.OwnerUserID, bot.ID, bot.NodeID, keep)
 	return nil
 }
 
@@ -547,7 +722,7 @@ type DesktopBotReleaser interface {
 // re-created under a new id). Before this, the numbers stayed taken until
 // the 30-number pool ran out (papers 2026-11-11). It runs off the request;
 // a failure only leaves the supervisor's reclaim-on-exhaustion fallback.
-func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID string, keep []string) {
+func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID, nodeID string, keep []string) {
 	rel, ok := s.Desktop.(DesktopBotReleaser)
 	if !ok || rel == nil || strings.TrimSpace(ownerUserID) == "" {
 		return
@@ -555,7 +730,9 @@ func (s *Service) releaseBotDesktopLater(tenantID, ownerUserID, botID string, ke
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := rel.ReleaseBotDesktop(ctx, tenantID, ownerUserID, botID)
+		// The bot is already gone, so the release names its computer directly.
+		// An empty node is the cloud computer.
+		err := rel.ReleaseBotDesktop(desktoppool.WithComputer(ctx, nodeID), tenantID, ownerUserID, botID)
 		traceBot(botID, "desktop_release", err)
 		err = rel.PruneBotDesktops(ctx, tenantID, ownerUserID, keep)
 		traceBot(botID, "desktop_prune", err, "keep", strconv.Itoa(len(keep)))
@@ -587,11 +764,22 @@ func (s *Service) save(ctx context.Context, tenantID string, rec record) error {
 	if s == nil || s.System == nil {
 		return ErrSettingsUnavailable
 	}
+	if strings.TrimSpace(rec.DialNode) != "" {
+		stored, err := s.load(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		rec = foldNodeView(stored, rec)
+	}
 	if rec.Bots == nil {
 		rec.Bots = []Bot{}
 	}
 	if rec.Grants == nil {
 		rec.Grants = []Grant{}
+	}
+	// desktop_over is an admin-list mark. Drop it before the record is stored.
+	for i := range rec.Bots {
+		rec.Bots[i].DesktopOver = false
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
@@ -706,7 +894,16 @@ func (s *Service) authAsOwner(ctx context.Context, tenantID, owner string, rec *
 	if !upstreamUnauthorized(err) {
 		return err
 	}
-	fresh, next, tokenErr := s.ownerToken(ctx, tenantID, owner)
+	// Renew on the srv this call already chose. ownerToken follows the
+	// owner's pin, which would move a cloud bot onto a local node.
+	var fresh record
+	var next string
+	var tokenErr error
+	if nodeID := strings.TrimSpace(rec.DialNode); nodeID != "" {
+		fresh, next, tokenErr = s.finishNodeOwnerToken(ctx, tenantID, owner, nodeID)
+	} else {
+		fresh, next, tokenErr = s.ownerTokenPublic(ctx, tenantID, owner)
+	}
 	if tokenErr != nil {
 		return err
 	}
@@ -747,9 +944,11 @@ const botmgmtIdempotentRetryWait = 200 * time.Millisecond
 // botmgmtCallWorthRetry reports whether one MaClawSrv call failed without
 // MaClawSrv deciding anything: a transport error, or a 5xx from a proxy in
 // front of it. Both leave the requested state unchanged, which is what makes
-// another try safe for a read.
+// another try safe for a read. A tunnel that is already offline, or a node
+// that has no link at all, will not answer a second time, so that failure
+// is returned at once. A missing link stays out of the offline queue.
 func botmgmtCallWorthRetry(err error) bool {
-	if err == nil {
+	if err == nil || nodeLinkOffline(err) || nodeLinkMissingError(err) {
 		return false
 	}
 	var statusErr *upstream.StatusError
@@ -812,7 +1011,7 @@ func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, met
 			}
 		}
 		var resp *http.Response
-		resp, err = s.httpClient(path).Do(req)
+		resp, err = s.httpClientFor(rec, path).Do(req)
 		if err != nil {
 			err = fmt.Errorf("%w: %s", ErrSrv, err.Error())
 		} else {
@@ -857,7 +1056,22 @@ func (s *Service) client() *http.Client {
 const demoSkillCallTimeout = 5 * time.Minute
 
 func (s *Service) httpClient(path string) *http.Client {
+	return s.httpClientFor(record{}, path)
+}
+
+func (s *Service) httpClientFor(rec record, path string) *http.Client {
 	base := s.client()
+	if node := strings.TrimSpace(rec.DialNode); node != "" {
+		var nodeClient *http.Client
+		if s != nil && s.NodeHTTP != nil {
+			nodeClient = s.NodeHTTP(node)
+		}
+		if nodeClient == nil {
+			base = &http.Client{Timeout: base.Timeout, CheckRedirect: base.CheckRedirect, Transport: nodeLinkMissing{}}
+		} else {
+			base = nodeClient
+		}
+	}
 	if strings.Contains(path, "/skills/demo/") {
 		// Distill captions every screenshot and then writes the skill with
 		// the model: tens of seconds. The 15s client cut it off and the
@@ -893,7 +1107,21 @@ func (s *Service) now() time.Time {
 }
 
 func configured(rec record) error {
-	if strings.TrimSpace(rec.BaseURL) == "" || strings.TrimSpace(rec.AccessToken) == "" {
+	if strings.TrimSpace(rec.DialNode) != "" {
+		if strings.TrimSpace(rec.BaseURL) == "" {
+			return ErrNotConfigured
+		}
+		return nil
+	}
+	if strings.TrimSpace(rec.BaseURL) == "" {
+		return ErrNotConfigured
+	}
+	// The admin secret alone completes the setup: it provisions the shared
+	// connection credential itself, so pasting an access token is no longer
+	// required.
+	if strings.TrimSpace(rec.AccessToken) == "" &&
+		strings.TrimSpace(rec.AdminSecret) == "" &&
+		!connectionReady(rec.Connection) {
 		return ErrNotConfigured
 	}
 	return nil
@@ -909,12 +1137,13 @@ func viewOf(rec record) SettingsView {
 		grants = []Grant{}
 	}
 	return SettingsView{
-		BaseURL:        rec.BaseURL,
-		TokenSet:       strings.TrimSpace(rec.AccessToken) != "",
-		AdminSecretSet: strings.TrimSpace(rec.AdminSecret) != "",
-		Bots:           bots,
-		Grants:         grants,
-		LLM:            llmView(rec.LLM),
+		BaseURL:                rec.BaseURL,
+		TokenSet:               strings.TrimSpace(rec.AccessToken) != "",
+		AdminSecretSet:         strings.TrimSpace(rec.AdminSecret) != "",
+		Bots:                   bots,
+		Grants:                 grants,
+		DefaultDesktopBotLimit: rec.DefaultDesktopBotLimit,
+		LLM:                    llmView(rec.LLM),
 	}
 }
 
@@ -933,6 +1162,10 @@ func validateBaseURL(raw string) error {
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("%w: base_url must be http or https", ErrInvalidInput)
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), ".")
+	if host == "node.invalid" || strings.HasSuffix(host, ".node.invalid") {
+		return fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
 	}
 	return nil
 }

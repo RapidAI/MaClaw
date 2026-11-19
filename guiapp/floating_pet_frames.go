@@ -10,7 +10,8 @@ import (
 
 // tryLoadPackFrame returns a scaled frame from the selected pack. The legacy
 // variant argument remains for call compatibility, but no longer selects a
-// different rendering path. Shared by Windows (animated) and Linux/macOS (still).
+// different rendering path. Windows and macOS use it when a character or
+// skeleton frame is not available. Linux paints only this frame.
 func tryLoadPackFrame(skin, variant, state string, size int, cache *petpack.FrameCache) *image.NRGBA {
 	reg := petpack.EnsureGlobal()
 	if reg == nil {
@@ -35,8 +36,9 @@ func encodeNRGBAToPNG(img *image.NRGBA) []byte {
 	return buf.Bytes()
 }
 
-// desktopPetStillPNG is the static pet face used where the Windows animation
-// loop is not available. A pack frame wins; logoFallback is only the last resort.
+// desktopPetStillPNG is the static pet face. Linux paints only this. Windows
+// and macOS use it when a character or skeleton frame is not available.
+// A pack frame wins; logoFallback is only the last resort.
 func desktopPetStillPNG(skin, variant, state string, size int, cache *petpack.FrameCache, logoFallback []byte) []byte {
 	sz := size
 	if sz < 56 {

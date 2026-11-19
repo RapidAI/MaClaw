@@ -2744,6 +2744,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			// only the final aggregated answer is persisted.
 			streamedChunks := false
 			chunkCount := 0
+			var streamed strings.Builder
 			var liveChunks veStreamChunkCoalescer
 			pushChunk := func(chunk string) {
 				if chunk == "" || initiatorID == "" {
@@ -2772,6 +2773,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 					return
 				}
 				streamedChunks = true
+				streamed.WriteString(chunk)
 				liveChunks.add(chunk, pushChunk)
 			}
 			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), macLawSrvStreamHooks{onChunk: chunkCb, onStatus: pushActivity})
@@ -2823,8 +2825,12 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 				}
 				return
 			}
-			reply = strings.TrimSpace(reply)
-			if reply == "" {
+			// Fold the raw settled answer onto the chunks that were actually
+			// pushed. Trimming first can cut the opening off a fold and make
+			// the next fold insert a second gap. Whitespace-only replies were
+			// already rejected above.
+			shown := textutil.ProjectAnswerSlices(streamed.String(), reply)
+			if strings.TrimSpace(reply) == "" {
 				log.Printf("[ve-platform-delivery] async runtime empty reply session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started))
 				// Send stream_end so the frontend closes the streaming state.
 				if streamedChunks && initiatorID != "" {
@@ -2849,7 +2855,7 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 				endEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
 				endEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
 				endEnvelope.ToIDs = []string{initiatorID}
-				endMsg := corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, CreatedAt: time.Now().UTC()}
+				endMsg := corea2a.GroupDiscussionMessage{FromID: targetID, Kind: corea2a.MessageStreamEnd, Content: textutil.StreamEndContent(streamed.String(), reply), CreatedAt: time.Now().UTC()}
 				endEnvelope.Message = &endMsg
 				_ = s.SendToMachine(initiatorID, map[string]any{
 					"type": "ve:discussion_message",
@@ -2860,12 +2866,10 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 					},
 				})
 			}
-			// Persist the final aggregated response as a MessageAnswer for history.
-			// When streaming occurred, the client already received all content via
-			// stream_chunk + stream_end. Use AddDiscussionMessage directly (not
-			// onReply) to avoid notifyDiscussionMessage re-pushing the same content
-			// as a duplicate message to the frontend.
-			replyMsg := corea2a.GroupDiscussionMessage{ID: macLawSrvReplyMessageID(msgCopy, targetID), FromID: targetID, Kind: corea2a.MessageAnswer, Content: reply, CreatedAt: time.Now().UTC()}
+			// Persist the folded answer. The live client paints the opening as
+			// chunks and folds the ending from stream_end; reopening reads this
+			// one row. AddDiscussionMessage does not push it again.
+			replyMsg := corea2a.GroupDiscussionMessage{ID: macLawSrvReplyMessageID(msgCopy, targetID), FromID: targetID, Kind: corea2a.MessageAnswer, Content: shown, CreatedAt: time.Now().UTC()}
 			if streamedChunks {
 				// Persist without notification — client already has the content.
 				if s.groupSvc != nil {
@@ -3040,7 +3044,7 @@ func macLawSrvDiscussionRecentContext(messages []corea2a.Message, current corea2
 			if fromID == "" {
 				fromID = "unknown"
 			}
-			recent = append(recent, fmt.Sprintf("[%s] %s", fromID, truncateMacLawSrvDiscussionContext(content, 1200)))
+			recent = append(recent, fmt.Sprintf("[%s] %s", fromID, textutil.ClipKeepTail(content, 1200)))
 		}
 		streamFrom = ""
 		streamContent.Reset()
@@ -3054,7 +3058,25 @@ func macLawSrvDiscussionRecentContext(messages []corea2a.Message, current corea2
 			continue
 		}
 		switch item.Kind {
-		case corea2a.MessageStreamEnd, corea2a.MessageStreamStatus, corea2a.MessageHandoff:
+		case corea2a.MessageStreamEnd:
+			// stream_end is the settled ending. The chunks above it are only
+			// the opening. Fold them the same way the viewer does. Dropping
+			// the ending leaves the next turn with the opening alone.
+			endFrom := strings.TrimSpace(item.FromID)
+			if streamFrom != "" && endFrom != "" && !groupDiscussionParticipantIdentityMatches(streamFrom, endFrom) {
+				flushStream()
+			}
+			if item.Content != "" {
+				if streamFrom == "" {
+					streamFrom = endFrom
+				}
+				folded := textutil.ProjectAnswerSlices(streamContent.String(), item.Content)
+				streamContent.Reset()
+				streamContent.WriteString(folded)
+			}
+			flushStream()
+			continue
+		case corea2a.MessageStreamStatus, corea2a.MessageHandoff:
 			flushStream()
 			continue
 		case corea2a.MessageStreamChunk:
@@ -3081,7 +3103,7 @@ func macLawSrvDiscussionRecentContext(messages []corea2a.Message, current corea2
 		if fromID == "" {
 			fromID = "unknown"
 		}
-		recent = append(recent, fmt.Sprintf("[%s] %s", fromID, truncateMacLawSrvDiscussionContext(content, 1200)))
+		recent = append(recent, fmt.Sprintf("[%s] %s", fromID, macLawSrvDiscussionContextClip(content, item.Kind)))
 	}
 	flushStream()
 	if len(recent) > 12 {
@@ -3112,6 +3134,13 @@ func macLawSrvDiscussionCurrentMessageIndex(messages []corea2a.Message, current 
 		return i
 	}
 	return -1
+}
+
+func macLawSrvDiscussionContextClip(content string, kind corea2a.MessageKind) string {
+	if kind == corea2a.MessageAnswer {
+		return textutil.ClipKeepTail(content, 1200)
+	}
+	return truncateMacLawSrvDiscussionContext(content, 1200)
 }
 
 func truncateMacLawSrvDiscussionContext(value string, maxRunes int) string {

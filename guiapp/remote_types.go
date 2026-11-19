@@ -355,8 +355,13 @@ type RemoteSession struct {
 	// intentionally separate from Maclaw LLM provider usage and billing.
 	TokenUsage RemoteSessionTokenUsage
 
-	Exec     ExecutionHandle
-	Provider ProviderAdapter
+	Exec ExecutionHandle
+	// outputDone is closed when this session's output loop returns. The exit
+	// loop waits for it before publishing session.closed, so a tail still in
+	// the reader cannot follow that frame. It stays nil when a test runs only
+	// one of the two loops.
+	outputDone chan struct{}
+	Provider   ProviderAdapter
 
 	// AgentLoop tracks a background AI-assistant task that is surfaced via the
 	// remote session list. These sessions do not have an ExecutionHandle, so

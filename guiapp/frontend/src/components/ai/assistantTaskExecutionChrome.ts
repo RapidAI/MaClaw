@@ -45,6 +45,11 @@ export function resolveTaskExecutionStatus(input: {
      * "running" covers queued work. "needs_input" is waiting on the user.
      */
     openChatWork?: "" | "running" | "needs_input";
+    /**
+     * Status published by the same projection MCP reads. Empty keeps the
+     * snapshot inference, including a leading completed token.
+     */
+    executionStatus?: string;
 }): TaskExecutionStatus {
     const raw = input.raw || "";
     const lang = input.lang;
@@ -57,10 +62,13 @@ export function resolveTaskExecutionStatus(input: {
     // working, the badge must say in progress rather than contradict the
     // reasoning trail that is still streaming.
     const liveWork = input.busy === true;
+    // The published projection is the task outcome. Snapshot words are only
+    // for a task that has not published one.
+    const shared = sharedExecutionBadge(lang, input.executionStatus);
     // Failure still beats pause and an in-flight stop. A live worker wins, so
     // a failed token left in the snapshot does not hide it. A leading
     // completed status is the list's outcome; a later failed step is not.
-    if (!settledComplete && !input.openChatWork && !liveWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
+    if (!shared && !settledComplete && !input.openChatWork && !liveWork && /(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
         return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" };
     }
     if (input.cancelPending) {
@@ -81,6 +89,7 @@ export function resolveTaskExecutionStatus(input: {
     if (liveWork) {
         return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
     }
+    if (shared) return shared;
     // Only the leading status token counts. A later phase named "pause" must
     // not turn a finished run into a paused one.
     if (/^(paused|pause|已暂停|暂停)(?=$|[\s_])/.test(raw)) {
@@ -147,6 +156,25 @@ export function resolveTaskExecutionStatus(input: {
 
 /** The leading workflow status is a finished success. Step words such as
  * "passed" are not that status: they follow the workflow token. */
+function sharedExecutionBadge(lang: string, status: string | undefined): TaskExecutionStatus | null {
+    switch ((status || "").trim()) {
+        case "completed":
+            return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" };
+        case "failed":
+            return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" };
+        case "cancelled":
+            return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" };
+        case "waiting_review":
+            return { label: localizeText(lang, "Waiting for review", "等待审阅", "等待審閱"), tone: "pending" };
+        case "running":
+            return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" };
+        case "needs_confirmation":
+            return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" };
+        default:
+            return null;
+    }
+}
+
 function durableExecutionStatusCompleted(raw: string): boolean {
     return leadingSnapshotStatusCompleted(raw);
 }

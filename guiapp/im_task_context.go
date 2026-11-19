@@ -14,7 +14,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	// The continuation prompt repeats the original request, and the max-rounds
 	// slot makes the recovery classifier treat that echo as a new task. Clearing
 	// here deletes the work the next wave is supposed to resume.
-	if sessionRoundTurn(trimmed, msg.Platform) {
+	if sessionRoundTurn(trimmed, msg.Platform) || repoMaintHostTurn(trimmed, msg.Platform) {
 		return askUserContext, false, false
 	}
 	// The bar's continue is the same goal. Leave the fence in place so this

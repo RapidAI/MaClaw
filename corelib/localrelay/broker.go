@@ -130,6 +130,36 @@ func (b *Broker) Attach(ctx context.Context, key, machine string, conn net.Conn)
 	return nil
 }
 
+// CloseUser closes one person's relay link and revokes every grant minted for them.
+func (b *Broker) CloseUser(key string) {
+	b.closeKeyPrefix(key, true)
+}
+
+// CloseTenant closes every relay link and grant in one tenant.
+func (b *Broker) CloseTenant(tenantID string) {
+	b.closeKeyPrefix(strings.TrimSpace(tenantID)+"\x00", false)
+}
+
+func (b *Broker) closeKeyPrefix(prefix string, exact bool) {
+	b.mu.Lock()
+	var sessions []*yamux.Session
+	for key, link := range b.links {
+		if (exact && key == prefix) || (!exact && strings.HasPrefix(key, prefix)) {
+			sessions = append(sessions, link.sess)
+			delete(b.links, key)
+		}
+	}
+	for token, grant := range b.grants {
+		if (exact && grant.Key == prefix) || (!exact && strings.HasPrefix(grant.Key, prefix)) {
+			delete(b.grants, token)
+		}
+	}
+	b.mu.Unlock()
+	for _, sess := range sessions {
+		_ = sess.Close()
+	}
+}
+
 // Online reports the person's link.
 func (b *Broker) Online(key string) (bool, string, time.Time) {
 	b.mu.Lock()
@@ -270,14 +300,8 @@ func (b *Broker) use(token string) (Grant, error) {
 	now := b.now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	var g *Grant
-	for tok, cand := range b.grants {
-		if len(tok) == len(token) && subtle.ConstantTimeCompare([]byte(tok), []byte(token)) == 1 {
-			g = cand
-			break
-		}
-	}
-	if g == nil || token == "" {
+	g := b.grants[token]
+	if g == nil || token == "" || subtle.ConstantTimeCompare([]byte(g.Token), []byte(token)) != 1 {
 		return Grant{}, &Err{Code: CodeExpired, Message: "relay token is unknown or was closed (the server may have restarted); open it again"}
 	}
 	if why := b.deadLocked(g, now); why != "" {

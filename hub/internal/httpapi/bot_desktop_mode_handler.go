@@ -38,7 +38,56 @@ func PutBotDesktopModeAdminHandler(svc *botmgmt.Service) http.HandlerFunc {
 		if mode == "" {
 			mode = "shared"
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": bot.ID, "desktop_mode": mode})
+		body := map[string]any{"id": bot.ID, "desktop_mode": mode}
+		if warning := svc.DesktopOverWarning(r.Context(), botTenantID(r), bot.OwnerUserID, mode); warning != "" {
+			body["warning"] = warning
+		}
+		writeJSON(w, http.StatusOK, body)
+	}
+}
+
+// PostBotDesktopControlHandler POST /api/v1/bots/{id}/desktop/control
+// {"hold":true} claims this machine's keyboard on the bot's screen.
+// {"hold":false} releases it. A second machine is refused while the first
+// hold is still fresh.
+func PostBotDesktopControlHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		in := struct {
+			Hold *bool `json:"hold"`
+		}{}
+		if r.Body != nil {
+			raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+			if err != nil || (len(strings.TrimSpace(string(raw))) > 0 && json.Unmarshal(raw, &in) != nil) {
+				writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+				return
+			}
+		}
+		hold := true
+		if in.Hold != nil {
+			hold = *in.Hold
+		}
+		botID := r.PathValue("id")
+		if !hold {
+			if err := svc.ReleaseDesktopControl(r.Context(), principal.TenantID, principal.UserID, botID, principal.MachineID); err != nil {
+				writeBotUserError(w, r, principal, err, "")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"input_granted": false})
+			return
+		}
+		granted, err := svc.ClaimDesktopControl(r.Context(), principal.TenantID, principal.UserID, botID, principal.MachineID)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"input_granted": granted})
 	}
 }
 
@@ -87,9 +136,20 @@ func PostBotDesktopHandBackHandler(svc *botmgmt.Service, identity botAuthenticat
 		if phase == "" {
 			phase = "execute"
 		}
-		admission, err := svc.AdmitDesktopMessage(r.Context(), principal.TenantID, principal.UserID, botID, message, phase, "")
+		admission, err := svc.AdmitDesktopMessage(botmgmt.WithDesktopContinuation(r.Context()), principal.TenantID, principal.UserID, botID, message, phase, "")
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if admission.Joined {
+			// Another post already continues this handoff and owns its
+			// bubble; this press only hands back.
+			reply := admission.Reply
+			if strings.TrimSpace(reply.Text) == "" {
+				reply.Text = botmgmt.DesktopContinueJoinedLine
+				reply.SendToUser = reply.Text
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"handed_back": true, "joined": true, "reply": reply})
 			return
 		}
 		if admission.Accepted && !admission.Settled {

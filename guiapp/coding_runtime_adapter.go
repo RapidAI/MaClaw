@@ -360,7 +360,7 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 		return &CodingSubAgentResult{Status: TaskExecInterrupted, Summary: "Execution interrupted; read-only recovery probe required", Error: attempt.ErrorSummary, RuntimeTaskID: task.TaskID}, attempt, nil
 	}
 	if attempt != nil && attempt.Status == codingruntime.TaskWaitingChild {
-		return &CodingSubAgentResult{Status: TaskExecWaitingChild, Summary: "Read-only child tasks completed; start a fresh parent attempt to review their bounded results.", RuntimeTaskID: task.TaskID}, attempt, nil
+		return &CodingSubAgentResult{Status: TaskExecWaitingChild, Summary: "Read-only child tasks were admitted; start a fresh parent attempt to review their bounded results.", RuntimeTaskID: task.TaskID, Children: codingLedgerChildren(store, task.TaskID)}, attempt, nil
 	}
 	if task.Status == codingruntime.TaskBlocked && attempt != nil && strings.HasPrefix(attempt.ErrorCode, "final_diff_gate") {
 		if adapter.result != nil {
@@ -464,7 +464,7 @@ func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store c
 		return &RemoteCodingSubAgentResult{Status: "interrupted", Summary: "Execution interrupted; read-only recovery probe required", Error: attempt.ErrorSummary, RuntimeTaskID: task.TaskID}, attempt, nil
 	}
 	if attempt != nil && attempt.Status == codingruntime.TaskWaitingChild {
-		return &RemoteCodingSubAgentResult{Status: "waiting_child", Summary: "Read-only child tasks were admitted; start a fresh parent attempt after their bounded results are delivered.", RuntimeTaskID: task.TaskID}, attempt, nil
+		return &RemoteCodingSubAgentResult{Status: "waiting_child", Summary: "Read-only child tasks were admitted; start a fresh parent attempt after their bounded results are delivered.", RuntimeTaskID: task.TaskID, Children: codingLedgerChildren(store, task.TaskID)}, attempt, nil
 	}
 	if adapter.result != nil {
 		adapter.result.RuntimeTaskID = task.TaskID

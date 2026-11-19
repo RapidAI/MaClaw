@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -485,6 +486,113 @@ func TestOpenTimeoutWhenGUIStalls(t *testing.T) {
 	_, err := r.broker.Call(context.Background(), r.key, Request{Op: OpList, Path: r.home})
 	if CodeOf(err) != CodeTimeout || time.Since(start) > time.Second {
 		t.Fatalf("stalled GUI: %v after %v", err, time.Since(start))
+	}
+}
+
+func TestNormalizePermissionDefaultsToAsk(t *testing.T) {
+	if got := (Settings{}).Normalize().Permission; got != PermissionAsk {
+		t.Fatalf("empty permission: %q", got)
+	}
+	if got := (Settings{Permission: " FULL "}).Normalize().Permission; got != PermissionFull {
+		t.Fatalf("full permission: %q", got)
+	}
+	if got := (Settings{Permission: "nope"}).Normalize().Permission; got != PermissionAsk {
+		t.Fatalf("unknown permission: %q", got)
+	}
+	if got := DefaultSettings(t.TempDir()).Normalize().Permission; got != PermissionAsk {
+		t.Fatalf("default permission: %q", got)
+	}
+}
+
+func TestFullPermissionWritesAndDialsWithoutAsking(t *testing.T) {
+	r := newRig(t, Settings{}, func(context.Context, Prompt) Answer {
+		t.Error("full access showed a question")
+		return AnswerDeny
+	})
+	maclaw := filepath.Join(r.home, "MaClaw")
+	outside := filepath.Join(r.home, "elsewhere")
+	os.MkdirAll(maclaw, 0o755)
+	os.MkdirAll(outside, 0o755)
+	r.agent.Load = func() Settings {
+		return Settings{
+			FilesEnabled:   true,
+			NetworkEnabled: true,
+			Permission:     PermissionFull,
+			Roots:          []Root{{Path: maclaw, Write: true}},
+		}
+	}
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckWrite, BotID: "b4", BotName: "Bot 4", Name: "weather.pdf"}); err != nil {
+		t.Fatalf("bot folder write: %v", err)
+	}
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckWrite, BotID: "b4", BotName: "Bot 4", Path: outside, Name: "note.txt"}); err != nil {
+		t.Fatalf("outside write: %v", err)
+	}
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckRead, BotID: "b4", Path: filepath.Join(outside, "missing")}); CodeOf(err) != CodeNotFound {
+		t.Fatalf("missing file should still fail, got %v", err)
+	}
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckDial, BotID: "b4", Host: "127.0.0.1", Port: 9}); err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if n := r.prompts.Load(); n != 0 {
+		t.Fatalf("full access asked %d times", n)
+	}
+
+	r.agent.Load = func() Settings { return Settings{Permission: PermissionFull} }
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckWrite, BotID: "b4", Name: "x.txt"}); CodeOf(err) != CodeDisabled {
+		t.Fatalf("files still off: %v", err)
+	}
+	if _, err := r.broker.Call(context.Background(), r.key, Request{Op: OpCheckDial, BotID: "b4", Host: "127.0.0.1", Port: 9}); CodeOf(err) != CodeDisabled {
+		t.Fatalf("network still off: %v", err)
+	}
+}
+
+func TestFullAccessCoversTheQuestionAlreadyWaiting(t *testing.T) {
+	release := make(chan struct{})
+	var asks atomic.Int32
+	var mu sync.Mutex
+	r := newRig(t, Settings{}, nil)
+	docs := filepath.Join(r.home, "Docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := Settings{FilesEnabled: true, Roots: []Root{{Path: docs}}}
+	r.agent.Load = func() Settings {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	r.agent.Ask = func(context.Context, Prompt) Answer {
+		asks.Add(1)
+		<-release
+		return AnswerDeny
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 2)
+	call := func() {
+		_, err := r.broker.Call(ctx, r.key, Request{Op: OpList, BotID: "b1", Path: docs})
+		errCh <- err
+	}
+	go call()
+	deadline := time.Now().Add(2 * time.Second)
+	for asks.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the question never opened")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	go call()
+	mu.Lock()
+	current = Settings{FilesEnabled: true, Permission: PermissionFull, Roots: []Root{{Path: docs}}}
+	mu.Unlock()
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if n := asks.Load(); n != 1 {
+		t.Fatalf("full access asked %d times", n)
 	}
 }
 

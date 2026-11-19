@@ -268,3 +268,77 @@ func WindowTitlesMatch(a, b string) bool {
 	}
 	return false
 }
+
+// sameControlWindow reports whether two titles are the same top-level window,
+// not merely the same application. It is the fallback when a stable window
+// id is missing. Empty values stay unknown and match. "记事本" still matches
+// "无标题 - 记事本". Two document titles that only share an app suffix
+// ("订单 - Google Chrome" and "收件箱 - Google Chrome") do not.
+// WindowTitlesMatch stays the app-family check used when a crop goes stale.
+func sameControlWindow(a, b string) bool {
+	na := NormalizeWindowTitle(a)
+	nb := NormalizeWindowTitle(b)
+	if na == "" || nb == "" || na == nb {
+		return true
+	}
+	preA, sufA, splitA := splitWindowTitle(na)
+	preB, sufB, splitB := splitWindowTitle(nb)
+	if splitA && splitB {
+		return sufA != "" && preA == preB && sufA == sufB
+	}
+	if splitA == splitB {
+		return false
+	}
+	if splitA {
+		return nb == preA || nb == sufA
+	}
+	return na == preB || na == sufB
+}
+
+// sameDocumentWindow reports that two titles are the same document, not just
+// the same top-level window. A trailing unread count ("收件箱 (1)" and
+// "收件箱 (2)") stays one document. A new page title ("搜索" and "订单") does
+// not. Callers that already separated windows by HWND use this to see whether
+// the page inside that window changed.
+func sameDocumentWindow(a, b string) bool {
+	if sameControlWindow(a, b) {
+		return true
+	}
+	na := NormalizeWindowTitle(a)
+	nb := NormalizeWindowTitle(b)
+	if na == "" || nb == "" {
+		return true
+	}
+	preA, sufA, splitA := splitWindowTitle(na)
+	preB, sufB, splitB := splitWindowTitle(nb)
+	if !splitA || !splitB || sufA == "" || sufA != sufB {
+		return false
+	}
+	docA := stripDocNoise(preA)
+	docB := stripDocNoise(preB)
+	return docA != "" && docA == docB
+}
+
+// stripDocNoise removes parenthetical unread counts so "收件箱 (1) - Gmail"
+// and "收件箱 (2) - Gmail" compare as the same document prefix.
+func stripDocNoise(prefix string) string {
+	var b strings.Builder
+	r := []rune(prefix)
+	for i := 0; i < len(r); {
+		if r[i] == '(' || r[i] == '（' {
+			j := i + 1
+			digits := false
+			for j < len(r) && r[j] >= '0' && r[j] <= '9' {
+				digits = true
+				j++
+			}
+			if digits && j < len(r) && (r[j] == ')' || r[j] == '）') {
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteRune(r[i])
+		i++
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}

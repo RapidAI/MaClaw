@@ -182,17 +182,27 @@ export function BotVoiceSettingsDialog({ heading, tabs, lang, onClose }: Props) 
                     <p className="bot-llm-dialog__hint">{w.hint}</p>
                     {loading ? <p className="bot-llm-dialog__subhint" data-testid="bot-voice-loading">{w.loading}</p> : (
                         <>
-                            <label className="bot-llm-dialog__radio">
-                                <input type="checkbox" checked={enabled} disabled={busy} data-testid="bot-voice-enabled" onChange={e => { void toggleSpeak(e.target.checked); }} />
-                                <span>{w.speak}</span>
-                            </label>
-                            <p className="bot-llm-dialog__subhint">{w.speakHint}</p>
-                            <label className="bot-llm-dialog__radio">
-                                <input type="checkbox" checked={readback} disabled={busy} data-testid="bot-voice-readback" onChange={e => { void toggleReadback(e.target.checked); }} />
-                                <span>{w.readback}</span>
-                            </label>
-                            <p className="bot-llm-dialog__subhint">{w.readbackHint}</p>
-                            <label className="bot-local-dialog__field">
+                            <div className="bot-setting-row">
+                                <div className="bot-setting-row__text">
+                                    <span className="bot-setting-row__title">{w.speak}</span>
+                                    <p className="bot-setting-row__hint">{w.speakHint}</p>
+                                </div>
+                                <label className="bot-switch">
+                                    <input type="checkbox" checked={enabled} disabled={busy} data-testid="bot-voice-enabled" onChange={e => { void toggleSpeak(e.target.checked); }} />
+                                    <span className="bot-switch__track" aria-hidden="true" />
+                                </label>
+                            </div>
+                            <div className="bot-setting-row">
+                                <div className="bot-setting-row__text">
+                                    <span className="bot-setting-row__title">{w.readback}</span>
+                                    <p className="bot-setting-row__hint">{w.readbackHint}</p>
+                                </div>
+                                <label className="bot-switch">
+                                    <input type="checkbox" checked={readback} disabled={busy} data-testid="bot-voice-readback" onChange={e => { void toggleReadback(e.target.checked); }} />
+                                    <span className="bot-switch__track" aria-hidden="true" />
+                                </label>
+                            </div>
+                            <label className="bot-local-dialog__field bot-local-dialog__field--block">
                                 <span>{w.voice}</span>
                                 <select className="form-input" value={voiceID} disabled={busy} data-testid="bot-voice-select" onChange={e => { void changeVoice(e.target.value); }}>
                                     {ttsVoiceOptions.map(option => (
@@ -200,13 +210,15 @@ export function BotVoiceSettingsDialog({ heading, tabs, lang, onClose }: Props) 
                                     ))}
                                 </select>
                             </label>
-                            <label className="bot-local-dialog__field bot-local-dialog__field--block">
+                            <div className="bot-local-dialog__field bot-local-dialog__field--block">
                                 <span>{w.previewLabel}</span>
-                                <input className="form-input" value={previewText} maxLength={200} disabled={busy} data-testid="bot-voice-preview-text" onChange={e => setPreviewText(e.target.value)} />
-                            </label>
-                            <button type="button" className="btn-secondary" data-testid="bot-voice-preview" disabled={busy || previewing || !previewText.trim()} onClick={() => { void previewVoice(); }}>
-                                {previewing ? w.previewing : w.preview}
-                            </button>
+                                <div className="bot-voice__preview-row">
+                                    <input className="form-input" value={previewText} maxLength={200} disabled={busy} data-testid="bot-voice-preview-text" aria-label={w.previewLabel} onChange={e => setPreviewText(e.target.value)} />
+                                    <button type="button" className="btn-secondary" data-testid="bot-voice-preview" disabled={busy || previewing || !previewText.trim()} onClick={() => { void previewVoice(); }}>
+                                        {previewing ? w.previewing : w.preview}
+                                    </button>
+                                </div>
+                            </div>
                         </>
                     )}
                     {notice ? <p className="bot-llm-dialog__notice" role="status" data-testid="bot-voice-notice">{notice}</p> : null}

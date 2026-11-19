@@ -355,8 +355,8 @@ func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID s
 		return nil
 	}
 	return s.machines.UpdateMetadata(ctx, machineID, store.MachineMetadata{
-		Name:                 defaultIfEmpty(metadata.Name, "MaClaw Desktop"),
-		Platform:             defaultIfEmpty(metadata.Platform, "unknown"),
+		Name:                 strings.TrimSpace(metadata.Name),
+		Platform:             strings.TrimSpace(metadata.Platform),
 		Hostname:             strings.TrimSpace(metadata.Hostname),
 		Arch:                 strings.TrimSpace(metadata.Arch),
 		AppVersion:           strings.TrimSpace(metadata.AppVersion),
@@ -2092,15 +2092,29 @@ func (s *IdentityService) RemoveBlockedEmail(ctx context.Context, email string) 
 }
 
 func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*MachinePrincipal, error) {
+	if s == nil || s.machines == nil || s.users == nil || strings.TrimSpace(machineID) == "" || rawToken == "" {
+		return nil, ErrMachineUnauthorized
+	}
 	machine, err := s.machines.GetByID(ctx, machineID)
 	if err != nil {
 		return nil, err
 	}
-	if machine == nil {
+	if machine == nil || machine.MachineTokenHash != hashToken(rawToken) {
 		return nil, ErrMachineUnauthorized
 	}
-	if machine.MachineTokenHash != hashToken(rawToken) {
+	switch strings.ToLower(strings.TrimSpace(machine.Status)) {
+	case "disabled", "revoked", "deleted":
 		return nil, ErrMachineUnauthorized
+	}
+	user, err := s.users.GetByID(ctx, machine.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || user.Status != "active" {
+		return nil, ErrMachineUnauthorized
+	}
+	if err := s.ensureTenantActive(ctx, machine.TenantID); err != nil {
+		return nil, err
 	}
 	return &MachinePrincipal{TenantID: machine.TenantID, UserID: machine.UserID, MachineID: machine.ID}, nil
 }
@@ -2110,16 +2124,25 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 // (which only have a machine_token) can obtain a viewer_token without
 // re-enrolling.
 func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
+	if s == nil || s.users == nil || s.viewerTok == nil {
+		return "", ErrInvalidUserCredentials
+	}
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		return "", err
 	}
+	if user == nil || user.Status != "active" {
+		return "", ErrInvalidUserCredentials
+	}
 	tenantID := strings.TrimSpace(tenantIDFromContext(ctx))
-	if user != nil && strings.TrimSpace(user.TenantID) != "" {
+	if strings.TrimSpace(user.TenantID) != "" {
 		tenantID = strings.TrimSpace(user.TenantID)
 	}
 	if tenantID == "" {
 		tenantID = store.DefaultTenantID
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return "", err
 	}
 	raw, err := randomToken(32)
 	if err != nil {
@@ -2160,18 +2183,21 @@ func (s *IdentityService) AuthenticateViewer(ctx context.Context, rawToken strin
 		return nil, ErrInvalidUserCredentials
 	}
 
-	// Sliding expiration: if less than half the lifetime remains, extend to 30 days from now.
-	remaining := time.Until(viewerToken.ExpiresAt)
-	if remaining < 15*24*time.Hour {
-		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
-	}
-
 	tenantID := strings.TrimSpace(user.TenantID)
 	if tenantID == "" {
 		tenantID = strings.TrimSpace(viewerToken.TenantID)
 	}
 	if tenantID == "" {
 		tenantID = store.DefaultTenantID
+	}
+	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	// Sliding expiration: if less than half the lifetime remains, extend to 30 days from now.
+	remaining := time.Until(viewerToken.ExpiresAt)
+	if remaining < 15*24*time.Hour {
+		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
 	}
 	return &ViewerPrincipal{TenantID: tenantID, UserID: user.ID, Email: user.Email}, nil
 }

@@ -153,6 +153,46 @@ func TestIMSemanticGoalIsolatesByPrincipalWithoutLastUserFallback(t *testing.T) 
 	}
 }
 
+func TestSemanticTrustedGoalTerminalUpdateEmitsCloseout(t *testing.T) {
+	app, store, engine := newGoalBarApp(t)
+	const userID = "desktop-user"
+	h := app.imHandler
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	if _, err := store.Set(userID, "ship it"); err != nil {
+		t.Fatal(err)
+	}
+	var notices []struct {
+		user    string
+		text    string
+		asError bool
+	}
+	engine.noticeObserver = func(user, text string, asError bool) {
+		notices = append(notices, struct {
+			user    string
+			text    string
+			asError bool
+		}{user, text, asError})
+	}
+
+	if _, err := h.administerTrustedGoal(userID, "", "complete", "baseline frozen"); err != nil {
+		t.Fatalf("complete err=%v", err)
+	}
+	if len(notices) != 1 || notices[0].asError || notices[0].user != userID ||
+		!strings.Contains(notices[0].text, "目标已完成") || !strings.Contains(notices[0].text, "baseline frozen") {
+		t.Fatalf("completion closeout = %+v", notices)
+	}
+	if _, err := store.Set("desktop-user-b", "ship it too"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.administerTrustedGoal("desktop-user-b", "", "failed", "构建过不了"); err != nil {
+		t.Fatalf("fail err=%v", err)
+	}
+	if len(notices) != 2 || !notices[1].asError || notices[1].user != "desktop-user-b" ||
+		!strings.Contains(notices[1].text, "目标失败") || !strings.Contains(notices[1].text, "构建过不了") {
+		t.Fatalf("failure closeout = %+v", notices)
+	}
+}
+
 // TestTrustedGoalStatusVocabulary pins the vocabulary at this host: the schema
 // advertises only the lifecycle names, the aliases still reach them, and an
 // invented status is refused by the real administer path with a refusal that

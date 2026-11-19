@@ -54,6 +54,12 @@ func TestIsHubRegistrationLogLine(t *testing.T) {
 	if isHubRegistrationLogLine(`[hub] listening on :9399`) {
 		t.Fatal("hub listen must not be registration")
 	}
+	if !isHubRegistrationLogLine(`[center] register on startup: hub center base url is required`) {
+		t.Fatal("center register failure must reach registration.log")
+	}
+	if isHubRegistrationLogLine(`[center] heartbeat OK from https://example`) {
+		t.Fatal("heartbeat must not be registration")
+	}
 }
 
 func TestHubLogWriterTeesRegistrationOnly(t *testing.T) {

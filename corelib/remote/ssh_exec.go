@@ -126,10 +126,11 @@ func (m *SSHSessionManager) ExecCommandChannel(ctx context.Context, sessionID, c
 	if !ok {
 		return SSHExecResult{}, fmt.Errorf("ssh session %s not found", sessionID)
 	}
-	if s.Handle == nil {
+	h := s.PTY()
+	if h == nil {
 		return SSHExecResult{}, fmt.Errorf("ssh session %s has no handle", sessionID)
 	}
-	client := s.Handle.Client()
+	client := h.Client()
 	if client == nil {
 		return SSHExecResult{}, fmt.Errorf("ssh session %s is closed", sessionID)
 	}
