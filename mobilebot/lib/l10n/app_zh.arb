@@ -901,5 +901,75 @@
     }
   },
   "roomEmptyTranscript": "在房间里说点什么，Bot 们会听到",
-  "rcCreate": "创建"
+  "rcCreate": "创建",
+  "voiceStageDownloadKokoro": "下载 Kokoro 模型",
+  "voiceStageDownloadVoices": "下载音色包",
+  "voiceStageUnpackVoices": "解压音色包",
+  "voiceStageReady": "就绪",
+  "voiceStageDownloadSenseVoice": "下载 SenseVoice 模型",
+  "voiceStageDownloadFailedRetry": "下载失败，稍后在语音引擎里重试：{error}",
+  "@voiceStageDownloadFailedRetry": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "wakeNodeOffline": "这台内网电脑暂时连不上",
+  "wakeNoFreeDisplay": "没有空闲的屏幕，请稍后再试",
+  "wakeTimeout": "等了一分钟电脑仍没有起来",
+  "wakeNotOpenYet": "电脑还没有打开",
+  "wakeServiceUnreachable": "电脑服务暂时连不上",
+  "netTimeout": "网络超时，请稍后重试",
+  "netConnectionError": "无法连接服务器，请检查网络",
+  "netBadCertificate": "服务器证书不受信任",
+  "netServerError": "服务器异常，请稍后重试",
+  "netRequestFailed": "请求失败，请稍后重试",
+  "pendingApprovalHint": "注册已提交，等待审批通过后再登录",
+  "hubNotFoundForAccount": "未能为该账号找到可用的 Hub",
+  "hubCenterUnreachable": "无法连接 HubCenter",
+  "chatRoutedTo": "已转给「{target}」处理",
+  "@chatRoutedTo": {
+    "placeholders": {
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatRoutedWithText": "{text}（已转给「{target}」）",
+  "@chatRoutedWithText": {
+    "placeholders": {
+      "text": {
+        "type": "String"
+      },
+      "target": {
+        "type": "String"
+      }
+    }
+  },
+  "chatReplyTimedOut": "等待回复超时，Bot 可能仍在处理，可稍后查看任务状态",
+  "chatDoneNoReply": "（已完成，无文字回复）",
+  "speechCodeOnScreen": "，代码内容见屏幕，",
+  "speechReplyTooLong": "……回复较长，完整内容请查看屏幕",
+  "updateDownloadFailed": "下载更新包失败：{error}",
+  "@updateDownloadFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "requestFailedShort": "请求失败",
+  "assistantAttachQuery": "请阅读并总结这个附件。",
+  "chatMaterialFallbackPath": "~/素材/{bot}/{name}",
+  "@chatMaterialFallbackPath": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  }
 }

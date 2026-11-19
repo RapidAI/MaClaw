@@ -94,6 +94,58 @@ func TestCompactElementRefOmitsCDPFrameID(t *testing.T) {
 	}
 }
 
+func TestModelRefsKeepsAnOffscreenSecretField(t *testing.T) {
+	refs := make([]BrowserElementRef, 100)
+	for i := range refs {
+		refs[i] = BrowserElementRef{Ref: fmt.Sprintf("@e%d", i+1), Visible: true, InViewport: true}
+	}
+	refs[99] = BrowserElementRef{Ref: "@e100", Role: "textbox", InputType: "password", Name: "密码"}
+	kept, truncated := ModelRefs(refs)
+	if !truncated || len(kept) != compactRefLimit {
+		t.Fatalf("kept=%d truncated=%v", len(kept), truncated)
+	}
+	found := false
+	for _, ref := range kept {
+		if ref.Ref == "@e100" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("password field was ranked out of the model list")
+	}
+}
+
+func TestModelRefsKeepsAnOffscreenPayButton(t *testing.T) {
+	refs := make([]BrowserElementRef, 100)
+	for i := range refs {
+		refs[i] = BrowserElementRef{Ref: fmt.Sprintf("@e%d", i+1), Visible: true, InViewport: true}
+	}
+	refs[94] = BrowserElementRef{Ref: "@e95", Role: "button", Tag: "button", Name: "支付方式", Visible: true}
+	refs[95] = BrowserElementRef{Ref: "@e96", Role: "button", Tag: "button", Name: "获取验证码", Visible: true}
+	refs[96] = BrowserElementRef{Ref: "@e97", Role: "textbox", Name: "hotpot", Visible: true}
+	refs[97] = BrowserElementRef{Ref: "@e98", Role: "textbox", Name: "支付密码", Visible: true}
+	refs[98] = BrowserElementRef{Ref: "@e99", Role: "button", Tag: "button", Name: "支付方式", Selector: ".pay-btn", Visible: true}
+	refs[99] = BrowserElementRef{Ref: "@e100", Role: "button", Tag: "button", Name: "确认支付", Visible: true}
+	kept, truncated := ModelRefs(refs)
+	if !truncated || len(kept) != compactRefLimit {
+		t.Fatalf("kept=%d truncated=%v", len(kept), truncated)
+	}
+	got := map[string]bool{}
+	for _, ref := range kept {
+		got[ref.Ref] = true
+	}
+	for _, id := range []string{"@e98", "@e99", "@e100"} {
+		if !got[id] {
+			t.Fatalf("ranked out %s", id)
+		}
+	}
+	for _, id := range []string{"@e95", "@e96", "@e97"} {
+		if got[id] {
+			t.Fatalf("ranked in %s", id)
+		}
+	}
+}
+
 func TestTruncateRefsCapsAt80(t *testing.T) {
 	refs := make([]BrowserElementRef, 120)
 	for i := range refs {

@@ -48,8 +48,12 @@ class MaclawGoApp extends ConsumerWidget {
       darkTheme: AppTheme.dark(),
       // 手动选择优先；否则按系统语言在 zh/zh_Hant/en/mn 间解析。
       locale: localeFor(language),
-      localeResolutionCallback: (deviceLocale, _) =>
-          resolveAppLocale(deviceLocale, manual: language),
+      localeResolutionCallback: (deviceLocale, _) {
+        final resolved = resolveAppLocale(deviceLocale, manual: language);
+        // Keep the context-free snapshot (sharedL10n) in sync with the UI.
+        updateSharedL10nLocale(resolved);
+        return resolved;
+      },
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
       routerConfig: router,

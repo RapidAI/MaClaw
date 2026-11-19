@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'message_order.dart';
 
 import '../../core/hub_config.dart';
+import '../../core/locale.dart';
 import '../../core/providers.dart';
 import 'bot_api.dart';
 import 'bot_models.dart';
@@ -646,7 +647,9 @@ class BotChatController extends Notifier<ChatState> {
     if (text.isEmpty && routed.isEmpty) return;
     final content = routed.isEmpty
         ? text
-        : (text.isEmpty ? '已转给「$routed」处理' : '$text（已转给「$routed」）');
+        : (text.isEmpty
+              ? sharedL10n.chatRoutedTo(routed)
+              : sharedL10n.chatRoutedWithText(text, routed));
     state = state.copyWith(
       messages: [
         ...state.messages,
@@ -691,7 +694,7 @@ class BotChatController extends Notifier<ChatState> {
     void tick() async {
       if (_disposed || !_foreground || state.activeRunId != runId) return;
       if (DateTime.now().difference(startedAt) > botTurnMaxWait) {
-        _settleError('等待回复超时，Bot 可能仍在处理，可稍后查看任务状态');
+        _settleError(sharedL10n.chatReplyTimedOut);
         return;
       }
       try {
@@ -720,7 +723,7 @@ class BotChatController extends Notifier<ChatState> {
 
   void _settleReply(BotReply reply) {
     final messages = [...state.messages];
-    final text = reply.isEmpty ? '（已完成，无文字回复）' : reply.text;
+    final text = reply.isEmpty ? sharedL10n.chatDoneNoReply : reply.text;
     // The same reply may already be visible: another client (or the Hub's
     // own journal projection) can land it through the long-poll before the
     // run poll returns. Adding it again would double the bubble — and

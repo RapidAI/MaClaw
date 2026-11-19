@@ -988,7 +988,14 @@ func openaiToAnthropic(body map[string]interface{}, model string) map[string]int
 	}
 
 	messages := openAICompatForwardMessageSlice(body["messages"])
-	converted := convertOpenAIToAnthropicMessages(messages)
+	// DeepSeek's Anthropic endpoint requires content[].thinking on replayed
+	// assistant turns. Tool-call id recovery is best-effort and fails on long
+	// agent loops (HTTP 400). Pass the blocks back instead of relying on it.
+	passBackThinking := deepSeekAnthropicPassBackFromRequest(model, body)
+	// Disabled DeepSeek thinking must not replay old thinking blocks. The API
+	// rejects that history the same way a missing block is rejected while on.
+	dropThinking := IsDeepSeekThinkingModeModel(MaclawLLMConfig{Model: model}) && !passBackThinking
+	converted := convertOpenAIToAnthropicMessages(messages, passBackThinking, dropThinking)
 	if converted.SystemText != "" {
 		anthropicReq["system"] = converted.SystemText
 	}
@@ -1037,7 +1044,14 @@ type anthropicConvertedMessages struct {
 	Messages   []interface{}
 }
 
-func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConvertedMessages {
+func deepSeekAnthropicPassBackFromRequest(model string, body map[string]interface{}) bool {
+	if !DeepSeekAnthropicThinkingPassback(MaclawLLMConfig{Model: model}) {
+		return false
+	}
+	return !thinkingTypeDisabled(body)
+}
+
+func convertOpenAIToAnthropicMessages(messages []interface{}, passBackThinking, dropThinking bool) anthropicConvertedMessages {
 	var result anthropicConvertedMessages
 	for _, m := range messages {
 		mm := mapFromAny(m)
@@ -1054,18 +1068,7 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 				result.SystemText += content
 			}
 		case "assistant":
-			var blocks []interface{}
-			if text := openAICompatForwardTextContent(mm["content"]); text != "" {
-				blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
-			}
-			for _, tc := range extractOpenAIToolCalls(mm) {
-				var input interface{}
-				_ = json.Unmarshal([]byte(tc.Arguments), &input)
-				if input == nil {
-					input = map[string]interface{}{}
-				}
-				blocks = append(blocks, map[string]interface{}{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": input})
-			}
+			blocks := openAIAssistantToAnthropicBlocks(mm, passBackThinking, dropThinking)
 			if len(blocks) > 0 {
 				result.Messages = append(result.Messages, map[string]interface{}{"role": "assistant", "content": blocks})
 			}
@@ -1094,6 +1097,64 @@ func convertOpenAIToAnthropicMessages(messages []interface{}) anthropicConverted
 		}
 	}
 	return result
+}
+
+// openAIAssistantToAnthropicBlocks builds one assistant content array.
+// Thinking blocks come first. DeepSeek thinking mode requires the thinking
+// field on every replayed assistant message once tools are in use, even when
+// the text is empty. A missing field is the 400 "content[].thinking must be
+// passed back".
+func openAIAssistantToAnthropicBlocks(mm map[string]interface{}, passBackThinking, dropThinking bool) []interface{} {
+	var thinking []interface{}
+	reasoning, hasReasoning := mm["reasoning_content"].(string)
+	if !dropThinking {
+		thinking, _, _ = splitAssistantThinkingContent(mm["content"])
+		if len(thinking) > 0 && thinkingBlocksText(thinking) == "" && hasReasoning && reasoning != "" {
+			filled := cloneThinkingBlock(mapFromAny(thinking[0]))
+			filled["thinking"] = reasoning
+			thinking = []interface{}{filled}
+		}
+		if len(thinking) == 0 && passBackThinking {
+			text := ""
+			if hasReasoning {
+				text = reasoning
+			}
+			thinking = []interface{}{map[string]interface{}{"type": "thinking", "thinking": text}}
+		}
+		if passBackThinking {
+			stampThinkingBlockSignature(thinking, mm["thought_signature"])
+		}
+	}
+	var blocks []interface{}
+	blocks = append(blocks, thinking...)
+	if text := openAICompatForwardTextContent(mm["content"]); text != "" {
+		blocks = append(blocks, map[string]interface{}{"type": "text", "text": text})
+	}
+	for _, tc := range extractOpenAIToolCalls(mm) {
+		var input interface{}
+		_ = json.Unmarshal([]byte(tc.Arguments), &input)
+		if input == nil {
+			input = map[string]interface{}{}
+		}
+		blocks = append(blocks, map[string]interface{}{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": input})
+	}
+	return blocks
+}
+
+func stampThinkingBlockSignature(blocks []interface{}, raw interface{}) {
+	sig, _ := raw.(string)
+	sig = strings.TrimSpace(sig)
+	if sig == "" || len(blocks) == 0 {
+		return
+	}
+	first, _ := blocks[0].(map[string]interface{})
+	if first == nil {
+		return
+	}
+	if existing, _ := first["signature"].(string); strings.TrimSpace(existing) != "" {
+		return
+	}
+	first["signature"] = sig
 }
 
 func convertAnthropicTools(tools []map[string]interface{}) []map[string]interface{} {
@@ -1208,6 +1269,9 @@ func stringFromMap(m map[string]interface{}, key string) string {
 func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]interface{} {
 	// Extract and concatenate text content blocks
 	var contentBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	var thoughtSignature string
+	sawThinking := false
 	var toolCalls []interface{}
 	for _, block := range openAICompatForwardSlice(resp["content"]) {
 		blockMap := mapFromAny(block)
@@ -1219,6 +1283,18 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 		case "text":
 			text, _ := blockMap["text"].(string)
 			contentBuilder.WriteString(text)
+		case "thinking":
+			sawThinking = true
+			if text, _ := blockMap["thinking"].(string); text != "" {
+				reasoningBuilder.WriteString(text)
+			} else if text, _ := blockMap["text"].(string); text != "" {
+				reasoningBuilder.WriteString(text)
+			}
+			if thoughtSignature == "" {
+				if sig, _ := blockMap["signature"].(string); strings.TrimSpace(sig) != "" {
+					thoughtSignature = strings.TrimSpace(sig)
+				}
+			}
 		case "tool_use":
 			id, _ := blockMap["id"].(string)
 			name, _ := blockMap["name"].(string)
@@ -1246,6 +1322,14 @@ func anthropicToOpenAI(resp map[string]interface{}, model string) map[string]int
 	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
+	}
+	// The next OpenAI-shaped turn has to carry this text so the Anthropic
+	// converter can put content[].thinking back on the request.
+	if sawThinking {
+		message["reasoning_content"] = reasoningBuilder.String()
+	}
+	if thoughtSignature != "" {
+		message["thought_signature"] = thoughtSignature
 	}
 
 	// Map stop_reason to finish_reason

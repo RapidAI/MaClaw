@@ -15,11 +15,19 @@ const browserObserveScript = `(function () {
     const s = String(input || '').replace(/\s+/g, ' ').trim();
     return s.length > limit ? s.slice(0, limit) : s;
   }
+  let __maclawMainText = null;
+  function mainDocumentText() {
+    if (__maclawMainText != null) return __maclawMainText;
+    try {
+      __maclawMainText = String((document.body && (document.body.innerText || document.body.textContent)) || '').replace(/\s+/g, ' ').trim();
+    } catch (e) {
+      __maclawMainText = '';
+    }
+    return __maclawMainText;
+  }
   function pageText() {
     if (__maclawProbe) {
-      try {
-        return String((document.body && (document.body.innerText || document.body.textContent)) || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
-      } catch (e) { return ''; }
+      try { return mainDocumentText().slice(0, 2000); } catch (e) { return ''; }
     }
     const parts = [];
     function collect(root) {
@@ -43,6 +51,44 @@ const browserObserveScript = `(function () {
     }
     walk(document);
     return String(parts.join(' ')).replace(/\s+/g, ' ').trim();
+  }
+  // Keep a long leading prefix. Append a payable line or a ship-to line that
+  // sits past it. Marker order matches payableMarkers. Payable markers stay on
+  // the first hit, the same one payableAmount reads. An address marker inside
+  // the prefix is often a header ("管理收货地址"); keep searching so that hit
+  // does not hide the ship-to block further down. A page with neither keeps
+  // the prefix: swapping in the footer drops the product and the address.
+  function excerptSourceForModel(text, limit) {
+    const s = String(text || '');
+    const prefix = Math.min(s.length, Math.max(limit, 1600));
+    if (s.length <= prefix) return s;
+    const markers = ["应付总额", "应付金额", "实付款", "实付", "应付", "订单总额", "合计", "总计"];
+    const addressMarkers = ["收货地址", "默认地址", "配送至", "送至"];
+    let out = s.slice(0, prefix);
+    const chosen = [];
+    function appendMarker(at) {
+      if (at < 0 || at + 80 <= prefix) return;
+      for (let c = 0; c < chosen.length; c++) {
+        if (Math.abs(chosen[c] - at) < 80) return;
+      }
+      chosen.push(at);
+      const start = Math.max(0, at - 40);
+      const end = Math.min(s.length, at + 160);
+      out += "…" + s.slice(start, end);
+    }
+    function firstPastPrefix(marker) {
+      let from = 0;
+      while (from < s.length) {
+        const at = s.indexOf(marker, from);
+        if (at < 0) return -1;
+        if (at + 80 > prefix) return at;
+        from = at + marker.length;
+      }
+      return -1;
+    }
+    for (let i = 0; i < markers.length; i++) appendMarker(s.indexOf(markers[i]));
+    for (let i = 0; i < addressMarkers.length; i++) appendMarker(firstPastPrefix(addressMarkers[i]));
+    return out;
   }
   function cssEscape(value) {
     if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(value);
@@ -296,15 +342,16 @@ const browserObserveScript = `(function () {
       new MutationObserver(function () { window.__maclawMut.n++; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: false });
     } catch (e) {}
   }
+  const excerptSource = __maclawProbe ? mainDocumentText() : fullText;
   return JSON.stringify({
     url: location.href,
     title: document.title,
     ready_state: document.readyState,
     frame_tree: frames,
-    page_text_excerpt: shortText(fullText, excerptLimit),
-    page_text_total: fullText.length,
+    page_text_excerpt: excerptSourceForModel(excerptSource, excerptLimit),
+    page_text_total: excerptSource.length,
     page_text_offset: 0,
-    page_text_has_more: fullText.length > excerptLimit,
+    page_text_has_more: excerptSource.length > excerptLimit,
     page_flags: pageFlags,
     refs: refs
   });
@@ -356,6 +403,24 @@ func (s *BrowserAgentSession) Probe(query string) (*BrowserObservation, error) {
 	return s.observeFiltered(query, true, false)
 }
 
+// ProbeForModel is the probe the desktop model reads. Batch planning drops
+// the page sample. This call keeps an excerpt packed around the payable
+// total. Page flags still read only the first 2000 characters.
+func (s *BrowserAgentSession) ProbeForModel(query string) (*BrowserObservation, error) {
+	return s.observeFiltered(query, true, true)
+}
+
+// dropProbePageText removes the probe sample unless the caller asked to keep it.
+func dropProbePageText(probe, keep bool, payload *observePayload) {
+	if payload == nil || !probe || keep {
+		return
+	}
+	payload.PageTextExcerpt = ""
+	payload.PageTextTotal = 0
+	payload.PageTextOffset = 0
+	payload.PageTextHasMore = false
+}
+
 // finishFastBatch is the snapshot returned after a same-page task_run.
 // It uses the probe script and keeps the short main-document text sample.
 func (s *BrowserAgentSession) finishFastBatch() (*BrowserObservation, error) {
@@ -394,12 +459,7 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 		return nil, fmt.Errorf("parse browser observation: %w", err)
 	}
 
-	if probe && !keepProbeText {
-		payload.PageTextExcerpt = ""
-		payload.PageTextTotal = 0
-		payload.PageTextOffset = 0
-		payload.PageTextHasMore = false
-	}
+	dropProbePageText(probe, keepProbeText, &payload)
 	jsFrames := payload.FrameTree
 	cdpFrames := sess.frameTree()
 	if len(cdpFrames) > 0 {

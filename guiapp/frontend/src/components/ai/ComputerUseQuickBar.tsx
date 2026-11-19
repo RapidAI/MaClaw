@@ -1,8 +1,9 @@
 /**
  * Compact Computer Use controls near the chat input (next to stop-generation UX).
- * Visible while a CU session is active or paused; hidden once stopped or idle
- * so the console does not linger after use. A new CU task re-opens it — the
- * backend lifts the stale stop on fresh activation.
+ * Visible while a CU session is active or paused, or while interactive
+ * acceptance is driving a program this turn just built. Hidden once stopped
+ * or idle so the console does not linger after use. A new CU task re-opens
+ * it — the backend lifts the stale stop on fresh activation.
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
@@ -68,25 +69,31 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
     const refresh = useCallback(async () => {
         try {
             const s: any = await GetComputerUseStatus();
-            if (!s || s.enabled === false) {
+            const driving = !!s?.acceptance_driving;
+            // Acceptance can run while Computer Use itself is off. Read the
+            // driving flag before the enabled short-circuit.
+            if (!s || (s.enabled === false && !driving)) {
                 setSt(empty);
                 return;
             }
             const paused = !!s.paused && !s.stopped;
             // Hide once control is no longer in use: a stopped session, or stale
             // step counters after the sticky window expired, must not pin the bar.
-            const active = !!s.session_active || paused;
-            if (s.stopped || !active) {
+            const active = !!s.session_active || paused || driving;
+            if ((s.stopped && !driving) || !active) {
                 setSt(empty);
                 return;
             }
             let label = tr("Desktop control", "桌面操控", "桌面操控");
-            if (paused) label = tr("Desktop control · paused", "桌面操控 · 已暂停", "桌面操控 · 已暫停");
+            if (driving) label = tr("Verifying the interface just built", "正在验证刚构建的界面", "正在驗證剛構建的界面");
+            else if (paused) label = tr("Desktop control · paused", "桌面操控 · 已暂停", "桌面操控 · 已暫停");
             else label = tr("Desktop control · active", "桌面操控 · 活动中", "桌面操控 · 活動中");
-            const backend = typeof s.uia_sidecar_backend === "string" && s.uia_sidecar_backend
-                ? s.uia_sidecar_backend
-                : "";
-            if (backend) label = `${label} · ${backend}`;
+            if (!driving) {
+                const backend = typeof s.uia_sidecar_backend === "string" && s.uia_sidecar_backend
+                    ? s.uia_sidecar_backend
+                    : "";
+                if (backend) label = `${label} · ${backend}`;
+            }
             setSt({
                 visible: true,
                 paused,

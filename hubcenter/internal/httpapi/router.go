@@ -1105,6 +1105,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/auth/me", smHandlers.CurrentUser)
 		mux.HandleFunc("POST /api/v1/problem-reports", problemReports.Create)
 		mux.HandleFunc("GET /api/v1/problem-reports/mine", problemReports.ListMine)
+		mux.HandleFunc("GET /api/v1/problem-reports/d/{token}/diagnostics.zip", problemReports.PublicDiagnosticsDownload)
 		mux.HandleFunc("GET /api/v1/admin/problem-reports", RequireAdmin(adminService, problemReports.AdminList))
 		mux.HandleFunc("PUT /api/v1/admin/problem-reports/{id}", RequireAdmin(adminService, problemReports.AdminUpdate))
 		mux.HandleFunc("DELETE /api/v1/admin/problem-reports/{id}", RequireAdmin(adminService, problemReports.AdminDelete))

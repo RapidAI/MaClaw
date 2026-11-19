@@ -866,8 +866,9 @@ func remoteCodingStickyStep(result *RemoteCodingSubAgentResult) (stepStatus, sum
 	}
 	// The run result for this status is a cancel skip. The checklist must
 	// use the same row, or the workbench reports a program failure while
-	// the task query reports a user stop.
-	if strings.EqualFold(strings.TrimSpace(result.Status), "cancelled") || strings.EqualFold(strings.TrimSpace(result.Status), "canceled") {
+	// the task query reports a user stop. A review handoff keeps its row:
+	// the run result prefers that handoff over the cancel spelling.
+	if stepStatus != mcpStepWaiting && remoteCodingResultIsUserCancel(result.Status) {
 		stepStatus = codingStepInterrupted
 		summary = "cancelled"
 	} else if stepStatus == codingStepFailed {
@@ -877,6 +878,38 @@ func remoteCodingStickyStep(result *RemoteCodingSubAgentResult) (stepStatus, sum
 		childID = strings.TrimSpace(result.Children[0].TaskID)
 	}
 	return stepStatus, summary, childID
+}
+
+// remoteCodingResultIsUserCancel is the remote step status that the run
+// result stores as a cancel skip. Both spellings show up on the wire.
+func remoteCodingResultIsUserCancel(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+// remoteCodingDependentsAfterStop is the note for steps that did not start
+// after this one. A user cancel leaves them pending so the turn can record
+// interrupted; a prior-step skip would count them done. An iteration cap
+// leaves them for the next round. A real failure still records the skip.
+func remoteCodingDependentsAfterStop(status, errText string) string {
+	if remoteCodingHostSuccess(status) || remoteCodingResultIsUserCancel(status) || codingLoopIterationExhausted(errText) {
+		return ""
+	}
+	return "skipped: prior step failed"
+}
+
+// remoteCodingTurnNeedsInterrupt reports a turn whose still-open rows are a
+// user stop. The loop flag covers a cancel noticed between steps. The result
+// status covers a step that already returned cancelled.
+func remoteCodingTurnNeedsInterrupt(loopCancelled bool, result *RemoteCodingSubAgentResult) bool {
+	if loopCancelled {
+		return true
+	}
+	return result != nil && remoteCodingResultIsUserCancel(result.Status)
 }
 
 func appendCodingWorkbenchSkippedResults(results []v2.TaskRunResult, tasks []*v2.TaskItem, steps []codingWorkbenchStepStatus) []v2.TaskRunResult {

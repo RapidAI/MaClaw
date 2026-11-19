@@ -9734,11 +9734,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_browser_arguments_invalid"
 	}
-	action, url, err := semanticTrustedBrowserArgsAllowed(args)
+	cleaned, err := semanticTrustedBrowserArgsAllowed(args)
 	if err != nil {
 		return semanticUnexecutedRejection(err)
 	}
-	text, err := c.handler.controlTrustedBrowser(c.semanticPrincipalID(), action, url)
+	text, err := c.handler.performTrustedBrowser(c.semanticPrincipalID(), cleaned)
 	if err != nil {
 		// Only a dispatched request whose answer was lost may be reported as
 		// unknown. A session that was never available or already dead did not
@@ -9803,11 +9803,11 @@ func (c *sharedAgentLoopCallbacks) executeTrustedComputerUse(_ tool.PlannedSelec
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_computer_use_arguments_invalid"
 	}
-	action, err := semanticTrustedComputerUseArgsAllowed(args)
+	cleaned, err := semanticTrustedComputerUseArgsAllowed(args)
 	if err != nil {
 		return semanticUnexecutedRejection(err)
 	}
-	text, err := c.handler.controlTrustedDesktop(c.semanticPrincipalID(), action)
+	text, err := c.handler.performTrustedDesktop(c.semanticPrincipalID(), cleaned)
 	if err != nil {
 		if strings.Contains(err.Error(), "unavailable") {
 			return "[system unknown] " + err.Error()

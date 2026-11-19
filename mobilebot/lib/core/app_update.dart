@@ -6,6 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 
+import 'locale.dart';
+
 /// 在线更新 — 镜像桌面 GUI `app.go` 的更新协议：
 /// latest.json manifest 双源竞速（GitHub + Cloudflare R2），下载 URL 按
 /// 「per-tag 不可变 R2 → latest R2 → GitHub → manifest 镜像」回退，
@@ -277,6 +279,6 @@ class AppUpdater {
         await tmp.delete().onError((_, _) => tmp);
       }
     }
-    throw Exception('下载更新包失败：$lastError');
+    throw Exception(sharedL10n.updateDownloadFailed('$lastError'));
   }
 }

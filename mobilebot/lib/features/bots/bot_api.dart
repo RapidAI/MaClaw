@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/api_client.dart';
 import '../../core/hub_config.dart';
+import '../../core/locale.dart';
 import 'bot_models.dart';
 
 /// Result of sending one message: admitted (poll the run), queued behind a
@@ -1040,7 +1041,7 @@ class BotApi {
 HubApiException hubException(Response<dynamic> response) {
   final data = response.data;
   var code = 'HTTP_${response.statusCode}';
-  var message = '请求失败';
+  var message = sharedL10n.requestFailedShort;
   if (data is Map) {
     final rawError = data['error'];
     if (rawError is Map) {

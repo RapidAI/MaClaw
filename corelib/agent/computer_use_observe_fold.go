@@ -12,11 +12,14 @@ const ComputerObserveFingerprintPrefix = "[computer_observe fingerprint]"
 
 // FoldComputerUseObserves keeps the latest computer_observe tool result in full
 // and replaces earlier ones with a short fingerprint. It also drops stale
-// observe screenshots, leaving the last vision image.
+// observe screenshots, leaving the last vision image. Browser page probes fold
+// in the same pass: each action tells the model to probe again, and only the
+// latest page is a click target.
 func FoldComputerUseObserves(msgs []interface{}) []interface{} {
 	if len(msgs) == 0 {
 		return msgs
 	}
+	msgs = FoldBrowserObservations(msgs)
 	idxs := computerObserveMessageIndexes(msgs)
 	if len(idxs) >= 2 {
 		out := append([]interface{}(nil), msgs...)
@@ -38,6 +41,7 @@ func FoldComputerUseObserveEntries(entries []ConversationEntry) []ConversationEn
 	if len(entries) == 0 {
 		return entries
 	}
+	entries = FoldBrowserObservationEntries(entries)
 	idxs := make([]int, 0, 4)
 	for i, e := range entries {
 		if isComputerObserveEntry(e) {

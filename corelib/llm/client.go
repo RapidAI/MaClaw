@@ -158,6 +158,11 @@ func buildOpenAIChatRequestBody(
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		messages = normalizeOpenAICompatDeveloperMessages(messages)
 	}
+	if corelib.IsDeepSeekThinking(cfg) && !corelib.IsMistralAIAPIEndpoint(cfg) {
+		// Flash text-only flattening drops content[].thinking before the
+		// chat sanitizer can see it. Keep the text on reasoning_content.
+		messages = foldOpenAIThinkingBlocksIntoReasoning(messages)
+	}
 	if corelib.IsGLMCodingPlanOpenAICompat(cfg) || (corelib.IsDeepSeekFlashOpenAICompat(cfg) && !corelib.DeepSeekFlashAcceptsImages(cfg.Model)) {
 		messages = normalizeOpenAICompatTextOnlyMessageContent(messages)
 	}
@@ -1466,6 +1471,12 @@ func stringifyOpenAIToolContent(content interface{}) string {
 }
 
 func sanitizeOpenAIChatMessagesForSDKCompatibility(messages []interface{}, preserveReasoningContent bool) []interface{} {
+	// Thinking blocks belong to the Anthropic replay. The OpenAI chat wire
+	// carries the same text in reasoning_content and rejects the block.
+	return sanitizeOpenAIChatMessagesForSDK(messages, preserveReasoningContent, false)
+}
+
+func sanitizeOpenAIChatMessagesForSDK(messages []interface{}, preserveReasoningContent, keepThinkingBlocks bool) []interface{} {
 	normalized := make([]interface{}, 0, len(messages))
 	for _, message := range messages {
 		mm := toStringInterfaceMap(message)
@@ -1497,10 +1508,19 @@ func sanitizeOpenAIChatMessagesForSDKCompatibility(messages []interface{}, prese
 				out["name"] = name
 			}
 			if content, ok := mm["content"]; ok {
-				out["content"] = sanitizeOpenAIMessageContent(content, false)
+				out["content"] = sanitizeOpenAIMessageContentMode(content, false, keepThinkingBlocks)
 			}
 			if preserveReasoningContent {
-				if reasoning, ok := mm["reasoning_content"].(string); ok {
+				reasoning, isString := mm["reasoning_content"].(string)
+				if isString && reasoning != "" {
+					out["reasoning_content"] = reasoning
+				} else if !keepThinkingBlocks {
+					if text := openAIContentThinkingText(mm["content"]); text != "" {
+						out["reasoning_content"] = text
+					} else if isString {
+						out["reasoning_content"] = reasoning
+					}
+				} else if isString {
 					out["reasoning_content"] = reasoning
 				}
 			}
@@ -1683,7 +1703,54 @@ func normalizeGLMCodingPlanEmptyUserContent(messages []interface{}) []interface{
 	return out
 }
 
+func foldOpenAIThinkingBlocksIntoReasoning(messages []interface{}) []interface{} {
+	out := make([]interface{}, len(messages))
+	copy(out, messages)
+	for i, message := range messages {
+		mm := toStringInterfaceMap(message)
+		if mm == nil || strings.TrimSpace(stringValue(mm["role"])) != "assistant" {
+			continue
+		}
+		if reasoning, ok := mm["reasoning_content"].(string); ok && reasoning != "" {
+			continue
+		}
+		text := openAIContentThinkingText(mm["content"])
+		if text == "" {
+			continue
+		}
+		patched := make(map[string]interface{}, len(mm)+1)
+		for k, v := range mm {
+			patched[k] = v
+		}
+		patched["reasoning_content"] = text
+		out[i] = patched
+	}
+	return out
+}
+
+func openAIContentThinkingText(raw interface{}) string {
+	var parts []string
+	for _, item := range toInterfaceSlice(raw) {
+		block := toStringInterfaceMap(item)
+		if block == nil || !strings.EqualFold(strings.TrimSpace(stringValue(block["type"])), "thinking") {
+			continue
+		}
+		if text, ok := block["thinking"].(string); ok && text != "" {
+			parts = append(parts, text)
+			continue
+		}
+		if text, ok := block["text"].(string); ok && text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func sanitizeOpenAIMessageContent(content interface{}, allowNil bool) interface{} {
+	return sanitizeOpenAIMessageContentMode(content, allowNil, false)
+}
+
+func sanitizeOpenAIMessageContentMode(content interface{}, allowNil, keepThinking bool) interface{} {
 	switch v := content.(type) {
 	case nil:
 		if allowNil {
@@ -1693,7 +1760,7 @@ func sanitizeOpenAIMessageContent(content interface{}, allowNil bool) interface{
 	case string:
 		return v
 	case []interface{}:
-		blocks := sanitizeOpenAIContentBlocks(v)
+		blocks := sanitizeOpenAIContentBlocksMode(v, keepThinking)
 		if len(blocks) == 0 {
 			return ""
 		}
@@ -1703,7 +1770,7 @@ func sanitizeOpenAIMessageContent(content interface{}, allowNil bool) interface{
 		for _, item := range v {
 			items = append(items, item)
 		}
-		blocks := sanitizeOpenAIContentBlocks(items)
+		blocks := sanitizeOpenAIContentBlocksMode(items, keepThinking)
 		if len(blocks) == 0 {
 			return ""
 		}
@@ -1714,6 +1781,10 @@ func sanitizeOpenAIMessageContent(content interface{}, allowNil bool) interface{
 }
 
 func sanitizeOpenAIContentBlocks(blocks []interface{}) []interface{} {
+	return sanitizeOpenAIContentBlocksMode(blocks, false)
+}
+
+func sanitizeOpenAIContentBlocksMode(blocks []interface{}, keepThinking bool) []interface{} {
 	out := make([]interface{}, 0, len(blocks))
 	for _, block := range blocks {
 		mm := toStringInterfaceMap(block)
@@ -1722,6 +1793,22 @@ func sanitizeOpenAIContentBlocks(blocks []interface{}) []interface{} {
 		}
 		typ := strings.TrimSpace(stringValue(mm["type"]))
 		switch typ {
+		case "thinking":
+			if !keepThinking {
+				continue
+			}
+			kept := map[string]interface{}{"type": "thinking"}
+			if thinking, ok := mm["thinking"].(string); ok {
+				kept["thinking"] = thinking
+			} else if text, ok := mm["text"].(string); ok {
+				kept["thinking"] = text
+			} else {
+				kept["thinking"] = ""
+			}
+			if sig := strings.TrimSpace(stringValue(mm["signature"])); sig != "" {
+				kept["signature"] = sig
+			}
+			out = append(out, kept)
 		case "text", "input_text", "output_text":
 			text := stringValue(mm["text"])
 			if text == "" {
@@ -2324,8 +2411,21 @@ func SanitizeConservativeOpenAICompatMessages(messages []interface{}) []interfac
 }
 
 func SanitizeOpenAICompatRequestMessages(messages []interface{}, stripTrailing bool) []interface{} {
+	return sanitizeOpenAICompatRequestMessages(messages, stripTrailing, false)
+}
+
+// SanitizeOpenAICompatRequestMessagesPreserveReasoning is the Anthropic
+// DeepSeek path. The ordinary sanitizer drops reasoning_content, and the
+// thinking-mode API then rejects the next tool turn.
+func SanitizeOpenAICompatRequestMessagesPreserveReasoning(messages []interface{}, stripTrailing bool) []interface{} {
+	return sanitizeOpenAICompatRequestMessages(messages, stripTrailing, true)
+}
+
+func sanitizeOpenAICompatRequestMessages(messages []interface{}, stripTrailing, preserveReasoning bool) []interface{} {
 	messages = normalizeOpenAIChatToolCallLinkage(messages)
-	messages = sanitizeOpenAIChatMessagesForSDKCompatibility(messages, false)
+	// keepThinkingBlocks follows preserveReasoning: only the Anthropic
+	// DeepSeek replay reads content[].thinking. Other callers drop the blocks.
+	messages = sanitizeOpenAIChatMessagesForSDK(messages, preserveReasoning, preserveReasoning)
 	messages = sanitizeEmptyToolCalls(messages)
 	messages = sanitizeInvalidToolCallArguments(messages)
 	messages = sanitizeOrphanedToolCalls(messages, stripTrailing)
@@ -3060,6 +3160,7 @@ type sseChunk struct {
 			ReasoningContent string                `json:"reasoning_content"`
 			Reasoning        string                `json:"reasoning"`
 			Thinking         string                `json:"thinking"`
+			ThoughtSignature string                `json:"thought_signature,omitempty"`
 			ToolCalls        []sseToolCallDelta    `json:"tool_calls"`
 			FunctionCall     *sseFunctionCallDelta `json:"function_call,omitempty"`
 		} `json:"delta"`
@@ -3139,6 +3240,7 @@ func openAISSEReasoningText(delta struct {
 	ReasoningContent string                `json:"reasoning_content"`
 	Reasoning        string                `json:"reasoning"`
 	Thinking         string                `json:"thinking"`
+	ThoughtSignature string                `json:"thought_signature,omitempty"`
 	ToolCalls        []sseToolCallDelta    `json:"tool_calls"`
 	FunctionCall     *sseFunctionCallDelta `json:"function_call,omitempty"`
 }) string {
@@ -3170,6 +3272,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	var finishReason string
 	var usage *Usage
 	var responseID string
+	var thoughtSignature string
 
 	// toolCalls accumulated by index
 	type toolCallAcc struct {
@@ -3221,6 +3324,9 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		contentBuf.WriteString(text)
 		reasoningBuf.WriteString(openAISSEReasoningText(delta))
 		reasoningBuf.WriteString(thinking)
+		if thoughtSignature == "" {
+			thoughtSignature = strings.TrimSpace(delta.ThoughtSignature)
+		}
 
 		if chunk.Choices[0].FinishReason != "" {
 			finishReason = chunk.Choices[0].FinishReason
@@ -3286,6 +3392,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		Role:             "assistant",
 		Content:          StripAllExtra(visibleContent),
 		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning)),
+		ThoughtSignature: thoughtSignature,
 	}
 
 	// Assemble tool calls in index order

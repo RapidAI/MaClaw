@@ -1568,9 +1568,23 @@ func IsDeepSeekThinkingModeModel(cfg MaclawLLMConfig) bool {
 	case model == "deepseek-reasoner":
 		// V3 thinking alias, now maps to V4-Flash thinking mode
 		return true
+	case strings.Contains(model, "deepseek-flash"):
+		// Current V4-Flash alias (deepseek-flash, provider/deepseek-flash).
+		return true
 	default:
 		return false
 	}
+}
+
+// DeepSeekAnthropicThinkingPassback reports that an Anthropic Messages request
+// for this model must replay assistant thinking blocks. DeepSeek thinking mode
+// returns 400 ("content[].thinking must be passed back") when a tool
+// continuation omits them. Explicitly disabled thinking does not replay.
+func DeepSeekAnthropicThinkingPassback(cfg MaclawLLMConfig) bool {
+	if !IsDeepSeekThinkingModeModel(cfg) {
+		return false
+	}
+	return normalizeReasoningMode(cfg.ThinkingMode) != "disabled"
 }
 
 const (

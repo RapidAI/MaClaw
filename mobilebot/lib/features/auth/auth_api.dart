@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/account_store.dart';
 import '../../core/hub_config.dart';
+import '../../core/locale.dart';
 import 'desktop_auth_qr.dart';
 
 /// OS key reported to the Hub at enrollment so user management can show the
@@ -174,7 +175,7 @@ class AuthApi {
     if (token.isEmpty) {
       return VerifyResult(
         status: status.isNotEmpty ? status : 'pending',
-        message: message.isNotEmpty ? message : '注册已提交，等待审批通过后再登录',
+        message: message.isNotEmpty ? message : sharedL10n.pendingApprovalHint,
       );
     }
     final account = Account(
@@ -240,7 +241,7 @@ class AuthApi {
     if (token.isEmpty) {
       return VerifyResult(
         status: status.isNotEmpty ? status : 'pending',
-        message: message.isNotEmpty ? message : '注册已提交，等待审批通过后再登录',
+        message: message.isNotEmpty ? message : sharedL10n.pendingApprovalHint,
       );
     }
     final phone = (data['phone_number'] ?? '').toString().trim();
@@ -295,7 +296,9 @@ class AuthApi {
         if (hub == null || hub.baseUrl.isEmpty) {
           throw HubApiException(
             'NO_HUB',
-            result.message.isNotEmpty ? result.message : '未能为该账号找到可用的 Hub',
+            result.message.isNotEmpty
+                ? result.message
+                : sharedL10n.hubNotFoundForAccount,
           );
         }
         return (hub: hub, hubCenterUrl: hubCenter);
@@ -307,14 +310,14 @@ class AuthApi {
       }
     }
     throw hubExceptionFrom(
-      lastError ?? const HubApiException('NO_HUB', '无法连接 HubCenter'),
+      lastError ?? HubApiException('NO_HUB', sharedL10n.hubCenterUnreachable),
     );
   }
 
   String _normalizeEmail(String raw) {
     final email = raw.trim().toLowerCase();
     if (!email.contains('@') || email.startsWith('@') || email.endsWith('@')) {
-      throw ArgumentError.value(raw, 'email', '请输入有效的邮箱地址');
+      throw ArgumentError.value(raw, 'email', sharedL10n.invalidEmail);
     }
     return email;
   }
@@ -322,7 +325,7 @@ class AuthApi {
   String _normalizePhone(String raw) {
     final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
     if (digits.length < 8 || digits.length > 15) {
-      throw ArgumentError.value(raw, 'phoneNumber', '请输入有效的手机号');
+      throw ArgumentError.value(raw, 'phoneNumber', sharedL10n.invalidPhone);
     }
     return digits;
   }

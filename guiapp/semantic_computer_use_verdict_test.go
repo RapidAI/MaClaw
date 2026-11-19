@@ -120,11 +120,11 @@ func TestTrustedComputerUseActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 		t.Fatalf("action must publish a non-empty enum, got %#v", action["enum"])
 	}
 	for _, name := range enum {
-		if !tool.ComputerControlActionAllowed(name) {
+		if !semanticComputerUseActionAllowed(name) {
 			t.Fatalf("schema advertises action %q but the execution check refuses it", name)
 		}
 	}
-	for _, name := range tool.ComputerControlActions() {
+	for _, name := range semanticComputerUseActions() {
 		advertised := false
 		for _, candidate := range enum {
 			if candidate == name {
@@ -136,6 +136,11 @@ func TestTrustedComputerUseActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 			t.Fatalf("execution check accepts action %q but the schema never shows it", name)
 		}
 	}
+	for _, floor := range tool.ComputerControlActions() {
+		if !semanticComputerUseActionAllowed(floor) {
+			t.Fatalf("desktop computer-use set dropped the shared action %q", floor)
+		}
+	}
 	// The enum is not the boundary; this check is.
 	for _, guessed := range []string{"open", "screenshot", "press", ""} {
 		_, err := semanticTrustedComputerUseArgsAllowed(map[string]interface{}{"action": guessed})
@@ -144,10 +149,54 @@ func TestTrustedComputerUseActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
 		}
 		// The refusal must name the real vocabulary so the first failure can
 		// redirect the turn instead of ending it.
-		for _, valid := range tool.ComputerControlActions() {
+		for _, valid := range semanticComputerUseActions() {
 			if !strings.Contains(err.Error(), valid) {
 				t.Fatalf("refusal for %q = %v does not mention the valid name %q", guessed, err, valid)
 			}
 		}
+	}
+	secret := "998877"
+	_, err := semanticTrustedComputerUseArgsAllowed(map[string]interface{}{"action": "type", "text": "hi", "password": secret})
+	if err == nil || !strings.Contains(err.Error(), "trusted_computer_use_secret_rejected") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("secret field = %v", err)
+	}
+	if _, err := semanticTrustedComputerUseArgsAllowed(map[string]interface{}{"action": "click", "ref": "e3"}); err != nil {
+		t.Fatalf("click with ref = %v", err)
+	}
+	if _, err := semanticTrustedComputerUseArgsAllowed(map[string]interface{}{"action": "type"}); err == nil || !strings.Contains(err.Error(), "trusted_computer_use_text_required") {
+		t.Fatalf("type without text = %v", err)
+	}
+}
+
+func TestManagedComputerUseResultNamesThePublishedTool(t *testing.T) {
+	got := managedComputerUseModelText("clicked e3 via a11y — call computer_observe again (refs are now stale)")
+	if strings.Contains(got, "computer_observe") || strings.Contains(got, "computer_click") {
+		t.Fatalf("legacy tool name survived: %s", got)
+	}
+	if !strings.Contains(got, "computer_use action=observe") {
+		t.Fatalf("observe follow-up missing: %s", got)
+	}
+	hint := managedComputerUseModelText("hint: Use computer_click with ref=eN (or computer_type/key/scroll/select). Do NOT invent pixel coordinates.")
+	if strings.Contains(hint, "computer_click") || strings.Contains(hint, "computer_type") {
+		t.Fatalf("hint still names unpublished tools: %s", hint)
+	}
+	if !strings.Contains(hint, "computer_use action=click") {
+		t.Fatalf("hint = %s", hint)
+	}
+	done := managedComputerUseModelText("computer_done rejected: missing line; call computer_observe and retry")
+	if strings.Contains(done, "computer_done") || strings.Contains(done, "computer_observe") {
+		t.Fatalf("done result still names unpublished tools: %s", done)
+	}
+	if !strings.Contains(done, "computer_use action=done") || !strings.Contains(done, "computer_use action=observe") {
+		t.Fatalf("done result = %s", done)
+	}
+}
+
+func TestComputerUseDisabledGuardDoesNotMatchADisabledControl(t *testing.T) {
+	if computerUseResultIsRuntimeDisabled("e4 [button] \"提交\" disabled") {
+		t.Fatal("a disabled control must stay an observation")
+	}
+	if !computerUseResultIsRuntimeDisabled("computer_click: Computer Use is disabled (computer_use_enabled=false). Enable it in Settings → Computer Use first.") {
+		t.Fatal("the settings guard must still count as unavailable")
 	}
 }

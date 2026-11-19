@@ -662,6 +662,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	var finishReason string
 	var usage *Usage
 	var responseID string
+	var thoughtSignature string
 	contentFilter := newContentToolCallDeltaFilter(onToken)
 	contentProtocol := newReasoningProtocolStreamFilter(contentFilter.Write)
 	reasoningProtocol := newReasoningProtocolStreamFilter(onReasoning)
@@ -741,6 +742,11 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 				reasoningProtocol.Write(thinking)
 			}
 		}
+		// DeepSeek sends the thinking-block signature once, after the text.
+		// Keep the first non-empty value. Later chunks must not replace it.
+		if thoughtSignature == "" {
+			thoughtSignature = strings.TrimSpace(delta.ThoughtSignature)
+		}
 
 		if chunk.Choices[0].FinishReason != "" {
 			finishReason = chunk.Choices[0].FinishReason
@@ -818,6 +824,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		Role:             "assistant",
 		Content:          StripAllExtra(visibleContent),
 		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoningBuf.String(), mergeOpenAIReasoningText(taggedReasoningBuf.String(), trailingTaggedReasoning))),
+		ThoughtSignature: thoughtSignature,
 	}
 
 	// Assemble tool calls in index order.
@@ -891,7 +898,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 // forwards text_delta plus thinking_delta events. Reasoning must not wait for
 // message_stop: hosts use the live callback to keep the thinking panel open.
 func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReasoning TokenCallback) (*Response, error) {
-	var contentBuf, reasoningBuf strings.Builder
+	var contentBuf, reasoningBuf, signatureBuf strings.Builder
 	var finishReason string
 	var usage *Usage
 	var responseID string
@@ -925,15 +932,17 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 				Type        string `json:"type,omitempty"`
 				Text        string `json:"text,omitempty"`
 				Thinking    string `json:"thinking,omitempty"`
+				Signature   string `json:"signature,omitempty"`
 				PartialJSON string `json:"partial_json,omitempty"`
 				StopReason  string `json:"stop_reason,omitempty"`
 			} `json:"delta,omitempty"`
 			ContentBlock *struct {
-				Type     string `json:"type"`
-				ID       string `json:"id,omitempty"`
-				Name     string `json:"name,omitempty"`
-				Text     string `json:"text,omitempty"`
-				Thinking string `json:"thinking,omitempty"`
+				Type      string `json:"type"`
+				ID        string `json:"id,omitempty"`
+				Name      string `json:"name,omitempty"`
+				Text      string `json:"text,omitempty"`
+				Thinking  string `json:"thinking,omitempty"`
+				Signature string `json:"signature,omitempty"`
 			} `json:"content_block,omitempty"`
 			Message *struct {
 				ID         string `json:"id,omitempty"`
@@ -954,6 +963,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 					// Text block started, nothing to accumulate yet.
 				case "thinking":
 					appendAnthropicThinking(&reasoningBuf, onReasoning, anthropicThinkingBlockText(event.ContentBlock.Type, event.ContentBlock.Thinking, event.ContentBlock.Text))
+					signatureBuf.WriteString(event.ContentBlock.Signature)
 				case "tool_use":
 					toolCalls = append(toolCalls, toolCallAcc{
 						ID:   event.ContentBlock.ID,
@@ -968,6 +978,9 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 				contentFilter.Write(event.Delta.Text)
 			}
 			appendAnthropicThinking(&reasoningBuf, onReasoning, anthropicDeltaThinkingText(event.Delta.Type, event.Delta.Thinking, event.Delta.Text))
+			if event.Delta.Type == "signature_delta" {
+				signatureBuf.WriteString(event.Delta.Signature)
+			}
 			if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
 				if currentToolIdx >= 0 && currentToolIdx < len(toolCalls) {
 					toolCalls[currentToolIdx].ArgsBuf.WriteString(event.Delta.PartialJSON)
@@ -1021,6 +1034,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 		Role:             "assistant",
 		Content:          StripAllExtra(contentBuf.String()),
 		ReasoningContent: StripLeakedReasoningProtocol(reasoningBuf.String()),
+		ThoughtSignature: strings.TrimSpace(signatureBuf.String()),
 	}
 
 	for _, tc := range toolCalls {

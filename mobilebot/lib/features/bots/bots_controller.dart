@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/hub_config.dart';
+import '../../core/locale.dart';
 import '../../core/providers.dart';
 import 'bot_api.dart';
 import 'bot_models.dart';
@@ -167,8 +168,8 @@ final botsProvider = NotifierProvider<BotsController, BotsState>(
 
 String failureMessage(Object error) {
   if (error is HubApiException) {
-    return error.message.isNotEmpty ? error.message : '操作失败，请重试';
+    return error.message.isNotEmpty ? error.message : sharedL10n.opFailedRetry;
   }
   final text = error.toString();
-  return text.isEmpty ? '操作失败，请重试' : text;
+  return text.isEmpty ? sharedL10n.opFailedRetry : text;
 }
