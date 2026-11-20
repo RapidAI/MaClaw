@@ -584,11 +584,21 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true, action)
 }
 
-// desktopQueuedLine is the fallback first sentence when a message is queued
-// behind a busy desktop and the intake LLM produced no ack of its own.
-// The mobile and desktop GUI show it so the person knows the command was
-// received and is waiting its turn, not lost.
-const desktopQueuedLine = "收到，这条先排着，忙完就接着做。"
+// desktopQueuedAck returns the first sentence a queued message shows when the
+// intake LLM produced no ack of its own (timeout or fallback). It names the
+// person's own command — clipped to a short lead — so the reply reads like
+// an understanding of their task, not a canned line.
+func desktopQueuedAck(content string) string {
+	trimmed := strings.TrimSpace(content)
+	c := clipDesktopRunes(trimmed, 24)
+	if c == "" {
+		return "收到，这条先排着，忙完就接着做。"
+	}
+	if c != trimmed {
+		c += "…"
+	}
+	return "收到「" + c + "」，先排着，忙完就接着做。"
+}
 
 func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (outAdmission BotAdmission, outErr error) {
 	// A password typed into the message is taken out here, before routing,
@@ -800,7 +810,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		if admit && errors.Is(busyErr, ErrDesktopBusy) && !desktopQueueSuppressed(ctx) && !hubStartedTurn(clientMessageID) {
 			queuedAck := intakeAck
 			if strings.TrimSpace(queuedAck) == "" {
-				queuedAck = desktopQueuedLine
+				queuedAck = desktopQueuedAck(content)
 			}
 			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
 				ClientMessageID: clientMessageID,

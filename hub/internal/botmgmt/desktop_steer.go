@@ -126,7 +126,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		}
 		heldAck := decision.Ack
 		if strings.TrimSpace(heldAck) == "" {
-			heldAck = desktopQueuedLine
+			heldAck = desktopQueuedAck(content)
 		}
 		pos, err := s.enqueueDesktopMessage(in.TenantID, in.UserID, in.BotID, desktopQueueItem{
 			ClientMessageID: in.ClientMessageID,
