@@ -19057,9 +19057,35 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	now := time.Now()
 	b.WriteString(fmt.Sprintf("\n当前时间: %s\n", now.Format("2006-01-02 15:04")))
 	b.WriteString("\n" + visualPreviewPromptSentence + "\n")
+	if codingTurnWantsDiagram(task, reqCtx, designCtx) && !strings.Contains(b.String(), agent.PromptVisualizationRulesLight) {
+		b.WriteString(agent.PromptVisualizationRulesLight)
+	}
 
 	return b.String()
 }
+
+// codingTurnWantsDiagram reports a coding-workbench turn whose reply should
+// include a rendered flowchart. The workbench answer lands in the desktop
+// markdown pipeline, so the cue is useful there. Plan and operational turns
+// have their own contract and must not be told to draw.
+func codingTurnWantsDiagram(task *TaskItem, reqCtx, designCtx string) bool {
+	if goalContinuationPhase(goalContinuationSource(task, reqCtx)) == "plan" || codingTaskLooksOperational(task) {
+		return false
+	}
+	return conversationWantsDiagram(strings.Join([]string{
+		codingTaskDiagramText(task),
+		reqCtx,
+		designCtx,
+	}, "\n"))
+}
+
+func codingTaskDiagramText(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
+	return strings.Join([]string{task.Title, task.Description, strings.Join(task.AcceptanceCriteria, "\n")}, "\n")
+}
+
 
 // codingBulletItemText clips one continuity bullet. File lists and project
 // instructions keep the recovery marker: it means the rest is on disk.

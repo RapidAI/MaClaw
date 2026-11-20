@@ -81,7 +81,7 @@ func TestBuildIMEntrySystemPrompt_DiagramCueFollowsReplySurface(t *testing.T) {
 		h := &IMMessageHandler{}
 		msg := IMUserMessage{
 			UserID:   tc.userID,
-			Text:     "解释一下这个系统的架构",
+			Text:     "画一张这个系统的架构图",
 			Platform: tc.platform,
 		}
 		// Mirror production: the loop context carries the inbound message's
@@ -101,5 +101,20 @@ func TestBuildIMEntrySystemPrompt_DiagramCueFollowsReplySurface(t *testing.T) {
 		if tc.wantCue && !strings.Contains(prompt, "```mermaid") {
 			t.Fatalf("%s: wants diagrams but teaches no fence", tc.name)
 		}
+	}
+}
+
+
+func TestBuildIMEntrySystemPrompt_DiagramCueStaysOffUntilAsked(t *testing.T) {
+	h := &IMMessageHandler{}
+	prompt := h.buildIMEntrySystemPrompt(IMUserMessage{
+		UserID:   desktopUserID,
+		Platform: desktopPlatform,
+		Text:     "解释一下这个系统的架构",
+	}, nil, &LoopContext{
+		Runtime: RuntimeContext{PolicyOwnerID: desktopUserID, WorkflowOwnerID: desktopUserID},
+	}, false, "", "", "", "")
+	if strings.Contains(prompt, "讲解配图") || strings.Contains(prompt, "```mermaid") {
+		t.Fatal("desktop conversation must not carry the drawing rule until the user asks for a diagram")
 	}
 }

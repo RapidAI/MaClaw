@@ -209,7 +209,7 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carri
 		AssistantBinding:    msg.AssistantBinding,
 		// Same surface rule as the full-profile deps above: only turns whose
 		// reply lands in the desktop markdown pipeline can draw the fence.
-		DiagramRenderingSupported: replyRendersDiagrams(msg.UserID),
+		DiagramRenderingSupported: replyRendersDiagrams(msg.UserID) && conversationWantsDiagram(msg.Text),
 	}))
 	if lookupContinuationProfile(profile) {
 		prompt += lookupContinuationToolPrompt(carried, primary)
@@ -385,7 +385,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			ModelDiscovery:          loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*loopCtx.Runtime.SemanticIntent),
 			// Only turns whose reply lands in the desktop markdown pipeline
 			// can draw a mermaid fence; see replyRendersDiagrams.
-			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)),
+			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)) && conversationWantsDiagram(msg),
 		},
 		MemoryStore:       h.currentMemoryStore(),
 		MemoryOwnerID:     promptUserID,
@@ -580,6 +580,30 @@ func imWorkflowDocDeliveryRule() string {
 // An empty owner means the surface could not be determined, so no diagrams:
 // guessing "desktop" here is what originally leaked the cue to scheduled tasks
 // and Lansenger groups.
+// conversationWantsDiagram is the on-demand half of the visualization cue.
+// A desktop markdown surface can draw a mermaid fence, but the conversation
+// agent only receives the drawing rule when this turn actually asks for a
+// flowchart. Plain-text channels never reach this check: replyRendersDiagrams
+// stays false for them, so the rule is not injected there.
+func conversationWantsDiagram(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	folded := strings.ToLower(text)
+	for _, word := range []string{
+		"流程图", "架构图", "示意图", "思维导图", "时序图", "拓扑图", "结构图", "类图", "状态图", "框图",
+		"flowchart", "sequence diagram", "mermaid",
+		"画一张流程图", "画个流程图", "画一个流程图", "画流程图",
+		"draw a flowchart", "draw a diagram", "draw the architecture",
+	} {
+		if strings.Contains(folded, strings.ToLower(word)) {
+			return true
+		}
+	}
+	return false
+}
+
 func replyRendersDiagrams(promptUserID string) bool {
 	if strings.TrimSpace(promptUserID) == "" {
 		return false

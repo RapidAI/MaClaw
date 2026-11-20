@@ -14,7 +14,7 @@ import (
 // whose replies land in plain text (TUI, hub bots) construct their own config
 // without the flag and must not see this cue.
 func TestBuildLightIMSystemPrompt_CarriesDiagramCue(t *testing.T) {
-	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "解释一下这个系统的架构"}
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "画一张这个系统的架构图"}
 	prompt := buildLightIMSystemPrompt(msg, ExecutionProfile{}, nil, "")
 	if !strings.Contains(prompt, "讲解配图") {
 		t.Fatal("GUI light prompt must carry the compact visualization cue")
@@ -47,7 +47,7 @@ func TestBuildLightIMSystemPrompt_OmitsDiagramCueForExternalDelivery(t *testing.
 	}
 	for _, tc := range cases {
 		prompt := buildLightIMSystemPrompt(
-			IMUserMessage{UserID: tc.userID, Platform: "scheduler", Text: "解释一下这个系统的架构"},
+			IMUserMessage{UserID: tc.userID, Platform: "scheduler", Text: "画一张这个系统的架构图"},
 			ExecutionProfile{}, nil, "")
 		if strings.Contains(prompt, "讲解配图") {
 			t.Fatalf("%s: externally delivered turn must not carry the diagram cue", tc.name)
@@ -55,11 +55,36 @@ func TestBuildLightIMSystemPrompt_OmitsDiagramCueForExternalDelivery(t *testing.
 	}
 }
 
+// TestBuildLightIMSystemPrompt_OmitsDiagramCueUntilAsked keeps the drawing
+// rule on demand. A desktop markdown turn that only asks for an explanation
+// must not be told to emit a mermaid fence.
+func TestBuildLightIMSystemPrompt_OmitsDiagramCueUntilAsked(t *testing.T) {
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "解释一下这个系统的架构"}
+	prompt := buildLightIMSystemPrompt(msg, ExecutionProfile{}, nil, "")
+	if strings.Contains(prompt, "讲解配图") || strings.Contains(prompt, "```mermaid") {
+		t.Fatal("desktop conversation must not carry the drawing rule until the user asks for a diagram")
+	}
+}
+
+// TestConversationWantsDiagram_PlainLookupStaysOff guards the plain-text
+// boundary at the predicate: a lookup, even one that says 画图 as image
+// generation, is not a flowchart request.
+func TestConversationWantsDiagram_PlainLookupStaysOff(t *testing.T) {
+	for _, text := range []string{"", "北京天气", "画一只猫", "生成一张图片"} {
+		if conversationWantsDiagram(text) {
+			t.Fatalf("plain text %q must not request a flowchart", text)
+		}
+	}
+	if !conversationWantsDiagram("请画一张登录流程图") {
+		t.Fatal("an explicit flowchart request must opt in")
+	}
+}
+
 // TestBuildLightIMSystemPrompt_DefersToPhaseInstructions keeps the light cue
 // honest about the same precedence rule as the full block: a more specific
 // phase instruction (e.g. the patent figure workflow) wins.
 func TestBuildLightIMSystemPrompt_DefersToPhaseInstructions(t *testing.T) {
-	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "梳理一下这个流程"}
+	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "画一张这个流程的流程图"}
 	prompt := buildLightIMSystemPrompt(msg, ExecutionProfile{}, nil, intent.IntentLabel(""))
 	if !strings.Contains(prompt, "以该指令为准") {
 		t.Fatal("GUI light visualization cue must defer to phase instructions")

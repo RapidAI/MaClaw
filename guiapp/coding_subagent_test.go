@@ -6368,6 +6368,24 @@ func TestBuildCodingSubAgentSystemPromptIncludesWindowsShellContract(t *testing.
 	}
 }
 
+
+func TestBuildCodingSubAgentSystemPromptDiagramCueIsOnDemand(t *testing.T) {
+	ordinary := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 1, Title: "实现 Player 类"}, `D:\tmp\proj`, "", "", nil)
+	if strings.Contains(ordinary, "讲解配图") || strings.Contains(ordinary, "```mermaid") {
+		t.Fatal("coding prompt must not carry the drawing rule until the task asks for a diagram")
+	}
+	asked := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 1, Title: "补登录流程图"}, `D:\tmp\proj`, "请画流程图", "", nil)
+	if !strings.Contains(asked, "讲解配图") || !strings.Contains(asked, "```mermaid") {
+		t.Fatal("a flowchart task on the desktop markdown surface must teach the mermaid fence")
+	}
+	operational := buildCodingSubAgentSystemPrompt(&TaskItem{
+		Index: 2, Title: "画流程图", RequestKind: codingRequestOperational,
+	}, `D:\tmp\proj`, "", "", nil)
+	if strings.Contains(operational, "讲解配图") {
+		t.Fatal("operational turns must keep their own contract and not be told to draw")
+	}
+}
+
 func TestBuildCodingSubAgentSystemPromptWorkspaceClearIsNeverOperational(t *testing.T) {
 	prompt := buildCodingSubAgentSystemPrompt(&TaskItem{
 		Index: 0, Title: "清空当前目录", RequestKind: codingRequestOperational,
