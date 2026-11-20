@@ -903,6 +903,12 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions/redeem", MobileDesktopAuthQRRedeemHandler(identity))
+	// Third-party device authorization: an unauthenticated client renders a QR,
+	// a signed-in maclawbot phone authorizes it, and the client polls for a
+	// viewer_token bound to that maclaw account's official LLM service.
+	mux.HandleFunc("POST /api/mobile/auth/third-party-qr-sessions", ThirdPartyQRSessionHandler())
+	mux.HandleFunc("POST /api/mobile/auth/third-party-qr-sessions/authorize", ThirdPartyQRAuthorizeHandler(identity))
+	mux.HandleFunc("POST /api/mobile/auth/third-party-qr-sessions/token", ThirdPartyQRTokenHandler())
 	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	mux.HandleFunc("GET /api/mobile/jobs", MobileJobsHandler(identity))
 	// Hub SSH credential vault (hub_exec path).
