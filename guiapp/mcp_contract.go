@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -128,6 +129,118 @@ func mcpKnownTaskStatus(status string) bool {
 
 func mcpTextAsksConfirmation(text string) bool {
 	return strings.Contains(text, "需要确认执行计划")
+}
+
+// mcpCommandOutcome is the short decision a caller reads after one command.
+// run_id is that command's session. A running round tells the caller to query
+// it before sending anything else. A finished round leads with the reason,
+// not the plan body that was appended for the desktop.
+func mcpCommandOutcome(view mcpTaskView) string {
+	id := strings.TrimSpace(firstNonEmpty(view.RunID, view.CurrentRunID))
+	switch view.Status {
+	case mcpStatusRunning:
+		if view.ConfirmationKind == "scope" || view.ConfirmationKind == "critical" {
+			if id == "" {
+				return "这一轮还在运行，先处理 commands 里的确认，再决定下一条命令。"
+			}
+			return "这一轮还在运行，先处理 commands 里的确认。会话标识是 " + id + "。"
+		}
+		if id == "" {
+			return "命令已受理，这一轮还没结束。结束后用 get_task 查询这一轮，再决定下一条命令。"
+		}
+		return "命令已受理，这一轮还没结束。会话标识是 " + id + "。结束后用 get_task 传入这个 run_id 查看状态，再决定下一条命令。"
+	case mcpStatusNeedsConfirmation:
+		lead := mcpOutcomeLead(view.Text)
+		if lead == "" {
+			lead = strings.TrimSpace(view.Error)
+		}
+		if lead == "" {
+			lead = "这一轮需要确认。"
+		}
+		tail := "先看 status、commands 和 confirmation_id，再决定下一条命令。"
+		if id != "" {
+			tail = "会话标识是 " + id + "。" + tail
+		}
+		return lead + "\n" + tail
+	case mcpStatusWaitingReview:
+		lead := mcpOutcomeLead(view.Text)
+		if lead == "" {
+			lead = "子任务结果待审阅。"
+		}
+		return lead
+	case mcpStatusFailed:
+		lead := strings.TrimSpace(view.Error)
+		if lead == "" {
+			lead = mcpOutcomeLead(view.Text)
+		}
+		if lead == "" {
+			lead = "这一轮失败了。"
+		}
+		return lead
+	case mcpStatusCancelled:
+		lead := ""
+		if view.Stop != nil {
+			lead = strings.TrimSpace(view.Stop.Reason)
+		}
+		if lead == "" {
+			lead = strings.TrimSpace(view.Error)
+		}
+		if lead == "" {
+			lead = "这一轮已停止。"
+		}
+		// A later command cancels a round that was waiting. The reason it
+		// was waiting stays visible when that session is queried.
+		if reason := mcpOutcomeLead(view.Text); reason != "" && !strings.Contains(lead, reason) {
+			return reason + "\n" + lead
+		}
+		return lead
+	case mcpStatusCompleted:
+		lead := mcpOutcomeLead(view.Text)
+		if lead == "" {
+			lead = "这一轮已完成。"
+		}
+		return lead
+	case mcpStatusIdle:
+		if id == "" {
+			return "任务已创建，还没有开始。"
+		}
+		return "任务已创建。会话标识是 " + id + "。"
+	default:
+		lead := mcpOutcomeLead(firstNonEmpty(view.Error, view.Text))
+		if lead != "" {
+			return lead
+		}
+		if status := strings.TrimSpace(view.Status); status != "" {
+			return "当前状态是 " + status + "。"
+		}
+		return ""
+	}
+}
+
+// mcpOutcomeLead keeps the decision sentence and drops the plan body and the
+// send_command hint that get_task appends after it.
+func mcpOutcomeLead(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	cut := len(text)
+	for _, mark := range []string{
+		"\n\n" + mcpPlanConfirmHint,
+		"\n\n" + mcpPlanReviewHint,
+		"\n\n" + mcpPlanDialogueHint,
+		"\n\n## ",
+	} {
+		if i := strings.Index(text, mark); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	text = strings.TrimSpace(text[:cut])
+	const maxRunes = 800
+	if utf8.RuneCountInString(text) <= maxRunes {
+		return text
+	}
+	return string([]rune(text)[:maxRunes]) + "…"
 }
 
 // mcpAutoResumeAllowed is false after the user stopped the run.

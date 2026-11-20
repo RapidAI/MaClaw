@@ -835,6 +835,419 @@ func TestInboundMCPSessionPathDoesNotDoubleBump(t *testing.T) {
 	}
 }
 
+func TestInboundMCPCommandSessionStaysQueryable(t *testing.T) {
+	app := &App{}
+	missing := "计划引用的输入文件不存在，无法开始实施；当前计划已恢复为待确认状态：\n\n• users.noreply.github.com\n\n请补齐文件或修正计划后重试。\n\n## 计划正文\n\n" + mcpPlanConfirmHint
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-a",
+		RunID: "run-a", StatusVersion: 3, Text: missing,
+		Commands:         []string{"/plan approve", "/plan skip", "/plan reject"},
+		ConfirmationKind: mcpConfirmKindPlan,
+	})
+	req, claimed, err := app.mcpClaimRequest("cmd-1", mcpRequestKindCommand, "approve", "")
+	if err != nil || !claimed || req == nil {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(req, "p")
+	app.mcpNoteRequestRun("p", "run-a")
+	app.mcpCompleteRequest(req, nil)
+
+	view, err := app.mcpGetTask(context.Background(), "p", "run-a")
+	if err != nil || view.Status != mcpStatusNeedsConfirmation || view.RunID != "run-a" {
+		t.Fatalf("session %+v err=%v", view, err)
+	}
+	if !strings.Contains(view.Outcome, "users.noreply.github.com") || strings.Contains(view.Outcome, "## 计划正文") || !strings.Contains(view.Outcome, "commands") {
+		t.Fatalf("outcome %q", view.Outcome)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-b",
+		RunID: "run-b", Text: "should not leak", ConfirmationID: "mcf_live",
+	})
+	next, claimed, err := app.mcpClaimRequest("cmd-2", mcpRequestKindCommand, "skip", "")
+	if err != nil || !claimed || next == nil {
+		t.Fatalf("next claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(next, "p")
+	app.mcpNoteRequestRun("p", "run-b")
+
+	state, err := app.mcpGetRequest(context.Background(), "cmd-1")
+	if err != nil || state.RunID != "run-a" || state.Task == nil || state.Task.RunID != "run-a" {
+		t.Fatalf("request %+v err=%v", state, err)
+	}
+	if !strings.Contains(state.Task.Outcome, "users.noreply.github.com") || strings.Contains(state.Task.Outcome, "should not leak") {
+		t.Fatalf("later round hid this session: %q", state.Task.Outcome)
+	}
+	live, ok := app.mcpViewFromRegistry("p")
+	if !ok || live.RunID != "run-b" || live.ConfirmationID != "mcf_live" {
+		t.Fatalf("old session rewrote the live round %+v", live)
+	}
+	replay, err := app.mcpReplayRequest(context.Background(), req)
+	if err != nil || replay.RunID != "run-a" || !strings.Contains(replay.Outcome, "users.noreply.github.com") {
+		t.Fatalf("replay %+v err=%v", replay, err)
+	}
+	receipt := app.mcpPublishTaskView(mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-b", CurrentRunID: "run-b", Text: "上一轮回答",
+	})
+	if !strings.Contains(receipt.Outcome, "run-b") || !strings.Contains(receipt.Outcome, "还没结束") || strings.Contains(receipt.Outcome, "上一轮回答") {
+		t.Fatalf("receipt %q", receipt.Outcome)
+	}
+	defs, err := json.Marshal(mcpToolDefinitions())
+	if err != nil || !strings.Contains(string(defs), "会话标识") {
+		t.Fatalf("schema %v", err)
+	}
+}
+
+func TestInboundMCPGoneCommandSessionIsNotStillRunning(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-old",
+		RunID: "run-old", Text: "计划引用的输入文件不存在",
+	})
+	req, claimed, err := app.mcpClaimRequest("cmd-old", mcpRequestKindCommand, "approve", "")
+	if err != nil || !claimed || req == nil {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(req, "p")
+	app.mcpNoteRequestRun("p", "run-old")
+	app.mcpCompleteRequest(req, nil)
+
+	failedReq, claimed, err := app.mcpClaimRequest("cmd-fail", mcpRequestKindCommand, "fail", "")
+	if err != nil || !claimed || failedReq == nil {
+		t.Fatalf("fail claim claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(failedReq, "p")
+	app.mcpNoteRequestRun("p", "run-old")
+	app.mcpCompleteRequest(failedReq, errors.New("这一轮启动失败"))
+
+	for i := 0; i <= mcpRunArchiveLimit; i++ {
+		app.mcpStoreRun(&mcpRunRecord{
+			ProjectPath: "p", Status: mcpStatusCompleted, RequestID: fmt.Sprintf("mcp-%d", i),
+			RunID: fmt.Sprintf("run-%d", i),
+		})
+	}
+	if _, ok := app.mcpViewForRun("p", "run-old"); ok {
+		t.Fatal("evicted session still present")
+	}
+	state, err := app.mcpGetRequest(context.Background(), "cmd-old")
+	if err == nil || !mcpCodeIs(err, mcpCodeRunNotFound) || !strings.Contains(err.Error(), "没有这一轮执行") {
+		t.Fatalf("gone session %+v err=%v", state, err)
+	}
+	failedState, err := app.mcpGetRequest(context.Background(), "cmd-fail")
+	if err != nil || failedState.State != mcpRequestStateFailed || !strings.Contains(failedState.Error, "这一轮启动失败") {
+		t.Fatalf("failed request %+v err=%v", failedState, err)
+	}
+
+	bare, claimed, err := app.mcpClaimRequest("cmd-bare", mcpRequestKindCommand, "bare", "")
+	if err != nil || !claimed || bare == nil {
+		t.Fatalf("bare claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(bare, "p")
+	app.mcpCompleteRequest(bare, nil)
+	live, err := app.mcpGetRequest(context.Background(), "cmd-bare")
+	if err != nil || live.Task == nil || live.Task.RunID == "" || live.Task.RunID == "run-old" {
+		t.Fatalf("unbound request %+v err=%v", live, err)
+	}
+
+	orphan, claimed, err := app.mcpClaimRequest("cmd-orphan", mcpRequestKindCommand, "orphan", "")
+	if err != nil || !claimed || orphan == nil {
+		t.Fatalf("orphan claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(orphan, "no-such")
+	app.mcpCompleteRequest(orphan, nil)
+	waiting, err := app.mcpGetRequest(context.Background(), "cmd-orphan")
+	if err != nil || waiting.State != mcpRequestStateRunning || waiting.Task != nil || waiting.RunID != "" {
+		t.Fatalf("unpublished request %+v err=%v", waiting, err)
+	}
+	for _, def := range mcpToolDefinitions() {
+		if def["name"] != "get_request" {
+			continue
+		}
+		desc, _ := def["description"].(string)
+		if !strings.Contains(desc, "run_not_found") || !strings.Contains(desc, "没有这一轮执行") || strings.Contains(desc, "task 为空") {
+			t.Fatalf("schema %s", desc)
+		}
+	}
+}
+
+func TestInboundMCPOlderSessionKeepsItsOwnResult(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusWaitingReview, RequestID: "mcp-old",
+		RunID: "run-old", Text: "子任务结果待审阅",
+	})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusCompleted, RequestID: "mcp-new",
+		RunID: "run-new", Text: "这一轮写好了",
+	})
+	owner := projectSessionOwnerID("p")
+	app.imHandler = &IMMessageHandler{}
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: "## 改登录",
+	})
+	req, claimed, err := app.mcpClaimRequest("cmd-old", mcpRequestKindCommand, "review", "")
+	if err != nil || !claimed || req == nil {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	app.mcpBindRequest(req, "p")
+	app.mcpNoteRequestRun("p", "run-old")
+	app.mcpCompleteRequest(req, nil)
+
+	live, err := app.mcpGetTask(context.Background(), "p", "run-new")
+	if err != nil || live.Status != mcpStatusNeedsConfirmation || live.RunID != "run-new" || live.CurrentRunID != "run-new" {
+		t.Fatalf("live %+v err=%v", live, err)
+	}
+	if !strings.Contains(live.Text, "## 改登录") || !strings.Contains(live.Text, "这一轮写好了") || !containsAll(live.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("live plan %+v", live)
+	}
+	liveID := live.ConfirmationID
+	if !strings.HasPrefix(liveID, mcpConfirmIDPrefix) {
+		t.Fatalf("live confirmation %q", liveID)
+	}
+
+	old, err := app.mcpGetTask(context.Background(), "p", "run-old")
+	if err != nil || old.Status != mcpStatusWaitingReview || old.RunID != "run-old" || old.CurrentRunID != "run-new" {
+		t.Fatalf("old session %+v err=%v", old, err)
+	}
+	if strings.Contains(old.Text, "## 改登录") || strings.Contains(old.Outcome, "## 改登录") || len(old.Commands) != 0 || old.ConfirmationID != "" {
+		t.Fatalf("old session took the live plan %+v", old)
+	}
+	if !strings.Contains(old.Text, "子任务结果待审阅") || !strings.Contains(old.Outcome, "子任务结果待审阅") {
+		t.Fatalf("old result %+v", old)
+	}
+	state, err := app.mcpGetRequest(context.Background(), "cmd-old")
+	if err != nil || state.Task == nil || state.Task.Status != mcpStatusWaitingReview || state.Task.RunID != "run-old" || state.Task.CurrentRunID != "run-new" {
+		t.Fatalf("request %+v err=%v", state, err)
+	}
+	if strings.Contains(state.Task.Outcome, "## 改登录") {
+		t.Fatalf("request took the live plan %q", state.Task.Outcome)
+	}
+	again, err := app.mcpGetTask(context.Background(), "p", "run-new")
+	if err != nil || again.ConfirmationID != liveID || again.Status != mcpStatusNeedsConfirmation {
+		t.Fatalf("reading the old session rewrote the live card %+v err=%v", again, err)
+	}
+}
+
+func TestInboundMCPOlderSessionKeepsItsConfirmationID(t *testing.T) {
+	app := &App{}
+	commands := mcpPlanDecisionCommands()
+	fp := mcpConfirmationFingerprint(mcpConfirmKindPlan, commands)
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-old",
+		RunID: "run-old", Text: "计划引用的输入文件不存在",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		ConfirmationID: "mcf_hist", confirmFingerprint: fp,
+	})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-new",
+		RunID: "run-new", Text: "当前这一轮",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		ConfirmationID: "mcf_live", confirmFingerprint: fp,
+	})
+	old, err := app.mcpGetTask(context.Background(), "p", "run-old")
+	if err != nil || old.Status != mcpStatusCancelled || old.ConfirmationID != "mcf_hist" || old.RunID != "run-old" || old.CurrentRunID != "run-new" {
+		t.Fatalf("stored id %+v err=%v", old, err)
+	}
+	if !containsAll(old.Commands, "/plan approve", "/plan skip", "/plan reject") || strings.Contains(old.Text, "当前这一轮") {
+		t.Fatalf("old commands %+v", old)
+	}
+	live, err := app.mcpGetTask(context.Background(), "p", "run-new")
+	if err != nil || live.ConfirmationID != "mcf_live" || live.RunID != "run-new" {
+		t.Fatalf("live id %+v err=%v", live, err)
+	}
+	oldAgain, err := app.mcpGetTask(context.Background(), "p", "run-old")
+	if err != nil || oldAgain.ConfirmationID != "mcf_hist" {
+		t.Fatalf("stored id changed %+v err=%v", oldAgain, err)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "q", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-q-old",
+		RunID: "run-q-old", Text: "还没有编号",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "q", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-q-new",
+		RunID: "run-q-new", Text: "q 的当前轮",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		ConfirmationID: "mcf_qlive", confirmFingerprint: fp,
+	})
+	minted, err := app.mcpGetTask(context.Background(), "q", "run-q-old")
+	if err != nil || !strings.HasPrefix(minted.ConfirmationID, mcpConfirmIDPrefix) || minted.ConfirmationID == "mcf_qlive" {
+		t.Fatalf("mint %+v err=%v", minted, err)
+	}
+	if _, err := app.mcpGetTask(context.Background(), "q", "run-q-new"); err != nil {
+		t.Fatal(err)
+	}
+	mintedAgain, err := app.mcpGetTask(context.Background(), "q", "run-q-old")
+	if err != nil || mintedAgain.ConfirmationID != minted.ConfirmationID {
+		t.Fatalf("minted id changed %q -> %+v err=%v", minted.ConfirmationID, mintedAgain, err)
+	}
+	qLive, err := app.mcpGetTask(context.Background(), "q", "run-q-new")
+	if err != nil || qLive.ConfirmationID != "mcf_qlive" {
+		t.Fatalf("q live %+v err=%v", qLive, err)
+	}
+}
+
+func TestInboundMCPConfirmationIDSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task")
+	app := &App{mcpStateDir: dir}
+	commands := mcpPlanDecisionCommands()
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: path, Status: mcpStatusNeedsConfirmation, RequestID: "mcp-old",
+		RunID: "run-old", Text: "计划引用的输入文件不存在",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: path, Status: mcpStatusNeedsConfirmation, RequestID: "mcp-new",
+		RunID: "run-new", Text: "下一轮",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	old, err := app.mcpGetTask(context.Background(), path, "run-old")
+	if err != nil || old.Status != mcpStatusCancelled || old.RunID != "run-old" || old.CurrentRunID != "run-new" {
+		t.Fatalf("old %+v err=%v", old, err)
+	}
+	live, err := app.mcpGetTask(context.Background(), path, "run-new")
+	if err != nil || live.Status != mcpStatusNeedsConfirmation || live.RunID != "run-new" {
+		t.Fatalf("live %+v err=%v", live, err)
+	}
+	if !strings.HasPrefix(old.ConfirmationID, mcpConfirmIDPrefix) || !strings.HasPrefix(live.ConfirmationID, mcpConfirmIDPrefix) || old.ConfirmationID == live.ConfirmationID {
+		t.Fatalf("minted old=%q live=%q", old.ConfirmationID, live.ConfirmationID)
+	}
+	if !strings.Contains(old.Text, "计划引用的输入文件不存在") || strings.Contains(old.Text, "下一轮") {
+		t.Fatalf("old text %q", old.Text)
+	}
+
+	again := &App{mcpStateDir: dir}
+	oldAgain, err := again.mcpGetTask(context.Background(), path, "run-old")
+	if err != nil || oldAgain.ConfirmationID != old.ConfirmationID || oldAgain.StatusVersion != old.StatusVersion || oldAgain.CurrentRunID != "run-new" {
+		t.Fatalf("reloaded old %+v err=%v want id %q version %d", oldAgain, err, old.ConfirmationID, old.StatusVersion)
+	}
+	liveAgain, err := again.mcpGetTask(context.Background(), path, "run-new")
+	if err != nil || liveAgain.ConfirmationID != live.ConfirmationID || liveAgain.StatusVersion != live.StatusVersion {
+		t.Fatalf("reloaded live %+v err=%v want id %q version %d", liveAgain, err, live.ConfirmationID, live.StatusVersion)
+	}
+
+	used := liveAgain.ConfirmationID
+	if err := again.mcpConsumeConfirmation(path, used); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &App{mcpStateDir: dir}
+	liveNew, err := restarted.mcpGetTask(context.Background(), path, "run-new")
+	if err != nil || !strings.HasPrefix(liveNew.ConfirmationID, mcpConfirmIDPrefix) || liveNew.ConfirmationID == used || liveNew.StatusVersion != live.StatusVersion {
+		t.Fatalf("used id returned %+v err=%v used %q", liveNew, err, used)
+	}
+	oldKept, err := restarted.mcpGetTask(context.Background(), path, "run-old")
+	if err != nil || oldKept.ConfirmationID != old.ConfirmationID {
+		t.Fatalf("archive id changed %+v err=%v", oldKept, err)
+	}
+}
+
+func TestInboundMCPChangedConfirmationCardRotatesID(t *testing.T) {
+	app := &App{}
+	commands := mcpPlanDecisionCommands()
+	path := normalizeProjectSessionPath("p")
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-1",
+		RunID: "run-1", Text: "待确认",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		ConfirmationID: "mcf_saved",
+	})
+	// A loaded record has no fingerprint. A view whose card differs must not
+	// keep the id that was stored for the previous commands.
+	changed := app.mcpRuns[path].view()
+	changed.Commands = append(append([]string(nil), commands...), "另一项")
+	before := app.mcpRuns[path].StatusVersion
+	rotated := app.mcpEnsureConfirmationID(changed)
+	if !strings.HasPrefix(rotated.ConfirmationID, mcpConfirmIDPrefix) || rotated.ConfirmationID == "mcf_saved" {
+		t.Fatalf("changed card kept %q", rotated.ConfirmationID)
+	}
+	if got := app.mcpRuns[path].StatusVersion; got != before {
+		t.Fatalf("status_version %d -> %d", before, got)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-2",
+		RunID: "run-2", Text: "仍是这一张",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		ConfirmationID: "mcf_saved",
+	})
+	kept := app.mcpEnsureConfirmationID(app.mcpRuns[path].view())
+	if kept.ConfirmationID != "mcf_saved" {
+		t.Fatalf("matching card replaced %q", kept.ConfirmationID)
+	}
+}
+
+func TestInboundMCPSamePlanKeepsConfirmationIDAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{mcpStateDir: dir}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-1",
+		RunID: "run-1", Text: "待确认",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: []string{"/plan approve"},
+	})
+	rememberMCPPendingPlan(app, "p")
+	first, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || !strings.HasPrefix(first.ConfirmationID, mcpConfirmIDPrefix) || !containsAll(first.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("first %+v err=%v", first, err)
+	}
+	app.mcpRunsMu.Lock()
+	stored := append([]string(nil), app.mcpRuns[normalizeProjectSessionPath("p")].Commands...)
+	app.mcpRunsMu.Unlock()
+	if len(stored) != 1 || stored[0] != "/plan approve" {
+		t.Fatalf("record commands changed %v", stored)
+	}
+
+	again := &App{mcpStateDir: dir}
+	rememberMCPPendingPlan(again, "p")
+	second, err := again.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || second.ConfirmationID != first.ConfirmationID || second.StatusVersion != first.StatusVersion || !containsAll(second.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("restart %+v err=%v want %q version %d", second, err, first.ConfirmationID, first.StatusVersion)
+	}
+}
+
+func TestInboundMCPPlanEditRotatesConfirmationID(t *testing.T) {
+	app := &App{}
+	commands := mcpPlanDecisionCommands()
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-1",
+		RunID: "run-1", Text: "待确认",
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	rememberMCPPendingPlan(app, "p")
+	first, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || !strings.HasPrefix(first.ConfirmationID, mcpConfirmIDPrefix) || !strings.Contains(first.Text, "改登录") {
+		t.Fatalf("first %+v err=%v", first, err)
+	}
+	same, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || same.ConfirmationID != first.ConfirmationID || same.StatusVersion != first.StatusVersion {
+		t.Fatalf("same plan %+v err=%v", same, err)
+	}
+	owner := projectSessionOwnerID("p")
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":2}]}`,
+		PendingPlanMarkdown: "## 改密码",
+	})
+	edited, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || edited.ConfirmationID == first.ConfirmationID || !strings.HasPrefix(edited.ConfirmationID, mcpConfirmIDPrefix) || !strings.Contains(edited.Text, "改密码") || edited.StatusVersion != first.StatusVersion {
+		t.Fatalf("edited %+v err=%v first %q version %d", edited, err, first.ConfirmationID, first.StatusVersion)
+	}
+	again, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || again.ConfirmationID != edited.ConfirmationID || again.StatusVersion != first.StatusVersion {
+		t.Fatalf("edited plan unstable %+v err=%v", again, err)
+	}
+}
+
+func rememberMCPPendingPlan(app *App, projectPath string) {
+	owner := projectSessionOwnerID(projectPath)
+	app.imHandler = &IMMessageHandler{}
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: "## 改登录",
+	})
+}
+
 type mcpOptCapture struct {
 	fakeMCPTasks
 	mu   sync.Mutex

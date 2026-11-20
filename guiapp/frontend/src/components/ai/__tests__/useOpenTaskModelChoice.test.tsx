@@ -347,4 +347,299 @@ describe('useOpenTaskModelChoice', () => {
         expect(opened).toBe(true);
         expect(SetTaskLLMChoice).toHaveBeenLastCalledWith('D:/tasks/one', 'devin', 'second-model');
     });
+
+    it('drops a provider choice that has no model yet when the menu closes', async () => {
+        vi.mocked(GetTaskLLMChoice).mockResolvedValue({
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: true,
+        });
+        let releaseFetch: (value: any) => void = () => {};
+        vi.mocked(FetchMaclawLLMProfileModels).mockImplementation(() => new Promise((resolve) => {
+            releaseFetch = resolve;
+        }));
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        expect(result.current?.label).toContain('本任务');
+        expect(result.current?.label).toContain('Bare');
+        const gate = result.current?.whenSaved();
+        expect(gate).toBeInstanceOf(Promise);
+        let opened = false;
+        const finished = gate?.then(() => { opened = true; });
+        await act(async () => { result.current?.onDismissModelMenu(); });
+        expect(result.current?.label).not.toContain('本任务');
+        expect(SetTaskLLMChoice).not.toHaveBeenCalled();
+        expect(opened).toBe(false);
+        await act(async () => { releaseFetch([{ id: 'catalog-model' }]); });
+        await finished;
+        expect(opened).toBe(true);
+        expect(SetTaskLLMChoice).not.toHaveBeenCalled();
+    });
+
+    it('stores the catalog model before the next send continues', async () => {
+        let reads = 0;
+        let releaseRead: (value: any) => void = () => {};
+        vi.mocked(GetTaskLLMChoice).mockImplementation(() => {
+            reads += 1;
+            if (reads === 1) {
+                return Promise.resolve({
+                    providerId: 'devin',
+                    providerName: 'Devin',
+                    model: 'swe-2-max',
+                    followsAssignment: true,
+                });
+            }
+            return new Promise((resolve) => { releaseRead = resolve; });
+        });
+        vi.mocked(FetchMaclawLLMProfileModels).mockResolvedValue([{ id: 'catalog-model' } as any]);
+        let releaseSet: () => void = () => {};
+        vi.mocked(SetTaskLLMChoice).mockImplementation(() => new Promise((resolve) => {
+            releaseSet = () => resolve(undefined);
+        }));
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        const gate = result.current?.whenSaved();
+        await waitFor(() => expect(SetTaskLLMChoice).toHaveBeenCalledWith('D:/tasks/one', 'bare', 'catalog-model'));
+        let opened = false;
+        const finished = gate?.then(() => { opened = true; });
+        await Promise.resolve();
+        expect(opened).toBe(false);
+        await act(async () => { releaseSet(); });
+        await finished;
+        expect(opened).toBe(true);
+        await act(async () => {
+            releaseRead({
+                providerId: 'bare',
+                providerName: 'Bare',
+                model: 'catalog-model',
+                followsAssignment: false,
+            });
+        });
+    });
+
+    it('returns to model assignment when the provider catalog is empty', async () => {
+        vi.mocked(GetTaskLLMChoice).mockResolvedValue({
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: true,
+        });
+        vi.mocked(FetchMaclawLLMProfileModels).mockResolvedValue([]);
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        await waitFor(() => expect(result.current?.label).not.toContain('本任务'));
+        expect(SetTaskLLMChoice).not.toHaveBeenCalled();
+        expect(result.current?.whenSaved()).toBeUndefined();
+    });
+
+    it('shows the stored pin after a model-less browse is cancelled during read-back', async () => {
+        const follow = {
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: true,
+        };
+        const pin = {
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'pinned-coder',
+            followsAssignment: false,
+        };
+        let reads = 0;
+        let releaseRead: (value: any) => void = () => {};
+        vi.mocked(GetTaskLLMChoice).mockImplementation(() => {
+            reads += 1;
+            if (reads === 1) return Promise.resolve(follow);
+            if (reads === 2) return new Promise((resolve) => { releaseRead = resolve; });
+            return Promise.resolve(pin);
+        });
+        vi.mocked(SetTaskLLMChoice).mockResolvedValue(undefined);
+        let releaseFetch: (value: any) => void = () => {};
+        vi.mocked(FetchMaclawLLMProfileModels).mockImplementation(() => new Promise((resolve) => {
+            releaseFetch = resolve;
+        }));
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchModel('pinned-coder'); });
+        expect(result.current?.currentModel).toBe('pinned-coder');
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        expect(result.current?.label).toContain('Bare');
+        await act(async () => { releaseRead(pin); });
+        expect(result.current?.label).toContain('Bare');
+        await act(async () => { result.current?.onDismissModelMenu(); });
+        await waitFor(() => {
+            expect(result.current?.label).toContain('本任务');
+            expect(result.current?.label).toContain('pinned-coder');
+        });
+        expect(result.current?.followsAssignment).toBe(false);
+        await act(async () => { releaseFetch([{ id: 'catalog-model' }]); });
+        expect(SetTaskLLMChoice).toHaveBeenCalledTimes(1);
+        expect(SetTaskLLMChoice).toHaveBeenCalledWith('D:/tasks/one', 'devin', 'pinned-coder');
+        expect(result.current?.label).toContain('pinned-coder');
+        expect(result.current?.label).not.toContain('Bare');
+    });
+
+    it('shows the stored pin when a model-less provider catalog is empty', async () => {
+        const follow = {
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: true,
+        };
+        const pin = {
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'pinned-coder',
+            followsAssignment: false,
+        };
+        let reads = 0;
+        let releaseRead: (value: any) => void = () => {};
+        vi.mocked(GetTaskLLMChoice).mockImplementation(() => {
+            reads += 1;
+            if (reads === 1) return Promise.resolve(follow);
+            if (reads === 2) return new Promise((resolve) => { releaseRead = resolve; });
+            return Promise.resolve(pin);
+        });
+        vi.mocked(SetTaskLLMChoice).mockResolvedValue(undefined);
+        vi.mocked(FetchMaclawLLMProfileModels).mockResolvedValue([]);
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchModel('pinned-coder'); });
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        await waitFor(() => {
+            expect(result.current?.label).toContain('本任务');
+            expect(result.current?.label).toContain('pinned-coder');
+        });
+        await act(async () => { releaseRead(pin); });
+        expect(result.current?.followsAssignment).toBe(false);
+        expect(result.current?.label).not.toContain('Bare');
+        expect(SetTaskLLMChoice).toHaveBeenCalledTimes(1);
+    });
+
+    it('pins the model clicked as a model-less provider menu closes', async () => {
+        let reads = 0;
+        vi.mocked(GetTaskLLMChoice).mockImplementation(() => {
+            reads += 1;
+            if (reads === 1) {
+                return Promise.resolve({
+                    providerId: 'devin',
+                    providerName: 'Devin',
+                    model: 'swe-2-max',
+                    followsAssignment: true,
+                });
+            }
+            return new Promise(() => {});
+        });
+        vi.mocked(SetTaskLLMChoice).mockResolvedValue(undefined);
+        let releaseFetch: (value: any) => void = () => {};
+        vi.mocked(FetchMaclawLLMProfileModels).mockImplementation(() => new Promise((resolve) => {
+            releaseFetch = resolve;
+        }));
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        await act(async () => {
+            result.current?.onDismissModelMenu();
+            result.current?.onSwitchModel('clicked-model');
+        });
+        expect(SetTaskLLMChoice).toHaveBeenCalledWith('D:/tasks/one', 'bare', 'clicked-model');
+        expect(result.current?.label).toContain('本任务');
+        expect(result.current?.label).toContain('clicked-model');
+        await act(async () => { releaseFetch([{ id: 'catalog-model' }]); });
+        expect(SetTaskLLMChoice).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the send waiting when follow closes a model-less provider', async () => {
+        vi.mocked(GetTaskLLMChoice).mockResolvedValue({
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: true,
+        });
+        let releaseSet: () => void = () => {};
+        vi.mocked(SetTaskLLMChoice).mockImplementation(() => new Promise((resolve) => {
+            releaseSet = () => resolve(undefined);
+        }));
+        let releaseFetch: (value: any) => void = () => {};
+        vi.mocked(FetchMaclawLLMProfileModels).mockImplementation(() => new Promise((resolve) => {
+            releaseFetch = resolve;
+        }));
+        const bareProviders = [
+            ...providers,
+            { id: 'bare', name: 'Bare', url: '', model: '', models: [], configured: true, isHubService: false },
+        ];
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers: bareProviders,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.followsAssignment).toBe(true));
+        await act(async () => { result.current?.onSwitchProvider('bare'); });
+        const gate = result.current?.whenSaved();
+        let opened = false;
+        const finished = gate?.then(() => { opened = true; });
+        await act(async () => {
+            result.current?.onDismissModelMenu();
+            result.current?.onFollow();
+        });
+        expect(SetTaskLLMChoice).toHaveBeenCalledWith('D:/tasks/one', '', '');
+        expect(opened).toBe(false);
+        await act(async () => { releaseSet(); });
+        await finished;
+        expect(opened).toBe(true);
+        await act(async () => { releaseFetch([]); });
+        expect(SetTaskLLMChoice).toHaveBeenCalledTimes(1);
+    });
 });

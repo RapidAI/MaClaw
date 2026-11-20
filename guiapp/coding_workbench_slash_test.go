@@ -8,6 +8,34 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
+func TestInboundMCPPlanApproveDoesNotClaimStartWhenInputsAreMissing(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	dir := t.TempDir()
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "inspect", Description: "inspect code"},
+	}
+	h.storeStickyPendingCodingPlan(userID, "实现 @docs/spec.md", "### T1: inspect", tasks)
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	mem.ProjectPath = dir
+	h.storeStickyCodingWorkbenchMemory(userID, mem)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+
+	var progressed []string
+	resp := h.executeApprovedCodingPlan(userID, dir, mem, IMUserMessage{}, func(text string) {
+		progressed = append(progressed, text)
+	}, nil)
+	if resp == nil || !strings.Contains(resp.Text, "docs/spec.md") || !strings.Contains(resp.Text, "输入文件不存在") {
+		t.Fatalf("missing input response: %#v", resp)
+	}
+	if len(progressed) != 0 {
+		t.Fatalf("missing input was announced as started: %v", progressed)
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); !ok {
+		t.Fatal("plan was not restored")
+	}
+}
+
 func TestCodingPlanApprovalWaitsForLiveReview(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

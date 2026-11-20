@@ -19,48 +19,49 @@ import (
 // mcpRunSnapshot is the durable copy of one round. Cancel funcs and SSH
 // passwords are not fields on the run, and they are not written here.
 type mcpRunSnapshot struct {
-	ProjectPath       string         `json:"project_path"`
-	Name              string         `json:"name,omitempty"`
-	Mode              string         `json:"mode,omitempty"`
-	Status            string         `json:"status,omitempty"`
-	Text              string         `json:"text,omitempty"`
-	Error             string         `json:"error,omitempty"`
-	Provider          string         `json:"provider,omitempty"`
-	Model             string         `json:"model,omitempty"`
-	RequestID         string         `json:"request_id,omitempty"`
-	ConfirmationKind  string         `json:"confirmation_kind,omitempty"`
-	Commands          []string       `json:"commands,omitempty"`
-	Workspace         string         `json:"workspace,omitempty"`
-	Round             int            `json:"round,omitempty"`
-	StartedAt         time.Time      `json:"started_at,omitempty"`
-	FinishedAt        time.Time      `json:"finished_at,omitempty"`
-	EndReason         string         `json:"end_reason,omitempty"`
-	EndDetail         string         `json:"end_detail,omitempty"`
-	ConfirmationID    string         `json:"confirmation_id,omitempty"`
-	LogSeq            int            `json:"log_seq,omitempty"`
-	Logs              []mcpLogEvent  `json:"logs,omitempty"`
-	HistoryCount      int            `json:"history_count,omitempty"`
-	HistorySeal       string         `json:"history_seal,omitempty"`
-	RemoteHost        string         `json:"ssh_host,omitempty"`
-	RemoteUser        string         `json:"ssh_user,omitempty"`
-	RemotePort        int            `json:"ssh_port,omitempty"`
-	RemoteWorkDir     string         `json:"remote_work_dir,omitempty"`
-	Steps             []mcpStepView  `json:"steps,omitempty"`
-	Checks            []mcpCheckView `json:"checks,omitempty"`
-	RunID             string         `json:"run_id,omitempty"`
-	StatusVersion     int            `json:"status_version,omitempty"`
-	ParentTaskID      string         `json:"parent_task_id,omitempty"`
-	ChildTaskID       string         `json:"child_task_id,omitempty"`
-	Children          []mcpChildView `json:"children,omitempty"`
-	Stop              *mcpStopView   `json:"stop,omitempty"`
-	PlanID            string         `json:"plan_id,omitempty"`
-	PlanVersion       int            `json:"plan_version,omitempty"`
-	ProviderRequested string         `json:"provider_requested,omitempty"`
-	ModelRequested    string         `json:"model_requested,omitempty"`
-	ProviderEffective string         `json:"provider_effective,omitempty"`
-	ModelEffective    string         `json:"model_effective,omitempty"`
-	WorkDirRequested  string         `json:"working_dir_requested,omitempty"`
-	SessionPath       string         `json:"session_path,omitempty"`
+	ProjectPath        string         `json:"project_path"`
+	Name               string         `json:"name,omitempty"`
+	Mode               string         `json:"mode,omitempty"`
+	Status             string         `json:"status,omitempty"`
+	Text               string         `json:"text,omitempty"`
+	Error              string         `json:"error,omitempty"`
+	Provider           string         `json:"provider,omitempty"`
+	Model              string         `json:"model,omitempty"`
+	RequestID          string         `json:"request_id,omitempty"`
+	ConfirmationKind   string         `json:"confirmation_kind,omitempty"`
+	Commands           []string       `json:"commands,omitempty"`
+	Workspace          string         `json:"workspace,omitempty"`
+	Round              int            `json:"round,omitempty"`
+	StartedAt          time.Time      `json:"started_at,omitempty"`
+	FinishedAt         time.Time      `json:"finished_at,omitempty"`
+	EndReason          string         `json:"end_reason,omitempty"`
+	EndDetail          string         `json:"end_detail,omitempty"`
+	ConfirmationID     string         `json:"confirmation_id,omitempty"`
+	ConfirmFingerprint string         `json:"confirmation_fingerprint,omitempty"`
+	LogSeq             int            `json:"log_seq,omitempty"`
+	Logs               []mcpLogEvent  `json:"logs,omitempty"`
+	HistoryCount       int            `json:"history_count,omitempty"`
+	HistorySeal        string         `json:"history_seal,omitempty"`
+	RemoteHost         string         `json:"ssh_host,omitempty"`
+	RemoteUser         string         `json:"ssh_user,omitempty"`
+	RemotePort         int            `json:"ssh_port,omitempty"`
+	RemoteWorkDir      string         `json:"remote_work_dir,omitempty"`
+	Steps              []mcpStepView  `json:"steps,omitempty"`
+	Checks             []mcpCheckView `json:"checks,omitempty"`
+	RunID              string         `json:"run_id,omitempty"`
+	StatusVersion      int            `json:"status_version,omitempty"`
+	ParentTaskID       string         `json:"parent_task_id,omitempty"`
+	ChildTaskID        string         `json:"child_task_id,omitempty"`
+	Children           []mcpChildView `json:"children,omitempty"`
+	Stop               *mcpStopView   `json:"stop,omitempty"`
+	PlanID             string         `json:"plan_id,omitempty"`
+	PlanVersion        int            `json:"plan_version,omitempty"`
+	ProviderRequested  string         `json:"provider_requested,omitempty"`
+	ModelRequested     string         `json:"model_requested,omitempty"`
+	ProviderEffective  string         `json:"provider_effective,omitempty"`
+	ModelEffective     string         `json:"model_effective,omitempty"`
+	WorkDirRequested   string         `json:"working_dir_requested,omitempty"`
+	SessionPath        string         `json:"session_path,omitempty"`
 }
 
 type mcpDurableBundle struct {
@@ -679,48 +680,49 @@ func mcpSnapshotFromRun(rec *mcpRunRecord) *mcpRunSnapshot {
 	}
 	clone := mcpCloneRun(rec)
 	return &mcpRunSnapshot{
-		ProjectPath:       clone.ProjectPath,
-		Name:              clone.Name,
-		Mode:              clone.Mode,
-		Status:            clone.Status,
-		Text:              clone.Text,
-		Error:             clone.Error,
-		Provider:          clone.Provider,
-		Model:             clone.Model,
-		RequestID:         clone.RequestID,
-		ConfirmationKind:  clone.ConfirmationKind,
-		Commands:          clone.Commands,
-		Workspace:         clone.Workspace,
-		Round:             clone.Round,
-		StartedAt:         clone.StartedAt,
-		FinishedAt:        clone.FinishedAt,
-		EndReason:         clone.EndReason,
-		EndDetail:         clone.EndDetail,
-		ConfirmationID:    clone.ConfirmationID,
-		LogSeq:            clone.logSeq,
-		Logs:              clone.logs,
-		HistoryCount:      clone.historyCount,
-		HistorySeal:       clone.historySeal,
-		RemoteHost:        clone.RemoteHost,
-		RemoteUser:        clone.RemoteUser,
-		RemotePort:        clone.RemotePort,
-		RemoteWorkDir:     clone.RemoteWorkDir,
-		Steps:             clone.Steps,
-		Checks:            clone.Checks,
-		RunID:             clone.RunID,
-		StatusVersion:     clone.StatusVersion,
-		ParentTaskID:      clone.ParentTaskID,
-		ChildTaskID:       clone.ChildTaskID,
-		Children:          clone.Children,
-		Stop:              clone.Stop,
-		PlanID:            clone.PlanID,
-		PlanVersion:       clone.PlanVersion,
-		ProviderRequested: clone.ProviderRequested,
-		ModelRequested:    clone.ModelRequested,
-		ProviderEffective: clone.ProviderEffective,
-		ModelEffective:    clone.ModelEffective,
-		WorkDirRequested:  clone.WorkDirRequested,
-		SessionPath:       clone.SessionPath,
+		ProjectPath:        clone.ProjectPath,
+		Name:               clone.Name,
+		Mode:               clone.Mode,
+		Status:             clone.Status,
+		Text:               clone.Text,
+		Error:              clone.Error,
+		Provider:           clone.Provider,
+		Model:              clone.Model,
+		RequestID:          clone.RequestID,
+		ConfirmationKind:   clone.ConfirmationKind,
+		Commands:           clone.Commands,
+		Workspace:          clone.Workspace,
+		Round:              clone.Round,
+		StartedAt:          clone.StartedAt,
+		FinishedAt:         clone.FinishedAt,
+		EndReason:          clone.EndReason,
+		EndDetail:          clone.EndDetail,
+		ConfirmationID:     clone.ConfirmationID,
+		ConfirmFingerprint: clone.confirmFingerprint,
+		LogSeq:             clone.logSeq,
+		Logs:               clone.logs,
+		HistoryCount:       clone.historyCount,
+		HistorySeal:        clone.historySeal,
+		RemoteHost:         clone.RemoteHost,
+		RemoteUser:         clone.RemoteUser,
+		RemotePort:         clone.RemotePort,
+		RemoteWorkDir:      clone.RemoteWorkDir,
+		Steps:              clone.Steps,
+		Checks:             clone.Checks,
+		RunID:              clone.RunID,
+		StatusVersion:      clone.StatusVersion,
+		ParentTaskID:       clone.ParentTaskID,
+		ChildTaskID:        clone.ChildTaskID,
+		Children:           clone.Children,
+		Stop:               clone.Stop,
+		PlanID:             clone.PlanID,
+		PlanVersion:        clone.PlanVersion,
+		ProviderRequested:  clone.ProviderRequested,
+		ModelRequested:     clone.ModelRequested,
+		ProviderEffective:  clone.ProviderEffective,
+		ModelEffective:     clone.ModelEffective,
+		WorkDirRequested:   clone.WorkDirRequested,
+		SessionPath:        clone.SessionPath,
 	}
 }
 
@@ -729,48 +731,49 @@ func mcpRunFromSnapshot(snap *mcpRunSnapshot) *mcpRunRecord {
 		return nil
 	}
 	return &mcpRunRecord{
-		ProjectPath:       snap.ProjectPath,
-		Name:              snap.Name,
-		Mode:              snap.Mode,
-		Status:            snap.Status,
-		Text:              snap.Text,
-		Error:             snap.Error,
-		Provider:          snap.Provider,
-		Model:             snap.Model,
-		RequestID:         snap.RequestID,
-		ConfirmationKind:  snap.ConfirmationKind,
-		Commands:          append([]string(nil), snap.Commands...),
-		Workspace:         snap.Workspace,
-		Round:             snap.Round,
-		StartedAt:         snap.StartedAt,
-		FinishedAt:        snap.FinishedAt,
-		EndReason:         snap.EndReason,
-		EndDetail:         snap.EndDetail,
-		ConfirmationID:    snap.ConfirmationID,
-		logSeq:            snap.LogSeq,
-		logs:              append([]mcpLogEvent(nil), snap.Logs...),
-		historyCount:      snap.HistoryCount,
-		historySeal:       snap.HistorySeal,
-		RemoteHost:        snap.RemoteHost,
-		RemoteUser:        snap.RemoteUser,
-		RemotePort:        snap.RemotePort,
-		RemoteWorkDir:     snap.RemoteWorkDir,
-		Steps:             mcpCloneSteps(snap.Steps),
-		Checks:            mcpCloneChecks(snap.Checks),
-		RunID:             snap.RunID,
-		StatusVersion:     snap.StatusVersion,
-		ParentTaskID:      snap.ParentTaskID,
-		ChildTaskID:       snap.ChildTaskID,
-		Children:          mcpCloneChildren(snap.Children),
-		Stop:              mcpCloneStop(snap.Stop),
-		PlanID:            snap.PlanID,
-		PlanVersion:       snap.PlanVersion,
-		ProviderRequested: snap.ProviderRequested,
-		ModelRequested:    snap.ModelRequested,
-		ProviderEffective: snap.ProviderEffective,
-		ModelEffective:    snap.ModelEffective,
-		WorkDirRequested:  snap.WorkDirRequested,
-		SessionPath:       snap.SessionPath,
+		ProjectPath:        snap.ProjectPath,
+		Name:               snap.Name,
+		Mode:               snap.Mode,
+		Status:             snap.Status,
+		Text:               snap.Text,
+		Error:              snap.Error,
+		Provider:           snap.Provider,
+		Model:              snap.Model,
+		RequestID:          snap.RequestID,
+		ConfirmationKind:   snap.ConfirmationKind,
+		Commands:           append([]string(nil), snap.Commands...),
+		Workspace:          snap.Workspace,
+		Round:              snap.Round,
+		StartedAt:          snap.StartedAt,
+		FinishedAt:         snap.FinishedAt,
+		EndReason:          snap.EndReason,
+		EndDetail:          snap.EndDetail,
+		ConfirmationID:     snap.ConfirmationID,
+		confirmFingerprint: snap.ConfirmFingerprint,
+		logSeq:             snap.LogSeq,
+		logs:               append([]mcpLogEvent(nil), snap.Logs...),
+		historyCount:       snap.HistoryCount,
+		historySeal:        snap.HistorySeal,
+		RemoteHost:         snap.RemoteHost,
+		RemoteUser:         snap.RemoteUser,
+		RemotePort:         snap.RemotePort,
+		RemoteWorkDir:      snap.RemoteWorkDir,
+		Steps:              mcpCloneSteps(snap.Steps),
+		Checks:             mcpCloneChecks(snap.Checks),
+		RunID:              snap.RunID,
+		StatusVersion:      snap.StatusVersion,
+		ParentTaskID:       snap.ParentTaskID,
+		ChildTaskID:        snap.ChildTaskID,
+		Children:           mcpCloneChildren(snap.Children),
+		Stop:               mcpCloneStop(snap.Stop),
+		PlanID:             snap.PlanID,
+		PlanVersion:        snap.PlanVersion,
+		ProviderRequested:  snap.ProviderRequested,
+		ModelRequested:     snap.ModelRequested,
+		ProviderEffective:  snap.ProviderEffective,
+		ModelEffective:     snap.ModelEffective,
+		WorkDirRequested:   snap.WorkDirRequested,
+		SessionPath:        snap.SessionPath,
 	}
 }
 

@@ -181,11 +181,17 @@ func (a *App) mcpPublishTaskView(view mcpTaskView) mcpTaskView {
 	}
 	view = a.mcpFillProviderModel(view)
 	view = mcpSealTaskIdentity(view)
+	// current_run_id is the live round. The viewed run_id stays on this session.
+	if live := a.mcpLiveRunID(view.ProjectPath); live != "" {
+		view.CurrentRunID = live
+	}
 	view.Text = mcpRelabelSessionWorkspace(view.Text, view.SessionPath, firstNonEmpty(view.WorkingDirEffective, view.WorkingDir, view.workspace))
 	view = mcpGuardCompletion(view)
 	view = a.mcpEnsureConfirmationID(view)
 	view = mcpPublishChildren(view)
-	return a.mcpAnnotateStepFreshness(view)
+	view = a.mcpAnnotateStepFreshness(view)
+	view.Outcome = mcpCommandOutcome(view)
+	return view
 }
 
 func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
@@ -199,7 +205,11 @@ func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
 		view.FinishedAt = ""
 		view.Stop = nil
 	} else {
-		view = a.mcpApplyLiveConfirmation(view)
+		// The desktop plan, ask, and confirm card belong to the live round.
+		// An older command session keeps the result stored for that run.
+		if a.mcpViewIsLiveRound(view) {
+			view = a.mcpApplyLiveConfirmation(view)
+		}
 		if view.Status == mcpStatusNeedsConfirmation {
 			view.EndReason = mcpStatusNeedsConfirmation
 			if strings.TrimSpace(view.EndDetail) == "" {
@@ -216,6 +226,34 @@ func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
 		}
 	}
 	return a.mcpPublishTaskView(view)
+}
+
+func (a *App) mcpLiveRunID(path string) string {
+	path = normalizeProjectSessionPath(path)
+	if a == nil || path == "" {
+		return ""
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil {
+		return ""
+	}
+	return strings.TrimSpace(rec.RunID)
+}
+
+// mcpViewIsLiveRound is false for a stored command session that is no longer
+// the registry's current run. An empty run id is the task-level read.
+func (a *App) mcpViewIsLiveRound(view mcpTaskView) bool {
+	runID := strings.TrimSpace(view.RunID)
+	if runID == "" {
+		return true
+	}
+	live := a.mcpLiveRunID(view.ProjectPath)
+	if live == "" {
+		return false
+	}
+	return live == runID
 }
 
 func (a *App) mcpFillProviderModel(view mcpTaskView) mcpTaskView {
@@ -291,6 +329,46 @@ func mcpConfirmationFingerprint(kind string, commands []string) string {
 	return strings.TrimSpace(kind) + "\n" + strings.Join(commands, "\n")
 }
 
+// mcpConfirmationBindsPlan reports whether this card approves or replaces
+// the desktop's pending coding plan. The command list stays the same when
+// that plan is edited, so the fingerprint has to include the plan itself.
+func mcpConfirmationBindsPlan(kind string, commands []string) bool {
+	switch strings.TrimSpace(kind) {
+	case mcpConfirmKindPlan, mcpConfirmKindPlanReview, mcpConfirmKindPlanDialogue:
+		return true
+	}
+	for _, command := range commands {
+		switch strings.TrimSpace(command) {
+		case "/plan approve", "/plan skip", "/plan reject":
+			return true
+		}
+	}
+	return false
+}
+
+// mcpPendingPlanStamp is the pending plan a plan confirmation would act on.
+// An empty stamp leaves the fingerprint as kind plus commands.
+func (a *App) mcpPendingPlanStamp(projectPath string) string {
+	handler := a.mcpReadyIMHandler()
+	if handler == nil {
+		return ""
+	}
+	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	if userID == "" || userID == desktopUserID {
+		return ""
+	}
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	parts := []string{
+		strings.TrimSpace(mem.PendingPlanJSON),
+		strings.TrimSpace(mem.PendingPlanMarkdown),
+		strings.TrimSpace(mem.PlanDialogueNotes),
+	}
+	if parts[0] == "" && parts[1] == "" && parts[2] == "" {
+		return ""
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (a *App) mcpEnsureConfirmationID(view mcpTaskView) mcpTaskView {
 	if strings.TrimSpace(view.ConfirmationKind) == "" && len(view.Commands) == 0 {
 		view.ConfirmationID = ""
@@ -302,35 +380,91 @@ func (a *App) mcpEnsureConfirmationID(view mcpTaskView) mcpTaskView {
 		view.ConfirmationID = ""
 		return view
 	}
+	// Read the plan before taking the run lock. The workbench load must not
+	// sit behind that lock, and a plan edit has to change this fingerprint.
+	if mcpConfirmationBindsPlan(view.ConfirmationKind, view.Commands) {
+		if stamp := a.mcpPendingPlanStamp(path); stamp != "" {
+			fp += "\n" + stamp
+		}
+	}
+	// Persist only after this lock is released. mcpPersistRun takes the disk
+	// lock and then the run lock again.
+	persist := false
 	a.mcpRunsMu.Lock()
-	defer a.mcpRunsMu.Unlock()
-	if rec := a.mcpRuns[path]; rec != nil {
+	defer func() {
+		a.mcpRunsMu.Unlock()
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
+	// Only the live round owns the id stored on the record. Reading an older
+	// command session must not replace the confirmation the current round shows.
+	viewRun := strings.TrimSpace(firstNonEmpty(view.RunID, view.CurrentRunID))
+	if rec := a.mcpRuns[path]; rec != nil && (viewRun == "" || strings.TrimSpace(rec.RunID) == viewRun) {
 		// The run record is the only live id. Drop ids minted before it existed.
 		a.mcpDropConfirmIDsLocked(path)
-		if rec.confirmFingerprint == fp && strings.HasPrefix(rec.ConfirmationID, mcpConfirmIDPrefix) {
+		// A stored fingerprint is the card that was shown, including the pending
+		// plan. An older snapshot has none: keep the id when the loaded kind
+		// and commands still match. A different card mints a new id.
+		cardFP := rec.confirmFingerprint
+		if cardFP == "" {
+			cardFP = mcpConfirmationFingerprint(rec.ConfirmationKind, rec.Commands)
+		}
+		if strings.HasPrefix(rec.ConfirmationID, mcpConfirmIDPrefix) && cardFP == fp {
+			rec.confirmFingerprint = fp
 			view.ConfirmationID = rec.ConfirmationID
 			return view
 		}
 		rec.ConfirmationID = mcpConfirmIDPrefix + randomHexID(12)
 		rec.confirmFingerprint = fp
 		view.ConfirmationID = rec.ConfirmationID
+		persist = true
 		return view
 	}
-	key := path + "\x00" + fp
+	// This round is not the live record. Keep its id beside the path and the
+	// run, and do not drop the id the current round is showing.
+	key := path + "\x00" + viewRun + "\x00" + fp
 	if a.mcpConfirmIDs == nil {
 		a.mcpConfirmIDs = map[string]string{}
 	}
-	if id := a.mcpConfirmIDs[key]; strings.HasPrefix(id, mcpConfirmIDPrefix) {
-		a.mcpDropConfirmIDsLocked(path)
-		a.mcpConfirmIDs[key] = id
-		view.ConfirmationID = id
+	// The id minted while this round was current stays on the archived record.
+	// A later read must keep that same id, not mint another one.
+	if stored := strings.TrimSpace(view.ConfirmationID); strings.HasPrefix(stored, mcpConfirmIDPrefix) {
+		a.mcpConfirmIDs[key] = stored
 		return view
 	}
-	a.mcpDropConfirmIDsLocked(path)
+	if id := a.mcpConfirmIDs[key]; strings.HasPrefix(id, mcpConfirmIDPrefix) {
+		view.ConfirmationID = id
+		if a.mcpStoreArchivedConfirmationLocked(path, viewRun, id) {
+			persist = true
+		}
+		return view
+	}
 	id := mcpConfirmIDPrefix + randomHexID(12)
 	a.mcpConfirmIDs[key] = id
 	view.ConfirmationID = id
+	if a.mcpStoreArchivedConfirmationLocked(path, viewRun, id) {
+		persist = true
+	}
 	return view
+}
+
+func (a *App) mcpStoreArchivedConfirmationLocked(path, runID, id string) bool {
+	runID = strings.TrimSpace(runID)
+	if a == nil || path == "" || runID == "" || !strings.HasPrefix(id, mcpConfirmIDPrefix) {
+		return false
+	}
+	for _, old := range a.mcpRunArchive[path] {
+		if old == nil || old.RunID != runID {
+			continue
+		}
+		if old.ConfirmationID == id {
+			return false
+		}
+		old.ConfirmationID = id
+		return true
+	}
+	return false
 }
 
 func (a *App) mcpDropConfirmIDsLocked(path string) {
@@ -339,9 +473,15 @@ func (a *App) mcpDropConfirmIDsLocked(path string) {
 	}
 	prefix := path + "\x00"
 	for key := range a.mcpConfirmIDs {
-		if strings.HasPrefix(key, prefix) {
-			delete(a.mcpConfirmIDs, key)
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		// path, run, fingerprint is one command session. Refreshing the live
+		// round drops only ids that were minted before a run existed.
+		if strings.Contains(key[len(prefix):], "\x00") {
+			continue
+		}
+		delete(a.mcpConfirmIDs, key)
 	}
 }
 
@@ -351,11 +491,22 @@ func (a *App) mcpConsumeConfirmation(path, id string) error {
 	if a == nil || path == "" || !strings.HasPrefix(id, mcpConfirmIDPrefix) {
 		return errors.New("确认编号不匹配或已失效")
 	}
+	// Persist only after this lock is released. mcpPersistRun takes the disk
+	// lock and then the run lock again.
+	persist := false
 	a.mcpRunsMu.Lock()
-	defer a.mcpRunsMu.Unlock()
+	defer func() {
+		a.mcpRunsMu.Unlock()
+		if persist {
+			a.mcpPersistRun(path)
+		}
+	}()
 	if rec := a.mcpRuns[path]; rec != nil && rec.ConfirmationID == id {
 		rec.ConfirmationID = ""
 		rec.confirmFingerprint = ""
+		// A minted id is on disk. Clearing it only in memory lets the next
+		// process accept a confirmation this process already used.
+		persist = true
 		return nil
 	}
 	prefix := path + "\x00"
@@ -1195,6 +1346,37 @@ func (a *App) mcpBindRequest(req *mcpClientRequest, path string) {
 	a.mcpPersistRequests()
 }
 
+// mcpNoteRequestRun binds this command to the round that was just installed.
+// A finished request keeps the session it already has, so a later command
+// cannot make get_request return that later round.
+func (a *App) mcpNoteRequestRun(path, runID string) {
+	path = normalizeProjectSessionPath(path)
+	runID = strings.TrimSpace(runID)
+	if a == nil || path == "" || runID == "" {
+		return
+	}
+	a.mcpReqMu.Lock()
+	changed := false
+	for _, req := range a.mcpReqs {
+		if req == nil || req.done || req.failed {
+			continue
+		}
+		if normalizeProjectSessionPath(req.ProjectPath) != path {
+			continue
+		}
+		if strings.TrimSpace(req.RunID) != "" {
+			continue
+		}
+		req.RunID = runID
+		req.updated = time.Now()
+		changed = true
+	}
+	a.mcpReqMu.Unlock()
+	if changed {
+		a.mcpPersistRequests()
+	}
+}
+
 func (a *App) mcpCompleteRequest(req *mcpClientRequest, callErr error) {
 	if a == nil || req == nil {
 		return
@@ -1276,6 +1458,7 @@ func (a *App) mcpReplayRequest(ctx context.Context, req *mcpClientRequest) (mcpT
 	errText := req.errText
 	failed := req.failed
 	done := req.done
+	runID := req.RunID
 	a.mcpReqMu.Unlock()
 	if failed || errText != "" {
 		if errText == "" {
@@ -1289,10 +1472,24 @@ func (a *App) mcpReplayRequest(ctx context.Context, req *mcpClientRequest) (mcpT
 		}
 		return mcpTaskView{}, errors.New("请求还在处理，用 get_request 查询")
 	}
-	if view, ok := a.mcpViewFromRegistry(path); ok {
+	if view, ok := a.mcpRequestSessionView(path, runID); ok {
 		return a.mcpReturnTask(view), nil
 	}
+	if strings.TrimSpace(runID) != "" {
+		return mcpTaskView{}, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
+	}
 	return mcpTaskView{ProjectPath: path, Status: mcpStatusRunning, Text: "请求已受理"}, nil
+}
+
+// mcpRequestSessionView is the round that belongs to one accepted command.
+// A stored run id stays on that command after a later round becomes current.
+func (a *App) mcpRequestSessionView(path, runID string) (mcpTaskView, bool) {
+	path = normalizeProjectSessionPath(path)
+	runID = strings.TrimSpace(runID)
+	if runID != "" {
+		return a.mcpViewForRun(path, runID)
+	}
+	return a.mcpViewFromRegistry(path)
 }
 
 func (a *App) mcpGetRequest(ctx context.Context, clientRequestID string) (mcpRequestView, error) {
@@ -1345,13 +1542,20 @@ func (a *App) mcpGetRequest(ctx context.Context, clientRequestID string) (mcpReq
 	}
 	var published *mcpTaskView
 	if path != "" {
-		if view, ok := a.mcpViewFromRegistry(path); ok {
+		if view, ok := a.mcpRequestSessionView(path, runID); ok {
 			next := a.mcpReturnTask(view)
 			published = &next
 			out.Task = published
 			if out.RunID == "" {
-				out.RunID = firstNonEmpty(next.CurrentRunID, next.RunID)
+				out.RunID = firstNonEmpty(next.RunID, next.CurrentRunID)
 			}
+		} else if strings.TrimSpace(runID) != "" && !failed && strings.TrimSpace(errText) == "" {
+			// The run id is written only after that round is stored. A miss
+			// means the session left the archive. The empty-id path below is
+			// the short window before a row exists; reporting running here
+			// makes a caller wait on a session that will not come back.
+			// A request that already failed keeps that failure.
+			return mcpRequestView{}, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
 		}
 	}
 	out.State = mcpDeriveRequestState(&mcpClientRequest{ProjectPath: path, errText: errText, failed: failed, done: done}, published)

@@ -88,6 +88,7 @@ export function useOpenTaskModelChoice(args: {
     const overrideStampRef = useRef(0);
     const pinTokenRef = useRef(0);
     const pendingPinRef = useRef<{ providerId: string; token: number } | null>(null);
+    const releaseIdleWaitersRef = useRef<() => void>(() => {});
     const pathRef = useRef(path);
     pathRef.current = path;
 
@@ -114,11 +115,22 @@ export function useOpenTaskModelChoice(args: {
         }
     }, []);
 
+    // The browse already moved the stamp, so the write's read-back does not
+    // publish. Re-read after that browse is gone, or the chip stays on the
+    // choice from before the write. Callers own the send gate: 使用模型分配
+    // closes the menu and starts its write in the same turn.
+    const rereadAfterCancelledBrowse = useCallback(() => {
+        pinOverride(null);
+        const target = pathRef.current;
+        if (target) void reload(target);
+    }, [pinOverride, reload]);
+
     useEffect(() => {
         overrideStampRef.current += 1;
         setChoice(null);
         setOverride(null);
         pendingPinRef.current = null;
+        releaseIdleWaitersRef.current();
         if (!path) return;
         void reload(path);
         let off: unknown;
@@ -147,13 +159,19 @@ export function useOpenTaskModelChoice(args: {
     const writingRef = useRef(false);
     const writeWaitRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
     const releaseWriteWaiters = useCallback(() => {
-        if (writeRef.current) return;
+        // A provider click can still be resolving its first model. The chip
+        // already shows that provider, so a send keeps waiting for the pin.
+        if (writeRef.current || pendingPinRef.current) return;
         const pending = writeWaitRef.current;
         writeWaitRef.current = null;
         pending?.resolve();
     }, []);
+    releaseIdleWaitersRef.current = () => {
+        if (writingRef.current || writeRef.current) return;
+        releaseWriteWaiters();
+    };
     const whenSaved = useCallback((): Promise<void> | undefined => {
-        if (!writingRef.current && !writeRef.current) return undefined;
+        if (!writingRef.current && !writeRef.current && !pendingPinRef.current) return undefined;
         if (writeWaitRef.current) return writeWaitRef.current.promise;
         let resolve = () => {};
         const promise = new Promise<void>((done) => { resolve = done; });
@@ -264,14 +282,21 @@ export function useOpenTaskModelChoice(args: {
         const token = ++pinTokenRef.current;
         pendingPinRef.current = { providerId, token };
         void fetchModels(providerId).then((ids) => {
-            if (pendingPinRef.current?.token !== token) return;
+            if (pendingPinRef.current?.token !== token) {
+                if (!writingRef.current && !writeRef.current && !pendingPinRef.current) releaseWriteWaiters();
+                return;
+            }
             pendingPinRef.current = null;
             const first = ids[0] || "";
-            if (!first) return;
+            if (!first) {
+                rereadAfterCancelledBrowse();
+                if (!writingRef.current && !writeRef.current) releaseWriteWaiters();
+                return;
+            }
             pinOverride({ providerId, model: first });
             void remember(path, providerId, first);
         });
-    }, [fetchModels, path, pinOverride, providers, remember]);
+    }, [fetchModels, path, pinOverride, providers, releaseWriteWaiters, remember, rereadAfterCancelledBrowse]);
 
     const onSwitchModel = useCallback((modelId: string) => {
         if (!path) return;
@@ -296,8 +321,10 @@ export function useOpenTaskModelChoice(args: {
     }, [choice?.providerId, fetchModels, override?.providerId]);
 
     const onDismissModelMenu = useCallback(() => {
+        if (!pendingPinRef.current) return;
         pendingPinRef.current = null;
-    }, []);
+        rereadAfterCancelledBrowse();
+    }, [rereadAfterCancelledBrowse]);
 
     if (!path) return null;
 

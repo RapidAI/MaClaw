@@ -84,6 +84,9 @@ type mcpTaskView struct {
 	ResumeOK            bool                `json:"resume_ok,omitempty"`
 	Conflicts           []mcpResumeConflict `json:"conflicts,omitempty"`
 	DirtyNote           string              `json:"dirty_note,omitempty"`
+	// Outcome is the short decision for this command. run_id is the session
+	// the caller queries after the round ends.
+	Outcome string `json:"outcome,omitempty"`
 	// workspace is the directory tools are editing. Scope approvals name that
 	// directory, which is not always the task record path. Publish copies it
 	// to WorkingDir. The unexported field stays the scope-match key.
@@ -371,7 +374,7 @@ func (a *App) mcpCreateTaskBody(ctx context.Context, args mcpCreateArgs, prompt 
 			historyCount: mark.count,
 			historySeal:  mark.text,
 		})
-		return a.mcpPublishTaskView(view), nil
+		return a.mcpPublishInstalledCreate(view), nil
 	}
 	return a.mcpStartPrompt(ctx, view, prompt, args.Wait, true, nil)
 }
@@ -430,9 +433,24 @@ func (a *App) mcpCreateRemoteTask(ctx context.Context, args mcpCreateArgs, promp
 		view.historyCount = mark.count
 		view.historySeal = mark.text
 		a.mcpStoreRun(mcpRunRecordFromView(view))
-		return a.mcpPublishTaskView(view), nil
+		return a.mcpPublishInstalledCreate(view), nil
 	}
 	return a.mcpStartPrompt(ctx, view, prompt, args.Wait, true, nil)
+}
+
+// mcpPublishInstalledCreate copies the run id commit just minted and binds
+// that session to the in-flight create request.
+func (a *App) mcpPublishInstalledCreate(view mcpTaskView) mcpTaskView {
+	if saved, ok := a.mcpViewFromRegistry(view.ProjectPath); ok {
+		if strings.TrimSpace(view.RunID) == "" {
+			view.RunID = saved.RunID
+			view.CurrentRunID = saved.CurrentRunID
+			view.StatusVersion = saved.StatusVersion
+			view.Round = saved.Round
+		}
+	}
+	a.mcpNoteRequestRun(view.ProjectPath, view.RunID)
+	return a.mcpPublishTaskView(view)
 }
 
 func mcpRunRecordFromView(view mcpTaskView) *mcpRunRecord {
@@ -537,6 +555,7 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 			return mcpTaskView{}, err
 		}
 		accept(firstNonEmpty(reg.ProjectPath, registryPath))
+		a.mcpNoteRequestRun(firstNonEmpty(reg.ProjectPath, registryPath), firstNonEmpty(reg.RunID, reg.CurrentRunID))
 		view, _, err := a.mcpOperateLiveGate(projectPath, reg, inRegistry, command)
 		if err != nil {
 			return mcpTaskView{}, err
@@ -579,6 +598,7 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 		}
 		a.recordMCPAccess(ctx, "send_command", view.Name, view.ProjectPath)
 		accept(view.ProjectPath)
+		a.mcpNoteRequestRun(view.ProjectPath, view.RunID)
 		return a.mcpReturnTask(view), nil
 	}
 	return a.mcpStartPrompt(ctx, view, command, wait, false, func(path string) {
@@ -945,6 +965,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	if bind != nil {
 		bind(path)
 	}
+	a.mcpNoteRequestRun(path, rec.RunID)
 	// Drop the claim once the run is stored. Waiting for the prompt used to
 	// keep it, so the next command was rejected after this run had already
 	// finished and the waiter was only packaging the result.
@@ -1026,6 +1047,9 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	view.WorkDirRequested = rec.WorkDirRequested
 	view.SessionPath = rec.SessionPath
 	view.workspace = rec.Workspace
+	// This receipt is the new session, not the previous round's answer.
+	view.Text = ""
+	view.Error = ""
 	view.FinishedAt = ""
 	view.EndReason = ""
 	view.EndDetail = ""
@@ -1840,6 +1864,10 @@ func (a *App) mcpConfirmRecovery(ctx context.Context, view mcpTaskView, command,
 	}
 	if dismiss {
 		a.mcpDismissPendingConfirmation(path)
+	}
+	if strings.TrimSpace(view.RunID) == "" {
+		view.RunID = rec.RunID
+		view.CurrentRunID = rec.RunID
 	}
 	return view, nil
 }

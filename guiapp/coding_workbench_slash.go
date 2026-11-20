@@ -215,17 +215,18 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 			loopCtx.Done()
 		}()
 	}
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("已批准计划，开始执行 %d 步…", len(pending.Tasks)))
-	}
 	if remote {
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("已批准计划，开始执行 %d 步…", len(pending.Tasks)))
+		}
 		return h.runRemoteCodingTemplateSubAgent(userID, marker+" "+pending.UserText, remoteCtx, loopCtx, onProgress, onToken)
 	}
 	// Freeze the approved plan into an execution contract before dispatch
 	// (local targets only: remote files live on another filesystem, so input
 	// existence and host-run validators cannot be checked from here). The
 	// contract's write scope is the projectPath just resolved — the runner is
-	// bound to it for the whole run.
+	// bound to it for the whole run. Say that execution started only after
+	// the inputs exist, so a missing file is not logged as a start.
 	contract := compileCodingExecutionContract(pending, projectPath)
 	if len(contract.MissingRequiredFiles) > 0 {
 		if _, restored := h.restoreApprovedCodingPlanAsPending(userID); restored {
@@ -235,6 +236,9 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 		return &IMAgentResponse{Text: fmt.Sprintf(
 			"计划引用的输入文件不存在，无法开始实施；当前计划已恢复为待确认状态：\n\n%s\n\n请补齐文件或修正计划后重试。",
 			"• "+strings.Join(contract.MissingRequiredFiles, "\n• "))}
+	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf("已批准计划，开始执行 %d 步…", len(pending.Tasks)))
 	}
 	log.Printf("[coding-plan] approved plan frozen user=%s plan=%s scope=%s required=%d validators=%d",
 		userID, contract.PlanDigest[:12], contract.ProjectPath, len(contract.RequiredFiles), len(contract.Validators))
