@@ -130,13 +130,34 @@ func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 			readErr = err
 			return
 		}
-		if disk.UpdatedAtUnix > 0 && time.Since(time.Unix(disk.UpdatedAtUnix, 0)) > stickyCodingMemoryMaxAge {
+	})
+	if readErr != nil {
+		log.Printf("[coding-env] load coding agent state failed path=%s err=%v", path, readErr)
+		return codingAgentResume{}
+	}
+	// The workbench file has its own read path. Checking it under this lock
+	// re-enters withStickyCodingUserLock, which is not reentrant, and a
+	// "继续" on aged unfinished work deadlocks.
+	if codingAgentResumeExpired(disk) && !codingWorkbenchStillNeedsResume(userID) {
+		withStickyCodingUserLock(userID, func() {
+			again, againErr := readCodingAgentResumeDisk(path)
+			if againErr != nil {
+				if !os.IsNotExist(againErr) {
+					readErr = againErr
+				}
+				disk = codingAgentResumeDisk{}
+				return
+			}
+			if !codingAgentResumeExpired(again) {
+				disk = again
+				return
+			}
 			disk = codingAgentResumeDisk{}
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				readErr = err
 			}
-		}
-	})
+		})
+	}
 	if readErr != nil {
 		log.Printf("[coding-env] load coding agent state failed path=%s err=%v", path, readErr)
 		return codingAgentResume{}
@@ -374,6 +395,34 @@ func deleteCodingAgentResume(userID string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		log.Printf("[coding-env] delete coding agent state failed path=%s err=%v", path, err)
 	}
+}
+
+func readCodingAgentResumeDisk(path string) (codingAgentResumeDisk, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return codingAgentResumeDisk{}, err
+	}
+	var disk codingAgentResumeDisk
+	if err := json.Unmarshal(data, &disk); err != nil {
+		return codingAgentResumeDisk{}, err
+	}
+	return disk, nil
+}
+
+// codingAgentResumeExpired is the age rule shared with the workbench file.
+// A missing timestamp is not expired: the record call that just wrote it
+// has not stamped a clock yet, and dropping it would refuse a live continue.
+func codingAgentResumeExpired(disk codingAgentResumeDisk) bool {
+	return disk.UpdatedAtUnix > 0 && time.Since(time.Unix(disk.UpdatedAtUnix, 0)) > stickyCodingMemoryMaxAge
+}
+
+// codingWorkbenchStillNeedsResume keeps an aged transcript when the workbench
+// file beside it still has unfinished work. The workbench loader already
+// keeps that file past stickyCodingMemoryMaxAge. Deleting only the resume
+// file made "继续" look like a task with no history.
+func codingWorkbenchStillNeedsResume(userID string) bool {
+	mem, found, _ := loadStickyCodingWorkbenchMemoryFromDisk(userID)
+	return found && codingWorkbenchHasUnfinishedWork(mem)
 }
 
 // codingAgentResumeReady bounds one loop the same way chat history is bounded,

@@ -1728,6 +1728,9 @@ func chatEntriesFromCodingResume(history []agent.ConversationEntry) []agent.Conv
 		}
 		text := strings.TrimSpace(stringifyProjectConversationContent(entry.Content))
 		if text == "" {
+			text = chatTextFromCodingToolCalls(entry.ToolCalls)
+		}
+		if text == "" {
 			continue
 		}
 		out = append(out, agent.ConversationEntry{Role: role, Content: text})
@@ -1736,6 +1739,19 @@ func chatEntriesFromCodingResume(history []agent.ConversationEntry) []agent.Conv
 		return nil
 	}
 	return out
+}
+
+// chatTextFromCodingToolCalls keeps a closed assistant row whose only record
+// is the tool it already ran. Dropping that row makes a task whose transcript
+// never grew a prose answer look like it has no history. The chat session
+// gets the tool name, not the call payload: a coding tool is not in the chat
+// tool list, so the call itself cannot be replayed.
+func chatTextFromCodingToolCalls(raw interface{}) string {
+	names := toolCallNames(raw)
+	if len(names) == 0 {
+		return ""
+	}
+	return "已调用 " + strings.Join(names, "、")
 }
 
 func projectContinuationHistoryMissing(req AIAssistantSendRequest, handler *IMMessageHandler, userID, projectPath string) bool {

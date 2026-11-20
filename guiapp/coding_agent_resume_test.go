@@ -134,6 +134,31 @@ func TestCodingAgentResumeDropsExpiredFile(t *testing.T) {
 	}
 }
 
+func TestCodingAgentResumeKeepsExpiredFileWhileWorkbenchUnfinished(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	resumePath := codingAgentResumeStatePath(userID)
+	workbenchPath := stickyCodingMemoryFilePath(userID)
+	raw := []byte(`{"project_path":"` + filepath.ToSlash(dir) + `","updated_at_unix":1,"history":[{"role":"user","content":"修表格公式"},{"role":"assistant","content":"还差公式里的竖线"}]}`)
+	workbench := []byte(`{"project_path":"` + filepath.ToSlash(dir) + `","updated_at_unix":1,"pending_plan_json":"{\"steps\":[\"protect pipes\"]}"}`)
+	if err := os.MkdirAll(filepath.Dir(resumePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resumePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workbenchPath, workbench, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := loadCodingAgentResume(userID, dir)
+	if len(got.History) != 2 || got.History[0].Content != "修表格公式" {
+		t.Fatalf("unfinished work lost its aged transcript: %#v", got.History)
+	}
+	if _, err := os.Stat(resumePath); err != nil {
+		t.Fatalf("aged resume was deleted while workbench work remains: %v", err)
+	}
+}
+
 func TestCodingAgentResumeRejectsAnotherProject(t *testing.T) {
 	dir := t.TempDir()
 	other := t.TempDir()

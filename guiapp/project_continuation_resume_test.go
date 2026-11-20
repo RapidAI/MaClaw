@@ -1,11 +1,14 @@
 package guiapp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // BR-20261120-BD8D23C968F7 — 任务继续时失败.
@@ -143,6 +146,36 @@ func TestCodingResumeRestoreDropsReasoningTrace(t *testing.T) {
 		if entry.Role == "tool" || entry.ToolCalls != nil {
 			t.Fatalf("coding tool row entered the chat session: %#v", got)
 		}
+	}
+}
+
+func TestCodingResumeRestoreKeepsToolOnlyAssistantTurn(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "tool-only")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(projectPath)
+	recordCodingAgentResume(owner, projectPath, []agent.ConversationEntry{
+		{Role: "user", Content: "看一下切分函数"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call-1", Type: "function", Function: llm.ToolCallFunction{Name: "code_navigation"}}}},
+		{Role: "tool", ToolCallID: "call-1", ToolName: "code_navigation", Content: "frame at table.go"},
+	}, nil)
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	req := AIAssistantSendRequest{Text: "继续", Lang: "zh-Hans"}
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	got := memory.Load(owner)
+	if len(got) != 2 || got[1].Role != "assistant" || got[1].ToolCalls != nil {
+		t.Fatalf("tool-only assistant turn was not kept as chat text: %#v", got)
+	}
+	if !strings.Contains(fmt.Sprint(got[1].Content), "code_navigation") {
+		t.Fatalf("closed tool name was dropped: %#v", got[1])
+	}
+	if projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+		t.Fatal("tool-only coding transcript was refused as missing history")
 	}
 }
 
