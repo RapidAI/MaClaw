@@ -81,3 +81,68 @@ func TestCodingResumeTranscriptDoesNotLeakAcrossProjects(t *testing.T) {
 		t.Fatalf("another task's coding transcript leaked in: %#v", got)
 	}
 }
+
+// An ACP continue is a different session in the same workspace. Its session
+// id does not name the project's coding file. Loading by that id reads a
+// record that can belong to another conversation in the same tree, and that
+// record must not become this task's history.
+func TestACPContinuationDoesNotAdoptForeignCodingResume(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "shared-workspace")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	acpUser := acpAssistantSessionOwnerID("editor-session")
+	recordCodingAgentResume(acpUser, projectPath, []agent.ConversationEntry{
+		{Role: "user", Content: "另一段编辑器对话"},
+		{Role: "assistant", Content: "已改完"},
+	}, nil)
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	req := AIAssistantSendRequest{Text: "继续", Lang: "zh-Hans"}
+	app.restoreProjectAgentSession(handler, acpUser, projectPath)
+	if got := memory.Load(acpUser); len(got) != 0 {
+		t.Fatalf("ACP continue adopted a session-scoped coding record: %#v", got)
+	}
+	if !projectContinuationHistoryMissing(req, handler, acpUser, projectPath) {
+		t.Fatal("ACP continue with no project transcript was not refused")
+	}
+}
+
+// The coding record is the executor loop. Its reasoning trace is not a chat
+// turn: the chat loop sends reasoning_content on every assistant row. The
+// visible user and assistant turns are what a continue needs.
+func TestCodingResumeRestoreDropsReasoningTrace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectPath := filepath.Join(t.TempDir(), "coding-task")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(projectPath)
+	recordCodingAgentResume(owner, projectPath, []agent.ConversationEntry{
+		{Role: "user", Content: "修掉表格公式被竖线切断的问题"},
+		{Role: "assistant", Content: "", ReasoningContent: "先看切分函数", ToolCalls: []interface{}{map[string]interface{}{"id": "call-1"}}},
+		{Role: "tool", ToolCallID: "call-1", ToolName: "code_navigation", Content: "frame at table.go"},
+		{Role: "assistant", Content: "根因是单元格切分没保护公式里的竖线", ReasoningContent: "先看切分函数，再核对公式里的竖线"},
+	}, nil)
+
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	app.restoreProjectAgentSession(handler, owner, projectPath)
+	got := memory.Load(owner)
+	if len(got) != 2 || got[0].Content != "修掉表格公式被竖线切断的问题" {
+		t.Fatalf("visible turns were not restored: %#v", got)
+	}
+	if got[1].ReasoningContent != "" || got[1].ToolCalls != nil || got[1].Content != "根因是单元格切分没保护公式里的竖线" {
+		t.Fatalf("coding loop row entered the chat session: %#v", got[1])
+	}
+	for _, entry := range got {
+		if entry.Role == "tool" || entry.ToolCalls != nil {
+			t.Fatalf("coding tool row entered the chat session: %#v", got)
+		}
+	}
+}
+

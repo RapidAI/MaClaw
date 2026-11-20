@@ -1683,7 +1683,7 @@ func (a *App) restoreProjectAgentSession(handler *IMMessageHandler, userID, proj
 		// turns, the tab only shows them. Without this fallback a "继续" on a
 		// coding task was refused with "没有找到这个任务之前的对话" even though
 		// the task had 41 recorded turns (BR-20261120-BD8D23C968F7).
-		entries = codingAgentResumeHistoryForUser(userID, projectPath)
+		entries = codingAgentResumeHistoryForProject(projectPath)
 	}
 	if !conversationEntriesHaveTurns(entries) {
 		return
@@ -1692,15 +1692,50 @@ func (a *App) restoreProjectAgentSession(handler *IMMessageHandler, userID, proj
 	log.Printf("[AI assistant] restored project session from tab transcript user=%s project=%q turns=%d", userID, projectPath, len(entries))
 }
 
-// codingAgentResumeHistoryForUser returns the transcript the coding workbench
-// recorded for this task, as chat entries. Empty when the task never ran a
-// coding turn or the record belongs to another project.
-func codingAgentResumeHistoryForUser(userID, projectPath string) []agent.ConversationEntry {
-	resume := loadCodingAgentResume(userID, projectPath)
-	if len(resume.History) == 0 {
+// codingAgentResumeHistoryForProject returns the transcript the coding
+// workbench recorded for this task, as chat entries. Empty when the task
+// never ran a coding turn or the record belongs to another project.
+//
+// The file belongs to the project, not to the session that pressed 继续.
+// An ACP session id does not name that file; loading by the session id
+// reads a different record and can treat another conversation in the same
+// tree as this task's history.
+func codingAgentResumeHistoryForProject(projectPath string) []agent.ConversationEntry {
+	owner := projectSessionOwnerID(projectPath)
+	if owner == "" || owner == desktopUserID {
 		return nil
 	}
-	return append([]agent.ConversationEntry(nil), resume.History...)
+	resume := loadCodingAgentResume(owner, projectPath)
+	return chatEntriesFromCodingResume(resume.History)
+}
+
+// chatEntriesFromCodingResume keeps the turns a chat continuation can send.
+// The coding record is the executor's loop. Reasoning traces and tool rows
+// steer that loop; they are not chat turns. The chat loop forwards
+// reasoning_content and tool_calls as stored, and a coding tool such as
+// code_navigation is not in the chat tool list. Restoring those rows would
+// make the next chat request unsendable. The visible user and assistant
+// text is the task the continuation has to continue.
+func chatEntriesFromCodingResume(history []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(history) == 0 {
+		return nil
+	}
+	out := make([]agent.ConversationEntry, 0, len(history))
+	for _, entry := range history {
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		text := strings.TrimSpace(stringifyProjectConversationContent(entry.Content))
+		if text == "" {
+			continue
+		}
+		out = append(out, agent.ConversationEntry{Role: role, Content: text})
+	}
+	if !conversationEntriesHaveTurns(out) {
+		return nil
+	}
+	return out
 }
 
 func projectContinuationHistoryMissing(req AIAssistantSendRequest, handler *IMMessageHandler, userID, projectPath string) bool {
