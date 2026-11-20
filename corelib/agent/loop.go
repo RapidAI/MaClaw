@@ -5140,12 +5140,6 @@ type toolCallRecord struct {
 	batch   uint64
 }
 
-// noProgressMissedExecution reports whether an executed tool call counts as a
-// no-progress miss: it ran, but produced nothing the model did not already
-// have. An empty body is a miss. An identical (name, args, result) failing
-// call already on record means the rerun taught the model nothing new. A
-// failed call that returned a different result — a fresh test report, a
-// different compile error — is forward progress and returns false.
 // noProgressFailedRepeat reports whether an executed-but-failed tool call made
 // no forward progress. A failure is a miss when it is the tool's first failure
 // this turn, produced an empty body, or reran the same command as the previous
@@ -5167,7 +5161,10 @@ func noProgressFailedRepeat(prevFailed map[string]string, name, argsJSON, result
 	if !seen {
 		return true // first failure of this tool: nothing preceded it to build on
 	}
-	return prev == argsJSON
+	// Canonical compare, not raw string: a rerun that only reordered JSON keys
+	// or changed whitespace is still the same command and taught the model
+	// nothing. sameCallArgs matches how the drift detector judges "same call".
+	return sameCallArgs(prev, argsJSON)
 }
 
 // rememberFailedToolCall stores the arguments of the most recent failed call to
