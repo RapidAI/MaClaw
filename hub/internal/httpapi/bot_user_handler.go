@@ -500,11 +500,17 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 				"status":   "running",
 				"run_id":   r.PathValue("runID"),
 			}
-			if activity := svc.DesktopRunActivity(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); activity != "" {
+			activity := svc.DesktopRunActivity(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID"))
+			if activity != "" {
 				running["activity"] = activity
 			}
 			if line := svc.DesktopRunStatusLine(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); line != "" {
 				running["status_line"] = line
+			}
+			// While nothing has said a word yet the header still needs one:
+			// a neutral line, not the raw run id.
+			if activity == "" && running["status_line"] == nil {
+				running["status_line"] = "正在处理…"
 			}
 			if process := svc.DesktopRunProcess(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); len(process) > 0 {
 				running["process"] = process
