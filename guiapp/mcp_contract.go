@@ -150,7 +150,7 @@ func mcpCommandOutcome(view mcpTaskView) string {
 		}
 		return "命令已受理，这一轮还没结束。会话标识是 " + id + "。结束后用 get_task 传入这个 run_id 查看状态，再决定下一条命令。"
 	case mcpStatusNeedsConfirmation:
-		lead := mcpOutcomeLead(view.Text)
+		lead := mcpCapOutcomeKeepingGate(mcpDecisionText(view.Text), view)
 		if lead == "" {
 			lead = strings.TrimSpace(view.Error)
 		}
@@ -254,36 +254,125 @@ func mcpAttachSessionLine(text, line string) string {
 	return text
 }
 
-// mcpOutcomeLead keeps the decision sentence and drops the plan body and the
-// send_command hint that get_task appends after it.
-func mcpOutcomeLead(text string) string {
+const (
+	mcpOutcomeLeadRunes = 800
+	mcpOutcomeGateRunes = 240
+)
+
+// mcpPlanHintAt is the earliest plan, review, or dialogue hint. That hint is
+// the end of the decision. A "## " heading earlier in the transcript is still
+// the decision; the plan body is the overlay in front of the confirm hint.
+func mcpPlanHintAt(text string) (int, string, bool) {
+	cut := -1
+	hint := ""
+	for _, item := range []string{mcpPlanConfirmHint, mcpPlanReviewHint, mcpPlanDialogueHint} {
+		if i := strings.Index(text, "\n\n"+item); i >= 0 && (cut < 0 || i < cut) {
+			cut = i
+			hint = item
+		}
+	}
+	if cut < 0 {
+		return 0, "", false
+	}
+	return cut, hint, true
+}
+
+// mcpDecisionText is the part of text the caller keeps as the decision.
+// With a plan hint, an earlier "## " heading stays, and the confirm hint's
+// plan overlay is removed. Without a hint, the first "## " heading still ends
+// the decision so a bare plan dump does not become the outcome.
+func mcpDecisionText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}
-	cut := len(text)
-	for _, mark := range []string{
-		"\n\n" + mcpPlanConfirmHint,
-		"\n\n" + mcpPlanReviewHint,
-		"\n\n" + mcpPlanDialogueHint,
-		"\n\n## ",
-	} {
-		if i := strings.Index(text, mark); i >= 0 && i < cut {
-			cut = i
+	if cut, hint, ok := mcpPlanHintAt(text); ok {
+		lead := strings.TrimSpace(text[:cut])
+		if hint == mcpPlanConfirmHint {
+			lead = strings.TrimSpace(mcpDropPlanOverlay(lead, false))
 		}
+		return lead
 	}
-	lead := strings.TrimSpace(text[:cut])
-	// A "## " plan is cut above. The formatted plan starts with the goal line
-	// and stands immediately before the confirm hint, so it would otherwise
-	// become the decision sentence.
-	if hintAt := strings.Index(text, "\n\n"+mcpPlanConfirmHint); hintAt >= 0 && hintAt == cut {
-		lead = strings.TrimSpace(mcpDropPlanOverlay(lead, false))
+	if i := strings.Index(text, "\n\n## "); i >= 0 {
+		return strings.TrimSpace(text[:i])
 	}
-	const maxRunes = 800
-	if utf8.RuneCountInString(lead) <= maxRunes {
+	return text
+}
+
+// mcpGateShownInDecision reports whether block is already in the decision the
+// caller reads. A copy inside the plan body, or past the front of a long
+// decision, is not that text: the outcome drops the plan and keeps the first
+// 800 runes. Without a plan hint the whole transcript is the decision.
+func mcpGateShownInDecision(text, block string) bool {
+	block = strings.TrimSpace(block)
+	text = strings.TrimSpace(text)
+	if block == "" {
+		return true
+	}
+	if _, _, ok := mcpPlanHintAt(text); !ok {
+		return strings.Contains(text, block)
+	}
+	decision := mcpDecisionText(text)
+	if utf8.RuneCountInString(decision) > mcpOutcomeLeadRunes {
+		decision = string([]rune(decision)[:mcpOutcomeLeadRunes])
+	}
+	return strings.Contains(decision, block)
+}
+
+func mcpCapOutcomeRunes(lead string, maxRunes int) string {
+	if maxRunes < 1 || utf8.RuneCountInString(lead) <= maxRunes {
 		return lead
 	}
 	return string([]rune(lead)[:maxRunes]) + "…"
+}
+
+// mcpCapOutcomeKeepingGate keeps a short authorization that the front cap
+// would cut. The gate is placed at the end of the decision, in front of the
+// plan. Other statuses do not regain a trailing paragraph this way.
+func mcpCapOutcomeKeepingGate(lead string, view mcpTaskView) string {
+	if utf8.RuneCountInString(lead) <= mcpOutcomeLeadRunes {
+		return lead
+	}
+	prefix := mcpCapOutcomeRunes(lead, mcpOutcomeLeadRunes)
+	if !mcpOutcomeHasRunningGate(view) {
+		return prefix
+	}
+	blocks := mcpTextBlocks(lead)
+	tail := make([]string, 0, 2)
+	for i := len(blocks) - 1; i >= 0 && len(tail) < 2; i-- {
+		block := blocks[i]
+		if utf8.RuneCountInString(block) > mcpOutcomeGateRunes || strings.Contains(prefix, block) {
+			break
+		}
+		tail = append(tail, block)
+	}
+	if len(tail) == 0 {
+		return prefix
+	}
+	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
+		tail[i], tail[j] = tail[j], tail[i]
+	}
+	return prefix + "\n\n" + strings.Join(tail, "\n\n")
+}
+
+func mcpOutcomeHasRunningGate(view mcpTaskView) bool {
+	switch strings.TrimSpace(view.ConfirmationKind) {
+	case "scope", "critical":
+		return true
+	}
+	for _, command := range view.Commands {
+		command = strings.TrimSpace(command)
+		if strings.HasPrefix(command, "__scope_approval__ ") || strings.HasPrefix(command, "__resolve_critical_confirm__ ") {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpOutcomeLead keeps the decision sentence and drops the plan body and the
+// send_command hint that get_task appends after it.
+func mcpOutcomeLead(text string) string {
+	return mcpCapOutcomeRunes(mcpDecisionText(text), mcpOutcomeLeadRunes)
 }
 
 // mcpAutoResumeAllowed is false after the user stopped the run.

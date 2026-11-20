@@ -1600,6 +1600,89 @@ func TestInboundMCPHolderCardKeepsRunningGates(t *testing.T) {
 	}
 }
 
+func TestInboundMCPPlanGateStaysInTheDecision(t *testing.T) {
+	const runID = "run-hold"
+	const gate = "要写仓库外的文件"
+	goalPlan := "**目标**: 改登录\n\n第二段要求\n\n### T1: 登录页"
+	headingPlan := "## 改登录\n\n### T1: 登录页"
+	decision := "计划引用的输入文件不存在，无法开始实施；当前计划已恢复为待确认状态：\n\n• users.noreply.github.com\n\n请补齐文件或修正计划后重试。"
+	longDecision := decision + "\n\n" + strings.Repeat("补充说明。", 200)
+	scopeCh := make(chan ScopeApprovalDecision, 1)
+	scopeID := storePendingScopeApproval(nil, ScopeApprovalRequest{
+		ProjectPath: "p",
+		Message:     gate,
+	}, scopeCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(scopeID) })
+
+	check := func(name, markdown, transcript string, headCopies int, afterCap bool, keep string) {
+		t.Helper()
+		app := &App{mcpRuns: map[string]*mcpRunRecord{
+			"p": {ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2},
+		}}
+		owner := projectSessionOwnerID("p")
+		app.imHandler = &IMMessageHandler{}
+		app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+			PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+			PendingPlanMarkdown: markdown,
+		})
+		view := app.mcpReturnTask(mcpTaskView{
+			ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2, Text: transcript,
+		})
+		if view.Status != mcpStatusNeedsConfirmation || view.ConfirmationKind != mcpConfirmKindPlan || view.RunID != runID || view.StatusVersion != 2 {
+			t.Fatalf("%s card %+v", name, view)
+		}
+		if !containsAll(view.Commands, "/plan approve", "__scope_approval__ "+scopeID+" allow_dir", "__scope_approval__ "+scopeID+" deny") {
+			t.Fatalf("%s commands %v", name, view.Commands)
+		}
+		planAt := strings.Index(view.Text, markdown)
+		if strings.Count(view.Text, markdown) != 1 || planAt < 0 || strings.Count(view.Text[:planAt], gate) != headCopies || planAt > strings.Index(view.Text, mcpPlanConfirmHint) {
+			t.Fatalf("%s text %q", name, view.Text)
+		}
+		if !strings.Contains(view.Outcome, "users.noreply.github.com") || strings.Count(view.Outcome, gate) != 1 || strings.Contains(view.Outcome, "第二段要求") || strings.Contains(view.Outcome, "登录页") || strings.Contains(view.Outcome, "改登录") {
+			t.Fatalf("%s outcome %q", name, view.Outcome)
+		}
+		if keep != "" && !strings.Contains(view.Outcome, keep) {
+			t.Fatalf("%s outcome lost %q in %q", name, keep, view.Outcome)
+		}
+		if afterCap {
+			if cut := strings.Index(view.Outcome, "…"); cut < 0 || strings.Index(view.Outcome, gate) < cut {
+				t.Fatalf("%s cap dropped the gate %q", name, view.Outcome)
+			}
+		} else if strings.Contains(view.Outcome, "…") {
+			t.Fatalf("%s capped a short decision %q", name, view.Outcome)
+		}
+		again := app.mcpReturnTask(mcpTaskView{
+			ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2, Text: transcript,
+		})
+		if again.ConfirmationID != view.ConfirmationID || again.Text != view.Text || again.StatusVersion != 2 {
+			t.Fatalf("%s reread %+v", name, again)
+		}
+		if rec := app.mcpRuns["p"]; rec == nil || rec.Status != mcpStatusIdle || rec.Text != "" || rec.ConfirmationKind != "" || len(rec.Commands) != 0 || rec.StatusVersion != 2 {
+			t.Fatalf("%s wrote the holder %+v", name, rec)
+		}
+	}
+	for _, plan := range []string{goalPlan, headingPlan} {
+		check(plan, plan, decision, 1, false, "")
+		check("already "+plan, plan, decision+"\n\n"+gate, 1, false, "")
+		check("quoted "+plan, plan+"\n"+gate, decision, 1, false, "")
+		check("heading "+plan, plan, decision+"\n\n## 当前结构\n\n仓库现在只有旧接口。", 1, false, "当前结构")
+	}
+	check("long", goalPlan, longDecision, 1, true, "")
+	buried := decision + "\n\n" + strings.Repeat("补充说明。", 160) + gate + strings.Repeat("补充说明。", 40)
+	check("buried", goalPlan, buried, 2, true, "")
+
+	runningApp := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-live", StatusVersion: 2},
+	}}
+	running := runningApp.mcpReturnTask(mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-live", StatusVersion: 2,
+		Text: "日志\n\n## 现场\n\n" + gate,
+	})
+	if running.ConfirmationKind != "scope" || strings.Count(running.Text, gate) != 1 {
+		t.Fatalf("running duplicated the gate %q kind %s", running.Text, running.ConfirmationKind)
+	}
+}
+
 func rememberMCPPendingPlan(app *App, projectPath string) {
 	owner := projectSessionOwnerID(projectPath)
 	app.imHandler = &IMMessageHandler{}

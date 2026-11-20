@@ -1599,7 +1599,7 @@ func (a *App) mcpCollectRunningGates(view mcpTaskView) mcpRunningGateOverlay {
 		if line == "" {
 			line = "授权确认 " + item.ID
 		}
-		if line != "" && !strings.Contains(view.Text, line) && !strings.Contains(overlay.Extra, line) {
+		if line != "" && !mcpGateShownInDecision(view.Text, line) && !strings.Contains(overlay.Extra, line) {
 			if overlay.Extra != "" {
 				overlay.Extra += "\n\n"
 			}
@@ -1613,7 +1613,7 @@ func (a *App) mcpCollectRunningGates(view mcpTaskView) mcpRunningGateOverlay {
 		}
 	}
 	for _, item := range a.mcpCriticalConfirmPrompts(desktopAIAssistantUserIDForProjectPath(view.ProjectPath)) {
-		if item.Prompt != "" && !strings.Contains(view.Text, item.Prompt) && !strings.Contains(overlay.Extra, item.Prompt) {
+		if item.Prompt != "" && !mcpGateShownInDecision(view.Text, item.Prompt) && !strings.Contains(overlay.Extra, item.Prompt) {
 			if overlay.Extra != "" {
 				overlay.Extra += "\n\n"
 			}
@@ -1651,20 +1651,39 @@ func mcpApplyRunningGateOverlay(view mcpTaskView, overlay mcpRunningGateOverlay,
 	return view
 }
 
-// mcpInsertBeforePlanHint places a gate in the decision text. The outcome cut
-// keeps everything in front of the plan hint, so the gate stays visible there.
+// mcpInsertBeforePlanHint places a gate in the decision text. The outcome
+// keeps that decision and drops the plan body in front of the confirm hint.
+// A copy that exists only inside the plan is not already shown.
 func mcpInsertBeforePlanHint(text, block string) string {
 	block = strings.TrimSpace(block)
 	text = strings.TrimSpace(text)
-	if block == "" || strings.Contains(text, block) {
+	if block == "" || mcpGateShownInDecision(text, block) {
 		return text
 	}
 	for _, hint := range []string{mcpPlanConfirmHint, mcpPlanReviewHint, mcpPlanDialogueHint} {
-		if i := strings.Index(text, hint); i >= 0 {
-			return strings.TrimSpace(text[:i] + block + "\n\n" + text[i:])
+		i := strings.Index(text, hint)
+		if i < 0 {
+			continue
 		}
+		head := mcpInsertBeforePlanOverlay(strings.TrimSpace(text[:i]), block)
+		return strings.TrimSpace(head + "\n\n" + text[i:])
 	}
 	return strings.TrimSpace(text + "\n\n" + block)
+}
+
+// mcpInsertBeforePlanOverlay keeps the gate with the decision. The plan
+// overlay stays the trailing body the outcome cut removes.
+func mcpInsertBeforePlanOverlay(text, block string) string {
+	blocks := mcpTextBlocks(text)
+	at := mcpTrailingPlanOverlayStart(blocks)
+	if at >= len(blocks) {
+		return mcpJoinBlocks(text, block)
+	}
+	kept := make([]string, 0, len(blocks)+1)
+	kept = append(kept, blocks[:at]...)
+	kept = append(kept, block)
+	kept = append(kept, blocks[at:]...)
+	return strings.Join(kept, "\n\n")
 }
 
 func (a *App) mcpAnnotateRunningGates(view mcpTaskView) mcpTaskView {
