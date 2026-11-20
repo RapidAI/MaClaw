@@ -41,18 +41,11 @@
 
 .chat-session-locator.is-open .chat-session-locator-list {
     box-sizing: border-box;
-    min-width: 0;
-    max-height: 100%;
-    overflow-x: hidden;
+    /* Keep the closed window. Growing to the full rail on hover moves the tick under the pointer. */
     overflow-y: auto;
     scrollbar-width: thin;
     /* Scrollbar on the left, so it does not sit on the tick column. */
     direction: rtl;
-    padding: 4px;
-    background: var(--csl-bg);
-    border: 1px solid var(--csl-border);
-    border-radius: 10px;
-    box-shadow: var(--csl-shadow);
 }
 
 .chat-session-locator-turn {
@@ -76,14 +69,6 @@
 
 .chat-session-locator.is-open .chat-session-locator-turn {
     direction: ltr;
-    gap: 8px;
-    padding: 4px 6px;
-    line-height: 18px;
-}
-
-.chat-session-locator.is-open .chat-session-locator-turn:hover {
-    background: var(--csl-hover);
-    border-radius: 6px;
 }
 
 .chat-session-locator-label {
@@ -97,22 +82,60 @@
     opacity: 0;
 }
 
-.chat-session-locator.is-open .chat-session-locator-label {
-    flex: 0 1 auto;
-    max-width: 240px;
-    max-height: none;
-    opacity: 1;
-}
-
 .chat-session-locator-tick {
     flex: 0 0 auto;
-    /* 70% of the old 14px mark. Height stays 2px. */
+    /* 70% of the old 14px mark. Height stays 2px so the stack does not jump. */
     width: 10px;
     height: 2px;
     border-radius: 1px;
     background: var(--csl-tick);
+    transition: width 120ms ease, background-color 120ms ease;
 }
 
-.chat-session-locator-turn:hover .chat-session-locator-tick {
+/* Pointed tick is the longest and the brightest. The next two on either side only grow. */
+.chat-session-locator-turn[data-near="2"] .chat-session-locator-tick {
+    width: 13px;
+}
+
+.chat-session-locator-turn[data-near="1"] .chat-session-locator-tick {
+    width: 16px;
+}
+
+.chat-session-locator-turn[data-near="0"] .chat-session-locator-tick {
+    width: 20px;
     background: var(--csl-text);
+}
+
+.chat-session-locator-current {
+    position: absolute;
+    /* Overlap the tick column by 2px so the pointer can move onto the line. */
+    right: calc(100% - 2px);
+    top: var(--csl-current-top, 50%);
+    transform: translateY(-50%);
+    box-sizing: border-box;
+    max-width: 240px;
+    padding: 3px 8px;
+    border: 1px solid var(--csl-border);
+    border-radius: 6px;
+    background: var(--csl-bg);
+    box-shadow: var(--csl-shadow);
+    color: var(--csl-text);
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.chat-session-locator[data-current-visible="false"] .chat-session-locator-current {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chat-session-locator-tick {
+        transition: none;
+    }
 }

@@ -32158,14 +32158,16 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   overscroll-behavior: contain;
   z-index: 99999;
 }
-/* Shared with the pinned banner: 15% see-through. Blur keeps the list
-   behind a tint, so task titles do not stay readable through the copy. */
+/* Shared frosted glass: pinned banner and the login popover.
+   25% see-through. The wide blur turns the list behind into a color
+   wash, so task titles do not stay readable through the copy.
+   The border stays the solid theme edge so the card keeps a silhouette. */
 .mc-pinned-banner,
 .mc-workbench-status-popover {
-  background: color-mix(in srgb, var(--theme-surface, #ffffff) 85%, transparent);
-  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--theme-surface, #ffffff) 75%, transparent);
+  backdrop-filter: blur(32px) saturate(1.5);
 }
-@media (prefers-reduced-transparency: reduce) {
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .mc-pinned-banner,
   .mc-workbench-status-popover {
     background: var(--theme-surface, #ffffff);
@@ -32179,10 +32181,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   pointer-events: none;
   backdrop-filter: none;
 }
-/* Both floats sit in the banner's slot above the status row. Hide the banner
-   while one is open so its copy does not show through the glass. */
-.sidebar-system-status:has(.mc-workbench-status-popover[data-open='true']) .mc-pinned-banner,
-.sidebar-system-status:has(.mc-workbench-devices-popover[data-open='true']) .mc-pinned-banner {
+/* The status popover is glass and shares the banner's slot above the row.
+   Hide the banner while it is open so the notice does not read through it.
+   The devices card is opaque and only covers the icon side, so the banner stays. */
+.sidebar-system-status:has(.mc-workbench-status-popover[data-open='true']) .mc-pinned-banner {
   visibility: hidden;
   pointer-events: none;
   backdrop-filter: none;

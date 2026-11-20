@@ -22,6 +22,7 @@ import {
     parseLiveActivityFromProgressText,
     reasoningHasModelThought,
     resolveAssistantLiveActivity,
+    latchLiveModel,
     resolveLiveModelTarget,
     resolveStandaloneLiveActivityLabel,
 } from '../assistantLiveActivity';
@@ -614,6 +615,34 @@ describe('assistantLiveActivity', () => {
                 { name: 'Custom1', model: 'deepseek-v4.1-flash' },
             ],
         }).providerName).toBe('Custom1');
+        expect(resolveLiveModelTarget({
+            contactProviderName: 'OpenCode',
+            contactModelId: 'hy4-flash-free',
+            taskProviderName: 'WorkBuddy 国内版',
+            taskModelId: 'hy4flash-free',
+        })).toEqual({ providerName: 'WorkBuddy 国内版', modelId: 'hy4flash-free', isHubService: false });
+    });
+
+    it('holds the model for a running turn and waits until the task choice is ready', () => {
+        const assigned = { providerName: 'OpenCode', modelId: 'hy4-flash-free', isHubService: false };
+        const pinned = { providerName: 'WorkBuddy 国内版', modelId: 'hy4flash-free', isHubService: false };
+        const edited = { providerName: 'WorkBuddy 国内版', modelId: 'glm-5.3', isHubService: false };
+        expect(latchLiveModel(null, true, false, assigned)).toEqual({ held: null, value: assigned });
+        const started = latchLiveModel(null, true, true, pinned);
+        expect(started).toEqual({ held: pinned, value: pinned });
+        expect(latchLiveModel(started.held, true, true, edited)).toEqual({ held: pinned, value: pinned });
+        expect(latchLiveModel(started.held, true, false, edited)).toEqual({ held: pinned, value: pinned });
+        expect(latchLiveModel(started.held, false, true, edited)).toEqual({ held: null, value: edited });
+        const empty = { providerName: '', modelId: '', isHubService: false };
+        const skipped = latchLiveModel(null, true, true, empty);
+        expect(skipped).toEqual({ held: null, value: empty });
+        expect(latchLiveModel(skipped.held, true, true, pinned)).toEqual({ held: pinned, value: pinned });
+        const unnamed = { providerName: '', modelId: 'hy4flash-free', isHubService: false };
+        const named = { providerName: 'WorkBuddy 国内版', modelId: 'hy4flash-free', isHubService: true };
+        const partial = latchLiveModel(null, true, true, unnamed);
+        expect(latchLiveModel(partial.held, true, true, named)).toEqual({ held: named, value: named });
+        const otherProvider = { providerName: 'Other', modelId: 'hy4flash-free', isHubService: true };
+        expect(latchLiveModel(named, true, true, otherProvider)).toEqual({ held: named, value: named });
     });
 
     it('reads the in-flight tool name from coding events and progress lines', () => {

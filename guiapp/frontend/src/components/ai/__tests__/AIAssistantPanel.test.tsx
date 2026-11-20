@@ -220,6 +220,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ShowItemInFolder: showItemInFolderMock,
     CreateTaskUnified: createTaskUnifiedMock,
+    GetMaclawLLMProfilePanelState: vi.fn().mockResolvedValue(null),
     SuggestNewTaskType: vi.fn().mockResolvedValue({ suggested: '', confident: false }),
     SuggestNewTaskExpert: vi.fn().mockResolvedValue({ expertId: '', confident: false }),
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
@@ -235,6 +236,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadProjectContext: loadProjectContextMock,
     LoadProjectConversationHistory: loadProjectConversationHistoryMock,
     SearchTasks: vi.fn().mockResolvedValue([]),
+    ListRunWindowTasks: vi.fn().mockResolvedValue([]),
+    ClaimRunWindowTask: vi.fn().mockResolvedValue(null),
+    ReleaseRunWindowTask: vi.fn().mockResolvedValue(undefined),
+    MarkRunWindowTaskStarted: vi.fn().mockResolvedValue(undefined),
+    MarkRunWindowTaskFailed: vi.fn().mockResolvedValue(undefined),
     NotifyDesktopPetMicBusy: vi.fn().mockResolvedValue(undefined),
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
     KnowledgeSearch: vi.fn().mockResolvedValue([]),
@@ -2428,6 +2434,151 @@ describe('AIAssistantPanel property tests', () => {
         const live = container.querySelector('[data-live="true"]');
         expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
         expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('Custom1 deepseek-v4.1-flash 模型');
+    });
+
+    it('names the task pin while contacting the model, not the system assignment', () => {
+        const user = makeMsg({ role: 'user', content: '重庆天气，生成pdf' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                contactProviderName="OpenCode"
+                contactModelId="hy4-flash-free"
+                taskModelFollows={false}
+                taskModelSettled
+                taskModelProviderName="WorkBuddy 国内版"
+                taskModelCurrent="hy4flash-free"
+                state={{ ...props.state, messages: [user], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('WorkBuddy 国内版 hy4flash-free 模型');
+    });
+
+    it('waits for this task choice, then keeps that model name for the turn', () => {
+        const user = makeMsg({ role: 'user', content: '重庆天气，生成pdf' });
+        const props = defaultPanelProps();
+        const state = { ...props.state, messages: [user], sending: true, streaming: false, ready: true };
+        const view = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                contactProviderName="OpenCode"
+                contactModelId="hy4-flash-free"
+                activeAssistantTask={{ projectPath: 'D:/tasks/chongqing' }}
+                taskModelFollows
+                taskModelSettled={false}
+                state={state}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = () => view.container.querySelector('[data-live="true"]');
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-object"]')).toBeNull();
+
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                contactProviderName="OpenCode"
+                contactModelId="hy4-flash-free"
+                activeAssistantTask={{ projectPath: 'D:/tasks/chongqing' }}
+                taskModelFollows={false}
+                taskModelSettled
+                taskModelProviderName="WorkBuddy 国内版"
+                taskModelCurrent="hy4flash-free"
+                state={state}
+            />,
+        );
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('WorkBuddy 国内版 hy4flash-free 模型');
+
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                contactProviderName="OpenCode"
+                contactModelId="hy4-flash-free"
+                activeAssistantTask={{ projectPath: 'D:/tasks/chongqing' }}
+                taskModelFollows={false}
+                taskModelSettled
+                taskModelProviderName="WorkBuddy 国内版"
+                taskModelCurrent="glm-5.3"
+                state={state}
+            />,
+        );
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('WorkBuddy 国内版 hy4flash-free 模型');
+
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                contactProviderName="OpenCode"
+                contactModelId="hy4-flash-free"
+                activeAssistantTask={{ projectPath: 'D:/tasks/beijing' }}
+                taskModelFollows
+                taskModelSettled={false}
+                state={state}
+            />,
+        );
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live()?.querySelector('[data-testid="assistant-reasoning-object"]')).toBeNull();
+    });
+
+    it('keeps the turn model across a busy gap and uses a chip edit on the next send', () => {
+        const user = makeMsg({ id: 'u-weather', role: 'user', content: '重庆天气，生成pdf' });
+        const props = defaultPanelProps();
+        const base = {
+            lang: 'zh-Hans' as const,
+            contactProviderName: 'OpenCode',
+            contactModelId: 'hy4-flash-free',
+            activeAssistantTask: { projectPath: 'D:/tasks/chongqing' },
+            taskModelFollows: false,
+            taskModelSettled: true,
+            taskModelProviderName: 'WorkBuddy 国内版',
+            taskModelCurrent: 'hy4flash-free',
+        };
+        const view = render(
+            <AIAssistantPanel
+                {...props}
+                {...base}
+                state={{ ...props.state, messages: [user], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const object = () => view.container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-object"]')?.textContent;
+        expect(object()).toBe('WorkBuddy 国内版 hy4flash-free 模型');
+
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                {...base}
+                taskModelCurrent="glm-5.3"
+                state={{ ...props.state, messages: [user], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                {...base}
+                taskModelCurrent="glm-5.3"
+                state={{ ...props.state, messages: [user], sending: true, streaming: false, ready: true }}
+            />,
+        );
+        expect(object()).toBe('WorkBuddy 国内版 hy4flash-free 模型');
+
+        const follow = makeMsg({ id: 'u-again', role: 'user', content: '再查一次' });
+        view.rerender(
+            <AIAssistantPanel
+                {...props}
+                {...base}
+                taskModelCurrent="glm-5.3"
+                state={{ ...props.state, messages: [user, follow], sending: true, streaming: false, ready: true }}
+            />,
+        );
+        expect(object()).toBe('WorkBuddy 国内版 glm-5.3 模型');
     });
 
     it('puts the in-flight tool next to the live tool action as plain text', () => {
@@ -11484,7 +11635,7 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
             render(<Harness />, { wrapper: DialogProvider });
             act(() => { controls.openProject?.(coveredPath, 'Covered weather'); });
             await waitFor(() => {
-                expect(screen.getByText('covered weather chat').closest('[hidden]')).toBeNull();
+                expect(screen.getAllByText('covered weather chat')[0].closest('[hidden]')).toBeNull();
                 expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
             });
 
@@ -11500,7 +11651,7 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
 
             await waitFor(() => {
                 expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull();
-                expect(screen.getByText('lanzhou weather chat').closest('[hidden]')).toBeNull();
+                expect(screen.getAllByText('lanzhou weather chat')[0].closest('[hidden]')).toBeNull();
             });
             expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
             expect(createTaskUnifiedMock).not.toHaveBeenCalled();

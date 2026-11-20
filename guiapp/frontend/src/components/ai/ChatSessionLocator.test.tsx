@@ -11,7 +11,7 @@ const turns = [
 ];
 
 describe("ChatSessionLocator", () => {
-    it("opens every user command on hover and jumps when one is clicked", () => {
+    it("opens the rail on hover and jumps when a tick is clicked", () => {
         const onJump = vi.fn();
         const onWarm = vi.fn();
         render(<ChatSessionLocator turns={turns} lang="zh-Hans" theme={lightTheme} onJump={onJump} onWarm={onWarm} />);
@@ -25,6 +25,7 @@ describe("ChatSessionLocator", () => {
         const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
         fireEvent.mouseEnter(list);
         expect(rail.className).toContain("is-open");
+        expect(screen.queryByTestId("chat-session-locator-current")).toBeNull();
         expect(onWarm).toHaveBeenCalledTimes(1);
         fireEvent.focus(list);
         expect(onWarm).toHaveBeenCalledTimes(2);
@@ -74,6 +75,23 @@ describe("ChatSessionLocator", () => {
         rerender(<ChatSessionLocator turns={turns} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} onWarm={onWarm} />);
         expect(screen.getByTestId("chat-session-locator")).toBeTruthy();
         expect(onWarm).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes when the pointer leaves after Escape left focus on the list", () => {
+        render(<ChatSessionLocator turns={turns} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
+        const rail = screen.getByTestId("chat-session-locator");
+        const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
+        fireEvent.mouseEnter(list);
+        const button = screen.getAllByTestId("chat-session-locator-turn")[0];
+        act(() => { button.focus(); });
+        fireEvent.keyDown(button, { key: "Escape" });
+        expect(document.activeElement).toBe(list);
+        fireEvent.mouseEnter(list);
+        fireEvent.mouseEnter(button);
+        expect(rail.className).toContain("is-open");
+        fireEvent.mouseLeave(list);
+        expect(rail.className).not.toContain("is-open");
+        expect(screen.queryByTestId("chat-session-locator-current")).toBeNull();
     });
 
     it("closes on Escape without the focus return opening it again", () => {
@@ -126,8 +144,127 @@ describe("ChatSessionLocator", () => {
         expect(css).toContain("width: 10px;");
         expect(css).toContain("height: 2px;");
         expect(css).toContain("padding: 3px 4px;");
-        expect(css).toContain("padding: 4px 6px;");
+        expect(css).toContain('width: 13px;');
+        expect(css).toContain('width: 16px;');
+        expect(css).toContain('width: 20px;');
         expect(css).not.toContain("width: 14px;");
+        expect(css).not.toContain("max-height: 100%;");
+        expect(css).not.toMatch(/\.chat-session-locator\.is-open \.chat-session-locator-label/);
+        expect(css).toContain(".chat-session-locator-current");
+        expect(css).toContain('data-current-visible="false"');
+    });
+
+    it("brightens the pointed tick, lengthens the two beside it, and shows only that topic", () => {
+        const many = ["一", "二", "三", "当前话题", "五", "六", "七"].map((label, index) => ({ id: `t${index}`, label }));
+        render(<ChatSessionLocator turns={many} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
+        const rail = screen.getByTestId("chat-session-locator");
+        const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
+        const rows = screen.getAllByTestId("chat-session-locator-turn");
+        const box = (top: number, height: number) => ({
+            top, height, left: 0, right: 0, bottom: top + height, width: 0, x: 0, y: top, toJSON() { return {}; },
+        }) as DOMRect;
+        // A 2x ancestor transform inflates client rects. The line uses offsetTop.
+        vi.spyOn(rail, "getBoundingClientRect").mockReturnValue(box(100, 800));
+        Object.defineProperty(rail, "offsetHeight", { configurable: true, value: 400 });
+        vi.spyOn(rows[3], "getBoundingClientRect").mockReturnValue(box(260, 16));
+        Object.defineProperty(rows[3], "offsetTop", { configurable: true, value: 80 });
+        Object.defineProperty(rows[3], "offsetHeight", { configurable: true, value: 8 });
+        Object.defineProperty(rows[3], "offsetParent", { configurable: true, get: () => rail });
+        fireEvent.mouseEnter(list);
+        fireEvent.mouseEnter(rows[3]);
+        expect(rows.map((row) => row.getAttribute("data-near"))).toEqual([null, "2", "1", "0", "1", "2", null]);
+        expect(rows[3].getAttribute("aria-current")).toBe("true");
+        expect(rows.filter((row) => row.getAttribute("aria-current") === "true")).toHaveLength(1);
+        const current = screen.getByTestId("chat-session-locator-current");
+        expect(current.textContent).toBe("当前话题");
+        expect(current.getAttribute("title")).toBe("当前话题");
+        expect(rail.querySelectorAll(".chat-session-locator-current")).toHaveLength(1);
+        expect(rail.style.getPropertyValue("--csl-current-top")).toBe("84px");
+
+        Object.defineProperty(rows[3], "offsetTop", { configurable: true, value: 130 });
+        let scrolled = 10;
+        Object.defineProperty(list, "scrollTop", {
+            configurable: true,
+            get: () => scrolled,
+            set: (value) => { scrolled = Number(value); },
+        });
+        fireEvent.scroll(list);
+        expect(rail.style.getPropertyValue("--csl-current-top")).toBe("124px");
+
+        act(() => { rows[4].focus(); });
+        expect(rows[4].getAttribute("data-near")).toBe("0");
+        expect(rows[3].getAttribute("data-near")).toBe("1");
+        expect(screen.getByTestId("chat-session-locator-current").textContent).toBe("五");
+
+        act(() => { (document.activeElement as HTMLElement).blur(); });
+        fireEvent.mouseEnter(list);
+        fireEvent.mouseEnter(rows[3]);
+        fireEvent.mouseLeave(list);
+        expect(rail.className).not.toContain("is-open");
+        expect(rows.every((row) => row.getAttribute("data-near") == null)).toBe(true);
+        expect(screen.queryByTestId("chat-session-locator-current")).toBeNull();
+    });
+
+    it("keeps the topic while the pointer moves onto it, and jumps from that line", () => {
+        const onJump = vi.fn();
+        render(<ChatSessionLocator turns={turns} lang="zh-Hans" theme={lightTheme} onJump={onJump} />);
+        const rail = screen.getByTestId("chat-session-locator");
+        const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
+        const rows = screen.getAllByTestId("chat-session-locator-turn");
+        fireEvent.mouseEnter(list);
+        fireEvent.mouseEnter(rows[1]);
+        const current = screen.getByTestId("chat-session-locator-current");
+        fireEvent.mouseLeave(list, { relatedTarget: current });
+        expect(rail.className).toContain("is-open");
+        expect(current.textContent).toBe("继续");
+        act(() => { rows[1].focus(); });
+        fireEvent.mouseLeave(current);
+        expect(rail.className).toContain("is-open");
+        fireEvent.mouseDown(current);
+        fireEvent.click(current);
+        expect(onJump).toHaveBeenCalledWith("short");
+        expect(rail.className).not.toContain("is-open");
+        expect(list.contains(document.activeElement)).toBe(false);
+        expect(screen.queryByTestId("chat-session-locator-current")).toBeNull();
+    });
+
+    it("keeps a scrolled tick window when the pointer returns from the topic line", () => {
+        const many = Array.from({ length: 30 }, (_, index) => ({ id: `t${index}`, label: `命令 ${index}` }));
+        const { rerender } = render(<ChatSessionLocator turns={many} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
+        const rail = screen.getByTestId("chat-session-locator");
+        const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
+        Object.defineProperty(list, "scrollHeight", { configurable: true, value: 800 });
+        Object.defineProperty(list, "clientHeight", { configurable: true, value: 200 });
+        fireEvent.mouseEnter(list);
+        list.scrollTop = 40;
+        fireEvent.scroll(list);
+        fireEvent.mouseEnter(screen.getAllByTestId("chat-session-locator-turn")[0]);
+        const current = screen.getByTestId("chat-session-locator-current");
+        fireEvent.mouseLeave(list, { relatedTarget: current });
+        fireEvent.mouseEnter(list);
+        rerender(<ChatSessionLocator turns={[...many, { id: "new", label: "新的" }]} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
+        expect(list.scrollTop).toBe(40);
+    });
+
+    it("hides the topic when its tick scrolls out of the window", () => {
+        const many = ["一", "二", "三", "当前话题", "五", "六", "七"].map((label, index) => ({ id: `t${index}`, label }));
+        render(<ChatSessionLocator turns={many} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
+        const rail = screen.getByTestId("chat-session-locator");
+        const list = rail.querySelector(".chat-session-locator-list") as HTMLElement;
+        const row = screen.getAllByTestId("chat-session-locator-turn")[3];
+        Object.defineProperty(list, "offsetTop", { configurable: true, value: 40 });
+        Object.defineProperty(list, "clientHeight", { configurable: true, value: 80 });
+        Object.defineProperty(list, "offsetParent", { configurable: true, get: () => rail });
+        Object.defineProperty(row, "offsetTop", { configurable: true, value: 64 });
+        Object.defineProperty(row, "offsetHeight", { configurable: true, value: 8 });
+        Object.defineProperty(row, "offsetParent", { configurable: true, get: () => rail });
+        fireEvent.mouseEnter(list);
+        fireEvent.mouseEnter(row);
+        expect(rail.dataset.currentVisible).toBe("true");
+        Object.defineProperty(row, "offsetTop", { configurable: true, value: 200 });
+        fireEvent.scroll(list);
+        expect(rail.dataset.currentVisible).toBe("false");
+        expect(screen.getByTestId("chat-session-locator-current").textContent).toBe("当前话题");
     });
 
     it("renders nothing when the conversation has no user commands", () => {

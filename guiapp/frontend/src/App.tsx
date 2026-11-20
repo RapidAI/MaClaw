@@ -6462,6 +6462,9 @@ ${instruction}`;
                             taskModelTitle={openTaskModel?.title}
                             onFollowTaskModel={openTaskModel?.onFollow}
                             taskModelFollows={openTaskModel?.followsAssignment}
+                            taskModelProviderName={openTaskModel?.providerName}
+                            taskModelIsHubService={openTaskModel?.isHubService}
+                            taskModelSettled={openTaskModel?.settled}
                             taskModelSavePending={openTaskModel?.savePending}
                             taskModelWhenSaved={openTaskModel?.whenSaved}
                             availableProviders={quickProfileProviders}

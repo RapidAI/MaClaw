@@ -8,6 +8,7 @@ import { EventsOn } from "../../../wailsjs/runtime";
 import { hubOfficialModelAliases } from "../../utils/capabilityModelLabel";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { localizeText } from "./aiAssistantI18n";
+import { normalizeProjectSessionPath } from "./assistantSessionPath";
 import { defaultModelForQuickProvider } from "./assistantQuickModelMenu";
 import { listedModelsWithCurrent } from "./task-config/taskModelChoice";
 
@@ -19,6 +20,11 @@ export interface OpenTaskModelBinding {
     label: string;
     title: string;
     followsAssignment: boolean;
+    /** Provider named by the pin, or by the assignment this task follows. */
+    providerName: string;
+    isHubService: boolean;
+    /** False until the first read for this path finishes. */
+    settled: boolean;
     savePending: boolean;
     /** Resolves once an in-flight pin is on disk. Undefined when nothing is writing. */
     whenSaved: () => Promise<void> | undefined;
@@ -75,11 +81,12 @@ export function useOpenTaskModelChoice(args: {
     lang: string;
     showToast?: (message: string) => void;
 }): OpenTaskModelBinding | null {
-    const path = String(args.projectPath || "").trim();
+    const path = normalizeProjectSessionPath(args.projectPath);
     const providers = args.providers;
     const lang = args.lang;
     const showToast = args.showToast;
     const [choice, setChoice] = useState<Choice | null>(null);
+    const [settled, setSettled] = useState(false);
     const [override, setOverride] = useState<{ providerId: string; model: string } | null>(null);
     const [fetched, setFetched] = useState<Record<string, string[]>>({});
     const [loadingId, setLoadingId] = useState("");
@@ -91,6 +98,15 @@ export function useOpenTaskModelChoice(args: {
     const releaseIdleWaitersRef = useRef<() => void>(() => {});
     const pathRef = useRef(path);
     pathRef.current = path;
+    // The path effect clears this after paint. Until then the previous task's
+    // pin would still be settled, and the live line would keep that name.
+    const seenPathRef = useRef(path);
+    if (seenPathRef.current !== path) {
+        seenPathRef.current = path;
+        setChoice(null);
+        setOverride(null);
+        setSettled(false);
+    }
 
     const pinOverride = useCallback((next: { providerId: string; model: string } | null) => {
         overrideStampRef.current += 1;
@@ -105,12 +121,14 @@ export function useOpenTaskModelChoice(args: {
             const raw = await GetTaskLLMChoice(target);
             if (token !== seqRef.current || pathRef.current !== target) return null;
             const next = choiceFromPayload(raw);
-            if (stamp !== overrideStampRef.current) return next;
+            if (stamp !== overrideStampRef.current) return null;
             setChoice(next);
             setOverride(null);
+            setSettled(true);
             return next;
         } catch {
-            if (token === seqRef.current && stamp === overrideStampRef.current) setChoice(null);
+            // Keep the pin already on screen. Clearing it shows 模型分配
+            // while the stored choice is still the one this turn called.
             return null;
         }
     }, []);
@@ -126,13 +144,19 @@ export function useOpenTaskModelChoice(args: {
     }, [pinOverride, reload]);
 
     useEffect(() => {
+        let alive = true;
         overrideStampRef.current += 1;
         setChoice(null);
         setOverride(null);
+        setSettled(false);
         pendingPinRef.current = null;
         releaseIdleWaitersRef.current();
         if (!path) return;
-        void reload(path);
+        // A failed or discarded read stays unsettled. Settling it would name
+        // 模型分配 for the rest of the turn while the pin is still on disk.
+        void reload(path).then((published) => {
+            if (alive && published) setSettled(true);
+        });
         let off: unknown;
         try {
             off = EventsOn("llm-profiles-changed", () => { void reload(path); });
@@ -140,6 +164,7 @@ export function useOpenTaskModelChoice(args: {
             off = undefined;
         }
         return () => {
+            alive = false;
             if (typeof off === "function") (off as () => void)();
         };
     }, [path, reload]);
@@ -328,7 +353,7 @@ export function useOpenTaskModelChoice(args: {
 
     if (!path) return null;
 
-    const providerName = currentProvider?.name || choice?.providerName || providerId;
+    const providerName = currentProvider?.name || choice?.providerName || "";
     const pair = [providerName, model].filter(Boolean).join(" · ");
     const label = !choice && !override
         ? localizeText(lang, "Model assignment", "模型分配", "模型分配")
@@ -349,6 +374,9 @@ export function useOpenTaskModelChoice(args: {
             "預設來自模型分配。在這裡改只影響這個任務。",
         ),
         followsAssignment: follows,
+        providerName,
+        isHubService: !!currentProvider?.isHubService,
+        settled,
         savePending,
         whenSaved,
         onSwitchProvider,

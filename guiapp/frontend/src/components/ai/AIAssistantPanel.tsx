@@ -79,7 +79,7 @@ import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximize
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, codingAgentTurnFileChanges, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, latchLiveModel, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -214,7 +214,7 @@ const noopAssistantMessagesSubscribe = () => () => {};
 const getEmptyAssistantMessages = () => emptyAssistantMessages;
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", chatBubblesEnabled = true, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onAddCustomModel, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN, taskModelProviders, taskModelCurrent, taskModelOptions, taskModelLoading, onSwitchTaskProvider, onSwitchTaskModel, onOpenTaskModelMenu, onDismissTaskModelMenu, taskModelLabel, taskModelTitle, onFollowTaskModel, taskModelFollows, taskModelSavePending, taskModelWhenSaved } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, chatFontFamily = "system", codingFontFamily = "system", chatBubblesEnabled = true, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onAddCustomModel, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayName, brandDisplayNameCN, taskModelProviders, taskModelCurrent, taskModelOptions, taskModelLoading, onSwitchTaskProvider, onSwitchTaskModel, onOpenTaskModelMenu, onDismissTaskModelMenu, taskModelLabel, taskModelTitle, onFollowTaskModel, taskModelFollows, taskModelProviderName, taskModelIsHubService, taskModelSettled, taskModelSavePending, taskModelWhenSaved } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -5323,17 +5323,63 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         answerStarted: liveAssistantCue.answerStarted,
         thoughtIsCurrent: liveAssistantCue.thoughtIsCurrent,
     }), [headerProgressMessages, liveAssistantCue, liveCodingProgress, liveWorkActive, liveWorkStreaming]);
+    const liveModelLatchRef = useRef<ReturnType<typeof resolveLiveModelTarget> | null>(null);
+    const liveModelScopeRef = useRef("");
+    const liveModelEditBeforeReadRef = useRef(false);
+    // The name belongs to this user message. A busy flag can drop between
+    // tool calls and come back; that is still the same send. The next user
+    // message is the next send, which is when a chip edit takes effect.
+    const liveModelTurn = liveWorkActive || liveWorkStreaming;
+    let liveModelUserKey = "";
+    for (let index = displayMessages.length - 1; index >= 0; index -= 1) {
+        const message = displayMessages[index];
+        if (message?.role !== "user") continue;
+        liveModelUserKey = String(message.id || index);
+        break;
+    }
+    const liveModelScope = `${normalizeProjectSessionPath(activeAssistantTaskProp?.projectPath)}\0${liveModelUserKey}`;
+    if (liveModelScopeRef.current !== liveModelScope) {
+        liveModelScopeRef.current = liveModelScope;
+        liveModelLatchRef.current = null;
+        liveModelEditBeforeReadRef.current = false;
+    }
+    if (liveModelTurn && taskModelSettled === false && taskModelSavePending) {
+        liveModelEditBeforeReadRef.current = true;
+    }
+    const liveModelKnown = taskModelSettled !== false && !liveModelEditBeforeReadRef.current;
+    const liveModelPin = liveModelKnown && taskModelFollows === false ? {
+        taskProviderName: taskModelProviderName,
+        taskModelId: taskModelCurrent,
+        taskIsHubService: taskModelIsHubService,
+    } : {};
+    const liveModelCandidate = liveModelKnown
+        ? resolveLiveModelTarget({
+            contactProviderName,
+            contactModelId,
+            contactIsHubService,
+            currentModel,
+            providers: (availableProviders || []) as SidebarLLMProviderSummary[],
+            ...liveModelPin,
+        })
+        : { providerName: "", modelId: "", isHubService: false };
+    let liveModel = liveModelCandidate;
+    if (liveModelTurn) {
+        const latchedLiveModel = latchLiveModel(liveModelLatchRef.current, true, liveModelKnown, liveModelCandidate);
+        liveModelLatchRef.current = latchedLiveModel.held;
+        liveModel = latchedLiveModel.value;
+    }
     const liveHeader = useMemo(() => {
         if (!liveReasoningKind) return undefined;
-        const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
-        const liveModel = resolveLiveModelTarget({ contactProviderName, contactModelId, contactIsHubService, currentModel, providers });
+        // A pin replaces 模型分配 for this task. The contact profile is that
+        // assignment, so naming it shows the system default while the request
+        // uses the pin. Until this task's choice is read, name nothing.
         const toolName = extractInFlightToolName({ codingProgress: liveCodingProgress, progressMessages: headerProgressMessages, reasoningText: liveAssistantCue.reasoningText, latestToolCall: liveAssistantCue.embeddedToolCall });
         const workTarget = (liveCodingProgress?.event || "").trim().toLowerCase() === "tool_started"
             ? codingAgentToolOperandText(liveCodingProgress, lang, 72)
             : undefined;
         const object = assistantLiveActivityObject(liveReasoningKind, lang, { providerName: liveModel.providerName, modelId: liveModel.modelId, isHubService: liveModel.isHubService, toolName, target: workTarget });
         return { label: assistantLiveActivityLabel(liveReasoningKind, lang, toolName), object: object || undefined };
-    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, headerProgressMessages, lang, liveAssistantCue, liveCodingProgress, liveReasoningKind]);
+    }, [headerProgressMessages, lang, liveAssistantCue, liveCodingProgress, liveModel.isHubService, liveModel.modelId, liveModel.providerName, liveReasoningKind]);
     const liveReasoningLabel = liveHeader?.label;
     const liveReasoningObject = liveHeader?.object;
     const projectSearch = useProjectSearch(lang);

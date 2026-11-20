@@ -284,11 +284,14 @@ export type LiveModelProviderRef = {
 
 /**
  * Model named beside "正在访问模型".
- * Prefer the profile that will actually serve the turn. Do not guess from
- * another provider's catalog, and do not fall back to the first provider's
- * default model when the turn has no explicit model id — that list is sorted
- * by name, so an unrelated provider (for example 智谱编程) would be shown
- * while the request uses the assistant profile.
+ * A task pin is the model this turn calls. The contact profile is only the
+ * assignment that pin replaces, so naming the assignment shows the system
+ * default while the request uses the pin.
+ * Otherwise prefer the profile that will actually serve the turn. Do not
+ * guess from another provider's catalog, and do not fall back to the first
+ * provider's default model when the turn has no explicit model id — that
+ * list is sorted by name, so an unrelated provider (for example 智谱编程)
+ * would be shown while the request uses the assistant profile.
  */
 export function resolveLiveModelTarget(input: {
     contactProviderName?: string;
@@ -296,7 +299,20 @@ export function resolveLiveModelTarget(input: {
     contactIsHubService?: boolean;
     currentModel?: string;
     providers?: LiveModelProviderRef[];
+    /** Set only when this task has its own pin. Empty when it follows 模型分配. */
+    taskProviderName?: string;
+    taskModelId?: string;
+    taskIsHubService?: boolean;
 }): { providerName: string; modelId: string; isHubService: boolean } {
+    const taskModel = String(input.taskModelId || "").trim();
+    const taskProvider = String(input.taskProviderName || "").trim();
+    if (taskModel || taskProvider) {
+        return {
+            providerName: taskProvider,
+            modelId: taskModel,
+            isHubService: !!input.taskIsHubService,
+        };
+    }
     const contactModel = String(input.contactModelId || "").trim();
     const contactProvider = String(input.contactProviderName || "").trim();
     if (contactModel || contactProvider) {
@@ -314,6 +330,40 @@ export function resolveLiveModelTarget(input: {
         modelId,
         isHubService: !!match?.isHubService,
     };
+}
+
+export type LiveModelTarget = { providerName: string; modelId: string; isHubService: boolean };
+
+export type LatchedLiveModel = { held: LiveModelTarget | null; value: LiveModelTarget };
+
+function liveModelNamesSomething(target: LiveModelTarget): boolean {
+    return !!(target.providerName || target.modelId);
+}
+
+/**
+ * Keep the model named for a turn that is already running.
+ * A pin edited after the request left applies on the next send. The choice
+ * for the open task may still be loading, so nothing is held until it is ready.
+ * A blank reading is not held: the profile may still be loading, and holding
+ * it would hide the model for the rest of the turn. A later provider record
+ * may fill an empty name or the official-hub flag for that same model.
+ * A different model stays on the one this turn already named.
+ */
+export function latchLiveModel(held: LiveModelTarget | null, active: boolean, ready: boolean, next: LiveModelTarget): LatchedLiveModel {
+    if (!active) return { held: null, value: next };
+    if (!ready) return held ? { held, value: held } : { held: null, value: next };
+    if (!liveModelNamesSomething(next)) return held ? { held, value: held } : { held: null, value: next };
+    if (!held) return { held: next, value: next };
+    if (held.modelId !== next.modelId) return { held, value: held };
+    const nameFilled = !held.providerName && !!next.providerName;
+    const hubFilled = !held.isHubService && next.isHubService;
+    if (!nameFilled && !hubFilled) return { held, value: held };
+    const merged = {
+        providerName: nameFilled ? next.providerName : held.providerName,
+        modelId: held.modelId,
+        isHubService: held.isHubService || next.isHubService,
+    };
+    return { held: merged, value: merged };
 }
 
 export function formatLiveModelObject(lang: string, providerName?: string, modelId?: string, isHubService?: boolean): string {

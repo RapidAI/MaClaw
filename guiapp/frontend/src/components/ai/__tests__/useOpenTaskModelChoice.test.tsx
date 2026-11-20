@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FetchMaclawLLMProfileModels, GetTaskLLMChoice, SetTaskLLMChoice } from '../../../../wailsjs/go/main/App';
+import { EventsOn } from '../../../../wailsjs/runtime';
 import { useOpenTaskModelChoice } from '../useOpenTaskModelChoice';
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -155,6 +156,107 @@ describe('useOpenTaskModelChoice', () => {
         await waitFor(() => expect(SetTaskLLMChoice).toHaveBeenCalledTimes(2));
         expect(SetTaskLLMChoice).toHaveBeenNthCalledWith(2, 'D:/tasks/one', 'devin', 'second-model');
         expect(showToast).not.toHaveBeenCalled();
+    });
+
+    it('drops the previous task pin while the next choice is unread', async () => {
+        vi.mocked(GetTaskLLMChoice).mockImplementation((target: string) => {
+            if (target.endsWith('one')) {
+                return Promise.resolve({
+                    providerId: 'devin',
+                    providerName: 'Devin',
+                    model: 'swe-2-max',
+                    followsAssignment: false,
+                });
+            }
+            return new Promise(() => undefined);
+        });
+        const { result, rerender } = renderHook(
+            ({ path }: { path: string }) => useOpenTaskModelChoice({
+                projectPath: path,
+                providers,
+                lang: 'zh',
+            }),
+            { initialProps: { path: 'D:/tasks/one' } },
+        );
+        await waitFor(() => {
+            expect(result.current?.settled).toBe(true);
+            expect(result.current?.followsAssignment).toBe(false);
+            expect(result.current?.providerName).toBe('Devin');
+        });
+        rerender({ path: 'D:/tasks/two' });
+        expect(result.current?.settled).toBe(false);
+        expect(result.current?.followsAssignment).toBe(true);
+        expect(result.current?.providerName).toBe('');
+        expect(result.current?.label).toBe('模型分配');
+    });
+
+    it('stays unread when the task choice cannot be loaded', async () => {
+        vi.mocked(GetTaskLLMChoice).mockRejectedValue(new Error('offline'));
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(GetTaskLLMChoice).toHaveBeenCalled());
+        await act(async () => { await Promise.resolve(); });
+        expect(result.current?.settled).toBe(false);
+        expect(result.current?.label).toBe('模型分配');
+    });
+
+    it('keeps the published pin when a later read fails', async () => {
+        const pin = {
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: false,
+        };
+        const listeners: Array<() => void> = [];
+        vi.mocked(EventsOn).mockImplementation((_event: string, cb: () => void) => {
+            listeners.push(cb);
+            return () => {};
+        });
+        let reads = 0;
+        vi.mocked(GetTaskLLMChoice).mockImplementation(() => {
+            reads += 1;
+            if (reads === 1) return Promise.resolve(pin);
+            return Promise.reject(new Error('offline'));
+        });
+        const { result } = renderHook(() => useOpenTaskModelChoice({
+            projectPath: 'D:/tasks/one',
+            providers,
+            lang: 'zh',
+        }));
+        await waitFor(() => expect(result.current?.providerName).toBe('Devin'));
+        await act(async () => {
+            listeners.forEach((notify) => notify());
+        });
+        await waitFor(() => expect(reads).toBeGreaterThan(1));
+        expect(result.current?.followsAssignment).toBe(false);
+        expect(result.current?.providerName).toBe('Devin');
+        expect(result.current?.currentModel).toBe('swe-2-max');
+        vi.mocked(EventsOn).mockImplementation(() => () => {});
+    });
+
+    it('treats a slash change as the same task', async () => {
+        vi.mocked(GetTaskLLMChoice).mockResolvedValue({
+            providerId: 'devin',
+            providerName: 'Devin',
+            model: 'swe-2-max',
+            followsAssignment: false,
+        });
+        const { result, rerender } = renderHook(
+            ({ path }: { path: string }) => useOpenTaskModelChoice({
+                projectPath: path,
+                providers,
+                lang: 'zh',
+            }),
+            { initialProps: { path: 'D:/tasks/one' } },
+        );
+        await waitFor(() => expect(result.current?.settled).toBe(true));
+        rerender({ path: 'D:\\tasks\\one' });
+        expect(result.current?.settled).toBe(true);
+        expect(result.current?.providerName).toBe('Devin');
+        expect(GetTaskLLMChoice).toHaveBeenCalledTimes(1);
     });
 
     it('keeps a newer choice when the earlier save fails', async () => {

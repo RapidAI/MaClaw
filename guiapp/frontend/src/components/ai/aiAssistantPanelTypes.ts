@@ -202,6 +202,11 @@ export interface AIAssistantPanelProps {
     taskModelTitle?: string;
     onFollowTaskModel?: () => void;
     taskModelFollows?: boolean;
+    /** Provider behind taskModelCurrent. Set with the pin, including while it follows 模型分配. */
+    taskModelProviderName?: string;
+    taskModelIsHubService?: boolean;
+    /** False while this task's pin is still being read. Omitted means already known. */
+    taskModelSettled?: boolean;
     taskModelSavePending?: boolean;
     /** Wait until an in-flight per-task pin is stored. Undefined when idle. */
     taskModelWhenSaved?: () => Promise<void> | undefined;
