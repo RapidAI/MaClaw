@@ -79,9 +79,14 @@ func TestCodingResumeTranscriptDoesNotLeakAcrossProjects(t *testing.T) {
 	memory := agent.NewConversationMemory()
 	defer memory.Stop()
 	handler := &IMMessageHandler{memory: memory}
-	app.restoreProjectAgentSession(handler, projectSessionOwnerID(other), other)
-	if got := memory.Load(projectSessionOwnerID(other)); len(got) != 0 {
+	otherOwner := projectSessionOwnerID(other)
+	app.restoreProjectAgentSession(handler, otherOwner, other)
+	if got := memory.Load(otherOwner); len(got) != 0 {
 		t.Fatalf("another task's coding transcript leaked in: %#v", got)
+	}
+	req := AIAssistantSendRequest{Text: "继续执行", Lang: "zh-Hans"}
+	if !projectContinuationHistoryMissing(req, handler, otherOwner, other) {
+		t.Fatal("another task's coding record satisfied this task's continue")
 	}
 }
 
@@ -176,6 +181,53 @@ func TestCodingResumeRestoreKeepsToolOnlyAssistantTurn(t *testing.T) {
 	}
 	if projectContinuationHistoryMissing(req, handler, owner, projectPath) {
 		t.Fatal("tool-only coding transcript was refused as missing history")
+	}
+}
+
+// R4: every continue-shaped turn has to fail closed when this task has no
+// history. The coding-exec button, a polite cue, and an ACP/MCP wrapper are
+// the same continue. A sentence that names new work is not.
+func TestProjectContinuationCuesFailClosedWithoutHistory(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "cue-task")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	handler := &IMMessageHandler{memory: memory}
+	owner := projectSessionOwnerID(projectPath)
+	for _, text := range []string{
+		"继续执行",
+		"继续这个任务",
+		"请继续一下",
+		acpProgrammingUserText(projectPath, "继续"),
+		mcpTaskUserText(projectPath, "继续"),
+		mcpTaskUserText(projectPath, "继续执行"),
+	} {
+		req := AIAssistantSendRequest{Text: text, Lang: "zh-Hans"}
+		if !projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+			t.Fatalf("continue cue %q ran with no task history", text)
+		}
+	}
+	// The chat action button sets UIAction. That flag must not skip the
+	// history check when the command is itself a continue. Confirm is not.
+	button := AIAssistantSendRequest{Text: "继续执行", UIAction: true, Lang: "zh-Hans"}
+	if !projectContinuationHistoryMissing(button, handler, owner, projectPath) {
+		t.Fatal("continue button ran with no task history")
+	}
+	confirm := AIAssistantSendRequest{Text: "confirm", UIAction: true}
+	if projectContinuationHistoryMissing(confirm, handler, owner, projectPath) {
+		t.Fatal("confirm action was refused as a continue")
+	}
+	for _, text := range []string{
+		"继续做配图版",
+		"检查本机 NPU",
+		mcpTaskUserText(projectPath, "把按钮改成红色"),
+	} {
+		req := AIAssistantSendRequest{Text: text}
+		if projectContinuationHistoryMissing(req, handler, owner, projectPath) {
+			t.Fatalf("named request %q was refused as a bare continue", text)
+		}
 	}
 }
 

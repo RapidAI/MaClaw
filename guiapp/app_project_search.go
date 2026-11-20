@@ -1758,18 +1758,58 @@ func projectContinuationHistoryMissing(req AIAssistantSendRequest, handler *IMMe
 	if strings.TrimSpace(projectPath) == "" || strings.TrimSpace(userID) == "" || userID == desktopUserID {
 		return false
 	}
-	if req.StartNewTask || req.UIAction || strings.TrimSpace(req.ResumeSlotID) != "" || strings.TrimSpace(req.DismissSlotID) != "" ||
+	if req.StartNewTask || strings.TrimSpace(req.ResumeSlotID) != "" || strings.TrimSpace(req.DismissSlotID) != "" ||
 		strings.TrimSpace(req.ResumeSessionID) != "" || strings.TrimSpace(req.DismissRecoverableSessionID) != "" {
 		return false
 	}
-	wording := continuationTitleText(req.Text)
-	if wording == "" || !continuationCueOnly(wording) {
+	// The workbench, the coding-exec button, and ACP/MCP all treat a cue as
+	// "continue this task". The guard has to use that same cue. A chat-only
+	// peel let "继续执行" and a wrapped "继续" through with no transcript.
+	// A clicked action sets UIAction, including that continue button. Other
+	// actions (confirm, cancel, workflow choice) are not continue cues and
+	// stay out of this guard.
+	if !projectContinuationCue(req.Text) {
 		return false
 	}
 	if handler != nil && handler.memory != nil && handler.memory.GetUnfinishedSlot(userID) != nil {
 		return false
 	}
 	return handler == nil || handler.memory == nil || !conversationEntriesHaveTurns(handler.memory.Load(userID))
+}
+
+// projectContinuationCue is a turn that continues the current task and names
+// no new work. Desktop chat, the "继续执行" button, ACP, and MCP all have to
+// fail closed on that turn when this task has no recoverable history.
+func projectContinuationCue(text string) bool {
+	if codingWorkbenchContinueCue(text) {
+		return true
+	}
+	// MCP and ACP wrap the user's line. The workbench cue already unwraps the
+	// ACP workspace contract; MCP uses its own preamble.
+	if inner := mcpInnerUserRequest(text); inner != strings.TrimSpace(text) && codingWorkbenchContinueCue(inner) {
+		return true
+	}
+	wording := continuationTitleText(text)
+	return wording != "" && continuationCueOnly(wording)
+}
+
+// mcpInnerUserRequest is the User request body of an MCP task preamble.
+// A bare continue inside that preamble is still a continue.
+func mcpInnerUserRequest(userText string) string {
+	trimmed := strings.TrimSpace(userText)
+	const marker = "User request:"
+	if !strings.HasPrefix(trimmed, "[MCP task]") {
+		return trimmed
+	}
+	idx := strings.Index(trimmed, marker)
+	if idx < 0 {
+		return trimmed
+	}
+	inner := strings.TrimSpace(trimmed[idx+len(marker):])
+	if inner == "" {
+		return trimmed
+	}
+	return inner
 }
 
 func projectContinuationHistoryMissingResponse(req AIAssistantSendRequest, userID string) *IMAgentResponse {
