@@ -578,7 +578,11 @@ func (s *Service) admitUnreadyWait(view desktopRunView) time.Duration {
 
 func desktopRunTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "succeeded", "failed", "cancelled":
+	// paused is terminal on MaClawSrv (the run stopped to wait for the
+	// person). It is not finished work, but it is finished running — the
+	// watcher must settle it and stop polling or the goroutine spins until
+	// the claim is dropped for good.
+	case "succeeded", "failed", "cancelled", "paused":
 		return true
 	default:
 		return false

@@ -1894,7 +1894,11 @@ func (a *App) desktopLiveRuns(ctx context.Context, botID string) (live int, unkn
 
 func desktopTaskTerminal(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "succeeded", "failed", "cancelled":
+	// paused is MaClawSrv's terminal status for a run that stopped to wait
+	// for the person (BR-20261120-8A708E128485). The desktop is free: the
+	// answer arrives as the next turn. Leaving it out kept the busy wait
+	// spinning until the occurrence was skipped.
+	case "succeeded", "paused", "failed", "cancelled", "canceled":
 		return true
 	default:
 		return false

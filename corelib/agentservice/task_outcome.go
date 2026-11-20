@@ -7,11 +7,12 @@ import (
 
 // Task outcome: what a finished run's task really reached, as measured by
 // the host (e.g. the desktop runtime's goal ledger), independent of the run
-// status. A run whose execution ended normally keeps RunStatusSucceeded (the
-// status clients already parse); a task that is not done is additionally
-// marked waiting_for_user — the person has to decide what happens next — and
-// carries metadata task_outcome on the run, the assistant message and the
-// terminal events. The host sets assistant metadata task_outcome (and an
+// status. A run whose execution ended normally and whose task is done keeps
+// RunStatusSucceeded. A task that is not done is waiting_for_user, and that
+// run's status is RunStatusPaused: the person has to decide what happens
+// next, so a status-only reader must not count it as finished work. The
+// outcome also carries metadata task_outcome on the run, the assistant
+// message and the terminal events. The host sets assistant metadata task_outcome (and an
 // optional task_outcome_notice line) through AssistantMessageMetadataHook,
 // which runs after the model's last reply, so a confident reply cannot hide
 // the measured outcome.
@@ -127,6 +128,13 @@ func (s *Service) PersistRunReceipt(run *Run, msg *Message) error {
 		run.Metadata[TaskOutcomeKey] = outcome
 		if TaskOutcomeNeedsUser(outcome) {
 			run.WaitingForUser = true
+			// The receipt is often decided after the first save, which already
+			// wrote succeeded. A later reader of status alone must still see
+			// paused (BR-20261120-8A708E128485). Failed and cancelled stay as
+			// they are: those are not a person waiting to decide.
+			if run.Status == RunStatusSucceeded {
+				run.Status = RunStatusPaused
+			}
 		}
 	} else {
 		delete(run.Metadata, TaskOutcomeKey)

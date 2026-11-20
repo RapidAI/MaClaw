@@ -418,8 +418,15 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 		switch name {
 		case "status":
 			enumValues, _ := schema["enum"].([]any)
-			if len(enumValues) == 4 {
-				foundStatusEnum = true
+			// The enum must advertise every terminal status the store can
+			// persist; paused (BR-20261120-8A708E128485) is the newest and a
+			// validator must not drop it. Require it rather than a fixed count
+			// so a future status added to the enum does not fail this test.
+			for _, v := range enumValues {
+				if s, _ := v.(string); s == string(agentservice.RunStatusPaused) {
+					foundStatusEnum = true
+					break
+				}
 			}
 		case "waiting_for_user":
 			if schema["type"] == "boolean" {

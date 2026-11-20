@@ -484,6 +484,11 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		writeMetricsUnavailable(w)
 		return
 	}
+	runPaused, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "run.paused"})
+	if err != nil {
+		writeMetricsUnavailable(w)
+		return
+	}
 	alerts, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{})
 	if err != nil {
 		writeMetricsUnavailable(w)
@@ -598,6 +603,10 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("# TYPE maclaw_run_failed_events_total counter\n")
 	b.WriteString("maclaw_run_failed_events_total ")
 	b.WriteString(strconv.FormatInt(int64(len(runFailed)), 10))
+	b.WriteString("\n# HELP maclaw_run_paused_events_total Number of paused run audit events\n")
+	b.WriteString("# TYPE maclaw_run_paused_events_total counter\n")
+	b.WriteString("maclaw_run_paused_events_total ")
+	b.WriteString(strconv.FormatInt(int64(len(runPaused)), 10))
 	b.WriteString("\n# HELP maclaw_async_jobs_total Number of async jobs by lifecycle status\n")
 	b.WriteString("# TYPE maclaw_async_jobs_total gauge\n")
 	for _, status := range []asyncJobStatus{asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled, asyncJobStatusUnknown} {

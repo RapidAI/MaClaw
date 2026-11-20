@@ -708,7 +708,10 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			s.emitRunEvent(run, event.Type, event.Payload)
 		}
 	}
-	terminalStatus = "succeeded"
+	// A paused run is terminal for events and cleanup but is not finished
+	// work: it must not be reported as succeeded in metrics or audit. The
+	// run status just written above is the source of truth for both.
+	terminalStatus = string(run.Status)
 	if pendingAskReq != nil {
 		sess.Metadata = clearPendingAskUserMetadata(sess.Metadata)
 	}
@@ -717,7 +720,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	}
 	sess.UpdatedAt = completed
 	_ = s.store.SaveSession(sess)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID})})
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run." + string(run.Status), ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: mergeCorrelationMetadata(ctx, map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID})})
 	return &run, &assistant, nil
 }
 

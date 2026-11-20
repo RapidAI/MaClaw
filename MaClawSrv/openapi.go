@@ -357,7 +357,7 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/messages", Summary: "List messages", Tag: "messages", Security: bearerSecurity(), QueryParams: []string{"role", "since", "until", "limit", "before"}},
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/messages", Summary: "Post message", Description: "Posts a message and returns the completed assistant response. Send Prefer: respond-async or async=true to receive 202 Accepted as soon as the run is durably admitted, then poll status_url or subscribe to run events.", Tag: "messages", Security: bearerSecurity(), QueryParams: []string{"async"}, HeaderParams: []string{"Prefer", "Idempotency-Key"}},
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/remote", Summary: "Start remote coding runtime", Description: "Starts an explicit remote Workflow implementation attempt. The request supplies only a configured SSH host label and absolute remote work directory; MaClawSrv resolves the canonical host/user/port and pinned host key from the authenticated user's configuration. A previously verified live SSH session is required; no connection or replay is attempted.", Tag: "coding-runtime", Security: bearerSecurity()},
-	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs", Summary: "List runs", Description: "Lists runs for one instance. status accepts running, succeeded, failed, cancelled. response_source currently accepts ask_user when filtering waiting-for-user flows.", Tag: "runs", Security: bearerSecurity(), QueryParams: []string{"status", "session_id", "response_source", "waiting_for_user", "limit", "before"}},
+	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs", Summary: "List runs", Description: "Lists runs for one instance. status accepts running, succeeded, paused, failed, cancelled. response_source currently accepts ask_user when filtering waiting-for-user flows.", Tag: "runs", Security: bearerSecurity(), QueryParams: []string{"status", "session_id", "response_source", "waiting_for_user", "limit", "before"}},
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs/{runId}", Summary: "Get run", Tag: "runs", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/instances/{instanceId}/runs/{runId}/events", Summary: "Stream run events", Description: "Returns a server-sent events stream for run snapshots and terminal updates. Send Last-Event-ID to resume after a previously received durable event id.", Tag: "runs", Security: bearerSecurity(), HeaderParams: []string{"Last-Event-ID"}},
 	{Method: http.MethodPost, Path: "/api/v1/instances/{instanceId}/runs/{runId}/cancel", Summary: "Cancel run", Tag: "runs", Security: bearerSecurity()},
@@ -716,7 +716,7 @@ func openAPIQuerySchema(path, name string) map[string]any {
 		case "/api/v1/jobs":
 			return map[string]any{"type": "string", "enum": []string{"pending", "running", "succeeded", "failed", "canceled", "unknown"}}
 		case "/api/v1/instances/{instanceId}/runs":
-			return map[string]any{"type": "string", "enum": []string{"running", "succeeded", "failed", "cancelled"}}
+			return map[string]any{"type": "string", "enum": []string{"running", "succeeded", "paused", "failed", "cancelled", "interrupted"}}
 		}
 	case "severity":
 		if path == "/api/v1/admin/security/risk-events" {

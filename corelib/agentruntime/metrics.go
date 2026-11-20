@@ -38,6 +38,7 @@ type RuntimeMetricsSnapshot struct {
 	TurnsSucceeded          uint64                         `json:"turns_succeeded"`
 	TurnsFailed             uint64                         `json:"turns_failed"`
 	TurnsCancelled          uint64                         `json:"turns_cancelled"`
+	TurnsPaused             uint64                         `json:"turns_paused"`
 	ActiveRuns              int64                          `json:"active_runs"`
 	MaxActiveRuns           uint64                         `json:"max_active_runs"`
 	QueueWaitMilliseconds   uint64                         `json:"queue_wait_milliseconds"`
@@ -65,6 +66,7 @@ type TenantRuntimeMetricsSnapshot struct {
 	TurnsSucceeded         uint64 `json:"turns_succeeded"`
 	TurnsFailed            uint64 `json:"turns_failed"`
 	TurnsCancelled         uint64 `json:"turns_cancelled"`
+	TurnsPaused            uint64 `json:"turns_paused"`
 	ActiveRuns             int64  `json:"active_runs"`
 	MaxActiveRuns          uint64 `json:"max_active_runs"`
 	QueueWaitMilliseconds  uint64 `json:"queue_wait_milliseconds"`
@@ -86,6 +88,7 @@ type runtimeMetricCounters struct {
 	turnsSucceeded          atomic.Uint64
 	turnsFailed             atomic.Uint64
 	turnsCancelled          atomic.Uint64
+	turnsPaused             atomic.Uint64
 	activeRuns              atomic.Int64
 	maxActiveRuns           atomic.Uint64
 	queueWaitMilliseconds   atomic.Uint64
@@ -194,6 +197,11 @@ func (m *RuntimeMetrics) RecordTurnFinished(tenantID, status string) {
 			c.turnsSucceeded.Add(1)
 		case "cancelled", "canceled":
 			c.turnsCancelled.Add(1)
+		case "paused":
+			// A paused run stopped to wait for the person: it is neither a
+			// success nor a failure. Count it separately so a 待决策 turn
+			// does not inflate the success or the failure series.
+			c.turnsPaused.Add(1)
 		default:
 			c.turnsFailed.Add(1)
 		}
@@ -267,7 +275,8 @@ func snapshotMetricCounters(c *runtimeMetricCounters) TenantRuntimeMetricsSnapsh
 	return TenantRuntimeMetricsSnapshot{
 		TurnsAdmitted: c.turnsAdmitted.Load(), TurnsSucceeded: c.turnsSucceeded.Load(),
 		TurnsFailed: c.turnsFailed.Load(), TurnsCancelled: c.turnsCancelled.Load(),
-		ActiveRuns: c.activeRuns.Load(), MaxActiveRuns: c.maxActiveRuns.Load(),
+		TurnsPaused: c.turnsPaused.Load(),
+		ActiveRuns:  c.activeRuns.Load(), MaxActiveRuns: c.maxActiveRuns.Load(),
 		QueueWaitMilliseconds: c.queueWaitMilliseconds.Load(), QueueWaitSamples: c.queueWaitSamples.Load(),
 		FirstTokenMilliseconds: c.firstTokenMilliseconds.Load(), FirstTokenSamples: c.firstTokenSamples.Load(),
 		TokenDeltas: c.tokenDeltas.Load(), ToolCalls: c.toolCalls.Load(), ToolErrors: c.toolErrors.Load(),
@@ -286,7 +295,8 @@ func (m *RuntimeMetrics) Snapshot() RuntimeMetricsSnapshot {
 	out := RuntimeMetricsSnapshot{
 		TurnsAdmitted: global.TurnsAdmitted, TurnsSucceeded: global.TurnsSucceeded,
 		TurnsFailed: global.TurnsFailed, TurnsCancelled: global.TurnsCancelled,
-		ActiveRuns: global.ActiveRuns, MaxActiveRuns: global.MaxActiveRuns,
+		TurnsPaused: global.TurnsPaused,
+		ActiveRuns:  global.ActiveRuns, MaxActiveRuns: global.MaxActiveRuns,
 		QueueWaitMilliseconds: global.QueueWaitMilliseconds, QueueWaitSamples: global.QueueWaitSamples,
 		FirstTokenMilliseconds: global.FirstTokenMilliseconds, FirstTokenSamples: global.FirstTokenSamples,
 		TokenDeltas: global.TokenDeltas, ToolCalls: global.ToolCalls, ToolErrors: global.ToolErrors,

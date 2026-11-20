@@ -1363,3 +1363,54 @@ func TestFinishDesktopBotTaskWaitsOutABusyDesktop(t *testing.T) {
 		t.Fatalf("queued = %v", queued)
 	}
 }
+
+
+func TestDesktopTaskTerminalTreatsPausedAsFree(t *testing.T) {
+	// A 待决策 run is persisted as paused, not succeeded. The busy wait reads
+	// Hub's task list and must not keep the desktop occupied for it.
+	for _, status := range []string{"succeeded", "paused", "PAUSED", "failed", "cancelled", "canceled"} {
+		if !desktopTaskTerminal(status) {
+			t.Fatalf("%q must be terminal", status)
+		}
+	}
+	for _, status := range []string{"", "running", "interrupted", "waiting"} {
+		if desktopTaskTerminal(status) {
+			t.Fatalf("%q must stay live", status)
+		}
+	}
+}
+
+func TestFinishDesktopBotTaskDoesNotWaitOnAPausedRun(t *testing.T) {
+	prev := desktopBotBusyPoll
+	desktopBotBusyPoll = 5 * time.Millisecond
+	app := &App{}
+	var got *IMAgentResponse
+	relays := 0
+	t.Cleanup(func() {
+		desktopBotBusyPoll = prev
+		desktopBotRelayOverride = nil
+		desktopBotExchangeOverride = nil
+		desktopBotResultSink = nil
+	})
+	desktopBotResultSink = func(resp *IMAgentResponse) { got = resp }
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
+		if relays == 1 {
+			return desktopBotRelayResult{}, fmt.Errorf("%s", desktopBotBusyMessage)
+		}
+		return desktopBotRelayResult{Text: "接着做了。"}, nil
+	}
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodGet && strings.Contains(path, "/tasks") {
+			fillDesktopBotDest(t, dest, map[string]any{
+				"items": []map[string]any{{"run_id": "run-paused", "bot_id": "bot_1", "status": "paused", "task": "等你选专栏"}},
+			})
+			return http.StatusOK, nil
+		}
+		return 0, fmt.Errorf("no bot list")
+	}
+	app.finishDesktopBotTask("desktop-bot-busy", "alice:bot_1", "bot_1", "发到 CSDN", "do")
+	if relays != 2 || got == nil || got.Text != "接着做了。" || got.Error != "" {
+		t.Fatalf("relays=%d reply=%#v", relays, got)
+	}
+}

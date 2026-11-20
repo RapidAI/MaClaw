@@ -24,6 +24,7 @@ func appendRuntimeMetricsPrometheus(b *strings.Builder, snapshot agentruntime.Ru
 		{"maclaw_runtime_turns_succeeded_total", "Successfully completed Agent turns", "counter", snapshot.TurnsSucceeded},
 		{"maclaw_runtime_turns_failed_total", "Failed Agent turns", "counter", snapshot.TurnsFailed},
 		{"maclaw_runtime_turns_cancelled_total", "Cancelled Agent turns", "counter", snapshot.TurnsCancelled},
+		{"maclaw_runtime_turns_paused_total", "Paused Agent turns waiting for the person", "counter", snapshot.TurnsPaused},
 		{"maclaw_runtime_max_active_runs", "Maximum concurrently active Agent runs", "gauge", snapshot.MaxActiveRuns},
 		{"maclaw_runtime_queue_wait_milliseconds_total", "Aggregate Agent admission wait in milliseconds", "counter", snapshot.QueueWaitMilliseconds},
 		{"maclaw_runtime_queue_wait_samples_total", "Agent admission wait samples", "counter", snapshot.QueueWaitSamples},
@@ -91,6 +92,11 @@ func appendRuntimeMetricsPrometheus(b *strings.Builder, snapshot agentruntime.Ru
 		b.WriteString(label)
 		b.WriteByte(' ')
 		b.WriteString(strconv.FormatUint(tenant.TurnsCancelled, 10))
+		b.WriteByte('\n')
+		b.WriteString("maclaw_runtime_turns_paused_total")
+		b.WriteString(label)
+		b.WriteByte(' ')
+		b.WriteString(strconv.FormatUint(tenant.TurnsPaused, 10))
 		b.WriteByte('\n')
 		b.WriteString("maclaw_runtime_rate_limited_total")
 		b.WriteString(label)
