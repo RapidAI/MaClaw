@@ -12,9 +12,13 @@ import (
 )
 
 // desktopIntakeBudget bounds the srv decision. The ack is part of that
-// answer. On timeout or error the message is a new task. MaClawSrv finishes
-// inside 1500ms, and this wait stays above that so a held spec arrives here.
-var desktopIntakeBudget = 2 * time.Second
+// answer. On timeout or error the message is a new task. The LLM behind
+// srv's /bot-intake can be slow (a 1.5s LLM budget plus network), so this
+// wait stays generous: a slow ack is better than dropping the first sentence
+// every time the model takes a beat. The mobile and desktop clients already
+// allow a long POST (the mobile caps at 60s), so the extra wait is invisible
+// to them.
+var desktopIntakeBudget = 5 * time.Second
 
 // DesktopSchedule is a timer MaClawSrv decided and armed on its own clock
 // during bot-intake. Hub returns it so the GUI can show the ack. Hub does

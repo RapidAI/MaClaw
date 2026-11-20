@@ -89,9 +89,11 @@ type BotIntake struct {
 type BotIntakeClassifier func(ctx context.Context, system, user string) (string, error)
 
 // BotIntakeBudget bounds the whole decision, including the first sentence.
-// Hub cancels this call at 2s. The decision finishes sooner so an open spec
-// is held and that answer reaches Hub, instead of Hub starting the raw words.
-var BotIntakeBudget = 1500 * time.Millisecond
+// Hub cancels this call at 5s. The decision finishes well inside that so an
+// open spec is held and that answer reaches Hub, instead of Hub starting the
+// raw words. A slow model is better than dropping the first sentence, so the
+// budget leaves room for a couple of seconds of LLM latency.
+var BotIntakeBudget = 3000 * time.Millisecond
 
 const botIntakeChangeMark = "【改变做法】"
 
