@@ -322,6 +322,78 @@ void main() {
       });
       expect(missing.downloadable, isFalse);
     });
+
+    test('kind is coding only for durable coding tokens', () {
+      RemoteTask task({String workflowType = '', List<String> tags = const []}) {
+        return RemoteTask(
+          id: '/p/kind',
+          name: 'kind',
+          workflowType: workflowType,
+          tags: tags,
+        );
+      }
+
+      expect(task().kind, RemoteTaskKind.chat);
+      expect(task(workflowType: '   ').kind, RemoteTaskKind.chat);
+      expect(task().isCoding, isFalse);
+
+      for (final token in [
+        'coding_dev',
+        'CODING',
+        'programming',
+        'code',
+        'remote_coding_dev',
+        'remote_coding',
+        'remote_programming',
+        ' remote_code ',
+      ]) {
+        expect(
+          task(workflowType: token).kind,
+          RemoteTaskKind.coding,
+          reason: token,
+        );
+      }
+
+      // 标签上的编程身份同样算编程，即使 workflow 是别的类型。
+      expect(
+        task(workflowType: 'product_design', tags: const ['coding_dev']).kind,
+        RemoteTaskKind.coding,
+      );
+      expect(task(tags: const ['chat', 'remote_programming']).isCoding, isTrue);
+
+      // 非空但非编程的工作流保持 other，不能画成对话。
+      expect(task(workflowType: 'product_design').kind, RemoteTaskKind.other);
+      expect(task(workflowType: 'report').kind, RemoteTaskKind.other);
+      expect(task(workflowType: 'product_design').isCoding, isFalse);
+      expect(task(tags: const ['design']).kind, RemoteTaskKind.chat);
+    });
+
+    test('kind survives fromJson workflow_type and tags', () {
+      final coding = RemoteTask.fromJson({
+        'id': '/p/code',
+        'workflow_type': 'remote_coding_dev',
+        'tags': ['ignored'],
+      });
+      expect(coding.kind, RemoteTaskKind.coding);
+
+      final tagged = RemoteTask.fromJson({
+        'id': '/p/tagged',
+        'tags': ['code'],
+      });
+      expect(tagged.kind, RemoteTaskKind.coding);
+      expect(tagged.isCoding, isTrue);
+
+      final other = RemoteTask.fromJson({
+        'id': '/p/other',
+        'workflow_type': 'product_design',
+        'tags': 'not-a-list',
+      });
+      expect(other.kind, RemoteTaskKind.other);
+      expect(other.isCoding, isFalse);
+
+      final chat = RemoteTask.fromJson({'id': '/p/chat', 'tags': []});
+      expect(chat.kind, RemoteTaskKind.chat);
+    });
   });
 
   group('task spaces', () {
@@ -450,6 +522,64 @@ void main() {
       expect(find.text('任务乙'), findsOneWidget);
       expect(find.text('任务甲'), findsNothing);
       expect(api.calls, contains('list:g-ops'));
+    });
+
+    testWidgets('kind chip copy stays inside a 320dp card with a long title', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      const longName =
+          '超长任务名超长任务名超长任务名超长任务名超长任务名超长任务名超长任务名';
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantOps])
+        ..tasksByGrant = {
+          'g-ops': const [
+            RemoteTask(
+              id: '/p/code',
+              name: longName,
+              projectPath: '/p/code',
+              workingDir: r'D:\proj\web',
+              workflowType: 'coding_dev',
+              pinned: true,
+              lastActivity: '刚刚 · 一段很长的活动摘要不应该把卡片撑出屏幕',
+              activeStatus: 'completed',
+              pendingReview: true,
+            ),
+            RemoteTask(
+              id: '/p/chat',
+              name: '普通对话',
+              projectPath: '/p/chat',
+              workingDir: r'D:\proj\web',
+            ),
+            RemoteTask(
+              id: '/p/other',
+              name: '设计稿',
+              projectPath: '/p/other',
+              workingDir: r'D:\proj\web',
+              workflowType: 'product_design',
+            ),
+          ],
+        };
+
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      expect(find.text('编程任务'), findsOneWidget);
+      expect(find.text('对话'), findsNWidgets(2));
+      // 编程走代码图标；对话和 other 都用对话气泡，不按 other 画成代码。
+      expect(find.byIcon(Icons.code_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.chat_bubble_outline_rounded), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+
+      for (final element in find.byType(Card).evaluate()) {
+        final box = element.renderObject! as RenderBox;
+        final right = box.localToGlobal(Offset(box.size.width, 0)).dx;
+        expect(right, lessThanOrEqualTo(320));
+      }
     });
 
     testWidgets('tasks group under a collapsible space header', (tester) async {

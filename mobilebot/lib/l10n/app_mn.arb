@@ -477,6 +477,8 @@
   "rcTaskNameLabel": "Даалгаврын нэр",
   "rcModeChat": "Чат",
   "rcModeCoding": "Код бичих",
+  "rcKindChat": "Чат",
+  "rcKindCoding": "Код бичих даалгавар",
   "rcWorkDirLabel": "Ажлын хавтас (заавал биш)",
   "rcWorkDirHint": "Хоосон орхивол нөгөө талын өгөгдмөл хавтас ашиглагдана",
   "rcBrowseTheirDir": "Нөгөө талын хавтсуудыг харах",

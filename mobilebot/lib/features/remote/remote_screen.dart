@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/providers.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import 'remote_api.dart';
@@ -1070,15 +1071,16 @@ class _TaskCard extends ConsumerWidget {
 
   const _TaskCard({required this.grant, required this.task});
 
-  /// 任务类型 → 图标与着色芯片。coding_dev 是编程任务；其余（含空）
-  /// 都是普通对话任务。
-  (IconData, Color) _typeOf(BuildContext context) {
+  /// 任务类型 → 图标、着色与本地化短标签。判定走 [RemoteTask.kind]
+  /// （工作流类型或标签上的编程身份），不再用 workflow 子串猜测。
+  /// 非编程的 other 工作流仍用对话气泡，避免产品设计/报告被画成代码任务。
+  (IconData, Color, String) _typeOf(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final wf = task.workflowType.toLowerCase();
-    if (wf.contains('coding') || wf.contains('dev')) {
-      return (Icons.code_rounded, scheme.tertiary);
+    final S = context.S;
+    if (task.isCoding) {
+      return (Icons.code_rounded, scheme.tertiary, S.rcKindCoding);
     }
-    return (Icons.chat_bubble_outline_rounded, scheme.primary);
+    return (Icons.chat_bubble_outline_rounded, scheme.primary, S.rcKindChat);
   }
 
   /// activeStatus 的终态 → (kind, label, color)。kind 是给图标选择用的
@@ -1115,7 +1117,7 @@ class _TaskCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final (typeIcon, typeColor) = _typeOf(context);
+    final (typeIcon, typeColor, typeLabel) = _typeOf(context);
     final (stateKind, stateLabel, stateColor) = _stateOf(context);
     return Card(
           child: InkWell(
@@ -1144,27 +1146,40 @@ class _TaskCard extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                task.title,
-                                style: theme.textTheme.titleSmall,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (task.pinned)
-                              Padding(
-                                padding: const EdgeInsets.only(left: 4),
-                                child: Icon(
-                                  Icons.push_pin,
-                                  size: 14,
-                                  color: theme.colorScheme.primary,
+                        // 320dp + 超长任务名：Wrap 换行。Flexible 不能直接放进
+                        // Wrap，用行宽上限代替，标题省略、置顶图标落到下一行。
+                        LayoutBuilder(
+                          builder: (context, titleConstraints) {
+                            final maxTitle = titleConstraints.maxWidth.isFinite
+                                ? titleConstraints.maxWidth
+                                : MediaQuery.sizeOf(context).width;
+                            return Wrap(
+                              spacing: 4,
+                              runSpacing: 2,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxWidth: maxTitle,
+                                  ),
+                                  child: Text(
+                                    task.title,
+                                    style: theme.textTheme.titleSmall,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
-                              ),
-                          ],
+                                if (task.pinned)
+                                  Icon(
+                                    Icons.push_pin,
+                                    size: 14,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                              ],
+                            );
+                          },
                         ),
+
                         if (task.preview.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.only(top: 2),
@@ -1179,31 +1194,51 @@ class _TaskCard extends ConsumerWidget {
                           ),
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
-                          child: Row(
-                            children: [
-                              // 状态徽章 — 运行中带脉冲点，终端态用语义色。
-                              AppBadge(
-                                label: stateLabel,
-                                color: stateColor,
-                                icon: task.running
-                                    ? Icons.circle
-                                    : _stateIcon(stateKind),
-                              ),
-                              if (task.pendingReview) ...[
-                                const SizedBox(width: 6),
-                                AppBadge(
-                                  label: context.S.rcPendingReview,
-                                  color: theme.colorScheme.tertiary,
-                                  icon: Icons.rate_review_outlined,
-                                ),
-                              ],
-                              const Spacer(),
-                              if (task.lastActivity.isNotEmpty)
-                                Text(
-                                  task.lastActivity,
-                                  style: theme.textTheme.labelMedium,
-                                ),
-                            ],
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final maxChip = constraints.maxWidth.isFinite
+                                  ? constraints.maxWidth
+                                  : MediaQuery.sizeOf(context).width;
+                              return Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  _metaChip(
+                                    label: typeLabel,
+                                    color: typeColor,
+                                    maxWidth: maxChip,
+                                  ),
+                                  _metaChip(
+                                    label: stateLabel,
+                                    color: stateColor,
+                                    maxWidth: maxChip,
+                                    icon: task.running
+                                        ? Icons.circle
+                                        : _stateIcon(stateKind),
+                                  ),
+                                  if (task.pendingReview)
+                                    _metaChip(
+                                      label: context.S.rcPendingReview,
+                                      color: theme.colorScheme.tertiary,
+                                      maxWidth: maxChip,
+                                      icon: Icons.rate_review_outlined,
+                                    ),
+                                  if (task.lastActivity.isNotEmpty)
+                                    ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxWidth: maxChip,
+                                      ),
+                                      child: Text(
+                                        task.lastActivity,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.labelMedium,
+                                      ),
+                                    ),
+                                ],
+                              );
+                            },
                           ),
                         ),
                       ],
@@ -1222,6 +1257,49 @@ class _TaskCard extends ConsumerWidget {
         )
         .animate(delay: (task.id.hashCode.abs() % 3 * 40).ms)
         .fadeIn(duration: 240.ms);
+  }
+
+  /// Badge capped to the meta row so a long localized label ellipsizes
+  /// instead of painting past the card.
+  Widget _metaChip({
+    required String label,
+    required Color color,
+    required double maxWidth,
+    IconData? icon,
+  }) {
+    final foreground = color;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 12, color: foreground),
+              const SizedBox(width: 4),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   IconData? _stateIcon(String kind) => switch (kind) {

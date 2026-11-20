@@ -477,6 +477,8 @@
   "rcTaskNameLabel": "Task name",
   "rcModeChat": "Chat",
   "rcModeCoding": "Coding",
+  "rcKindChat": "Chat",
+  "rcKindCoding": "Coding task",
   "rcWorkDirLabel": "Working directory (optional)",
   "rcWorkDirHint": "Leave empty to use their default directory",
   "rcBrowseTheirDir": "Browse their directories",

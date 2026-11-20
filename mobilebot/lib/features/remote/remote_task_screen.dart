@@ -14,6 +14,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart' show linkifyMarkdownUrls, openExternalUrl;
 import 'remote_api.dart';
 import 'remote_models.dart';
@@ -804,20 +805,42 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
         : (widget.taskName.isNotEmpty
               ? widget.taskName
               : context.S.rtDefaultTaskName);
+    final task = detail?.task;
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: theme.textTheme.titleMedium,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleMedium,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (task != null) ...[
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: _KindChip(
+                      label: task.isCoding
+                          ? context.S.rcKindCoding
+                          : context.S.rcKindChat,
+                      color: task.isCoding
+                          ? theme.colorScheme.tertiary
+                          : theme.colorScheme.primary,
+                    ),
+                  ),
+                ],
+              ],
             ),
             Text(
               '${widget.grant.title} · ${widget.grant.permissionLabel(context.S)}',
               style: theme.textTheme.labelSmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -1357,6 +1380,39 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
       borderRadius: BorderRadius.circular(8),
     ),
   );
+}
+
+/// 标题区类型芯片。宽度受限时省略，不把 AppBar 撑出屏幕。
+class _KindChip extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _KindChip({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 96),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+        ),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          softWrap: false,
+          style: TextStyle(
+            fontSize: 11,
+            color: color,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _MessageRow extends StatelessWidget {

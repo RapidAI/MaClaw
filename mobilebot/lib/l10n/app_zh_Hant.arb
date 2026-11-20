@@ -248,6 +248,8 @@
   "rcTaskNameLabel": "任務名稱",
   "rcModeChat": "對話",
   "rcModeCoding": "編程",
+  "rcKindChat": "對話",
+  "rcKindCoding": "編程任務",
   "rcWorkDirLabel": "工作目錄（可選）",
   "rcWorkDirHint": "留空用對方默認目錄",
   "rcBrowseTheirDir": "瀏覽對方目錄",

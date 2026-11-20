@@ -121,6 +121,15 @@ class RemoteControlState {
   }
 }
 
+/// Chat vs programming vs everything else on a remote task row.
+///
+/// Programming is the durable coding-dev identity (`coding_dev` /
+/// `remote_coding_dev`, plus the aliases desktop create-task accepts), on
+/// either [RemoteTask.workflowType] or [RemoteTask.tags]. Other non-empty
+/// workflow types (product design, reports, …) stay [RemoteTaskKind.other]
+/// so they are not painted as chat.
+enum RemoteTaskKind { chat, coding, other }
+
 /// One task on the controlled desktop (`ProjectSearchResult` — the `id` is
 /// the project path and doubles as the task key for every follow-up op).
 class RemoteTask {
@@ -160,6 +169,34 @@ class RemoteTask {
 
   String get title => name.isNotEmpty ? name : id;
   String get path => projectPath.isNotEmpty ? projectPath : id;
+
+  /// Kind from workflow type first, then tags. Empty means ordinary chat.
+  RemoteTaskKind get kind {
+    if (_isCodingToken(workflowType) || tags.any(_isCodingToken)) {
+      return RemoteTaskKind.coding;
+    }
+    if (workflowType.trim().isNotEmpty) return RemoteTaskKind.other;
+    return RemoteTaskKind.chat;
+  }
+
+  bool get isCoding => kind == RemoteTaskKind.coding;
+
+  static bool _isCodingToken(String raw) {
+    final value = raw.trim().toLowerCase();
+    switch (value) {
+      case 'coding_dev':
+      case 'coding':
+      case 'programming':
+      case 'code':
+      case 'remote_coding_dev':
+      case 'remote_coding':
+      case 'remote_programming':
+      case 'remote_code':
+        return true;
+      default:
+        return false;
+    }
+  }
 
   /// Terminal states mirror the desktop panel's `remoteTerminalStatus`
   /// (`completed|cancelled|canceled|failed|interrupted|done`) — anything else

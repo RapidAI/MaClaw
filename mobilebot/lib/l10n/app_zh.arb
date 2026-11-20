@@ -477,6 +477,8 @@
   "rcTaskNameLabel": "任务名称",
   "rcModeChat": "对话",
   "rcModeCoding": "编程",
+  "rcKindChat": "对话",
+  "rcKindCoding": "编程任务",
   "rcWorkDirLabel": "工作目录（可选）",
   "rcWorkDirHint": "留空用对方默认目录",
   "rcBrowseTheirDir": "浏览对方目录",
