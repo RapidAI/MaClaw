@@ -16,6 +16,7 @@ import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:uuid/uuid.dart';
 
+import '../../core/asr_fallback.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
@@ -283,46 +284,81 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (!supportsVoiceInput || _listening) return;
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
-    var usedSystem = false;
-    if (engine.asrEngine == AsrEngine.system) {
-      // 识别词直接进输入框（同 Bot 聊天的听写）：部分 OEM 识别器只发结果
-      // 不发终态状态，等 'done' 再上屏会让输入栏卡在"聆听中"而一个字都
-      // 不落；落在 onResult 里则部分结果也能实时上屏。
-      final ok = await _speech.initialize(
-        onError: (_) {
-          if (mounted) setState(() => _listening = false);
-        },
-        onStatus: (status) {
-          if (status != 'done' && status != 'notListening') return;
-          if (mounted) setState(() => _listening = false);
+    final localReady = await engine.localAsrReady();
+    final choice = decideAsrFallback(
+      systemStarted: false,
+      localReady: localReady,
+      alreadyFellBack: false,
+      engine: engine.asrEngine,
+    );
+    if (choice != AsrFallbackChoice.local) {
+      // 选了本地但模型缺失/校验未过时，localAsrReady 一直是 false。
+      // 先试系统识别，别只 toast「稍后再试」就结束。
+      final started = await _startSystemDictate();
+      if (started ||
+          decideAsrFallback(
+                systemStarted: started,
+                localReady: localReady,
+                alreadyFellBack: true,
+                engine: engine.asrEngine,
+              ) ==
+              AsrFallbackChoice.retryLater) {
+        return;
+      }
+      // 系统也起不来且本地模型已就绪：继续本地听写。
+    }
+    await _localDictate();
+  }
+
+  /// 系统听写。成功启动返回 true；不可用或启动失败返回 false，调用方回退本地。
+  ///
+  /// 识别词直接进输入框（同 Bot 聊天）：部分 OEM 只发结果不发终态，等
+  /// 'done' 再上屏会让输入栏卡在「聆听中」而一个字都不落。
+  /// 会话中途的 onError 只结束聆听态，不在这里回退——麦克风已开，再切
+  /// 本地采集会抢麦。
+  Future<bool> _startSystemDictate() async {
+    final ok = await _speech.initialize(
+      onError: (_) {
+        if (mounted) setState(() => _listening = false);
+      },
+      onStatus: (status) {
+        if (status != 'done' && status != 'notListening') return;
+        if (mounted) setState(() => _listening = false);
+      },
+    );
+    if (!ok || !mounted) return false;
+    final prefix = _inputCtrl.text;
+    final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
+    setState(() => _listening = true);
+    try {
+      // speech_to_text 7.x：启动失败抛 ListenFailedException，成功则无返回值。
+      final locales = await _speech.locales();
+      if (!mounted) return false;
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: pickAsrLocale(
+            locales,
+            fallbackLocaleId: fallbackLocaleId,
+          ),
+        ),
+        onResult: (r) {
+          _inputCtrl.text = prefix.isEmpty
+              ? r.recognizedWords
+              : '$prefix ${r.recognizedWords}';
+          _inputCtrl.selection = TextSelection.collapsed(
+            offset: _inputCtrl.text.length,
+          );
         },
       );
-      if (ok) {
-        usedSystem = true;
-        final prefix = _inputCtrl.text;
-        setState(() => _listening = true);
-        try {
-          await _speech.listen(
-            listenOptions: stt.SpeechListenOptions(
-              localeId: pickAsrLocale(await _speech.locales()),
-            ),
-            onResult: (r) {
-              _inputCtrl.text = prefix.isEmpty
-                  ? r.recognizedWords
-                  : '$prefix ${r.recognizedWords}';
-              _inputCtrl.selection = TextSelection.collapsed(
-                offset: _inputCtrl.text.length,
-              );
-            },
-          );
-        } on Object {
-          // listen 抛错（通道/识别器占用）：复位聆听态，别把输入栏
-          // 永久卡在"聆听中"。已识别的词在 onResult 里已经上屏。
-          if (mounted) setState(() => _listening = false);
-        }
-      }
+    } on Object {
+      // ListenFailedException / 通道错误：识别器没起来。复位后再回退，
+      // 避免输入栏停在「聆听中」。
+      if (mounted) setState(() => _listening = false);
+      return false;
     }
-    if (!usedSystem) await _localDictate();
+    // listen 正常返回即已启动。不要用 isListening 判断：它要等平台
+    // status 回调，成功启动时也可能仍是 false，误判会和系统识别抢麦。
+    return mounted;
   }
 
   Future<Uint8List?> _capturePcm() async {
@@ -399,6 +435,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         _toast(S.chatNotHeard);
       }
     } on Object {
+      if (!await engine.localAsrReady()) {
+        // 权重校验/加载失败：文件已丢弃。不要停在「识别失败」。
+        final started = await _startSystemDictate();
+        if (started) return;
+        final hub = ref.read(sessionProvider).active?.hubUrl;
+        unawaited(engine.autoEnsure(hubBase: hub));
+        _toast(S.chatAsrUnavailableDownloading);
+        return;
+      }
       _toast(S.chatAsrFailed);
     }
   }

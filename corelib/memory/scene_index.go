@@ -93,7 +93,7 @@ func BuildSceneIndex(entries []Entry, limit int) []SceneRecord {
 			acc.sources[e.SourceURL] = true
 			acc.rec.SourceURLs = append(acc.rec.SourceURLs, e.SourceURL)
 		}
-		if (e.Category == CategoryTaskArtifact || MapToCanonical(e.Category) == CategoryTaskArtifact) && !IsDurableTaskManagementEntry(&e) {
+		if sceneArtifactSource(e.SourceURL) != "" && (e.Category == CategoryTaskArtifact || MapToCanonical(e.Category) == CategoryTaskArtifact) && !IsDurableTaskManagementEntry(&e) {
 			acc.rec.RecentArtifacts = append(acc.rec.RecentArtifacts, SceneArtifact{
 				Title:      sceneEntryTitle(e),
 				Category:   e.Category,
@@ -136,6 +136,17 @@ func (s *Store) SceneIndex(limit int) []SceneRecord {
 	entries := append([]Entry(nil), s.entries...)
 	s.mu.RUnlock()
 	return BuildSceneIndex(entries, limit)
+}
+
+// sceneArtifactSource is a non-directory source the phone can treat as a
+// file pointer. Blank sources and paths that end in a separator are index
+// noise (title equals the task name) and stay out of RecentArtifacts.
+func sceneArtifactSource(sourceURL string) string {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" || strings.HasSuffix(sourceURL, "/") || strings.HasSuffix(sourceURL, `\`) {
+		return ""
+	}
+	return sourceURL
 }
 
 func sceneEntryTitle(e Entry) string {

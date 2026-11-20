@@ -417,27 +417,36 @@ func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDe
 		return RemoteControlTaskDetail{}, err
 	}
 	task := a.remoteControlTaskSnapshot(path)
-	messages := a.LoadProjectConversationHistory(path)
+	history := a.LoadProjectConversationHistory(path)
+	messages := history
 	if len(messages) > 40 {
-		messages = messages[len(messages)-40:]
+		messages = append([]ProjectConversationHistoryItem(nil), messages[len(messages)-40:]...)
 	}
 	for i := range messages {
 		messages[i].Content = trimRemoteControlText(messages[i].Content, 4000)
 		messages[i].ReasoningContent = trimRemoteControlText(messages[i].ReasoningContent, 2000)
 	}
 	artifacts := append([]ProjectSearchArtifact(nil), task.RecentArtifacts...)
-	// 手机端只能拉取 fetch_file 投递过的普通文件；去掉缺失或非文件的产出物。
+	// SourceURL is often a source pointer (task.md, a markdown/session ref),
+	// not a file the phone can fetch. Keep only paths fetch_file would serve:
+	// absolute paths recorded in this task's LocalFilePaths that are still
+	// regular files. Scan the full transcript, not the trimmed phone payload.
+	delivered := remoteControlDeliveredFilePaths(history)
 	downloadable := artifacts[:0]
 	for i := range artifacts {
 		artifacts[i].Preview = trimRemoteControlText(artifacts[i].Preview, 500)
 		src := strings.TrimSpace(artifacts[i].SourceURL)
-		if src == "" {
+		if src == "" || !filepath.IsAbs(src) {
 			continue
 		}
-		info, err := os.Stat(src)
+		if _, ok := delivered[remoteControlNormalizeFilePath(src)]; !ok {
+			continue
+		}
+		info, err := os.Lstat(src)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
+		artifacts[i].Downloadable = true
 		downloadable = append(downloadable, artifacts[i])
 	}
 	artifacts = downloadable
@@ -450,6 +459,26 @@ func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDe
 		messages = []ProjectConversationHistoryItem{}
 	}
 	return RemoteControlTaskDetail{Task: task, Messages: messages, Artifacts: artifacts}, nil
+}
+
+// remoteControlDeliveredFilePaths is the set fetch_file will accept: absolute
+// attachment paths recorded on this task's conversation history.
+func remoteControlDeliveredFilePaths(messages []ProjectConversationHistoryItem) map[string]struct{} {
+	delivered := make(map[string]struct{})
+	for _, item := range messages {
+		for _, produced := range item.LocalFilePaths {
+			produced = strings.TrimSpace(produced)
+			if produced == "" || !filepath.IsAbs(produced) {
+				continue
+			}
+			key := remoteControlNormalizeFilePath(produced)
+			if key == "" {
+				continue
+			}
+			delivered[key] = struct{}{}
+		}
+	}
+	return delivered
 }
 
 // stopRemoteControlTask signals the task to stop and returns without waiting

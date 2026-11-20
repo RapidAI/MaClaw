@@ -548,8 +548,9 @@ func TestCreateTaskRecordWritesDurableIdentityEntry(t *testing.T) {
 
 // Regression: a brand-new empty task must not surface its identity/sidebar row
 // as a downloadable artifact on the phone remote-control detail view. The
-// scene RecentArtifacts and the remote detail's Artifacts both come out empty;
-// a genuine workflow_output_ref file that exists on disk is still listed.
+// scene RecentArtifacts and the remote detail's Artifacts both come out empty.
+// A workflow_output_ref is listed only when its absolute SourceURL was also
+// recorded in the conversation LocalFilePaths that fetch_file accepts.
 func TestRemoteControlTaskDetailFiltersNonDownloadableArtifacts(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.ensureMemoryStore()
@@ -579,35 +580,68 @@ func TestRemoteControlTaskDetailFiltersNonDownloadableArtifacts(t *testing.T) {
 		t.Fatal("detail Artifacts is nil, want non-nil empty slice")
 	}
 
-	// (3) A real workflow_output_ref whose SourceURL points at an existing
-	// regular file is still surfaced and survives the remote-detail filter.
-	outFile := filepath.Join(t.TempDir(), "report.txt")
+	// (3) An existing regular file is not enough. SourceURL is often a source
+	// pointer (task.md, a markdown/session ref). The phone card must list only
+	// absolute paths recorded in LocalFilePaths, the same set fetch_file serves.
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "report.txt")
+	pointer := filepath.Join(created.ProjectPath, "task.md")
+	relative := "notes.md"
 	if err := os.WriteFile(outFile, []byte("delivered output"), 0o644); err != nil {
 		t.Fatalf("write artifact file: %v", err)
 	}
-	now := time.Now()
-	if err := app.memoryStore.Save(memory.Entry{
-		Title:      "Delivered report",
-		Content:    "Wrote the report file.",
-		Category:   memory.CategoryTaskArtifact,
-		SourceType: "workflow_output_ref",
-		SourceURL:  outFile,
-		Boundary:   &memory.MemoryBoundary{ProjectPath: created.ProjectPath},
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}); err != nil {
-		t.Fatalf("Save artifact entry: %v", err)
+	if err := os.WriteFile(pointer, []byte("# task"), 0o644); err != nil {
+		t.Fatalf("write source pointer: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, relative), []byte("session note"), 0o644); err != nil {
+		t.Fatalf("write relative ref: %v", err)
+	}
+	now := time.Now()
+	saveArtifact := func(title, sourceURL string, at time.Time) {
+		t.Helper()
+		if err := app.memoryStore.Save(memory.Entry{
+			Title: title, Content: title,
+			Category: memory.CategoryTaskArtifact, SourceType: "workflow_output_ref",
+			SourceURL: sourceURL, Boundary: &memory.MemoryBoundary{ProjectPath: created.ProjectPath},
+			CreatedAt: at, UpdatedAt: at,
+		}); err != nil {
+			t.Fatalf("Save %s: %v", title, err)
+		}
+	}
+	saveArtifact("Delivered report", outFile, now)
+	saveArtifact("Task identity pointer", pointer, now.Add(time.Second))
+	saveArtifact("Relative session ref", relative, now.Add(2*time.Second))
 	if err := app.memoryStore.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 
+	// Without a transcript record, even the real file must stay off the card.
 	detail, err = app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
 	if err != nil {
-		t.Fatalf("remoteControlTaskDetail after artifact: %v", err)
+		t.Fatalf("remoteControlTaskDetail before delivery: %v", err)
+	}
+	if len(detail.Artifacts) != 0 {
+		t.Fatalf("undelivered Artifacts=%+v, want empty", detail.Artifacts)
+	}
+
+	mem := agent.NewConversationMemory()
+	t.Cleanup(mem.Stop)
+	app.aiConversationMemory = mem
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.interactionInfraDone.Store(true)
+	handler := NewIMMessageHandler(app, app.remoteSessions)
+	app.imHandler = handler
+	handler.memory.Save(projectSessionOwnerID(created.ProjectPath), []agent.ConversationEntry{
+		{Role: "user", Content: "生成报告"},
+		{Role: "assistant", Content: "已生成", LocalFilePaths: []string{outFile, "relative.txt"}},
+	})
+
+	detail, err = app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail after delivery: %v", err)
 	}
 	if len(detail.Artifacts) != 1 {
-		t.Fatalf("detail Artifacts=%+v, want exactly the real file", detail.Artifacts)
+		t.Fatalf("detail Artifacts=%+v, want only the delivered file", detail.Artifacts)
 	}
 	got := detail.Artifacts[0]
 	if got.SourceType != "workflow_output_ref" {
@@ -615,6 +649,49 @@ func TestRemoteControlTaskDetailFiltersNonDownloadableArtifacts(t *testing.T) {
 	}
 	if got.SourceURL != outFile {
 		t.Fatalf("artifact SourceURL=%q, want %q", got.SourceURL, outFile)
+	}
+	if !got.Downloadable {
+		t.Fatalf("delivered file Downloadable=false, artifact=%+v", got)
+	}
+
+	// A delivery older than the 40-message phone window must still match
+	// fetch_file, which scans the full transcript.
+	older := filepath.Join(dir, "older.txt")
+	if err := os.WriteFile(older, []byte("older delivery"), 0o644); err != nil {
+		t.Fatalf("write older file: %v", err)
+	}
+	saveArtifact("Older delivery", older, now.Add(3*time.Second))
+	if err := app.memoryStore.Flush(); err != nil {
+		t.Fatalf("Flush older: %v", err)
+	}
+	longHistory := make([]agent.ConversationEntry, 0, 42)
+	longHistory = append(longHistory, agent.ConversationEntry{
+		Role: "assistant", Content: "early file", LocalFilePaths: []string{older},
+	})
+	for i := 0; i < 41; i++ {
+		longHistory = append(longHistory, agent.ConversationEntry{
+			Role: "user", Content: fmt.Sprintf("follow-up %d", i),
+		})
+	}
+	handler.memory.Save(projectSessionOwnerID(created.ProjectPath), longHistory)
+	detail, err = app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail long history: %v", err)
+	}
+	foundOlder := false
+	for _, artifact := range detail.Artifacts {
+		if artifact.SourceURL == older {
+			foundOlder = true
+		}
+		if artifact.SourceURL == pointer || artifact.SourceURL == relative {
+			t.Fatalf("source pointer survived long history: %+v", artifact)
+		}
+		if artifact.SourceURL != "" && !artifact.Downloadable {
+			t.Fatalf("listed artifact is not downloadable: %+v", artifact)
+		}
+	}
+	if !foundOlder {
+		t.Fatalf("older delivery missing from Artifacts=%+v", detail.Artifacts)
 	}
 }
 

@@ -1199,12 +1199,12 @@ class _ArtifactStrip extends StatelessWidget {
               Card(
                 child: ListTile(
                   dense: true,
-                  // sourceUrl 是产物在受控机上的路径——fetch_file 只回传
-                  // 任务记录里投递过的文件，路径没被投递时服务端会如实报错。
-                  enabled: artifact.sourceUrl.isNotEmpty,
-                  onTap: artifact.sourceUrl.isEmpty
-                      ? null
-                      : () => onOpen(artifact.sourceUrl),
+                  // downloadable 由受控机标记：绝对路径的普通文件，且已记在
+                  // 对话投递列表里。没有这个标记时不提供打开/下载。
+                  enabled: artifact.downloadable && artifact.sourceUrl.isNotEmpty,
+                  onTap: artifact.downloadable && artifact.sourceUrl.isNotEmpty
+                      ? () => onOpen(artifact.sourceUrl)
+                      : null,
                   leading: const Icon(Icons.description_outlined),
                   title: Text(
                     artifact.title.isNotEmpty
@@ -1218,7 +1218,7 @@ class _ArtifactStrip extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                         )
                       : null,
-                  trailing: artifact.sourceUrl.isEmpty
+                  trailing: !artifact.downloadable || artifact.sourceUrl.isEmpty
                       ? null
                       : IconButton(
                           tooltip: context.S.rtDownload,

@@ -295,6 +295,27 @@ void main() {
       expect(dirs.dirs, hasLength(1));
       expect(dirs.truncated, isFalse);
     });
+
+    test('artifact download flag is true only when the desktop says so', () {
+      final ready = RemoteArtifact.fromJson({
+        'title': '报告.pdf',
+        'source_url': '/tmp/报告.pdf',
+        'downloadable': true,
+      });
+      expect(ready.downloadable, isTrue);
+      expect(ready.sourceUrl, '/tmp/报告.pdf');
+      final pointer = RemoteArtifact.fromJson({
+        'title': '任务甲',
+        'source_url': '/tasks/a/',
+        'downloadable': false,
+      });
+      expect(pointer.downloadable, isFalse);
+      final missing = RemoteArtifact.fromJson({
+        'title': '任务甲',
+        'source_url': '/tmp/note.md',
+      });
+      expect(missing.downloadable, isFalse);
+    });
   });
 
   group('task spaces', () {
@@ -764,7 +785,13 @@ void main() {
           filePaths: ['/tmp/报告.pdf'],
         ),
       ],
-      artifacts: const [RemoteArtifact(title: '报告.pdf')],
+      artifacts: const [
+        RemoteArtifact(
+          title: '报告.pdf',
+          sourceUrl: '/tmp/报告.pdf',
+          downloadable: true,
+        ),
+      ],
     );
 
     Map<String, dynamic> wireDoc() {
@@ -1913,6 +1940,13 @@ void main() {
       expect(find.text('已经生成好了', findRichText: true), findsOneWidget);
       expect(find.text('产出物'), findsOneWidget);
       expect(find.text('报告.pdf'), findsNWidgets(2)); // chip + artifact row
+      expect(
+        find.descendant(
+          of: find.byType(ListTile),
+          matching: find.byIcon(Icons.download_outlined),
+        ),
+        findsOneWidget,
+      );
       expect(find.byIcon(Icons.arrow_upward_rounded), findsNothing);
       expect(find.byIcon(Icons.more_vert), findsNothing);
     });

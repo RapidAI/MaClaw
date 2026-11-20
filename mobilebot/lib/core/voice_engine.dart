@@ -25,9 +25,17 @@ enum AsrEngine { system, local }
 /// recognizer without it the listen intent carries
 /// EXTRA_LANGUAGE=zh-CN and recognition dies with
 /// language-not-supported before a single word is heard. Preference:
-/// mainland zh first, any other Chinese locale next, else null = let the
-/// recognizer use its own default.
-String? pickAsrLocale(List<LocaleName> available) {
+/// mainland zh first, any other Chinese locale next. A non-empty list
+/// with no Chinese locale returns null so the recognizer keeps its own
+/// default.
+///
+/// An empty list must not return null. speech_to_text 7.4 on Android
+/// turns a missing localeId into `Locale.getDefault().toLanguageTag()`
+/// (`zh-Hans-CN`) and some OEM recognizers reject that listen outright.
+String? pickAsrLocale(
+  List<LocaleName> available, {
+  String? fallbackLocaleId,
+}) {
   String? best;
   var bestScore = 0;
   for (final l in available) {
@@ -42,7 +50,11 @@ String? pickAsrLocale(List<LocaleName> available) {
       bestScore = score;
     }
   }
-  return bestScore > 0 ? best : null;
+  if (bestScore > 0) return best;
+  if (available.isNotEmpty) return null;
+  final fallback = fallbackLocaleId?.trim();
+  if (fallback != null && fallback.isNotEmpty) return fallback;
+  return 'zh_CN';
 }
 
 final voiceEngineProvider = Provider<VoiceEngine>((ref) => VoiceEngine());
@@ -205,8 +217,20 @@ class VoiceEngine {
   Future<String?> _ensureAsrLoaded() async {
     if (!NativeVoice.supported) return 'native voice unavailable';
     if (_asrLoaded) return null;
+    if (!await VoiceAssets.asrReady()) {
+      _asrPathSnapshot = null;
+      return 'asr model missing or failed validation';
+    }
     final err = await Isolate.run(() => NativeVoice.loadAsr(_asrPathSnapshot!));
-    if (err == null) _asrLoaded = true;
+    if (err == null) {
+      _asrLoaded = true;
+      return null;
+    }
+    // Header looked fine but the weights failed to load. Drop the file so
+    // the next ensure does not treat the same bytes as ready forever.
+    _asrLoaded = false;
+    _asrPathSnapshot = null;
+    await VoiceAssets.rejectAsrFile();
     return err;
   }
 

@@ -87,7 +87,43 @@ class VoiceAssets {
     return true;
   }
 
-  static Future<bool> asrReady() async => _nonEmpty(await asrPath());
+  /// Same gate as desktop `asr.ModelFileStatus`: a non-empty file whose
+  /// first four bytes are the GGUF magic. A truncated or checksum-failed
+  /// download used to pass `_nonEmpty` and then fail every load.
+  static Future<bool> asrReady() async => _validGguf(await asrPath());
+
+  static const ggufMagic = 0x46554747; // "GGUF" little-endian
+
+  static bool _validGguf(String path) {
+    final f = File(path);
+    RandomAccessFile? raf;
+    try {
+      if (!f.existsSync() || f.lengthSync() < 4) return false;
+      raf = f.openSync();
+      final header = raf.readSync(4);
+      if (header.length < 4) return false;
+      final magic = header[0] |
+          (header[1] << 8) |
+          (header[2] << 16) |
+          (header[3] << 24);
+      return magic == ggufMagic;
+    } on Object {
+      return false;
+    } finally {
+      raf?.closeSync();
+    }
+  }
+
+  /// Drop a model that failed to load so the next ensure re-downloads it.
+  static Future<void> rejectAsrFile() async {
+    final f = File(await asrPath());
+    if (!f.existsSync()) return;
+    try {
+      f.deleteSync();
+    } on Object {
+      // locked — asrReady stays false and the next tap retries
+    }
+  }
 
   /// Download `file` from the Model_Release asset, falling back to the
   /// account Hub's `/api/v1/models/` mirror — identical order to the
@@ -117,7 +153,8 @@ class VoiceAssets {
           onReceiveProgress: onProgress,
         );
         if (File(part).lengthSync() > 0) {
-          File(dest).deleteSync(); // replace any truncated earlier attempt
+          final current = File(dest);
+          if (current.existsSync()) current.deleteSync();
           File(part).renameSync(dest);
           return;
         }
@@ -126,8 +163,8 @@ class VoiceAssets {
         lastError = e;
       }
     }
-    // A truncated body must never sit at `dest` — existsSync() would call
-    // the model "ready" and every load/retry would fail on the same bytes.
+    // A truncated body must never sit at `dest` — a later ready check
+    // would keep failing on the same bytes.
     for (final p in [part, dest]) {
       final f = File(p);
       if (f.existsSync()) {
@@ -223,10 +260,12 @@ class VoiceAssets {
     void Function(String stage, double progress)? onProgress,
   }) async {
     final ap = await asrPath();
-    if (_nonEmpty(ap)) {
+    if (await asrReady()) {
       onProgress?.call(sharedL10n.voiceStageReady, 1);
       return;
     }
+    // A non-GGUF file stays until `_download` has a replacement. Deleting
+    // first would lose the only copy if every URL fails.
     await _download(
       asrFile,
       ap,

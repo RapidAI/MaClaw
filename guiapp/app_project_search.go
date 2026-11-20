@@ -293,13 +293,15 @@ type ProjectWorkflowState struct {
 
 // ProjectSearchArtifact is the small source-backed artifact summary attached
 // to task search results. Full content stays in SourceURL-backed refs.
+// Downloadable is true only for an absolute regular file the phone can fetch.
 type ProjectSearchArtifact struct {
-	Title      string `json:"title,omitempty"`
-	SourceType string `json:"source_type,omitempty"`
-	SourceURL  string `json:"source_url,omitempty"`
-	SourceHint string `json:"source_hint,omitempty"`
-	Preview    string `json:"preview,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	Title        string `json:"title,omitempty"`
+	SourceType   string `json:"source_type,omitempty"`
+	SourceURL    string `json:"source_url,omitempty"`
+	SourceHint   string `json:"source_hint,omitempty"`
+	Preview      string `json:"preview,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
+	Downloadable bool   `json:"downloadable"`
 }
 
 // ProjectSceneDetail exposes the scene/task navigation data for one project.
@@ -1080,16 +1082,7 @@ func projectSceneDetailFromRecord(scene memory.SceneRecord) *ProjectSceneDetail 
 		detail.LastActivity = scene.LastActivity.Format(time.RFC3339)
 	}
 	for _, artifact := range scene.RecentArtifacts {
-		item := ProjectSearchArtifact{
-			Title:      artifact.Title,
-			SourceType: artifact.SourceType,
-			SourceURL:  artifact.SourceURL,
-			SourceHint: projectTabSourceHint(artifact.SourceURL),
-			Preview:    artifact.Preview,
-		}
-		if !artifact.UpdatedAt.IsZero() {
-			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
-		}
+		item := projectSearchArtifactFromScene(artifact)
 		detail.RecentArtifacts = append(detail.RecentArtifacts, item)
 	}
 	return detail
@@ -1101,16 +1094,7 @@ func enrichProjectSearchResultWithScene(result *ProjectSearchResult, scene memor
 	}
 	result.SourceURLs = append([]string(nil), scene.SourceURLs...)
 	for _, artifact := range scene.RecentArtifacts {
-		item := ProjectSearchArtifact{
-			Title:      artifact.Title,
-			SourceType: artifact.SourceType,
-			SourceURL:  artifact.SourceURL,
-			SourceHint: projectTabSourceHint(artifact.SourceURL),
-			Preview:    artifact.Preview,
-		}
-		if !artifact.UpdatedAt.IsZero() {
-			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
-		}
+		item := projectSearchArtifactFromScene(artifact)
 		result.RecentArtifacts = append(result.RecentArtifacts, item)
 	}
 }
@@ -8396,6 +8380,39 @@ func projectTabExtractPaths(entries []memory.Entry) []string {
 	}
 
 	return paths
+}
+
+func projectSearchArtifactFromScene(artifact memory.SceneArtifact) ProjectSearchArtifact {
+	item := ProjectSearchArtifact{
+		Title:        artifact.Title,
+		SourceType:   artifact.SourceType,
+		SourceURL:    artifact.SourceURL,
+		SourceHint:   projectTabSourceHint(artifact.SourceURL),
+		Preview:      artifact.Preview,
+		Downloadable: projectArtifactDownloadable(artifact.SourceURL),
+	}
+	if !artifact.UpdatedAt.IsZero() {
+		item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
+	}
+	return item
+}
+
+// projectArtifactDownloadable is the phone download gate: an absolute path to
+// a regular file. Directories, relative refs, and missing paths stay listed
+// as sources but must not grow a download button.
+func projectArtifactDownloadable(sourceURL string) bool {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" || !filepath.IsAbs(sourceURL) {
+		return false
+	}
+	if strings.HasSuffix(sourceURL, "/") || strings.HasSuffix(sourceURL, `\`) {
+		return false
+	}
+	info, err := os.Lstat(sourceURL)
+	if err != nil || info.IsDir() || !info.Mode().IsRegular() {
+		return false
+	}
+	return true
 }
 
 func projectTabSourceHint(sourceURL string) string {

@@ -73,6 +73,26 @@ func TestStoreSceneIndex(t *testing.T) {
 	}
 }
 
+func TestBuildSceneIndexSkipsBlankAndDirectoryArtifactSources(t *testing.T) {
+	now := time.Now()
+	entries := []Entry{
+		{ID: "blank", Title: "Blank source", Content: "no file", Category: CategoryTaskArtifact, Tags: []string{"/home/user/app"}, UpdatedAt: now},
+		{ID: "dir-slash", Title: "Unix dir", Content: "dir", Category: CategoryTaskArtifact, Tags: []string{"/home/user/app"}, SourceURL: "/home/user/app/out/", UpdatedAt: now},
+		{ID: "dir-backslash", Title: "Win dir", Content: "dir", Category: CategoryTaskArtifact, Tags: []string{"/home/user/app"}, SourceURL: `C:\tasks\out\`, UpdatedAt: now},
+		{ID: "spaces", Title: "Spaces", Content: "spaces", Category: CategoryTaskArtifact, Tags: []string{"/home/user/app"}, SourceURL: "  ", UpdatedAt: now},
+		{ID: "file", Title: "Real file", Content: "file", Category: CategoryTaskArtifact, Tags: []string{"/home/user/app"}, SourceURL: "/home/user/app/out/report.md", UpdatedAt: now.Add(-time.Minute)},
+	}
+
+	scenes := BuildSceneIndex(entries, 10)
+	var artifacts []SceneArtifact
+	for _, scene := range scenes {
+		artifacts = append(artifacts, scene.RecentArtifacts...)
+	}
+	if len(artifacts) != 1 || artifacts[0].Title != "Real file" || artifacts[0].SourceURL != "/home/user/app/out/report.md" {
+		t.Fatalf("blank/dir sources leaked into artifacts: %#v", artifacts)
+	}
+}
+
 func TestFormatSceneIndexForPromptIncludesReadFileHint(t *testing.T) {
 	scenes := []SceneRecord{{
 		ProjectPath: "/home/user/project",

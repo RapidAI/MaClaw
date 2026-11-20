@@ -35,6 +35,29 @@ final appLanguageProvider =
 
 /// Null means "follow the OS" — MaterialApp then resolves via
 /// [resolveAppLocale].
+/// `language_COUNTRY` id Android recognizers accept. `Locale.toLanguageTag()`
+/// (`zh-Hans-CN`) is rejected by some OEM `listen` intents.
+String speechLocaleId(Locale locale) {
+  final language = locale.languageCode.toLowerCase();
+  final country = (locale.countryCode ?? '').toUpperCase();
+  final script = (locale.scriptCode ?? '').toLowerCase();
+  switch (language) {
+    case 'en':
+      return 'en_US';
+    case 'mn':
+      return 'mn_MN';
+    case 'zh':
+      final hant =
+          script == 'hant' ||
+          country == 'TW' ||
+          country == 'HK' ||
+          country == 'MO';
+      return hant ? 'zh_TW' : 'zh_CN';
+    default:
+      return 'zh_CN';
+  }
+}
+
 Locale? localeFor(AppLanguage language) => switch (language) {
   AppLanguage.system => null,
   AppLanguage.zhHans => const Locale('zh'),

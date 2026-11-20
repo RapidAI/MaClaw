@@ -238,6 +238,10 @@ class RemoteArtifact {
   final String preview;
   final String updatedAt;
 
+  /// Desktop says this path is an absolute regular file fetch_file will
+  /// serve. Missing or false hides the download action.
+  final bool downloadable;
+
   const RemoteArtifact({
     this.title = '',
     this.sourceType = '',
@@ -245,6 +249,7 @@ class RemoteArtifact {
     this.sourceUrl = '',
     this.preview = '',
     this.updatedAt = '',
+    this.downloadable = false,
   });
 
   factory RemoteArtifact.fromJson(Map json) => RemoteArtifact(
@@ -254,6 +259,7 @@ class RemoteArtifact {
     sourceUrl: syncText(json['source_url']),
     preview: syncText(json['preview']),
     updatedAt: syncText(json['updated_at']),
+    downloadable: json['downloadable'] == true,
   );
 }
 

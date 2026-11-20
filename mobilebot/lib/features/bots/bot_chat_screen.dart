@@ -14,6 +14,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import '../../core/asr_fallback.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
@@ -122,21 +123,40 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       unawaited(_localDictate());
       return;
     }
+    final started = await _listenSystemDictate();
+    if (!started && mounted) unawaited(_localDictate());
+  }
+
+  /// 系统听写写入输入框。listen 抛错时复位并返回 false，调用方可回退本地。
+  Future<bool> _listenSystemDictate() async {
     _speechPrefix = _inputCtrl.text;
+    final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
     setState(() => _listening = true);
-    await _speech.listen(
-      listenOptions: stt.SpeechListenOptions(
-        localeId: pickAsrLocale(await _speech.locales()),
-      ),
-      onResult: (result) {
-        _inputCtrl.text = _speechPrefix.isEmpty
-            ? result.recognizedWords
-            : '$_speechPrefix ${result.recognizedWords}';
-        _inputCtrl.selection = TextSelection.collapsed(
-          offset: _inputCtrl.text.length,
-        );
-      },
-    );
+    try {
+      // speech_to_text 7.x：启动失败抛 ListenFailedException，成功则无返回值。
+      final locales = await _speech.locales();
+      if (!mounted) return false;
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: pickAsrLocale(
+            locales,
+            fallbackLocaleId: fallbackLocaleId,
+          ),
+        ),
+        onResult: (result) {
+          _inputCtrl.text = _speechPrefix.isEmpty
+              ? result.recognizedWords
+              : '$_speechPrefix ${result.recognizedWords}';
+          _inputCtrl.selection = TextSelection.collapsed(
+            offset: _inputCtrl.text.length,
+          );
+        },
+      );
+    } on Object {
+      if (mounted) setState(() => _listening = false);
+      return false;
+    }
+    return mounted;
   }
 
   /// 语音助手开关。开：立即进入聆听循环；关：停 ASR+TTS，回到手动输入。
@@ -206,10 +226,40 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     if (!_voiceMode || _listening || _ttsBusy) return;
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
-    if (engine.asrEngine == AsrEngine.local) {
+    final localReady = await engine.localAsrReady();
+    if (decideAsrFallback(
+          systemStarted: false,
+          localReady: localReady,
+          alreadyFellBack: false,
+          engine: engine.asrEngine,
+        ) ==
+        AsrFallbackChoice.local) {
       await _recordListen();
       return;
     }
+    // 模型缺失/校验失败时 localAsrReady 永远 false。不要停掉语音模式
+    // 只留一句「稍后再试」——先试系统识别。
+    final started = await _startSystemVoiceTurn();
+    if (started || _listening) return;
+    if (decideAsrFallback(
+          systemStarted: started,
+          localReady: localReady,
+          alreadyFellBack: true,
+          engine: engine.asrEngine,
+        ) ==
+        AsrFallbackChoice.retryLater) {
+      return;
+    }
+    // initialize/listen 没起来（无 GMS 等）且本地模型已就绪 → SenseVoice。
+    // 会话中途出错不会走到这里：onError 已把 _listening 复位并排队重听。
+    await _recordListen();
+  }
+
+  /// 系统听写一轮。成功启动返回 true；不可用返回 false，调用方决定回退。
+  ///
+  /// 会话中途的 onError 只结束本轮并排队重听，不在这里切本地采集——
+  /// 麦克风已开，再开 record 会抢麦。
+  Future<bool> _startSystemVoiceTurn() async {
     final ok = await _speech.initialize(
       onError: (_) {
         _listening = false;
@@ -221,22 +271,47 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         _handleVoiceTurnEnd();
       },
     );
-    if (!ok) {
-      // 系统识别不可用（如无 GMS 的华为设备）→ 本地 SenseVoice 兜底。
-      await _recordListen();
-      return;
-    }
+    if (!ok || !mounted || !_voiceMode) return false;
     _voiceCaptured = '';
+    final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
     setState(() => _listening = true);
-    await _speech.listen(
-      listenOptions: stt.SpeechListenOptions(
-        localeId: pickAsrLocale(await _speech.locales()),
-      ),
-      onResult: (result) {
-        _voiceCaptured = result.recognizedWords;
-        if (result.finalResult) _handleVoiceTurnEnd();
+    try {
+      final locales = await _speech.locales();
+      if (!mounted) return false;
+      await _speech.listen(
+        listenOptions: stt.SpeechListenOptions(
+          localeId: pickAsrLocale(
+            locales,
+            fallbackLocaleId: fallbackLocaleId,
+          ),
+        ),
+        onResult: (result) {
+          _voiceCaptured = result.recognizedWords;
+          if (result.finalResult) _handleVoiceTurnEnd();
+        },
+      );
+    } on Object {
+      _listening = false;
+      if (mounted) setState(() {});
+      return false;
+    }
+    return mounted && _voiceMode;
+  }
+
+  /// 输入框听写的系统路径。成功启动返回 true。
+  Future<bool> _startComposerSystemDictate() async {
+    final ok = await _speech.initialize(
+      onError: (_) {
+        if (mounted) setState(() => _listening = false);
+      },
+      onStatus: (status) {
+        if (mounted && (status == 'done' || status == 'notListening')) {
+          setState(() => _listening = false);
+        }
       },
     );
+    if (!ok || !mounted) return false;
+    return _listenSystemDictate();
   }
 
   /// 本地模型缺失时后台拉起下载（GitHub → Hub 镜像），用户不用进设置页。
@@ -321,6 +396,16 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     try {
       text = (await engine.transcribe(pcm)).trim();
     } on Object {
+      if (!await engine.localAsrReady()) {
+        // 坏模型已丢弃。先试系统识别，不要静默重听同一份失败。
+        final started = await _startSystemVoiceTurn();
+        if (!started && mounted && _voiceMode) {
+          _ensureLocalVoiceModels();
+          _toast(S.chatAsrUnavailableDownloading);
+          _stopVoiceMode();
+        }
+        return;
+      }
       _scheduleVoiceRelisten();
       return;
     }
@@ -341,6 +426,12 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
+      // 选了本地但模型缺失/校验未过：先试系统识别，不要只 toast 就结束。
+      // 已经在系统路径里失败过的调用方不会再进这里。
+      if (engine.asrEngine == AsrEngine.local) {
+        final started = await _startComposerSystemDictate();
+        if (started) return;
+      }
       _ensureLocalVoiceModels();
       _toast(S.chatAsrUnavailableDownloading);
       return;
@@ -356,6 +447,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     try {
       text = (await engine.transcribe(pcm)).trim();
     } on Object {
+      if (!await engine.localAsrReady()) {
+        final started = await _startComposerSystemDictate();
+        if (started) return;
+        _ensureLocalVoiceModels();
+        _toast(S.chatAsrUnavailableDownloading);
+        return;
+      }
       _toast(S.chatAsrFailed);
       return;
     }
