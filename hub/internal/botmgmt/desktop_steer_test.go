@@ -116,6 +116,11 @@ func TestHubIntakeTimeoutAdmitsTheWordsAsANewTask(t *testing.T) {
 	if err != nil || adm.RunID == "" || time.Since(start) > time.Second {
 		t.Fatalf("adm=%+v err=%v after %v", adm, err, time.Since(start))
 	}
+	// The intake timed out (no ack of its own), so the admit names the
+	// person's own command instead of going silent.
+	if !strings.Contains(adm.Ack, "打开报表") {
+		t.Fatalf("expected the admit ack to name the command, got %q", adm.Ack)
+	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	if len(fake.posts) != 1 || !strings.Contains(fake.posts[0], "打开报表") {

@@ -1033,7 +1033,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			"dur_ms", traceMS(time.Since(pipelineStarted)),
 		)
 		via, title := routedFor(route, botID, claim.session)
-		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: intakeAck}, nil
+		// The intake's first sentence is the immediate reply. When the LLM
+		// timed out (the common slow case), name the person's own command so
+		// the admit still reads like an understanding of the task.
+		ack := intakeAck
+		if strings.TrimSpace(ack) == "" {
+			ack = desktopQueuedAck(content)
+		}
+		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: ack}, nil
 	}
 	if !isolated && payload.DesktopHandoff && !opened && strings.TrimSpace(novnc) == "" {
 		// The worker asked this person to look. That open is the handoff,

@@ -296,8 +296,8 @@ class BotApi {
   }
 
   /// One run poll. Returns null while the run is in flight (a 202 answer).
-  /// The 202 body may carry a live step phrase (activity) or status line —
-  /// both are read so the caller can show them in the header.
+  /// The 202 body may carry a live step phrase (activity), a status line, or
+  /// a process list — all are read so the caller can show them in the header.
   Future<BotReply?> pollRun(String botId, String runId) async {
     final response = await _client.call(
       () => _client.dio.get<Map<String, dynamic>>(
@@ -307,19 +307,25 @@ class BotApi {
     );
     final status = response.statusCode ?? 0;
     if (status == 202) {
-      // A 202 body may carry a live step phrase (activity) or status line.
-      // Store it so the controller can read it after the await.
+      // A 202 body may carry a live step phrase (activity), a status line, or
+      // a process list. The most specific one that changed wins the header.
       final data = response.data ?? const <String, dynamic>{};
       final activity = syncText(data['activity']);
       final statusLine = syncText(data['status_line']);
       final display = activity.isNotEmpty ? activity : statusLine;
       if (display.isNotEmpty) _lastRunActivity[runId] = display;
+      final process = [
+        for (final item in syncList(data['process']))
+          if (item is String && item.isNotEmpty) item
+      ];
+      if (process.isNotEmpty) _lastRunProcess[runId] = process;
       return null;
     }
     if (status < 200 || status >= 300) {
       throw hubException(response);
     }
     _lastRunActivity.remove(runId);
+    _lastRunProcess.remove(runId);
     return BotReply.fromJson(response.data ?? const <String, dynamic>{});
   }
 
@@ -330,6 +336,12 @@ class BotApi {
   /// The live step phrase for a run, from the most recent 202 poll.
   /// Returns an empty string when the run is not reporting a step.
   String lastActivityForRun(String runId) => _lastRunActivity[runId] ?? '';
+
+  /// The live process lines for a run, from the most recent 202 poll.
+  /// Empty while the run reports no steps.
+  final Map<String, List<String>> _lastRunProcess = {};
+
+  List<String> lastProcessForRun(String runId) => _lastRunProcess[runId] ?? const [];
 
   Future<List<ActiveRun>> activeRuns(String botId) async {
     final data = await _client.guard(

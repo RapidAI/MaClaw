@@ -741,11 +741,16 @@ class BotChatController extends Notifier<ChatState> {
         if (_disposed || state.activeRunId != runId) return;
         if (reply == null) {
           // A 202 answer: the run is still in flight. Hub may report a live
-          // step phrase (activity) or status line — show it in the header.
-          // Only rebuild when the phrase actually changed.
+          // step phrase (activity), a status line, or process steps — show
+          // the most specific in the header, newest step first.
           final activity = _api.lastActivityForRun(runId);
-          if (activity != state.activity) {
-            state = state.copyWith(activity: activity);
+          final process = _api.lastProcessForRun(runId);
+          var header = activity;
+          if (header.isEmpty && process.isNotEmpty) {
+            header = process.last;
+          }
+          if (header != state.activity) {
+            state = state.copyWith(activity: header);
           }
           if (_foreground) _pollTimer = Timer(botPollInterval, tick);
           return;
