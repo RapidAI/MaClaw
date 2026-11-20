@@ -1678,10 +1678,29 @@ func (a *App) restoreProjectAgentSession(handler *IMMessageHandler, userID, proj
 	}
 	entries := conversationEntriesFromTabSnapshot(a.projectTranscriptSnapshot(projectPath))
 	if !conversationEntriesHaveTurns(entries) {
+		// A coding task keeps its transcript in the coding-agent resume state,
+		// not in the chat memory or the tab snapshot: the workbench runs the
+		// turns, the tab only shows them. Without this fallback a "继续" on a
+		// coding task was refused with "没有找到这个任务之前的对话" even though
+		// the task had 41 recorded turns (BR-20261120-BD8D23C968F7).
+		entries = codingAgentResumeHistoryForUser(userID, projectPath)
+	}
+	if !conversationEntriesHaveTurns(entries) {
 		return
 	}
 	handler.memory.Save(userID, entries)
 	log.Printf("[AI assistant] restored project session from tab transcript user=%s project=%q turns=%d", userID, projectPath, len(entries))
+}
+
+// codingAgentResumeHistoryForUser returns the transcript the coding workbench
+// recorded for this task, as chat entries. Empty when the task never ran a
+// coding turn or the record belongs to another project.
+func codingAgentResumeHistoryForUser(userID, projectPath string) []agent.ConversationEntry {
+	resume := loadCodingAgentResume(userID, projectPath)
+	if len(resume.History) == 0 {
+		return nil
+	}
+	return append([]agent.ConversationEntry(nil), resume.History...)
 }
 
 func projectContinuationHistoryMissing(req AIAssistantSendRequest, handler *IMMessageHandler, userID, projectPath string) bool {
