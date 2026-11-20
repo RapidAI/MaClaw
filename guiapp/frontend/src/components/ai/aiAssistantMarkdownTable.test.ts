@@ -69,6 +69,51 @@ describe("parseMarkdownTableCells inline opaque spans", () => {
         expect(parseMarkdownTableCells("| $5 | $10 |"))
             .toEqual(["$5", "$10"]);
     });
+
+    it("keeps literal pipes inside double-dollar formulas in one cell", () => {
+        expect(parseMarkdownTableCells("| $$A|B$$ | determinant |"))
+            .toEqual(["$$A|B$$", "determinant"]);
+        expect(parseMarkdownTableCells("| $$\\begin{vmatrix} a & b \\\\ c | d \\end{vmatrix}$$ | matrix |"))
+            .toEqual(["$$\\begin{vmatrix} a & b \\\\ c | d \\end{vmatrix}$$", "matrix"]);
+    });
+
+    it("keeps literal pipes inside bracket-delimited formulas in one cell", () => {
+        expect(parseMarkdownTableCells("| \\[A|B\\] | relation |"))
+            .toEqual(["\\[A|B\\]", "relation"]);
+    });
+
+    it("still splits real columns around an unclosed formula opener", () => {
+        // No closing delimiter means the opener was prose, so the pipes cut.
+        expect(parseMarkdownTableCells("| $a | b |")).toEqual(["$a", "b"]);
+        expect(parseMarkdownTableCells("| \\(a | b |")).toEqual(["\\(a", "b"]);
+        expect(parseMarkdownTableCells("| $$a | b |")).toEqual(["$$a", "b"]);
+        expect(parseMarkdownTableCells("| \\[a | b |")).toEqual(["\\[a", "b"]);
+    });
+
+    it("keeps pipes inside absolute-value, matrix, set-builder, and inline-paren formulas", () => {
+        // $|x|$ : pipes that open/close absolute value inside a $...$ span.
+        expect(parseMarkdownTableCells("| $|x|$ | absolute value |"))
+            .toEqual(["$|x|$", "absolute value"]);
+        // A \begin{matrix} environment carries both & and | in one cell.
+        expect(parseMarkdownTableCells("| $\\begin{matrix} a & b \\\\ c & d \\end{matrix}$ | matrix |"))
+            .toEqual(["$\\begin{matrix} a & b \\\\ c & d \\end{matrix}$", "matrix"]);
+        // Set-builder \mid inside a $...$ span.
+        expect(parseMarkdownTableCells("| $\\{x \\mid x>0\\}$ | domain |"))
+            .toEqual(["$\\{x \\mid x>0\\}$", "domain"]);
+        // Inline \(...\) with a literal pipe.
+        expect(parseMarkdownTableCells("| \\(a|b\\) | relation |"))
+            .toEqual(["\\(a|b\\)", "relation"]);
+    });
+
+    it("still splits plain pipe columns with no formulas", () => {
+        // An ordinary table row with no math must keep cutting every column.
+        expect(parseMarkdownTableCells("| 名称 | 数量 | 备注 |"))
+            .toEqual(["名称", "数量", "备注"]);
+        expect(parseMarkdownTableCells("| a | b | c |"))
+            .toEqual(["a", "b", "c"]);
+        expect(parseMarkdownTableCells("a | b"))
+            .toEqual(["a", "b"]);
+    });
 });
 
 describe("repairMixedNarrativeTable split-row repair", () => {

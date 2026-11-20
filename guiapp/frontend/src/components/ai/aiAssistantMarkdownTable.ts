@@ -1,3 +1,5 @@
+import { skipDelimitedMathSpan } from "./aiAssistantInlineMath";
+
 export type MarkdownTableAlignment = "left" | "center" | "right";
 
 export interface MarkdownTableModel {
@@ -83,7 +85,6 @@ export function parseMarkdownTableCells(line: string): string[] {
     let cell = "";
     let escaped = false;
     let codeFenceLength = 0;
-    let inlineMathDelimiter: "$" | "\\(" | "" = "";
     for (let index = 0; index < trimmed.length; index++) {
         const char = trimmed[index];
         if (codeFenceLength > 0) {
@@ -98,19 +99,14 @@ export function parseMarkdownTableCells(line: string): string[] {
             continue;
         }
 
-        if (inlineMathDelimiter) {
-            if (
-                (inlineMathDelimiter === "$" && char === "$" && !isEscapedAt(trimmed, index))
-                || (inlineMathDelimiter === "\\(" && trimmed.startsWith("\\)", index) && !isEscapedAt(trimmed, index))
-            ) {
-                cell += inlineMathDelimiter === "$" ? "$" : "\\)";
-                index += inlineMathDelimiter === "$" ? 0 : 1;
-                inlineMathDelimiter = "";
-            } else {
-                // TeX backslashes (including `\\|`) are syntax, not Markdown
-                // escapes. Keep the source intact until the formula closes.
-                cell += char;
-            }
+        // A finished `$...$` / `$$...$$` / `\(...\)` / `\[...\]` span is opaque:
+        // a `|` inside it is TeX syntax, not a column separator. This is the
+        // same set of delimiters the inline math splitter uses, so a formula
+        // that renders in a cell is also protected while the row is split.
+        const mathEnd = skipDelimitedMathSpan(trimmed, index);
+        if (mathEnd !== -1) {
+            cell += trimmed.slice(index, mathEnd);
+            index = mathEnd - 1;
             continue;
         }
 
@@ -118,13 +114,6 @@ export function parseMarkdownTableCells(line: string): string[] {
             codeFenceLength = countConsecutiveCharacters(trimmed, index, "`");
             cell += trimmed.slice(index, index + codeFenceLength);
             index += codeFenceLength - 1;
-        } else if (trimmed.startsWith("\\(", index) && !isEscapedAt(trimmed, index) && hasInlineMathClose(trimmed, index, "\\(")) {
-            inlineMathDelimiter = "\\(";
-            cell += "\\(";
-            index++;
-        } else if (char === "$" && !isEscapedAt(trimmed, index) && isInlineDollarBoundaryBefore(trimmed, index) && hasInlineMathClose(trimmed, index, "$")) {
-            inlineMathDelimiter = "$";
-            cell += char;
         } else if (escaped) {
             cell += char === "|" ? "|" : `\\${char}`;
             escaped = false;
@@ -145,40 +134,6 @@ function countConsecutiveCharacters(text: string, start: number, character: stri
     let end = start;
     while (text[end] === character) end++;
     return end - start;
-}
-
-function isEscapedAt(text: string, index: number): boolean {
-    let slashCount = 0;
-    for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashCount++;
-    return slashCount % 2 === 1;
-}
-
-function hasInlineMathClose(text: string, start: number, delimiter: "$" | "\\("): boolean {
-    if (delimiter === "$") {
-        // Do not treat currency values as TeX; otherwise a table row such as
-        // "$5 | $10" would hide its real column separator.
-        if (/\s|\d/u.test(text[start + 1] || "")) return false;
-        for (let index = start + 1; index < text.length; index++) {
-            if (text[index] !== "$" || isEscapedAt(text, index) || text[index + 1] === "$") continue;
-            return index > start + 1 && !/\s/u.test(text[index - 1]) && isInlineDollarBoundaryAfter(text, index);
-        }
-        return false;
-    }
-
-    for (let index = start + 2; index < text.length - 1; index++) {
-        if (text.startsWith("\\)", index) && !isEscapedAt(text, index)) return true;
-    }
-    return false;
-}
-
-function isInlineDollarBoundaryBefore(text: string, index: number): boolean {
-    const previous = text[index - 1] || "";
-    return !previous || !/[\p{L}\p{N}_]/u.test(previous) || /\p{Script=Han}/u.test(previous);
-}
-
-function isInlineDollarBoundaryAfter(text: string, index: number): boolean {
-    const next = text[index + 1] || "";
-    return !next || !/[\p{L}\p{N}_]/u.test(next) || /\p{Script=Han}/u.test(next);
 }
 
 export function parseMarkdownTableAlignments(separatorLine: string, columnCount: number): MarkdownTableAlignment[] {

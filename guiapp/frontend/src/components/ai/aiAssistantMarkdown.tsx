@@ -7,6 +7,7 @@ import { isHostGoalChecklistText, rewriteHostGoalChecklistBody } from "./aiAssis
 import { GoalChecklistCard, goalChecklistBodyFromText } from "./GoalChecklistCard";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { inlineMathDelimiterAt, inlineMathSpanEnd, isEscapedAt, skipDelimitedMathSpan } from "./aiAssistantInlineMath";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { assistantSpeakerLabel, localizeAIAssistantError, describeAIAssistantError, localizeText } from "./aiAssistantI18n";
 import { renderConfirmationCard, type ConfirmationCardDeps } from "./confirmationCard";
@@ -486,50 +487,11 @@ type InlineMathSegment =
     | { kind: "text"; value: string }
     | { kind: "math"; value: string };
 
-function isEscapedAt(text: string, index: number): boolean {
-    let slashCount = 0;
-    for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashCount++;
-    return slashCount % 2 === 1;
-}
-
-function isInlineMathBoundaryBefore(text: string, index: number): boolean {
-    const previous = text[index - 1] || "";
-    // TeX delimiters do not begin in the middle of identifiers, prices, or a
-    // word such as `US$`. This also prevents a lone closing dollar in prose from
-    // swallowing a later formula.
-    // Chinese prose commonly omits the space before a formula ("令$x$...").
-    // Treat Han characters as natural prose boundaries while keeping `$` inside
-    // Latin identifiers (for example `price$USD`) untouched.
-    return !previous || !/[\p{L}\p{N}_]/u.test(previous) || /\p{Script=Han}/u.test(previous);
-}
-
-function isInlineMathBoundaryAfter(text: string, index: number): boolean {
-    const next = text[index + 1] || "";
-    return !next || !/[\p{L}\p{N}_]/u.test(next) || /\p{Script=Han}/u.test(next);
-}
-
-function findUnescapedDelimiter(text: string, delimiter: string, from: number): number {
-    let index = text.indexOf(delimiter, from);
-    while (index !== -1 && isEscapedAt(text, index)) index = text.indexOf(delimiter, index + delimiter.length);
-    return index;
-}
-
 /**
- * A `$` followed by a digit is usually a price, not TeX — but a formula can
- * start with a number: `$0.786\pm0.004$`, `$2^n$`, `$0.934$`. A digit-led span
- * counts as math only when the inside carries TeX structure, or is nothing but
- * a number the author still wrapped as a formula. "$5 to $10" stays currency.
- */
-function digitLedSpanIsMath(inner: string): boolean {
-    // A span holding another delimiter or Han prose is a currency pair that
-    // ran into a later formula, not mathematics ("$5 到 $10，公式为 $x$").
-    if (inner.includes("$") || /\p{Script=Han}/u.test(inner)) return false;
-    return /[\\^_{}]/.test(inner) || /^\s*[-+]?\d[\d.,\s]*$/.test(inner);
-}
-
-/**
- * Split only the two inline LaTex forms we support. Backtick code spans remain
+ * Split only the inline LaTex forms we support. Backtick code spans remain
  * opaque here so `$...$` in source code is never interpreted as mathematics.
+ * The delimiter rules live in `aiAssistantInlineMath` so the markdown table
+ * cell splitter protects exactly the same spans.
  */
 function splitInlineMath(text: string): InlineMathSegment[] {
     const segments: InlineMathSegment[] = [];
@@ -560,61 +522,20 @@ function splitInlineMath(text: string): InlineMathSegment[] {
             continue;
         }
 
-        if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
-            const close = findUnescapedDelimiter(text, "\\)", index + 2);
-            if (close !== -1 && close > index + 2) {
-                pushMath(close + 2, text.slice(index + 2, close));
-                continue;
-            }
-        }
-
-        // A $$...$$ pair inside a sentence is one formula. The single-dollar
-        // scan would treat the first pair as empty and keep a stray dollar.
-        if (
-            text.startsWith("$$", index)
-            && !isEscapedAt(text, index)
-            && isInlineMathBoundaryBefore(text, index)
-        ) {
-            const close = findUnescapedDelimiter(text, "$$", index + 2);
-            if (close > index + 2 && isInlineMathBoundaryAfter(text, close + 1)) {
-                const inner = text.slice(index + 2, close).trim();
-                if (inner) {
-                    pushMath(close + 2, inner);
+        const delimiter = inlineMathDelimiterAt(text, index);
+        if (delimiter) {
+            const end = inlineMathSpanEnd(text, index, delimiter);
+            if (end !== -1) {
+                const innerStart = index + delimiter.length;
+                const innerEnd = end - (delimiter === "$" || delimiter === "$$" ? delimiter.length : 2);
+                const inner = text.slice(innerStart, innerEnd);
+                // An empty (or whitespace-only) body is not a formula; keep the
+                // delimiters as text. `$x$` keeps its inner verbatim; `$$..$$`
+                // trims like a display block.
+                if (inner.trim()) {
+                    pushMath(end, delimiter === "$$" ? inner.trim() : inner);
                     continue;
                 }
-            }
-        }
-
-        if (
-            text[index] === "$"
-            && !isEscapedAt(text, index)
-            && text[index + 1] !== "$"
-            && !/\s/u.test(text[index + 1] || "")
-            && isInlineMathBoundaryBefore(text, index)
-        ) {
-            // A dollar amount ("$5" / "$1,200") is prose, not TeX. Requiring an
-            // explicit closing delimiter already avoids most false positives;
-            // digit-led spans must also carry TeX structure (or be a bare
-            // number the author still wrapped, like `$0.934$`).
-            const digitLed = /\d/u.test(text[index + 1] || "");
-            let close = index + 1;
-            while (close < text.length && text[close] !== "\n") {
-                if (
-                    text[close] === "$"
-                    && !isEscapedAt(text, close)
-                    && text[close + 1] !== "$"
-                    && isInlineMathBoundaryAfter(text, close)
-                ) break;
-                close++;
-            }
-            if (
-                close < text.length
-                && close > index + 1
-                && !/\s/u.test(text[close - 1])
-                && (!digitLed || digitLedSpanIsMath(text.slice(index + 1, close)))
-            ) {
-                pushMath(close + 1, text.slice(index + 1, close));
-                continue;
             }
         }
 
@@ -692,46 +613,9 @@ function skipUrlSpan(text: string, index: number): number {
     return end;
 }
 
-/** A finished `$...$` / `$$...$$` / `\(...\)` span. Stars inside it are math, not emphasis. */
-function skipDelimitedMathSpan(text: string, index: number): number {
-    if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
-        const close = findUnescapedDelimiter(text, "\\)", index + 2);
-        return close === -1 ? -1 : close + 2;
-    }
-    if (
-        text.startsWith("$$", index)
-        && !isEscapedAt(text, index)
-        && isInlineMathBoundaryBefore(text, index)
-    ) {
-        const close = findUnescapedDelimiter(text, "$$", index + 2);
-        if (close > index + 2 && isInlineMathBoundaryAfter(text, close + 1)) return close + 2;
-    }
-    if (
-        text[index] === "$"
-        && !isEscapedAt(text, index)
-        && text[index + 1] !== "$"
-        && !/\s/u.test(text[index + 1] || "")
-        && isInlineMathBoundaryBefore(text, index)
-    ) {
-        const digitLed = /\d/u.test(text[index + 1] || "");
-        let close = index + 1;
-        while (close < text.length && text[close] !== "\n") {
-            if (
-                text[close] === "$"
-                && !isEscapedAt(text, close)
-                && text[close + 1] !== "$"
-                && isInlineMathBoundaryAfter(text, close)
-                && !/\s/u.test(text[close - 1] || "")
-            ) {
-                return digitLed && !digitLedSpanIsMath(text.slice(index + 1, close)) ? -1 : close + 1;
-            }
-            close++;
-        }
-    }
-    return -1;
-}
 
-/** `$` or `\(` that is not inside code, a link, an image, or a URL. */
+
+/** `$` / `$$` / `\(` / `\[` that is not inside code, a link, an image, or a URL. */
 function hasMathDelimiterOutsideOpaque(text: string): boolean {
     for (let index = 0; index < text.length; index++) {
         const code = skipBacktickSpan(text, index);
@@ -750,7 +634,7 @@ function hasMathDelimiterOutsideOpaque(text: string): boolean {
             continue;
         }
         if (text[index] === "\\") {
-            if (text[index + 1] === "(") return true;
+            if (text[index + 1] === "(" || text[index + 1] === "[") return true;
             index++;
             continue;
         }
@@ -869,10 +753,10 @@ function splitEmphasisContainingMath(text: string): EmphasisPiece[] | null {
 }
 
 export function renderInlineMarkdown(text: string, t: Theme, quietCode = false): React.ReactNode[] {
-    // `$`, `$$`, and `\(` open inline math. A $$ pair in a sentence is one
-    // formula, not two dollars. Backticks hide those openers, so a line with
-    // none of them is one text segment.
-    if (!text.includes("$") && !text.includes("\\(")) {
+    // `$`, `$$`, `\(`, and `\[` open inline math. A $$ pair in a sentence is
+    // one formula, not two dollars. Backticks hide those openers, so a line
+    // with none of them is one text segment.
+    if (!text.includes("$") && !text.includes("\\(") && !text.includes("\\[")) {
         return renderInlineMarkdownRestored(text, t, quietCode);
     }
     if (text.includes("*")) {

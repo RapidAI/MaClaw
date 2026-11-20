@@ -503,6 +503,60 @@ describe("renderContentWithCodeBlocks", () => {
         expect(table.textContent).toContain("条件概率");
     });
 
+    it("renders a double-dollar formula containing a pipe inside a single table cell", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("| 公式 | 含义 |\n| --- | --- |\n| $$A|B$$ | 行列式 |", lightTheme)}</div>,
+        );
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(2);
+        expect(table.querySelectorAll("tbody td")).toHaveLength(2);
+        expect(table.textContent).toContain("行列式");
+    });
+
+    it("keeps a bracket-delimited formula containing a pipe inside one table cell", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("| 公式 | 含义 |\n| --- | --- |\n| \\[A|B\\] | 关系 |", lightTheme)}</div>,
+        );
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(2);
+        expect(table.querySelectorAll("tbody td")).toHaveLength(2);
+        expect(table.textContent).toContain("关系");
+    });
+
+    it("typesets command-led formulas glued to a Latin identifier inside a table cell", () => {
+        // The reported bug: a gene/protein name glued to its Greek-letter
+        // subscript, e.g. `SIRP$\alpha$`, `IL-36$\gamma$`. The `$` after `P`
+        // looks like an identifier-internal dollar to the prose-boundary
+        // heuristic, but the `\alpha` command it opens is structural proof of
+        // math — the cell must typeset it, not echo a literal `SIRP$\alpha$`.
+        render(
+            <div>{renderContentWithCodeBlocks(
+                "| 方向 | 候选 |\n| --- | --- |\n| 免疫学端到端应用 | 最终提出 SIRP$\\alpha$ 抑制联合 IL-36$\\gamma$ 轴调控 |",
+                lightTheme,
+            )}</div>,
+        );
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("tbody td")).toHaveLength(2);
+        const maths = screen.getAllByTestId("assistant-inline-math");
+        expect(maths).toHaveLength(2);
+        expect(maths[0].textContent).toContain("α");
+        expect(maths[1].textContent).toContain("γ");
+        expect(table.textContent).not.toContain("SIRP$");
+        expect(table.textContent).not.toContain("IL-36$");
+    });
+
+    it("still keeps a Latin-letter dollar with no TeX command as currency text", () => {
+        // The guard above must not loosen identifier-internal dollars that are
+        // not math: `price$USD` and a bare `$5` have no backslash command after
+        // the `$`, so they stay literal.
+        render(<div>{renderContentWithCodeBlocks("价格为 price$USD 且 $5 起。", lightTheme)}</div>);
+
+        expect(screen.queryByTestId("assistant-inline-math")).toBeNull();
+    });
+
     it("typesets a formula inside emphasis instead of leaving the stars", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("**损失 $L_ce$ 项** 与 *$F^l$*，以及 2*$x$。", lightTheme)}</div>,
