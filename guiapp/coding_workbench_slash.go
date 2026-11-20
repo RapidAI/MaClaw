@@ -1250,7 +1250,7 @@ func (h *IMMessageHandler) handleCodingRouteSlash(userID, projectPath, trimmed s
 		b.WriteString("- **Last Model**: （尚无记录）\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(h.formatCodingRouteCapabilitiesMarkdown())
+	b.WriteString(h.formatCodingRouteCapabilitiesMarkdown(userID))
 	cost := formatCodingSessionCostLine(mem)
 	if cost != "" {
 		b.WriteString("\n")

@@ -946,10 +946,21 @@ func (c *codingSubAgentCallbacks) executeLedgerReadOnlySpawn(specs []codingSpawn
 	// the old parent loop alive and collapse the durable handoff back into an
 	// in-process nested conversation.
 	store := parent.runtimeStore
+	parentTaskID := parent.runtimeAttempt.TaskID
+	ownerID := parent.taskPermissionOwnerID()
+	resumeTarget := trustedLoopDeliveryTarget(parent.loopCtx)
+	progress := parent.onProgress
 	for i, handle := range handles {
 		spec := specs[i]
 		child := parent.newReadOnlyNestedCodingAgent(spec, c)
-		go runAdmittedLocalReadOnlyChild(store, parent.runtimeAttempt.TaskID, handle, policy, child, parent.onProgress, parent.taskPermissionOwnerID(), trustedLoopDeliveryTarget(parent.loopCtx))
+		// The child reads the parent's checkout after the parent turn returns.
+		// That checkout is removed at the end of a clean merge, so keep it
+		// until this child returns.
+		done := codingParallelTrackExec(parent.projectPath)
+		go func(handle codingruntime.ChildTaskHandle, child *CodingSubAgent, done func()) {
+			defer done()
+			runAdmittedLocalReadOnlyChild(store, parentTaskID, handle, policy, child, progress, ownerID, resumeTarget)
+		}(handle, child, done)
 	}
 	return codingToolExecutionResult{Text: formatAdmittedReadOnlyChildHandles(handles), Outcome: codingToolOutcomeSuccess}
 }

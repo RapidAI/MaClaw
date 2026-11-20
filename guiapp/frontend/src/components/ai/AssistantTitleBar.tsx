@@ -12,6 +12,7 @@ import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantU
 import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
+import { EVENT_OPEN_PROBLEM_REPORT } from "../../constants/events";
 import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
 
 type WailsDragStyle = WindowDragStyle;
@@ -141,6 +142,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     {onOpenKnowledge && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(onOpenKnowledge) } : { onClick: onOpenKnowledge })} style={getTitleBarToolButtonStyle(t)} title={(chromeText(lang, "Knowledge Base", "\u77e5\u8bc6\u5e93"))}><TitleBarToolIcon name="book" /></button>}
                     {onReturnToCoveredConversation ? <NewTaskWizardRunningBanner inline={inline} lang={lang} theme={t} onBack={onReturnToCoveredConversation} /> : null}
+                    <button className="ai-titlebar-tool" data-testid="open-problem-report" aria-label={chromeText(lang, "Feature request or bug report", "新功能请求或Bug报告", "新功能請求或Bug報告")} {...(inline ? { onMouseDown: stopMouse(() => { window.dispatchEvent(new Event(EVENT_OPEN_PROBLEM_REPORT)); }) } : { onClick: () => { window.dispatchEvent(new Event(EVENT_OPEN_PROBLEM_REPORT)); } })} style={getTitleBarToolButtonStyle(t)} title={chromeText(lang, "Feature request or bug report", "新功能请求或Bug报告", "新功能請求或Bug報告")}><TitleBarToolIcon name="bug" /></button>
                     <button className="ai-titlebar-tool" data-testid="open-file-companion" aria-label={(chromeText(lang, "Open with companion", "用伴读打开"))} {...(inline ? { onMouseDown: stopMouse(() => { void ChooseFileCompanionFiles(); }) } : { onClick: () => { void ChooseFileCompanionFiles(); } })} style={{ ...getTitleBarToolButtonStyle(t), width: "auto", padding: "0 10px", gap: 6 }} title={(chromeText(lang, "Open with companion", "用伴读打开"))}><TitleBarToolIcon name="guide" /><span>{(chromeText(lang, "Open with companion", "用伴读打开"))}</span></button>
                     {onOpenTutorial && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })} style={getTitleBarToolButtonStyle(t)} title={(chromeText(lang, "Tutorial", "\u6559\u7a0b"))}><TitleBarToolIcon name="guide" /></button>}
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })} style={getTitleBarToolButtonStyle(t)} title={(chromeText(lang, "Refresh news", "\u5237\u65b0\u6d88\u606f"))}><TitleBarToolIcon name="refresh" /></button>

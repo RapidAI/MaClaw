@@ -745,6 +745,47 @@ func TestProjectIndex_TaskPrefsNormalizeSlashVariants(t *testing.T) {
 	}
 }
 
+func TestProjectIndex_TaskLLMPinSurvivesCleanupAndSlashVariants(t *testing.T) {
+	pi := NewProjectIndex()
+	projectPath := "D:\\workprj\\llm-pin-task"
+	slashPath := "D:/workprj/llm-pin-task"
+
+	pi.SetTaskLLM(slashPath, "local", "custom:model")
+	if id, model := pi.TaskLLM(projectPath); id != "local" || model != "custom:model" {
+		t.Fatalf("TaskLLM(%q) = %q %q", projectPath, id, model)
+	}
+	pi.SetCustomName(projectPath, "")
+	if id, model := pi.TaskLLM(slashPath); id != "local" || model != "custom:model" {
+		t.Fatalf("clearing the name dropped the pin: %q %q", id, model)
+	}
+
+	pi.SetTaskLLM(projectPath, "local", "")
+	if id, model := pi.TaskLLM(projectPath); id != "" || model != "" {
+		t.Fatalf("one-sided pin = %q %q, want cleared", id, model)
+	}
+	if pi.CustomName(projectPath) != "" {
+		t.Fatalf("cleared pin left a pref name %q", pi.CustomName(projectPath))
+	}
+
+	tempDir := t.TempDir()
+	prefsPath := filepath.Join(tempDir, "task_prefs.json")
+	if err := os.WriteFile(prefsPath, []byte(`{
+  "prefs": {
+    "D:/workprj/llm-pin-task": { "llmProviderId": "prov-a", "llmModel": "model-a" },
+    "D:\\workprj\\llm-pin-task": { "name": "Kept" }
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	loaded := NewProjectIndex(tempDir)
+	if id, model := loaded.TaskLLM(projectPath); id != "prov-a" || model != "model-a" {
+		t.Fatalf("merged pin = %q %q", id, model)
+	}
+	if loaded.CustomName(slashPath) != "Kept" {
+		t.Fatalf("merged name = %q", loaded.CustomName(slashPath))
+	}
+}
+
 func TestProjectIndex_LoadPrefsNormalizesSlashVariants(t *testing.T) {
 	tempDir := t.TempDir()
 	prefsPath := filepath.Join(tempDir, "task_prefs.json")

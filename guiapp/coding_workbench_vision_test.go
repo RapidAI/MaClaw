@@ -186,7 +186,7 @@ func TestRecordStickyCodingRoute(t *testing.T) {
 func TestCodingRouteCapabilitiesWithoutRouter(t *testing.T) {
 	invalidateCodingRouteCapabilitiesCache()
 	h := &IMMessageHandler{}
-	caps := h.codingRouteCapabilities()
+	caps := h.codingRouteCapabilities("")
 	if len(caps) != 4 {
 		t.Fatalf("%+v", caps)
 	}
@@ -203,12 +203,12 @@ func TestCodingRouteCapabilitiesWithoutRouter(t *testing.T) {
 		t.Logf("reasoning cap=%+v", byPref[codingRoutePrefReasoning])
 	}
 	// Cache hit returns equal length.
-	caps2 := h.codingRouteCapabilities()
+	caps2 := h.codingRouteCapabilities("")
 	if len(caps2) != 4 {
 		t.Fatalf("cache %+v", caps2)
 	}
 	invalidateCodingRouteCapabilitiesCache()
-	md := h.formatCodingRouteCapabilitiesMarkdown()
+	md := h.formatCodingRouteCapabilitiesMarkdown("")
 	if !strings.Contains(md, "ModelRouter") || !strings.Contains(md, "reasoning") {
 		t.Fatalf("md=%s", md)
 	}

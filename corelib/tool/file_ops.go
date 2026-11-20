@@ -50,6 +50,16 @@ var textFileWriteLocks sync.Map
 // bytes. Production leaves it empty.
 var textFileMutationHook atomic.Value // func(string)
 
+// WithTextFileMutation runs fn while the per-path text lock is held.
+// Hosts use it when a merge has to re-read and write one file without
+// another edit landing between the check and the write.
+func WithTextFileMutation(path string, fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	return withTextFileWriteLock(path, fn)
+}
+
 func textFileWriteLock(path string) *sync.Mutex {
 	key := textFileWriteLockKey(path)
 	if key == "" {

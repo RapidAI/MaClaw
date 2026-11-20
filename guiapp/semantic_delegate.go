@@ -116,7 +116,7 @@ func (h *IMMessageHandler) runTrustedDelegate(principalID, task string) (string,
 	go func() {
 		done <- runner(
 			h,
-			h.getCodingLLMConfig(),
+			h.codingLLMConfigForSession(principalID),
 			httpClient,
 			item,
 			workspace,

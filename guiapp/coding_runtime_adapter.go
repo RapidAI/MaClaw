@@ -44,6 +44,10 @@ type guiCodingRuntimeOptions struct {
 	PolicyProjectRoot    string
 	WorkspaceIsolated    bool
 	RequireFinalDiffGate bool
+	// DeferredWorktree admits this attempt beside another writer of the same
+	// project. The executor must already be pointed at a private worktree.
+	// FinalizeWriter performs the merge and reports whether every file landed.
+	DeferredWorktree bool
 	// RequireFinalWorkspaceGate enables the serialized-writer baseline/final
 	// probe. Production GUI implementation/operational turns set this even
 	// when they cannot create an isolated worktree.
@@ -288,6 +292,11 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 		policy.ReadOnly = options.ReadOnly
 		policy.WorkspaceIsolated = options.WorkspaceIsolated
 		policy.FinalDiffGateRequired = options.RequireFinalDiffGate
+		policy.DeferredWorktree = options.DeferredWorktree
+		if policy.DeferredWorktree {
+			policy.WorkspaceIsolated = true
+			policy.FinalDiffGateRequired = true
+		}
 		policy.FinalWorkspaceGateRequired = options.RequireFinalWorkspaceGate
 		if policy.FinalWorkspaceGateRequired && !policy.ReadOnly && len(options.DeclaredWrites) == 0 {
 			// A final workspace probe proves that *something* changed, but it

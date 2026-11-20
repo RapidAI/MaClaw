@@ -39,6 +39,12 @@ export type AssistantQuickModelSwitcherProps = {
     /** Trailing action in the provider list; opens LLM provider management. */
     onAddCustomModel?: () => void;
     chipTestId?: string;
+    /** Replaces the whole chip label. Used by the open-task chip. */
+    labelOverride?: string;
+    titleOverride?: string;
+    /** Task chip: clear the pin and follow 模型分配. Omit it on the global chip. */
+    onFollowAssignment?: () => void;
+    followsAssignment?: boolean;
 };
 
 export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwitcher({
@@ -61,6 +67,10 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     onOpenLLMSettings,
     onAddCustomModel,
     chipTestId = "qs-model-chip",
+    labelOverride,
+    titleOverride,
+    onFollowAssignment,
+    followsAssignment = false,
 }: AssistantQuickModelSwitcherProps) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
@@ -108,7 +118,9 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     const normalModelChipLabel = isReadOnlyFollowingCoding
         ? `${tr("Coding · Follows assistant", "编程 · 跟随助手", "編程 · 跟隨助手")}${selectedModelLabel ? ` · ${selectedModelLabel}` : ""}`
         : [roleLabel, providerName, modelPart].filter(Boolean).join(" · ");
-    const modelChipLabel = providerSelectionPending && !isReadOnlyFollowingCoding
+    const modelChipLabel = labelOverride
+        ? labelOverride
+        : providerSelectionPending && !isReadOnlyFollowingCoding
         ? `${roleLabel} · ${providerName || tr("Provider", "服务商", "服務商")} · ${tr("choose model", "选择模型", "選擇模型")}`
         : normalModelChipLabel;
 
@@ -173,6 +185,12 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
     // Not a selection: the menu closes and the host navigates away (LLM
     // settings → provider management), so any staged provider draft is dropped
     // exactly like the unmount cleanup would.
+    const handleFollowAssignment = useCallback(() => {
+        if (profileSavePending) return;
+        closeModelMenu();
+        onFollowAssignment?.();
+    }, [closeModelMenu, onFollowAssignment, profileSavePending]);
+
     const handleAddCustomModel = useCallback(() => {
         if (profileSavePending) return;
         closeModelMenu();
@@ -216,7 +234,9 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
                 aria-expanded={isReadOnlyFollowingCoding ? undefined : menuOpen}
                 aria-haspopup={isReadOnlyFollowingCoding ? undefined : "listbox"}
                 style={modelChipStyle}
-                title={isReadOnlyFollowingCoding
+                title={titleOverride
+                    ? titleOverride
+                    : isReadOnlyFollowingCoding
                     ? tr("View coding model settings", "查看编程模型设置", "檢視編程模型設定")
                     : tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
             >
@@ -260,6 +280,9 @@ export const AssistantQuickModelSwitcher = memo(function AssistantQuickModelSwit
                     onSelectProvider={handleSelectProvider}
                     onSelectModel={handleSelectModel}
                     onClose={closeModelMenu}
+                    followAssignmentLabel={tr("Use model assignment", "使用模型分配", "使用模型分配")}
+                    onFollowAssignment={onFollowAssignment ? handleFollowAssignment : undefined}
+                    followsAssignment={followsAssignment}
                 />
             )}
         </div>

@@ -8,6 +8,7 @@ import {
     withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
+    withTaskModel,
     withTaskType,
     withWorkflow,
     withWorkspace,
@@ -163,6 +164,19 @@ describe('draftToTaskCreateOptions', () => {
         expect(draftToTaskCreateOptions('生成一份 PPT', withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO))).toMatchObject({
             workflowTemplateId: '',
         });
+    });
+
+    it('sends a provider and model only when this task pinned one', () => {
+        const pinned = withTaskModel(defaultTaskDraft(), 'devin', 'swe-2-max');
+        expect(isDraftDefault(pinned)).toBe(false);
+        expect(draftToTaskCreateOptions('写周报', pinned)).toMatchObject({
+            llmProviderId: 'devin',
+            llmModel: 'swe-2-max',
+        });
+        const plain = draftToTaskCreateOptions('写周报', defaultTaskDraft());
+        expect(plain.llmProviderId).toBeUndefined();
+        expect(plain.llmModel).toBeUndefined();
+        expect(isDraftDefault(defaultTaskDraft())).toBe(true);
     });
 });
 

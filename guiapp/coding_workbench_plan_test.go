@@ -61,7 +61,7 @@ func TestCodingRequestLooksModeratelyComplex(t *testing.T) {
 }
 
 func TestResolveCodingRequestDecisionPlansModerateRewrite(t *testing.T) {
-	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("改为豪华版 hello world")
+	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("", "改为豪华版 hello world")
 	if decision.Kind != codingRequestImplementation || !decision.NeedsPlan {
 		t.Fatalf("moderate rewrite must plan, got %#v", decision)
 	}
@@ -130,7 +130,7 @@ func TestApplyCodingRequestPlanFloorPromotesModerateImplementation(t *testing.T)
 }
 
 func TestResolveCodingRequestDecisionForcesWorkspaceClearToImplementation(t *testing.T) {
-	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("清空当前目录")
+	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("", "清空当前目录")
 	if decision.Kind != codingRequestImplementation || decision.NeedsPlan {
 		t.Fatalf("workspace clear must be a direct implementation turn, got %#v", decision)
 	}

@@ -161,9 +161,10 @@ func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 	return h.app.GetMaclawLLMConfig()
 }
 
-// getCodingLLMConfig resolves the coding profile for CodingSubAgent work. It
-// intentionally remains separate from the general assistant accessor: a
-// coding profile may follow assistant, but it may also be independently set.
+// getCodingLLMConfig resolves the coding assignment. It has no task. A turn
+// that belongs to a task uses codingLLMConfigForSession, so that task's pin
+// replaces this assignment. Callers still pass the result through the
+// existing reasoning and vision routers.
 func (h *IMMessageHandler) getCodingLLMConfig() corelib.MaclawLLMConfig {
 	if h.standaloneConfig != nil && h.standaloneConfig.LLMConfigFunc != nil {
 		return h.standaloneConfig.LLMConfigFunc()
@@ -172,6 +173,25 @@ func (h *IMMessageHandler) getCodingLLMConfig() corelib.MaclawLLMConfig {
 		return corelib.MaclawLLMConfig{}
 	}
 	return h.app.GetCodingLLMConfig()
+}
+
+// codingLLMConfigForSession is the coding model for one session. An explicit
+// task pin replaces the coding assignment and stays on the coding profile, so
+// usage stays with coding. A session that is not a task, a pin whose provider
+// is gone, or a standalone host injector keeps the assignment.
+func (h *IMMessageHandler) codingLLMConfigForSession(userID string) corelib.MaclawLLMConfig {
+	if h == nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	cfg := h.getCodingLLMConfig()
+	if h.app == nil || (h.standaloneConfig != nil && h.standaloneConfig.LLMConfigFunc != nil) {
+		return cfg
+	}
+	pinned, ok := h.app.taskBoundLLMConfig(projectPathFromSessionOwnerID(userID), maclawLLMProfileCoding)
+	if !ok {
+		return cfg
+	}
+	return pinned
 }
 
 // getLightweightLLMConfig returns a non-reasoning model config for classification
@@ -187,11 +207,25 @@ func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
 }
 
 // getCodingLightweightLLMConfig is the lightweight companion of the coding
-// profile. Coding intent/planning requests are real coding-workbench calls;
-// they must not spend or route through the assistant profile merely because
-// their prompts are short.
+// assignment. A task turn uses codingLightweightConfigForSession so the same
+// pin covers planning and classification.
 func (h *IMMessageHandler) getCodingLightweightLLMConfig() corelib.MaclawLLMConfig {
-	return h.getLightweightLLMConfigFromBase(h.getCodingLLMConfig())
+	return h.codingLightweightConfigForSession("")
+}
+
+// codingLightweightConfigForSession is the short-call model for one session.
+// It starts from that session's coding pin, then the coding assignment.
+// A pin whose lightweight form has no endpoint falls back to the pin itself.
+func (h *IMMessageHandler) codingLightweightConfigForSession(userID string) corelib.MaclawLLMConfig {
+	if h == nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	base := h.codingLLMConfigForSession(userID)
+	cfg := h.getLightweightLLMConfigFromBase(base)
+	if strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != "" {
+		return cfg
+	}
+	return base
 }
 
 func (h *IMMessageHandler) getLightweightLLMConfigFromBase(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {

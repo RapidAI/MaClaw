@@ -13,6 +13,7 @@ import {
     ListExperts,
     ListLatexTemplates,
     ListManagedIndustryExperts,
+    GetMaclawLLMProfilePanelState,
     ListWorkflowTemplateSummaries,
     SelectWorkingDir,
     SetTabWorkingDir,
@@ -48,6 +49,7 @@ import {
     type LatexTemplate,
 } from "../../../utils/latexTemplates";
 import { runTaskConfigSend } from "./taskConfigSend";
+import { taskModelCatalogFromPanel, type TaskModelCatalog } from "./taskModelChoice";
 
 function sameLatexTemplateList(left: LatexTemplate[], right: LatexTemplate[]): boolean {
     if (left.length !== right.length) return false;
@@ -189,6 +191,8 @@ export interface TaskConfigPanelModel {
     remoteMachines?: RemoteMachineOption[];
     /** 浏览对方电脑上的目录（remote_control list_dirs）；缺省 = 远控未就绪。 */
     onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
+    /** 模型分配 catalog. The chip follows the row for the current task type. */
+    modelCatalog?: TaskModelCatalog | null;
 }
 
 export interface TaskConfigWiring {
@@ -237,6 +241,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     const [taskConfigCloudWorkspaces, setTaskConfigCloudWorkspaces] = useState<CloudWorkspaceOption[]>([]);
     const cloudListGenRef = useRef(0);
     const [taskConfigError, setTaskConfigError] = useState("");
+    const [taskModelCatalog, setTaskModelCatalog] = useState<TaskModelCatalog | null>(null);
     const [taskConfigSending, setTaskConfigSending] = useState(false);
     const taskConfigSendingRef = useRef(false);
     // The new-task screen is showing. The conversation underneath stays mounted.
@@ -1181,6 +1186,22 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
     }, [machineTarget.machines, taskConfigDraft.machine]);
 
+    useEffect(() => {
+        let cancelled = false;
+        const load = () => {
+            if (typeof GetMaclawLLMProfilePanelState !== "function") return;
+            void Promise.resolve(GetMaclawLLMProfilePanelState()).then((state) => {
+                if (!cancelled) setTaskModelCatalog(taskModelCatalogFromPanel(state));
+            }).catch(() => {});
+        };
+        load();
+        const off = EventsOn("llm-profiles-changed", load);
+        return () => {
+            cancelled = true;
+            if (typeof off === "function") off();
+        };
+    }, []);
+
     const taskConfig = useMemo<TaskConfigPanelModel>(() => ({
         draft: taskConfigDraft,
         onDraftChange: setTaskConfigDraft,
@@ -1206,10 +1227,11 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             operate: m.operate,
         })),
         onListRemoteDirs: handleListRemoteDirs,
+        modelCatalog: taskModelCatalog,
     }), [
         taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
         handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, handleListRemoteDirs, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
-        isNewTaskWizardTabActive, machineTarget.machines,
+        isNewTaskWizardTabActive, machineTarget.machines, taskModelCatalog,
     ]);
 
     return { taskConfig, handleSendWithTaskConfig, handleWelcomePromptSendWithTaskConfig, launchNewTaskFromText, wizardOverlay, dismissWizardOverlay };

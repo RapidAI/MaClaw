@@ -1095,14 +1095,11 @@ func codingRequestUnderstandingKeepsHostFallback(userText string, mem stickyCodi
 	return codingClosedRequirementSnippet(mem.SessionPlan) != "" || prior != ""
 }
 
-func (h *IMMessageHandler) llmCodingRequestRestatement(userText string, mem stickyCodingWorkbenchMemory) string {
+func (h *IMMessageHandler) llmCodingRequestRestatement(userID, userText string, mem stickyCodingWorkbenchMemory) string {
 	if h == nil || h.client == nil {
 		return ""
 	}
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}
@@ -1121,7 +1118,7 @@ func (h *IMMessageHandler) resolveCodingRequestUnderstanding(userText string, me
 	if codingRequestUnderstandingKeepsHostFallback(userText, mem, decision) {
 		return fallback
 	}
-	if got := h.llmCodingRequestRestatement(userText, mem); got != "" {
+	if got := h.llmCodingRequestRestatement("", userText, mem); got != "" {
 		return got
 	}
 	return fallback
@@ -1153,7 +1150,7 @@ func (h *IMMessageHandler) refineCodingRequestUnderstanding(userID, userText str
 	if !codingRequestShouldRestate(decision, userText) || codingRequestUnderstandingKeepsHostFallback(userText, mem, decision) {
 		return strings.TrimSpace(mem.RequirementRestatement)
 	}
-	got := h.llmCodingRequestRestatement(userText, mem)
+	got := h.llmCodingRequestRestatement(userID, userText, mem)
 	if got == "" {
 		return strings.TrimSpace(mem.RequirementRestatement)
 	}

@@ -18045,6 +18045,8 @@ export namespace main {
 	    workflowTemplateId: string;
 	    params?: Record<string, string>;
 	    keepExpertSession?: boolean;
+	    llmProviderId?: string;
+	    llmModel?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new TaskCreateOptions(source);
@@ -18062,6 +18064,8 @@ export namespace main {
 	        this.workflowTemplateId = source["workflowTemplateId"];
 	        this.params = source["params"];
 	        this.keepExpertSession = source["keepExpertSession"];
+	        this.llmProviderId = source["llmProviderId"];
+	        this.llmModel = source["llmModel"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

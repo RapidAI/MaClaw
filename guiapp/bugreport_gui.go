@@ -73,9 +73,9 @@ func guiBugReportRectInside(inner, outer guiBugReportRect) bool {
 }
 
 // bugReportRootFile is an extra file written at the diagnostics ZIP root.
-// The About-page report leaves this empty. The header bug button adds the
-// main-window screenshot and the typed description so an agent can open the
-// same package and see both without a separate attachment download.
+// SubmitBugReport leaves this empty. The header bug button adds the
+// main-window screenshot and bugreports.txt. The About dialog adds
+// bugreports.txt and, for a bug, still walks logs and trajectories.
 type bugReportRootFile struct {
 	name string
 	data []byte
@@ -347,18 +347,12 @@ func (a *App) SubmitGUIBugReport(description, annotatedPNG string) (map[string]i
 	if len(annotated) > 0 {
 		pngBytes = annotated
 	}
-	osVersion := strings.TrimSpace(a.getOSVersion())
-	if osVersion == "" || strings.EqualFold(osVersion, "Unknown") {
-		osVersion = runtime.GOOS
-	}
-	notes := []byte(description)
-	if !bytes.HasSuffix(notes, []byte("\n")) {
-		notes = append(notes, '\n')
-	}
+	osVersion := a.detectedBugReportOS()
+	notes := bugReportNotes("bug", description)
 	result, err := a.submitBugReport(osVersion, description, nil, []bugReportRootFile{
 		{name: guiBugReportScreenshotName, data: pngBytes},
 		{name: guiBugReportNotesName, data: notes},
-	})
+	}, true, "bug")
 	if err != nil {
 		// The dialog stays open on a HubCenter failure. Keep the capture so
 		// Send can be pressed again without photographing the error text.
@@ -448,6 +442,173 @@ func validateGUIBugReportScreenshot(data []byte) error {
 		return fmt.Errorf("main window screenshot dimensions are not supported")
 	}
 	return nil
+}
+
+// bugReportKindLabel maps the About dialog's kind. Anything other than a
+// feature request is a defect, including the header screenshot report.
+func bugReportKindLabel(kind string) (label string, feature bool) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "feature", "request":
+		return "新功能", true
+	default:
+		return "缺陷", false
+	}
+}
+
+func bugReportKindToken(kind string) string {
+	if _, feature := bugReportKindLabel(kind); feature {
+		return "feature"
+	}
+	return "bug"
+}
+
+func bugReportNotes(kind, description string) []byte {
+	label, _ := bugReportKindLabel(kind)
+	text := "报告类型: " + label + "\n" + strings.TrimSpace(description)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return []byte(text)
+}
+
+func (a *App) detectedBugReportOS() string {
+	osVersion := ""
+	if a != nil {
+		osVersion = strings.TrimSpace(a.getOSVersion())
+	}
+	if osVersion == "" || strings.EqualFold(osVersion, "Unknown") {
+		return runtime.GOOS
+	}
+	return osVersion
+}
+
+// SubmitAboutProblemReport posts a bug or a feature request from the About
+// dialog and the new-task title bar. OS and the GUI version are filled here.
+// A feature request does not pack logs or trajectories. bugreports.txt names
+// the type. annotated entries are PNG data URLs aligned with screenshots;
+// an empty entry keeps that file's original bytes.
+func (a *App) SubmitAboutProblemReport(kind, description string, screenshots, annotated []string) (map[string]interface{}, error) {
+	if a == nil {
+		return nil, fmt.Errorf("application is not ready")
+	}
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return nil, fmt.Errorf("problem description is required")
+	}
+	if len(description) > guiBugReportNoteLimit {
+		return nil, fmt.Errorf("problem description is too long")
+	}
+	shots, cleanup, err := a.materializeAboutBugReportScreenshots(screenshots, annotated)
+	defer removeBugReportTempFiles(cleanup)
+	if err != nil {
+		return nil, err
+	}
+	_, feature := bugReportKindLabel(kind)
+	return a.submitBugReport(a.detectedBugReportOS(), description, shots, []bugReportRootFile{
+		{name: guiBugReportNotesName, data: bugReportNotes(kind, description)},
+	}, !feature, bugReportKindToken(kind))
+}
+
+// RetryAboutProblemReport resends the saved archive. Screenshots are not in
+// that zip, so the current paths and annotations are attached again.
+func (a *App) RetryAboutProblemReport(kind, description string, screenshots, annotated []string) (map[string]interface{}, error) {
+	if a == nil {
+		return nil, fmt.Errorf("application is not ready")
+	}
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return nil, fmt.Errorf("problem description is required")
+	}
+	if len(description) > guiBugReportNoteLimit {
+		return nil, fmt.Errorf("problem description is too long")
+	}
+	shots, cleanup, err := a.materializeAboutBugReportScreenshots(screenshots, annotated)
+	defer removeBugReportTempFiles(cleanup)
+	if err != nil {
+		return nil, err
+	}
+	a.bugReportUploadMu.Lock()
+	defer a.bugReportUploadMu.Unlock()
+	pending := a.getPendingBugReportUpload()
+	if pending == nil || strings.TrimSpace(pending.zipPath) == "" {
+		return nil, fmt.Errorf("no failed diagnostic upload is available to retry")
+	}
+	if _, err := os.Stat(pending.zipPath); err != nil {
+		a.clearPendingBugReportUpload(pending.zipPath)
+		return nil, fmt.Errorf("saved diagnostics archive is no longer available: %w", err)
+	}
+	return a.uploadBugReportArchive(pending.zipPath, pending.includedFiles, a.detectedBugReportOS(), description, shots, bugReportKindToken(kind))
+}
+
+func removeBugReportTempFiles(paths []string) {
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
+}
+
+// materializeAboutBugReportScreenshots replaces a screenshot with a temp PNG
+// when that index carries a flattened annotation. Invalid image data is
+// rejected before any archive is created. The returned cleanup list is every
+// temp file, including those created before a later index fails.
+func (a *App) materializeAboutBugReportScreenshots(paths, annotated []string) ([]string, []string, error) {
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	var cleanup []string
+	fail := func(err error) ([]string, []string, error) {
+		removeBugReportTempFiles(cleanup)
+		return nil, nil, err
+	}
+	for i, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		cleanPath := filepath.Clean(path)
+		key := cleanPath
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		raw := ""
+		if i < len(annotated) {
+			raw = annotated[i]
+		}
+		data, err := decodeGUIBugReportAnnotatedPNG(raw)
+		if err != nil {
+			return fail(err)
+		}
+		finalPath := cleanPath
+		if len(data) > 0 {
+			dir := a.GetTempDir()
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fail(err)
+			}
+			file, err := os.CreateTemp(dir, "bug-report-mark-*.png")
+			if err != nil {
+				return fail(err)
+			}
+			if _, err := file.Write(data); err != nil {
+				name := file.Name()
+				_ = file.Close()
+				_ = os.Remove(name)
+				return fail(err)
+			}
+			if err := file.Close(); err != nil {
+				_ = os.Remove(file.Name())
+				return fail(err)
+			}
+			cleanup = append(cleanup, file.Name())
+			finalPath = file.Name()
+		}
+		out = append(out, finalPath)
+		if len(out) == maxBugReportScreenshots {
+			break
+		}
+	}
+	return out, cleanup, nil
 }
 
 func writeBugReportZipRoot(zw *zip.Writer, name string, data []byte) error {

@@ -305,8 +305,8 @@ func TestSQLiteStoreSharedLocalRootClaimAdmitsFileClaimAcrossHandles(t *testing.
 	if len(reloaded.Policy.WriteSet.Claims) != 1 || !reloaded.Policy.WriteSet.Claims[0].Directory || reloaded.Policy.WriteSet.Claims[0].Path != "." {
 		t.Fatalf("stored root claim = %+v", reloaded.Policy.WriteSet.Claims)
 	}
-	if _, err := second.StartAttempt(b.TaskID, "two", time.Minute, fileClaim, now); err != nil {
-		t.Fatalf("sqlite root claim blocked a disjoint file: %v", err)
+	if _, err := second.StartAttempt(b.TaskID, "two", time.Minute, fileClaim, now); !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("sqlite root claim err=%v, want a conflict with the file writer", err)
 	}
 }
 

@@ -193,6 +193,13 @@ export type OpenCreateCodingTaskDetail = {
 export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
 
 /**
+ * New-task title bar. Opens the About problem-report dialog, which also
+ * accepts a feature request. The dialog lives in App, so the title bar
+ * does not take a callback through the assistant panel.
+ */
+export const EVENT_OPEN_PROBLEM_REPORT = "maclaw:open-problem-report";
+
+/**
  * Task-pane toolbar entry for the phone-shared cloud drive. App switches to
  * the files page. This is not the assistant overlay (maclaw:open-files with
  * an empty detail) and not the cloud-workspace manager.

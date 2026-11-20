@@ -72,6 +72,20 @@ describe('AssistantTitleBar', () => {
         notificationState.current.dismissUrgentToast.mockClear();
     });
 
+    it('opens the problem report from the icon left of companion', () => {
+        const opened: Event[] = [];
+        const listener = (event: Event) => opened.push(event);
+        window.addEventListener('maclaw:open-problem-report', listener);
+        renderTitleBar(true, true);
+        const report = screen.getByTestId('open-problem-report');
+        const companion = screen.getByTestId('open-file-companion');
+        expect(report.getAttribute('aria-label')).toBe('新功能请求或Bug报告');
+        expect(report.compareDocumentPosition(companion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        fireEvent.mouseDown(report);
+        expect(opened).toHaveLength(1);
+        window.removeEventListener('maclaw:open-problem-report', listener);
+    });
+
     it('exposes mobile documents as a title-bar icon near tools', () => {
         renderTitleBar();
         const btn = screen.getByTestId('mobile-docs-titlebar-btn');

@@ -19981,9 +19981,9 @@ func RunTaskWithSubAgent(
 // defaultGUICodingRuntimeOptions is the production admission policy for a GUI
 // turn. Inquiry turns are read-only. Implementation turns declare the plan's
 // files, or the project root when the file list is empty, and require a
-// successful before/after workspace probe. Those concrete claims run beside
-// other shared-tree tasks. Same-file writes are synchronized in the file
-// tools. The root claim stays a concrete declaration rather than Unknown.
+// successful before/after workspace probe. Disjoint file claims can run
+// beside each other. An overlapping claim, including the project root,
+// waits. A later task with a private worktree sets DeferredWorktree.
 // Isolated worktree execution is a separate options path.
 func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodingRuntimeOptions {
 	options := &guiCodingRuntimeOptions{}

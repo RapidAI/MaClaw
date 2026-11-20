@@ -3209,7 +3209,7 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.RouteTask = strings.TrimSpace(mem.LastRouteTask)
 	st.RouteReason = strings.TrimSpace(mem.LastRouteReason)
 	st.RoutePref = normalizeCodingRoutePref(mem.RoutePref)
-	if caps := handler.codingRouteCapabilities(); len(caps) > 0 {
+	if caps := handler.codingRouteCapabilities(userID); len(caps) > 0 {
 		st.RouteCapabilities = caps
 	}
 	// Checkpoint list from the same sticky snapshot already loaded (one parse).
@@ -3946,14 +3946,14 @@ func (a *App) WriteCodingWorkbenchConflictFileContent(projectPath, conflictID, r
 // projectPath may be empty — then capabilities come from the global App ModelRouter.
 func (a *App) GetCodingWorkbenchRouteMap(projectPath string) []codingRouteCapability {
 	if strings.TrimSpace(projectPath) != "" {
-		handler, _, err := a.codingWorkbenchHandlerForProject(projectPath)
+		handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
 		if err == nil && handler != nil {
-			return handler.codingRouteCapabilities()
+			return handler.codingRouteCapabilities(userID)
 		}
 	}
 	// Settings panel / no active task: still resolve against live App router.
 	h := &IMMessageHandler{app: a}
-	return h.codingRouteCapabilities()
+	return h.codingRouteCapabilities("")
 }
 
 // PruneCodingWorkbenchCheckpoints drops non-current checkpoint sidecars for the task user.

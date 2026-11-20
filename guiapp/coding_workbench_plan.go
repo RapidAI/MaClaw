@@ -122,7 +122,7 @@ Questions about how a command works are inquiry, even when they mention build, t
 When kind is operational, acceptance is required. When kind is not operational, omit acceptance. An omitted acceptance is treated as launch and does not cover a host action.
 Do not infer intent from isolated words; judge the complete request.`
 
-func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingRequestDecision {
+func (h *IMMessageHandler) resolveCodingRequestDecision(userID, userText string) codingRequestDecision {
 	// An explicit workspace wipe is file mutation. Do not let the lightweight
 	// classifier call it operational and send the agent to run an existing binary.
 	if codingRequestLooksExplicitWorkspaceClear(normalizeCodingWorkspaceClearText(userText)) {
@@ -139,10 +139,7 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	// the classifier and force an implementation plan from those words.
 	// applyCodingRequestPlanFloor still raises NeedsPlan when the judgment
 	// itself is implementation.
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
 	}
@@ -3176,7 +3173,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasks(
 		userText,
 		projectPath,
 		sessionMem,
-		h.resolveCodingRequestDecision(userText),
+		h.resolveCodingRequestDecision(userID, userText),
 		onProgress,
 		onToken,
 	)
@@ -3353,7 +3350,7 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	// User-written steps and the host's own fallback stay as they are: the
 	// fallback exists to avoid another model wait. Each fix is reviewed on
 	// the next round, so the copy shown to the user is one a review judged.
-	if modelPlan && h.codingPlanSelfReviewConfigured() && (planMode == codingPlanModeAuto || planMode == codingPlanModeApprove) {
+	if modelPlan && h.codingPlanSelfReviewConfigured(userID) && (planMode == codingPlanModeAuto || planMode == codingPlanModeApprove) {
 		if onProgress != nil {
 			onProgress("正在复审规划，通过后再交给你确认")
 		}
@@ -3439,10 +3436,7 @@ func (h *IMMessageHandler) planCodingWorkbenchTasks(
 	if h == nil {
 		return "", nil
 	}
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", nil
 	}

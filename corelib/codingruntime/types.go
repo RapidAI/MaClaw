@@ -132,8 +132,10 @@ type PolicySnapshot struct {
 	ReadOnly     bool
 	// WriteSet is the frozen, normalized declaration used for cross-task
 	// writer admission. Empty declarations are persisted as Unknown and stay
-	// serialized within their workspace. Concrete claims on a shared local
-	// tree run together; the file tools synchronize one path.
+	// serialized within their workspace. Disjoint concrete claims on a shared
+	// local tree run together. An overlapping claim, including the project
+	// root, waits. The file-tool lock only covers one edit call, so it is not
+	// an admission pass for the same file.
 	WriteSet WriteSet
 	// WorkspaceIsolated and FinalDiffGateRequired are the worktree merge gate.
 	// Two isolated writers may run together only when both flags are set and
@@ -142,6 +144,11 @@ type PolicySnapshot struct {
 	// does not use this gate.
 	WorkspaceIsolated     bool
 	FinalDiffGateRequired bool
+	// DeferredWorktree means this attempt edits a private worktree of
+	// ProjectRoot and lands bytes only through the host merge. It may omit a
+	// file list. It does not take the shared-tree lock, and it still requires
+	// isolation plus the final diff gate so a completed attempt has merged.
+	DeferredWorktree bool
 	// FinalWorkspaceGateRequired asks Runner, before recording completed, to
 	// capture a second read-only workspace probe and confirm that it differs
 	// from the baseline. The probe is per attempt. It does not serialize other
@@ -182,14 +189,14 @@ type Attempt struct {
 	// starts at 1 when the attempt is created and increments on every
 	// FinishAttempt write. FinishAttempt's CAS uses it so a stale executor
 	// cannot overwrite a newer terminal record.
-	Version         uint64
+	Version uint64
 	// EvidenceDigest is the completion evidence hash persisted beside the
 	// terminal record. A completed attempt must carry a non-empty digest;
 	// non-completed attempts may leave it empty. The ledger stores the hash,
 	// never the model explanation or raw tool output.
-	EvidenceDigest  string
-	StartedAt       time.Time
-	FinishedAt      time.Time
+	EvidenceDigest string
+	StartedAt      time.Time
+	FinishedAt     time.Time
 }
 
 // SemanticTaskAnchor is the durable host-side mapping from one execution-ledger
@@ -236,7 +243,7 @@ type FinishInput struct {
 	// EvidenceDigest is the completion evidence hash. It is mandatory when
 	// Status is TaskCompleted: a completion without verified evidence must be
 	// refused, not recorded. For other terminal states it may be empty.
-	EvidenceDigest  string
+	EvidenceDigest string
 }
 
 func boundedLedgerText(value string, limit int) string {

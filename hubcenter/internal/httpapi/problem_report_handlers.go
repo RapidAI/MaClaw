@@ -233,10 +233,18 @@ func (h *ProblemReportHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		smError(w, http.StatusBadRequest, "os_version and description are required")
 		return
 	}
+	// The cap applies to the text the person wrote. The type line added below
+	// is a few dozen bytes and must not reject a description that already fit.
 	if len(osVersion) > problemReportMaxOSVersionBytes || len(description) > problemReportMaxDescriptionBytes {
 		smError(w, http.StatusBadRequest, "report text is too long")
 		return
 	}
+	storedDescription, ok := prefixProblemReportDescription(r.FormValue("kind"), description)
+	if !ok {
+		smError(w, http.StatusBadRequest, "os_version and description are required")
+		return
+	}
+	description = storedDescription
 	if len(guiVersion) > 256 {
 		smError(w, http.StatusBadRequest, "GUI version is too long")
 		return

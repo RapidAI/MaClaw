@@ -49,6 +49,9 @@ type RunWindowDraft struct {
 	WorkflowParams     map[string]string `json:"workflowParams,omitempty"`
 	LatexTemplateID    string            `json:"latexTemplateId"`
 	LatexTemplateName  string            `json:"latexTemplateName"`
+	// LLMProviderID and LLMModel replay a per-task pin. Empty follows 模型分配.
+	LLMProviderID string `json:"llmProviderId,omitempty"`
+	LLMModel      string `json:"llmModel,omitempty"`
 }
 
 // RunWindowTask is a one-shot new-task launch held until StartAt.

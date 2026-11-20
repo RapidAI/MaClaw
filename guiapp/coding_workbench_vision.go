@@ -113,11 +113,14 @@ func (h *IMMessageHandler) routeLLMConfigForCodingVision(cfg corelib.MaclawLLMCo
 	return cfg
 }
 
-func (h *IMMessageHandler) primaryMaclawModelName() string {
+// primaryMaclawModelName is the model a coding turn starts from. A task pin
+// replaces the coding assignment. An empty session keeps the assignment, which
+// is also the route-capability cache fingerprint when no task is open.
+func (h *IMMessageHandler) primaryMaclawModelName(userID string) string {
 	if h == nil {
 		return ""
 	}
-	return strings.TrimSpace(h.getCodingLLMConfig().Model)
+	return strings.TrimSpace(h.codingLLMConfigForSession(userID).Model)
 }
 
 func (h *IMMessageHandler) modelRouterHasReasoning() bool {
@@ -158,8 +161,7 @@ func invalidateCodingRouteCapabilitiesCache() {
 	codingRouteCapsCacheMu.Unlock()
 }
 
-func (h *IMMessageHandler) codingRouteCapabilitiesCacheKey() string {
-	primary := h.primaryMaclawModelName()
+func (h *IMMessageHandler) codingRouteCapabilitiesCacheKey(primary string) string {
 	var b strings.Builder
 	b.WriteString(primary)
 	if h != nil && h.app != nil && h.app.ohModules.modelRouter != nil {
@@ -177,8 +179,10 @@ func (h *IMMessageHandler) codingRouteCapabilitiesCacheKey() string {
 }
 
 // codingRouteCapabilities reports how each workbench route pref maps to ModelRouter.
-func (h *IMMessageHandler) codingRouteCapabilities() []codingRouteCapability {
-	key := h.codingRouteCapabilitiesCacheKey()
+// userID selects the task pin. An empty id reports the coding assignment.
+func (h *IMMessageHandler) codingRouteCapabilities(userID string) []codingRouteCapability {
+	primary := h.primaryMaclawModelName(userID)
+	key := h.codingRouteCapabilitiesCacheKey(primary)
 	codingRouteCapsCacheMu.Lock()
 	if len(codingRouteCapsCache) > 0 &&
 		codingRouteCapsCacheKey == key &&
@@ -188,8 +192,6 @@ func (h *IMMessageHandler) codingRouteCapabilities() []codingRouteCapability {
 		return out
 	}
 	codingRouteCapsCacheMu.Unlock()
-
-	primary := h.primaryMaclawModelName()
 	hasReasoning := h.modelRouterHasReasoning()
 	hasVision := h.modelRouterHasVision()
 
@@ -237,7 +239,7 @@ func (h *IMMessageHandler) codingRouteCapabilities() []codingRouteCapability {
 			Available: true,
 			Model:     primary,
 			Source:    "primary",
-			Note:      "always use main Maclaw model",
+			Note:      "uses this task's coding model",
 		},
 		{
 			Pref:      codingRoutePrefReasoning,
@@ -267,8 +269,8 @@ func (h *IMMessageHandler) codingRouteCapabilities() []codingRouteCapability {
 	return caps
 }
 
-func (h *IMMessageHandler) formatCodingRouteCapabilitiesMarkdown() string {
-	caps := h.codingRouteCapabilities()
+func (h *IMMessageHandler) formatCodingRouteCapabilitiesMarkdown(userID string) string {
+	caps := h.codingRouteCapabilities(userID)
 	var b strings.Builder
 	b.WriteString("### ModelRouter 能力\n\n")
 	b.WriteString("| Pref | Model | Source | Note |\n|------|-------|--------|------|\n")

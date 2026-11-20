@@ -64,6 +64,21 @@ func TestBugReportScreenshotPreviewDataURLCreatesBoundedPNGThumbnail(t *testing.
 	if got := thumbnail.Bounds(); got.Dx() != 240 || got.Dy() != 60 {
 		t.Fatalf("thumbnail bounds = %v, want 240x60", got)
 	}
+	marked, err := app.BugReportScreenshotMarkDataURL(path)
+	if err != nil {
+		t.Fatalf("create mark bitmap: %v", err)
+	}
+	markedBytes, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(marked, prefix))
+	if err != nil {
+		t.Fatalf("decode mark bitmap: %v", err)
+	}
+	markImage, err := png.Decode(bytes.NewReader(markedBytes))
+	if err != nil {
+		t.Fatalf("decode mark png: %v", err)
+	}
+	if got := markImage.Bounds(); got.Dx() != 480 || got.Dy() != 120 {
+		t.Fatalf("mark bounds = %v, want 480x120", got)
+	}
 }
 
 func TestAIAssistantAttachmentPreviewDataURLCreatesCompactThumbnail(t *testing.T) {
@@ -234,7 +249,7 @@ func TestUploadBugReportArchiveIncludesProgramVersionUsingHubCenterFieldName(t *
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if gotVersion != "6.6.2.11621" {
@@ -268,7 +283,7 @@ func TestSuccessfulBugReportUploadClearsCollectedDiagnostics(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, SkillMarketSessionToken: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.uploadBugReportArchive(archive, 2, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 2, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	assertStaleBugReportEntriesGone(t, app.getMaclawBaseDir(), "captured.txt")
@@ -297,7 +312,7 @@ func TestRejectedBugReportUploadPreservesCollectedDiagnosticsForRetry(t *testing
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, SkillMarketSessionToken: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.uploadBugReportArchive(archive, 2, "Windows 11", "test report", nil); err == nil {
+	if _, err := app.uploadBugReportArchive(archive, 2, "Windows 11", "test report", nil, ""); err == nil {
 		t.Fatal("expected rejected upload to fail")
 	}
 	if _, err := os.Stat(archive); err != nil {
@@ -326,7 +341,7 @@ func TestMalformedSuccessfulBugReportResponsePreservesDiagnosticsForRetry(t *tes
 		t.Fatal(err)
 	}
 	app.setPendingBugReportUpload(archive, 1)
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err == nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err == nil {
 		t.Fatal("expected malformed successful response to fail")
 	}
 	if _, err := os.Stat(archive); err != nil {
@@ -399,7 +414,7 @@ func TestSuccessfulBugReportUploadSkipsLinkedDiagnosticRoot(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, SkillMarketSessionToken: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if content, err := os.ReadFile(externalFile); err != nil || string(content) != "external" {
@@ -764,7 +779,7 @@ func TestUploadBugReportUsesMatchingSignedSessionWithoutMachineLogin(t *testing.
 	defer server.Close()
 	token := testSkillMarketSignedToken("u_current", "phone:13301168516", time.Now().Add(time.Hour))
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", token)
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if loginCalls.Load() != 0 {
@@ -803,7 +818,7 @@ func TestUploadBugReportRemintsForeignSignedSessionBeforePosting(t *testing.T) {
 	defer server.Close()
 	foreign := testSkillMarketSignedToken("u_other", "phone:13301168516", time.Now().Add(time.Hour))
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", foreign)
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if loginUser != "u_current" {
@@ -855,7 +870,7 @@ func TestUploadBugReportRemintsOnceAfterHubCenterRejectsSession(t *testing.T) {
 	defer server.Close()
 	token := testSkillMarketSignedToken("u_current", "phone:13301168516", time.Now().Add(time.Hour))
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", token)
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if loginCalls.Load() != 1 || reports.Load() != 2 {
@@ -888,7 +903,7 @@ func TestUploadBugReportKeepsOpaqueTokenWhenHubEnrollmentCannotMint(t *testing.T
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, SkillMarketSessionToken: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if loginCalls.Load() != 0 || posted != "Bearer test-token" {
@@ -919,7 +934,7 @@ func TestUploadBugReportUsesOpaqueTokenWhenMachineLoginIsDown(t *testing.T) {
 	}))
 	defer server.Close()
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", "test-token")
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err != nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
 	if posted != "Bearer test-token" {
@@ -944,7 +959,7 @@ func TestUploadBugReportDoesNotPostForeignSessionWhenMintFails(t *testing.T) {
 	defer server.Close()
 	foreign := testSkillMarketSignedToken("u_other", "phone:13301168516", time.Now().Add(time.Hour))
 	saveBugReportHubPrincipal(t, app, server.URL, "u_current", foreign)
-	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil); err == nil {
+	if _, err := app.uploadBugReportArchive(archive, 1, "Windows 11", "test report", nil, ""); err == nil {
 		t.Fatal("expected mint failure")
 	}
 	if _, err := os.Stat(archive); err != nil {

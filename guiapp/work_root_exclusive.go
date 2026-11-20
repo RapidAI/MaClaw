@@ -572,6 +572,9 @@ func (a *App) exclusiveWorkRoot(taskPath, dir string) string {
 	if a == nil {
 		return dir
 	}
+	if mapped, ok := codingParallelMappedDir(taskPath, dir); ok {
+		return mapped
+	}
 	if ghost, active, _ := a.repoMaintGuardForOwner(projectSessionOwnerID(taskPath)); active && ghost != "" {
 		return ghost
 	}

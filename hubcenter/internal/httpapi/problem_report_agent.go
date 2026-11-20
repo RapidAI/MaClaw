@@ -112,7 +112,7 @@ func (h *ProblemReportHandlers) Repair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(req.ID)
-	status := strings.ToLower(strings.TrimSpace(req.Status))
+	status := normalizeProblemReportAgentStatus(req.Status)
 	note := strings.TrimSpace(req.AdminNote)
 	if !validProblemReportID(id) {
 		smError(w, http.StatusBadRequest, "invalid report id")
@@ -297,6 +297,18 @@ func validProblemReportAgentAPIKey(key string) bool {
 	return true
 }
 
+// normalizeProblemReportAgentStatus accepts the English console tokens and the
+// Chinese label the open.md preamble tells a bot to write. ToLower does not
+// change those runes, so the Chinese match happens before it.
+func normalizeProblemReportAgentStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "不予处理", "不予處理":
+		return "rejected"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
 func validProblemReportAgentStatus(status string) bool {
 	switch status {
 	case "pending", "fixed", "deferred", "rejected", "archived":
@@ -330,6 +342,8 @@ func renderProblemReportOpenMarkdown(items []skillmarket.ProblemReport, total in
 	listURL := joinProblemReportURL(origin, problemReportOpenMarkdownPath)
 	repairURL := joinProblemReportURL(origin, problemReportRepairPath)
 	var b strings.Builder
+	// The first line is an instruction for the repair bot, not a heading for people.
+	b.WriteString("bug直接修复，新功能需要与人类确认是否开发。人类如果不同意开发的新功能，把状态改为不予处理。\n\n")
 	b.WriteString("# 未修复故障清单\n\n")
 	b.WriteString("- 生成时间: " + generated.UTC().Format(time.RFC3339) + "\n")
 	b.WriteString("- 未修复数量: " + strconv.Itoa(total) + "\n")
@@ -338,7 +352,7 @@ func renderProblemReportOpenMarkdown(items []skillmarket.ProblemReport, total in
 	b.WriteString("- 修复接口: POST " + repairURL + "\n")
 	b.WriteString("- 认证: 请求头 `Authorization: Bearer <API Key>`，或 `X-API-Key: <API Key>`。\n")
 	b.WriteString("- 请求体: 每条单独成行的「编号」就是 JSON 字段 id，同条「修复请求体」里已经填好，必须逐字相同。把 STATUS 换成 pending、fixed、deferred、rejected 或 archived，把 NOTE 换成这次的管理员备注。不要原样提交 STATUS 或 NOTE。\n")
-	b.WriteString("- 范围: 编号、诊断包、修复请求体只认标题下面、描述之前的单独行。描述和备注里的同名文字不是字段。\n")
+	b.WriteString("- 范围: 编号、类型、诊断包、修复请求体只认标题下面、描述之前的单独行。描述和备注里的同名文字不是字段。\n")
 	b.WriteString("- status: `pending` 待处理，`fixed` 已修复，`deferred` 延期，`rejected` 不予处理，`archived` 已归档。\n")
 	b.WriteString("- 约束: 只能修改当前为待处理的报告，并必须写入管理员备注。改为已修复、延期、不予处理或已归档后，该条从本清单消失。待处理只更新备注，报告仍留在本清单。已处理过的报告不能再次修改。\n")
 	if total > len(items) {
@@ -370,8 +384,10 @@ func renderProblemReportOpenMarkdown(items []skillmarket.ProblemReport, total in
 			b.WriteString("- 管理员备注:\n\n")
 			b.WriteString(markdownFence(note))
 		}
+		kind, body := splitProblemReportKind(item.Description)
+		b.WriteString("- 类型: " + kind + "\n")
 		b.WriteString("- 描述:\n\n")
-		b.WriteString(markdownFence(strings.TrimSpace(item.Description)))
+		b.WriteString(markdownFence(body))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -436,7 +452,7 @@ func markdownFence(body string) string {
 
 func neutralizeProblemReportControlLines(body string) string {
 	lines := strings.Split(body, "\n")
-	labels := []string{"- 编号:", "- 诊断包:", "- 修复请求体:"}
+	labels := []string{"- 编号:", "- 诊断包:", "- 修复请求体:", "- 类型:"}
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// Headings are the section breaks. A report must not invent another one.
@@ -452,4 +468,72 @@ func neutralizeProblemReportControlLines(body string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+const (
+	problemReportKindTag     = "【报告类型】"
+	problemReportKindBug     = "缺陷"
+	problemReportKindFeature = "新功能"
+)
+
+// problemReportKindLabel maps the multipart kind field. An empty or unknown
+// value stays a bug so older clients and the header screenshot report are
+// defects. The form field wins over any type line the user typed.
+func problemReportKindLabel(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "feature", "request":
+		return problemReportKindFeature
+	default:
+		return problemReportKindBug
+	}
+}
+
+// prefixProblemReportDescription stores the authoritative type as the first
+// line and keeps the user's text after it. A forged type line is removed
+// first. ok is false when nothing remains to store.
+func prefixProblemReportDescription(kind, description string) (string, bool) {
+	body := stripProblemReportKindLine(description)
+	if strings.TrimSpace(body) == "" {
+		return "", false
+	}
+	return problemReportKindTag + problemReportKindLabel(kind) + "\n" + body, true
+}
+
+// splitProblemReportKind reads the stored first line. A report saved before
+// the type line existed is shown as a defect, and its whole text stays the body.
+func splitProblemReportKind(description string) (kind, body string) {
+	description = strings.TrimSpace(description)
+	line, rest, found := strings.Cut(description, "\n")
+	label, tagged := problemReportKindLineLabel(line)
+	if !tagged {
+		return problemReportKindBug, description
+	}
+	if !found {
+		return label, ""
+	}
+	return label, strings.TrimSpace(rest)
+}
+
+func stripProblemReportKindLine(description string) string {
+	description = strings.TrimSpace(description)
+	line, rest, found := strings.Cut(description, "\n")
+	if _, tagged := problemReportKindLineLabel(line); !tagged {
+		return description
+	}
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(rest)
+}
+
+func problemReportKindLineLabel(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, problemReportKindTag) {
+		return "", false
+	}
+	label := strings.TrimSpace(strings.TrimPrefix(line, problemReportKindTag))
+	if label == problemReportKindBug || label == problemReportKindFeature {
+		return label, true
+	}
+	return "", false
 }

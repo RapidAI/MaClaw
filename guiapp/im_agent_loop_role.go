@@ -51,6 +51,13 @@ func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.M
 			return cfg
 		}
 	}
+	// A task pin replaces the role's model for this task only. It does not
+	// rewrite 模型分配. An empty pin keeps the role, including official auto.
+	if ctx != nil && h != nil && h.app != nil {
+		if cfg, ok := h.app.taskBoundLLMConfig(projectPathFromSessionOwnerID(ctx.UserID), role); ok {
+			return cfg
+		}
+	}
 	if h != nil && h.app != nil {
 		cfg, err := h.app.ResolveMaclawLLMRole(role)
 		if err == nil && strings.TrimSpace(cfg.Model) != "" {

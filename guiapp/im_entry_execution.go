@@ -731,7 +731,7 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 			remoteCtx.OperationalAcceptance = ""
 			remoteCtx.ForceInitialInquiry = false
 		} else {
-			decision := h.resolveCodingRequestDecision(agentLoopUserText)
+			decision := h.resolveCodingRequestDecision(msg.UserID, agentLoopUserText)
 			remoteCtx.RequestKind = decision.Kind
 			remoteCtx.RequestNeedsPlan = decision.NeedsPlan
 			remoteCtx.OperationalAcceptance = decision.Acceptance

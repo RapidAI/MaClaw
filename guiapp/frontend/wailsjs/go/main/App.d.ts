@@ -426,6 +426,11 @@ export function CreateTaskWithCloudWorkspace(arg1:string,arg2:string,arg3:string
 // MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
 export function CreateTaskUnified(arg1:main.TaskCreateOptions):Promise<main.UnifiedTaskCreateResult>;
 
+// MANUAL SYNC: mirrors guiapp/task_llm_choice.go TaskLLMChoice.
+export function GetTaskLLMChoice(arg1:string):Promise<{ providerId: string; providerName: string; model: string; followsAssignment: boolean }>;
+
+export function SetTaskLLMChoice(arg1:string, arg2:string, arg3:string):Promise<void>;
+
 // MANUAL SYNC: mirrors guiapp/task_type_suggest.go SuggestNewTaskType.
 export function SuggestNewTaskType(arg1:string):Promise<{ suggested: string; confident: boolean; reason?: string; source?: string }>;
 

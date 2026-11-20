@@ -79,6 +79,12 @@ export interface TaskDraft {
     runWindow?: RunWindow;
     /** 任务执行位置：null/未设置 = 本机；否则在远控被控机器上创建并执行。 */
     machine?: MachineTarget | null;
+    /**
+     * 这个任务单独使用的服务商和模型。两者都空 = 跟随模型分配（会随分配变化）。
+     * 只填一边不算指定。
+     */
+    llmProviderId?: string;
+    llmModel?: string;
 }
 
 /** 从模板库、工作流页、专家卡片或任务右键菜单带入新建任务页的预填。 */
@@ -116,7 +122,21 @@ export function defaultTaskDraft(): TaskDraft {
         latexTemplateName: null,
         runWindow: immediateRunWindow(),
         machine: null,
+        llmProviderId: '',
+        llmModel: '',
     };
+}
+
+/** 两者都有值才是这个任务自己的模型。空的一边会把另一边也清掉。 */
+export function withTaskModel(draft: TaskDraft, providerId: string, model: string): TaskDraft {
+    const id = String(providerId || '').trim();
+    const next = String(model || '').trim();
+    if (!id || !next) return { ...draft, llmProviderId: '', llmModel: '' };
+    return { ...draft, llmProviderId: id, llmModel: next };
+}
+
+export function taskModelPinned(draft: TaskDraft | null | undefined): boolean {
+    return !!String(draft?.llmProviderId || '').trim() && !!String(draft?.llmModel || '').trim();
 }
 
 export function withRunWindow(draft: TaskDraft, runWindow: RunWindow): TaskDraft {
@@ -161,7 +181,8 @@ export function isDraftDefault(draft: TaskDraft): boolean {
         && !isWorkflowChosen(draft)
         && draft.workspace.kind === 'local'
         && !draft.workspace.localPath
-        && !draft.machine;
+        && !draft.machine
+        && !taskModelPinned(draft);
 }
 
 /**

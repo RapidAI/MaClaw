@@ -20,6 +20,7 @@ import {
     withMachineWorkDir,
     withRemoteWorkspace,
     withLatexTemplate,
+    withTaskModel,
     withWorkflow,
     workspaceKindsForExpert,
     workspaceSummaryLabel,
@@ -41,13 +42,15 @@ import type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 import { WorkspacePickerPopover } from "./WorkspacePickerPopover";
 import { RemoteDirPickerPopover, type RemoteDirListing } from "./RemoteDirPickerPopover";
 import { WorkspaceTypeBadge } from "./WorkspaceTypeBadge";
+import { TaskModelPickerPopover } from "./TaskModelPickerPopover";
+import { assignmentForTaskType, newTaskModelChipValue, type TaskModelCatalog } from "./taskModelChoice";
 import { tailText } from "../../../i18n/mnTail"
 
 export type { ExpertOption } from "./ExpertPickerPopover";
 export type { WorkflowOption } from "./WorkflowPickerPopover";
 export type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 
-type ConfigMenu = 'machine' | 'type' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
+type ConfigMenu = 'machine' | 'type' | 'model' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
 
 /**
  * 提示态（编程任务缺工作目录等）值文本的柔和砖红：仍然醒目引起注意，
@@ -106,6 +109,8 @@ export interface TaskConfigBarProps {
      * 输入卡片下方的配置条，视觉退居次位）。
      */
     variant?: "chip" | "bare";
+    /** Live 模型分配 catalog. An empty pin follows the row for the task type. */
+    modelCatalog?: TaskModelCatalog | null;
 }
 
 const CHIP_HEIGHT = 30;
@@ -118,6 +123,8 @@ function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boole
             return 'monitor';
         case 'type':
             return draft.taskType === 'coding' ? 'code' : 'chat';
+        case 'model':
+            return 'cpu';
         case 'expert':
             return 'robot';
         case 'workflow':
@@ -160,6 +167,7 @@ export function TaskConfigBar({
     remoteMachines,
     onListRemoteDirs,
     variant = "chip",
+    modelCatalog,
 }: TaskConfigBarProps) {
     const bare = variant === "bare";
     const isZh = !!lang?.startsWith("zh");
@@ -177,6 +185,7 @@ export function TaskConfigBar({
     const chipRefs = {
         machine: useRef<HTMLButtonElement | null>(null),
         type: useRef<HTMLButtonElement | null>(null),
+        model: useRef<HTMLButtonElement | null>(null),
         expert: useRef<HTMLButtonElement | null>(null),
         workflow: useRef<HTMLButtonElement | null>(null),
         workspace: useRef<HTMLButtonElement | null>(null),
@@ -343,6 +352,15 @@ export function TaskConfigBar({
             color: t.btnColor,
         };
 
+    const modelAssignment = assignmentForTaskType(modelCatalog, draft.taskType);
+    const modelChip = newTaskModelChipValue(draft, modelCatalog?.providers, modelAssignment);
+    const modelChipText = modelChip.remote
+        ? tailText(lang ?? "", "That computer", "对方电脑")
+        : modelChip.pinned
+            ? modelChip.text
+            : modelChip.text
+                ? `${tailText(lang ?? "", "Follows assignment", "跟随分配")} · ${modelChip.text}`
+                : tailText(lang ?? "", "Model assignment", "模型分配");
     const workspaceLabel = workspaceSummaryLabel(draft, (lang || (isZh ? "zh-Hans" : "en")));
 
     return (
@@ -375,6 +393,14 @@ export function TaskConfigBar({
                     {renderChip('type', "task-config-chip-type", tailText(lang ?? "", "Type", "类型"), draft.taskType === 'chat' ? (tailText(lang ?? "", "Chat", "会话")) : (tailText(lang ?? "", "Coding", "编程")), {
                         active: draft.taskType === 'coding',
                         title: tailText(lang ?? "", "Chat / Coding", "会话 / 编程"),
+                    })}
+                    {renderChip('model', "task-config-chip-model", tailText(lang ?? "", "Model", "模型"), modelChipText, {
+                        active: modelChip.pinned,
+                        locked: modelChip.remote,
+                        noMenu: modelChip.remote,
+                        title: modelChip.remote
+                            ? REMOTE_LOCKED_TITLE
+                            : tailText(lang ?? "", "Starts from model assignment. A change here affects only this task.", "默认来自模型分配。在这里改只影响这个任务。"),
                     })}
                     {renderChip('expert', "task-config-chip-expert", tailText(lang ?? "", "Expert", "专家"), (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
@@ -460,6 +486,21 @@ export function TaskConfigBar({
                     taskType={draft.taskType}
                     onSelect={selectType}
                     onClose={() => closeMenu('type')}
+                />
+            )}
+            {menu === 'model' && !draft.machine && (
+                <TaskModelPickerPopover
+                    anchor={chipRefs.model.current}
+                    theme={t}
+                    lang={lang}
+                    providers={modelCatalog?.providers || []}
+                    assignment={modelAssignment}
+                    providerId={draft.llmProviderId || ""}
+                    model={draft.llmModel || ""}
+                    pinned={modelChip.pinned}
+                    onFollow={() => onChange(withTaskModel(draft, "", ""))}
+                    onPick={(providerId, nextModel) => onChange(withTaskModel(draft, providerId, nextModel))}
+                    onClose={() => closeMenu('model')}
                 />
             )}
             {menu === 'expert' && (

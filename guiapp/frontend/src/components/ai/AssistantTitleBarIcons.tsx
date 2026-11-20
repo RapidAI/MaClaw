@@ -1,4 +1,4 @@
-type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash" | "eraser" | "mobileDocs";
+type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash" | "eraser" | "mobileDocs" | "bug";
 
 export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
     const common = {
@@ -74,6 +74,17 @@ export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
                     <path {...common} d="M4 6h16" />
                     <path {...common} d="M9 6V4h6v2" />
                     <path {...common} d="m6 6 1 14h10l1-14" />
+                </>
+            )}
+            {name === "bug" && (
+                <>
+                    <path {...common} d="M12 20a5 5 0 0 1-5-5v-3a5 5 0 0 1 10 0v3a5 5 0 0 1-5 5Z" />
+                    <path {...common} d="M9 7.5V7a3 3 0 0 1 6 0v.5" />
+                    <path {...common} d="M12 12v5" />
+                    <path {...common} d="M4.5 10.5 7 12" />
+                    <path {...common} d="M19.5 10.5 17 12" />
+                    <path {...common} d="M5 16.5 7.5 15" />
+                    <path {...common} d="M19 16.5 16.5 15" />
                 </>
             )}
             {name === "eraser" && (

@@ -42,6 +42,11 @@ type TaskCreateOptions struct {
 	// launch is on screen. The wizard leaves it unset and archives the tab at
 	// creation time.
 	KeepExpertSession bool `json:"keepExpertSession,omitempty"`
+	// LLMProviderID and LLMModel pin this task. Both empty follows 模型分配
+	// live. One side alone is rejected. The model id does not have to be in
+	// a catalog. Picking the current assignment pair is stored as follow.
+	LLMProviderID string `json:"llmProviderId,omitempty"`
+	LLMModel      string `json:"llmModel,omitempty"`
 }
 
 // RemoteTarget carries SSH connection parameters for a remote task. Password
@@ -93,12 +98,22 @@ type UnifiedTaskCreateResult struct {
 // Partial failures return the created path plus Warning and a nil err, so the
 // GUI can still open the task and surface the degradation.
 func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
+	if err := a.validateTaskLLMPair(opts.LLMProviderID, opts.LLMModel); err != nil {
+		return UnifiedTaskCreateResult{}, err
+	}
 	result, err := a.createTaskUnified(opts)
 	// Every branch, including an expert persona, takes its title from the
 	// first instruction. The async pass may condense that into a short summary.
 	// The expert's display name is not a title.
 	if err == nil && strings.TrimSpace(result.ProjectPath) != "" {
 		a.scheduleTaskTitleSummarization(result.ProjectPath, taskNameForCreate(opts.Name, true))
+		if warn := a.persistCreatedTaskLLM(result.ProjectPath, opts); warn != "" {
+			if strings.TrimSpace(result.Warning) != "" {
+				result.Warning = result.Warning + "\n" + warn
+			} else {
+				result.Warning = warn
+			}
+		}
 	}
 	return result, err
 }

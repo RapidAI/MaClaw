@@ -185,6 +185,26 @@ export interface AIAssistantPanelProps {
     onSwitchModel?: (modelId: string) => void;
     onOpenModelMenu?: () => void;
     onDismissModelMenu?: () => void;
+    /**
+     * Open-task composer chip. Present only while a task path is set, so a
+     * click writes that task and leaves 模型分配 alone. The quick-settings
+     * chip keeps the global handlers above.
+     */
+    taskModelProviders?: SidebarLLMProviderSummary[];
+    taskModelCurrent?: string;
+    taskModelOptions?: string[];
+    taskModelLoading?: boolean;
+    onSwitchTaskProvider?: (providerID: string) => void;
+    onSwitchTaskModel?: (modelId: string) => void;
+    onOpenTaskModelMenu?: () => void;
+    onDismissTaskModelMenu?: () => void;
+    taskModelLabel?: string;
+    taskModelTitle?: string;
+    onFollowTaskModel?: () => void;
+    taskModelFollows?: boolean;
+    taskModelSavePending?: boolean;
+    /** Wait until an in-flight per-task pin is stored. Undefined when idle. */
+    taskModelWhenSaved?: () => Promise<void> | undefined;
     activeExecutionProfile?: AIExecutionProfile;
     codingInheritsAssistant?: boolean;
     providerSelectionPending?: boolean;

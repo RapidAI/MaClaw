@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryAboutProblemReport, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitAboutProblemReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -12,7 +12,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { a2a, corelib } from '../wailsjs/go/models';
-import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
+import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_PROBLEM_REPORT, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
 import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
 import { hasLoadedOnboardingFlag, shouldReopenOnboardingForInactiveHub, shouldReopenOnboardingForOfflineLLM } from './components/remote/onboardingFlow';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -21,6 +21,7 @@ import type { SessionTab } from './components/remote/sessionTabs';
 import { startVisibleInterval } from './utils/visibleInterval';
 import { useStartupPerfProbe, reportInteractiveAfterPaint } from './components/startup/useStartupPerfProbe';
 import { defaultModelForQuickProvider } from './components/ai/assistantQuickModelMenu';
+import { useOpenTaskModelChoice } from './components/ai/useOpenTaskModelChoice';
 import { setViewerReducerEnabled } from './components/ai/viewerReducerFlag';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
@@ -29,8 +30,12 @@ import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
 import { SuggestCombobox } from './components/ui/SuggestCombobox';
-import { clipboardImageExtension, readClipboardImageBase64 } from './utils/clipboardImage';
-import { problemReportDescriptionPreview } from './utils/problemReportPreview';
+import { readClipboardImageBase64 } from './utils/clipboardImage';
+import { problemReportDescriptionPreview, problemReportStoredKind, problemReportUserDescription } from './utils/problemReportPreview';
+import { clampBugReportDescription } from './components/ai/BugReportButton';
+import { ProblemReportMarkEditor } from './components/ai/ProblemReportMarkEditor';
+import { emptyBugReportShotExport, type BugReportShotExporter } from './components/ai/bugReportAnnotate';
+import { appendProblemReportScreenshotPaths, problemReportAnnotatedExports, problemReportPasteExtension, problemReportPastedImages, problemReportShotAdded, problemReportShotMounts, removeProblemReportScreenshotPath, type ProblemReportAnnotationExport } from './components/ai/problemReportAnnotate';
 import { PetCompanionSurface } from './components/pet/PetCompanionSurface';
 
 const windowMaximizeRestore = createWindowMaximizeRestoreSession({
@@ -139,12 +144,6 @@ function saveTaskItemsSnapshot(items: ReadonlyArray<unknown>): void {
     }
 }
 
-function appendProblemReportScreenshotPaths(previous: string[], paths: unknown[]): string[] {
-    return [...previous, ...paths]
-        .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
-        .filter((value, index, all) => all.indexOf(value) === index)
-        .slice(0, 12);
-}
 import { isVirtualEmployeeOnline } from './components/ai/virtualEmployeeStatus';
 import { participantIdentityMatches } from './components/ai/participantIdentity';
 import { applyVirtualEmployeeOverrides, favoriteEmployeeAliasIds, favoriteEmployeeIDInAliasSet, filterOnlineVirtualEmployees, isOwnVirtualEmployeeId, mergeVirtualEmployeeList, normalizeFavoriteEmployeeNames, residentVirtualEmployeeAliases, virtualEmployeeFromEventPayload, virtualEmployeeOverrideKey } from './utils/virtualEmployeeEvents';
@@ -1747,10 +1746,19 @@ function App() {
     const [showInstallLog, setShowInstallLog] = useState(false);
     const [showUpdateModal, setShowUpdateModal] = useState(false);
     const [showProblemReport, setShowProblemReport] = useState(false);
-    const [problemOS, setProblemOS] = useState('');
+    const [problemKind, setProblemKind] = useState<'bug' | 'feature'>('bug');
     const [problemDescription, setProblemDescription] = useState('');
     const [problemScreenshots, setProblemScreenshots] = useState<string[]>([]);
+    const [problemMarkPath, setProblemMarkPath] = useState('');
+    const [problemMarkHost, setProblemMarkHost] = useState<HTMLDivElement | null>(null);
     const [problemScreenshotPreviews, setProblemScreenshotPreviews] = useState<Record<string, string>>({});
+    const problemShotExportsRef = useRef(new Map<string, { current: BugReportShotExporter }>());
+    const problemShotSeenRef = useRef(new Set<string>());
+    // Latches after the first open. Closing must not unmount the dialog: a new
+    // portal target remounts the mark editors and drops their strokes.
+    const problemReportMountedRef = useRef(false);
+    const problemScreenshotsRef = useRef(problemScreenshots);
+    problemScreenshotsRef.current = problemScreenshots;
     const [problemBusy, setProblemBusy] = useState(false);
     const [problemMessage, setProblemMessage] = useState('');
     const [problemRetryAvailable, setProblemRetryAvailable] = useState(false);
@@ -1791,6 +1799,25 @@ function App() {
         });
         return () => { cancelled = true; };
     }, [problemScreenshots]);
+    useEffect(() => {
+        setProblemMarkPath(current => (current && problemScreenshots.includes(current) ? current : (problemScreenshots[0] || '')));
+        const live = new Set(problemScreenshots);
+        for (const path of problemShotExportsRef.current.keys()) {
+            if (!live.has(path)) problemShotExportsRef.current.delete(path);
+        }
+    }, [problemScreenshots]);
+    const openProblemReportDialog = useCallback(() => {
+        problemReportReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setProblemMessage('');
+        setShowProblemReport(true);
+        ListMyBugReports().then((result: any) => setMyProblemReports(Array.isArray(result?.items) ? result.items : [])).catch(() => setMyProblemReports([]));
+        HasPendingBugReportUpload().then(setProblemRetryAvailable).catch(() => setProblemRetryAvailable(false));
+    }, []);
+    useEffect(() => {
+        const onOpen = () => openProblemReportDialog();
+        window.addEventListener(EVENT_OPEN_PROBLEM_REPORT, onOpen);
+        return () => window.removeEventListener(EVENT_OPEN_PROBLEM_REPORT, onOpen);
+    }, [openProblemReportDialog]);
     const problemReportStatusLabel = (status: unknown) => {
         const normalized = String(status || '').trim().toLowerCase();
         const keys: Record<string, string> = {
@@ -1811,7 +1838,7 @@ function App() {
             if (!dialog) return;
             const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
                 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
-            )).filter(element => !element.hasAttribute('hidden'));
+            )).filter(element => element.closest('[hidden]') == null);
             if (!focusable.length) {
                 event.preventDefault();
                 return;
@@ -3262,6 +3289,99 @@ function App() {
             await applyBugReportEnabled(false); await applyBugReportEnabled(true);
             showToastMessage(t('problemReportResetToast'), 5000);
         } catch (err: any) { setProblemMessage(String(err?.message || err)); } finally { setProblemBusy(false); }
+    };
+    if (showProblemReport) problemReportMountedRef.current = true;
+    const problemReportDialogLive = showProblemReport || problemReportMountedRef.current;
+    const problemShotMount = problemReportShotMounts(problemScreenshots, problemMarkPath, problemShotSeenRef.current);
+    problemShotSeenRef.current = new Set(problemShotMount.seen);
+    const problemShotExporter = (path: string) => {
+        const found = problemShotExportsRef.current.get(path);
+        if (found) return found;
+        const created = { current: emptyBugReportShotExport };
+        problemShotExportsRef.current.set(path, created);
+        return created;
+    };
+    const activateProblemShot = (path: string) => {
+        if (!path || path === problemMarkPath || !problemScreenshots.includes(path)) return;
+        setProblemMarkPath(path);
+    };
+    const addProblemReportScreenshots = (incoming: readonly unknown[]) => {
+        const previous = problemScreenshotsRef.current;
+        const next = appendProblemReportScreenshotPaths(previous, incoming);
+        const added = problemReportShotAdded(previous, next);
+        if (!added && next.length === previous.length) return;
+        problemScreenshotsRef.current = next;
+        setProblemScreenshots(next);
+        if (added) setProblemMarkPath(added);
+    };
+    const onProblemReportPaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
+        const images = problemReportPastedImages(event.clipboardData);
+        if (images.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (problemBusy) return;
+        if (problemScreenshotsRef.current.length >= 12) {
+            setProblemMessage(t('problemReportScreenshotCount').replace('{count}', '12'));
+            return;
+        }
+        try {
+            const slots = Math.max(0, 12 - problemScreenshotsRef.current.length);
+            const accepted = images.slice(0, slots);
+            const oversized = accepted.find(file => file.size > BUG_REPORT_SCREENSHOT_MAX_BYTES);
+            if (oversized) throw new Error(`Screenshot ${oversized.name || ''} exceeds the 10 MB limit`);
+            const savePastedImage = (window as any).go?.main?.App?.SavePastedImage;
+            if (typeof savePastedImage !== 'function') throw new Error('Pasted image support is unavailable');
+            const paths = await Promise.all(accepted.map(async file => {
+                const base64 = await readClipboardImageBase64(file);
+                return savePastedImage(base64, problemReportPasteExtension(file));
+            }));
+            addProblemReportScreenshots(paths);
+        } catch (err: any) {
+            setProblemMessage(String(err?.message || err));
+        }
+    };
+    const sendProblemReport = async (retry: boolean) => {
+        const limited = clampBugReportDescription(problemDescription);
+        if (limited !== problemDescription) {
+            setProblemDescription(limited);
+            setProblemMessage(t('problemReportDescriptionTooLong'));
+            return;
+        }
+        const description = limited.trim();
+        if (!description) return;
+        const exported: Record<string, ProblemReportAnnotationExport> = {};
+        for (const path of problemScreenshots) {
+            const slot = problemShotExportsRef.current.get(path);
+            exported[path] = slot ? slot.current() : emptyBugReportShotExport();
+        }
+        const collected = problemReportAnnotatedExports(problemScreenshots, exported);
+        if ('error' in collected) {
+            if (collected.path) setProblemMarkPath(collected.path);
+            setProblemMessage(t('problemReportMarkFailed'));
+            return;
+        }
+        setProblemBusy(true);
+        setProblemMessage('');
+        try {
+            const report = retry
+                ? await RetryAboutProblemReport(problemKind, description, problemScreenshots, collected.annotated)
+                : await SubmitAboutProblemReport(problemKind, description, problemScreenshots, collected.annotated);
+            setProblemRetryAvailable(false);
+            setProblemMessage(t('problemReportSubmitted').replace('{id}', String(report?.id || '')));
+            setProblemDescription('');
+            problemScreenshotsRef.current = [];
+            setProblemScreenshots([]);
+            setProblemMarkPath('');
+            problemShotSeenRef.current = new Set();
+            problemShotExportsRef.current.clear();
+            const mine = await ListMyBugReports();
+            setMyProblemReports(Array.isArray((mine as any)?.items) ? (mine as any).items : []);
+        } catch (err: any) {
+            setProblemMessage(String(err?.message || err));
+            setProblemRetryAvailable(await HasPendingBugReportUpload().catch(() => false));
+        } finally {
+            setProblemBusy(false);
+        }
     };
     const allProjects = config?.projects || [];
     const normalizedProjectKeyword = projectSearchKeyword.trim().toLowerCase();
@@ -5032,6 +5152,13 @@ function App() {
         commitQuickProfileSelection(profile, selectedQuickProviderID, String(modelId || '').trim());
     }, [activeProfileSummary?.inherit_assistant, commitQuickProfileSelection, openLLMSettingsPage, quickWriteProfile, selectedQuickProviderID]);
 
+    const openTaskModel = useOpenTaskModelChoice({
+        projectPath: activeAssistantTask?.projectPath,
+        providers: quickProfileProviders,
+        lang,
+        showToast: showToastMessage,
+    });
+
     const refreshMoASession = useCallback(() => {
         callBackend(() => GetMoASessionState()).then((raw: any) => {
             const presets = Array.isArray(raw?.presets)
@@ -6323,6 +6450,20 @@ ${instruction}`;
                             onOpenAppReleaseNotes={handleOpenAppReleaseNotes}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
+                            taskModelProviders={openTaskModel?.providers}
+                            taskModelCurrent={openTaskModel?.currentModel}
+                            taskModelOptions={openTaskModel?.modelOptions}
+                            taskModelLoading={openTaskModel?.modelsLoading}
+                            onSwitchTaskProvider={openTaskModel?.onSwitchProvider}
+                            onSwitchTaskModel={openTaskModel?.onSwitchModel}
+                            onOpenTaskModelMenu={openTaskModel?.onOpenModelMenu}
+                            onDismissTaskModelMenu={openTaskModel?.onDismissModelMenu}
+                            taskModelLabel={openTaskModel?.label}
+                            taskModelTitle={openTaskModel?.title}
+                            onFollowTaskModel={openTaskModel?.onFollow}
+                            taskModelFollows={openTaskModel?.followsAssignment}
+                            taskModelSavePending={openTaskModel?.savePending}
+                            taskModelWhenSaved={openTaskModel?.whenSaved}
                             availableProviders={quickProfileProviders}
                             onSwitchProvider={handleProfileQuickSwitchProvider}
                             currentModel={quickModel}
@@ -6649,19 +6790,7 @@ ${instruction}`;
                                 });
                             }}
                             onShowInstallLog={() => setShowInstallLog(true)}
-                            onOpenProblemReport={() => {
-                                problemReportReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-                                setProblemMessage('');
-                                setShowProblemReport(true);
-                                if (!problemOS) GetSystemInfo()
-                                    .then((info: any) => {
-                                        const detectedOS = [info?.os, info?.os_version].filter(Boolean).join(' ') || navigator.userAgent;
-                                        setProblemOS(current => current || detectedOS);
-                                    })
-                                    .catch(() => setProblemOS(current => current || navigator.userAgent));
-                                ListMyBugReports().then((result: any) => setMyProblemReports(Array.isArray(result?.items) ? result.items : [])).catch(() => setMyProblemReports([]));
-                                HasPendingBugReportUpload().then(setProblemRetryAvailable).catch(() => setProblemRetryAvailable(false));
-                            }}
+                            onOpenProblemReport={openProblemReportDialog}
                             onOpenBugReport={() => safeBrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}
                             onOpenGithub={() => BrowserOpenURL(MACLAW_CODE_REPOSITORY_URL)}
                             onRegister={requestOnboarding}
@@ -6773,11 +6902,14 @@ ${instruction}`;
                 />
             )}
 
-            {showProblemReport && (
-                <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
+            {problemShotMount.mounts.map(path => (
+                <ProblemReportMarkEditor key={path} lang={lang} path={path} portalHost={problemMarkHost} active={showProblemReport && problemMarkHost !== null && path === problemMarkPath} disabled={problemBusy} exporter={problemShotExporter(path)} failedLabel={t('problemReportMarkFailed')} />
+            ))}
+            {problemReportDialogLive && (
+                <div className={showProblemReport ? 'modal-overlay' : 'problem-report-overlay-parked'} aria-hidden={showProblemReport ? undefined : true} role="presentation" onMouseDown={(event) => {
                     if (event.target === event.currentTarget && !problemBusy) setShowProblemReport(false);
                 }}>
-                    <div ref={problemReportDialogRef} className="modal-content problem-report-dialog" role="dialog" aria-modal="true" aria-busy={problemBusy} aria-labelledby="problem-report-title" aria-describedby="problem-report-description">
+                    <div ref={problemReportDialogRef} className={`modal-content problem-report-dialog${problemScreenshots.length > 0 ? ' gui-bug-report-dialog' : ''}`} role="dialog" aria-modal={showProblemReport ? true : undefined} aria-busy={problemBusy} aria-labelledby="problem-report-title" aria-describedby="problem-report-description" onPaste={(event) => { void onProblemReportPaste(event); }}>
                         <div className="about-contact-dialog__header problem-report-dialog__header">
                             <h3 id="problem-report-title">{t('problemReport')}</h3>
                             <button className="modal-close" disabled={problemBusy} onClick={() => setShowProblemReport(false)} aria-label={t('close')}>&times;</button>
@@ -6805,36 +6937,15 @@ ${instruction}`;
                             }} /><span className="slider"></span></label>
                             </div>
                         </div>
-                        <div className="problem-report-dialog__version" aria-label="MaClaw GUI version"><span>MaClaw GUI</span><code>{APP_VERSION}</code></div>
-                        <label className="problem-report-dialog__field"><span className="form-label">{t('problemReportOS')} <em>*</em></span><input className="form-input" value={problemOS} onChange={event => setProblemOS(event.target.value)} /></label>
-                        <label className="problem-report-dialog__field"><span className="form-label">{t('problemReportDescription')} <em>*</em></span><textarea ref={problemDescriptionRef} className="form-input" rows={5} value={problemDescription} onChange={event => setProblemDescription(event.target.value)} placeholder={t('problemReportDescriptionPlaceholder')} /></label>
-                        <div
-                            className="problem-report-dialog__field problem-report-dialog__attachments-editor"
-                            onPaste={async (event) => {
-                                if (problemBusy || problemScreenshots.length >= 12) return;
-                                const images = Array.from(event.clipboardData?.items || [])
-                                    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
-                                    .map(item => item.getAsFile())
-                                    .filter((file): file is File => file !== null);
-                                if (!images.length) return;
-                                event.preventDefault();
-                                try {
-                                    const slots = Math.max(0, 12 - problemScreenshots.length);
-                                    const accepted = images.slice(0, slots);
-                                    const oversized = accepted.find(file => file.size > BUG_REPORT_SCREENSHOT_MAX_BYTES);
-                                    if (oversized) throw new Error(`Screenshot ${oversized.name || ''} exceeds the 10 MB limit`);
-                                    const savePastedImage = (window as any).go?.main?.App?.SavePastedImage;
-                                    if (typeof savePastedImage !== 'function') throw new Error('Pasted image support is unavailable');
-                                    const paths = await Promise.all(accepted.map(async file => {
-                                        const base64 = await readClipboardImageBase64(file);
-                                        return savePastedImage(base64, clipboardImageExtension(file.type));
-                                    }));
-                                    setProblemScreenshots(prev => appendProblemReportScreenshotPaths(prev, paths));
-                                } catch (err: any) {
-                                    setProblemMessage(String(err?.message || err));
-                                }
-                            }}
-                        >
+                        <div className="gui-bug-report-tools" role="group" aria-label={t('problemReportKind')}>
+                            <div className="gui-bug-report-tools__group">
+                                <button type="button" className="gui-bug-report-tool" aria-pressed={problemKind === 'bug'} disabled={problemBusy} onClick={() => setProblemKind('bug')}>{t('problemReportKindBug')}</button>
+                                <button type="button" className="gui-bug-report-tool" aria-pressed={problemKind === 'feature'} disabled={problemBusy} onClick={() => setProblemKind('feature')}>{t('problemReportKindFeature')}</button>
+                            </div>
+                        </div>
+                        {problemKind === 'feature' ? <div className="setting-desc">{t('problemReportFeatureHint')}</div> : null}
+                        <label className="problem-report-dialog__field"><span className="form-label">{t(problemKind === 'feature' ? 'problemReportFeatureDescription' : 'problemReportDescription')} <em>*</em></span><textarea ref={problemDescriptionRef} className="form-input" rows={5} value={problemDescription} onChange={event => setProblemDescription(event.target.value)} placeholder={t(problemKind === 'feature' ? 'problemReportFeaturePlaceholder' : 'problemReportDescriptionPlaceholder')} /></label>
+                        <div className="problem-report-dialog__field problem-report-dialog__attachments-editor">
                             <div className="problem-report-dialog__attachment-head">
                                 <span className="form-label">{t('problemReportScreenshots')}</span>
                                 <button type="button" className="btn-link about-action-button" disabled={problemBusy || problemScreenshots.length >= 12} onClick={async () => {
@@ -6844,7 +6955,7 @@ ${instruction}`;
                                         const result = await SelectBugReportScreenshots();
                                         const files = Array.isArray(result) ? result : [];
                                         if (!files.length) return;
-                                        setProblemScreenshots(prev => appendProblemReportScreenshotPaths(prev, files));
+                                        addProblemReportScreenshots(files);
                                     } catch (err: any) {
                                         setProblemMessage(String(err?.message || err));
                                     }
@@ -6853,12 +6964,14 @@ ${instruction}`;
                             {problemScreenshots.length > 0 ? (
                                 <>
                                     <ul className="problem-report-dialog__attachment-list" aria-label={t('problemReportScreenshots')}>
-                                        {problemScreenshots.map((path, index) => {
+                                        {problemScreenshots.map((path) => {
                                             const name = path.split(/[\\/]/).pop() || path;
                                             const preview = problemScreenshotPreviews[path];
                                             return (
                                                 <li key={path}>
-                                                    {preview ? <img className="problem-report-dialog__attachment-preview" src={preview} alt={name} /> : <span className="problem-report-dialog__attachment-placeholder" aria-hidden="true">IMG</span>}
+                                                    <button type="button" aria-pressed={path === problemMarkPath} aria-label={t('problemReportSelectShot').replace('{name}', name)} disabled={problemBusy} onClick={() => activateProblemShot(path)} style={{ padding: 0, border: 0, background: 'transparent', boxShadow: path === problemMarkPath ? '0 0 0 2px var(--theme-primary)' : undefined, borderRadius: 4 }}>
+                                                        {preview ? <img className="problem-report-dialog__attachment-preview" src={preview} alt="" /> : <span className="problem-report-dialog__attachment-placeholder" aria-hidden="true">IMG</span>}
+                                                    </button>
                                                     <span className="problem-report-dialog__attachment-name" title={path}>{name}</span>
                                                     <button
                                                         type="button"
@@ -6867,7 +6980,10 @@ ${instruction}`;
                                                         title={t('problemReportRemoveScreenshot').replace('{name}', name)}
                                                         disabled={problemBusy}
                                                         onClick={() => {
-                                                            setProblemScreenshots(prev => prev.filter((_, itemIndex) => itemIndex !== index));
+                                                            const next = removeProblemReportScreenshotPath(problemScreenshotsRef.current, path);
+                                                            if (next.length === problemScreenshotsRef.current.length) return;
+                                                            problemScreenshotsRef.current = next;
+                                                            setProblemScreenshots(next);
                                                             setProblemScreenshotPreviews(prev => {
                                                                 if (!(path in prev)) return prev;
                                                                 const next = { ...prev };
@@ -6883,6 +6999,7 @@ ${instruction}`;
                                         })}
                                     </ul>
                                     <div className="setting-desc">{t('problemReportScreenshotCount').replace('{count}', String(problemScreenshots.length))}</div>
+                                    <div ref={setProblemMarkHost} />
                                 </>
                             ) : (
                                 <div className="setting-desc">{t('problemReportNoScreenshots')} {t('problemReportPasteScreenshot')}</div>
@@ -6893,12 +7010,14 @@ ${instruction}`;
                                 <span className="form-label" id="problem-report-history-title">{t('myProblemReports')}</span>
                                 <div className="problem-report-dialog__history-list">
                                     {myProblemReports.map((report, index) => {
-                                        const preview = problemReportDescriptionPreview(report?.description);
+                                        const storedKind = problemReportStoredKind(report?.description);
+                                        const preview = problemReportDescriptionPreview(problemReportUserDescription(report?.description));
+                                        const historyText = storedKind && preview.text ? `${storedKind} · ${preview.text}` : (preview.text || storedKind);
                                         return (
                                             <div className="problem-report-dialog__history-item" key={String(report?.id || index)}>
                                                 <div className="problem-report-dialog__history-main">
                                                     <code title={String(report?.id || '')}>{report.id}</code>
-                                                    {preview.text ? <span className="problem-report-dialog__history-desc" title={preview.title || undefined}>{preview.text}</span> : null}
+                                                    {historyText ? <span className="problem-report-dialog__history-desc" title={preview.title || undefined}>{historyText}</span> : null}
                                                 </div>
                                                 <span className="problem-report-dialog__history-status">{problemReportStatusLabel(report.status)}</span>
                                             </div>
@@ -6915,50 +7034,16 @@ ${instruction}`;
                             {problemRetryAvailable && (
                                 <button
                                     className="btn-link about-action-button"
-                                    disabled={problemBusy || !problemOS.trim() || !problemDescription.trim()}
-                                    onClick={async () => {
-                                        setProblemBusy(true);
-                                        setProblemMessage('');
-                                        try {
-                                            const report = await RetryBugReportUpload(problemOS, problemDescription, problemScreenshots);
-                                            setProblemRetryAvailable(false);
-                                            setProblemMessage(t('problemReportSubmitted').replace('{id}', String(report?.id || '')));
-                                            setProblemDescription('');
-                                            setProblemScreenshots([]);
-                                            const mine = await ListMyBugReports();
-                                            setMyProblemReports(Array.isArray((mine as any)?.items) ? (mine as any).items : []);
-                                        } catch (err: any) {
-                                            setProblemMessage(String(err?.message || err));
-                                            setProblemRetryAvailable(await HasPendingBugReportUpload().catch(() => false));
-                                        } finally {
-                                            setProblemBusy(false);
-                                        }
-                                    }}
+                                    disabled={problemBusy || !problemDescription.trim()}
+                                    onClick={() => { void sendProblemReport(true); }}
                                 >
                                     {problemBusy ? t('loading') : t('problemReportRetry')}
                                 </button>
                             )}
                             <button
                                 className="btn-primary"
-                                disabled={problemBusy || !problemOS.trim() || !problemDescription.trim()}
-                                onClick={async () => {
-                                    setProblemBusy(true);
-                                    setProblemMessage('');
-                                    try {
-                                        const report = await SubmitBugReport(problemOS, problemDescription, problemScreenshots);
-                                        setProblemRetryAvailable(false);
-                                        setProblemMessage(t('problemReportSubmitted').replace('{id}', String(report?.id || '')));
-                                        setProblemDescription('');
-                                        setProblemScreenshots([]);
-                                        const mine = await ListMyBugReports();
-                                        setMyProblemReports(Array.isArray((mine as any)?.items) ? (mine as any).items : []);
-                                    } catch (err: any) {
-                                        setProblemMessage(String(err?.message || err));
-                                        setProblemRetryAvailable(await HasPendingBugReportUpload().catch(() => false));
-                                    } finally {
-                                        setProblemBusy(false);
-                                    }
-                                }}
+                                disabled={problemBusy || !problemDescription.trim()}
+                                onClick={() => { void sendProblemReport(false); }}
                             >
                                 {problemBusy ? t('loading') : t('problemReportSubmit')}
                             </button>

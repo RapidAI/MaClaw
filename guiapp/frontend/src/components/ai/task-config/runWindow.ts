@@ -1,5 +1,6 @@
 import {
     immediateRunWindow,
+    taskModelPinned,
     type RunWindow,
     type TaskDraft,
     type WorkspaceKind,
@@ -23,6 +24,8 @@ export interface RunWindowDraftPayload {
     workflowParams?: Record<string, string>;
     latexTemplateId: string;
     latexTemplateName: string;
+    llmProviderId?: string;
+    llmModel?: string;
 }
 
 export interface RunWindowTaskRecord {
@@ -130,6 +133,10 @@ export function runWindowCreateRequest(name: string, prompt: string, initialMess
             workflowParams: { ...draft.workflowParams },
             latexTemplateId: draft.latexTemplateId || "",
             latexTemplateName: draft.latexTemplateName || "",
+            ...(taskModelPinned(draft) ? {
+                llmProviderId: String(draft.llmProviderId || "").trim(),
+                llmModel: String(draft.llmModel || "").trim(),
+            } : {}),
         },
     };
 }
@@ -161,6 +168,8 @@ export function taskDraftFromRunWindow(task: RunWindowTaskRecord): TaskDraft {
         workflowParams: { ...(stored.workflowParams || {}) },
         latexTemplateId: stored.latexTemplateId || null,
         latexTemplateName: stored.latexTemplateName || null,
+        llmProviderId: stored.llmProviderId || "",
+        llmModel: stored.llmModel || "",
         runWindow: immediateRunWindow(),
     };
 }

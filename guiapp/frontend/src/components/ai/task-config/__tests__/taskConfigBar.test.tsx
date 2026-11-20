@@ -34,6 +34,7 @@ import { RemoteServerForm } from '../RemoteServerPopover';
 const testRemoteSSHConnection = vi.fn();
 vi.mock('../../../../../wailsjs/go/main/App', () => ({
     TestRemoteSSHConnection: (...args: unknown[]) => testRemoteSSHConnection(...args),
+    FetchMaclawLLMProfileModels: vi.fn().mockResolvedValue([]),
 }));
 
 const theme = {
@@ -1278,5 +1279,96 @@ describe('remote working directory (远控目录) picker', () => {
         await waitFor(() => {
             expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('D:/work/newproj');
         });
+    });
+});
+
+describe('TaskConfigBar model chip', () => {
+    afterEach(() => cleanup());
+
+    const catalog = {
+        providers: [
+            { id: 'devin', name: 'Devin', model: 'swe-2-max', models: ['swe-2-max', 'other-model'] },
+            { id: 'local', name: 'Local', model: 'coder', models: ['coder'] },
+        ],
+        chat: { providerId: 'devin', providerName: 'Devin', model: 'swe-2-max' },
+        coding: { providerId: 'local', providerName: 'Local', model: 'coder' },
+    };
+
+    it('stays collapsed while the task follows model assignment', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { modelCatalog: catalog });
+        expect(screen.getByTestId('task-config-collapsed')).toBeTruthy();
+        expect(screen.queryByTestId('task-config-chip-model')).toBeNull();
+    });
+
+    it('shows the assignment for the task type and pins a different model', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { defaultExpanded: true, modelCatalog: catalog });
+        const chip = screen.getByTestId('task-config-chip-model');
+        expect(chip.textContent).toContain('跟随分配');
+        expect(chip.textContent).toContain('Devin');
+        expect(chip.textContent).toContain('swe-2-max');
+        fireEvent.click(chip);
+        expect(screen.getByTestId('task-model-popover')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-model-provider-local'));
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('task-model-option-coder'));
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+            llmProviderId: 'local',
+            llmModel: 'coder',
+        }));
+    });
+
+    it('clears the pin when the chosen pair is the assignment', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { defaultExpanded: true, modelCatalog: catalog });
+        fireEvent.click(screen.getByTestId('task-config-chip-model'));
+        fireEvent.click(screen.getByTestId('task-model-option-swe-2-max'));
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+            llmProviderId: '',
+            llmModel: '',
+        }));
+    });
+
+    it('shows a pin as this task and can return to the assignment', () => {
+        const onChange = vi.fn();
+        const draft = { ...defaultTaskDraft(), llmProviderId: 'local', llmModel: 'coder' };
+        renderBar(draft, onChange, { modelCatalog: catalog });
+        const chip = screen.getByTestId('task-config-chip-model');
+        expect(chip.textContent).toContain('Local');
+        expect(chip.textContent).toContain('coder');
+        expect(chip.textContent).not.toContain('跟随分配');
+        fireEvent.click(chip);
+        fireEvent.click(screen.getByTestId('task-model-follow'));
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+            llmProviderId: '',
+            llmModel: '',
+        }));
+    });
+
+    it('locks the model chip for a task on another computer', () => {
+        const onChange = vi.fn();
+        const draft = withMachine(defaultTaskDraft(), { grantId: 'g1', machineName: 'office' });
+        renderBar(draft, onChange, {
+            modelCatalog: catalog,
+            remoteMachines: [{ grantId: 'g1', machineName: 'office', online: true, operate: true }],
+        });
+        const chip = screen.getByTestId('task-config-chip-model');
+        expect(chip.textContent).toContain('对方电脑');
+        expect(chip.getAttribute('title')).toContain('不可配置');
+        fireEvent.click(chip);
+        expect(screen.queryByTestId('task-model-popover')).toBeNull();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps a pin when the task type changes', () => {
+        const onChange = vi.fn();
+        const draft = { ...defaultTaskDraft(), llmProviderId: 'local', llmModel: 'coder' };
+        renderBar(draft, onChange, { modelCatalog: catalog });
+        fireEvent.click(screen.getByTestId('task-config-chip-type'));
+        fireEvent.click(screen.getByTestId('type-item-coding'));
+        const next = onChange.mock.calls[0][0];
+        expect(next.taskType).toBe('coding');
+        expect(next.llmProviderId).toBe('local');
+        expect(next.llmModel).toBe('coder');
     });
 });

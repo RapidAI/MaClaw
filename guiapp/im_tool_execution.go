@@ -482,7 +482,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	}
 	result := runner(
 		h,
-		h.getCodingLLMConfig(),
+		h.codingLLMConfigForSession(policyUserID),
 		httpClient,
 		task,
 		projectPath,

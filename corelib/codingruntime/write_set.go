@@ -92,6 +92,9 @@ func NormalizeWriterPolicy(task Task, policy PolicySnapshot) (PolicySnapshot, er
 	if policy.FinalDiffGateRequired && !policy.WorkspaceIsolated {
 		return PolicySnapshot{}, fmt.Errorf("coding runtime final diff gate requires isolated workspace")
 	}
+	if policy.DeferredWorktree && (!policy.WorkspaceIsolated || !policy.FinalDiffGateRequired) {
+		return PolicySnapshot{}, fmt.Errorf("coding runtime deferred worktree requires isolated workspace and final diff gate")
+	}
 	scope := WriteScope{
 		Mode:         firstNonEmpty(policy.Mode, task.Mode),
 		ProjectRef:   firstNonEmpty(policy.ProjectRoot, task.ProjectRef),
@@ -155,11 +158,12 @@ func NormalizeWriterPolicy(task Task, policy PolicySnapshot) (PolicySnapshot, er
 	}
 	policy.WriteSet = normalized
 	policy.Mode, policy.ProjectRoot, policy.RemoteTarget = normalized.Scope.Mode, normalized.Scope.ProjectRef, normalized.Scope.RemoteTarget
-	if policy.WorkspaceIsolated && (normalized.Unknown || len(normalized.Claims) == 0) {
+	if policy.WorkspaceIsolated && !policy.DeferredWorktree && (normalized.Unknown || len(normalized.Claims) == 0) {
 		// An isolated writer is merged back under a frozen scope.  Without at
 		// least one exact claim the merge gate cannot prove what it is allowed
 		// to change, so treating the declaration as an unknown serialized writer
-		// would defeat the isolation assertion.
+		// would defeat the isolation assertion. A deferred worktree merges by
+		// git content instead of a predeclared file list.
 		return PolicySnapshot{}, fmt.Errorf("coding runtime isolated writer requires declared write claims")
 	}
 	return policy, nil
@@ -203,6 +207,8 @@ func PolicyDigest(policy PolicySnapshot) (string, error) {
 	b.WriteString(fmt.Sprintf("%t", copy.FinalDiffGateRequired))
 	b.WriteString("\nfinal_workspace_gate=")
 	b.WriteString(fmt.Sprintf("%t", copy.FinalWorkspaceGateRequired))
+	b.WriteString("\ndeferred=")
+	b.WriteString(fmt.Sprintf("%t", copy.DeferredWorktree))
 	b.WriteString("\nunknown=")
 	b.WriteString(fmt.Sprintf("%t", copy.WriteSet.Unknown))
 	for _, claim := range claims {
@@ -219,16 +225,16 @@ func PolicyDigest(policy PolicySnapshot) (string, error) {
 // global and fail-closed because it cannot be proven disjoint from anything.
 //
 // Two non-isolated local writers with concrete claims share one project tree.
-// Different files run together. The same file is synchronized in the text
-// file tools, so an overlapping claim, including a project-root directory
-// claim, is not an attempt-level wait. An unknown write set stays fail-closed:
-// that writer may touch any path in that same workspace, including through
-// the shell. A different project is not part of the conflict.
+// Different files run together. The same file, and a project-root directory
+// claim, wait: a text-tool lock covers one edit call, and a later full-file
+// write or a shell rewrite would replace the other task's bytes. An unknown
+// write set stays fail-closed. A different project is not part of the conflict.
 //
-// A workspace-isolated writer keeps CanAdmitParallelWriters. That is the
-// worktree merge rule: both sides isolated, disjoint claims, and a final diff
-// gate. Remote shared-tree writers stay on that gate as well. Their bytes go
-// out over SSH and are not covered by the local per-file lock.
+// A deferred worktree edits a private checkout of the same project. It does
+// not share bytes with the primary writer, so it does not wait here. The host
+// merge is the gate. A workspace-isolated writer that is not deferred keeps
+// CanAdmitParallelWriters: both sides isolated, disjoint claims, and a final
+// diff gate. Remote shared-tree writers stay on that gate as well.
 func WriterAdmissionConflict(leftTask Task, left PolicySnapshot, rightTask Task, right PolicySnapshot) WriteSetConflict {
 	if left.ReadOnly || right.ReadOnly {
 		return WriteSetConflict{}
@@ -241,18 +247,30 @@ func WriterAdmissionConflict(leftTask Task, left PolicySnapshot, rightTask Task,
 	if strings.TrimSpace(left.WriteSet.Scope.ProjectRef) == "" || strings.TrimSpace(right.WriteSet.Scope.ProjectRef) == "" {
 		return WriteSetConflict{Conflicts: true, Reason: "unknown write scope"}
 	}
+	if deferredLocalWorktree(left) || deferredLocalWorktree(right) {
+		// Private checkouts of one repo run together. A different project, or a
+		// remote writer, is not given this pass.
+		if !sameWriteScope(left.WriteSet.Scope, right.WriteSet.Scope) {
+			return WriteSetConflict{}
+		}
+		if strings.EqualFold(left.WriteSet.Scope.Mode, "local") && strings.EqualFold(right.WriteSet.Scope.Mode, "local") {
+			return WriteSetConflict{}
+		}
+	}
 	if sharedLocalTreeWriters(left, right) {
-		// Unknown conflicts inside one workspace. A different project stays
-		// independent, matching CanAdmitParallelWriters.
 		if !sameWriteScope(left.WriteSet.Scope, right.WriteSet.Scope) {
 			return WriteSetConflict{}
 		}
 		if left.WriteSet.Unknown || right.WriteSet.Unknown {
 			return WriteSetConflict{Conflicts: true, Reason: "unknown write set"}
 		}
-		return WriteSetConflict{}
+		return left.WriteSet.ConflictsWith(right.WriteSet)
 	}
 	return CanAdmitParallelWriters(left.WriteSet, right.WriteSet, left.WorkspaceIsolated, right.WorkspaceIsolated, left.FinalDiffGateRequired && right.FinalDiffGateRequired)
+}
+
+func deferredLocalWorktree(policy PolicySnapshot) bool {
+	return policy.DeferredWorktree && strings.EqualFold(strings.TrimSpace(policy.WriteSet.Scope.Mode), "local")
 }
 
 // sharedLocalTreeWriters is the desktop project tree: both attempts are local
@@ -352,10 +370,8 @@ func normalizeWriteClaimPath(scope WriteScope, raw string, directory bool) (stri
 	}
 	if path == "." {
 		if directory {
-			// An explicit project-root directory claim is a bounded fallback for a
-			// dynamic task that cannot name its files yet. ConflictsWith still
-			// treats it as overlapping every descendant. Shared local admission
-			// does not turn that overlap into an attempt wait. It is not
+			// An explicit project-root directory claim overlaps every descendant.
+			// Shared local admission waits on that overlap. It is not
 			// WriteSet.Unknown.
 			return ".", nil
 		}

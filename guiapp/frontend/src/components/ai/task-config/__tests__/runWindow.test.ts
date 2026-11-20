@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { presentDialogMessage } from '../../../CustomDialog';
-import { defaultTaskDraft, withRunWindow } from '../taskDraft';
+import { defaultTaskDraft, withRunWindow, withTaskModel } from '../taskDraft';
 import {
     isRunWindowDue,
     runWindowChipLabel,
     runWindowCreatedNotice,
     runWindowCreateRequest,
     runWindowStatusLabel,
+    taskDraftFromRunWindow,
     validateRunWindow,
 } from '../runWindow';
 
@@ -60,6 +61,30 @@ describe('run window', () => {
         expect(request.draft.remoteHost).toBe('10.0.0.8');
         expect(request.draft).not.toHaveProperty('password');
         expect(JSON.stringify(request)).not.toContain('secret');
+        expect(request.draft.llmProviderId).toBeUndefined();
+    });
+
+    it('keeps a per-task model pin on the scheduled draft and restores it', () => {
+        const draft = withTaskModel(withRunWindow(defaultTaskDraft(), {
+            mode: 'scheduled',
+            startAt: '2099-03-01T02:00',
+            endAt: '',
+        }), 'devin', 'swe-2-max');
+        const request = runWindowCreateRequest('夜间整理', '夜间整理', '夜间整理', draft);
+        expect(request.draft.llmProviderId).toBe('devin');
+        expect(request.draft.llmModel).toBe('swe-2-max');
+        const restored = taskDraftFromRunWindow({
+            id: 'rw-pin',
+            name: '夜间整理',
+            prompt: '夜间整理',
+            initialMessage: '夜间整理',
+            draft: request.draft,
+            status: 'pending',
+            startAt: '2099-03-01T02:00',
+            createdAt: '2099-03-01T00:00',
+        });
+        expect(restored.llmProviderId).toBe('devin');
+        expect(restored.llmModel).toBe('swe-2-max');
     });
 
     it('treats a pending task as due only inside the window', () => {

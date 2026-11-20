@@ -14,6 +14,28 @@ function cutCodePoints(chars: string[], limit: number): string {
     return `${chars.slice(0, limit).join('').trimEnd()}…`;
 }
 
+const problemReportKindLine = /^【报告类型】(缺陷|新功能)$/;
+
+function problemReportKindParts(description: unknown): { kind: string; body: string } {
+    const text = String(description ?? '').replace(/\r\n/g, '\n');
+    const newline = text.indexOf('\n');
+    const line = (newline < 0 ? text : text.slice(0, newline)).trim();
+    const match = problemReportKindLine.exec(line);
+    if (!match) return { kind: '', body: String(description ?? '') };
+    const body = newline < 0 ? '' : text.slice(newline + 1).trim();
+    return { kind: match[1], body };
+}
+
+/** Stored type line, or "" for a report saved before types existed. */
+export function problemReportStoredKind(description: unknown): string {
+    return problemReportKindParts(description).kind;
+}
+
+/** Description without the stored type line. */
+export function problemReportUserDescription(description: unknown): string {
+    return problemReportKindParts(description).body;
+}
+
 /** Leading description excerpt for the submitted-report list. */
 export function problemReportDescriptionPreview(description: unknown): ProblemReportDescriptionPreview {
     const collapsed = String(description ?? '').replace(/\s+/g, ' ').trim();

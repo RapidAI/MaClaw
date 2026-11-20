@@ -114,6 +114,11 @@ type TaskPref struct {
 	Pinned   bool   `json:"pinned,omitempty"`   // pinned to top of list
 	Hidden   bool   `json:"hidden,omitempty"`   // hidden from list (soft delete)
 	Archived bool   `json:"archived,omitempty"` // archived (hidden + read-only, experience preserved)
+	// LLMProviderID and LLMModel pin this task to one provider and model.
+	// An empty pair follows 模型分配 live. Both fields are required; one side
+	// alone is not a pin. Model ids may contain colons, so this is not a tag.
+	LLMProviderID string `json:"llmProviderId,omitempty"`
+	LLMModel      string `json:"llmModel,omitempty"`
 }
 
 // NewProjectIndex creates an empty ProjectIndex.
@@ -850,6 +855,46 @@ func (pi *ProjectIndex) ClearTaskPrefs(projectPath string) {
 	pi.savePrefs()
 }
 
+// SetTaskLLM pins a task to one provider and model. An empty provider or an
+// empty model clears the pin, so the task follows 模型分配 again. A pin-only
+// preference is kept.
+func (pi *ProjectIndex) SetTaskLLM(projectPath, providerID, model string) {
+	if pi == nil {
+		return
+	}
+	providerID = strings.TrimSpace(providerID)
+	model = strings.TrimSpace(model)
+	if providerID == "" || model == "" {
+		providerID, model = "", ""
+	}
+	pi.mu.Lock()
+	p := pi.getOrCreatePrefLocked(projectPath)
+	p.LLMProviderID = providerID
+	p.LLMModel = model
+	pi.cleanupPrefLocked(projectPath)
+	pi.mu.Unlock()
+	pi.savePrefs()
+}
+
+// TaskLLM returns the pinned provider and model. An incomplete pair is not a pin.
+func (pi *ProjectIndex) TaskLLM(projectPath string) (providerID, model string) {
+	if pi == nil {
+		return "", ""
+	}
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+	p, ok := pi.prefs[projectPrefKey(projectPath)]
+	if !ok || p == nil {
+		return "", ""
+	}
+	providerID = strings.TrimSpace(p.LLMProviderID)
+	model = strings.TrimSpace(p.LLMModel)
+	if providerID == "" || model == "" {
+		return "", ""
+	}
+	return providerID, model
+}
+
 // IsArchived returns whether a task is archived.
 func (pi *ProjectIndex) IsArchived(projectPath string) bool {
 	pi.mu.RLock()
@@ -877,7 +922,7 @@ func (pi *ProjectIndex) getOrCreatePrefLocked(projectPath string) *TaskPref {
 func (pi *ProjectIndex) cleanupPrefLocked(projectPath string) {
 	projectPath = projectPrefKey(projectPath)
 	if p, ok := pi.prefs[projectPath]; ok {
-		if p.Name == "" && !p.Pinned && !p.Hidden && !p.Archived {
+		if p.Name == "" && !p.Pinned && !p.Hidden && !p.Archived && strings.TrimSpace(p.LLMProviderID) == "" && strings.TrimSpace(p.LLMModel) == "" {
 			delete(pi.prefs, projectPath)
 		}
 	}
@@ -909,6 +954,12 @@ func normalizeTaskPrefs(input map[string]*TaskPref) map[string]*TaskPref {
 		merged.Pinned = merged.Pinned || pref.Pinned
 		merged.Hidden = merged.Hidden || pref.Hidden
 		merged.Archived = merged.Archived || pref.Archived
+		if strings.TrimSpace(merged.LLMProviderID) == "" {
+			merged.LLMProviderID = strings.TrimSpace(pref.LLMProviderID)
+		}
+		if strings.TrimSpace(merged.LLMModel) == "" {
+			merged.LLMModel = strings.TrimSpace(pref.LLMModel)
+		}
 	}
 	return out
 }

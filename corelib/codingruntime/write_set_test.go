@@ -245,10 +245,35 @@ func TestPolicyDigestCoversWriteScopeAndIsolation(t *testing.T) {
 	if err != nil || first == third {
 		t.Fatalf("isolation digest first=%q third=%q err=%v", first, third, err)
 	}
+	changedDeferred := changedIsolation
+	changedDeferred.DeferredWorktree = true
+	fourth, err := PolicyDigest(changedDeferred)
+	if err != nil || third == fourth {
+		t.Fatalf("deferred digest third=%q fourth=%q err=%v", third, fourth, err)
+	}
+}
+
+func TestNormalizeWriterPolicyAllowsDeferredWorktreeWithoutFileClaims(t *testing.T) {
+	policy, err := NormalizeWriterPolicy(Task{ProjectRef: filepath.Join("D:", "repo"), Mode: "local"}, PolicySnapshot{
+		WorkspaceIsolated:     true,
+		FinalDiffGateRequired: true,
+		DeferredWorktree:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.DeferredWorktree || !policy.WriteSet.Unknown {
+		t.Fatalf("policy=%+v", policy)
+	}
+	if _, err := NormalizeWriterPolicy(Task{ProjectRef: filepath.Join("D:", "repo"), Mode: "local"}, PolicySnapshot{DeferredWorktree: true}); err == nil {
+		t.Fatal("deferred worktree without isolation and final diff gate was accepted")
+	}
 }
 
 func TestWriterAdmissionSharedLocalTreeRunsConcreteClaimsTogether(t *testing.T) {
-	root := filepath.Join("D:", "repo")
+	// Join("D:", "repo") is drive-relative on Windows and does not normalize
+	// to the project-root claim ".".
+	root := filepath.Join("D:\\", "repo")
 	task := Task{ProjectRef: root, Mode: "local"}
 	claim := func(path string, directory bool) PolicySnapshot {
 		return PolicySnapshot{ProjectRoot: root, Mode: "local", WriteSet: WriteSet{Claims: []WriteClaim{{Path: path, Directory: directory}}}}
@@ -256,21 +281,26 @@ func TestWriterAdmissionSharedLocalTreeRunsConcreteClaimsTogether(t *testing.T) 
 	if got := WriterAdmissionConflict(task, claim("a.go", false), task, claim("b.go", false)); got.Conflicts {
 		t.Fatalf("disjoint files conflicted: %+v", got)
 	}
-	if got := WriterAdmissionConflict(task, claim("a.go", false), task, claim("a.go", false)); got.Conflicts {
-		t.Fatalf("same file blocked the attempt: %+v", got)
+	if got := WriterAdmissionConflict(task, claim("a.go", false), task, claim("a.go", false)); !got.Conflicts || got.Reason != "overlapping write claim" {
+		t.Fatalf("same file was admitted together: %+v", got)
 	}
 	rootPolicy := claim(root+string(filepath.Separator), true)
-	if got := WriterAdmissionConflict(task, rootPolicy, task, claim("src/main.go", false)); got.Conflicts {
-		t.Fatalf("root directory claim blocked a file writer: %+v", got)
+	if got := WriterAdmissionConflict(task, rootPolicy, task, claim("src/main.go", false)); !got.Conflicts || got.Reason != "overlapping write claim" {
+		t.Fatalf("root directory claim was admitted beside a file writer: %+v", got)
 	}
-	if got := WriterAdmissionConflict(task, rootPolicy, task, rootPolicy); got.Conflicts {
-		t.Fatalf("two root claims conflicted: %+v", got)
+	if got := WriterAdmissionConflict(task, rootPolicy, task, rootPolicy); !got.Conflicts || got.Reason != "overlapping write claim" {
+		t.Fatalf("two root claims were admitted together: %+v", got)
+	}
+	deferred := claim("a.go", false)
+	deferred.WorkspaceIsolated, deferred.FinalDiffGateRequired, deferred.DeferredWorktree = true, true, true
+	if got := WriterAdmissionConflict(task, rootPolicy, task, deferred); got.Conflicts {
+		t.Fatalf("deferred worktree waited on the primary writer: %+v", got)
 	}
 	unknown := WriterAdmissionConflict(task, PolicySnapshot{ProjectRoot: root, Mode: "local"}, task, claim("a.go", false))
 	if !unknown.Conflicts || unknown.Reason != "unknown write set" {
 		t.Fatalf("unknown writer: %+v", unknown)
 	}
-	otherRoot := filepath.Join("D:", "other")
+	otherRoot := filepath.Join("D:\\", "other")
 	otherTask := Task{ProjectRef: otherRoot, Mode: "local"}
 	otherClaim := PolicySnapshot{ProjectRoot: otherRoot, Mode: "local", WriteSet: WriteSet{Claims: []WriteClaim{{Path: "a.go"}}}}
 	if got := WriterAdmissionConflict(task, PolicySnapshot{ProjectRoot: root, Mode: "local"}, otherTask, otherClaim); got.Conflicts {
@@ -303,7 +333,7 @@ func TestWriterAdmissionSharedLocalTreeRunsConcreteClaimsTogether(t *testing.T) 
 func TestMemoryStoreSharedLocalClaimsAdmitTogether(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
-	root := filepath.Join("D:", "shared-tree")
+	root := filepath.Join("D:\\", "shared-tree")
 	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
 	if err != nil {
 		t.Fatal(err)
@@ -327,8 +357,8 @@ func TestMemoryStoreSharedLocalClaimsAdmitTogether(t *testing.T) {
 	if _, err := store.StartAttempt(first.TaskID, "one", time.Minute, rootClaim, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.StartAttempt(second.TaskID, "two", time.Minute, fileClaim, now); err != nil {
-		t.Fatalf("file writer waited behind the project-root claim: %v", err)
+	if _, err := store.StartAttempt(second.TaskID, "two", time.Minute, fileClaim, now); !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("file writer err=%v, want a conflict with the project-root claim", err)
 	}
 }
 

@@ -11,7 +11,7 @@
  */
 import { describeTaskTitle } from "../describeTaskTitle";
 import { isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../../utils/latexTemplates";
-import { codingDirectoryRequired, isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
+import { codingDirectoryRequired, isDraftDefault, taskModelPinned, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
 import { tailText } from "../../../i18n/mnTail"
 
 /** 与 wailsjs main.TaskCreateOptions 字段对齐（普通对象，直接可序列化）。 */
@@ -27,6 +27,9 @@ export interface UnifiedTaskCreateOptions {
     params?: Record<string, string>;
     /** Scheduled LaTeX paper: do not cancel the shared expert turn while allocating the directory. */
     keepExpertSession?: boolean;
+    /** Set together. Omitted when this task follows 模型分配. */
+    llmProviderId?: string;
+    llmModel?: string;
 }
 
 /** 打开新任务页签并自动发送首条消息的导航载荷（EVENT_OPEN_TASK_LAUNCH）。 */
@@ -94,6 +97,10 @@ export function draftToTaskCreateOptions(text: string, draft: TaskDraft): Unifie
         expertName: (draft.expertName || "").trim(),
         workflowTemplateId: workflowId === WORKFLOW_AUTO ? "" : workflowId,
     };
+    if (taskModelPinned(draft)) {
+        base.llmProviderId = String(draft.llmProviderId || "").trim();
+        base.llmModel = String(draft.llmModel || "").trim();
+    }
     if (base.workflowTemplateId) {
         // v1：参数槽弹窗未接入，带空参数对象创建，缺槽位由后端 SubmitForm 兜底。
         base.params = { ...draft.workflowParams };

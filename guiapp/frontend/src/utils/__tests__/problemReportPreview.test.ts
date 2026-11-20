@@ -3,6 +3,8 @@ import {
     problemReportDescriptionPreview,
     problemReportDescriptionPreviewLimit,
     problemReportDescriptionTitleLimit,
+    problemReportStoredKind,
+    problemReportUserDescription,
 } from '../problemReportPreview';
 
 describe('problemReportDescriptionPreview', () => {
@@ -49,5 +51,14 @@ describe('problemReportDescriptionPreview', () => {
         const preview = problemReportDescriptionPreview(description);
         expect(preview.text.endsWith(`${emoji}…`)).toBe(true);
         expect(Array.from(preview.text).at(-2)).toBe(emoji);
+    });
+});
+
+describe('problemReportStoredKind', () => {
+    it('reads the stored type and leaves the person\'s text', () => {
+        expect(problemReportStoredKind('【报告类型】新功能\n希望能导出')).toBe('新功能');
+        expect(problemReportUserDescription('【报告类型】缺陷\n窗口卡住')).toBe('窗口卡住');
+        expect(problemReportStoredKind('旧报告没有类型')).toBe('');
+        expect(problemReportUserDescription('旧报告没有类型')).toBe('旧报告没有类型');
     });
 });

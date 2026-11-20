@@ -12832,9 +12832,23 @@ func normalizeBugReportScreenshotPaths(paths []string) []string {
 // for a user-selected diagnostic screenshot.  The frontend receives only image
 // data, never a local file URL/path, and therefore cannot accidentally expose it.
 func (a *App) BugReportScreenshotPreviewDataURL(path string) (string, error) {
+	return a.bugReportScreenshotDataURL(path, 240)
+}
+
+// BugReportScreenshotMarkDataURL is the bitmap the About-page editor paints on.
+// It uses the same file guards as the thumbnail and the header dialog's 4096
+// long-edge cap. An unmarked upload still reads the original file bytes.
+func (a *App) BugReportScreenshotMarkDataURL(path string) (string, error) {
+	return a.bugReportScreenshotDataURL(path, guiBugReportPreviewMaxEdge)
+}
+
+func (a *App) bugReportScreenshotDataURL(path string, maxEdge int) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("screenshot path is required")
+	}
+	if maxEdge < 1 {
+		maxEdge = 240
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -12866,7 +12880,6 @@ func (a *App) BugReportScreenshotPreviewDataURL(path string) (string, error) {
 	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
 		return "", fmt.Errorf("screenshot has invalid dimensions")
 	}
-	const maxEdge = 240
 	width, height := bounds.Dx(), bounds.Dy()
 	if width > maxEdge || height > maxEdge {
 		if width >= height {
@@ -13088,10 +13101,10 @@ func fullDataURLFromImageBytes(data []byte) (string, error) {
 // The SkillMarket session is derived from the current Hub principal. The local
 // archive is retained for a retry if the request fails.
 func (a *App) SubmitBugReport(osVersion, description string, screenshots []string) (map[string]interface{}, error) {
-	return a.submitBugReport(osVersion, description, screenshots, nil)
+	return a.submitBugReport(osVersion, description, screenshots, nil, true, "bug")
 }
 
-func (a *App) submitBugReport(osVersion, description string, screenshots []string, roots []bugReportRootFile) (map[string]interface{}, error) {
+func (a *App) submitBugReport(osVersion, description string, screenshots []string, roots []bugReportRootFile, includeDiagnostics bool, kind string) (map[string]interface{}, error) {
 	a.bugReportUploadMu.Lock()
 	defer a.bugReportUploadMu.Unlock()
 	osVersion, description = strings.TrimSpace(osVersion), strings.TrimSpace(description)
@@ -13127,68 +13140,72 @@ func (a *App) submitBugReport(osVersion, description string, screenshots []strin
 		}
 	}()
 	var includedFiles int
-	for _, root := range []string{"logs", "trajectories"} {
-		base := filepath.Join(a.getMaclawBaseDir(), root)
-		baseInfo, statErr := os.Lstat(base)
-		if statErr != nil {
-			if !os.IsNotExist(statErr) {
-				log.Printf("[bug-report] skipping unreadable %s directory %s: %v", root, base, statErr)
+	// A feature request still gets bugreports.txt. It does not walk logs
+	// or trajectories, so those directories stay on disk.
+	if includeDiagnostics {
+		for _, root := range []string{"logs", "trajectories"} {
+			base := filepath.Join(a.getMaclawBaseDir(), root)
+			baseInfo, statErr := os.Lstat(base)
+			if statErr != nil {
+				if !os.IsNotExist(statErr) {
+					log.Printf("[bug-report] skipping unreadable %s directory %s: %v", root, base, statErr)
+				}
+				continue
 			}
-			continue
-		}
-		if baseInfo.Mode()&os.ModeSymlink != 0 {
-			log.Printf("[bug-report] skipping symbolic-link diagnostic root: %s", base)
-			continue
-		}
-		if !baseInfo.IsDir() {
-			log.Printf("[bug-report] skipping %s because it is not a directory: %s", root, base)
-			continue
-		}
-		if err := filepath.Walk(base, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil {
-				if os.IsPermission(walkErr) {
-					log.Printf("[bug-report] skipping inaccessible diagnostic path %s: %v", path, walkErr)
+			if baseInfo.Mode()&os.ModeSymlink != 0 {
+				log.Printf("[bug-report] skipping symbolic-link diagnostic root: %s", base)
+				continue
+			}
+			if !baseInfo.IsDir() {
+				log.Printf("[bug-report] skipping %s because it is not a directory: %s", root, base)
+				continue
+			}
+			if err := filepath.Walk(base, func(path string, info os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					if os.IsPermission(walkErr) {
+						log.Printf("[bug-report] skipping inaccessible diagnostic path %s: %v", path, walkErr)
+						return nil
+					}
+					return walkErr
+				}
+				if info == nil || info.IsDir() {
 					return nil
 				}
-				return walkErr
-			}
-			if info == nil || info.IsDir() {
-				return nil
-			}
-			// Diagnostics directories are user-writable. Do not follow symlinks
-			// or read devices/FIFOs, which could leak data outside ~/.maclaw or
-			// block archive creation indefinitely.
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return nil
-			}
-			rel, err := filepath.Rel(a.getMaclawBaseDir(), path)
-			if err != nil {
-				return err
-			}
-			in, err := os.Open(path)
-			if err != nil {
-				if os.IsPermission(err) {
-					log.Printf("[bug-report] skipping unreadable diagnostic file %s: %v", path, err)
+				// Diagnostics directories are user-writable. Do not follow symlinks
+				// or read devices/FIFOs, which could leak data outside ~/.maclaw or
+				// block archive creation indefinitely.
+				if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 					return nil
 				}
+				rel, err := filepath.Rel(a.getMaclawBaseDir(), path)
+				if err != nil {
+					return err
+				}
+				in, err := os.Open(path)
+				if err != nil {
+					if os.IsPermission(err) {
+						log.Printf("[bug-report] skipping unreadable diagnostic file %s: %v", path, err)
+						return nil
+					}
+					return err
+				}
+				w, err := zw.Create(filepath.ToSlash(rel))
+				if err != nil {
+					_ = in.Close()
+					return err
+				}
+				_, err = io.Copy(w, in)
+				closeErr := in.Close()
+				if err == nil {
+					includedFiles++
+				}
+				if err == nil {
+					err = closeErr
+				}
 				return err
+			}); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
+				return nil, err
 			}
-			w, err := zw.Create(filepath.ToSlash(rel))
-			if err != nil {
-				_ = in.Close()
-				return err
-			}
-			_, err = io.Copy(w, in)
-			closeErr := in.Close()
-			if err == nil {
-				includedFiles++
-			}
-			if err == nil {
-				err = closeErr
-			}
-			return err
-		}); err != nil && !os.IsNotExist(err) && !os.IsPermission(err) {
-			return nil, err
 		}
 	}
 	for _, entry := range roots {
@@ -13217,7 +13234,7 @@ func (a *App) submitBugReport(osVersion, description string, screenshots []strin
 	}
 	a.setPendingBugReportUpload(zipPath, includedFiles)
 	keepArchive = true
-	return a.uploadBugReportArchive(zipPath, includedFiles, osVersion, description, screenshots)
+	return a.uploadBugReportArchive(zipPath, includedFiles, osVersion, description, screenshots, kind)
 }
 
 // RetryBugReportUpload retries the latest failed submission without recreating
@@ -13234,7 +13251,7 @@ func (a *App) RetryBugReportUpload(osVersion, description string, screenshots []
 		a.clearPendingBugReportUpload(pending.zipPath)
 		return nil, fmt.Errorf("saved diagnostics archive is no longer available: %w", err)
 	}
-	return a.uploadBugReportArchive(pending.zipPath, pending.includedFiles, osVersion, description, screenshots)
+	return a.uploadBugReportArchive(pending.zipPath, pending.includedFiles, osVersion, description, screenshots, "bug")
 }
 
 // HasPendingBugReportUpload reports whether this running desktop client still
@@ -13317,7 +13334,7 @@ func (a *App) clearPendingBugReportUpload(zipPath string) {
 	}
 }
 
-func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersion, description string, screenshots []string) (map[string]interface{}, error) {
+func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersion, description string, screenshots []string, kind string) (map[string]interface{}, error) {
 	osVersion, description = strings.TrimSpace(osVersion), strings.TrimSpace(description)
 	if osVersion == "" || description == "" {
 		return nil, fmt.Errorf("operating system and problem description are required")
@@ -13345,6 +13362,9 @@ func (a *App) uploadBugReportArchive(zipPath string, includedFiles int, osVersio
 	// fallback for local/dev builds where the linker has not set main.version.
 	_ = mw.WriteField("gui_version", remoteAppVersion())
 	_ = mw.WriteField("description", description)
+	// HubCenter turns this into the stored 【报告类型】 line. The description
+	// field stays the text the person wrote.
+	_ = mw.WriteField("kind", bugReportKindToken(kind))
 	part, err := mw.CreateFormFile("diagnostics", filepath.Base(zipPath))
 	if err != nil {
 		return nil, err

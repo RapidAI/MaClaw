@@ -27,12 +27,16 @@ export function BugReportShotEditor({
     disabled,
     exporter,
     onPreviewError,
+    active = true,
 }: {
     lang: string;
     src: string;
     disabled: boolean;
     exporter: { current: BugReportShotExporter };
     onPreviewError: () => void;
+    // The About dialog keeps one editor per picture and hides the rest.
+    // A hidden editor must not take Ctrl+Z, and it measures again when shown.
+    active?: boolean;
 }) {
     const imgRef = useRef<HTMLImageElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -97,6 +101,7 @@ export function BugReportShotEditor({
     }, [src]);
 
     useLayoutEffect(() => {
+        if (!active) return;
         const canvas = canvasRef.current;
         const img = imgRef.current;
         if (!canvas || !img || !ready) return;
@@ -173,7 +178,7 @@ export function BugReportShotEditor({
             viewRef.current = { width: 0, height: 0 };
             paintRef.current = () => {};
         };
-    }, [ready]);
+    }, [ready, active]);
 
     const releaseCapturedPointer = () => {
         const canvas = captureElRef.current;
@@ -226,6 +231,7 @@ export function BugReportShotEditor({
     };
 
     useEffect(() => {
+        if (!active) return;
         const onKey = (event: KeyboardEvent) => {
             if (disabled) return;
             if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z" || event.shiftKey) return;
@@ -245,7 +251,7 @@ export function BugReportShotEditor({
             window.removeEventListener("keydown", onKey);
             window.removeEventListener("blur", onBlur);
         };
-    }, [disabled]);
+    }, [disabled, active]);
 
     const pointOf = (event: ReactPointerEvent<HTMLCanvasElement>) => {
         return bugReportPointerPoint(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
@@ -270,6 +276,13 @@ export function BugReportShotEditor({
         schedulePaint();
     };
     commitRef.current = commitDraft;
+
+    // The About dialog hides this editor without unmounting it. Finish the
+    // stroke here: a pointer that is still down would otherwise block the next one.
+    useEffect(() => {
+        if (active) return;
+        commitRef.current();
+    }, [active]);
 
     // includeRelease is for pointerup. A move's coalesced list already ends
     // on that event; an up event's list often does not, and a short stroke

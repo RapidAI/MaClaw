@@ -851,6 +851,15 @@ export function CreateTaskUnified(arg1) {
   return window['go']['main']['App']['CreateTaskUnified'](arg1);
 }
 
+// MANUAL SYNC: mirrors guiapp/task_llm_choice.go.
+export function GetTaskLLMChoice(arg1) {
+  return window['go']['main']['App']['GetTaskLLMChoice'](arg1);
+}
+
+export function SetTaskLLMChoice(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetTaskLLMChoice'](arg1, arg2, arg3);
+}
+
 // MANUAL SYNC: mirrors guiapp/task_type_suggest.go SuggestNewTaskType.
 export function SuggestNewTaskType(arg1) {
   return window['go']['main']['App']['SuggestNewTaskType'](arg1);

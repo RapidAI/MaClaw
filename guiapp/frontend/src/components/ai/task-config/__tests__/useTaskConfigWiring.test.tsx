@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskExpert, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, GetMaclawLLMProfilePanelState, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir, SuggestNewTaskExpert, SuggestNewTaskType } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
 import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withMachine, withRemoteWorkspace, withRunWindow, withTaskType, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
 import { bindRemoteTaskOpener, publishRemoteMachineTarget } from '../../../layout/remoteAssistantSession';
@@ -28,6 +28,7 @@ vi.mock('../../../../../wailsjs/go/main/App', () => ({
     CreateLatexDocument: vi.fn(),
     SetTabWorkingDir: vi.fn(),
     EnsureCodingWorkbenchArmed: vi.fn().mockResolvedValue(undefined),
+    GetMaclawLLMProfilePanelState: vi.fn().mockResolvedValue(null),
     SelectWorkingDir: (...args: unknown[]) => selectWorkingDirMock(...args),
 }));
 
@@ -59,6 +60,26 @@ function makeOptions(overrides?: Partial<TaskConfigWiringOptions>): TaskConfigWi
         ...overrides,
     };
 }
+
+describe('useTaskConfigWiring model catalog', () => {
+    afterEach(() => {
+        cleanup();
+        vi.mocked(GetMaclawLLMProfilePanelState).mockResolvedValue(null);
+    });
+
+    it('publishes the model assignment for the new-task chip', async () => {
+        vi.mocked(GetMaclawLLMProfilePanelState).mockResolvedValue({
+            providers: [{ id: 'devin', name: 'Devin', model: 'swe-2-max', is_hub_service: true }],
+            assistant: { provider_id: 'devin', provider_name: 'Devin', model: 'swe-2-max' },
+            coding: { provider_id: 'devin', provider_name: 'Devin', model: 'swe-2-max' },
+        } as any);
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions()));
+        await waitFor(() => {
+            expect(result.current.taskConfig.modelCatalog?.chat?.model).toBe('swe-2-max');
+            expect(result.current.taskConfig.modelCatalog?.providers[0]?.name).toBe('Devin');
+        });
+    });
+});
 
 describe('useTaskConfigWiring onBrowseLocal', () => {
     afterEach(() => {

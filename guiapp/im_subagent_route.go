@@ -23,7 +23,7 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			return nil, history, false
 		}
 		log.Printf("[subagent-intercept] routing to SubAgent for user=%s owner=%s", msg.UserID, ownerID)
-		cfg := h.getCodingLLMConfig()
+		cfg := h.codingLLMConfigForSession(ownerID)
 		taskOrch := h.getTaskOrchestratorReadOnly(ownerID)
 
 		if onProgress != nil {

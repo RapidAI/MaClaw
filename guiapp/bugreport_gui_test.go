@@ -55,8 +55,11 @@ func TestSubmitGUIBugReportZipAddsScreenshotAndDescriptionOnly(t *testing.T) {
 	if !bytes.Equal(got.files["screen_shot.png"], pngBytes) {
 		t.Fatalf("screen_shot.png missing or different (%d bytes)", len(got.files["screen_shot.png"]))
 	}
-	if string(got.files["bugreports.txt"]) != description+"\n" {
+	if string(got.files["bugreports.txt"]) != "报告类型: 缺陷\n"+description+"\n" {
 		t.Fatalf("bugreports.txt = %q", got.files["bugreports.txt"])
+	}
+	if got.kind != "bug" {
+		t.Fatalf("kind = %q", got.kind)
 	}
 	if _, ok := got.files["screenshot.png"]; ok {
 		t.Fatal("zip root must use screen_shot.png")
@@ -69,6 +72,96 @@ func TestSubmitGUIBugReportZipAddsScreenshotAndDescriptionOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(shot); !os.IsNotExist(err) {
 		t.Fatalf("temp screenshot still present: %v", err)
+	}
+}
+
+func TestSubmitAboutProblemReportFeatureOmitsLogs(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	base := app.getMaclawBaseDir()
+	if err := os.MkdirAll(filepath.Join(base, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "logs", "app.log"), []byte("secret-log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "trajectories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "trajectories", "run.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := tinyBugReportPNG(t)
+	shot := filepath.Join(t.TempDir(), "pasted.png")
+	if err := os.WriteFile(shot, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	description := "希望能从标题栏提交新功能"
+	got := captureBugReportUpload(t, app, func() (map[string]interface{}, error) {
+		return app.SubmitAboutProblemReport("feature", description, []string{shot}, []string{""})
+	})
+	if got.kind != "feature" || got.description != description || got.guiVersion == "" {
+		t.Fatalf("fields kind=%q description=%q gui=%q", got.kind, got.description, got.guiVersion)
+	}
+	if got.osVersion == "" || strings.EqualFold(got.osVersion, "Unknown") {
+		t.Fatalf("os was not submitted: %q", got.osVersion)
+	}
+	if _, ok := got.files["logs/app.log"]; ok {
+		t.Fatal("feature request packed logs")
+	}
+	if _, ok := got.files["trajectories/run.json"]; ok {
+		t.Fatal("feature request packed trajectories")
+	}
+	if string(got.files["bugreports.txt"]) != "报告类型: 新功能\n"+description+"\n" {
+		t.Fatalf("bugreports.txt = %q", got.files["bugreports.txt"])
+	}
+	if got.screenshotParts != 1 || !bytes.Equal(got.screenshotBodies[0], original) {
+		t.Fatalf("unmarked screenshot was not the original file (%d parts)", got.screenshotParts)
+	}
+}
+
+func TestSubmitAboutProblemReportBugKeepsLogsAndMarkedPNG(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	base := app.getMaclawBaseDir()
+	logBody := []byte("about-log\n")
+	if err := os.MkdirAll(filepath.Join(base, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "logs", "app.log"), logBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := tinyBugReportPNG(t)
+	marked := sizedBugReportPNG(t, 3, 2)
+	shot := filepath.Join(t.TempDir(), "pasted.png")
+	if err := os.WriteFile(shot, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	description := "贴图上的按钮点了没反应"
+	got := captureBugReportUpload(t, app, func() (map[string]interface{}, error) {
+		return app.SubmitAboutProblemReport("bug", description, []string{shot}, []string{"data:image/png;base64," + base64.StdEncoding.EncodeToString(marked)})
+	})
+	if got.kind != "bug" || got.description != description {
+		t.Fatalf("fields %+v", got.capturedBugReportFields)
+	}
+	if !bytes.Equal(got.files["logs/app.log"], logBody) {
+		t.Fatal("bug report dropped the log")
+	}
+	if string(got.files["bugreports.txt"]) != "报告类型: 缺陷\n"+description+"\n" {
+		t.Fatalf("bugreports.txt = %q", got.files["bugreports.txt"])
+	}
+	if got.screenshotParts != 1 || !bytes.Equal(got.screenshotBodies[0], marked) || bytes.Equal(got.screenshotBodies[0], original) {
+		t.Fatal("marked screenshot did not replace the original bytes")
+	}
+}
+
+func TestSubmitAboutProblemReportRejectsBadAnnotation(t *testing.T) {
+	app := NewApp()
+	_, err := app.SubmitAboutProblemReport("bug", "说明", []string{filepath.Join(t.TempDir(), "shot.png")}, []string{"data:image/png;base64,aaaa"})
+	if err == nil {
+		t.Fatal("invalid annotation was accepted")
 	}
 }
 
@@ -698,10 +791,12 @@ func TestWriteBugReportZipRootRejectsNestedNames(t *testing.T) {
 }
 
 type capturedBugReportFields struct {
-	osVersion       string
-	description     string
-	guiVersion      string
-	screenshotParts int
+	osVersion        string
+	description      string
+	guiVersion       string
+	kind             string
+	screenshotParts  int
+	screenshotBodies [][]byte
 }
 
 type capturedBugReport struct {
@@ -726,7 +821,23 @@ func captureBugReportUpload(t *testing.T, app *App, submit func() (map[string]in
 		got.osVersion = r.FormValue("os_version")
 		got.description = r.FormValue("description")
 		got.guiVersion = r.FormValue("gui_version")
-		got.screenshotParts = len(r.MultipartForm.File["screenshots"])
+		got.kind = r.FormValue("kind")
+		got.screenshotBodies = nil
+		for _, header := range r.MultipartForm.File["screenshots"] {
+			part, err := header.Open()
+			if err != nil {
+				t.Errorf("open screenshot: %v", err)
+				continue
+			}
+			body, err := io.ReadAll(part)
+			_ = part.Close()
+			if err != nil {
+				t.Errorf("read screenshot: %v", err)
+				continue
+			}
+			got.screenshotBodies = append(got.screenshotBodies, body)
+		}
+		got.screenshotParts = len(got.screenshotBodies)
 		file, header, err := r.FormFile("diagnostics")
 		if err != nil {
 			t.Errorf("diagnostics part: %v", err)

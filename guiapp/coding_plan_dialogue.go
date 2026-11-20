@@ -454,19 +454,16 @@ Delete only a step the plan itself makes redundant. Do not drop a step the goal 
 The host applies your issues and reviews that updated plan again. Return {"ok":true} only when nothing important is still missing. Do not repeat an issue the current plan already states.
 Do not claim files were changed. No markdown.`
 
-func (h *IMMessageHandler) codingPlanSelfReviewConfigured() bool {
+func (h *IMMessageHandler) codingPlanSelfReviewConfigured(userID string) bool {
 	if h == nil {
 		return false
 	}
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
 func (h *IMMessageHandler) selfReviewCodingPlan(userID, goal, projectPath string, tasks []*v2.TaskItem, reviewSeq int64) ([]*v2.TaskItem, string) {
-	if !h.codingPlanSelfReviewConfigured() {
+	if !h.codingPlanSelfReviewConfigured(userID) {
 		return tasks, ""
 	}
 	rounds := 0
@@ -475,7 +472,7 @@ func (h *IMMessageHandler) selfReviewCodingPlan(userID, goal, projectPath string
 			return "", false
 		}
 		rounds++
-		return h.callCodingPlanSelfReview(goal, projectPath, current), true
+		return h.callCodingPlanSelfReview(userID, goal, projectPath, current), true
 	})
 	if rounds > 1 {
 		log.Printf("[coding-plan] self-review rounds=%d steps=%d passed=%t", rounds, len(reviewed), passed)
@@ -584,14 +581,11 @@ func applyCodingPlanReviewIssues(tasks []*v2.TaskItem, issues []codingPlanReview
 	return next
 }
 
-func (h *IMMessageHandler) callCodingPlanSelfReview(goal, projectPath string, tasks []*v2.TaskItem) string {
+func (h *IMMessageHandler) callCodingPlanSelfReview(userID, goal, projectPath string, tasks []*v2.TaskItem) string {
 	if h == nil || len(tasks) == 0 {
 		return ""
 	}
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}
@@ -1267,7 +1261,7 @@ func (h *IMMessageHandler) reviseStickyPendingCodingPlan(userID, userText, proje
 		onProgress("规划模式：正在把你的补充写进当前方案，确认前不会改文件")
 	}
 
-	tasks, reply := h.draftCodingPlanRevision(brief, userText, projectPath, pending)
+	tasks, reply := h.draftCodingPlanRevision(userID, brief, userText, projectPath, pending)
 	if len(tasks) < codingWorkbenchPlanMinTasks {
 		tasks, reply = patchCodingPlan(pending.Tasks, userText)
 	}
@@ -1353,7 +1347,7 @@ func (h *IMMessageHandler) commitCodingPlanDraft(userID, brief string, tasks []*
 	return h.codingPlanDialogueResponse(onToken, body, codingPlanApproveActions())
 }
 
-func (h *IMMessageHandler) draftCodingPlanRevision(brief, latest, projectPath string, pending codingWorkbenchPendingPlan) ([]*v2.TaskItem, string) {
+func (h *IMMessageHandler) draftCodingPlanRevision(userID, brief, latest, projectPath string, pending codingWorkbenchPendingPlan) ([]*v2.TaskItem, string) {
 	if tasks := extractUserProvidedCodingPlan(latest); len(tasks) >= codingWorkbenchPlanMinTasks {
 		return tasks, "已换成你写出的步骤。"
 	}
@@ -1365,7 +1359,7 @@ func (h *IMMessageHandler) draftCodingPlanRevision(brief, latest, projectPath st
 	if codingPlanHostPatchConfident(pending.Tasks, latest) {
 		return patchCodingPlan(pending.Tasks, latest)
 	}
-	if raw := h.callCodingPlanRevisionModel(brief, latest, projectPath, pending.Markdown); raw != "" {
+	if raw := h.callCodingPlanRevisionModel(userID, brief, latest, projectPath, pending.Markdown); raw != "" {
 		if op, index, patch, reply, ok := parseCodingPlanPatch(raw); ok && codingPlanModelOpAgrees(pending.Tasks, op, index, patch, latest) {
 			index = codingPlanResolveOpIndex(pending.Tasks, op, index, latest)
 			if tasks, summary, applied := applyCodingPlanOp(pending.Tasks, op, index, patch); applied {
@@ -1974,14 +1968,11 @@ func codingPlanStripEnglishCues(feedback string) string {
 	return strings.Join(kept, " ")
 }
 
-func (h *IMMessageHandler) callCodingPlanRevisionModel(brief, latest, projectPath, currentMarkdown string) string {
+func (h *IMMessageHandler) callCodingPlanRevisionModel(userID, brief, latest, projectPath, currentMarkdown string) string {
 	if h == nil {
 		return ""
 	}
-	cfg := h.getCodingLightweightLLMConfig()
-	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		cfg = h.getCodingLLMConfig()
-	}
+	cfg := h.codingLightweightConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}

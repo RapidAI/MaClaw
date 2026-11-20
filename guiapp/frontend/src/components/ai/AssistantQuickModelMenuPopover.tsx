@@ -31,6 +31,7 @@ const MENU_MIN_WIDTH = 200;
 const MENU_MAX_WIDTH = 300;
 
 type MenuAction =
+    | { kind: "follow" }
     | { kind: "provider"; id: string }
     | { kind: "model"; id: string }
     | { kind: "add-custom" };
@@ -63,6 +64,10 @@ export type AssistantQuickModelMenuPopoverProps = {
     onSelectProvider: (providerID: string) => void;
     onSelectModel: (modelId: string) => void;
     onClose: () => void;
+    /** Task chip only. Absent on the global assignment chip, so its indexes stay put. */
+    followAssignmentLabel?: string;
+    onFollowAssignment?: () => void;
+    followsAssignment?: boolean;
 };
 
 const labelStyleBase: CSSProperties = {
@@ -79,6 +84,7 @@ const checkColStyle: CSSProperties = {
 };
 
 function buildActions(
+    showFollow: boolean,
     showProviders: boolean,
     switchableProviders: SidebarLLMProviderSummary[],
     showModels: boolean,
@@ -86,6 +92,7 @@ function buildActions(
     showAddCustom: boolean,
 ): MenuAction[] {
     const next: MenuAction[] = [];
+    if (showFollow) next.push({ kind: "follow" });
     if (showProviders) {
         for (const p of switchableProviders) next.push({ kind: "provider", id: String(p.id || p.name).trim() });
         if (showAddCustom) next.push({ kind: "add-custom" });
@@ -121,6 +128,9 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
     onSelectProvider,
     onSelectModel,
     onClose,
+    followAssignmentLabel,
+    onFollowAssignment,
+    followsAssignment = false,
 }: AssistantQuickModelMenuPopoverProps) {
     const listRef = useRef<HTMLDivElement | null>(null);
     const [pos, setPos] = useState<ProviderDropdownPos | null>(null);
@@ -137,13 +147,15 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
         [modelList, showCapabilityDefaults],
     );
     const showAddCustom = showProviders && !!addCustomModelLabel && !!onAddCustomModel;
-    // The add-custom entry sits after the switchable providers, so model rows
-    // offset by it too — keep keyboard highlight and DOM rows in one numbering.
-    const addCustomIndex = switchableProviders.length;
-    const providerActionCount = showProviders ? switchableProviders.length + (showAddCustom ? 1 : 0) : 0;
+    const showFollow = !!onFollowAssignment;
+    // Follow is present only for a task chip. It shifts every later index.
+    // The global chip leaves the callback unset, so those indexes stay put.
+    const followOffset = showFollow ? 1 : 0;
+    const addCustomIndex = followOffset + switchableProviders.length;
+    const providerActionCount = followOffset + (showProviders ? switchableProviders.length + (showAddCustom ? 1 : 0) : 0);
     const actions = useMemo(
-        () => buildActions(showProviders, switchableProviders, showModels, orderedModelList, showAddCustom),
-        [showProviders, switchableProviders, showModels, orderedModelList, showAddCustom],
+        () => buildActions(showFollow, showProviders, switchableProviders, showModels, orderedModelList, showAddCustom),
+        [showFollow, showProviders, switchableProviders, showModels, orderedModelList, showAddCustom],
     );
     const actionsRef = useRef(actions);
     actionsRef.current = actions;
@@ -178,15 +190,15 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
         if (!wasOpenRef.current) {
             wasOpenRef.current = true;
             skipScrollRef.current = true;
-            const selectedModelIdx = actions.findIndex(
-                (a) => a.kind === "model" && modelIdsEqual(a.id, currentModel),
-            );
+            const selectedModelIdx = (showFollow && followsAssignment)
+                ? actions.findIndex((a) => a.kind === "follow")
+                : actions.findIndex((a) => a.kind === "model" && modelIdsEqual(a.id, currentModel));
             setActive(selectedModelIdx >= 0 ? selectedModelIdx : 0);
             return;
         }
         // Catalog refresh while open: clamp, don't yank focus back to current model.
         setActive(activeIndexRef.current);
-    }, [open, actions, currentModel, setActive]);
+    }, [open, actions, currentModel, followsAssignment, setActive, showFollow]);
 
     useLayoutEffect(() => {
         if (!open) return;
@@ -251,8 +263,9 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
         if (!action) return;
         if (action.kind === "provider") onSelectProvider(action.id);
         else if (action.kind === "model") onSelectModel(action.id);
+        else if (action.kind === "follow") onFollowAssignment?.();
         else onAddCustomModel?.();
-    }, [onAddCustomModel, onSelectProvider, onSelectModel]);
+    }, [onAddCustomModel, onFollowAssignment, onSelectProvider, onSelectModel]);
 
     const onKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         const list = actionsRef.current;
@@ -378,6 +391,26 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                 pointerEvents: pos ? "auto" : "none",
             }}
         >
+            {showFollow && (
+                <button
+                    id={`${listId}-opt-0`}
+                    type="button"
+                    role="option"
+                    aria-selected={followsAssignment}
+                    data-qs-option-index={0}
+                    data-testid="qs-model-menu-follow"
+                    style={itemStyle({ active: followsAssignment, focused: activeIndex === 0, interactive: true })}
+                    title={followAssignmentLabel}
+                    onMouseEnter={() => {
+                        skipScrollRef.current = true;
+                        setActive(0);
+                    }}
+                    onClick={() => onFollowAssignment?.()}
+                >
+                    <span aria-hidden="true" style={checkColStyle}>{followsAssignment ? "✓" : ""}</span>
+                    <span style={labelStyleBase}>{followAssignmentLabel}</span>
+                </button>
+            )}
             {showProviders && currentProvider && (
                 <>
                     <div aria-hidden="true" style={sectionLabelStyle}>{providersLabel}</div>
@@ -391,7 +424,7 @@ export const AssistantQuickModelMenuPopover = memo(function AssistantQuickModelM
                         <span style={labelStyleBase}>{presetProviderDisplayName(lang, currentProvider.name)}</span>
                     </div>
                     {switchableProviders.map((p, i) => {
-                        const index = i; // providers come first in actions
+                        const index = followOffset + i;
                         const focused = index === activeIndex;
                         const providerLabel = presetProviderDisplayName(lang, p.name);
                         return (

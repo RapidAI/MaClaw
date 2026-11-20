@@ -118,7 +118,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 	h.emitWorkflowV2Progress(userID, state)
 
 	// --- Step 6: Launch orchestrator in background goroutine ---
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	loopCtx := NewLoopContext("remote-experiment-orchestrator", h.getMaclawAgentMaxIterations(), httpClient)
 	ensureLoopCtxUserID(loopCtx, userID)

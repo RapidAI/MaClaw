@@ -2091,7 +2091,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 
 	reasoningToken := wrapCodingAgentReasoningToken(onToken)
 
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
 		if task == nil {
@@ -2294,7 +2294,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 
 	reasoningToken := wrapCodingAgentReasoningToken(onToken)
 
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 
 	// 1-based ordinal for user-facing progress (TaskItem.Index may already be 1-based).
@@ -2861,7 +2861,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, s
 	}
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
-	cfg, total := h.getCodingLLMConfig(), len(targets)
+	cfg, total := h.codingLLMConfigForSession(userID), len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
 		if task == nil {
 			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
@@ -2911,7 +2911,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 	}
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
-	cfg, total := h.getCodingLLMConfig(), len(targets)
+	cfg, total := h.codingLLMConfigForSession(userID), len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
 		if task == nil {
 			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
@@ -2976,7 +2976,7 @@ func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.Wo
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	total := len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
@@ -3058,7 +3058,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 	runCtx, cancelRun := loopCtx.Context()
 	defer cancelRun()
 
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	total := len(targets)
 	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
@@ -3832,7 +3832,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				// a redirected approved plan — drop them here rather than let a
 				// later resuming turn stamp them onto unrelated work.
 				h.clearApprovedPlanValidators(userID)
-				decision = forceWorkspaceClearCodingDecision(recordUserText, h.resolveCodingRequestDecision(recordUserText))
+				decision = forceWorkspaceClearCodingDecision(recordUserText, h.resolveCodingRequestDecision(userID, recordUserText))
 				// The sentence follows this judgment. The write-tool upgrade
 				// below must not turn an answer back into an edit echo.
 				if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision, onToken); got != "" {
@@ -3957,7 +3957,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	}
 
 	hooks := loadCodingWorkbenchHooks(projectPath)
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	worktreeMode := h.getStickyCodingWorktreeMode(userID)
 	// Start a fresh source-preview session for each turn. Inquiry and operational
@@ -4000,6 +4000,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	var mergeMu sync.Mutex // serialize worktree cherry-picks into main tree
 	var attachOnce sync.Once
 	var mergedModified, mergedCreated []string
+	// sessionProject stays the task's real directory. projectPath becomes a
+	// private worktree for a later implementation turn. Sticky memory and the
+	// preview route keep the real directory. Hooks and step verify use
+	// shellDir: the checkout until the merge, then the real directory.
+	sessionProject := projectPath
+	var parallelTurn *codingParallelTurn
 	subAgentFn := func(ctx context.Context, t *v2.TaskItem, config v2.TaskRunnerConfig, onTk func(string), onPr func(string)) *v2.TaskRunResult {
 		if t == nil {
 			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
@@ -4015,7 +4021,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			}
 		}
 		h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, codingStepRunning, "")
-		if preStepRes := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_step"); preStepRes.Report != "" || preStepRes.Failed {
+		if preStepRes := runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "pre_step"); preStepRes.Report != "" || preStepRes.Failed {
 			if preStepRes.Report != "" {
 				log.Printf("[coding-hooks] pre_step T%d: %s", t.Index, truncateRunesV2(preStepRes.Report, 160))
 			}
@@ -4047,6 +4053,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		var wt *codingWorkbenchWorktree
 		waveSize := config.WaveSize
 		useWT := codingWorkbenchShouldUseWorktree(requestKind, worktreeMode, planned, t.Title, t.Description, maxParallel, waveSize, t.DependsOn)
+		// This turn already has a private checkout. A second step worktree
+		// would nest inside it and is refused, so the step stays on that checkout.
+		if parallelTurn != nil && parallelTurn.deferred {
+			useWT = false
+		}
 		if useWT {
 			created, wtErr := createCodingWorkbenchWorktree(projectPath, t.Index, t.Title)
 			if wtErr != nil {
@@ -4128,6 +4139,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					return true, nil
 				},
 			})
+		} else if parallelTurn != nil && parallelTurn.deferred && runTaskWithSubAgent == nil {
+			v1Result = runTaskWithSubAgentRuntimeOptions(h, cfg, httpClient, v1Task, stepProject, stepReqCtx, "", stepPrev, loopCtx, onTk, onPr, parallelTurn.runtimeOptions(v1Task))
 		} else {
 			var fn subAgentTaskFunc
 			if runTaskWithSubAgent != nil {
@@ -4180,7 +4193,14 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			}
 			// Push step file changes into the right-hand preview immediately
 			// (after worktree path remap so events target the main project).
-			if sourcePreview {
+			if parallelTurn != nil {
+				disk, modified, created := parallelTurn.previewPaths(projectPath, v1Result.FilesModified, v1Result.FilesCreated)
+				v1Result.FilesModified = modified
+				v1Result.FilesCreated = created
+				if sourcePreview {
+					emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, disk, modified, created, previewRoutePath)
+				}
+			} else if sourcePreview {
 				emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, v1Result.FilesModified, v1Result.FilesCreated, previewRoutePath)
 			}
 			usageMu.Lock()
@@ -4214,10 +4234,11 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		status, stepStatus, stepSummary, resultErr := codingWorkbenchStepOutcome(v1Result)
 		summary := v1Result.Summary
-		// Step verification gate after successful implement/verify-style steps.
-		// Always verify on the main project path (post-merge).
+		// Step verification runs where this turn's bytes are. A private checkout
+		// is checked in place until the merge. After the merge the primary has
+		// the combined tree, and paths recorded earlier are rewritten onto it.
 		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, planStepTotal) {
-			preV := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_verify")
+			preV := runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "pre_verify")
 			if preV.Report != "" {
 				log.Printf("[coding-hooks] pre_verify T%d: %s", t.Index, truncateRunesV2(preV.Report, 160))
 			}
@@ -4231,7 +4252,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					summary = gateSum
 				}
 				h.recordOrchestratedCodingStepStatus(planned, userID, t.Index, stepStatus, summary)
-				_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
+				_ = runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_step")
 				return &v2.TaskRunResult{
 					TaskIndex:     t.Index,
 					Title:         t.Title,
@@ -4245,7 +4266,17 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			usageMu.Lock()
 			taskFiles := append(append([]string{}, mergedModified...), mergedCreated...)
 			usageMu.Unlock()
-			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerifyForTask(ctx, projectPath, taskFiles)
+			verifyRoot := projectPath
+			if parallelTurn != nil {
+				verifyRoot = parallelTurn.shellDir(projectPath)
+				// After the merge the list still names the checkout. A file
+				// beside the opened subdirectory lands on the git root. The
+				// command itself stays in the subdirectory.
+				if verifyRoot != projectPath {
+					taskFiles = parallelTurn.remapLandedPaths(parallelTurn.execDir, taskFiles)
+				}
+			}
+			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerifyForTask(ctx, verifyRoot, taskFiles)
 			gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
 			if !skipped {
 				if ok {
@@ -4253,7 +4284,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 				} else {
 					log.Printf("[workflow-v2] T%d step verify failed: %s", t.Index, vcmd)
 				}
-				postV := runCodingWorkbenchHookPhase(projectPath, hooks, "post_verify")
+				postV := runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_verify")
 				if postV.Report != "" {
 					log.Printf("[coding-hooks] post_verify T%d: %s", t.Index, truncateRunesV2(postV.Report, 160))
 				}
@@ -4266,7 +4297,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 						summary = gateSum
 					}
 					h.updateStickyCodingStepVerify(userID, t.Index, vcmd, false, gateSum)
-					_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
+					_ = runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_step")
 					return &v2.TaskRunResult{
 						TaskIndex:     t.Index,
 						Title:         t.Title,
@@ -4298,7 +4329,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		} else {
 			h.recordOrchestratedCodingStepChild(planned, userID, t.Index, stepStatus, stepSummary, firstChildTaskID(v1Result))
 		}
-		_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
+		_ = runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_step")
 		return &v2.TaskRunResult{
 			TaskIndex:      t.Index,
 			Title:          t.Title,
@@ -4324,6 +4355,28 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if operational {
 		log.Printf("[workflow-v2] pure coding: operational path user=%s acceptance=%s", userID, decision.Acceptance)
 	}
+
+	runCtx := context.Background()
+	var cancelRun context.CancelFunc
+	if loopCtx != nil {
+		runCtx, cancelRun = loopCtx.Context()
+		if cancelRun != nil {
+			defer cancelRun()
+		}
+	}
+	parallelTurn = h.beginCodingParallelTurn(userID, projectPath, requestKind, onProgress)
+	if parallelTurn != nil {
+		if parallelTurn.primary != "" {
+			sessionProject = parallelTurn.primary
+		}
+		projectPath = parallelTurn.execDir
+		parallelTurn.noteSteps(len(tasks))
+		parallelTurn.bindRunCtx(runCtx)
+		defer parallelTurn.finish(runCtx)
+		if err := parallelTurn.waitReady(runCtx); err != nil {
+			return &IMAgentResponse{Text: "编码任务已取消", TraceEventCount: 0}
+		}
+	}
 	config := v2.TaskRunnerConfig{
 		ProjectPath: projectPath,
 		MaxRetries:  0,
@@ -4336,15 +4389,6 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Route SubAgent thinking to reasoning panel (collapsed)
 	reasoningToken := wrapCodingAgentReasoningToken(onToken)
-
-	runCtx := context.Background()
-	var cancelRun context.CancelFunc
-	if loopCtx != nil {
-		runCtx, cancelRun = loopCtx.Context()
-		if cancelRun != nil {
-			defer cancelRun()
-		}
-	}
 	if planned {
 		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
 		if len(memSteps) == 0 {
@@ -4400,17 +4444,21 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		previewModified = lastCodingResult.FilesModified
 		previewCreated = lastCodingResult.FilesCreated
 	}
+	previewRoot := projectPath
+	if parallelTurn != nil && parallelTurn.hasMerged() {
+		previewRoot, previewModified, previewCreated = parallelTurn.previewPaths(parallelTurn.execDir, previewModified, previewCreated)
+	}
 	stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, sessionMem.FilesModified...), sessionMem.FilesCreated...))
 	emittedPreview := []string(nil)
 	if sourcePreview {
-		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, false, true, previewRoutePath)
+		emittedPreview = emitCodingWorkbenchSourcePreview(h.app, codeSessionID, previewRoot, previewModified, previewCreated, stickyFiles, false, true, previewRoutePath)
 	}
 	repoMaintOutcome = localCodingTurnOutcome(runResults, runCtx)
 	repoMaintHaveOutcome = true
 	if repoMaintDirect {
-		h.writeStickyLocalCodingTurn(userID, projectPath, "", lastCodingResult, repoMaintOutcome, false)
+		h.writeStickyLocalCodingTurn(userID, sessionProject, "", lastCodingResult, repoMaintOutcome, false)
 	} else {
-		h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult, repoMaintOutcome)
+		h.recordStickyLocalCodingTurn(userID, sessionProject, recordUserText, lastCodingResult, repoMaintOutcome)
 	}
 	// A shell write the tool audit did not record is not previewed and is not
 	// persisted here. This merge only keeps a path when emit returned files
@@ -4427,7 +4475,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		})
 	}
 	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
-	if postTurn := runCodingWorkbenchHookPhase(projectPath, hooks, "post_turn"); postTurn.Report != "" {
+	if postTurn := runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
 
@@ -4713,7 +4761,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}); ok {
 			return decision
 		}
-		return h.resolveCodingRequestDecision(recordUserText)
+		return h.resolveCodingRequestDecision(userID, recordUserText)
 	}
 	var decision codingRequestDecision
 	tookApprovedPlan := false
@@ -4893,7 +4941,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 	}
 
-	cfg := h.getCodingLLMConfig()
+	cfg := h.codingLLMConfigForSession(userID)
 	httpClient := h.client
 	runner := remoteCodingTemplateRunner
 	if runner == nil {

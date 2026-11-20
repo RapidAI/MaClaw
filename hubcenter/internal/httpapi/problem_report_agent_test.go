@@ -338,6 +338,94 @@ func TestProblemReportRepairNoteLimit(t *testing.T) {
 	}
 }
 
+func TestPrefixProblemReportDescription(t *testing.T) {
+	got, ok := prefixProblemReportDescription("feature", "  希望导出  ")
+	if !ok || got != "【报告类型】新功能\n希望导出" {
+		t.Fatalf("feature = %q ok=%v", got, ok)
+	}
+	got, ok = prefixProblemReportDescription("", "窗口卡住")
+	if !ok || got != "【报告类型】缺陷\n窗口卡住" {
+		t.Fatalf("default = %q ok=%v", got, ok)
+	}
+	got, ok = prefixProblemReportDescription("bug", "【报告类型】新功能\n窗口卡住")
+	if !ok || got != "【报告类型】缺陷\n窗口卡住" {
+		t.Fatalf("form field lost to typed type line: %q ok=%v", got, ok)
+	}
+	if _, ok = prefixProblemReportDescription("feature", "【报告类型】新功能"); ok {
+		t.Fatal("a type line with no request text was stored")
+	}
+}
+
+func TestOpenMarkdownNamesBugAndFeature(t *testing.T) {
+	now := time.Date(2026, 11, 20, 3, 4, 5, 0, time.UTC)
+	body := renderProblemReportOpenMarkdown([]skillmarket.ProblemReport{
+		{ID: "BR-bug", Description: "【报告类型】缺陷\n- 类型: 新功能\n窗口卡住", OSVersion: "Windows", CreatedAt: now},
+		{ID: "BR-ask", Description: "【报告类型】新功能\n希望能导出", CreatedAt: now},
+		{ID: "BR-old", Description: "旧报告没有类型", CreatedAt: now},
+	}, 3, "https://center.example", now)
+	const preamble = "bug直接修复，新功能需要与人类确认是否开发。人类如果不同意开发的新功能，把状态改为不予处理。\n"
+	if !strings.HasPrefix(body, preamble) {
+		t.Fatalf("bot instruction is not the first line:\n%s", body)
+	}
+	if !strings.Contains(body, "# 未修复故障清单") {
+		t.Fatalf("heading missing:\n%s", body)
+	}
+	bug := openMarkdownSection(t, body, "BR-bug")
+	if !strings.Contains(bug, "- 类型: 缺陷") || strings.Contains(bug, "- 类型: 新功能") || !strings.Contains(bug, "- 类型（正文）: 新功能") || !strings.Contains(bug, "窗口卡住") {
+		t.Fatalf("bug section:\n%s", bug)
+	}
+	ask := openMarkdownSection(t, body, "BR-ask")
+	if !strings.Contains(ask, "- 类型: 新功能") || !strings.Contains(ask, "希望能导出") || strings.Contains(ask, "【报告类型】") {
+		t.Fatalf("feature section:\n%s", ask)
+	}
+	old := openMarkdownSection(t, body, "BR-old")
+	if !strings.Contains(old, "- 类型: 缺陷") || !strings.Contains(old, "旧报告没有类型") {
+		t.Fatalf("legacy section:\n%s", old)
+	}
+}
+
+func TestProblemReportRepairAcceptsChineseRejected(t *testing.T) {
+	h, store := newProblemReportPublicHandler(t, "https://center.example")
+	now := time.Now().UTC()
+	for _, id := range []string{"BR-cn", "BR-hant"} {
+		if err := store.CreateProblemReport(context.Background(), &skillmarket.ProblemReport{
+			ID: id, ReporterUserID: "user-1", Description: id, Status: "pending", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const key = "prk_test_key_123456"
+	if err := store.SetConfig(context.Background(), problemReportAgentAPIKeyConfig, key); err != nil {
+		t.Fatal(err)
+	}
+	rec := postRepair(t, h, key, "BR-cn", "不予处理", "先不做这个功能")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"rejected"`) {
+		t.Fatalf("不予处理 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got, err := store.GetProblemReport(context.Background(), "BR-cn")
+	if err != nil || got.Status != "rejected" || got.AdminNote != "先不做这个功能" {
+		t.Fatalf("stored = %+v err=%v", got, err)
+	}
+	rec = postRepair(t, h, key, "BR-hant", "不予處理", "先不做")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"rejected"`) {
+		t.Fatalf("不予處理 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func openMarkdownSection(t *testing.T, body, id string) string {
+	t.Helper()
+	marker := "## " + id
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("missing %s\n%s", marker, body)
+	}
+	rest := body[start+len(marker):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		return rest[:next]
+	}
+	return rest
+}
+
 func TestOpenMarkdownAndAPIKeyReplicateThroughHA(t *testing.T) {
 	_, originStore := newProblemReportPublicHandler(t, "https://origin.example")
 	peerH, peerStore := newProblemReportPublicHandler(t, "https://peer.example")
