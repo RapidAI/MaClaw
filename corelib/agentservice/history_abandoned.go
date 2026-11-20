@@ -18,7 +18,7 @@ func dropAbandonedUserTurns(history []Message, runs []Run, currentID string) []M
 			continue
 		}
 		switch {
-		case r.AssistantMessageID != "" || r.Status == RunStatusSucceeded:
+		case r.AssistantMessageID != "" || r.Status == RunStatusSucceeded || r.Status == RunStatusPaused:
 			answered[id] = true
 		case r.Status == RunStatusCancelled || r.Status == RunStatusFailed:
 			abandoned[id] = true

@@ -226,7 +226,7 @@ func restartNoticeOf(run *agentservice.Run) string {
 
 func desktopTerminalRun(status agentservice.RunStatus) bool {
 	switch status {
-	case agentservice.RunStatusSucceeded, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
+	case agentservice.RunStatusSucceeded, agentservice.RunStatusPaused, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
 		return true
 	default:
 		return false

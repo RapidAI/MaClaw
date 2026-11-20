@@ -777,7 +777,10 @@ func runReceiptTurn(t *testing.T, root string, turn receiptTurn) receiptView {
 		if desktopReceiptWatch != nil {
 			desktopReceiptWatch(body.DesktopReady, body.Status, body.Metadata, body.Message)
 		}
-		if body.ReceiptError != "" || (body.DesktopReady && body.Status == agentservice.RunStatusSucceeded && body.Message != nil) {
+		// A run that stopped to wait for the person is terminal too: paused is a
+		// finished run, only not a successful one (BR-20261120-8A708E128485).
+		runsTerminal := body.Status == agentservice.RunStatusSucceeded || body.Status == agentservice.RunStatusPaused
+		if body.ReceiptError != "" || (body.DesktopReady && runsTerminal && body.Message != nil) {
 			break
 		}
 		if time.Now().After(deadline) {

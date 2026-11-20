@@ -151,7 +151,7 @@ func TestAsyncDesktopTurnOutlivesTheAdmittingRequest(t *testing.T) {
 				if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
 					t.Fatal(err)
 				}
-				if body.DesktopReady && body.Status == agentservice.RunStatusSucceeded {
+				if body.DesktopReady && (body.Status == agentservice.RunStatusSucceeded || body.Status == agentservice.RunStatusPaused) {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -335,7 +335,7 @@ func TestAsyncReplayDoesNotStealTheDesktopTurn(t *testing.T) {
 		if err := json.Unmarshal(got.Body.Bytes(), &done); err != nil {
 			t.Fatal(err)
 		}
-		if done.DesktopReady && done.Status == agentservice.RunStatusSucceeded {
+		if done.DesktopReady && (done.Status == agentservice.RunStatusSucceeded || done.Status == agentservice.RunStatusPaused) {
 			break
 		}
 		if time.Now().After(deadline) {

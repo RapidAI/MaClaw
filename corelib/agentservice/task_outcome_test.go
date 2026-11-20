@@ -19,8 +19,13 @@ func (e *outcomeExecutor) Execute(ctx context.Context, req ExecuteRequest) (*Exe
 
 // The host's measured task outcome reaches the persisted run, the reloaded
 // run, the assistant message and the terminal events; a not-done task is
-// waiting_for_user with the run status unchanged; a happy final reply
-// cannot hide it; unknown values are never passed on.
+// waiting_for_user and its run status is paused, never succeeded; a happy
+// final reply cannot hide it; unknown values are never passed on.
+//
+// BR-20261120-8A708E128485: this test used to require RunStatusSucceeded for
+// every case ("must stay compatible"), which encoded the reported defect —
+// a run that stopped to wait for the person was counted as finished work by
+// every consumer that reads run status alone.
 func TestTaskOutcomeIsTruthfulEndToEnd(t *testing.T) {
 	cases := []struct {
 		name, reply, source string
@@ -71,10 +76,17 @@ func TestTaskOutcomeIsTruthfulEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			wantStatus := RunStatusSucceeded
+			if tc.waiting {
+				// A run that stopped to wait for the person is paused, not
+				// completed: consumers that read only the status must not
+				// count it as done work.
+				wantStatus = RunStatusPaused
+			}
 			check := func(where string, r *Run) {
 				t.Helper()
-				if r.Status != RunStatusSucceeded {
-					t.Fatalf("%s: status %s (must stay compatible)", where, r.Status)
+				if r.Status != wantStatus {
+					t.Fatalf("%s: status %s, want %s", where, r.Status, wantStatus)
 				}
 				if r.Metadata[TaskOutcomeKey] != tc.outcome || r.WaitingForUser != tc.waiting {
 					t.Fatalf("%s: outcome=%q waiting=%v", where, r.Metadata[TaskOutcomeKey], r.WaitingForUser)

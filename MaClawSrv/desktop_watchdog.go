@@ -741,7 +741,7 @@ func desktopVisibleAnswer(msg *agentservice.Message) string {
 // A process screenshot is not one of those records. A file does not replace
 // a measured not-done outcome or an unposted publish.
 func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, outcome, why string, runErr error, _ bool) (string, string) {
-	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled {
+	if msg == nil || run == nil || runErr != nil || run.Status == agentservice.RunStatusFailed || run.Status == agentservice.RunStatusCancelled || run.Status == agentservice.RunStatusPaused {
 		return outcome, why
 	}
 	if msg.Metadata == nil {

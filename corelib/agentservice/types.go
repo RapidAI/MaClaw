@@ -45,6 +45,10 @@ type RunStatus string
 const (
 	RunStatusRunning     RunStatus = "running"
 	RunStatusSucceeded   RunStatus = "succeeded"
+	// RunStatusPaused is a terminal run that stopped to wait for the person:
+	// the task is not done, so it must not be read as succeeded. Statistics,
+	// cleanup, long-job follow-up and clients all separate it from succeeded.
+	RunStatusPaused      RunStatus = "paused"
 	RunStatusFailed      RunStatus = "failed"
 	RunStatusCancelled   RunStatus = "cancelled"
 	RunStatusInterrupted RunStatus = "interrupted"

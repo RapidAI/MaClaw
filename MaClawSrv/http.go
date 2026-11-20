@@ -2182,7 +2182,7 @@ func parseRunStatus(raw string) (agentservice.RunStatus, bool) {
 	}
 	status := agentservice.RunStatus(statusRaw)
 	switch status {
-	case agentservice.RunStatusRunning, agentservice.RunStatusSucceeded, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
+	case agentservice.RunStatusRunning, agentservice.RunStatusSucceeded, agentservice.RunStatusPaused, agentservice.RunStatusFailed, agentservice.RunStatusCancelled:
 		return status, true
 	default:
 		return "", false

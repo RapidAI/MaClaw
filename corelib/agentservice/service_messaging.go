@@ -656,6 +656,15 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	run.ResponseSource = strings.TrimSpace(assistant.Metadata[metaResponseSource])
 	run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
 	outcome := applyTaskOutcome(&run, &assistant)
+	// A run that stopped to wait for the person is not finished work. The
+	// outcome hook just decided that above; leaving StatusSucceeded here made
+	// every consumer that reads run status alone count a 待决策 run as done
+	// (BR-20261120-8A708E128485). Paused is its own terminal status, so the
+	// run stays terminal for cleanup and events while no longer reading as
+	// completed.
+	if run.WaitingForUser {
+		run.Status = RunStatusPaused
+	}
 	withOutcome := func(m map[string]any) map[string]any {
 		if outcome != "" {
 			m[TaskOutcomeKey] = outcome
