@@ -90,6 +90,18 @@ describe("parseMarkdownTableCells inline opaque spans", () => {
         expect(parseMarkdownTableCells("| \\[a | b |")).toEqual(["\\[a", "b"]);
     });
 
+    it("does not treat an empty \\(\\) or \\[\\] pair as a math span", () => {
+        // An empty body is not a formula, so a `|` right after the close still
+        // cuts columns exactly like plain text would.
+        expect(parseMarkdownTableCells("| \\(\\) | b | c |")).toEqual(["\\(\\)", "b", "c"]);
+        expect(parseMarkdownTableCells("| \\[\\] | b | c |")).toEqual(["\\[\\]", "b", "c"]);
+    });
+
+    it("keeps a non-empty \\[...\\] span opaque even when it touches cell edges", () => {
+        expect(parseMarkdownTableCells("| \\[a|b\\]x | c |")).toEqual(["\\[a|b\\]x", "c"]);
+        expect(parseMarkdownTableCells("|x\\[a|b\\] | c |")).toEqual(["x\\[a|b\\]", "c"]);
+    });
+
     it("keeps pipes inside absolute-value, matrix, set-builder, and inline-paren formulas", () => {
         // $|x|$ : pipes that open/close absolute value inside a $...$ span.
         expect(parseMarkdownTableCells("| $|x|$ | absolute value |"))

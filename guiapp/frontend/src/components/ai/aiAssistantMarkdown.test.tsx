@@ -575,6 +575,33 @@ describe("renderContentWithCodeBlocks", () => {
         expect(multiplied?.closest("strong")).toBeNull();
     });
 
+    it("typesets a bracket-delimited formula inside emphasis", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("**损失 \\[L_{ce}\\] 项** 与 *\\[F^l\\]*。", lightTheme)}</div>,
+        );
+
+        const strong = container.querySelector("strong");
+        const em = container.querySelector("em");
+        expect(strong?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(strong?.textContent).toContain("损失");
+        expect(em?.querySelector("[data-testid='assistant-inline-math']")).not.toBeNull();
+        expect(container.textContent).not.toContain("**");
+    });
+
+    it("renders a standalone bracket-delimited inline formula", () => {
+        render(<div>{renderContentWithCodeBlocks("令 \\[x+y\\] 为和。", lightTheme)}</div>);
+
+        expect(screen.getByTestId("assistant-inline-math")).toBeTruthy();
+    });
+
+    it("does not typeset an empty \\(\\) or \\[\\] pair as a formula", () => {
+        render(<div>{renderContentWithCodeBlocks("文本 \\(\\) 与 \\[\\] 保留原样。", lightTheme)}</div>);
+
+        expect(screen.queryByTestId("assistant-inline-math")).toBeNull();
+        expect(document.body.textContent).toContain("\\(\\)");
+        expect(document.body.textContent).toContain("\\[\\]");
+    });
+
     it("does not let a leftover bold star italicize a later formula", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("**plain** and *$x$*", lightTheme)}</div>,
