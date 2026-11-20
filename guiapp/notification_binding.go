@@ -130,12 +130,20 @@ func pinnedListsEqual(left, right []PinnedNotification) bool {
 }
 
 // GetPinnedNotifications returns the cached pinned-message list for the
-// frontend banner. The list is refreshed by PullPinnedNotifications.
+// frontend banner. An empty cache also fires one background refresh: the
+// reconnect pull can land before the frontend subscribes (event lost) and
+// the HTTP fetch may still be in flight when the frontend reads, so this
+// closes the gap without a polling loop. The resulting notification:pinned
+// event updates the open hook.
 func (a *App) GetPinnedNotifications() []PinnedNotification {
 	if a == nil || a.pinnedNotifs == nil {
 		return nil
 	}
-	return a.pinnedNotifs.snapshot()
+	items := a.pinnedNotifs.snapshot()
+	if len(items) == 0 {
+		go a.PullPinnedNotifications()
+	}
+	return items
 }
 
 // PullPinnedNotifications fetches the pinned list from the Hub and, when it
@@ -166,6 +174,9 @@ func (a *App) PullPinnedNotifications() error {
 	if items == nil {
 		items = []PinnedNotification{}
 	}
+	// Result breadcrumb: distinguishes (endpoint missing / empty on the Hub)
+	// from (list delivered but the frontend never painted it).
+	a.log(fmt.Sprintf("[notification] pinned pull: %d item(s)", len(items)))
 	if a.pinnedNotifs.replace(items) {
 		a.publishPinnedNotifications(items)
 	}

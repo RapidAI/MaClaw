@@ -19,6 +19,15 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		return
 	}
 
+	// A pinned (置顶) message displays in the sidebar banner only — it
+	// never lands in the unread bell cache or fires bell events. The
+	// banner list is authoritative; re-pull it and stop here.
+	if push.Action == "new" && push.Notification != nil && push.Notification.Pinned {
+		log.Printf("[notification] hub push pinned: id=%s title=%q", push.Notification.ID, push.Notification.Title)
+		go a.PullPinnedNotifications()
+		return
+	}
+
 	switch push.Action {
 	case "new":
 		if push.Notification == nil {
@@ -49,12 +58,6 @@ func (a *App) handleNotificationPush(payload json.RawMessage) {
 		// Urgent notifications get an additional toast event.
 		if push.Notification.Priority == "urgent" {
 			emitNotificationFrontendEvent(a, "notification:urgent-toast", push.Notification)
-		}
-		// A pinned message changes what the sidebar banner shows. The push
-		// payload itself is not enough (the banner caps at 1 permanent + 3
-		// latest), so re-pull the authoritative pinned list.
-		if push.Notification.Pinned {
-			go a.PullPinnedNotifications()
 		}
 
 	case "revoke":

@@ -377,11 +377,15 @@ func (s *Store) queryUnreadForMachine(ctx context.Context, machineID, now string
 		return notifications, nil
 	}
 	lowerErr := strings.ToLower(err.Error())
-	if isMissingTableError(err) && strings.Contains(lowerErr, "machines") {
-		return s.getUnreadForMachineLegacy(ctx, machineID, now, limit)
-	}
+	// Missing org_members → drop the department branch but keep the
+	// tenant/user resolution (which needs machines + users).
 	if isMissingTableError(err) && strings.Contains(lowerErr, "org_members") {
 		return s.getUnreadForMachineWithoutDepartments(ctx, machineID, now, limit)
+	}
+	// Missing users (or machines entirely) → no joins are safe; the legacy
+	// variant reads published rows without audience resolution.
+	if isMissingTableError(err) && (strings.Contains(lowerErr, "users") || strings.Contains(lowerErr, "machines")) {
+		return s.getUnreadForMachineLegacy(ctx, machineID, now, limit)
 	}
 	return nil, err
 }
@@ -397,6 +401,9 @@ func (s *Store) queryUnreadForMachineWithDepartments(ctx context.Context, machin
 		 WHERE n.status = 'published'
 		   AND (n.expire_at IS NULL OR n.expire_at > ?)
 		   AND r.notification_id IS NULL
+		   -- Pinned messages ride the floating banner (GET .../pinned),
+		   -- never the unread bell list.
+		   AND n.pinned = 0
 		   AND (
 		     n.audience_type = 'all'
 		     OR (n.audience_type = 'tenant' AND EXISTS (
@@ -432,6 +439,7 @@ func (s *Store) getUnreadForMachineLegacy(ctx context.Context, machineID, now st
 		 WHERE n.status = 'published'
 		   AND (n.expire_at IS NULL OR n.expire_at > ?)
 		   AND r.notification_id IS NULL
+		   AND n.pinned = 0
 		 ORDER BY n.created_at DESC
 		 `+limitSQL,
 		machineID, now)
@@ -453,6 +461,9 @@ func (s *Store) getUnreadForMachineWithoutDepartments(ctx context.Context, machi
 		 WHERE n.status = 'published'
 		   AND (n.expire_at IS NULL OR n.expire_at > ?)
 		   AND r.notification_id IS NULL
+		   -- Pinned messages ride the floating banner (GET .../pinned),
+		   -- never the unread bell list.
+		   AND n.pinned = 0
 		   AND (
 		     n.audience_type = 'all'
 		     OR (n.audience_type = 'tenant' AND EXISTS (

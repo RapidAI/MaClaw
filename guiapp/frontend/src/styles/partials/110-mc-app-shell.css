@@ -158,8 +158,17 @@
   width: min(880px, 94vw);
   max-height: min(960px, 92vh);
 }
+/* The report dialog stays mounted after close so its portal target does not
+   change. Drop .modal-overlay while parked: that class is display:flex, and
+   body:has(.modal-overlay) would keep hiding the update card. */
+.problem-report-overlay-parked {
+  display: none;
+}
 .gui-bug-report-dialog .problem-report-dialog__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.gui-bug-report-dialog label { display: block; color: var(--theme-text-secondary); font-size: 13px; }
+/* Header dialog label and textarea are direct children. The About dialog
+   reuses this class for width and marks; its field label and description
+   box keep their own layout, and the collection switch stays inline. */
+.gui-bug-report-dialog > label:not(.problem-report-dialog__field) { display: block; color: var(--theme-text-secondary); font-size: 13px; }
 .gui-bug-report-annotate-label {
   margin: 2px 0 8px;
   color: var(--theme-text-secondary);
@@ -269,7 +278,7 @@
 }
 .gui-bug-report-swatch:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .gui-bug-report-swatch:disabled { opacity: 0.45; cursor: not-allowed; }
-.gui-bug-report-dialog textarea {
+.gui-bug-report-dialog > textarea {
   width: 100%;
   min-height: 96px;
   box-sizing: border-box;
@@ -283,7 +292,7 @@
   line-height: 1.5;
   resize: vertical;
 }
-.gui-bug-report-dialog textarea:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
+.gui-bug-report-dialog > textarea:focus-visible { outline: 2px solid var(--theme-primary); outline-offset: 2px; }
 .mc-task-execution-actions .task-window-btn {
   display: inline-flex;
   align-items: center;
@@ -1943,6 +1952,155 @@
   border-color: var(--mc-accent, #2e75cb);
   background: var(--theme-surface-muted, rgba(0, 0, 0, .03));
   box-shadow: 0 2px 8px rgba(35, 55, 80, .10);
+}
+/* ── Pinned (置顶) message banner ──────────────────────────────────────
+   The floating card above the status row (fixed coords set inline by
+   PinnedMessageBanner from statusRowRef; the hidden pre-layout frame uses
+   visibility/pointerEvents so there is no flash at 0,0). The close button
+   is hover-only: resting state shows just the card, like a promo slide. */
+.mc-pinned-banner {
+  position: fixed;
+  z-index: 60;
+  box-sizing: border-box;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--theme-border, #dce6f2);
+  border-radius: 12px;
+  background: var(--theme-surface, #ffffff);
+  box-shadow: 0 6px 20px rgba(20, 35, 60, .16);
+  color: var(--theme-text-primary, #17212f);
+  cursor: default;
+}
+.mc-pinned-banner__body {
+  min-width: 0;
+}
+.mc-pinned-banner__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.mc-pinned-banner__title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-pinned-banner__forever {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mc-accent, #2e75cb);
+}
+.mc-pinned-banner__content {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--theme-text-secondary, #5a6a7e);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.mc-pinned-banner__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+}
+.mc-pinned-banner__dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.mc-pinned-banner__dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--theme-border-strong, #c3cfdd);
+  cursor: pointer;
+  transition: background .15s ease, width .15s ease;
+}
+.mc-pinned-banner__dot.is-active {
+  width: 16px;
+  border-radius: 4px;
+  background: var(--mc-accent, #2e75cb);
+}
+.mc-pinned-banner__nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.mc-pinned-banner__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--theme-border, #dce6f2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-secondary, #5a6a7e);
+  cursor: pointer;
+}
+.mc-pinned-banner__arrow:disabled {
+  opacity: .4;
+  cursor: default;
+}
+.mc-pinned-banner__cta {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #1f1f1f;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.mc-pinned-banner__cta:hover {
+  background: #000000;
+}
+.mc-pinned-banner__close {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-secondary, #5a6a7e);
+  cursor: pointer;
+  /* Hover-only per spec: the resting banner shows no close affordance. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .15s ease, background .15s ease;
+}
+.mc-pinned-banner:hover .mc-pinned-banner__close,
+.mc-pinned-banner__close:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.mc-pinned-banner__close:hover {
+  background: var(--theme-surface-muted, rgba(0, 0, 0, .06));
+}
+.mc-pinned-banner__close:focus-visible {
+  outline: 2px solid var(--mc-accent, #2e75cb);
+  outline-offset: 1px;
 }
 .mc-workbench-status-line {
   flex: 1;

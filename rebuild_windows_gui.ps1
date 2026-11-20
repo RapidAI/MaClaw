@@ -38,6 +38,37 @@ if (-not $?) {
   throw 'companion extension asset sync failed'
 }
 
+# Build the frontend BEFORE the go build: -tags production embeds
+# guiapp\frontend\dist verbatim, so a stale dist ships stale UI (this bit the
+# pinned-message banner — the exe embedded a dist built before the component
+# existed). Mirrors build_win.bat Step 4: wipe dist first so no old asset is
+# reused, install deps when missing, fail hard on any frontend error.
+$frontendDir = Join-Path $root 'guiapp\frontend'
+$npmCmd = 'C:\Program Files\nodejs\npm.cmd'
+if (-not (Test-Path $npmCmd)) {
+  $npmOnPath = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if ($null -eq $npmOnPath) {
+    throw 'frontend rebuild requires npm.cmd; install Node.js or add it to PATH.'
+  }
+  $npmCmd = $npmOnPath.Source
+}
+Push-Location $frontendDir
+try {
+  if (-not (Test-Path (Join-Path $frontendDir 'node_modules'))) {
+    Write-Host '[frontend] node_modules missing — npm install...'
+    & $npmCmd install --cache ./.npm_cache
+    if ($LASTEXITCODE -ne 0) { throw 'npm install failed.' }
+  }
+  if (Test-Path (Join-Path $frontendDir 'dist')) {
+    Remove-Item (Join-Path $frontendDir 'dist') -Recurse -Force
+  }
+  Write-Host '[frontend] npm run build...'
+  & $npmCmd run build
+  if ($LASTEXITCODE -ne 0) { throw 'frontend build failed.' }
+} finally {
+  Pop-Location
+}
+
 Remove-Item (Join-Path $root 'guiapp\resource_windows_amd64.syso') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'guiapp\resource_windows_arm64.syso') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -ErrorAction SilentlyContinue

@@ -151,4 +151,39 @@ describe("usePinnedNotifications", () => {
     });
     expect(result.current.messages).toHaveLength(0);
   });
+
+  it("parses the exact production payload shape (captured 2026-11-20)", async () => {
+    // This is the verbatim GET /api/v1/notifications/pinned response captured
+    // with real machine credentials against the production hub. If the Hub
+    // renames a field, this test fails before the banner goes silently blank.
+    (window as any).go.main.App.GetPinnedNotifications =
+      vi.fn().mockResolvedValue([
+        {
+          id: "232dde0a-46a5-4694-b725-342b9ed8d259",
+          title: "欢迎使用码卡龙8",
+          content: "全新码卡龙8,为个人及企业提供完整功能，目前全网功能最全的agent平台。",
+          category: "system_announcement",
+          priority: "normal",
+          is_read: false,
+          created_at: "2026-11-19T22:34:06Z",
+          pinned: true,
+          pinned_forever: true,
+          link_url: "https://www.maclaw.top",
+          button_text: "访问官网",
+          source: "hubcenter",
+          source_id: "4e6fbb4d-0960-4636-a0f8-a553ef9a78e0",
+        },
+      ]);
+    const { result } = renderHook(() => usePinnedNotifications());
+    await waitFor(() =>
+      expect((window as any).go.main.App.GetPinnedNotifications).toHaveBeenCalled()
+    );
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    const m = result.current.messages[0];
+    expect(m.title).toBe("欢迎使用码卡龙8");
+    expect(m.link_url).toBe("https://www.maclaw.top");
+    expect(m.button_text).toBe("访问官网");
+    expect(m.pinned_forever).toBe(true);
+    expect(result.current.visibleMessages).toHaveLength(1);
+  });
 });

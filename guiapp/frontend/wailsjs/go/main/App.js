@@ -234,6 +234,10 @@ export function BugReportScreenshotPreviewDataURL(arg1) {
   return window['go']['main']['App']['BugReportScreenshotPreviewDataURL'](arg1);
 }
 
+export function BugReportScreenshotMarkDataURL(arg1) {
+  return window['go']['main']['App']['BugReportScreenshotMarkDataURL'](arg1);
+}
+
 export function BuildExperienceBlockedSkillDraft(arg1) {
   return window['go']['main']['App']['BuildExperienceBlockedSkillDraft'](arg1);
 }
@@ -4894,6 +4898,10 @@ export function RetryBlockedSkillUpload(arg1) {
   return window['go']['main']['App']['RetryBlockedSkillUpload'](arg1);
 }
 
+export function RetryAboutProblemReport(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RetryAboutProblemReport'](arg1, arg2, arg3, arg4);
+}
+
 export function RetryBugReportUpload(arg1, arg2, arg3) {
   return window['go']['main']['App']['RetryBugReportUpload'](arg1, arg2, arg3);
 }
@@ -6064,6 +6072,10 @@ export function StopWeixin() {
 
 export function SubmitAgentView(arg1) {
   return window['go']['main']['App']['SubmitAgentView'](arg1);
+}
+
+export function SubmitAboutProblemReport(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SubmitAboutProblemReport'](arg1, arg2, arg3, arg4);
 }
 
 export function SubmitBugReport(arg1, arg2, arg3) {

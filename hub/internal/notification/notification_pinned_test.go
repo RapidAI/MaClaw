@@ -199,3 +199,65 @@ func TestCascadePreservesPinnedFields(t *testing.T) {
 		t.Errorf("cascaded pinned notification must broadcast to clients")
 	}
 }
+
+func TestUnreadExcludesPinnedRows(t *testing.T) {
+	svc, store, _ := setupTestService(t)
+	ctx := context.Background()
+	seedMachineUser(t, store, "machine-001", "user-001", "tenant_default")
+
+	base := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	createPinnedTestNotification(t, svc, ctx, "banner-pin", true, false, base)
+	createPinnedTestNotification(t, svc, ctx, "permanent-pin", true, true, base.Add(time.Hour))
+	createPinnedTestNotification(t, svc, ctx, "bell-plain", false, false, base.Add(2*time.Hour))
+
+	unread, err := svc.GetUnreadForMachine(ctx, "machine-001", 10)
+	if err != nil {
+		t.Fatalf("GetUnreadForMachine: %v", err)
+	}
+	if len(unread) != 1 || unread[0].Title != "bell-plain" {
+		t.Fatalf("unread must carry only the plain row (pinned rides the banner), got %+v", unread)
+	}
+
+	// MarkAllRead walks the same unread query — pinned rows are not touched.
+	if err := svc.MarkAllRead(ctx, "machine-001"); err != nil {
+		t.Fatalf("MarkAllRead: %v", err)
+	}
+	pinned, err := svc.GetPinnedForMachine(ctx, "machine-001")
+	if err != nil {
+		t.Fatalf("GetPinnedForMachine after MarkAllRead: %v", err)
+	}
+	if len(pinned) != 2 {
+		t.Fatalf("MarkAllRead must not consume pinned rows, got %+v", pinned)
+	}
+}
+
+// The test DB only has `machines` (no users/org_members). The unread query
+// must fall back to the legacy variant instead of surfacing the missing-table
+// error as a 500 — same fallback contract the pinned query follows.
+func TestGetUnreadForMachineFallsBackWithoutUsersTable(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	req := CreateRequest{
+		Title:        "plain notice",
+		Content:      "unread fallback",
+		Category:     CategorySystemAnnouncement,
+		Priority:     PriorityNormal,
+		AudienceType: AudienceAll,
+	}
+	n, err := svc.CreateNotification(ctx, req)
+	if err != nil {
+		t.Fatalf("CreateNotification: %v", err)
+	}
+	if err := svc.PublishNotification(ctx, n.ID); err != nil {
+		t.Fatalf("PublishNotification: %v", err)
+	}
+
+	unread, err := svc.GetUnreadForMachine(ctx, "machine-001", 10)
+	if err != nil {
+		t.Fatalf("GetUnreadForMachine without users table: %v", err)
+	}
+	if len(unread) != 1 || unread[0].Title != "plain notice" {
+		t.Fatalf("legacy fallback must still return the row, got %+v", unread)
+	}
+}

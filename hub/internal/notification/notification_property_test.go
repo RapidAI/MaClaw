@@ -460,7 +460,11 @@ func TestProperty5_NotificationLifecycleStateMachineValidity(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func newTestDB(t interface{ Helper(); Fatal(...interface{}); Cleanup(func()) }) *sql.DB {
+func newTestDB(t interface {
+	Helper()
+	Fatal(...interface{})
+	Cleanup(func())
+}) *sql.DB {
 	switch tt := t.(type) {
 	case *testing.T:
 		tt.Helper()

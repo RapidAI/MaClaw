@@ -124,7 +124,10 @@
   arrives as `-run a` (the `.cmd`/`powershell` layers eat the quote), so a
   "compile-only" selector can silently become "run ~600 tests". Verify the
   selector survived by checking the first `=== RUN` line, or use
-  `go vet` for a type-check-only pass.
+  `go vet` for a type-check-only pass. (2026-11-20: the shim routes through
+  `powershell -Command` with single-quoted tokens — dash tokens like `-o` no
+  longer trip AmbiguousParameter, but regex quoting still loses one layer;
+  the same verify-the-`=== RUN`-line rule applies.)
 
 ## Owner turn-window serialization (guiapp)
 
@@ -929,7 +932,37 @@
   reconnect (×2 sites), a pinned WS push, and a revoke can each fire a pull,
   and without the lock a stale fetch finishing last would publish last and
   freeze the banner on an outdated list until the next event.
-- Known bound: hub expiry (`CheckExpired` → status flip) does NOT push, so a
-  pinned card whose expire_at passed lingers until the next pull (reconnect /
-  any pinned push / revoke). Same reconnect-pull contract as unread notices;
-  a revoke always pushes, so admin removal is immediate.
+- Known bound: hub expiry NEVER flips status — `Service.CheckExpired` has no
+  caller (no ticker wires it), so DB rows stay `published` past expire_at and
+  the admin list keeps showing 已发布. Clients are still correct: every
+  pinned/unread query filters `expire_at > now` in SQL, so an expired card
+  disappears at the next pull (reconnect / any pinned push / revoke); a
+  revoke always pushes, so admin removal is immediate. Wire CheckExpired to
+  a ticker only if the admin status badge (not clients) needs the flip.
+- Verified end-to-end 2026-11-20: the production pinned endpoint returns the
+  full payload (`ok/items` with pinned, pinned_forever, link_url,
+  button_text) for real machine credentials — the desktop-side gap was
+  purely the stale embedded frontend.
+- Banner-only display: pinned rows are EXCLUDED from the unread bell list —
+  hub store adds `AND n.pinned = 0` to all three unread variants (legacy
+  included), and guiapp's handleNotificationPush early-returns on a pinned
+  push (no notifCache.Add, no notification:new / urgent-toast; just a pinned
+  re-pull). MarkAllRead therefore never consumes pinned rows; the bell badge
+  ignores them. The pinned endpoint is their only client surface.
+- `PullPinnedNotifications` logs the result breadcrumb
+  `[notification] pinned pull: N item(s)` (and the failure line on HTTP
+  errors), so "banner empty" splits into hub-side (0 items / 404 = hub not
+  redeployed, or rows predating the deploy lost their pinned fields on
+  cascade) vs frontend-side (N>0 but no card). `GetPinnedNotifications`
+  fires one background refresh when the cache is empty — covers the
+  reconnect pull landing before the frontend subscribed (event lost).
+- Build-chain gotchas found while shipping the banner (2026-11-20):
+  `rebuild_windows_gui.ps1` had NO frontend step — it embedded whatever
+  `frontend/dist` happened to hold, shipping stale UI in a fresh exe
+  (build_win.bat / build_win.metastaff.bat were already correct). It now
+  wipes + rebuilds dist via npm before go build and fails hard. ALSO:
+  `scripts/goheavy.cmd` lost `%~dp0` after its arg `shift` loop (cmd's
+  `shift` rewrites %0 too), and unquoted `-o` hit PowerShell -File's
+  AmbiguousParameter (-o prefix-matches -OutVariable/-OutBuffer); the shim
+  now captures the dir first and routes through `powershell -Command` with
+  single-quoted tokens (space grouping preserved, `-o` passes through).

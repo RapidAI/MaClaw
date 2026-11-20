@@ -13,6 +13,8 @@ import {
 } from '../settings/imSettingsShared';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 import { IconAlert } from '../ai/WorkbenchIcons';
+import { usePinnedNotifications } from '../ai/usePinnedNotifications';
+import { PinnedMessageBanner } from './PinnedMessageBanner';
 import {
     centeredDropdownLeft,
     computeProviderDropdownPos,
@@ -444,6 +446,9 @@ export const SidebarSystemStatus = ({
     // published by the single notification host (assistant panel) — no second
     // hook instance here, so no duplicate Wails subscriptions or loads.
     const bellUnreadCount = useSharedUnreadCount();
+    // Pinned (置顶) messages for the floating banner above this status row.
+    // A single mount point: SidebarSystemStatus renders once per sidebar.
+    const { visibleMessages: pinnedMessages, dismissAll: dismissPinnedMessages } = usePinnedNotifications();
     const bellLabel = bellUnreadCount > 0
         ? textForLang(lang, `Notifications, ${bellUnreadCount} unread`, `通知，${bellUnreadCount} 条未读`, `通知，${bellUnreadCount} 條未讀`)
         : textForLang(lang, 'Notifications', '通知', '通知');
@@ -1986,6 +1991,16 @@ export const SidebarSystemStatus = ({
                     </div>
                 )}
             </div>
+            {/* 置顶消息浮窗：固定定位悬浮在状态行上方，锚定 statusRowRef。
+                sessionDismissed 只影响本次运行，重启后重新显示。 */}
+            {pinnedMessages.length > 0 ? (
+                <PinnedMessageBanner
+                    messages={pinnedMessages}
+                    lang={lang}
+                    anchorRef={statusRowRef}
+                    onDismiss={dismissPinnedMessages}
+                />
+            ) : null}
         </div>
     );
 };

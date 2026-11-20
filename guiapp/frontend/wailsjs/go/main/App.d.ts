@@ -123,6 +123,8 @@ export function BranchConversationAt(arg1:number):Promise<main.ConversationBranc
 
 export function BugReportScreenshotPreviewDataURL(arg1:string):Promise<string>;
 
+export function BugReportScreenshotMarkDataURL(arg1:string):Promise<string>;
+
 export function BuildExperienceBlockedSkillDraft(arg1:string):Promise<main.ExperienceBlockedSkillDraft>;
 
 export function BuildExperienceConflictReconciliationDraft(arg1:string):Promise<main.ExperienceConflictReconciliationDraft>;
@@ -2438,6 +2440,8 @@ export function ResumeTask(arg1:string):Promise<string>;
 
 export function RetryBlockedSkillUpload(arg1:string):Promise<void>;
 
+export function RetryAboutProblemReport(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>):Promise<Record<string, any>>;
+
 export function RetryBugReportUpload(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
 
 export function RetrySkillUploadQueue():Promise<void>;
@@ -3018,6 +3022,8 @@ export function StopThirdPartyGateway():Promise<void>;
 export function StopWeixin():Promise<void>;
 
 export function SubmitAgentView(arg1:main.AgentViewSubmitPayload):Promise<main.IMAgentResponse>;
+
+export function SubmitAboutProblemReport(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>):Promise<Record<string, any>>;
 
 export function SubmitBugReport(arg1:string,arg2:string,arg3:Array<string>):Promise<Record<string, any>>;
 
