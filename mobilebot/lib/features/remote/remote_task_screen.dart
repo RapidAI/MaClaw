@@ -52,6 +52,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   String _error = '';
   bool _loading = true;
   bool _sending = false;
+
+  /// 已点发送、历史还没对上的用户消息。立刻在对话里回显，避免等 get_task。
+  final List<PendingUserEcho> _pendingUser = [];
+
+  /// 上次对账时历史里已有的用户消息条数。新回显只和此后多出来的用户行对账。
+  int _ackedUserCount = 0;
   bool _downloading = false;
   bool _pollInFlight = false;
   bool _paused = false;
@@ -333,6 +339,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
         _detail = detail;
         _loading = false;
         _error = '';
+        reconcilePendingUserEchoes(
+          _pendingUser,
+          detail.messages,
+          knownUserCount: _ackedUserCount,
+        );
+        _ackedUserCount = userMessageCount(detail.messages);
       });
     } on Object catch (error) {
       if (!mounted) return;
@@ -363,7 +375,13 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
     final api = ref.read(remoteApiProvider);
     if (api == null) return;
-    setState(() => _sending = true);
+    final echo = PendingUserEcho(text: text, sentAt: DateTime.now());
+    setState(() {
+      _sending = true;
+      _pendingUser.add(echo);
+    });
+    _stickToEnd = true;
+    _revealTail();
     try {
       await api.sendMessage(widget.grant.id, widget.taskPath, text);
       if (!mounted) return;
@@ -896,7 +914,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                                 onOpen: _fetchAndOpen,
                                 downloading: _downloading,
                               ),
+                        for (final echo in _pendingUser)
+                          _UserBubble(text: echo.text),
                         if ((detail == null || detail.messages.isEmpty) &&
+                            _pendingUser.isEmpty &&
                             !_liveHasCopy())
                           Padding(
                             padding: const EdgeInsets.symmetric(vertical: 24),
@@ -1328,6 +1349,54 @@ class _MessageRow extends StatelessWidget {
             downloading: downloading,
           );
   }
+}
+
+/// 已发出、尚未被历史对上的用户消息。
+class PendingUserEcho {
+  final String text;
+  final DateTime sentAt;
+
+  const PendingUserEcho({required this.text, required this.sentAt});
+}
+
+/// 历史里角色为 user 的消息条数。
+int userMessageCount(List<RemoteMessage> messages) {
+  var count = 0;
+  for (final message in messages) {
+    if (message.role == 'user') count++;
+  }
+  return count;
+}
+
+/// 按文本与条数对上历史里多出来的用户消息，从待确认列表里去掉重复回显。
+/// 只消费历史尾部相对 [knownUserCount] 新增的用户行，避免把更早的同文消息算进来。
+List<PendingUserEcho> reconcilePendingUserEchoes(
+  List<PendingUserEcho> pending,
+  List<RemoteMessage> messages, {
+  int knownUserCount = 0,
+}) {
+  if (pending.isEmpty) return pending;
+  var seenUsers = 0;
+  final fresh = <String>[];
+  for (final message in messages) {
+    if (message.role != 'user') continue;
+    seenUsers++;
+    if (seenUsers <= knownUserCount) continue;
+    final text = message.content.trim();
+    if (text.isNotEmpty) fresh.add(text);
+  }
+  if (fresh.isEmpty) return pending;
+  final counts = <String, int>{};
+  for (final text in fresh) {
+    counts[text] = (counts[text] ?? 0) + 1;
+  }
+  pending.removeWhere((echo) {
+    final left = counts[echo.text] ?? 0;
+    if (left <= 0) return false;
+    counts[echo.text] = left - 1;
+    return true;
+  });
+  return pending;
 }
 
 /// 我的消息 — 右侧气泡。

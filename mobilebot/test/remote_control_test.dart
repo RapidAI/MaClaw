@@ -133,6 +133,8 @@ class _FakeRemoteApi extends RemoteControlApi {
     return RemoteTask(id: '/p/$name', name: name, projectPath: '/p/$name');
   }
 
+  Completer<void>? sendGate;
+
   @override
   Future<void> sendMessage(
     String grantId,
@@ -140,6 +142,8 @@ class _FakeRemoteApi extends RemoteControlApi {
     String text,
   ) async {
     calls.add('send:$grantId:$projectPath:$text');
+    final gate = sendGate;
+    if (gate != null) await gate.future;
   }
 
   @override
@@ -1951,6 +1955,40 @@ void main() {
       expect(find.byIcon(Icons.more_vert), findsNothing);
     });
 
+    testWidgets('operate grant echoes the user message before send returns', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..sendGate = Completer<void>();
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantOps,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+
+      await tester.enterText(find.byType(TextField).last, '立刻回显');
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await tester.pump();
+
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('remote-task-transcript')),
+          matching: find.text('立刻回显'),
+        ),
+        findsOneWidget,
+      );
+      expect(api.calls, contains('send:g-ops:/p/a:立刻回显'));
+      api.sendGate!.complete();
+      await pumpFew(tester);
+    });
+
     testWidgets('operate grant can send a message', (tester) async {
       final api = _FakeRemoteApi()..detail = sampleDetail();
       await tester.pumpWidget(
@@ -1971,6 +2009,32 @@ void main() {
       await pumpFew(tester);
 
       expect(api.calls, contains('send:g-ops:/p/a:继续处理第二批'));
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('remote-task-transcript')),
+          matching: find.text('继续处理第二批'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    test('pending echo matches new user rows by text and count', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+        PendingUserEcho(text: '另一条', sentAt: sentAt),
+      ];
+      final messages = [
+        const RemoteMessage(role: 'user', content: '帮我查一下'),
+        const RemoteMessage(role: 'assistant', content: '已经生成好了'),
+        const RemoteMessage(role: 'user', content: '继续处理第二批'),
+      ];
+
+      reconcilePendingUserEchoes(pending, messages, knownUserCount: 1);
+
+      expect(pending.map((echo) => echo.text), ['继续处理第二批', '另一条']);
+      expect(pending.first.sentAt, sentAt);
     });
 
     testWidgets('file chip triggers fetch_file and share path', (tester) async {
