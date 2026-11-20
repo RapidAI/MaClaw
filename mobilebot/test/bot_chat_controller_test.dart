@@ -189,6 +189,8 @@ void main() {
     final messages = container.read(botChatProvider).messages;
     expect(messages.map((m) => m.id), ['m1', 'm2', 'm3']);
     expect(messages.first.role, 'user');
+    // The live step phrase is empty until a 202 poll reports one.
+    expect(container.read(botChatProvider).activity, isEmpty);
   });
 
   test('history keeps an edited line at its first sequence', () async {
@@ -487,6 +489,13 @@ void main() {
     // The composer frees right after admission; wait for the poll to land
     // the reply (two ticks at ~1.6s each).
     expect(container.read(botChatProvider).sending, isFalse);
+    // The user bubble is settled immediately — no "发送中" spinner.
+    final userMsg = container.read(botChatProvider).messages.firstWhere(
+      (m) => m.role == 'user',
+    );
+    expect(userMsg.pending, isFalse);
+    expect(userMsg.failed, isFalse);
+    expect(userMsg.queued, isFalse);
     await _until(
       () => container.read(botChatProvider).activeRunId == null,
       timeout: const Duration(seconds: 8),
@@ -494,6 +503,8 @@ void main() {
     final messages = container.read(botChatProvider).messages;
     expect(messages.last.content, '跑完了');
     expect(messages.last.role, 'assistant');
+    // The live step phrase is cleared when the run settles.
+    expect(container.read(botChatProvider).activity, isEmpty);
   });
 
   test('queued send marks the bubble and appends the ack', () async {
