@@ -725,6 +725,44 @@ func unreviewedExternalDeliverySlot(slot *agent.UnfinishedTaskSlot) bool {
 	return agent.ExternalSendCheckpointEvidence(slot.LastToolName, slot.SideEffectState)
 }
 
+// turnContinuesTheUnreviewedSend reports whether this turn is the person
+// continuing that task. The unreviewed-send record exists to stop a second
+// delivery, not to hold the whole conversation hostage: a new request in the
+// same session ("模型有多大？") is not a continuation and must run. While the
+// record stands, only the person's own continuation of the interrupted task is
+// refused, because that is the turn that would send again.
+func turnContinuesTheUnreviewedSend(text string) bool {
+	if shouldResumeIncompleteTask(text) {
+		return true
+	}
+	wording := continuationTitleText(text)
+	return wording != "" && continuationCueOnly(wording)
+}
+
+// dropUnreviewedSendSlot retires an uncertain-send record when the person
+// moved on to a different request. The send is never retried or replayed, so
+// keeping the record only blocks later turns. Nothing is delivered here.
+// trimmedOrEmpty dereferences the optional trimmed text.
+func (h *IMMessageHandler) trimmedOrEmpty(trimmed *string) string {
+	if trimmed == nil {
+		return ""
+	}
+	return *trimmed
+}
+
+func (h *IMMessageHandler) dropUnreviewedSendSlot(userID string, slot *agent.UnfinishedTaskSlot) {
+	if h == nil || h.memory == nil || slot == nil {
+		return
+	}
+	slotID := strings.TrimSpace(slot.SlotID)
+	if slotID == "" {
+		return
+	}
+	h.memory.DismissUnfinishedSlot(userID, slotID)
+	h.pendingSlotUserText.Delete(userID)
+	log.Printf("[unfinished-slot] dropped unreviewed send slot %s for user %s: the turn moved on to a new request", slotID, userID)
+}
+
 // returnExternalDeliveryReview stops the turn. It also drops any utterance the
 // unfinished-slot hint saved, so the dismiss button cannot replay that send.
 func (h *IMMessageHandler) returnExternalDeliveryReview(msg IMUserMessage, slot *agent.UnfinishedTaskSlot) *IMAgentResponse {

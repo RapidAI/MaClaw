@@ -122,10 +122,23 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// Structural "no history" and the recovery classifier both run below.
 	// Either one can dismiss this slot and plan another send. The uncertain
 	// send stays until the user explicitly starts a new task.
-	if !result.FreshTask && !msg.IsBackground && !h.isPureCodingWorkbenchSession(msg.UserID) && unreviewedExternalDeliverySlot(result.UnfinishedSlot) {
-		result.Handled = true
-		result.Response = h.returnExternalDeliveryReview(*msg, result.UnfinishedSlot)
-		return result
+	//
+	// Only a turn that continues that task is refused here. The record stops a
+	// second delivery; it must not swallow an unrelated new request in the same
+	// session, which used to answer every follow-up with "上一次外部发送的结果还
+	// 不能确定" and left the person stuck with one button
+	// (BR-20261120-06EAE6635C0F).
+	if !result.FreshTask && !msg.IsBackground && !h.isPureCodingWorkbenchSession(msg.UserID) &&
+		unreviewedExternalDeliverySlot(result.UnfinishedSlot) {
+		if turnContinuesTheUnreviewedSend(h.trimmedOrEmpty(opts.Trimmed)) {
+			result.Handled = true
+			result.Response = h.returnExternalDeliveryReview(*msg, result.UnfinishedSlot)
+			return result
+		}
+		// The person moved on. The uncertain send is not retried and the record
+		// is dropped, so this request and the ones after it run normally.
+		h.dropUnreviewedSendSlot(msg.UserID, result.UnfinishedSlot)
+		result.UnfinishedSlot = nil
 	}
 
 	workflowReviewPending := h.workflowReviewPending(msg.UserID, msg.IsBackground)

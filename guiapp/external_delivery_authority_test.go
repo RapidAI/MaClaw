@@ -248,7 +248,11 @@ func TestUnreviewedExternalDeliveryStopsBeforeTaskContext(t *testing.T) {
 		t.Fatal("bind failed")
 	}
 	h := &IMMessageHandler{memory: memory}
-	trimmed := "北京天气"
+	// A bound slot makes this turn the resume of the interrupted task, so the
+	// recorded send is read here even though the words are new.
+	// (BR-20261120-06EAE6635C0F: an UNBOUND record no longer swallows a new
+	// request — see TestDropUnreviewedSendSlotFreesTheSession.)
+	trimmed := "继续上次未完成任务"
 	msg := &IMUserMessage{UserID: "user-bound", Platform: "desktop", Lang: "zh", Text: trimmed}
 	result := h.resolveIMEntryContext(imEntryContextOptions{
 		Message:            msg,
