@@ -472,6 +472,14 @@ func TestVerifiedArtifactFailedExtractionCauseDoesNotLeak(t *testing.T) {
 			t.Fatalf("private cause %q leaked into user-visible text: %q", priv, visible)
 		}
 	}
+	// The concrete cause is what a reviewer debugs with — it must land on
+	// task_outcome_evidence (persisted with the receipt), not be lost to a
+	// courier key the metadata hook could never see. Only the generic line is
+	// the person-facing `why`.
+	evidence := view.message.Metadata["task_outcome_evidence"]
+	if !strings.Contains(evidence, secretPath) || !strings.Contains(evidence, token) {
+		t.Fatalf("extraction cause missing from task_outcome_evidence: %q", evidence)
+	}
 }
 
 func TestTextItemsNeedExplicitIDs(t *testing.T) {

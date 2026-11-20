@@ -166,8 +166,15 @@ func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
 	if failRun == nil || failRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified {
 		t.Fatalf("failed extraction was not unverified: %+v", failRun)
 	}
-	if !strings.Contains(failRun.Content, "not json") {
-		t.Fatalf("concrete extraction cause lost from reply: %q", failRun.Content)
+	// The concrete cause stays off the person-facing sentence — it can carry a
+	// local path or a token — and lives in task_outcome_evidence on the stored
+	// receipt instead. A generic "deliverable extraction failed" is the `why`
+	// the reply carries.
+	if strings.Contains(failRun.Content, "not json") {
+		t.Fatalf("concrete extraction cause leaked into the reply: %q", failRun.Content)
+	}
+	if ev := failRun.Metadata["task_outcome_evidence"]; !strings.Contains(ev, "not json") {
+		t.Fatalf("concrete extraction cause lost from evidence: %q", ev)
 	}
 	blankScope := agentruntime.Scope{TenantID: "t", UserID: "u1"}
 	noteParsedDeliverableContract("run_extract_blank", nil, true, "")

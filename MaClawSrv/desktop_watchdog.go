@@ -756,9 +756,16 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	contract, resolved := desktopWaitForContract(run.ID)
 	if resolved && contract.failed {
 		// Extraction failure is a read failure, not a business failure: the
-		// run stays unverified with the concrete cause, never an empty-done.
+		// run stays unverified, never an empty-done. The concrete cause can
+		// carry a local path or token from the transport/model error, so it
+		// goes to task_outcome_evidence (and the log) — never the person-facing
+		// sentence. Only the generic line is the `why` the reply carries. This
+		// message is persisted through PersistRunReceipt, so writing evidence
+		// here — not a courier key the earlier metadata hook already missed —
+		// is what actually lands it on the stored receipt.
 		if contract.failWhy != "" {
-			return agentservice.TaskOutcomeUnverified, "deliverable extraction failed: " + contract.failWhy
+			msg.Metadata["task_outcome_evidence"] = desktopRuneHead("deliverable extraction failed: "+contract.failWhy, 300)
+			log.Printf("[watchdog] run=%s deliverable extraction failed: %s", run.ID, contract.failWhy)
 		}
 		return agentservice.TaskOutcomeUnverified, "deliverable extraction failed"
 	}
@@ -1500,8 +1507,18 @@ func desktopTaskOutcomeMetadata(runID string, msg agentservice.Message) map[stri
 	if n != "" {
 		out[agentservice.TaskOutcomeNoticeKey] = n
 	}
-	if why != "" {
-		out["task_outcome_evidence"] = desktopRuneHead(why, 300)
+	// The concrete extraction error (which may name a local path or a token)
+	// lives in the contract store the extractor already wrote — this hook runs
+	// at run completion, before the receipt reconcile, so it cannot rely on a
+	// metadata key the reconcile only stamps later. Reading the contract
+	// directly lands the cause in evidence while the generic `why` stays the
+	// person-facing line.
+	evidence := why
+	if contract, ok := desktopOutputContractOf(runID); ok && contract.failed && strings.TrimSpace(contract.failWhy) != "" {
+		evidence = "deliverable extraction failed: " + strings.TrimSpace(contract.failWhy)
+	}
+	if evidence != "" {
+		out["task_outcome_evidence"] = desktopRuneHead(evidence, 300)
 	}
 	if fin, ok := desktopComposeRunFinish(runID, msg, outcome, why); ok {
 		fin.Record = desktopRunFinishRecordPath(runID)

@@ -9307,6 +9307,204 @@ func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
 	}
 }
 
+// variedDebugCallbacks runs a failing `bash` call every iteration, but the
+// model changes the command each time (a different `go test -run` filter) and
+// each call returns a fresh diagnostic report. That is real debugging
+// progress, not dithering: even though every call exits non-zero, the
+// no-progress breaker must not count them as misses.
+type variedDebugCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+}
+
+func (m *variedDebugCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *variedDebugCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	// A fresh report each call: a different subset of failing tests. Non-zero
+	// exit, but new information the model can act on.
+	report := fmt.Sprintf("=== RUN   TestCase%d\n--- FAIL: TestCase%d (0.01s)\nFAIL\tgithub.com/x/y\t0.5s\nDONE", len(m.toolCalls), len(m.toolCalls))
+	return ToolExecutionResult{Result: report, Outcome: ToolExecutionOutcomeError}
+}
+
+// TestRunLoop_VariedFailedCallsAreProgress reproduces BR-20261119-CBC5D7D318C7:
+// a debugging turn that ran `go test` under a different `-run` filter each
+// iteration, every one exiting non-zero but returning a fresh report, was
+// aborted by the no-progress hard stop and reported as a misleading "model
+// returned empty responses". Varying the command is forward progress, so the
+// loop must run to the model's own finish, not a five-iteration stop.
+func TestRunLoop_VariedFailedCallsAreProgress(t *testing.T) {
+	cb := &variedDebugCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   10,
+		sysPrompt: "sys",
+	}}
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := int(requests.Add(1))
+		var body string
+		if n <= 6 {
+			// A different `go test -run` filter every iteration: the model is
+			// varying the command, so each failure is new information.
+			body = fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"c%d","type":"function","function":{"name":"bash","arguments":"{\"command\":\"go test -run TestCase%d\"}"}}]},"finish_reason":"tool_calls"}]}`, n, n)
+		} else {
+			body = `{"choices":[{"message":{"role":"assistant","content":"all tests now pass"},"finish_reason":"stop"}]}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "fix the failing tests", nil, client, cb)
+	if result.HardExit {
+		t.Fatalf("varied failed calls are progress; loop must not hard-stop: %+v", result)
+	}
+	if result.Error != "" || result.Text != "all tests now pass" {
+		t.Fatalf("expected the model's own finish, got %+v", result)
+	}
+	if len(cb.toolCalls) != 6 {
+		t.Fatalf("executed tools = %d, want six varied debugging calls", len(cb.toolCalls))
+	}
+}
+
+// TestNoProgressFailedRepeat pins the miss/progress rule behind the breaker:
+// an empty body and a first failure are misses, a rerun of the same command is
+// a miss, and a different command on a non-zero exit is forward progress.
+func TestNoProgressFailedRepeat(t *testing.T) {
+	prev := map[string]string{}
+	// Empty result: produced nothing, always a miss.
+	if !noProgressFailedRepeat(prev, "bash", `{"command":"go test ./..."}`, "") {
+		t.Fatal("empty result must count as a no-progress miss")
+	}
+	if !noProgressFailedRepeat(prev, "bash", `{"command":"go test ./..."}`, "   \n ") {
+		t.Fatal("whitespace-only result must count as a no-progress miss")
+	}
+	// First failure of this tool: nothing preceded it to build on.
+	if !noProgressFailedRepeat(prev, "bash", `{"command":"go test -run A"}`, "FAIL: TestA") {
+		t.Fatal("first failure of a tool must count as a no-progress miss")
+	}
+	rememberFailedToolCall(prev, "bash", `{"command":"go test -run A"}`)
+	// Same command rerun: the model re-issued an identical failing call.
+	if !noProgressFailedRepeat(prev, "bash", `{"command":"go test -run A"}`, "FAIL: TestA again") {
+		t.Fatal("rerunning the same failed command must count as a no-progress miss")
+	}
+	// Same logical command, reordered keys/whitespace: still the same call.
+	if !noProgressFailedRepeat(prev, "bash", `{ "command" : "go test -run A" }`, "FAIL: TestA again") {
+		t.Fatal("canonically identical args must count as a no-progress miss")
+	}
+	// Different command: the model changed what it ran, so even a non-zero
+	// exit is new information (a fresh report), not dithering.
+	if noProgressFailedRepeat(prev, "bash", `{"command":"go test -run B"}`, "FAIL: TestB") {
+		t.Fatal("a different command on failure must count as progress")
+	}
+}
+
+// repeatFailedCommandCallbacks executes `bash` and always returns the same
+// non-ok result no matter the command. Used to drive the no-progress breaker.
+type repeatFailedCommandCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+}
+
+func (m *repeatFailedCommandCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *repeatFailedCommandCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	return ToolExecutionResult{Result: "FAIL\nexit status 1", Outcome: ToolExecutionOutcomeError}
+}
+
+// TestRunLoop_RepeatedFailedCommandStopsAtNoProgress covers the other half of
+// the breaker: the model reran the exact same failing command each iteration.
+// Those reruns teach it nothing, so they are no-progress misses and the loop
+// must hard-stop with ErrNoProgress after five iterations — well before the
+// separate 12-call same-tool failure breaker would fire.
+func TestRunLoop_RepeatedFailedCommandStopsAtNoProgress(t *testing.T) {
+	cb := &repeatFailedCommandCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   20,
+		sysPrompt: "sys",
+	}}
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := int(requests.Add(1))
+		// The model stubbornly re-issues the identical command every turn.
+		body := `{"choices":[{"message":{"role":"assistant","content":"retrying","tool_calls":[{"id":"c` +
+			fmt.Sprintf("%d", n) + `","type":"function","function":{"name":"bash","arguments":"{\"command\":\"go test ./...\"}"}}]},"finish_reason":"tool_calls"}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "run the tests", nil, client, cb)
+	if !result.HardExit || result.Error != ErrNoProgress {
+		t.Fatalf("repeated failing command must hard-stop with ErrNoProgress, got %+v", result)
+	}
+	// The breaker stops after five consecutive no-progress misses (the local
+	// hardStopNoProgressIterations inside RunLoop), well before the 12-call
+	// same-tool failure breaker would fire on these reruns.
+	if got := len(cb.toolCalls); got != 5 {
+		t.Fatalf("executed tools = %d, want the no-progress breaker to stop at 5 repeated misses", got)
+	}
+}
+
+// emptyResultCallbacks executes `bash` and returns an empty body with a
+// non-ok outcome: the call ran but produced nothing.
+type emptyResultCallbacks struct {
+	mockCallbacks
+	DefaultLoopHooks
+}
+
+func (m *emptyResultCallbacks) BuildTools(string) []map[string]interface{} {
+	return []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})}
+}
+
+func (m *emptyResultCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	return ToolExecutionResult{Result: "", Outcome: ToolExecutionOutcomeError}
+}
+
+// TestRunLoop_EmptyFailedResultStopsAtNoProgress covers the empty-body branch:
+// each call executes but returns nothing, so it is a no-progress miss and the
+// loop must hard-stop with ErrNoProgress after five iterations.
+func TestRunLoop_EmptyFailedResultStopsAtNoProgress(t *testing.T) {
+	cb := &emptyResultCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter:   20,
+		sysPrompt: "sys",
+	}}
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := int(requests.Add(1))
+		body := `{"choices":[{"message":{"role":"assistant","content":"trying","tool_calls":[{"id":"c` +
+			fmt.Sprintf("%d", n) + `","type":"function","function":{"name":"bash","arguments":"{\"command\":\"probe\"}"}}]},"finish_reason":"tool_calls"}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	result := RunLoop(cb, "probe the target", nil, client, cb)
+	if !result.HardExit || result.Error != ErrNoProgress {
+		t.Fatalf("empty-result failures must hard-stop with ErrNoProgress, got %+v", result)
+	}
+	// Five consecutive empty-result misses trip the breaker.
+	if got := len(cb.toolCalls); got != 5 {
+		t.Fatalf("executed tools = %d, want the no-progress breaker to stop at 5 empty misses", got)
+	}
+}
+
 // TestRunLoop_NoProgressHardStopCommitsPairedBatch locks the recovery
 // contract: the breaker fires only after each denied call is already paired
 // in history. Committing that batch clears the pre-tool checkpoint so the
