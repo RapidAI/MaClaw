@@ -10,6 +10,7 @@ import '../../core/platform.dart';
 import '../../core/ui_kit.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
+import '../auth/qr_login_screen.dart';
 import 'update_dialog.dart';
 import 'voice_settings_sheet.dart';
 
@@ -23,7 +24,22 @@ class AccountScreen extends ConsumerWidget {
     final active = session.active;
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(context.S.tabMe)),
+      appBar: AppBar(
+        title: Text(context.S.tabMe),
+        actions: [
+          if (active != null)
+            IconButton(
+              tooltip: '授权电脑端',
+              icon: const Icon(Icons.qr_code_scanner),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) =>
+                      const QrLoginScreen(mode: QrScanMode.thirdPartyAuthorize),
+                ),
+              ),
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

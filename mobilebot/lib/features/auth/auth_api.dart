@@ -265,6 +265,43 @@ class AuthApi {
     return VerifyResult(status: status, account: account, message: message);
   }
 
+  /// Authorizes a third-party client's scan-to-login QR with the currently
+  /// signed-in maclaw account. Sends this account's viewer_token to the Hub so
+  /// the Hub can mint a fresh service credential for the polling client.
+  ///
+  /// The request goes to `accountHubUrl` (the Hub this account belongs to),
+  /// not necessarily the hub_url embedded in the QR — the QR's hub_url only
+  /// identifies which Hub holds the session. On the official service both are
+  /// the same Hub. Returns the client display name from the Hub on success.
+  Future<String> authorizeThirdParty({
+    required ThirdPartyAuthQrPayload payload,
+    required String accountHubUrl,
+    required String accessToken,
+  }) async {
+    final dio = hubDio(accountHubUrl);
+    late final Response<Map<String, dynamic>> response;
+    try {
+      response = await dio.post<Map<String, dynamic>>(
+        '/api/mobile/auth/third-party-qr-sessions/authorize',
+        data: {'qr_payload': payload.raw},
+        options: Options(
+          headers: {'Authorization': 'Bearer $accessToken'},
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
+      );
+    } on DioException catch (error) {
+      throw hubExceptionFrom(error);
+    }
+    final data = response.data ?? const <String, dynamic>{};
+    final status = (data['status'] ?? '').toString().trim();
+    if (status != 'authorized') {
+      throw HubApiException('AUTH_NOT_CONFIRMED',
+          (data['message'] ?? sharedL10n.pendingApprovalHint).toString());
+    }
+    return (data['client_name'] ?? '').toString().trim();
+  }
+
   Future<({HubRoute hub, String hubCenterUrl})> _resolveIdentity({
     required AuthMethod method,
     required String identity,

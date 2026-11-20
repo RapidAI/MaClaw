@@ -59,5 +59,49 @@ void main() {
       );
       expect(() => parseDesktopAuthQrPayload('[1,2]'), throwsFormatException);
     });
+
+    test('does not accept third-party authorize QR type', () {
+      expect(
+        () => parseDesktopAuthQrPayload(_payload(type: thirdPartyAuthQrType)),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('parseThirdPartyAuthQrPayload', () {
+    test('accepts a live third-party authorization QR', () {
+      final payload = parseThirdPartyAuthQrPayload(
+        _payload(type: thirdPartyAuthQrType).replaceFirst(
+          '"hub_url"',
+          '"name":"RapidEditor AI","hub_url"',
+        ),
+      );
+      expect(payload.sessionId, 'maqr_abc123');
+      expect(payload.hubUrl, 'https://hub.example.com');
+      expect(payload.clientName, 'RapidEditor AI');
+      expect(payload.expiresAt, isNotNull);
+    });
+
+    test('rejects the desktop login QR type', () {
+      expect(
+        () => parseThirdPartyAuthQrPayload(_payload()),
+        throwsFormatException,
+      );
+    });
+
+    test('rejects expired third-party QR', () {
+      expect(
+        () => parseThirdPartyAuthQrPayload(
+          _payload(
+            type: thirdPartyAuthQrType,
+            expiresAt: DateTime.now()
+                .toUtc()
+                .subtract(const Duration(minutes: 1))
+                .toIso8601String(),
+          ),
+        ),
+        throwsFormatException,
+      );
+    });
   });
 }
