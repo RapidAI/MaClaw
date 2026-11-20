@@ -1965,19 +1965,10 @@
   padding: 12px 14px 10px;
   border: 1px solid var(--theme-border, #dce6f2);
   border-radius: 12px;
-  /* ~10% see-through. The blur turns the list behind the card into a tint,
-     so task titles do not print as a second line through the copy. */
-  background: color-mix(in srgb, var(--theme-surface, #ffffff) 90%, transparent);
-  backdrop-filter: blur(8px);
+  /* Fill is the shared glass rule with the status popover. */
   box-shadow: 0 6px 20px rgba(20, 35, 60, .16);
   color: var(--theme-text-primary, #17212f);
   cursor: default;
-}
-@media (prefers-reduced-transparency: reduce) {
-  .mc-pinned-banner {
-    background: var(--theme-surface, #ffffff);
-    backdrop-filter: none;
-  }
 }
 .mc-pinned-banner__body {
   min-width: 0;
@@ -2219,12 +2210,12 @@
 
 .mc-workbench-status-popover {
   /* position: fixed applied via inline style with computed coordinates;
-     inline width tracks the row width so the edges stay aligned. */
+     inline width tracks the row width so the edges stay aligned.
+     Fill is the shared glass rule just below. */
   width: 320px;
   padding: 10px;
   border: 1px solid var(--theme-border);
   border-radius: var(--radius-lg);
-  background: var(--theme-surface);
   box-shadow: 0 12px 30px rgba(27, 56, 93, .14);
   color: var(--theme-text-primary);
   box-sizing: border-box;
@@ -2232,7 +2223,35 @@
   overscroll-behavior: contain;
   z-index: 99999;
 }
-.mc-workbench-status-popover[data-open='false'] { visibility: hidden; pointer-events: none; }
+/* Shared with the pinned banner: 15% see-through. Blur keeps the list
+   behind a tint, so task titles do not stay readable through the copy. */
+.mc-pinned-banner,
+.mc-workbench-status-popover {
+  background: color-mix(in srgb, var(--theme-surface, #ffffff) 85%, transparent);
+  backdrop-filter: blur(12px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mc-pinned-banner,
+  .mc-workbench-status-popover {
+    background: var(--theme-surface, #ffffff);
+    backdrop-filter: none;
+  }
+}
+/* Closed (and the banner's pre-layout frame) must not keep a blur layer. */
+.mc-workbench-status-popover[data-open='false'],
+.mc-pinned-banner[data-open='false'] {
+  visibility: hidden;
+  pointer-events: none;
+  backdrop-filter: none;
+}
+/* Both floats sit in the banner's slot above the status row. Hide the banner
+   while one is open so its copy does not show through the glass. */
+.sidebar-system-status:has(.mc-workbench-status-popover[data-open='true']) .mc-pinned-banner,
+.sidebar-system-status:has(.mc-workbench-devices-popover[data-open='true']) .mc-pinned-banner {
+  visibility: hidden;
+  pointer-events: none;
+  backdrop-filter: none;
+}
 
 /* Devices icon: opens the mobile-QR + remote-connect popover. Mirrors the
    bell's chrome so the two controls read as a pair. */
@@ -2407,8 +2426,11 @@
   opacity: 0.55;
 }
 /* The embedded card sheds its own chrome; the popover surface provides it.
-   #App prefix outranks the #App .mc-workbench-status-card theme overrides. */
+   The dark selectors outrank the later opaque card fill, which would
+   otherwise paint a solid sheet over the glass. */
 #App .mc-workbench-status-popover .mc-workbench-status-card,
+#App[data-ai-theme='dark'] .mc-workbench-status-popover .mc-workbench-status-card,
+[data-ai-theme='dark'] .mc-workbench-status-popover .mc-workbench-status-card,
 .mc-workbench-status-popover .mc-workbench-status-card {
   margin: 0 !important;
   padding: 0 !important;

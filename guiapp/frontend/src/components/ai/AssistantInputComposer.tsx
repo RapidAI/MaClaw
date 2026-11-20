@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef } from "react";
 import { imageCountsForHistoryMatches } from "./promptHistory";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
 import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
@@ -11,6 +11,7 @@ import { useTextCompositionGuard } from "./useTextCompositionGuard";
 import { MemoryUsageRing } from "./MemoryUsageRing";
 import { asTextareaRef, insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
 import { tailText } from "../../i18n/mnTail"
+import { COMPOSER_SHORTCUT_HINT_FONT, COMPOSER_SHORTCUT_MEASURE_HOST_STYLE, COMPOSER_SHORTCUT_MEASURE_STYLE, composerShortcutHint, useComposerShortcutHintVisible } from "./composerShortcutHint"
 
 const EMPTY_SUBMITTED_PROMPTS: string[] = [];
 
@@ -70,6 +71,9 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     });
 
     const autocompleteOpen = autocomplete.open;
+    const toolbarRef = useRef<HTMLDivElement>(null);
+    const shortcutHint = composerShortcutHint(lang);
+    const shortcutHintFits = useComposerShortcutHintVisible(toolbarRef, shortcutHint);
     const historyImageCounts = useMemo(
         () => imageCountsForHistoryMatches(submittedPrompts, submittedPromptAttachments, autocomplete.matches),
         [autocomplete.matches, submittedPromptAttachments, submittedPrompts],
@@ -181,8 +185,8 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     spellCheck={false}
                 />
             </div>
-            <div data-testid={toolbarTestId} style={toolbarStyle}>
-                <div style={toolbarLeftStyle} role="group" aria-label={tailText(lang ?? "", "Input actions", "\u8f93\u5165\u64cd\u4f5c")}>
+            <div ref={toolbarRef} data-testid={toolbarTestId} style={toolbarStyle}>
+                <div data-toolbar-slot="start" style={toolbarLeftStyle} role="group" aria-label={tailText(lang ?? "", "Input actions", "\u8f93\u5165\u64cd\u4f5c")}>
                     <AssistantInputActionsLeft
                         active={active}
                         attachButtonTestId={attachButtonTestId}
@@ -211,8 +215,8 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     />
                     {trailingToolbarContent}
                     {toolbarAddon ? (
-                        // The left group wraps internally so an expanded config
-                        // bar never squeezes the hint/send group off the card.
+                        // An expanded config bar wraps inside the left group.
+                        // It does not decide whether the shortcut sentence fits.
                         <div data-testid="ai-input-toolbar-addon" className="aic-toolbar-addon">
                             {toolbarAddon}
                         </div>
@@ -225,11 +229,16 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         {toolbarEndContent}
                     </div>
                 ) : null}
-                <div style={toolbarRightStyle}>
+                <div data-toolbar-slot="trailing" style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}
-                    <span aria-hidden="true" style={{ fontSize: "12px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
-                        {tailText(lang ?? "", "Enter to send · Ctrl/⌘+Enter for a new line", "Enter \u53d1\u9001 · Ctrl/⌘+Enter \u6362\u884c")}
+                    <span data-shortcut-measure-host="" aria-hidden="true" style={COMPOSER_SHORTCUT_MEASURE_HOST_STYLE}>
+                        <span data-shortcut-measure="" style={COMPOSER_SHORTCUT_MEASURE_STYLE}>{shortcutHint}</span>
                     </span>
+                    {shortcutHintFits ? (
+                        <span data-shortcut-hint="" data-testid="ai-composer-shortcut-hint" style={{ ...COMPOSER_SHORTCUT_HINT_FONT, color: t.textMuted, userSelect: "none", flexShrink: 0 }}>
+                            {shortcutHint}
+                        </span>
+                    ) : null}
                     <AssistantInputActionsRight
                         canSend={canSend}
                         cancelSession={cancelSession}
@@ -242,6 +251,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         ready={ready}
                         sendButtonStyle={sendButtonStyle}
                         sendButtonTestId={sendButtonTestId}
+                        sendShortcutTitle={shortcutHintFits ? undefined : shortcutHint}
                         showBusySpinner={showBusySpinner}
                         theme={t}
                         themeMode={themeMode}

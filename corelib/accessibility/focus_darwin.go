@@ -165,3 +165,7 @@ error "not found"
 	}
 	return parseCSVWindowBounds(strings.TrimSpace(string(out)))
 }
+
+func namedWindowID(titleSubstring string) uint64 { return 0 }
+
+func windowOwnedBySelf(id uint64) bool { return false }

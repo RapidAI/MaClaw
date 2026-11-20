@@ -1239,6 +1239,143 @@ func TestInboundMCPPlanEditRotatesConfirmationID(t *testing.T) {
 	}
 }
 
+func TestInboundMCPEditedPlanReplacesStaleMarkdown(t *testing.T) {
+	commands := mcpPlanDecisionCommands()
+	replace := func(t *testing.T, stored, nextMarkdown, keep, gone string) {
+		t.Helper()
+		app := &App{}
+		app.mcpStoreRun(&mcpRunRecord{
+			ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-1",
+			RunID: "run-1", Text: stored,
+			ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+		})
+		rememberMCPPendingPlan(app, "p")
+		first, err := app.mcpGetTask(context.Background(), "p", "run-1")
+		if err != nil || !strings.HasPrefix(first.ConfirmationID, mcpConfirmIDPrefix) || strings.Count(first.Text, "## 改登录") != 1 {
+			t.Fatalf("stored plan %+v err=%v", first, err)
+		}
+		owner := projectSessionOwnerID("p")
+		app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+			PendingPlanJSON:     `{"tasks":[{"index":2}]}`,
+			PendingPlanMarkdown: nextMarkdown,
+		})
+		edited, err := app.mcpGetTask(context.Background(), "p", "run-1")
+		if err != nil || edited.ConfirmationID == first.ConfirmationID || edited.StatusVersion != first.StatusVersion {
+			t.Fatalf("edited %+v err=%v first %q version %d", edited, err, first.ConfirmationID, first.StatusVersion)
+		}
+		if !strings.Contains(edited.Text, keep) || strings.Contains(edited.Text, gone) || strings.Count(edited.Text, nextMarkdown) != 1 || strings.Count(edited.Text, mcpPlanConfirmHint) != 1 {
+			t.Fatalf("stale plan text %q", edited.Text)
+		}
+		if strings.Contains(edited.Outcome, gone) {
+			t.Fatalf("outcome kept the previous plan %q", edited.Outcome)
+		}
+		again, err := app.mcpGetTask(context.Background(), "p", "run-1")
+		if err != nil || again.ConfirmationID != edited.ConfirmationID || again.Text != edited.Text || strings.Count(again.Text, nextMarkdown) != 1 {
+			t.Fatalf("second read %+v err=%v", again, err)
+		}
+	}
+	oldBefore := "待确认\n\n## 改登录\n\n" + mcpPlanConfirmHint
+	oldAfter := "待确认\n\n" + mcpPlanConfirmHint + "\n\n## 改登录"
+	replace(t, oldBefore, "## 改密码", "待确认", "改登录")
+	replace(t, oldAfter, "## 改密码", "待确认", "改登录")
+	replace(t, oldBefore, "## 改", "待确认", "改登录")
+
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-keep",
+		RunID: "run-keep", Text: "请先看这段说明。\n\n" + mcpPlanConfirmHint,
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	rememberMCPPendingPlan(app, "p")
+	kept, err := app.mcpGetTask(context.Background(), "p", "run-keep")
+	if err != nil || !strings.Contains(kept.Text, "请先看这段说明。") || strings.Count(kept.Text, "## 改登录") != 1 || strings.Count(kept.Text, mcpPlanConfirmHint) != 1 {
+		t.Fatalf("decision dropped %+v err=%v", kept, err)
+	}
+
+	plain := &App{}
+	plain.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-plain",
+		RunID: "run-plain", Text: "结果如下。\n\n1. run go test ./...\n\n" + mcpPlanConfirmHint,
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	owner := projectSessionOwnerID("p")
+	plain.imHandler = &IMMessageHandler{}
+	plain.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: "1. run go test ./...",
+	})
+	firstPlain, err := plain.mcpGetTask(context.Background(), "p", "run-plain")
+	if err != nil || strings.Count(firstPlain.Text, "1. run go test ./...") != 1 || !strings.Contains(firstPlain.Text, "结果如下。") {
+		t.Fatalf("plain plan %+v err=%v", firstPlain, err)
+	}
+	plain.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":2}]}`,
+		PendingPlanMarkdown: "1. run go test ./guiapp",
+	})
+	editedPlain, err := plain.mcpGetTask(context.Background(), "p", "run-plain")
+	if err != nil || editedPlain.ConfirmationID == firstPlain.ConfirmationID || editedPlain.StatusVersion != firstPlain.StatusVersion || !strings.Contains(editedPlain.Text, "结果如下。") || strings.Contains(editedPlain.Text, "1. run go test ./...") || strings.Count(editedPlain.Text, "1. run go test ./guiapp") != 1 {
+		t.Fatalf("plain edit %+v err=%v", editedPlain, err)
+	}
+}
+
+func TestInboundMCPProductionPlanStaysOutOfOutcome(t *testing.T) {
+	commands := mcpPlanDecisionCommands()
+	oldPlan := "**目标**: 改登录\n\n第二段旧要求\n\n### T1: 登录页\n\n描述续行"
+	newPlan := "**目标**: 改密码\n\n第二段新要求\n\n### T1: 密码页"
+	decision := "待确认\n\n请先看这段说明。"
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-1",
+		RunID: "run-1", Text: decision + "\n\n" + mcpPlanConfirmHint + "\n\n" + oldPlan,
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	owner := projectSessionOwnerID("p")
+	app.imHandler = &IMMessageHandler{}
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: oldPlan,
+	})
+	first, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || !strings.HasPrefix(first.ConfirmationID, mcpConfirmIDPrefix) || strings.Count(first.Text, oldPlan) != 1 || strings.Count(first.Text, mcpPlanConfirmHint) != 1 {
+		t.Fatalf("first %+v err=%v", first, err)
+	}
+	if !strings.Contains(first.Text, "请先看这段说明。") || !strings.Contains(first.Outcome, "待确认") || !strings.Contains(first.Outcome, "请先看这段说明。") || strings.Contains(first.Outcome, "改登录") || strings.Contains(first.Outcome, "描述续行") {
+		t.Fatalf("outcome swallowed the plan %q text %q", first.Outcome, first.Text)
+	}
+	app.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":2}]}`,
+		PendingPlanMarkdown: newPlan,
+	})
+	edited, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || edited.ConfirmationID == first.ConfirmationID || edited.StatusVersion != first.StatusVersion || strings.Count(edited.Text, newPlan) != 1 || strings.Contains(edited.Text, "改登录") || strings.Contains(edited.Text, "描述续行") || strings.Contains(edited.Text, "第二段旧要求") {
+		t.Fatalf("edited %+v err=%v", edited, err)
+	}
+	if !strings.Contains(edited.Text, "请先看这段说明。") || !strings.Contains(edited.Outcome, "待确认") || strings.Contains(edited.Outcome, "改密码") || strings.Contains(edited.Outcome, "密码页") || strings.Contains(edited.Outcome, "改登录") {
+		t.Fatalf("edited outcome %q text %q", edited.Outcome, edited.Text)
+	}
+	again, err := app.mcpGetTask(context.Background(), "p", "run-1")
+	if err != nil || again.Text != edited.Text || again.ConfirmationID != edited.ConfirmationID || again.StatusVersion != edited.StatusVersion {
+		t.Fatalf("second read %+v err=%v", again, err)
+	}
+
+	missingLead := "计划引用的输入文件不存在，无法开始实施；当前计划已恢复为待确认状态：\n\n• users.noreply.github.com\n\n请补齐文件或修正计划后重试。"
+	missing := &App{}
+	missing.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RequestID: "mcp-miss",
+		RunID: "run-miss", Text: missingLead + "\n\n" + oldPlan + "\n\n" + mcpPlanConfirmHint,
+		ConfirmationKind: mcpConfirmKindPlan, Commands: commands,
+	})
+	missing.imHandler = &IMMessageHandler{}
+	missing.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{
+		PendingPlanJSON:     `{"tasks":[{"index":1}]}`,
+		PendingPlanMarkdown: oldPlan,
+	})
+	view, err := missing.mcpGetTask(context.Background(), "p", "run-miss")
+	if err != nil || !strings.Contains(view.Text, oldPlan) || !strings.Contains(view.Outcome, "users.noreply.github.com") || strings.Contains(view.Outcome, "改登录") || strings.Contains(view.Outcome, "描述续行") {
+		t.Fatalf("missing-file outcome %q text %q err=%v", view.Outcome, view.Text, err)
+	}
+}
+
 func rememberMCPPendingPlan(app *App, projectPath string) {
 	owner := projectSessionOwnerID(projectPath)
 	app.imHandler = &IMMessageHandler{}

@@ -817,6 +817,25 @@ func PlaybookVision() string {
 	return PlaybookFor(ObserveVisionAssist)
 }
 
+// PlaybookBeforePerception is the system-prompt playbook. That prompt is
+// built before this turn's model is chosen. The vision flag written by the
+// previous tool call must not decide it: a text-only model told to click
+// x,y is rejected, and a vision model told that no screenshot exists ignores
+// the image. computer_observe reports which result this turn actually got.
+func PlaybookBeforePerception() string {
+	return `Computer Use:
+- Call computer_observe first. If that result attaches a screenshot, look at the image and computer_click with x,y in that image's pixels, or with ref=eN. If there is no image, the result lists eN refs; computer_click those refs and do not invent pixel coordinates.
+- Pass window (an app title substring) to computer_observe or computer_focus to bring one app forward. If omitted, the foreground window is used.
+- To find a person, button, or text, call computer_find query=... It searches labels and OCR and returns clickable eN refs.
+- In an IM app or a long list, use that app's search box: focus the window, click the search field, computer_type the name, then computer_find the result. Otherwise computer_scroll and call computer_observe again.
+- After every click, type, key, scroll, focus, select, or drag, call computer_observe again. Refs go stale.
+- Use computer_key for shortcuts such as enter, ctrl+c, and alt+tab. Use computer_select for a list or tab item, and computer_scroll_into_view before clicking something off screen.
+- Web pages use the browser tools. Office documents use office_read. Computer Use is for native desktop windows.
+- Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
+- Do not computer_type a password, payment password, or verification code, and do not ask for it in chat. The person types it on the screen. The tool waits. Then computer_observe.
+- Call computer_done when the desktop task is finished.`
+}
+
 // PlaybookFor returns Computer Use rules for the active perception mode.
 func PlaybookFor(mode ObserveMode) string {
 	if mode == ObserveVisionAssist {

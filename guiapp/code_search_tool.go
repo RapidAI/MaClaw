@@ -34,7 +34,7 @@ func buildCodeSearchToolDefinition() map[string]interface{} {
 		}, []string{"query"})
 }
 
-func (c *codingSubAgentCallbacks) executeLocalCodeSearch(args map[string]interface{}) codingToolExecutionResult {
+func (c *codingSubAgentCallbacks) executeLocalCodeSearch(args map[string]interface{}, argsJSON string) codingToolExecutionResult {
 	query := strings.TrimSpace(fmt.Sprint(args["query"]))
 	if query == "" || query == "<nil>" {
 		return codingToolExecutionResult{Text: "query is required", Outcome: codingToolOutcomeFailed}
@@ -76,10 +76,44 @@ func (c *codingSubAgentCallbacks) executeLocalCodeSearch(args map[string]interfa
 	if n, ok := codingSubAgentArgumentIntegerValue(args["top_k"]); ok {
 		topK = int(n)
 	}
-	res := codesearch.Search(codesearch.Request{Root: root, Path: sub, Query: query, TopK: topK})
+	res := codesearch.Search(codesearch.Request{
+		Root:  root,
+		Path:  sub,
+		Query: query,
+		TopK:  topK,
+		Progress: func(phase string, done, total int) {
+			c.emitCodeSearchCatchup(argsJSON, done, total)
+		},
+	})
 	text := codesearch.Encode(res)
 	c.trackSearchResult(codeSearchToolName, searchArgs, text, res.Freshness == "indexed")
 	return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeSuccess}
+}
+
+// emitCodeSearchCatchup writes the open code_search row's note. It is not a
+// second search. The row stays tool_started; the UI folds this into that row.
+func (c *codingSubAgentCallbacks) emitCodeSearchCatchup(argsJSON string, done, total int) {
+	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
+		return
+	}
+	if done <= 0 || total <= 0 {
+		return
+	}
+	if done != 1 && done != total && done%8 != 0 {
+		return
+	}
+	title := ""
+	if c.task != nil {
+		title = compactSubAgentTaskTitle(c.task.Title)
+	}
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
+	event.Event = codingAgentEventKindToolProgress.String()
+	event.Detail = codeSearchToolName
+	event.Command = codingToolEventCommand(codeSearchToolName, argsJSON)
+	event.Target = codingToolEventTarget(codeSearchToolName, argsJSON, c.projectPath())
+	event.Summary = fmt.Sprintf("已跟上 %d/%d 个改动", done, total)
+	event.Count = done
+	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
 // codeSearchRelative returns the slash path of abs inside root. On Windows the

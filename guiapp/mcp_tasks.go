@@ -1883,6 +1883,184 @@ func (a *App) mcpNoteLiveConfirmation(path, status, text, kind string, commands 
 	return view.Status, view.Text, view.ConfirmationKind, view.Commands
 }
 
+// mcpSyncPendingPlanMarkdown shows the current plan once, immediately before
+// the confirm hint. Without the hint the text is left alone so the first
+// overlay is still appended. A paragraph that is not a plan stays.
+func mcpSyncPendingPlanMarkdown(text, markdown string) (string, bool) {
+	text = strings.TrimSpace(text)
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		return text, false
+	}
+	at := strings.Index(text, mcpPlanConfirmHint)
+	if at < 0 {
+		return text, strings.Contains(text, markdown)
+	}
+	before := strings.TrimSpace(text[:at])
+	after := strings.TrimSpace(text[at+len(mcpPlanConfirmHint):])
+	before = mcpDropExactPlanMarkdown(before, markdown, false)
+	after = mcpDropExactPlanMarkdown(after, markdown, true)
+	// Finish appends the plan after the hint. That tail is the overlay.
+	// The paragraphs before the hint are the decision and stay. When the
+	// tail is not a plan, the overlay is the plan-shaped suffix in front.
+	if mcpStartsWithPlanOverlay(after) {
+		after = mcpDropPlanOverlay(after, true)
+	} else {
+		before = mcpDropPlanOverlay(before, false)
+	}
+	return mcpJoinBlocks(before, markdown, mcpPlanConfirmHint, after), true
+}
+
+func mcpDropExactPlanMarkdown(text, markdown string, leading bool) string {
+	text = strings.TrimSpace(text)
+	markdown = strings.TrimSpace(markdown)
+	if text == "" || markdown == "" {
+		return text
+	}
+	if text == markdown {
+		return ""
+	}
+	if leading {
+		prefix := markdown + "\n\n"
+		if strings.HasPrefix(text, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(text, prefix))
+		}
+		return text
+	}
+	suffix := "\n\n" + markdown
+	if strings.HasSuffix(text, suffix) {
+		return strings.TrimSpace(strings.TrimSuffix(text, suffix))
+	}
+	return text
+}
+
+func mcpStartsWithPlanOverlay(text string) bool {
+	blocks := mcpTextBlocks(text)
+	return len(blocks) > 0 && mcpLooksLikePlanMarkdown(blocks[0])
+}
+
+func mcpDropPlanOverlay(text string, leading bool) string {
+	blocks := mcpTextBlocks(text)
+	if leading {
+		return strings.Join(blocks[mcpLeadingPlanOverlayEnd(blocks):], "\n\n")
+	}
+	return strings.Join(blocks[:mcpTrailingPlanOverlayStart(blocks)], "\n\n")
+}
+
+// mcpTrailingPlanOverlayStart is the first block of the plan in front of the
+// hint. The formatted plan begins at its last goal line and runs through the
+// steps, including a goal or description paragraph. A "## " or numbered plan
+// has no goal line, so only the plan-shaped suffix is the overlay.
+func mcpTrailingPlanOverlayStart(blocks []string) int {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if mcpBlockStartsPlanGoal(blocks[i]) {
+			return i
+		}
+	}
+	start := len(blocks)
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if !mcpLooksLikePlanMarkdown(blocks[i]) {
+			break
+		}
+		start = i
+	}
+	return start
+}
+
+// mcpLeadingPlanOverlayEnd drops a plan that finish appended after the hint.
+// A trailing paragraph that is not part of a following step stays, so an ask
+// that was stored after a heading plan is still there.
+func mcpLeadingPlanOverlayEnd(blocks []string) int {
+	if len(blocks) == 0 || !mcpLooksLikePlanMarkdown(blocks[0]) {
+		return 0
+	}
+	if mcpBlockStartsPlanGoal(blocks[0]) {
+		return len(blocks)
+	}
+	end := 0
+	for end < len(blocks) && mcpLooksLikePlanMarkdown(blocks[end]) {
+		end++
+	}
+	for end < len(blocks) {
+		if mcpLooksLikePlanMarkdown(blocks[end]) {
+			end++
+			continue
+		}
+		laterPlan := false
+		for j := end + 1; j < len(blocks); j++ {
+			if mcpLooksLikePlanMarkdown(blocks[j]) {
+				laterPlan = true
+				break
+			}
+		}
+		if !laterPlan {
+			break
+		}
+		end++
+	}
+	return end
+}
+
+func mcpBlockStartsPlanGoal(block string) bool {
+	return strings.HasPrefix(mcpFirstLine(block), "**目标**")
+}
+
+func mcpFirstLine(block string) string {
+	line := strings.TrimSpace(block)
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = strings.TrimSpace(line[:i])
+	}
+	return line
+}
+
+func mcpLooksLikePlanMarkdown(block string) bool {
+	line := mcpFirstLine(block)
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "#") || mcpBlockStartsPlanGoal(block) {
+		return true
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i+1 >= len(line) {
+		return false
+	}
+	if line[i] != '.' && line[i] != ')' {
+		return false
+	}
+	return line[i+1] == ' '
+}
+
+func mcpTextBlocks(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	parts := strings.Split(text, "\n\n")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func mcpJoinBlocks(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
 func (a *App) mcpApplyLiveConfirmation(view mcpTaskView) mcpTaskView {
 	switch view.Status {
 	case mcpStatusRunning, mcpStatusFailed, mcpStatusCancelled:
@@ -1919,8 +2097,15 @@ func (a *App) mcpApplyLiveConfirmation(view mcpTaskView) mcpTaskView {
 		for _, command := range mcpPlanDecisionCommands() {
 			commands = mcpAppendCommand(commands, command)
 		}
-		if md := strings.TrimSpace(mem.PendingPlanMarkdown); md != "" && !strings.Contains(view.Text, md) {
-			extra = md
+		// Finish already stored the plan from that moment. Contains keeps a
+		// longer previous plan, or appends the new one after the hint, so the
+		// caller approves a plan it did not just read. Replace that overlay.
+		if md := strings.TrimSpace(mem.PendingPlanMarkdown); md != "" {
+			if synced, placed := mcpSyncPendingPlanMarkdown(view.Text, md); placed {
+				view.Text = synced
+			} else {
+				extra = md
+			}
 		}
 		if !strings.Contains(view.Text, "send_command") {
 			if extra != "" {

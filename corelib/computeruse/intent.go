@@ -41,7 +41,101 @@ func RequestsDesktopAppOperation(userText string) bool {
 	if s == "" || browserTaskWithoutDesktop(s) {
 		return false
 	}
+	// A desktop IM send is desktop work for a sticky follow-up. It does not
+	// by itself open a fresh Computer Use session; the gate does that only
+	// through RequestsDesktopMessageSend.
+	if RequestsDesktopMessageSend(s) {
+		return true
+	}
 	return hasDesktopOperationCue(s)
+}
+
+// RequestsDesktopMessageSend reports a request to send one message inside a
+// known desktop IM client (蓝信, 微信, 钉钉, …). The chat loop cannot drive
+// that window, and host IM delivery is a different path. An inquiry, a
+// document about sending, a bare 发消息 with no IM app, and a browser task
+// stay closed. Opening the app without a send verb also stays closed.
+func RequestsDesktopMessageSend(userText string) bool {
+	s := strings.ToLower(strings.TrimSpace(userText))
+	if s == "" || browserTaskWithoutDesktop(s) || desktopMessageSendExcluded(s) {
+		return false
+	}
+	return mentionsDesktopIM(s) && hasDesktopMessageVerb(s)
+}
+
+// mentionsDesktopIM is true when the longest app alias at some position is
+// an IM client. A longer non-IM name hides the shorter one inside it.
+func mentionsDesktopIM(s string) bool {
+	rs := []rune(s)
+	for i := 0; i < len(rs); {
+		alias, ok := longestMentionAlias(string(rs[i:]))
+		if !ok {
+			i++
+			continue
+		}
+		if alias.kind == AdapterIM {
+			return true
+		}
+		n := utf8.RuneCountInString(alias.name)
+		if n < 1 {
+			n = 1
+		}
+		i += n
+	}
+	return false
+}
+
+func desktopMessageSendExcluded(s string) bool {
+	for _, phrase := range []string{
+		"怎么", "如何", "怎样", "怎樣",
+		"写一份", "寫一份", "写一篇", "寫一篇",
+		"教程", "介绍一下", "介紹一下",
+	} {
+		if strings.Contains(s, phrase) {
+			return true
+		}
+	}
+	if phraseBounded(s, "how to") || phraseBounded(s, "how do") {
+		return true
+	}
+	trimmed := strings.TrimRight(s, "。.!！?？~～…、 \t")
+	return strings.HasSuffix(trimmed, "吗") || strings.HasSuffix(trimmed, "么") || strings.HasSuffix(trimmed, "嗎")
+}
+
+func hasDesktopMessageVerb(s string) bool {
+	// Longer phrases first. 发条 is kept off 条件, and 开发信息 is not 发信息.
+	verbs := []string{
+		"发送消息", "发送信息", "发送一条",
+		"回复消息", "回消息",
+		"发个消息", "发个信息",
+		"发消息", "发信息", "发一条", "发条",
+		"私聊", "单聊",
+	}
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		for _, verb := range verbs {
+			vr := []rune(verb)
+			if !hasRunePrefix(rs[i:], vr) {
+				continue
+			}
+			if i > 0 && rs[i-1] == '开' && strings.HasPrefix(verb, "发") && !strings.HasPrefix(verb, "发送") {
+				continue
+			}
+			if verb == "发条" {
+				end := i + len(vr)
+				if end < len(rs) && rs[end] == '件' {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	for _, phrase := range []string{"send a message", "send messages", "send message"} {
+		if phraseBounded(s, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDesktopOperationCue(s string) bool {

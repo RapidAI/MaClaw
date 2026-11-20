@@ -284,8 +284,12 @@ func TestCodingParallelMergesDifferentRegions(t *testing.T) {
 	turn := pair.beginLater(t, codingRequestImplementation)
 	writeParallelFile(t, turn.execDir, "note.txt", "alpha\nmiddle\nOMEGA\n")
 	release()
-	if _, err := turn.integrate(context.Background(), nil); err != nil {
+	result := &CodingSubAgentResult{FilesModified: []string{filepath.Join(turn.execDir, "note.txt")}}
+	if _, err := turn.integrate(context.Background(), result); err != nil {
 		t.Fatal(err)
+	}
+	if len(result.FilesModified) != 1 || result.FilesModified[0] != filepath.Join(repo, "note.txt") {
+		t.Fatalf("result path = %#v, want %q", result.FilesModified, filepath.Join(repo, "note.txt"))
 	}
 	got := readParallelFile(t, repo, "note.txt")
 	if got != "ALPHA\nmiddle\nOMEGA\n" {
@@ -331,10 +335,20 @@ func TestCodingParallelConflictKeepsPrimaryBytes(t *testing.T) {
 	if len(result.FilesModified) != 2 {
 		t.Fatalf("reported modified = %#v", result.FilesModified)
 	}
+	sawPrimary := false
 	for _, path := range result.FilesModified {
 		if !strings.HasSuffix(strings.ToLower(filepath.ToSlash(path)), "other.txt") {
 			t.Fatalf("reported modified = %#v", result.FilesModified)
 		}
+		if path == filepath.Join(turn.execDir, "other.txt") {
+			t.Fatalf("reported the checkout path %q", path)
+		}
+		if path == filepath.Join(repo, "other.txt") {
+			sawPrimary = true
+		}
+	}
+	if !sawPrimary {
+		t.Fatalf("reported modified = %#v, want %q", result.FilesModified, filepath.Join(repo, "other.txt"))
 	}
 	joined := strings.Join(notes, "\n")
 	if !strings.Contains(joined, "自动合入 1 个文件，还有 1 个要人看") {
@@ -1050,15 +1064,17 @@ func TestCodingParallelPreviewRemapsSiblingBesideSubdir(t *testing.T) {
 	}
 	root, modified, created := turn.previewPaths(exec, []string{
 		filepath.Join(exec, "a.go"),
+		"note.go",
 		filepath.Join(wt, "other", "b.go"),
 	}, []string{
 		filepath.Join(wt, "other", "c.go"),
 	})
-	if root != primary {
-		t.Fatalf("preview root = %q, want %q", root, primary)
+	if root != repo {
+		t.Fatalf("preview root = %q, want git root %q", root, repo)
 	}
 	wantModified := map[string]bool{
 		filepath.Join(primary, "a.go"):       true,
+		filepath.Join(primary, "note.go"):    true,
 		filepath.Join(repo, "other", "b.go"): true,
 	}
 	if len(modified) != len(wantModified) {
@@ -1077,6 +1093,56 @@ func TestCodingParallelPreviewRemapsSiblingBesideSubdir(t *testing.T) {
 	root, modified, created = turn.previewPaths(exec, []string{filepath.Join(wt, "other", "b.go")}, nil)
 	if root != exec || len(modified) != 1 || modified[0] != filepath.Join(wt, "other", "b.go") || created != nil {
 		t.Fatalf("before merge root=%q modified=%v created=%v", root, modified, created)
+	}
+
+	turn.merged = true
+	root, modified, created = turn.previewPaths(exec, []string{"note.go", filepath.Join(exec, "a.go")}, nil)
+	if root != primary || len(modified) != 2 || created != nil {
+		t.Fatalf("subdir-only root=%q modified=%v created=%v", root, modified, created)
+	}
+	for _, path := range modified {
+		if path != "note.go" && path != filepath.Join(primary, "a.go") {
+			t.Fatalf("subdir-only path %q", path)
+		}
+	}
+}
+
+func TestCodingParallelPreviewSiblingEventIncludesFile(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(repo))
+	primary := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(filepath.Join(repo, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(primary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(primary, "a.go"), []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "other", "b.go"), []byte("package other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(repo, "wt")
+	exec := filepath.Join(wt, "pkg")
+	turn := &codingParallelTurn{
+		deferred: true,
+		merged:   true,
+		primary:  primary,
+		execDir:  exec,
+		wt:       &codingWorkbenchWorktree{Path: wt, GitRoot: repo, ProjectPath: exec},
+	}
+	root, modified, _ := turn.previewPaths(exec, []string{
+		"a.go",
+		filepath.Join(wt, "other", "b.go"),
+	}, nil)
+	events := buildCodingSubAgentCodeFileEvents("sess", root, modified, nil)
+	got := map[string]bool{}
+	for _, evt := range events {
+		got[evt.AbsPath] = true
+	}
+	if !got[filepath.Join(primary, "a.go")] || !got[filepath.Join(repo, "other", "b.go")] {
+		t.Fatalf("events = %#v", events)
 	}
 }
 
@@ -1123,5 +1189,157 @@ func TestCodingParallelCheckoutStaysForChildInsideWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("checkout was not removed after the readers finished: %v", err)
+	}
+}
+
+func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
+	task := filepath.Join(`D:\`, "tasks", "tool-paths")
+	root := filepath.Join(`D:\`, "Repo")
+	wt := filepath.Join(`D:\`, "wt")
+	primary := filepath.Join(root, "pkg")
+	exec := filepath.Join(wt, "pkg")
+	turn := &codingParallelTurn{
+		primary:  primary,
+		execDir:  exec,
+		deferred: true,
+		wt: &codingWorkbenchWorktree{
+			Path:        wt,
+			GitRoot:     root,
+			ProjectPath: exec,
+		},
+	}
+	codingParallelTurns.Store(codingParallelTurnKey(task), turn)
+	t.Cleanup(func() { codingParallelTurns.Delete(codingParallelTurnKey(task)) })
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		projectPath:       exec,
+		permissionOwnerID: projectSessionOwnerID(task),
+	}}
+
+	fileArgs := cb.withProjectRelativePath(map[string]interface{}{"path": filepath.Join(primary, "A.go")}, false)
+	if got, _ := fileArgs["path"].(string); got != filepath.Join(exec, "A.go") {
+		t.Fatalf("subdir file = %q", got)
+	}
+	rootArgs := cb.withProjectRelativePath(map[string]interface{}{"path": filepath.Join(root, "README.md")}, false)
+	if got, _ := rootArgs["path"].(string); got != filepath.Join(wt, "README.md") {
+		t.Fatalf("git root file = %q", got)
+	}
+	relArgs := cb.withProjectRelativePath(map[string]interface{}{"path": "A.go"}, false)
+	if got, _ := relArgs["path"].(string); got != filepath.Join(exec, "A.go") {
+		t.Fatalf("relative file = %q", got)
+	}
+	inside := filepath.Join(exec, "A.go")
+	insideArgs := cb.withProjectRelativePath(map[string]interface{}{"path": inside}, false)
+	if got, _ := insideArgs["path"].(string); got != inside {
+		t.Fatalf("path inside checkout = %q", got)
+	}
+	outside := filepath.Join(`C:\`, "Windows", "notepad.exe")
+	outArgs := cb.withProjectRelativePath(map[string]interface{}{"path": outside}, false)
+	if got, _ := outArgs["path"].(string); got != outside {
+		t.Fatalf("path outside the repo = %q", got)
+	}
+
+	bashArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": primary})
+	if got, _ := bashArgs["working_dir"].(string); got != exec {
+		t.Fatalf("working_dir = %q", got)
+	}
+	rootBash := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": root})
+	if got, _ := rootBash["working_dir"].(string); got != wt {
+		t.Fatalf("git root working_dir = %q", got)
+	}
+	relBash := cb.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": "sub"})
+	if got, _ := relBash["working_dir"].(string); got != filepath.Join(exec, "sub") {
+		t.Fatalf("relative working_dir = %q", got)
+	}
+
+	searchArgs := cb.withDefaultProjectPath(map[string]interface{}{"path": filepath.Join(primary, "A.go"), "pattern": "func"})
+	if got, _ := searchArgs["path"].(string); got != filepath.Join(exec, "A.go") {
+		t.Fatalf("search path = %q", got)
+	}
+
+	codingParallelTurns.Delete(codingParallelTurnKey(task))
+	plain := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		projectPath:       exec,
+		permissionOwnerID: projectSessionOwnerID(task),
+	}}
+	abs := filepath.Join(primary, "A.go")
+	plainArgs := plain.withProjectRelativePath(map[string]interface{}{"path": abs}, false)
+	if got, _ := plainArgs["path"].(string); got != abs {
+		t.Fatalf("without a turn = %q", got)
+	}
+	plainBash := plain.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": abs})
+	if got, _ := plainBash["working_dir"].(string); got != abs {
+		t.Fatalf("working_dir without a turn = %q", got)
+	}
+
+	stay := &codingParallelTurn{primary: primary, execDir: primary, stayPut: true}
+	codingParallelTurns.Store(codingParallelTurnKey(task), stay)
+	stayCB := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		projectPath:       primary,
+		permissionOwnerID: projectSessionOwnerID(task),
+	}}
+	stayArgs := stayCB.withProjectRelativePath(map[string]interface{}{"path": abs}, false)
+	if got, _ := stayArgs["path"].(string); got != abs {
+		t.Fatalf("stayPut path = %q", got)
+	}
+	stayBash := stayCB.withDefaultWorkingDir(map[string]interface{}{"command": "go test", "working_dir": abs})
+	if got, _ := stayBash["working_dir"].(string); got != abs {
+		t.Fatalf("stayPut working_dir = %q", got)
+	}
+}
+
+func TestCodingParallelPreviewOutsideRepoDoesNotWidenRoot(t *testing.T) {
+	repo := filepath.Join(`D:\`, "Repo")
+	wt := filepath.Join(`D:\`, "wt")
+	primary := filepath.Join(repo, "pkg")
+	exec := filepath.Join(wt, "pkg")
+	turn := &codingParallelTurn{
+		deferred: true,
+		merged:   true,
+		primary:  primary,
+		execDir:  exec,
+		wt: &codingWorkbenchWorktree{
+			Path:        wt,
+			GitRoot:     repo,
+			ProjectPath: exec,
+		},
+	}
+	outside := filepath.Join(`C:\`, "Windows", "notepad.exe")
+	root, modified, created := turn.previewPaths(exec, []string{"note.go", outside}, nil)
+	if root != primary || created != nil {
+		t.Fatalf("outside repo root=%q created=%v", root, created)
+	}
+	sawNote, sawOutside := false, false
+	for _, path := range modified {
+		switch path {
+		case "note.go":
+			sawNote = true
+		case outside:
+			sawOutside = true
+		default:
+			t.Fatalf("outside repo path %q", path)
+		}
+	}
+	if !sawNote || !sawOutside || len(modified) != 2 {
+		t.Fatalf("outside repo modified=%v", modified)
+	}
+
+	root, modified, created = turn.previewPaths(exec, []string{
+		"note.go",
+		filepath.Join(wt, "other", "b.go"),
+	}, nil)
+	if root != repo || created != nil {
+		t.Fatalf("sibling root=%q created=%v", root, created)
+	}
+	want := map[string]bool{
+		filepath.Join(primary, "note.go"):    true,
+		filepath.Join(repo, "other", "b.go"): true,
+	}
+	if len(modified) != len(want) {
+		t.Fatalf("sibling modified=%v", modified)
+	}
+	for _, path := range modified {
+		if !want[path] {
+			t.Fatalf("sibling path %q", path)
+		}
 	}
 }

@@ -622,6 +622,54 @@ export function codingAgentToolDisplayName(name: string): string {
     return raw;
 }
 
+/**
+ * Fold a code_search catch-up note into the open tool_started row.
+ * The stored event stays tool_started, so the row keeps running and the
+ * summary does not count another pattern. An unmatched progress line
+ * returns null and must not be inserted.
+ */
+export function mergeCodingToolProgressContent(startContent: string, progressContent: string): string | null {
+    const prefix = "Coding Agent Event:";
+    const started = parseCodingAgentProgress(startContent);
+    const progress = parseCodingAgentProgress(progressContent);
+    if (!started || !progress) return null;
+    if ((started.event || "").trim().toLowerCase() !== "tool_started") return null;
+    if ((progress.event || "").trim().toLowerCase() !== "tool_progress") return null;
+    for (const field of ["turnID", "runID", "taskID"] as const) {
+        const left = (started[field] || "").trim();
+        const right = (progress[field] || "").trim();
+        if (left && right && left !== right) return null;
+    }
+    const startedDetail = (started.detail || "").trim();
+    const progressDetail = (progress.detail || "").trim();
+    if (startedDetail && progressDetail && startedDetail !== progressDetail) return null;
+    if (!startedDetail || !progressDetail) {
+        if (!started.title || started.title !== progress.title) return null;
+    }
+    const startedCommand = (started.command || "").trim();
+    const progressCommand = (progress.command || "").trim();
+    if (startedCommand && progressCommand && startedCommand !== progressCommand) return null;
+    const startedTarget = (started.target || "").trim();
+    const progressTarget = (progress.target || "").trim();
+    if (startedTarget && progressTarget && startedTarget !== progressTarget) return null;
+    const summary = (progress.summary || "").replace(/\s+/g, " ").trim();
+    if (!summary) return null;
+    const trimmed = startContent.trim();
+    if (!trimmed.startsWith(prefix)) return null;
+    let raw: Record<string, unknown>;
+    try {
+        raw = JSON.parse(trimmed.slice(prefix.length).trim()) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+    raw.summary = summary;
+    raw.event = "tool_started";
+    if (typeof progress.count === "number" && progress.count > 0) {
+        raw.count = progress.count;
+    }
+    return `${prefix} ${JSON.stringify(raw)}`;
+}
+
 export function parseCodingAgentEventProgress(content: string): CodingAgentProgress | null {
     const prefix = "Coding Agent Event:";
     const trimmed = content.trim();

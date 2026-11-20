@@ -61,11 +61,20 @@ var aliasGroups = []appAlias{
 	{id: "calculator", kind: AdapterGeneric, names: []string{"计算器", "calculator"}},
 }
 
+// mentionAlias is one window-title name used when a sentence names an app.
+// Longer names are tried first so 微信开发者工具 does not also count as 微信,
+// and qq浏览器 does not also count as qq.
+type mentionAlias struct {
+	name string
+	kind AdapterKind
+}
+
 var (
 	groupByName        = map[string]string{}
 	kindByName         = map[string]AdapterKind{}
 	desktopLaunchNames []string
 	browserLaunchNames []string
+	mentionAliases     []mentionAlias
 )
 
 func init() {
@@ -77,6 +86,7 @@ func init() {
 			}
 			groupByName[key] = g.id
 			kindByName[key] = g.kind
+			mentionAliases = append(mentionAliases, mentionAlias{name: key, kind: g.kind})
 			if g.kind == AdapterBrowser {
 				browserLaunchNames = append(browserLaunchNames, key)
 			} else {
@@ -87,6 +97,48 @@ func init() {
 	// Longer names first so 企业微信 wins over 微信 and qq浏览器 wins over qq.
 	sortLongestFirst(desktopLaunchNames)
 	sortLongestFirst(browserLaunchNames)
+	sortMentionAliases(mentionAliases)
+}
+
+func sortMentionAliases(names []mentionAlias) {
+	for i := 1; i < len(names); i++ {
+		name := names[i]
+		j := i
+		for j > 0 && len(names[j-1].name) < len(name.name) {
+			names[j] = names[j-1]
+			j--
+		}
+		names[j] = name
+	}
+}
+
+// longestMentionAlias is the longest alias at the start of span.
+// A shorter alias inside a longer one is not a separate mention: qq does not
+// match inside qq浏览器, and 微信 does not match inside 微信开发者工具.
+// An alias glued to more ASCII letters is not a mention either.
+func longestMentionAlias(span string) (mentionAlias, bool) {
+	var blocked []string
+	for _, alias := range mentionAliases {
+		if alias.name == "" || !strings.HasPrefix(span, alias.name) {
+			continue
+		}
+		insideLonger := false
+		for _, longer := range blocked {
+			if strings.HasPrefix(longer, alias.name) {
+				insideLonger = true
+				break
+			}
+		}
+		if insideLonger {
+			continue
+		}
+		if len(span) > len(alias.name) && span[len(alias.name)] <= 127 && isASCIIAlphaNumByte(span[len(alias.name)]) {
+			blocked = append(blocked, alias.name)
+			continue
+		}
+		return alias, true
+	}
+	return mentionAlias{}, false
 }
 
 func sortLongestFirst(names []string) {

@@ -133,6 +133,12 @@ func recordComputerUseGate(h *IMMessageHandler, ctx *LoopContext, routingText st
 		return ctx.ComputerUseActive, ctx.ComputerUseFresh
 	}
 	active, fresh = h.gateComputerUse(routingText)
+	// A group chat does not get a computer helper for an IM send. An explicit
+	// @computer request keeps the previous opt-in.
+	if active && computerUseMessageSendBlocked(ctx, routingText) {
+		active = false
+		fresh = false
+	}
 	if ctx != nil && loopKeepsDrivingTools(ctx) {
 		ctx.ComputerUseGateSettled = true
 		ctx.ComputerUseActive = active
@@ -162,7 +168,7 @@ func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string
 	if screen == "" {
 		screen = strings.TrimSpace(ctx.SessionID)
 	}
-	card := desktopbot.CardForGoal(computerHelperGoalText(text))
+	card := computerHelperCard(text)
 	ctx.ComputerHelperGoal = card.Goal
 	ctx.ComputerHelperLimits = card.Constraints
 	ctx.ComputerHelperSuccess = card.SuccessCriteria
@@ -191,6 +197,35 @@ func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string
 		ctx.ComputerHelperDispatched = false
 		ctx.ComputerHelperQueued = true
 	}
+}
+
+// computerUseMessageSendBlocked keeps a group conversation from starting the
+// desktop helper just because the sentence sends a chat message. The helper
+// would drive this machine. Explicit @computer is unchanged.
+func computerUseMessageSendBlocked(ctx *LoopContext, routingText string) bool {
+	if ctx == nil || ctx.LansengerGroupPermissions == nil {
+		return false
+	}
+	text := computerUseGateText(routingText)
+	if computeruse.HasExplicitTrigger(text) {
+		return false
+	}
+	return computeruse.RequestsDesktopMessageSend(text)
+}
+
+// computerHelperCard is the text the helper runs. A desktop IM send is
+// allowed to send exactly the message the user asked for, and it is done
+// without a file. Every other job keeps the default card, which refuses
+// sending and requires a path.
+func computerHelperCard(text string) desktopbot.HelperCard {
+	goal := computerHelperGoalText(text)
+	card := desktopbot.CardForGoal(goal)
+	if !computeruse.RequestsDesktopMessageSend(goal) {
+		return card
+	}
+	card.Constraints = "只发送用户要求的这一条消息，不另发内容，不付款，不新开站点。"
+	card.SuccessCriteria = "交回三行结论：是否发出、发给谁、发出的原文。没有文件也算完成。"
+	return card
 }
 
 // computerHelperGoalText drops the addressing trigger. The card names the
@@ -259,7 +294,7 @@ func computerUseContractPlaybookExtra(owner string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Host acceptance (do not call computer_use action=done until every line is visible in the latest computer_use action=observe result):\n")
+	b.WriteString("Host acceptance (do not call computer_done until every line is visible in the latest computer_observe result):\n")
 	for _, item := range st.Acceptance {
 		b.WriteString("- ")
 		b.WriteString(item)

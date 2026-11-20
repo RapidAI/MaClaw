@@ -203,3 +203,7 @@ func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 		X: hit.x, Y: hit.y, Width: hit.w, Height: hit.h, Title: hit.title,
 	}, true
 }
+
+func namedWindowID(titleSubstring string) uint64 { return 0 }
+
+func windowOwnedBySelf(id uint64) bool { return false }

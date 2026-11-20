@@ -2897,7 +2897,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// The free client shows the official OpenCode tool names. Map them onto
 		// the Maclaw executors that the live weather-PDF run actually used.
 		if openCodeFreeAgentRequest(aggCFG) {
-			choice.Message.ToolCalls = rewriteOpenCodeAgentToolCalls(choice.Message.ToolCalls)
+			choice.Message.ToolCalls = rewriteOpenCodeAgentToolCallsForTurn(userText, choice.Message.ToolCalls)
 		}
 		if len(choice.Message.ToolCalls) > 0 && strings.TrimSpace(content) == strings.TrimSpace(reasoningContent) {
 			content = ""
@@ -3752,7 +3752,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						// executed. The first one is the next step. A repeat of a
 						// name that still has not run did not change the surface.
 						surfaceGrant := false
-						if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
+						// execute is the free client's only door for a host tool
+						// the official catalog cannot list. A generic "do not
+						// retry" closes that door. Petitioning execute onto the
+						// next request does not help: the free body replaces
+						// the tool list again.
+						if openCodeFreeAgentRequest(aggCFG) && strings.EqualFold(strings.TrimSpace(tc.Function.Name), "execute") {
+							denial = llm.OpenCodeFreeHostChannelRetryForTurn(renderedToolNames(tools), userText, argsJSON)
+							hostDirective = true
+						} else if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
 							// A budgeted repeat family can publish one more invocation
 							// when the model asks again. One-shot tools stay on the
 							// consumed-grant denial. The grant opened here is on the
@@ -4673,6 +4681,16 @@ func dropUnnamedToolCalls(calls []llm.ToolCall) (kept []llm.ToolCall, dropped in
 // The renderer's maps are trusted host-owned definitions; the requested name is
 // not normalized because accepting aliases/case variants would let a response
 // escape the exact model-visible surface that the wire receipt verified.
+func renderedToolNames(tools []map[string]interface{}) []string {
+	names := make([]string, 0, len(tools))
+	for _, definition := range tools {
+		if name := strings.TrimSpace(tooldef.Name(definition)); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func toolCallNameWasRendered(tools []map[string]interface{}, name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {

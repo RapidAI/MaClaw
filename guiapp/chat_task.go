@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -1578,6 +1579,17 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if request == "" {
 		return chatTaskToolRejected("dispatch_background_task", "request is required")
 	}
+	// The gate may already have started the computer helper. A second worker
+	// for that desktop job cannot drive the screen.
+	if (loop.ComputerHelperDispatched || loop.ComputerHelperQueued) &&
+		(computeruse.RequestsDesktopMessageSend(request) || computeruse.RequestsDesktopAppOperation(request)) {
+		loop.markChatTaskHandoffSent()
+		return toolExecutionResult{
+			Text:     "桌面助手已经在做这件事。用一句话告诉用户，然后停止。不要再派任务。",
+			ToolName: "dispatch_background_task",
+			Outcome:  toolOutcomeSucceeded,
+		}
+	}
 	sessionKey := strings.TrimSpace(policyUserID)
 	if sessionKey == "" && loop != nil {
 		sessionKey = loop.UserID
@@ -1585,6 +1597,9 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	reg := h.ensureChatTasks()
 	if reg == nil {
 		return chatTaskToolRejected("dispatch_background_task", "chat tasks are unavailable")
+	}
+	if desktopMessageNeedsHelper(loop, request) {
+		return h.dispatchDesktopMessageHelper(loop, reg, request, sessionKey)
 	}
 	snap, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: request, SessionKey: sessionKey})
 	if err != nil {
@@ -1594,6 +1609,68 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	// in the same response. The semantic loop snapshots its ceiling at
 	// start, and a desktop chat round restores ForegroundChatBudget, so
 	// lowering MaxIterations here would not stop anything.
+	loop.markChatTaskHandoffSent()
+	return toolExecutionResult{
+		Text:     "Started: " + snap.Title + ". Tell the user in one plain sentence, then stop. Do not continue the work in this turn. Do not mention ids, tool names, or lanes.",
+		ToolName: "dispatch_background_task",
+		Outcome:  toolOutcomeSucceeded,
+	}
+}
+
+// desktopMessageNeedsHelper is the fallback when the fresh-turn gate did not
+// already start the helper and the dispatched request is itself a desktop IM
+// send. Opening Notepad, writing a resume, a group chat, and a turn that is
+// already handling a local file stay ordinary chat tasks.
+func desktopMessageNeedsHelper(loop *LoopContext, request string) bool {
+	if loop == nil || loop.ComputerHelperNoted || loop.LansengerGroupPermissions != nil {
+		return false
+	}
+	if localFileWorkBlocksComputerUse(loop.ComputerUseRoutingText) {
+		return false
+	}
+	return computeruse.RequestsDesktopMessageSend(request)
+}
+
+// dispatchDesktopMessageHelper starts the one computer helper for this screen.
+// The task text is the helper card, so the worker is allowed to send the one
+// requested message and does not have to invent a file.
+func (h *IMMessageHandler) dispatchDesktopMessageHelper(loop *LoopContext, reg *chatTaskRegistry, request, sessionKey string) toolExecutionResult {
+	screen := strings.TrimSpace(loop.ComputerUseOwner)
+	if screen == "" {
+		screen = strings.TrimSpace(loop.UserID)
+	}
+	if screen == "" {
+		screen = strings.TrimSpace(sessionKey)
+	}
+	card := computerHelperCard(request)
+	loop.ComputerHelperNoted = true
+	loop.ComputerHelperGoal = card.Goal
+	loop.ComputerHelperLimits = card.Constraints
+	loop.ComputerHelperSuccess = card.SuccessCriteria
+	id := computerHelperLeaseID(screen)
+	started, queued := desktopbot.ClaimComputerScreen(screen, id)
+	loop.ComputerHelperDispatched = started
+	loop.ComputerHelperQueued = queued
+	if !started {
+		loop.markChatTaskHandoffSent()
+		return toolExecutionResult{
+			Text:     "桌面助手已经在做这件事。用一句话告诉用户，然后停止。不要再派任务。",
+			ToolName: "dispatch_background_task",
+			Outcome:  toolOutcomeSucceeded,
+		}
+	}
+	snap, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{
+		Text:       card.Text(),
+		SessionKey: sessionKey,
+		Computer:   true,
+		Screen:     screen,
+	})
+	if err != nil {
+		desktopbot.ReleaseComputerScreen(screen, id)
+		loop.ComputerHelperDispatched = false
+		loop.ComputerHelperQueued = true
+		return chatTaskToolRejected("dispatch_background_task", err.Error())
+	}
 	loop.markChatTaskHandoffSent()
 	return toolExecutionResult{
 		Text:     "Started: " + snap.Title + ". Tell the user in one plain sentence, then stop. Do not continue the work in this turn. Do not mention ids, tool names, or lanes.",

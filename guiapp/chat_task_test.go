@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -702,6 +703,112 @@ func TestDesktopChatStopConfirmsOnlyAfterTasksAreIdle(t *testing.T) {
 	if !handled || idle == nil || idle.Text != "Nothing is running." {
 		t.Fatalf("idle stop = handled:%v resp:%+v", handled, idle)
 	}
+}
+
+func TestDispatchDesktopMessageSendStartsComputerHelper(t *testing.T) {
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	reg.executor = func(*IMMessageHandler, *chatTaskRecord) chatTaskRunResult {
+		return chatTaskRunResult{Text: "1. 已发出\n2. 张勇\n3. 我是码卡龙"}
+	}
+	loop := NewLoopContext("chat", desktopChatForegroundIterationBudget, nil)
+	loop.OfferChatTaskDispatch = true
+	loop.UserID = desktopUserID
+	h.setSessionLoopCtx(desktopUserID, loop)
+
+	// The gate already owns this screen. A later desktop handoff must not
+	// start a second worker.
+	loop.ComputerHelperDispatched = true
+	held := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{
+		"request": "在本机桌面打开蓝信，找到张勇，发送一条文本消息：我是码卡龙",
+	})
+	if !strings.Contains(held.Text, "已经在做") {
+		t.Fatalf("held = %q", held.Text)
+	}
+	if tasks := reg.List(desktopUserID); len(tasks) != 0 {
+		t.Fatalf("second worker started: %d", len(tasks))
+	}
+
+	loop.ComputerHelperDispatched = false
+	loop.ComputerHelperQueued = false
+	loop.ComputerHelperNoted = false
+	loop.mu.Lock()
+	loop.ChatTaskHandoffSent = false
+	loop.mu.Unlock()
+	opened := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{"request": "打开记事本"})
+	if !strings.Contains(opened.Text, "Started:") {
+		t.Fatalf("notepad dispatch = %q", opened.Text)
+	}
+	tasks := reg.List(desktopUserID)
+	if len(tasks) != 1 {
+		t.Fatalf("notepad tasks = %d", len(tasks))
+	}
+	reg.mu.Lock()
+	notepad := reg.tasks[tasks[0].ID]
+	notepadComputer := notepad != nil && notepad.Computer
+	reg.mu.Unlock()
+	if notepadComputer {
+		t.Fatal("opening notepad became a computer helper")
+	}
+	waitChatTaskStatus(t, reg, tasks[0].ID, chatTaskDone)
+
+	loop.mu.Lock()
+	loop.ChatTaskHandoffSent = false
+	loop.mu.Unlock()
+	loop.ComputerHelperNoted = false
+	sent := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{
+		"request": "在本机桌面打开蓝信，找到张勇，发送一条文本消息：我是码卡龙",
+	})
+	if !strings.Contains(sent.Text, "Started:") {
+		t.Fatalf("message dispatch = %q", sent.Text)
+	}
+	if !loop.ComputerHelperDispatched || !strings.Contains(loop.ComputerHelperLimits, "只发送") {
+		t.Fatalf("helper flags dispatched=%v limits=%q", loop.ComputerHelperDispatched, loop.ComputerHelperLimits)
+	}
+	var helperID, helperPrompt string
+	reg.mu.Lock()
+	for id, task := range reg.tasks {
+		if task != nil && task.Computer {
+			helperID = id
+			helperPrompt = task.Prompt
+		}
+	}
+	reg.mu.Unlock()
+	if helperID == "" {
+		t.Fatal("message send did not start a computer helper")
+	}
+	if !strings.Contains(helperPrompt, "只发送") || !strings.Contains(helperPrompt, "没有文件也算完成") {
+		t.Fatalf("helper prompt = %q", helperPrompt)
+	}
+	waitChatTaskStatus(t, reg, helperID, chatTaskDone)
+
+	// Unrelated work still starts an ordinary task after the helper handoff
+	// is cleared.
+	loop.mu.Lock()
+	loop.ChatTaskHandoffSent = false
+	loop.mu.Unlock()
+	weather := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{"request": "查天气生成 PDF"})
+	if !strings.Contains(weather.Text, "Started:") {
+		t.Fatalf("weather dispatch = %q", weather.Text)
+	}
+	weatherTasks := reg.List(desktopUserID)
+	var weatherID string
+	reg.mu.Lock()
+	for id, task := range reg.tasks {
+		if task != nil && task.Prompt == "查天气生成 PDF" {
+			weatherID = id
+			if task.Computer {
+				weatherID = ""
+			}
+		}
+	}
+	reg.mu.Unlock()
+	if weatherID == "" {
+		t.Fatalf("weather task missing: %+v", weatherTasks)
+	}
+	waitChatTaskStatus(t, reg, weatherID, chatTaskDone)
 }
 
 func TestForegroundChatHandsOffComputerUseAndLongToolRuns(t *testing.T) {

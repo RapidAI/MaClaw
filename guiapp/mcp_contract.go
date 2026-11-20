@@ -235,12 +235,18 @@ func mcpOutcomeLead(text string) string {
 			cut = i
 		}
 	}
-	text = strings.TrimSpace(text[:cut])
-	const maxRunes = 800
-	if utf8.RuneCountInString(text) <= maxRunes {
-		return text
+	lead := strings.TrimSpace(text[:cut])
+	// A "## " plan is cut above. The formatted plan starts with the goal line
+	// and stands immediately before the confirm hint, so it would otherwise
+	// become the decision sentence.
+	if hintAt := strings.Index(text, "\n\n"+mcpPlanConfirmHint); hintAt >= 0 && hintAt == cut {
+		lead = strings.TrimSpace(mcpDropPlanOverlay(lead, false))
 	}
-	return string([]rune(text)[:maxRunes]) + "…"
+	const maxRunes = 800
+	if utf8.RuneCountInString(lead) <= maxRunes {
+		return lead
+	}
+	return string([]rune(lead)[:maxRunes]) + "…"
 }
 
 // mcpAutoResumeAllowed is false after the user stopped the run.

@@ -208,13 +208,19 @@ type walkedFile struct {
 	body string
 	size int64
 	mod  time.Time
+	// skip is a source file that was seen and not indexed. Its size and
+	// mtime stay on the corpus so a later edit can bring it back. A content
+	// write does not change the parent directory mtime.
+	skip bool
 }
 
-func collectFiles(root, only string, limit int) (files []walkedFile, rules []rule, dirs map[string]time.Time, truncated bool) {
+func collectFiles(root, only string, limit int) (files []walkedFile, rules []rule, dirs map[string]time.Time, gitignores map[string]time.Time, truncated bool) {
 	if limit < 1 {
 		limit = 1
 	}
 	dirs = map[string]time.Time{}
+	gitignores = map[string]time.Time{}
+	indexed := 0
 	var walk func(dir, rel string, inherited []rule)
 	walk = func(dir, rel string, inherited []rule) {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -228,10 +234,14 @@ func collectFiles(root, only string, limit int) (files []walkedFile, rules []rul
 			return
 		}
 		local := append([]rule{}, inherited...)
-		if data, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err == nil {
-			parsed := parseGitignore(rel, string(data))
-			local = append(local, parsed...)
-			rules = append(rules, parsed...)
+		giPath := filepath.Join(dir, ".gitignore")
+		if info, err := os.Stat(giPath); err == nil && info.Mode().IsRegular() {
+			gitignores[rel] = info.ModTime()
+			if data, err := os.ReadFile(giPath); err == nil {
+				parsed := parseGitignore(rel, string(data))
+				local = append(local, parsed...)
+				rules = append(rules, parsed...)
+			}
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
@@ -273,22 +283,35 @@ func collectFiles(root, only string, limit int) (files []walkedFile, rules []rul
 			if only != "" && !underPath(child, only) {
 				continue
 			}
-			if !sourceExt(name) || info.Size() == 0 || info.Size() > maxFileBytes {
+			if !sourceExt(name) {
 				continue
 			}
-			if len(files) >= limit {
+			// Remember the identity even when the bytes are not indexed.
+			// Otherwise a later shrink or a NUL being removed never shows
+			// up: the directory mtime stays put.
+			if info.Size() == 0 || info.Size() > maxFileBytes {
+				files = append(files, walkedFile{rel: child, size: info.Size(), mod: info.ModTime(), skip: true})
+				continue
+			}
+			if indexed >= limit {
 				truncated = true
 				return
 			}
 			body, err := os.ReadFile(filepath.Join(dir, name))
-			if err != nil || hasNUL(body) {
+			if err != nil {
+				NoteDirty(filepath.Join(dir, name))
+				continue
+			}
+			if hasNUL(body) {
+				files = append(files, walkedFile{rel: child, size: info.Size(), mod: info.ModTime(), skip: true})
 				continue
 			}
 			files = append(files, walkedFile{rel: child, body: string(body), size: info.Size(), mod: info.ModTime()})
+			indexed++
 		}
 	}
 	walk(root, "", nil)
-	return files, rules, dirs, truncated
+	return files, rules, dirs, gitignores, truncated
 }
 
 func dirMayHold(dir, only string) bool {

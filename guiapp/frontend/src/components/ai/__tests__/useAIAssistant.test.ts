@@ -8138,6 +8138,68 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('folds search catch-up into the open search row', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep one search row while the index catches up');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const started = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"code_search","target":"desktop delivery"}';
+        const unmatched = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_progress","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"ripgrep","target":"other","summary":"\\u5df2\\u8ddf\\u4e0a 1/1 \\u4e2a\\u6539\\u52a8","count":1}';
+        const progress = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_progress","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"code_search","target":"desktop delivery","summary":"\\u5df2\\u8ddf\\u4e0a 2/5 \\u4e2a\\u6539\\u52a8","count":2}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 10, text: unmatched });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: started });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 30, text: progress });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['progress']);
+        const raw = JSON.parse(String(timeline?.[0].content || '').replace(/^Coding Agent Event:\s*/, '')) as { event?: string; summary?: string; count?: number; detail?: string };
+        expect(raw.event).toBe('tool_started');
+        expect(raw.detail).toBe('code_search');
+        expect(raw.summary).toBe('已跟上 2/5 个改动');
+        expect(raw.count).toBe(2);
+        expect(timeline?.[0].eventSequences).toEqual([20, 30]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('publishes a waiting thought when search progress matches no open row', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep the thought when catch-up has no row');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const unmatched = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_progress","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"ripgrep","target":"other","summary":"\\u5df2\\u8ddf\\u4e0a 1/1 \\u4e2a\\u6539\\u52a8","count":1}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect the implementation.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: unmatched });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking']);
+        expect(timeline?.[0].content).toBe('Inspect the implementation.');
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
     it('pairs repeated tools with their matching command instead of the latest same-name start', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);

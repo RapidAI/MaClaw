@@ -10,7 +10,7 @@ import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathF
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isConversationBranchRewindCommand, isHistoryResetCommandText } from "./composeAction";
-import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, mergeCodingToolProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { ROUND_PROSE_PRESERVE_MIN_CHARS, clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
@@ -2462,6 +2462,25 @@ function replaceMatchingCodingToolStart(
         const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), finishedSequence]));
         return timeline.map((current, currentIndex) => currentIndex === index
             ? { ...current, content: finishedContent, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
+            : current);
+    }
+    return null;
+}
+
+function mergeCodingToolProgress(
+    timeline: CodingAgentTimelineItem[],
+    progressContent: string,
+    progressSequence: number,
+    timestamp: number,
+): CodingAgentTimelineItem[] | null {
+    for (let index = timeline.length - 1; index >= 0; index--) {
+        const item = timeline[index];
+        if (item.kind !== 'progress') continue;
+        const merged = mergeCodingToolProgressContent(item.content, progressContent);
+        if (!merged) continue;
+        const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), progressSequence]));
+        return timeline.map((current, currentIndex) => currentIndex === index
+            ? { ...current, content: merged, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
             : current);
     }
     return null;
@@ -5815,6 +5834,26 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                         codingTimeline: replacedTimeline,
                     };
                 }
+            }
+            if (toolProgress?.event === 'tool_progress') {
+                const replacedTimeline = mergeCodingToolProgress(openingReasoning, progressText, sequence, completedAt);
+                if (replacedTimeline) {
+                    return {
+                        ...message,
+                        pendingCodingThoughts: undefined,
+                        reasoningStartSequence: undefined,
+                        codingTimeline: replacedTimeline,
+                    };
+                }
+                // No open row owns this catch-up. Drop the event, but still
+                // publish a thought that was waiting for the first timeline row.
+                if (timeline.length > 0 || openingReasoning === timeline || openingReasoning.length === 0) return message;
+                return {
+                    ...message,
+                    pendingCodingThoughts: undefined,
+                    reasoningStartSequence: undefined,
+                    codingTimeline: openingReasoning,
+                };
             }
             return {
                 ...message,

@@ -27,3 +27,7 @@ func foregroundWindowBounds() (WindowBounds, bool) {
 func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 	return WindowBounds{}, false
 }
+
+func namedWindowID(titleSubstring string) uint64 { return 0 }
+
+func windowOwnedBySelf(id uint64) bool { return false }

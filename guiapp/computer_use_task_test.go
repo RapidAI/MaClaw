@@ -456,6 +456,49 @@ func TestSyncComputerUseTurnRecordsFreshWithoutToolsPrep(t *testing.T) {
 	}
 }
 
+func TestDesktopMessageSendDispatchesHelperCard(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
+	h := &IMMessageHandler{}
+	text := "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。"
+	ctx := &LoopContext{ComputerUseRoutingText: text, UserID: desktopUserID}
+	active, _ := recordComputerUseGate(h, ctx, text)
+	if active || ctx.ComputerUseActive {
+		t.Fatalf("main loop became the operator active=%v flag=%v", active, ctx.ComputerUseActive)
+	}
+	if !ctx.ComputerHelperDispatched {
+		t.Fatal("desktop IM send did not dispatch the helper")
+	}
+	if !strings.Contains(ctx.ComputerHelperGoal, "蓝信") || !strings.Contains(ctx.ComputerHelperGoal, "张勇") {
+		t.Fatalf("goal = %q", ctx.ComputerHelperGoal)
+	}
+	if !strings.Contains(ctx.ComputerHelperLimits, "只发送") || strings.Contains(ctx.ComputerHelperLimits, "不发送") {
+		t.Fatalf("limits = %q", ctx.ComputerHelperLimits)
+	}
+	if !strings.Contains(ctx.ComputerHelperSuccess, "没有文件也算完成") {
+		t.Fatalf("success = %q", ctx.ComputerHelperSuccess)
+	}
+
+	desktopbot.ResetComputerScreens()
+	group := &LoopContext{
+		ComputerUseRoutingText:    text,
+		UserID:                    "lansenger:group",
+		LansengerGroupPermissions: &lansengerGroupPermissionPolicy{},
+	}
+	if active, _ := recordComputerUseGate(h, group, text); active || group.ComputerHelperNoted || group.ComputerHelperDispatched {
+		t.Fatalf("group chat started a helper active=%v noted=%v dispatched=%v", active, group.ComputerHelperNoted, group.ComputerHelperDispatched)
+	}
+
+	desktopbot.ResetComputerScreens()
+	note := &LoopContext{ComputerUseRoutingText: "@computer 打开记事本", UserID: desktopUserID}
+	recordComputerUseGate(h, note, note.ComputerUseRoutingText)
+	if !strings.Contains(note.ComputerHelperLimits, "不发送") || strings.Contains(note.ComputerHelperLimits, "只发送") {
+		t.Fatalf("default card changed: %q", note.ComputerHelperLimits)
+	}
+}
+
 func TestComputerUseGateUsesLoopRoutingText(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	desktopbot.ResetComputerScreens()

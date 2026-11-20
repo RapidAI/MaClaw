@@ -210,13 +210,12 @@ func TestComputerUsePlaybookSection(t *testing.T) {
 		t.Fatal("inactive empty")
 	}
 	s := computerUsePlaybookSection(true)
-	if s == "" || !strings.Contains(s, "Computer Use") || !strings.Contains(s, "computer_use") || !strings.Contains(s, "action=observe") {
+	if s == "" || !strings.Contains(s, "Computer Use") || !strings.Contains(s, "computer_observe") || !strings.Contains(s, "computer_click") || !strings.Contains(s, "computer_done") {
 		t.Fatalf("playbook section incomplete: %q", s)
 	}
-	if strings.Contains(s, "computer_observe") || strings.Contains(s, "computer_click") {
-		t.Fatalf("managed playbook still names an unpublished tool: %q", s)
+	if strings.Contains(s, "computer_use action=") || strings.Contains(s, "The tool name is computer_use") {
+		t.Fatalf("driving loop playbook names the managed adapter: %q", s)
 	}
-	_ = computeruse.Playbook()
 }
 
 func TestBrowserPlaybookSection(t *testing.T) {
@@ -229,14 +228,29 @@ func TestBrowserPlaybookSection(t *testing.T) {
 	}
 }
 
-func TestComputerUsePlaybookSectionVision(t *testing.T) {
+func TestComputerUsePlaybookSectionIgnoresStaleVisionFlag(t *testing.T) {
 	resetComputerUseSessionForTest(t)
 	prev := computerUseVisionFn
+	computerUseVisionFn = func() bool { return false }
+	t.Cleanup(func() {
+		computerUseVisionFn = prev
+		setComputerUseTurnVision(false)
+	})
+	setComputerUseTurnVision(false)
+	textOnly := computerUsePlaybookSection(true)
+	setComputerUseTurnVision(true)
 	computerUseVisionFn = func() bool { return true }
-	t.Cleanup(func() { computerUseVisionFn = prev })
-	s := computerUsePlaybookSection(true)
-	if !strings.Contains(s, "视觉模型") || !strings.Contains(s, "screenshot") {
-		t.Fatalf("vision playbook missing: %q", s)
+	vision := computerUsePlaybookSection(true)
+	if textOnly != vision {
+		t.Fatalf("playbook followed the previous turn's vision flag\ntext:\n%s\nvision:\n%s", textOnly, vision)
+	}
+	for _, want := range []string{"screenshot", "ref=eN", "computer_find", "computer_done"} {
+		if !strings.Contains(textOnly, want) {
+			t.Fatalf("playbook missing %q: %q", want, textOnly)
+		}
+	}
+	if strings.Contains(textOnly, "Screenshots are NOT sent") {
+		t.Fatalf("unbound playbook told the model there is no image: %q", textOnly)
 	}
 }
 
@@ -422,6 +436,19 @@ func TestShouldActivateComputerUseDegradedFailsClosed(t *testing.T) {
 	h2 := &IMMessageHandler{}
 	if h2.shouldActivateComputerUse("打开word程序写一份简历") {
 		t.Fatal("nil classifier must fail closed")
+	}
+	incident := "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。"
+	if !h2.shouldActivateComputerUse(incident) {
+		t.Fatal("a desktop IM message send must open without a classifier")
+	}
+	if h2.shouldActivateComputerUse("打开记事本") || h2.shouldActivateComputerUse("打开微信") {
+		t.Fatal("opening an app must not open the fresh gate")
+	}
+	if h2.shouldActivateComputerUse("怎么给微信发消息") || h2.shouldActivateComputerUse("写一份蓝信发消息的说明") {
+		t.Fatal("an inquiry or a document about sending must stay closed")
+	}
+	if h2.shouldActivateComputerUse(incident + "\n[附件: notes.zip → 已保存到 C:\\tmp\\notes.zip]") {
+		t.Fatal("a current attachment must keep a message send closed")
 	}
 }
 
@@ -736,6 +763,33 @@ func TestDecideComputerUseActivation(t *testing.T) {
 			},
 			wantActive: true,
 			wantReason: "explicit_trigger",
+		},
+		{
+			name: "desktop IM message send opens without a classifier",
+			in: computerUseActivationInput{
+				DesktopMessage: true,
+			},
+			wantActive: true,
+			wantReason: "desktop_message",
+		},
+		{
+			name: "local file work wins over a desktop message send",
+			in: computerUseActivationInput{
+				DesktopMessage: true,
+				LocalFileWork:  true,
+				Sticky:         true,
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "local_file_work",
+		},
+		{
+			name: "desktop operation wording alone stays closed",
+			in: computerUseActivationInput{
+				DesktopOperation: true,
+			},
+			wantActive: false,
+			wantReason: "inactive",
 		},
 		{
 			name: "no sticky no signal",

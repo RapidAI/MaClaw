@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { lightTheme } from "./aiAssistantPanelTheme";
@@ -117,6 +119,15 @@ describe("ChatSessionLocator", () => {
         fireEvent.scroll(list);
         rerender(<ChatSessionLocator turns={[...many, { id: "new", label: "新的" }, { id: "newer", label: "更新" }]} lang="zh-Hans" theme={lightTheme} onJump={vi.fn()} />);
         expect(list.scrollTop).toBe(40);
+    });
+
+    it("draws each tick at 10px, with the closed row still 18px wide", () => {
+        const css = readFileSync(resolve(process.cwd(), "src/components/ai/ChatSessionLocator.css"), "utf8");
+        expect(css).toContain("width: 10px;");
+        expect(css).toContain("height: 2px;");
+        expect(css).toContain("padding: 3px 4px;");
+        expect(css).toContain("padding: 4px 6px;");
+        expect(css).not.toContain("width: 14px;");
     });
 
     it("renders nothing when the conversation has no user commands", () => {

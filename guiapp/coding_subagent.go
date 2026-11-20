@@ -3074,7 +3074,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		return result
 	case codeSearchToolName:
-		return c.executeLocalCodeSearch(args)
+		return c.executeLocalCodeSearch(args, argsJSON)
 	case codeNavigationToolName:
 		result := c.executeLocalCodeNavigation(args)
 		if result.Outcome == codingToolOutcomeSuccess {
@@ -4119,20 +4119,45 @@ func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolO
 	}
 }
 
+// mapParallelWorktreePath sends an absolute path copied from the primary tree
+// into this turn's checkout. Relative names are joined onto the checkout
+// first. Step verify and hooks call bash with the primary after the merge,
+// and they do not go through this helper, so the checkout map stays off that
+// command runner.
+func (c *codingSubAgentCallbacks) mapParallelWorktreePath(path string) string {
+	if c == nil || c.subagent == nil {
+		return path
+	}
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) {
+		return path
+	}
+	task := projectPathFromSessionOwnerID(c.subagent.taskPermissionOwnerID())
+	if task == "" {
+		return path
+	}
+	mapped, ok := codingParallelMappedDir(task, path)
+	if !ok || mapped == "" {
+		return path
+	}
+	return mapped
+}
+
 func (c *codingSubAgentCallbacks) withDefaultProjectPath(args map[string]interface{}) map[string]interface{} {
 	copied := make(map[string]interface{}, len(args)+1)
 	for k, v := range args {
 		copied[k] = v
 	}
 	projectPath := c.projectPath()
-	if projectPath != "" {
-		if raw, ok := copied["path"].(string); !ok || strings.TrimSpace(raw) == "" {
-			copied["path"] = projectPath
-		} else if raw = strings.TrimSpace(raw); !filepath.IsAbs(raw) {
-			copied["path"] = filepath.Join(projectPath, raw)
-		} else {
-			copied["path"] = raw
-		}
+	raw, hasRaw := copied["path"].(string)
+	raw = strings.TrimSpace(raw)
+	switch {
+	case projectPath != "" && (!hasRaw || raw == ""):
+		copied["path"] = projectPath
+	case projectPath != "" && !filepath.IsAbs(raw):
+		copied["path"] = c.mapParallelWorktreePath(filepath.Join(projectPath, raw))
+	case filepath.IsAbs(raw):
+		copied["path"] = c.mapParallelWorktreePath(raw)
 	}
 	return copied
 }
@@ -4151,10 +4176,16 @@ func (c *codingSubAgentCallbacks) withProjectRelativePath(args map[string]interf
 		}
 		return copied
 	}
-	if filepath.IsAbs(raw) || projectPath == "" {
-		return copied
+	if !filepath.IsAbs(raw) {
+		if projectPath == "" {
+			return copied
+		}
+		raw = filepath.Join(projectPath, raw)
+		copied["path"] = raw
 	}
-	copied["path"] = filepath.Join(projectPath, raw)
+	if mapped := c.mapParallelWorktreePath(raw); mapped != raw {
+		copied["path"] = mapped
+	}
 	return copied
 }
 
@@ -4175,7 +4206,11 @@ func (c *codingSubAgentCallbacks) withDefaultWorkingDir(args map[string]interfac
 		return copied
 	}
 	if wd != "" && !filepath.IsAbs(wd) && projectPath != "" {
-		copied["working_dir"] = filepath.Join(projectPath, wd)
+		wd = filepath.Join(projectPath, wd)
+		copied["working_dir"] = wd
+	}
+	if mapped := c.mapParallelWorktreePath(wd); mapped != wd {
+		copied["working_dir"] = mapped
 	}
 	return copied
 }

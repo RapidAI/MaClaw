@@ -705,7 +705,8 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
   // (guard counts 247).
-  ['guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 255],
+  // 255 -> 275 (2026-11-20): composer shortcut hint integration measured 264 lines.
+  ['guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 275],
   ['guiapp/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
   ['guiapp/frontend/src/components/ai/useAssistantPreviewResize.ts', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts', 40],

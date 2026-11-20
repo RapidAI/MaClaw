@@ -119,9 +119,10 @@ export function getAssistantInputComposerStyles({
             display: "flex",
             alignItems: "center",
             gap: "6px",
-            // Grow/shrink with the row so the addon (e.g. TaskConfigBar)
-            // wraps onto its own line inside this group before the
-            // hint/send group can ever be squeezed off the card.
+            // Grow and wrap so a wide addon stays inside this group.
+            // The shortcut sentence is measured separately: it leaves the row
+            // when the model slot and the send cluster cannot give it its
+            // intrinsic width, and the send tooltip keeps the sentence.
             flex: "1 1 auto",
             minWidth: 0,
             flexWrap: "wrap",
@@ -132,6 +133,7 @@ export function getAssistantInputComposerStyles({
             alignItems: "center",
             gap: "6px",
             flexShrink: 0,
+            position: "relative",
         },
     };
 }

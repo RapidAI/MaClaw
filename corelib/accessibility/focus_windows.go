@@ -4,6 +4,7 @@ package accessibility
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -178,6 +179,27 @@ func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 		return WindowBounds{}, false
 	}
 	return hwndWindowBounds(picked.hwnd)
+}
+
+func namedWindowID(titleSubstring string) uint64 {
+	titleSubstring = strings.TrimSpace(titleSubstring)
+	if titleSubstring == "" {
+		return 0
+	}
+	picked, ok := pickBestVisible(titleSubstring)
+	if !ok {
+		return 0
+	}
+	return uint64(picked.hwnd)
+}
+
+func windowOwnedBySelf(id uint64) bool {
+	if id == 0 {
+		return false
+	}
+	var pid uint32
+	procGetWindowThreadProcessId.Call(uintptr(id), uintptr(unsafe.Pointer(&pid)))
+	return pid != 0 && int(pid) == os.Getpid()
 }
 
 // windowTitleAtPoint resolves the top-level window owning screen point (x,y)

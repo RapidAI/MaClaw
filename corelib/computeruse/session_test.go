@@ -82,6 +82,18 @@ func TestPolicy_TargetApps(t *testing.T) {
 	}
 }
 
+func TestPlaybookBeforePerceptionNamesBothResults(t *testing.T) {
+	p := PlaybookBeforePerception()
+	for _, want := range []string{"screenshot", "ref=eN", "computer_find", "computer_done", "search box"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("playbook missing %q: %s", want, p)
+		}
+	}
+	if strings.Contains(p, "Screenshots are NOT sent") || strings.Contains(p, "computer_use") {
+		t.Fatal(p)
+	}
+}
+
 func TestPlaybookMentionsTextOnly(t *testing.T) {
 	if !strings.Contains(Playbook(), "text-only") {
 		t.Fatal(Playbook())

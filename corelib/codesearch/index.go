@@ -33,18 +33,35 @@ const (
 	indexedFreshness = "indexed"
 	warmingHint      = "索引还在构建。这一轮改用 code_navigation 或 ripgrep。"
 	symbolHint       = "下一步用 code_navigation，operation 用 node 或 callers。"
+	// catchingUpHint is the result when this search stopped before every noted
+	// file was reloaded. The hits are from the published index. Exact text
+	// that must include those edits belongs on ripgrep.
+	catchingUpHint = "索引还在跟上刚才的改动，这次命中不含未跟上的文件。精确文本用 ripgrep。"
+	// dirtyCatchupBudget is how long a background pass spends reloading noted
+	// files. It is not a query timeout. The query uses Request.Wait and leaves
+	// the rest of the notes for this pass.
+	dirtyCatchupBudget = 2 * time.Minute
 )
+
+// ProgressFunc reports noted files handled by one search.
+// phase is "catchup". done is how many this call has handled. total is how
+// many it owed when it started.
+type ProgressFunc func(phase string, done, total int)
 
 var symbolQuery = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 // Request is one code_search lookup. Path is a slash-separated directory or
-// file inside Root. Wait is how long this call blocks for a cold index.
+// file inside Root. Wait bounds two things: a cold index build, and how long
+// a published index spends reloading files noted since the last pass.
+// Reloading one file retokenizes that file. It does not rebuild the corpus.
+// Notes still owed stay dirty for the background pass. Progress may be nil.
 type Request struct {
-	Root  string
-	Path  string
-	Query string
-	TopK  int
-	Wait  time.Duration
+	Root     string
+	Path     string
+	Query    string
+	TopK     int
+	Wait     time.Duration
+	Progress ProgressFunc
 }
 
 // Hit is one ranked chunk.
@@ -93,13 +110,22 @@ func Encode(res Result) string {
 }
 
 var (
-	storeMu     sync.Mutex
-	corpora     = map[string]*corpus{}
-	builds      = map[string]*buildSlot{}
-	dirtyNotes  = map[string]time.Time{}
-	maxFiles    atomic.Int32
-	buildPause  func()
-	pauseMu     sync.Mutex
+	storeMu    sync.Mutex
+	corpora    = map[string]*corpus{}
+	builds     = map[string]*buildSlot{}
+	dirtyNotes = map[string]time.Time{}
+	maxFiles   atomic.Int32
+	buildPause func()
+	pauseMu    sync.Mutex
+	// dirtyGate, when set by a test, is asked before each noted file is read.
+	// Returning false leaves that note dirty and the search ranks the index
+	// already published.
+	dirtyGate   func(done, total int) bool
+	dirtyGateMu sync.Mutex
+	// noteRead reads a noted file. Tests replace it to simulate a share
+	// violation; a failed read must not consume the note.
+	noteReadMu  sync.Mutex
+	noteRead    = os.ReadFile
 	reconcileOn sync.Once
 	// testIndexBuilds counts BM25 rebuilds so a test can see a deleted file
 	// stop invalidating the corpus.
@@ -124,6 +150,20 @@ func SetBuildPauseForTest(fn func()) {
 	pauseMu.Lock()
 	buildPause = fn
 	pauseMu.Unlock()
+}
+
+// SetDirtyGateForTest is asked before each noted file is read.
+// Returning false stops this pass. The note stays dirty. Nil clears it.
+func SetDirtyGateForTest(fn func(done, total int) bool) {
+	dirtyGateMu.Lock()
+	dirtyGate = fn
+	dirtyGateMu.Unlock()
+}
+
+func currentDirtyGate() func(done, total int) bool {
+	dirtyGateMu.Lock()
+	defer dirtyGateMu.Unlock()
+	return dirtyGate
 }
 
 type buildSlot struct {
@@ -151,19 +191,23 @@ type chunk struct {
 }
 
 type corpus struct {
-	mu        sync.Mutex
-	gen       uint64
-	root      string
-	sub       string
-	files     int
-	truncated bool
-	scoped    bool
-	rules     []rule
-	chunks    []chunk
-	meta      map[string]fileSnap
-	dirs      map[string]time.Time
-	index     *bm25.Index
-	used      atomic.Int64
+	mu         sync.Mutex
+	gen        uint64
+	root       string
+	sub        string
+	files      int
+	truncated  bool
+	scoped     bool
+	rules      []rule
+	chunks     []chunk
+	meta       map[string]fileSnap
+	dirs       map[string]time.Time
+	gitignores map[string]time.Time
+	index      *bm25.Index
+	// applied is the dirty-note time already reflected in this corpus, keyed
+	// by noteKey. A later search skips those notes before copying meta.
+	applied map[string]time.Time
+	used    atomic.Int64
 }
 
 // noteKey folds Windows paths so a write recorded as D:\Repo\A.go and a corpus
@@ -325,8 +369,14 @@ func Search(req Request) Result {
 		c = sc
 	}
 	c.used.Store(time.Now().UnixNano())
-	applyDirty(c)
-	return rank(c, query, sub, top)
+	// The published index is already searchable. This pass only reloads noted
+	// files, and only until Wait. A full retokenize stays off this goroutine.
+	caughtUp := applyDirtyUntil(c, time.Now().Add(wait), req.Progress)
+	res := rank(c, query, sub, top)
+	if !caughtUp {
+		res.Hint = catchingUpHint
+	}
+	return res
 }
 
 func warmingResult() Result {
@@ -415,22 +465,27 @@ func build(key, root, sub string, scoped bool, slot *buildSlot) {
 
 func buildCorpus(root, sub string, scoped bool) *corpus {
 	limit := int(maxFiles.Load())
-	files, rules, dirs, truncated := collectFiles(root, sub, limit)
+	files, rules, dirs, gitignores, truncated := collectFiles(root, sub, limit)
 	c := &corpus{
-		root:      root,
-		sub:       sub,
-		files:     len(files),
-		truncated: truncated,
-		scoped:    scoped || truncated,
-		rules:     rules,
-		meta:      map[string]fileSnap{},
-		dirs:      dirs,
+		root:       root,
+		sub:        sub,
+		truncated:  truncated,
+		scoped:     scoped || truncated,
+		rules:      rules,
+		meta:       map[string]fileSnap{},
+		dirs:       dirs,
+		gitignores: gitignores,
 	}
 	now := time.Now()
 	for _, file := range files {
+		if file.skip {
+			c.meta[file.rel] = fileSnap{size: file.size, mod: file.mod, readAt: now, gone: true}
+			continue
+		}
 		c.meta[file.rel] = fileSnap{size: file.size, mod: file.mod, readAt: now}
 		c.chunks = append(c.chunks, chunksFrom(file.rel, file.body)...)
 	}
+	c.files = liveFiles(c.meta)
 	c.index = indexChunks(c.chunks)
 	return c
 }
@@ -509,106 +564,356 @@ type dirtyNote struct {
 	noted time.Time
 }
 
+// applyDirty reloads noted files on the background budget. A search does not
+// call this. It calls applyDirtyUntil with Request.Wait.
 func applyDirty(c *corpus) {
-	if c == nil {
-		return
-	}
-	for attempt := 0; attempt < 3; attempt++ {
-		if !applyDirtyOnce(c) {
-			return
-		}
-	}
+	applyDirtyUntil(c, time.Now().Add(dirtyCatchupBudget), nil)
 }
 
-// applyDirtyOnce reloads noted files. It returns true when a newer corpus
-// generation won the swap and the caller should retry.
-func applyDirtyOnce(c *corpus) bool {
+// applyDirtyUntil reloads noted files until deadline. It returns false when
+// notes are still owed. Those notes stay in dirtyNotes. The published chunks
+// are left in place for the ones this pass did not reach. A generation
+// conflict retries; the notes already published are not read again.
+func applyDirtyUntil(c *corpus, deadline time.Time, progress ProgressFunc) bool {
+	if c == nil {
+		return true
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		retry, caughtUp := applyDirtyOnce(c, deadline, progress)
+		if !retry {
+			return caughtUp
+		}
+	}
+	return false
+}
+
+type noteEdit struct {
+	abs      string
+	rel      string
+	noted    time.Time
+	storeRel string
+	snap     fileSnap
+	drop     bool
+	add      []chunk
+	touched  bool
+	// retry leaves the note owed. A failed read is not a deletion.
+	retry bool
+}
+
+// applyDirtyOnce reloads noted files that still fit in deadline.
+// It returns retry when a newer generation published first.
+// caughtUp is false when this pass stopped with notes still owed.
+// A corpus with nothing left to reload returns before it copies the file
+// table. The index published here is a clone, so a search that already
+// snapped the previous pointer keeps scoring that generation.
+func applyDirtyOnce(c *corpus, deadline time.Time, progress ProgressFunc) (retry bool, caughtUp bool) {
 	c.mu.Lock()
-	gen := c.gen
 	root := c.root
 	sub := c.sub
-	rules := c.rules
-	chunks := append([]chunk(nil), c.chunks...)
+	c.mu.Unlock()
+	pending := dirtyIn(root, sub)
+	if len(pending) == 0 {
+		return false, true
+	}
+	c.mu.Lock()
+	owed := make([]dirtyNote, 0, len(pending))
+	for _, n := range pending {
+		if t, ok := c.applied[n.abs]; ok && !t.Before(n.noted) {
+			continue
+		}
+		if snapCurrent(c.meta, n.rel, n.noted) {
+			rememberAppliedLocked(c, n)
+			continue
+		}
+		owed = append(owed, n)
+	}
+	if len(owed) == 0 {
+		c.mu.Unlock()
+		return false, true
+	}
+	gen := c.gen
+	rules := append([]rule(nil), c.rules...)
+	chunks := c.chunks
+	base := c.index
 	meta := copyMeta(c.meta)
 	c.mu.Unlock()
 
-	notes := notesFor(root, meta)
-	if len(notes) == 0 {
-		return false
+	snaps := indexSnaps(meta)
+	work := make([]dirtyNote, 0, len(owed))
+	var consumed []dirtyNote
+	for _, n := range owed {
+		if _, snap, exists := snaps.lookup(n.rel); exists && !snap.readAt.Before(n.noted) {
+			consumed = append(consumed, n)
+			continue
+		}
+		work = append(work, n)
+	}
+	if len(work) == 0 {
+		if rememberApplied(c, gen, consumed) {
+			return true, false
+		}
+		return false, true
+	}
+	edits := make([]noteEdit, 0, len(work))
+	caughtUp = true
+	done := 0
+	for _, n := range work {
+		if !time.Now().Before(deadline) {
+			caughtUp = false
+			break
+		}
+		if gate := currentDirtyGate(); gate != nil && !gate(done, len(work)) {
+			caughtUp = false
+			break
+		}
+		edit := catchNote(n, rules, snaps)
+		if edit.retry {
+			// This file stays owed. Keep applying the notes behind it.
+			caughtUp = false
+			continue
+		}
+		edit.abs = n.abs
+		edit.noted = n.noted
+		edits = append(edits, edit)
+		done++
+		if progress != nil {
+			progress("catchup", done, len(work))
+		}
 	}
 	indexChanged := false
 	metaChanged := false
-	for _, n := range notes {
-		// Notes are stored for the whole root. A scope corpus must not read
-		// or rebuild for a file outside that scope; doing so pulls the file
-		// into this index and changes every score.
-		if sub != "" && !underPath(n.rel, sub) {
+	dropSet := map[string]struct{}{}
+	var added []chunk
+	for _, edit := range edits {
+		if !edit.touched {
 			continue
 		}
-		key, snap, found := lookupSnap(meta, n.rel)
-		stamp := noteStamp(time.Now(), n.noted)
-		info, indexable := indexableInfo(n.abs, n.rel)
-		if pathSkipped(n.rel) || ignoredRel(n.rel, rules) || !indexable {
-			if found && !snap.gone {
-				chunks = dropChunks(chunks, n.rel)
-				indexChanged = true
-			}
-			storeRel := n.rel
-			if key != "" {
-				storeRel = key
-			}
-			if !found || !snap.gone || snap.readAt.Before(n.noted) {
-				meta[storeRel] = fileSnap{readAt: stamp, gone: true}
-				metaChanged = true
-			}
-			continue
-		}
-		body, err := os.ReadFile(n.abs)
-		if err != nil || hasNUL(body) {
-			if found && !snap.gone {
-				chunks = dropChunks(chunks, n.rel)
-				indexChanged = true
-			}
-			storeRel := n.rel
-			if key != "" {
-				storeRel = key
-			}
-			meta[storeRel] = fileSnap{readAt: stamp, gone: true}
-			metaChanged = true
-			continue
-		}
-		chunks = dropChunks(chunks, n.rel)
-		storeRel := n.rel
-		if key != "" {
-			delete(meta, key)
-			storeRel = key
-		}
-		meta[storeRel] = fileSnap{size: info.Size(), mod: info.ModTime(), readAt: stamp}
-		chunks = append(chunks, chunksFrom(storeRel, string(body))...)
-		indexChanged = true
 		metaChanged = true
+		if edit.drop {
+			dropSet[pathKey(edit.rel)] = struct{}{}
+			indexChanged = true
+		}
+		if len(edit.add) > 0 {
+			added = append(added, edit.add...)
+			indexChanged = true
+		}
+	}
+	doneNotes := append([]dirtyNote(nil), consumed...)
+	for _, edit := range edits {
+		doneNotes = append(doneNotes, dirtyNote{abs: edit.abs, noted: edit.noted})
 	}
 	if !indexChanged && !metaChanged {
-		return false
+		if rememberApplied(c, gen, doneNotes) {
+			return true, false
+		}
+		return false, caughtUp
 	}
-	var idx *bm25.Index
+	var filtered []chunk
+	var removed []string
+	var prepared bm25.Prepared
+	var next *bm25.Index
 	if indexChanged {
-		idx = indexChunks(chunks)
+		filtered = make([]chunk, 0, len(chunks)+len(added))
+		for _, ch := range chunks {
+			if _, ok := dropSet[pathKey(ch.path)]; ok {
+				removed = append(removed, ch.id)
+				continue
+			}
+			filtered = append(filtered, ch)
+		}
+		added = dedupeChunkIDs(filtered, added)
+		if len(removed) == 0 && len(added) == 0 {
+			indexChanged = false
+		} else {
+			prepared = bm25.Prepare(docsForChunks(added))
+			filtered = append(filtered, added...)
+			// Tokenize finished above. The clone is not the published index,
+			// so this edit cannot change a search that already snapped it.
+			next = replacedIndex(base, removed, prepared, filtered)
+		}
 	}
 	c.mu.Lock()
 	if c.gen != gen {
 		c.mu.Unlock()
-		return true
+		return true, false
 	}
 	if indexChanged {
-		c.chunks = chunks
-		c.index = idx
+		c.index = next
+		c.chunks = filtered
 	}
-	c.meta = meta
-	c.files = liveFiles(meta)
+	if metaChanged {
+		c.meta = meta
+		c.files = liveFiles(meta)
+	}
+	for _, n := range doneNotes {
+		rememberAppliedLocked(c, n)
+	}
 	c.gen++
 	c.mu.Unlock()
+	return false, caughtUp
+}
+
+// replacedIndex returns a new index with removed ids dropped and prepared
+// docs inserted. base nil builds one from fallback. The returned index is
+// not visible to readers until the caller stores it.
+func replacedIndex(base *bm25.Index, removed []string, prepared bm25.Prepared, fallback []chunk) *bm25.Index {
+	if base == nil {
+		return indexChunks(fallback)
+	}
+	next := base.Clone()
+	next.ReplacePrepared(removed, prepared)
+	return next
+}
+
+func rememberApplied(c *corpus, gen uint64, notes []dirtyNote) bool {
+	if c == nil || len(notes) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		return true
+	}
+	for _, n := range notes {
+		rememberAppliedLocked(c, n)
+	}
 	return false
+}
+
+func rememberAppliedLocked(c *corpus, n dirtyNote) {
+	if c == nil || n.abs == "" {
+		return
+	}
+	if c.applied == nil {
+		c.applied = map[string]time.Time{}
+	}
+	if t, ok := c.applied[n.abs]; ok && !t.Before(n.noted) {
+		return
+	}
+	c.applied[n.abs] = n.noted
+}
+
+// dirtyIn lists notes under root and, when set, sub. It does not copy the
+// corpus file table. An empty dirty set returns before any path join.
+func dirtyIn(root, sub string) []dirtyNote {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	if len(dirtyNotes) == 0 {
+		return nil
+	}
+	out := make([]dirtyNote, 0)
+	for abs, noted := range dirtyNotes {
+		rel, ok := relUnder(root, abs)
+		if !ok {
+			continue
+		}
+		if sub != "" && !underPath(rel, sub) {
+			continue
+		}
+		out = append(out, dirtyNote{abs: abs, rel: rel, noted: noted})
+	}
+	return out
+}
+
+func snapCurrent(meta map[string]fileSnap, rel string, noted time.Time) bool {
+	if snap, ok := meta[rel]; ok {
+		return !snap.readAt.Before(noted)
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	for key, snap := range meta {
+		if strings.EqualFold(key, rel) && !snap.readAt.Before(noted) {
+			return true
+		}
+	}
+	return false
+}
+
+func catchNote(n dirtyNote, rules []rule, snaps *snapIndex) noteEdit {
+	key, snap, found := snaps.lookup(n.rel)
+	stamp := noteStamp(time.Now(), n.noted)
+	storeRel := n.rel
+	if key != "" {
+		storeRel = key
+	}
+	info, indexable := indexableInfo(n.abs, n.rel)
+	if pathSkipped(n.rel) || ignoredRel(n.rel, rules) || !indexable {
+		edit := noteEdit{rel: n.rel, storeRel: storeRel}
+		if found && !snap.gone {
+			edit.drop = true
+			edit.touched = true
+		}
+		if !found || !snap.gone || snap.readAt.Before(n.noted) {
+			edit.snap = goneSnap(n.abs, info, stamp)
+			edit.touched = true
+			snaps.store(storeRel, edit.snap)
+		}
+		return edit
+	}
+	body, err := readNoted(n.abs)
+	if err != nil {
+		// The bytes are still the previous generation. Consuming the note
+		// would drop those chunks, and noteChanged would not come back:
+		// a later rewrite does not change the directory mtime.
+		return noteEdit{rel: n.rel, storeRel: storeRel, retry: true}
+	}
+	if hasNUL(body) {
+		edit := noteEdit{rel: n.rel, storeRel: storeRel, touched: true, snap: goneSnap(n.abs, info, stamp)}
+		if found && !snap.gone {
+			edit.drop = true
+		}
+		snaps.store(storeRel, edit.snap)
+		return edit
+	}
+	edit := noteEdit{
+		rel:      n.rel,
+		storeRel: storeRel,
+		touched:  true,
+		drop:     true,
+		snap:     fileSnap{size: info.Size(), mod: info.ModTime(), readAt: stamp},
+		add:      chunksFrom(storeRel, string(body)),
+	}
+	snaps.store(storeRel, edit.snap)
+	return edit
+}
+
+func docsForChunks(chunks []chunk) []bm25.Doc {
+	docs := make([]bm25.Doc, len(chunks))
+	for i := range chunks {
+		docs[i] = bm25.Doc{ID: chunks[i].id, Text: expandIdentifiers(chunks[i].symbol + "\n" + chunks[i].text)}
+	}
+	return docs
+}
+
+func dedupeChunkIDs(kept, added []chunk) []chunk {
+	if len(added) == 0 {
+		return added
+	}
+	seen := make(map[string]struct{}, len(kept)+len(added))
+	for _, ch := range kept {
+		seen[ch.id] = struct{}{}
+	}
+	out := make([]chunk, len(added))
+	for i, ch := range added {
+		id := ch.id
+		if id == "" {
+			id = ch.path + "#" + itoaSmall(ch.start)
+		}
+		base := id
+		n := i + 1
+		for {
+			if _, ok := seen[id]; !ok {
+				break
+			}
+			id = base + "#" + itoaSmall(n)
+			n++
+		}
+		seen[id] = struct{}{}
+		ch.id = id
+		out[i] = ch
+	}
+	return out
 }
 
 func noteStamp(started, noted time.Time) time.Time {
@@ -620,7 +925,8 @@ func noteStamp(started, noted time.Time) time.Time {
 
 // indexableInfo reports a regular source file small enough to index.
 // Lstat does not follow a symlink, and the size check happens before ReadFile
-// so a noted log or archive is not loaded.
+// so a noted log or archive is not loaded. An oversized or empty file still
+// returns its info so a tombstone can remember that identity.
 func indexableInfo(abs, rel string) (os.FileInfo, bool) {
 	if !sourceExt(rel) {
 		return nil, false
@@ -630,20 +936,37 @@ func indexableInfo(abs, rel string) (os.FileInfo, bool) {
 		return nil, false
 	}
 	if info.Size() == 0 || info.Size() > maxFileBytes {
-		return nil, false
+		return info, false
 	}
 	return info, true
 }
 
-func dropChunks(chunks []chunk, rel string) []chunk {
-	next := make([]chunk, 0, len(chunks))
-	for _, ch := range chunks {
-		if pathEqual(ch.path, rel) {
-			continue
-		}
-		next = append(next, ch)
+func readNoted(abs string) ([]byte, error) {
+	noteReadMu.Lock()
+	fn := noteRead
+	noteReadMu.Unlock()
+	if fn == nil {
+		fn = os.ReadFile
 	}
-	return next
+	return fn(abs)
+}
+
+// goneSnap remembers the file that was skipped. noteChanged uses the size
+// and mtime to notice when those bytes change; the directory mtime does not.
+func goneSnap(abs string, info os.FileInfo, stamp time.Time) fileSnap {
+	snap := fileSnap{readAt: stamp, gone: true}
+	if info != nil && info.Mode().IsRegular() {
+		snap.size = info.Size()
+		snap.mod = info.ModTime()
+		return snap
+	}
+	st, err := os.Lstat(abs)
+	if err != nil || !st.Mode().IsRegular() {
+		return snap
+	}
+	snap.size = st.Size()
+	snap.mod = st.ModTime()
+	return snap
 }
 
 func copyMeta(in map[string]fileSnap) map[string]fileSnap {
@@ -664,39 +987,61 @@ func liveFiles(meta map[string]fileSnap) int {
 	return n
 }
 
-func notesFor(root string, meta map[string]fileSnap) []dirtyNote {
-	storeMu.Lock()
-	defer storeMu.Unlock()
-	var notes []dirtyNote
-	for abs, noted := range dirtyNotes {
-		rel, ok := relUnder(root, abs)
-		if !ok {
-			continue
-		}
-		// Equal counts as consumed. On Windows time.Now often returns the same
-		// instant for the note and the reload that follows it, and After would
-		// rebuild the corpus on every later search.
-		if _, snap, exists := lookupSnap(meta, rel); exists && !snap.readAt.Before(noted) {
-			continue
-		}
-		notes = append(notes, dirtyNote{abs: abs, rel: rel, noted: noted})
-	}
-	return notes
+type snapHit struct {
+	key  string
+	snap fileSnap
 }
 
-func lookupSnap(meta map[string]fileSnap, rel string) (string, fileSnap, bool) {
-	if snap, ok := meta[rel]; ok {
-		return rel, snap, true
-	}
+type snapIndex struct {
+	exact map[string]fileSnap
+	fold  map[string]snapHit
+}
+
+func indexSnaps(meta map[string]fileSnap) *snapIndex {
+	s := &snapIndex{exact: meta}
 	if runtime.GOOS != "windows" {
+		return s
+	}
+	s.fold = make(map[string]snapHit, len(meta))
+	for key, snap := range meta {
+		s.fold[strings.ToLower(key)] = snapHit{key: key, snap: snap}
+	}
+	return s
+}
+
+func (s *snapIndex) lookup(rel string) (string, fileSnap, bool) {
+	if s == nil {
 		return "", fileSnap{}, false
 	}
-	for key, snap := range meta {
-		if strings.EqualFold(key, rel) {
-			return key, snap, true
-		}
+	if snap, ok := s.exact[rel]; ok {
+		return rel, snap, true
 	}
-	return "", fileSnap{}, false
+	if s.fold == nil {
+		return "", fileSnap{}, false
+	}
+	hit, ok := s.fold[strings.ToLower(rel)]
+	if !ok {
+		return "", fileSnap{}, false
+	}
+	return hit.key, hit.snap, true
+}
+
+func (s *snapIndex) store(rel string, snap fileSnap) {
+	if s == nil {
+		return
+	}
+	s.exact[rel] = snap
+	if s.fold != nil {
+		s.fold[strings.ToLower(rel)] = snapHit{key: rel, snap: snap}
+	}
+}
+
+func pathKey(p string) string {
+	p = filepath.ToSlash(p)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 func pathEqual(a, b string) bool {
@@ -752,6 +1097,9 @@ func rank(c *corpus, query, sub string, top int) Result {
 	}
 	tokens := bm25.Tokenize(expandIdentifiers(query))
 	c.mu.Lock()
+	// The published index is immutable. A reload clones it and swaps this
+	// pointer, so ScoreWithTokens below still scores the generation that
+	// owns this chunk slice.
 	chunks := c.chunks
 	idx := c.index
 	scoped := c.scoped
@@ -1083,11 +1431,13 @@ func reconcileOnce() {
 	}
 	storeMu.Unlock()
 	for _, c := range list {
-		if dirsChanged(c) {
-			refreshCorpus(c)
-			continue
+		// A file write changes the parent directory mtime. That is not a new
+		// tree. Rebuilding here retokenized every chunk on the same cadence
+		// as the edits that made the next search slow.
+		if !syncCorpusTree(c) {
+			noteChanged(c)
 		}
-		noteChanged(c)
+		applyDirtyUntil(c, time.Now().Add(dirtyCatchupBudget), nil)
 	}
 }
 
@@ -1109,47 +1459,607 @@ func evictIdle(now time.Time) {
 	}
 }
 
-func dirsChanged(c *corpus) bool {
+// syncCorpusTree notes source files that appeared in a directory whose mtime
+// changed. A new directory is walked on its own. A removed directory drops
+// its chunks. A gitignore edit reloads that file's rules and notes only the
+// files whose ignore status changed. None of those retokenize the corpus.
+// It returns false so the caller still checks the mtime of files already
+// indexed. A missing project root is left untouched.
+func syncCorpusTree(c *corpus) bool {
+	if c == nil {
+		return false
+	}
 	c.mu.Lock()
 	root := c.root
+	rules := append([]rule(nil), c.rules...)
 	dirs := make(map[string]time.Time, len(c.dirs))
 	for rel, mod := range c.dirs {
 		dirs[rel] = mod
+	}
+	gitignores := make(map[string]time.Time, len(c.gitignores))
+	for rel, mod := range c.gitignores {
+		gitignores[rel] = mod
 	}
 	c.mu.Unlock()
 	if len(dirs) == 0 {
 		return false
 	}
+	// Check the root before any child. Map order could otherwise treat a
+	// deleted project as a missing subdirectory and drop the index.
+	rootInfo, err := os.Stat(root)
+	if err != nil || !rootInfo.IsDir() {
+		return false
+	}
+	stamps := make(map[string]time.Time, len(dirs))
+	changed := make([]string, 0)
+	missing := make([]string, 0)
+	giChanged := make([]string, 0)
 	for rel, mod := range dirs {
 		abs := root
 		if rel != "" {
 			abs = filepath.Join(root, filepath.FromSlash(rel))
 		}
 		info, err := os.Stat(abs)
-		if err != nil || !info.IsDir() || !info.ModTime().Equal(mod) {
+		if rel == "" && (err != nil || !info.IsDir()) {
+			return false
+		}
+		if err != nil || !info.IsDir() {
+			missing = append(missing, rel)
+			continue
+		}
+		stamps[rel] = info.ModTime()
+		if !info.ModTime().Equal(mod) {
+			changed = append(changed, rel)
+		}
+		// Rewriting .gitignore does not change the directory mtime on
+		// Windows. The file's own mtime is the signal, including when the
+		// directory itself is unchanged.
+		if _, tracked := gitignores[rel]; tracked || !info.ModTime().Equal(mod) {
+			if gitignoreStampChanged(abs, rel, gitignores) {
+				giChanged = append(giChanged, rel)
+			}
+		}
+	}
+	for _, rel := range topmostDirs(missing) {
+		dropCorpusTree(c, rel)
+	}
+	for _, rel := range giChanged {
+		abs := root
+		if rel != "" {
+			abs = filepath.Join(root, filepath.FromSlash(rel))
+		}
+		reloadGitignore(c, abs, rel, dirs)
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	rules = append([]rule(nil), c.rules...)
+	meta := copyMeta(c.meta)
+	c.mu.Unlock()
+	known := indexSnaps(meta)
+	unread := map[string]struct{}{}
+	for _, rel := range changed {
+		abs := root
+		if rel != "" {
+			abs = filepath.Join(root, filepath.FromSlash(rel))
+		}
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			unread[rel] = struct{}{}
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == ".gitignore" {
+				continue
+			}
+			child := name
+			if rel != "" {
+				child = rel + "/" + name
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			mode := info.Mode()
+			if mode&os.ModeSymlink != 0 || (mode&os.ModeIrregular != 0 && !info.IsDir()) {
+				continue
+			}
+			if info.IsDir() {
+				if skipComponent(name, true) || ignored(child, true, rules) || ignoredRel(child, rules) {
+					continue
+				}
+				if !dirKnown(dirs, child) {
+					adoptCorpusDir(c, child, dirs)
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() || !sourceExt(name) {
+				continue
+			}
+			if pathSkipped(child) || ignoredRel(child, rules) {
+				continue
+			}
+			if _, snap, ok := known.lookup(child); ok {
+				if !snap.gone {
+					continue
+				}
+				// Already skipped, and the bytes are unchanged.
+				if snap.size == info.Size() && snap.mod.Equal(info.ModTime()) {
+					continue
+				}
+			}
+			NoteDirty(filepath.Join(root, filepath.FromSlash(child)))
+		}
+	}
+	c.mu.Lock()
+	for rel, mod := range stamps {
+		if _, skip := unread[rel]; skip {
+			continue
+		}
+		if _, ok := c.dirs[rel]; ok {
+			c.dirs[rel] = mod
+		}
+	}
+	c.mu.Unlock()
+	return false
+}
+
+func topmostDirs(rels []string) []string {
+	out := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		covered := false
+		for _, other := range rels {
+			if other != rel && other != "" && underPath(rel, other) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// dropCorpusTree removes one deleted directory from the published index.
+// Kept documents stay in a clone. Nothing in the rest of the tree is tokenized.
+func dropCorpusTree(c *corpus, rel string) {
+	if c == nil || rel == "" {
+		return
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		c.mu.Lock()
+		gen := c.gen
+		base := c.index
+		chunks := c.chunks
+		meta := copyMeta(c.meta)
+		rules := append([]rule(nil), c.rules...)
+		dirs := make(map[string]time.Time, len(c.dirs))
+		for key, mod := range c.dirs {
+			dirs[key] = mod
+		}
+		c.mu.Unlock()
+		removed := make([]string, 0)
+		keptChunks := make([]chunk, 0, len(chunks))
+		for _, ch := range chunks {
+			if underPath(ch.path, rel) {
+				if ch.id != "" {
+					removed = append(removed, ch.id)
+				}
+				continue
+			}
+			keptChunks = append(keptChunks, ch)
+		}
+		now := time.Now()
+		metaChanged := false
+		for path, snap := range meta {
+			if snap.gone || !underPath(path, rel) {
+				continue
+			}
+			snap.gone = true
+			snap.readAt = now
+			meta[path] = snap
+			metaChanged = true
+		}
+		keptRules := make([]rule, 0, len(rules))
+		rulesChanged := false
+		for _, rule := range rules {
+			if pathEqual(rule.base, rel) || (rule.base != "" && underPath(rule.base, rel)) {
+				rulesChanged = true
+				continue
+			}
+			keptRules = append(keptRules, rule)
+		}
+		dirsChanged := false
+		for key := range dirs {
+			if pathEqual(key, rel) || underPath(key, rel) {
+				delete(dirs, key)
+				dirsChanged = true
+			}
+		}
+		if len(removed) == 0 && !metaChanged && !rulesChanged && !dirsChanged {
+			return
+		}
+		var next *bm25.Index
+		if len(removed) > 0 && base != nil {
+			next = replacedIndex(base, removed, bm25.Prepared{}, nil)
+		}
+		c.mu.Lock()
+		if c.gen != gen {
+			c.mu.Unlock()
+			continue
+		}
+		if len(removed) > 0 {
+			if next != nil {
+				c.index = next
+			}
+			c.chunks = keptChunks
+		}
+		if metaChanged {
+			c.meta = meta
+			c.files = liveFiles(meta)
+		}
+		if rulesChanged {
+			c.rules = keptRules
+		}
+		if dirsChanged {
+			c.dirs = dirs
+		}
+		if c.gitignores != nil {
+			for key := range c.gitignores {
+				if pathEqual(key, rel) || underPath(key, rel) {
+					delete(c.gitignores, key)
+				}
+			}
+		}
+		c.gen++
+		c.mu.Unlock()
+		return
+	}
+}
+
+// adoptCorpusDir indexes a directory that was not in the tree.
+// Only that directory's files are read. seen records the new stamps so this
+// pass does not adopt the same directory again.
+func adoptCorpusDir(c *corpus, rel string, seen map[string]time.Time) {
+	if c == nil || rel == "" {
+		return
+	}
+	c.mu.Lock()
+	root := c.root
+	sub := c.sub
+	have := c.files
+	c.mu.Unlock()
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	if sub != "" && !underPath(rel, sub) && !dirMayHold(rel, sub) {
+		recordDir(c, abs, rel, seen)
+		return
+	}
+	if have >= int(maxFiles.Load()) {
+		c.mu.Lock()
+		c.truncated = true
+		c.scoped = true
+		c.mu.Unlock()
+		recordDir(c, abs, rel, seen)
+		return
+	}
+	limit := int(maxFiles.Load()) - have
+	files, rules, dirs, gitignores, truncated := collectFiles(root, rel, limit)
+	c.mu.Lock()
+	merged, added := mergeRules(c.rules, rules)
+	if added > 0 {
+		c.rules = merged
+	}
+	if c.dirs == nil {
+		c.dirs = map[string]time.Time{}
+	}
+	if c.gitignores == nil {
+		c.gitignores = map[string]time.Time{}
+	}
+	for key, mod := range gitignores {
+		if key != rel && !underPath(key, rel) {
+			continue
+		}
+		if _, ok := c.gitignores[key]; ok {
+			continue
+		}
+		c.gitignores[key] = mod
+	}
+	for key, mod := range dirs {
+		if key != rel && !underPath(key, rel) {
+			continue
+		}
+		if _, ok := c.dirs[key]; ok {
+			continue
+		}
+		c.dirs[key] = mod
+		if seen != nil {
+			seen[key] = mod
+		}
+	}
+	if _, ok := c.dirs[rel]; !ok {
+		if info, err := os.Stat(abs); err == nil && info.IsDir() {
+			c.dirs[rel] = info.ModTime()
+			if seen != nil {
+				seen[rel] = c.dirs[rel]
+			}
+		}
+	} else if seen != nil {
+		seen[rel] = c.dirs[rel]
+	}
+	if truncated {
+		c.truncated = true
+		c.scoped = true
+	}
+	if added > 0 || len(files) > 0 {
+		c.gen++
+	}
+	c.mu.Unlock()
+	for _, file := range files {
+		if sub != "" && !underPath(file.rel, sub) {
+			continue
+		}
+		NoteDirty(filepath.Join(root, filepath.FromSlash(file.rel)))
+	}
+}
+
+func recordDir(c *corpus, abs, rel string, seen map[string]time.Time) {
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	c.mu.Lock()
+	if c.dirs == nil {
+		c.dirs = map[string]time.Time{}
+	}
+	if _, ok := c.dirs[rel]; !ok {
+		c.dirs[rel] = info.ModTime()
+	}
+	if seen != nil {
+		seen[rel] = c.dirs[rel]
+	}
+	c.mu.Unlock()
+}
+
+// reloadGitignore replaces one directory's rules and notes files whose
+// ignore status changed. Files that stay indexed are not read again.
+func reloadGitignore(c *corpus, dirAbs, rel string, seen map[string]time.Time) {
+	if c == nil {
+		return
+	}
+	giPath := filepath.Join(dirAbs, ".gitignore")
+	info, statErr := os.Stat(giPath)
+	var parsed []rule
+	if statErr == nil {
+		if data, err := os.ReadFile(giPath); err == nil {
+			parsed = parseGitignore(rel, string(data))
+		}
+	}
+	c.mu.Lock()
+	same := sameRules(rulesAt(c.rules, rel), parsed)
+	if !same {
+		c.rules = replaceRulesAtBase(c.rules, rel, parsed)
+		c.gen++
+	}
+	if c.gitignores == nil {
+		c.gitignores = map[string]time.Time{}
+	}
+	if statErr != nil {
+		delete(c.gitignores, rel)
+	} else {
+		c.gitignores[rel] = info.ModTime()
+	}
+	if same {
+		c.mu.Unlock()
+		return
+	}
+	rules := append([]rule(nil), c.rules...)
+	meta := copyMeta(c.meta)
+	root := c.root
+	sub := c.sub
+	c.mu.Unlock()
+	noteIgnoreChanges(c, root, dirAbs, rel, sub, rules, meta, seen)
+}
+
+func noteIgnoreChanges(c *corpus, root, dirAbs, rel, sub string, rules []rule, meta map[string]fileSnap, seen map[string]time.Time) {
+	known := indexSnaps(meta)
+	var walk func(abs, relPath string)
+	walk = func(abs, relPath string) {
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == ".gitignore" {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			mode := info.Mode()
+			if mode&os.ModeSymlink != 0 || (mode&os.ModeIrregular != 0 && !info.IsDir()) {
+				continue
+			}
+			child := name
+			if relPath != "" {
+				child = relPath + "/" + name
+			}
+			if info.IsDir() {
+				if skipComponent(name, true) || ignored(child, true, rules) || ignoredRel(child, rules) {
+					noteLiveUnder(root, sub, known, child)
+					continue
+				}
+				if !dirKnown(seen, child) {
+					c.mu.Lock()
+					if c.dirs == nil {
+						c.dirs = map[string]time.Time{}
+					}
+					if _, ok := c.dirs[child]; !ok {
+						c.dirs[child] = info.ModTime()
+					}
+					c.mu.Unlock()
+					if seen != nil {
+						seen[child] = info.ModTime()
+					}
+				}
+				walk(filepath.Join(abs, name), child)
+				continue
+			}
+			if !info.Mode().IsRegular() || !sourceExt(name) {
+				continue
+			}
+			if sub != "" && !underPath(child, sub) {
+				continue
+			}
+			_, snap, ok := known.lookup(child)
+			live := ok && !snap.gone
+			if pathSkipped(child) || ignoredRel(child, rules) {
+				if live {
+					NoteDirty(filepath.Join(root, filepath.FromSlash(child)))
+				}
+				continue
+			}
+			if live {
+				continue
+			}
+			if ok && snap.size == info.Size() && snap.mod.Equal(info.ModTime()) {
+				continue
+			}
+			NoteDirty(filepath.Join(root, filepath.FromSlash(child)))
+		}
+	}
+	walk(dirAbs, rel)
+}
+
+func noteLiveUnder(root, sub string, known *snapIndex, dirRel string) {
+	if known == nil {
+		return
+	}
+	for path, snap := range known.exact {
+		if snap.gone || !underPath(path, dirRel) {
+			continue
+		}
+		if sub != "" && !underPath(path, sub) {
+			continue
+		}
+		NoteDirty(filepath.Join(root, filepath.FromSlash(path)))
+	}
+}
+
+func rulesAt(rules []rule, rel string) []rule {
+	out := make([]rule, 0)
+	for _, rule := range rules {
+		if pathEqual(rule.base, rel) {
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+func sameRules(a, b []rule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func replaceRulesAtBase(rules []rule, rel string, parsed []rule) []rule {
+	out := make([]rule, 0, len(rules)+len(parsed))
+	for _, rule := range rules {
+		if pathEqual(rule.base, rel) {
+			continue
+		}
+		out = append(out, rule)
+	}
+	out = append(out, parsed...)
+	// ignored() keeps the last match. A parent pattern appended after a
+	// nested negation would hide the file the child gitignore put back.
+	orderRules(out)
+	return out
+}
+
+// orderRules puts shallower gitignore directories first. Rules that share a
+// base keep the order they had in that file, so a later negation still wins.
+func orderRules(rules []rule) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		return ruleDepth(rules[i].base) < ruleDepth(rules[j].base)
+	})
+}
+
+func ruleDepth(base string) int {
+	if base == "" {
+		return 0
+	}
+	return strings.Count(base, "/") + 1
+}
+
+func mergeRules(have, extra []rule) ([]rule, int) {
+	if len(extra) == 0 {
+		return have, 0
+	}
+	out := append([]rule(nil), have...)
+	added := 0
+	for _, rule := range extra {
+		if ruleExists(out, rule) {
+			continue
+		}
+		out = append(out, rule)
+		added++
+	}
+	if added == 0 {
+		return have, 0
+	}
+	return out, added
+}
+
+func ruleExists(rules []rule, candidate rule) bool {
+	for i := range rules {
+		if rules[i] == candidate {
 			return true
 		}
 	}
 	return false
 }
 
-func refreshCorpus(c *corpus) {
-	c.mu.Lock()
-	root, sub := c.root, c.sub
-	c.mu.Unlock()
-	fresh := buildCorpus(root, sub, sub != "")
-	c.mu.Lock()
-	c.files = fresh.files
-	c.truncated = fresh.truncated
-	c.scoped = fresh.scoped
-	c.rules = fresh.rules
-	c.chunks = fresh.chunks
-	c.meta = fresh.meta
-	c.dirs = fresh.dirs
-	c.index = fresh.index
-	c.sub = fresh.sub
-	c.gen++
-	c.mu.Unlock()
+// gitignoreStampChanged reports a new, removed, or rewritten .gitignore.
+// The directory mtime is not a substitute: rewriting the file leaves it unchanged.
+func gitignoreStampChanged(dirAbs, rel string, stamps map[string]time.Time) bool {
+	info, err := os.Stat(filepath.Join(dirAbs, ".gitignore"))
+	prev, tracked := stamps[rel]
+	if err != nil {
+		return tracked
+	}
+	if !info.Mode().IsRegular() {
+		return tracked
+	}
+	if !tracked {
+		return true
+	}
+	return !info.ModTime().Equal(prev)
+}
+
+func dirKnown(dirs map[string]time.Time, rel string) bool {
+	if _, ok := dirs[rel]; ok {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	for key := range dirs {
+		if strings.EqualFold(key, rel) {
+			return true
+		}
+	}
+	return false
 }
 
 func noteChanged(c *corpus) {
@@ -1161,16 +2071,26 @@ func noteChanged(c *corpus) {
 	items := make([]item, 0, len(c.meta))
 	root := c.root
 	for rel, snap := range c.meta {
-		if snap.gone {
-			continue
-		}
 		items = append(items, item{rel: rel, snap: snap})
 	}
 	c.mu.Unlock()
 	for _, item := range items {
 		abs := filepath.Join(root, filepath.FromSlash(item.rel))
-		info, err := os.Stat(abs)
-		if err != nil || info.IsDir() || info.Size() != item.snap.size || !info.ModTime().Equal(item.snap.mod) {
+		info, err := os.Lstat(abs)
+		if item.snap.gone {
+			// A skipped file stays out while its size and mtime match the
+			// tombstone. A later edit does not change the directory mtime,
+			// so the identity on the snap is what brings it back.
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if info.Size() == item.snap.size && info.ModTime().Equal(item.snap.mod) {
+				continue
+			}
+			NoteDirty(abs)
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || info.Size() != item.snap.size || !info.ModTime().Equal(item.snap.mod) {
 			NoteDirty(abs)
 		}
 	}

@@ -82,18 +82,44 @@ func OpenCodeFreeVisibleText(content, reasoning string, calls []ToolCall) (strin
 // caller's executors. An empty caller list uses the Maclaw names, which is
 // what the GUI runs when the planner never rendered those tools.
 func AdaptOpenCodeFreeToolCalls(callerTools []string, calls []ToolCall) []ToolCall {
+	return adaptOpenCodeFreeToolCalls(callerTools, calls, "")
+}
+
+// AdaptOpenCodeFreeToolCallsForTurn applies the same rewrite, using the
+// host phase already written into this turn's user text. A goal action from
+// the other phase is not a delivery of this turn.
+func AdaptOpenCodeFreeToolCallsForTurn(userText string, callerTools []string, calls []ToolCall) []ToolCall {
+	phase, _ := openCodeFreeGoalPhaseFromText(userText)
+	return adaptOpenCodeFreeToolCalls(callerTools, calls, phase)
+}
+
+func adaptOpenCodeFreeToolCalls(callerTools []string, calls []ToolCall, phase string) []ToolCall {
 	if len(calls) == 0 {
 		return calls
 	}
-	out := make([]ToolCall, len(calls))
-	copy(out, calls)
-	for i := range out {
-		name, args, ok := adaptOpenCodeFreeToolCall(callerTools, out[i].Function.Name, out[i].Function.Arguments)
-		if !ok {
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if hostCalls, ok := expandOpenCodeFreeHostCalls(call, phase); ok {
+			// shell/read/write/webfetch/websearch inside MACLAW_CALL are the
+			// same official calls as a direct function. Leaving the official
+			// name in place is denied as an unrendered tool and closes it.
+			for i := range hostCalls {
+				name, args, adapted := adaptOpenCodeFreeToolCall(callerTools, hostCalls[i].Function.Name, hostCalls[i].Function.Arguments)
+				if !adapted {
+					continue
+				}
+				hostCalls[i].Function.Name = name
+				hostCalls[i].Function.Arguments = args
+			}
+			out = append(out, hostCalls...)
 			continue
 		}
-		out[i].Function.Name = name
-		out[i].Function.Arguments = args
+		name, args, ok := adaptOpenCodeFreeToolCall(callerTools, call.Function.Name, call.Function.Arguments)
+		if ok {
+			call.Function.Name = name
+			call.Function.Arguments = args
+		}
+		out = append(out, call)
 	}
 	return out
 }

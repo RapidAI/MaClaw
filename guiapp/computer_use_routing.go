@@ -126,12 +126,14 @@ func clearComputerUseSessionActive() {
 	changed := clearComputerUseStickyLocked()
 	globalComputerUse.mu.Unlock()
 	notifyComputerUseTrayIf(changed)
+	hideComputerUseWindowHalo()
 }
 
 // computerUseActivationInput is the pure input to the CU gate (testable without UIC).
 type computerUseActivationInput struct {
 	Explicit          bool
 	DesktopOperation  bool
+	DesktopMessage    bool
 	StickyFollowUp    bool
 	LocalFileWork     bool
 	Sticky            bool
@@ -150,12 +152,15 @@ type computerUseActivationDecision struct {
 // decideComputerUseActivation is the pure root-cause gate:
 //
 //  1. Explicit @computer / "computer use" → open
-//  2. Confident LabelComputerUse AND a desktop-app operation in the user text → open
-//  3. Sticky from recent computer_* activity → open only while the user has not
+//  2. A desktop IM message send → open. The chat loop cannot type into that
+//     client, so the computer helper is the operator. No classifier.
+//  3. Confident LabelComputerUse AND a desktop-app operation in the user text → open
+//  4. Sticky from recent computer_* activity → open only while the user has not
 //     clearly left desktop control; shortened when classification is unavailable
 //
 // Classifier similarity alone must not open a fresh session. "写一份 word 简历"
-// often embeds near the computer-use anchors.
+// often embeds near the computer-use anchors. Desktop-operation wording alone
+// (打开记事本, 打开微信, 打开 word 写简历) also stays closed.
 func decideComputerUseActivation(in computerUseActivationInput) computerUseActivationDecision {
 	if in.Explicit {
 		return computerUseActivationDecision{Active: true, Reason: "explicit_trigger"}
@@ -171,6 +176,9 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 		return computerUseActivationDecision{
 			Active: false, ClearSticky: in.Sticky, Reason: "local_file_work",
 		}
+	}
+	if in.DesktopMessage {
+		return computerUseActivationDecision{Active: true, Reason: "desktop_message"}
 	}
 
 	if in.HasClassification && computerUseIntentActivated(in.Classification) && in.DesktopOperation {
@@ -221,9 +229,9 @@ func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	return active
 }
 
-// gateComputerUse evaluates the CU gate. fresh reports an explicit/semantic
-// open (a new desktop task) as opposed to sticky continuation of an existing
-// session.
+// gateComputerUse evaluates the CU gate. fresh reports an explicit, desktop
+// IM message, or semantic open (a new desktop task) as opposed to sticky
+// continuation of an existing session.
 func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool) {
 	if h == nil || !h.computerUseEnabled() {
 		return false, false
@@ -237,15 +245,16 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 	in := computerUseActivationInput{
 		Explicit:         computeruse.HasExplicitTrigger(text),
 		DesktopOperation: computeruse.RequestsDesktopAppOperation(text),
+		DesktopMessage:   computeruse.RequestsDesktopMessageSend(text),
 		StickyFollowUp:   computerUseStickyFollowUp(text),
 		LocalFileWork:    hasCurrentLocalFileWork(userText),
 		Sticky:           sticky,
 		StickyAge:        stickyAge,
 	}
 	// Tool routing does not ask the intent classifier to open desktop
-	// control. An explicit trigger and a sticky follow-up still decide.
-	// Desktop-operation wording alone does not put computer_use on the
-	// first wave.
+	// control. An explicit trigger, a desktop IM message send, and a
+	// sticky follow-up still decide. Desktop-operation wording alone
+	// does not put computer_use on the first wave.
 	d := decideComputerUseActivation(in)
 	if d.ClearSticky {
 		clearComputerUseSessionActive()
@@ -597,42 +606,25 @@ func computerUsePlaybookSection(active bool) string {
 	return computerUsePlaybookSectionFor(active, "")
 }
 
+// computerUsePlaybookSectionFor is appended only while ComputerUseActive is
+// set. That flag is the computer helper and the gui_executor ring. Both
+// receive computer_observe, computer_click, and computer_done. The section
+// does not read computerUseLLMSupportsVision: the prompt is built before
+// this turn's model is routed, and that flag still holds the previous tool
+// call. The observe result says whether a screenshot was attached.
 func computerUsePlaybookSectionFor(active bool, owner string) string {
 	if !active {
 		return ""
 	}
 	var b strings.Builder
-	if computerUseLLMSupportsVision() {
-		b.WriteString("\n## Computer Use（桌面操控 · 视觉模型看截图）\n")
-		b.WriteString(managedComputerUsePlaybook(true))
-	} else {
-		b.WriteString("\n## Computer Use（桌面操控 · 文本模型优先）\n")
-		b.WriteString(managedComputerUsePlaybook(false))
-	}
+	b.WriteString("\n## Computer Use（桌面操控）\n")
+	b.WriteString(computeruse.PlaybookBeforePerception())
 	b.WriteString("\n")
 	if extra := computerUseContractPlaybookExtra(owner); extra != "" {
 		b.WriteString(extra)
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// managedComputerUsePlaybook names computer_use, the tool a managed desktop
-// turn can call. The legacy playbook names computer_observe and computer_click,
-// which are not in that catalog.
-func managedComputerUsePlaybook(vision bool) string {
-	see := "You may be a text-only model. computer_use action=observe returns windows and eN refs. Screenshots are not sent."
-	if vision {
-		see = "The current model can see the screenshot from computer_use action=observe. The image has numbered marks. Click a mark with action=click ref=eN. Do not pass raw x,y."
-	}
-	return see + `
-- The tool name is computer_use. action is observe, click, type, key, or done.
-- observe first. click and type use ref from that observe. type writes text. key presses enter, space, or a shortcut such as ctrl+c. done finishes.
-- After click, type, or key, call computer_use action=observe again. Refs go stale.
-- Web pages use the browser tool. This tool is for native desktop windows.
-- Do not click a pay or place-order control, and do not press Enter or Space to activate one. On the web, browser action=confirm_order, then one browser click after the person confirms. On the desktop, the person clicks the pay button. The tool waits.
-- Do not type a password, payment password, or verification code, and do not pass the secret. The person types it on the screen. Then observe again.
-`
 }
 
 func browserPlaybookSection(active bool) string {

@@ -447,7 +447,8 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 		return
 	}
 
-	// Computer Use playbook for text-only models (OmniParser local vision).
+	// Computer Use playbook. The prompt is built before this turn's model is
+	// routed, so the section states both observe results.
 	cuGateText := msg
 	if loopCtx != nil && strings.TrimSpace(loopCtx.ComputerUseRoutingText) != "" {
 		cuGateText = loopCtx.ComputerUseRoutingText

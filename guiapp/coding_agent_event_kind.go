@@ -9,6 +9,7 @@ const (
 	codingAgentEventKindTaskStatus
 	codingAgentEventKindToolStarted
 	codingAgentEventKindToolFinished
+	codingAgentEventKindToolProgress
 	codingAgentEventKindAssistantNote
 	codingAgentEventKindDiffUpdated
 	codingAgentEventKindDiffSummary
@@ -29,6 +30,8 @@ func classifyCodingAgentEventKind(event string) codingAgentEventKind {
 		return codingAgentEventKindToolStarted
 	case "tool_finished":
 		return codingAgentEventKindToolFinished
+	case "tool_progress":
+		return codingAgentEventKindToolProgress
 	case "assistant_note":
 		return codingAgentEventKindAssistantNote
 	case "diff_updated":
@@ -62,6 +65,8 @@ func (k codingAgentEventKind) String() string {
 		return "tool_started"
 	case codingAgentEventKindToolFinished:
 		return "tool_finished"
+	case codingAgentEventKindToolProgress:
+		return "tool_progress"
 	case codingAgentEventKindAssistantNote:
 		return "assistant_note"
 	case codingAgentEventKindDiffUpdated:

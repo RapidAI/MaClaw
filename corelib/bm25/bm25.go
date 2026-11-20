@@ -172,6 +172,136 @@ func (idx *Index) Remove(id string) {
 	}
 }
 
+// Prepared is a batch of documents that have already been tokenized.
+// Build it with Prepare before taking the caller's lock. ReplacePrepared
+// then inserts that batch without tokenizing documents that stay.
+type Prepared struct {
+	docs []indexedDoc
+}
+
+// Prepare tokenizes add. Duplicate IDs keep the last document.
+// An empty batch does not touch the segmenter.
+func Prepare(add []Doc) Prepared {
+	if len(add) == 0 {
+		return Prepared{}
+	}
+	docs := make([]indexedDoc, 0, len(add))
+	at := make(map[string]int, len(add))
+	for _, d := range add {
+		doc := tokenizeDoc(d)
+		if i, ok := at[doc.id]; ok {
+			docs[i] = doc
+			continue
+		}
+		at[doc.id] = len(docs)
+		docs = append(docs, doc)
+	}
+	return Prepared{docs: docs}
+}
+
+// Replace drops removeIDs and inserts add.
+// Added documents are tokenized before the index lock is taken.
+// Document frequency is adjusted from the removed and added term sets.
+// Documents that stay are not retokenized.
+func (idx *Index) Replace(removeIDs []string, add []Doc) {
+	if idx == nil {
+		return
+	}
+	idx.ReplacePrepared(removeIDs, Prepare(add))
+}
+
+// ReplacePrepared inserts a batch from Prepare.
+// It does not tokenize. removeIDs and the prepared IDs are both dropped
+// before the batch is appended, so an ID in the batch replaces the old document.
+func (idx *Index) ReplacePrepared(removeIDs []string, prepared Prepared) {
+	if idx == nil {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.replaceLocked(removeIDs, prepared.docs)
+}
+
+// Clone copies the index structure into a new Index.
+// Term-frequency maps are shared. They are immutable after tokenization, and
+// Replace mutates only the clone's document list and document frequencies.
+// A search that already loaded the published pointer keeps scoring that
+// generation while the clone is edited and then swapped in.
+func (idx *Index) Clone() *Index {
+	if idx == nil {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	docs := make([]indexedDoc, len(idx.docs))
+	copy(docs, idx.docs)
+	df := make(map[string]int, len(idx.df))
+	for term, n := range idx.df {
+		df[term] = n
+	}
+	docIndex := make(map[string]int, len(idx.docIndex))
+	for id, at := range idx.docIndex {
+		docIndex[id] = at
+	}
+	return &Index{
+		docs:     docs,
+		docIndex: docIndex,
+		df:       df,
+		avgDL:    idx.avgDL,
+		k1:       idx.k1,
+		b:        idx.b,
+		docsHash: idx.docsHash,
+	}
+}
+
+func (idx *Index) replaceLocked(removeIDs []string, added []indexedDoc) {
+	if len(removeIDs) == 0 && len(added) == 0 {
+		return
+	}
+	drop := make(map[string]struct{}, len(removeIDs)+len(added))
+	for _, id := range removeIDs {
+		if id != "" {
+			drop[id] = struct{}{}
+		}
+	}
+	for _, doc := range added {
+		if doc.id != "" {
+			drop[doc.id] = struct{}{}
+		}
+	}
+	if idx.df == nil {
+		idx.df = map[string]int{}
+	}
+	kept := make([]indexedDoc, 0, len(idx.docs)+len(added))
+	for _, doc := range idx.docs {
+		if _, ok := drop[doc.id]; !ok {
+			kept = append(kept, doc)
+			continue
+		}
+		for term := range doc.tf {
+			n := idx.df[term]
+			if n <= 1 {
+				delete(idx.df, term)
+				continue
+			}
+			idx.df[term] = n - 1
+		}
+	}
+	for _, doc := range added {
+		if doc.id == "" {
+			continue
+		}
+		kept = append(kept, doc)
+		for term := range doc.tf {
+			idx.df[term]++
+		}
+	}
+	idx.docs = kept
+	idx.rebuildDocIndexLocked()
+	idx.recalcAvgDL()
+	idx.docsHash = ""
+}
+
 // Update replaces a document in the index. If not found, appends it.
 func (idx *Index) Update(d Doc) {
 	idx.mu.Lock()

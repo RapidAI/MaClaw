@@ -254,7 +254,72 @@ func (t *codingParallelTurn) previewPaths(execDir string, modified, created []st
 	if t == nil || !t.deferred || t.primary == "" || !t.hasMerged() {
 		return execDir, modified, created
 	}
-	return t.primary, t.remapLandedPaths(execDir, modified), t.remapLandedPaths(execDir, created)
+	modified = t.remapLandedPaths(execDir, modified)
+	created = t.remapLandedPaths(execDir, created)
+	root := t.primary
+	// A file beside the opened subdirectory is inside the git root. The
+	// preview reads relative names from its root, so those names are made
+	// absolute before the root widens. A path outside the git root does not
+	// widen it: the subdirectory stays the root and its relative names stay
+	// relative. A turn that only touched the subdirectory keeps that root.
+	if t.wt != nil && previewPathsLeaveRoot(root, t.wt.GitRoot, modified, created) {
+		modified = absolutizeUnder(t.primary, modified)
+		created = absolutizeUnder(t.primary, created)
+		root = t.wt.GitRoot
+	}
+	return root, modified, created
+}
+
+// previewPathsLeaveRoot reports a landed path that sits in the git repo and
+// outside the opened subdirectory. A path outside the repo does not count.
+func previewPathsLeaveRoot(opened, gitRoot string, groups ...[]string) bool {
+	opened = filepath.Clean(strings.TrimSpace(opened))
+	gitRoot = filepath.Clean(strings.TrimSpace(gitRoot))
+	if opened == "" || opened == "." || gitRoot == "" || gitRoot == "." {
+		return false
+	}
+	for _, group := range groups {
+		for _, p := range group {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			full := p
+			if !filepath.IsAbs(full) {
+				full = filepath.Join(opened, filepath.FromSlash(full))
+			}
+			full = filepath.Clean(full)
+			if !previewPathEscapes(opened, full) || previewPathEscapes(gitRoot, full) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func previewPathEscapes(root, full string) bool {
+	rel, err := filepath.Rel(root, full)
+	if err != nil {
+		return true
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func absolutizeUnder(root string, paths []string) []string {
+	if strings.TrimSpace(root) == "" || len(paths) == 0 {
+		return paths
+	}
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" || filepath.IsAbs(p) {
+			out[i] = p
+			continue
+		}
+		out[i] = filepath.Join(root, filepath.FromSlash(p))
+	}
+	return out
 }
 
 // remapLandedPaths rewrites checkout paths onto the tree the merge wrote.
@@ -518,6 +583,7 @@ func (t *codingParallelTurn) integrate(ctx context.Context, result *CodingSubAge
 		if result != nil {
 			result.FilesModified = summary.landedModified(result.FilesModified)
 			result.FilesCreated = summary.landedModified(result.FilesCreated)
+			t.rewriteLandedResultPaths(result)
 		}
 		return false, fmt.Errorf("%s", notice)
 	}
@@ -527,7 +593,18 @@ func (t *codingParallelTurn) integrate(ctx context.Context, result *CodingSubAge
 	t.mu.Lock()
 	t.discardWorktree = true
 	t.mu.Unlock()
+	t.rewriteLandedResultPaths(result)
 	return true, nil
+}
+
+// rewriteLandedResultPaths points the turn's file list at the tree the merge
+// wrote. An absolute checkout path would dangle once that checkout is removed.
+func (t *codingParallelTurn) rewriteLandedResultPaths(result *CodingSubAgentResult) {
+	if t == nil || result == nil {
+		return
+	}
+	result.FilesModified = t.remapLandedPaths(t.execDir, result.FilesModified)
+	result.FilesCreated = t.remapLandedPaths(t.execDir, result.FilesCreated)
 }
 
 func (t *codingParallelTurn) waitHolder(ctx context.Context) error {

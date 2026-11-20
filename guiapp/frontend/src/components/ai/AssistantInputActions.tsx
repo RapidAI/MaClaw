@@ -60,6 +60,11 @@ interface AssistantInputActionsProps {
     showVoiceInput?: boolean;
     sendButtonTestId?: string;
     sendButtonStyle?: CSSProperties;
+    /**
+     * When the shortcut sentence does not fit on the row, the send button's
+     * tooltip carries that same sentence. Absent, the button keeps its short title.
+     */
+    sendShortcutTitle?: string;
     theme: Theme;
     themeMode: "light" | "dark";
     voiceInput: UseVoiceInputResult;
@@ -452,8 +457,17 @@ export const AssistantInputActionsLeft = memo(function AssistantInputActionsLeft
  * keeps the object stable across renders.
  */
 const TRAILING_ACTION_PAIR_STYLE: CSSProperties = { display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 };
+// A disabled button keeps the hit and does not show its title. This host is
+// the hover target, sized to the button, so the shortcut sentence still appears.
+const SEND_TOOLTIP_HOST_STYLE: CSSProperties = { display: "inline-flex", flexShrink: 0 };
 
-export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle">) {
+export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle, sendShortcutTitle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle" | "sendShortcutTitle">) {
+    const sendTitle = sendShortcutTitle || (localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)");
+    const sendButton = (
+        <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle, ...(canSend ? null : { pointerEvents: "none" }) }} title={canSend ? sendTitle : undefined} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
+            {isBusy ? <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
+        </button>
+    );
     // The send sits last — the primary action owns the corner.
     return isBusy && cancelSession ? (
         <span style={TRAILING_ACTION_PAIR_STYLE}>
@@ -479,9 +493,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
             <button type="button" onClick={handleClearInput} disabled={!inputValue} style={getInputActionButtonStyle(t, themeMode, "neutral", !inputValue)} title={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} aria-label={localizeText(lang, "Clear input", "\u6e05\u9664\u8f93\u5165")} data-testid="ai-clear-input">
                 <AssistantInputIcon name="eraser" size={13} />
             </button>
-            <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle }} title={localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)"} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
-                {isBusy ? <span style={{ width: "12px", height: "12px", borderRadius: "50%", border: `2px solid ${t.textMuted}`, borderTopColor: "transparent", animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="cornerDownLeft" size={13} />}
-            </button>
+            {canSend ? sendButton : <span style={SEND_TOOLTIP_HOST_STYLE} title={sendTitle}>{sendButton}</span>}
         </span>
     );
 }

@@ -88,6 +88,43 @@ describe("AssistantInputActionsRight", () => {
         expect(container.querySelector('[data-testid="ai-clear-input"]')).toBeNull();
     });
 
+    it("shows the shortcut sentence from the hover target when send is disabled", () => {
+        const sentence = "Enter 发送 · Ctrl/⌘+Enter 换行";
+        const { container } = renderRight({ canSend: false, inputValue: "", sendShortcutTitle: sentence });
+        const send = container.querySelector<HTMLButtonElement>(".ai-composer-send")!;
+        expect(send.disabled).toBe(true);
+        expect(send.hasAttribute("title")).toBe(false);
+        expect(send.style.pointerEvents).toBe("none");
+        expect(send.parentElement!.getAttribute("title")).toBe(sentence);
+        expect(send.getAttribute("aria-label")).toBe("发送");
+    });
+
+    it("keeps the short send tooltip until the row hands it the shortcut sentence", () => {
+        const { container, rerender } = renderRight();
+        const send = () => container.querySelector<HTMLButtonElement>(".ai-composer-send")!;
+        expect(send().title).toBe("发送 (Enter)");
+        expect(send().getAttribute("aria-label")).toBe("发送");
+
+        rerender(
+            <AssistantInputActionsRight
+                canSend={true}
+                handleCancel={vi.fn()}
+                handleClearInput={vi.fn()}
+                handleSend={vi.fn()}
+                inputValue="你好"
+                isBusy={false}
+                lang="zh-Hans"
+                ready={true}
+                showBusySpinner={false}
+                theme={theme}
+                themeMode="light"
+                sendShortcutTitle="Enter 发送 · Ctrl/⌘+Enter 换行"
+            />,
+        );
+        expect(send().title).toBe("Enter 发送 · Ctrl/⌘+Enter 换行");
+        expect(send().getAttribute("aria-label")).toBe("发送");
+    });
+
     it("still lets a surface own the send styling", () => {
         const { container } = renderRight({ sendButtonStyle: { width: "54px", minWidth: "54px" } });
         const send = container.querySelector<HTMLButtonElement>(".ai-composer-send")!;

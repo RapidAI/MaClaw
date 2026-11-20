@@ -34,6 +34,7 @@ func TestHasExplicitTrigger(t *testing.T) {
 func TestRequestsDesktopAppOperation(t *testing.T) {
 	yes := []string{
 		"打开word程序，编写一个你（maclaw）的简历。",
+		"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
 		"帮我在电脑上打开Excel程序，把这一列求和",
 		"打开记事本程序输入一段文字",
 		"打开微信",
@@ -108,6 +109,51 @@ User request:
 	for _, text := range no {
 		if RequestsDesktopAppOperation(text) {
 			t.Errorf("RequestsDesktopAppOperation(%q) = true, want false", text)
+		}
+	}
+}
+
+func TestRequestsDesktopMessageSend(t *testing.T) {
+	yes := []string{
+		"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
+		"在本机桌面打开蓝信（Lanxin）客户端，找到张勇，发送一条文本消息：我是码卡龙",
+		"给微信里的张三发消息说你好",
+		"在钉钉上给李四发个消息",
+		"用 Slack 私聊一下老板",
+		"send a message to wechat: hello",
+		"send message on telegram",
+	}
+	no := []string{
+		"",
+		"发消息",
+		"把昨天那个文件发给我",
+		"打开word程序写一份简历",
+		"帮我写一份word简历",
+		"打开记事本",
+		"打开微信",
+		"打开昨天那个关于微信的备份文件",
+		"怎么给微信发消息",
+		"如何在钉钉发消息",
+		"写一份蓝信发消息的说明",
+		"能在蓝信发消息吗",
+		"qq浏览器发消息",
+		"在微信开发者工具里发消息",
+		"在浏览器里打开知乎发帖",
+		"how to send a message on slack",
+		"在微信里看开发信息",
+		"打开qq浏览器",
+	}
+	for _, text := range yes {
+		if !RequestsDesktopMessageSend(text) {
+			t.Errorf("RequestsDesktopMessageSend(%q) = false, want true", text)
+		}
+		if !RequestsDesktopAppOperation(text) {
+			t.Errorf("RequestsDesktopAppOperation(%q) = false, want true for a desktop IM send", text)
+		}
+	}
+	for _, text := range no {
+		if RequestsDesktopMessageSend(text) {
+			t.Errorf("RequestsDesktopMessageSend(%q) = true, want false", text)
 		}
 	}
 }

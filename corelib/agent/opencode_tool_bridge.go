@@ -43,7 +43,11 @@ func OpenCodeFreeHostTool(cfg corelib.MaclawLLMConfig, name string) bool {
 }
 
 func rewriteOpenCodeAgentToolCalls(calls []llm.ToolCall) []llm.ToolCall {
-	return llm.AdaptOpenCodeFreeToolCalls(nil, calls)
+	return rewriteOpenCodeAgentToolCallsForTurn("", calls)
+}
+
+func rewriteOpenCodeAgentToolCallsForTurn(userText string, calls []llm.ToolCall) []llm.ToolCall {
+	return llm.AdaptOpenCodeFreeToolCallsForTurn(userText, nil, calls)
 }
 
 func rewriteOpenCodeAgentToolCall(name, argsJSON string) (string, string, bool) {

@@ -859,6 +859,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	}
 	storeComputerUseLastObserveMetrics(payload)
 	emitComputerUseEvent(EventComputerUseObserve, payload)
+	noteComputerUseNamedWindow(windowHint)
 	return out
 }
 
@@ -999,6 +1000,7 @@ func cuHandleFocus(args map[string]interface{}) string {
 	}
 	sess.RecordAction("focus", detail, true, "", true)
 	markComputerUseSessionActive()
+	noteComputerUseNamedWindow(window)
 	emitComputerUseActionUI("focus", detail, true, "")
 	cuPostActionSettle()
 	return fmt.Sprintf("focused window matching %q — call computer_observe again", window)
@@ -1314,6 +1316,7 @@ func cuHandleClick(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_click failed: %v", err)
 	}
 	sess.RecordAction("click", detail+" via "+strategy, true, "", true)
+	noteComputerUsePointWindow(x, y)
 	policyID := uint64(0)
 	if mark == nil {
 		policyID = cuPolicyWindowID(x, y)
@@ -1434,6 +1437,7 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
+	noteComputerUseOperatedWindow(accessibility.ForegroundWindowID())
 	if typeEl != nil {
 		sess.NoteActuatedID(typeEl.Name, typeEl.Window, typeEl.Type, typeEl.WindowID)
 	}
@@ -1505,6 +1509,7 @@ func cuHandleKey(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_key failed: %v", err)
 	}
 	sess.RecordAction("key", detail, true, "", true)
+	noteComputerUseOperatedWindow(fgID)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("key", detail, true, "")
 	cuPostActionSettle()
@@ -1578,6 +1583,7 @@ func cuHandleScroll(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_scroll failed: %v", err)
 	}
 	sess.RecordAction("scroll", detail, true, "", true)
+	noteComputerUsePointWindow(x, y)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("scroll", detail, true, "")
 	cuPostActionSettle()
@@ -1625,6 +1631,7 @@ func cuHandleSelect(args map[string]interface{}) string {
 		return "computer_select: input simulator unavailable"
 	}
 	sess.RecordAction("select", detail+" via "+strategy, true, "", true)
+	noteComputerUsePointWindow(x, y)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("select", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
@@ -1660,6 +1667,7 @@ func cuHandleScrollIntoView(args map[string]interface{}) string {
 		return "computer_scroll_into_view: accessibility scroll failed — try computer_scroll then re-observe"
 	}
 	sess.RecordAction("scroll_into_view", detail+" via a11y", true, "", true)
+	noteComputerUsePointWindow(x, y)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("scroll_into_view", detail, true, "")
 	cuPostActionSettle()
@@ -1701,6 +1709,7 @@ func cuHandleDrag(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_drag failed: %v", err)
 	}
 	sess.RecordAction("drag", detail, true, "", true)
+	noteComputerUsePointWindow(fromX, fromY)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("drag", detail, true, "")
 	cuPostActionSettle()

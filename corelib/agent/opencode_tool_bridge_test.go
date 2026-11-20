@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -113,9 +114,38 @@ func TestRewriteOpenCodeReadRange(t *testing.T) {
 	}
 }
 
+func TestRewriteOpenCodePlanTurnDropsCopiedStep(t *testing.T) {
+	code := `return MACLAW_CALL("goal", {"action":"plan","understanding":"北京天气","steps":[{"title":"采集"}],"acceptance_criteria":["pdf"]}); return MACLAW_CALL("goal", {"action":"step","index":1,"status":"done","result":"好了"})`
+	raw, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rewriteOpenCodeAgentToolCallsForTurn("[系统续接][plan] 本轮只做规划", []llm.ToolCall{{
+		ID:       "c",
+		Function: llm.ToolCallFunction{Name: "execute", Arguments: string(raw)},
+	}})
+	if len(got) != 1 || got[0].Function.Name != "goal" || strings.Contains(got[0].Function.Arguments, `"done"`) {
+		t.Fatalf("plan turn = %+v", got)
+	}
+	if got[0].ID != "c" {
+		t.Fatalf("id = %s", got[0].ID)
+	}
+}
+
 func TestRewriteOpenCodeAgentToolCallLeavesUnmappedName(t *testing.T) {
 	name, args, ok := rewriteOpenCodeAgentToolCall("execute", `{"code":"1"}`)
 	if ok || name != "execute" || !strings.Contains(args, `"code"`) {
 		t.Fatalf("execute was rewritten: ok=%v name=%s args=%s", ok, name, args)
+	}
+}
+
+func TestRewriteOpenCodeExecuteHostCallBecomesGoal(t *testing.T) {
+	raw := `{"code":"return MACLAW_CALL(\"goal\", {\"action\":\"plan\",\"understanding\":\"北京\",\"steps\":[{\"title\":\"采集\"}],\"acceptance_criteria\":[\"pdf\"]})"}`
+	name, args, ok := rewriteOpenCodeAgentToolCall("execute", raw)
+	if !ok || name != "goal" {
+		t.Fatalf("name=%s ok=%v args=%s", name, ok, args)
+	}
+	if !strings.Contains(args, `"action":"plan"`) || !strings.Contains(args, "北京") {
+		t.Fatalf("args = %s", args)
 	}
 }

@@ -2,6 +2,71 @@ package bm25
 
 import "testing"
 
+func TestReplaceKeepsUntouchedDocumentScores(t *testing.T) {
+	idx := New()
+	idx.Rebuild([]Doc{
+		{ID: "keep", Text: "alpha token one"},
+		{ID: "drop", Text: "beta token two"},
+	})
+	before := idx.Score("alpha token")
+	if before["keep"] <= 0 {
+		t.Fatalf("keep score = %v", before["keep"])
+	}
+	idx.Replace([]string{"drop"}, []Doc{{ID: "add", Text: "gamma token three"}})
+	after := idx.Score("alpha token")
+	if after["keep"] != before["keep"] {
+		t.Fatalf("untouched score changed %v -> %v", before["keep"], after["keep"])
+	}
+	if after["drop"] != 0 {
+		t.Fatalf("removed doc still scores: %v", after["drop"])
+	}
+	added := idx.Score("gamma token")
+	if added["add"] <= 0 {
+		t.Fatalf("added doc missing: %v", added)
+	}
+	only := idx.Score("beta two")
+	if len(only) != 0 {
+		t.Fatalf("removed terms still match: %v", only)
+	}
+}
+
+func TestCloneReplaceLeavesTheSourceIndexUnchanged(t *testing.T) {
+	idx := New()
+	idx.Rebuild([]Doc{
+		{ID: "keep", Text: "alpha token one"},
+		{ID: "drop", Text: "beta token two"},
+	})
+	before := idx.Score("alpha token")
+	if before["keep"] <= 0 {
+		t.Fatalf("keep score = %v", before["keep"])
+	}
+	next := idx.Clone()
+	if next == nil || next == idx {
+		t.Fatal("clone did not publish a distinct index")
+	}
+	next.Replace([]string{"drop"}, []Doc{{ID: "add", Text: "gamma token three"}})
+	after := idx.Score("alpha token")
+	if after["keep"] != before["keep"] || len(after) != len(before) {
+		t.Fatalf("source scores changed %v -> %v", before, after)
+	}
+	if idx.Score("gamma three")["add"] != 0 {
+		t.Fatal("source index gained the added document")
+	}
+	if idx.Score("beta two")["drop"] <= 0 {
+		t.Fatal("source index lost the removed document")
+	}
+	if next.Score("gamma token")["add"] <= 0 {
+		t.Fatal("clone missed the added document")
+	}
+	if len(next.Score("beta two")) != 0 {
+		t.Fatal("clone kept the removed document")
+	}
+	var none *Index
+	if none.Clone() != nil {
+		t.Fatal("nil clone")
+	}
+}
+
 func TestTokenizeAddsCJKFallbackNgrams(t *testing.T) {
 	tokens := Tokenize("记忆证据导航")
 	if !containsToken(tokens, "证据") || !containsToken(tokens, "导航") || !containsToken(tokens, "证据导") {

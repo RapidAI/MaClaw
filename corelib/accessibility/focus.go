@@ -54,6 +54,18 @@ func NamedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 	return namedWindowBounds(titleSubstring)
 }
 
+// NamedWindowID returns the platform id of the best visible top-level window
+// for titleSubstring. Windows returns the HWND. Other platforms return 0.
+func NamedWindowID(titleSubstring string) uint64 {
+	return namedWindowID(titleSubstring)
+}
+
+// WindowOwnedBySelf reports whether id belongs to this process.
+// A zero id does not.
+func WindowOwnedBySelf(id uint64) bool {
+	return windowOwnedBySelf(id)
+}
+
 func parseCSVWindowBounds(s string) (WindowBounds, bool) {
 	parts := strings.SplitN(strings.TrimSpace(s), ",", 5)
 	if len(parts) < 4 {

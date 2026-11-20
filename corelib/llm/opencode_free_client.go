@@ -535,6 +535,16 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 	if len(messages) == 1 {
 		return nil, fmt.Errorf("opencode free client: empty conversation")
 	}
+	// The fingerprint is the official system prompt plus the 12 tools. Host
+	// tools stay off that list. The note rides on the last user message of
+	// this body only, and a tail that already ends with it is not extended.
+	if note := openCodeFreeCallerHostNote(caller); note != "" {
+		if n := len(messages); n > 0 && messages[n-1].Role == "user" {
+			messages[n-1].Content = joinOpenCodeFreeHostNote(messages[n-1].Content, note)
+		} else {
+			messages = append(messages, message{Role: "user", Content: note})
+		}
+	}
 	payload := struct {
 		Model         string          `json:"model"`
 		Messages      []message       `json:"messages"`
@@ -579,11 +589,15 @@ func openCodeFreeConversation(role string, content json.RawMessage, calls []open
 		if name == "" {
 			continue
 		}
+		args := openCodeFreeToolArguments(call.Function.Arguments)
+		if presented, ok := presentOpenCodeFreeHostCall(name, args); ok {
+			name = "execute"
+			args = presented
+		}
 		if tools.Len() > 0 {
 			tools.WriteByte('\n')
 		}
 		tools.WriteString(name)
-		args := openCodeFreeToolArguments(call.Function.Arguments)
 		if args != "" {
 			tools.WriteByte(' ')
 			tools.WriteString(args)
