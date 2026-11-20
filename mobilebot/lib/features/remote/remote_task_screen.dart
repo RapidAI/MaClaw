@@ -56,7 +56,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   /// 已点发送、历史还没对上的用户消息。立刻在对话里回显，避免等 get_task。
   final List<PendingUserEcho> _pendingUser = [];
 
-  /// 上次对账时历史里已有的用户消息条数。新回显只和此后多出来的用户行对账。
+  /// 上次对账时历史里已有的用户消息条数。窗口没滑动时只消费多出来的行。
   int _ackedUserCount = 0;
   bool _downloading = false;
   bool _pollInFlight = false;
@@ -339,12 +339,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
         _detail = detail;
         _loading = false;
         _error = '';
-        reconcilePendingUserEchoes(
+        _ackedUserCount = reconcilePendingUserEchoes(
           _pendingUser,
           detail.messages,
           knownUserCount: _ackedUserCount,
         );
-        _ackedUserCount = userMessageCount(detail.messages);
       });
     } on Object catch (error) {
       if (!mounted) return;
@@ -376,16 +375,40 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     final api = ref.read(remoteApiProvider);
     if (api == null) return;
     final echo = PendingUserEcho(text: text, sentAt: DateTime.now());
+    setState(() => _pendingUser.add(echo));
+    _stickToEnd = true;
+    _revealTail();
+    await _dispatchEcho(echo, clearInput: true);
+  }
+
+  Future<void> _retryEcho(PendingUserEcho echo) async {
+    if (!canRetryPendingEcho(echo)) return;
+    await _dispatchEcho(echo, clearInput: false);
+  }
+
+  /// 发出一条待确认回显。成功去掉“发送中”；失败标红并保留重试。
+  Future<void> _dispatchEcho(
+    PendingUserEcho echo, {
+    required bool clearInput,
+  }) async {
+    if (_sending) return;
+    final api = ref.read(remoteApiProvider);
+    if (api == null) {
+      if (!mounted) return;
+      setState(() => markEchoFailed(_pendingUser, echo, context.S.chatSendFailed));
+      return;
+    }
     setState(() {
+      beginPendingRetry(echo);
       _sending = true;
-      _pendingUser.add(echo);
     });
     _stickToEnd = true;
     _revealTail();
     try {
-      await api.sendMessage(widget.grant.id, widget.taskPath, text);
+      await api.sendMessage(widget.grant.id, widget.taskPath, echo.text);
       if (!mounted) return;
-      _inputCtrl.clear();
+      setState(() => markEchoSent(_pendingUser, echo));
+      if (clearInput) _inputCtrl.clear();
       await _load();
       ref.invalidate(remoteTasksProvider(widget.grant.id));
       // Sending is a request to watch the reply, even if the reader had
@@ -393,11 +416,12 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       _stickToEnd = true;
       _revealTail();
     } on Object catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(failureMessage(error))));
-      }
+      if (!mounted) return;
+      final message = failureMessage(error);
+      setState(() => markEchoFailed(_pendingUser, echo, message));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -915,7 +939,13 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                                 downloading: _downloading,
                               ),
                         for (final echo in _pendingUser)
-                          _UserBubble(text: echo.text),
+                          _UserBubble(
+                            text: echo.text,
+                            sending: echo.sending,
+                            failed: echo.failed,
+                            error: echo.error,
+                            onRetry: echo.failed ? () => _retryEcho(echo) : null,
+                          ),
                         if ((detail == null || detail.messages.isEmpty) &&
                             _pendingUser.isEmpty &&
                             !_liveHasCopy())
@@ -1355,8 +1385,47 @@ class _MessageRow extends StatelessWidget {
 class PendingUserEcho {
   final String text;
   final DateTime sentAt;
+  bool sending;
+  bool failed;
+  String error;
 
-  const PendingUserEcho({required this.text, required this.sentAt});
+  PendingUserEcho({
+    required this.text,
+    required this.sentAt,
+    this.sending = true,
+    this.failed = false,
+    this.error = '',
+  });
+}
+
+/// 只有失败且当前不在发送中的回显可以重试。
+bool canRetryPendingEcho(PendingUserEcho echo) => echo.failed && !echo.sending;
+
+/// 重试前清掉失败标记，重新进入发送中。
+void beginPendingRetry(PendingUserEcho echo) {
+  echo.sending = true;
+  echo.failed = false;
+  echo.error = '';
+}
+
+/// 请求已返回成功：去掉“发送中”，等历史对上后再移除气泡。
+void markEchoSent(List<PendingUserEcho> pending, PendingUserEcho echo) {
+  if (!pending.contains(echo)) return;
+  echo.sending = false;
+  echo.failed = false;
+  echo.error = '';
+}
+
+/// 请求失败：标红并保留错误文案，供气泡上的重试入口使用。
+void markEchoFailed(
+  List<PendingUserEcho> pending,
+  PendingUserEcho echo,
+  String message,
+) {
+  if (!pending.contains(echo)) return;
+  echo.sending = false;
+  echo.failed = true;
+  echo.error = message;
 }
 
 /// 历史里角色为 user 的消息条数。
@@ -1368,50 +1437,181 @@ int userMessageCount(List<RemoteMessage> messages) {
   return count;
 }
 
-/// 按文本与条数对上历史里多出来的用户消息，从待确认列表里去掉重复回显。
-/// 只消费历史尾部相对 [knownUserCount] 新增的用户行，避免把更早的同文消息算进来。
-List<PendingUserEcho> reconcilePendingUserEchoes(
+/// get_task 只带最近若干条。用户行变少说明窗口滑走了旧行，不能再按绝对序号跳过。
+const remoteHistoryUserWindow = 40;
+
+/// 历史对上本地回显后，时间差超过这个窗口就不当成同一次发送。
+const pendingEchoMatchWindow = Duration(minutes: 2);
+
+/// 桌面端给远控用户行加的 〔远控〕/〔…〕 前缀。对账前剥掉，避免和本地原文对不上。
+final _remoteOriginMarker = RegExp(r'^〔[^〕]*〕');
+
+String remoteEchoText(String raw) {
+  final text = raw.trim();
+  final match = _remoteOriginMarker.firstMatch(text);
+  if (match == null) return text;
+  return text.substring(match.end).trim();
+}
+
+/// 用户行没有独立时间戳。行在历史末尾、或相对上次已确认条数是新增行时，
+/// 视为落在发送之后的合理范围内。
+bool historyEchoArrivedAfterSend({
+  required int index,
+  required int userCount,
+  required int knownUserCount,
+  required bool windowSlid,
+}) {
+  if (userCount <= 0 || index < 0 || index >= userCount) return false;
+  if (index == userCount - 1) return true;
+  if (windowSlid || knownUserCount <= 0) return false;
+  return index >= knownUserCount;
+}
+
+bool pendingEchoMatchesHistoryText(PendingUserEcho echo, String historyText) {
+  final left = remoteEchoText(echo.text);
+  final right = remoteEchoText(historyText);
+  return left.isNotEmpty && left == right;
+}
+
+/// 按顺序、按条数把历史里已落地的用户行配给待确认回显。
+/// 连续相同文本各占一条，更早的同文消息不会误删还没对上的回显。
+/// 返回这次看到的用户行数，供下次区分“新增”和“窗口滑动”。
+int reconcilePendingUserEchoes(
   List<PendingUserEcho> pending,
   List<RemoteMessage> messages, {
   int knownUserCount = 0,
+  DateTime? now,
 }) {
-  if (pending.isEmpty) return pending;
-  var seenUsers = 0;
-  final fresh = <String>[];
+  final users = <String>[];
   for (final message in messages) {
     if (message.role != 'user') continue;
-    seenUsers++;
-    if (seenUsers <= knownUserCount) continue;
-    final text = message.content.trim();
-    if (text.isNotEmpty) fresh.add(text);
+    final text = remoteEchoText(message.content);
+    if (text.isEmpty) continue;
+    users.add(text);
   }
-  if (fresh.isEmpty) return pending;
-  final counts = <String, int>{};
-  for (final text in fresh) {
-    counts[text] = (counts[text] ?? 0) + 1;
+  final nextKnown = users.length;
+  if (pending.isEmpty) return nextKnown;
+  final windowSlid =
+      knownUserCount > nextKnown || nextKnown >= remoteHistoryUserWindow;
+  final clock = now ?? DateTime.now();
+  var cursor = 0;
+  if (!windowSlid && knownUserCount > 0 && knownUserCount < nextKnown) {
+    cursor = knownUserCount;
   }
   pending.removeWhere((echo) {
-    final left = counts[echo.text] ?? 0;
-    if (left <= 0) return false;
-    counts[echo.text] = left - 1;
-    return true;
+    if (echo.failed) return false;
+    if (clock.difference(echo.sentAt) > pendingEchoMatchWindow) return false;
+    while (cursor < users.length) {
+      final index = cursor;
+      final text = users[cursor];
+      cursor++;
+      if (!historyEchoArrivedAfterSend(
+        index: index,
+        userCount: users.length,
+        knownUserCount: knownUserCount,
+        windowSlid: windowSlid,
+      )) {
+        continue;
+      }
+      if (pendingEchoMatchesHistoryText(echo, text)) return true;
+    }
+    return false;
   });
-  return pending;
+  return nextKnown;
 }
 
-/// 我的消息 — 右侧气泡。
+/// 我的消息 — 右侧气泡。发送中在气泡下方给小号进度；失败标红并保留重试。
 class _UserBubble extends StatelessWidget {
   final String text;
+  final bool sending;
+  final bool failed;
+  final String error;
+  final VoidCallback? onRetry;
 
-  const _UserBubble({required this.text});
+  const _UserBubble({
+    required this.text,
+    this.sending = false,
+    this.failed = false,
+    this.error = '',
+    this.onRetry,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return MessageBubble(
-      role: ChatRole.user,
-      maxWidth: MediaQuery.of(context).size.width * 0.78,
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: SelectableText(text, style: const TextStyle(height: 1.45)),
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            MessageBubble(
+              role: ChatRole.user,
+              maxWidth: MediaQuery.of(context).size.width * 0.78,
+              margin: const EdgeInsets.only(top: 4),
+              child: SelectableText(text, style: const TextStyle(height: 1.45)),
+            ),
+            if (sending)
+              Padding(
+                key: const ValueKey('pending-echo-sending'),
+                padding: const EdgeInsets.only(bottom: 4, right: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      context.S.chatSending,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (failed)
+              Padding(
+                key: const ValueKey('pending-echo-failed'),
+                padding: const EdgeInsets.only(bottom: 4, right: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      error.isEmpty ? context.S.chatSendFailed : error,
+                      textAlign: TextAlign.end,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.error,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: onRetry,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        context.S.chatResend,
+                        style: TextStyle(fontSize: 11, color: scheme.error),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

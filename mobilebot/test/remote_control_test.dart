@@ -134,6 +134,7 @@ class _FakeRemoteApi extends RemoteControlApi {
   }
 
   Completer<void>? sendGate;
+  Object? sendError;
 
   @override
   Future<void> sendMessage(
@@ -144,6 +145,7 @@ class _FakeRemoteApi extends RemoteControlApi {
     calls.add('send:$grantId:$projectPath:$text');
     final gate = sendGate;
     if (gate != null) await gate.future;
+    if (sendError != null) throw sendError!;
   }
 
   @override
@@ -1984,9 +1986,16 @@ void main() {
         ),
         findsOneWidget,
       );
+      expect(find.text('发送中…'), findsOneWidget);
+      expect(find.byKey(const ValueKey('pending-echo-sending')), findsOneWidget);
       expect(api.calls, contains('send:g-ops:/p/a:立刻回显'));
       api.sendGate!.complete();
       await pumpFew(tester);
+
+      expect(find.text('发送中…'), findsNothing);
+      expect(find.byKey(const ValueKey('pending-echo-sending')), findsNothing);
+      expect(find.text('立刻回显'), findsWidgets);
+      expect(find.widgetWithText(TextField, '立刻回显'), findsNothing);
     });
 
     testWidgets('operate grant can send a message', (tester) async {
@@ -2031,10 +2040,160 @@ void main() {
         const RemoteMessage(role: 'user', content: '继续处理第二批'),
       ];
 
-      reconcilePendingUserEchoes(pending, messages, knownUserCount: 1);
+      final known = reconcilePendingUserEchoes(
+        pending,
+        messages,
+        knownUserCount: 1,
+        now: sentAt,
+      );
 
+      expect(known, 2);
       expect(pending.map((echo) => echo.text), ['继续处理第二批', '另一条']);
       expect(pending.first.sentAt, sentAt);
+    });
+
+    test('pending echo drops a matching last user row after trim', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '  继续处理第二批  ', sentAt: sentAt),
+      ];
+      final messages = [
+        const RemoteMessage(role: 'user', content: '帮我查一下'),
+        const RemoteMessage(role: 'assistant', content: '已经生成好了'),
+        const RemoteMessage(role: 'user', content: '〔远控〕继续处理第二批'),
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        messages,
+        knownUserCount: 2,
+        now: sentAt.add(const Duration(seconds: 20)),
+      );
+
+      expect(pending, isEmpty);
+    });
+
+    test('pending echo keeps a same-text row that is older than the send', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+      ];
+      final messages = [
+        const RemoteMessage(role: 'user', content: '继续处理第二批'),
+        const RemoteMessage(role: 'assistant', content: '已经生成好了'),
+        const RemoteMessage(role: 'user', content: '另一条'),
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        messages,
+        knownUserCount: 2,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+    });
+
+    test('pending echo ignores a match outside the send window', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        [
+          const RemoteMessage(role: 'user', content: '继续处理第二批'),
+        ],
+        knownUserCount: 0,
+        now: sentAt.add(const Duration(minutes: 3)),
+      );
+
+      expect(pending, hasLength(1));
+    });
+
+    test('pending echo pairs repeated text in order and keeps the extra', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '再说一次', sentAt: sentAt),
+        PendingUserEcho(text: '再说一次', sentAt: sentAt),
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        [
+          const RemoteMessage(role: 'user', content: '旧的'),
+          const RemoteMessage(role: 'user', content: '再说一次'),
+        ],
+        knownUserCount: 1,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+      expect(pending.single.text, '再说一次');
+    });
+
+    test('echo status tracks sending, failure, and retry', () {
+      final echo = PendingUserEcho(text: '立刻回显', sentAt: DateTime(2026));
+      expect(echo.sending, isTrue);
+      expect(canRetryPendingEcho(echo), isFalse);
+
+      markEchoFailed([echo], echo, 'hub down');
+      expect(echo.sending, isFalse);
+      expect(echo.failed, isTrue);
+      expect(echo.error, 'hub down');
+      expect(canRetryPendingEcho(echo), isTrue);
+
+      beginPendingRetry(echo);
+      expect(echo.sending, isTrue);
+      expect(echo.failed, isFalse);
+      expect(echo.error, isEmpty);
+      expect(canRetryPendingEcho(echo), isFalse);
+
+      markEchoSent([echo], echo);
+      expect(echo.sending, isFalse);
+      expect(echo.failed, isFalse);
+    });
+
+    testWidgets('failed send marks the echo red and keeps retry', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = sampleDetail()
+        ..sendError = StateError('hub down');
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantOps,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+
+      await tester.enterText(find.byType(TextField).last, '发送失败这条');
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+      await pumpFew(tester);
+
+      expect(find.text('发送失败这条'), findsWidgets);
+      expect(find.widgetWithText(TextField, '发送失败这条'), findsOneWidget);
+      expect(find.text('发送中…'), findsNothing);
+      expect(find.byKey(const ValueKey('pending-echo-failed')), findsOneWidget);
+      expect(find.text('重发'), findsOneWidget);
+      expect(find.textContaining('hub down'), findsWidgets);
+
+      api.sendError = null;
+      await tester.tap(find.text('重发'));
+      await pumpFew(tester);
+
+      expect(
+        api.calls.where((call) => call.startsWith('send:')).length,
+        2,
+      );
+      expect(find.text('重发'), findsNothing);
+      expect(find.byKey(const ValueKey('pending-echo-failed')), findsNothing);
     });
 
     testWidgets('file chip triggers fetch_file and share path', (tester) async {
