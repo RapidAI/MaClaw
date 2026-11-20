@@ -41,6 +41,7 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
   DateTime? _listeningStartedAt;
   ValueChanged<String>? _onStatus;
   bool _callbacksInstalled = false;
+  bool _startupFailed = false;
   Future<void> _platformOperationTail = Future<void>.value();
 
   SpeechToTextAssistantVoiceInput({SpeechToText? speech})
@@ -64,6 +65,7 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
     // a permission prompt or a native recognizer transition is still pending.
     _hasRecognizedSpeech = false;
     _listeningStartedAt = null;
+    _startupFailed = false;
     return _enqueuePlatformOperation(() async {
       if (sessionGeneration != _sessionGeneration) return false;
       try {
@@ -84,6 +86,7 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
         if (!_callbacksInstalled || sessionGeneration != _sessionGeneration) {
           return false;
         }
+        final listenGeneration = _sessionGeneration;
         await _speech.listen(
           listenOptions: SpeechListenOptions(
             localeId: localeId,
@@ -118,6 +121,16 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
           },
         );
         if (sessionGeneration != _sessionGeneration) return false;
+        // speech_to_text reports a failed start through onError while listen()
+        // is still awaiting, before this session is marked active. That error
+        // used to be dropped and start() returned true, so the mic looked live
+        // and no text ever arrived.
+        if (_startupFailed && listenGeneration == _sessionGeneration) {
+          _startupFailed = false;
+          _onStatus?.call('error');
+          return false;
+        }
+        _startupFailed = false;
         // A prior native recognizer can emit its final status while the next
         // `listen` method call is still in flight. Associate callbacks only
         // once that call returns, then publish the active state ourselves so
@@ -193,8 +206,14 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
   }
 
   void _handleError() {
-    if (_activeSessionGeneration != 0 &&
-        _activeSessionGeneration == _sessionGeneration) {
+    if (_sessionGeneration == 0) return;
+    if (_activeSessionGeneration == 0) {
+      // listen() has not returned yet. Remember the failure so start() does
+      // not report a live session that never produces text.
+      _startupFailed = true;
+      return;
+    }
+    if (_activeSessionGeneration == _sessionGeneration) {
       _finishActiveSession();
       _onStatus?.call('error');
     }

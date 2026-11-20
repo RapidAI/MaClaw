@@ -660,13 +660,20 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
     if (!mounted || sessionGeneration != _voiceSessionGeneration) return;
     if (!ready) {
-      setState(() {
-        _listening = false;
-        _voiceStatus = '语音输入不可用，请检查麦克风权限';
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('语音输入不可用，请检查麦克风权限')),
-      );
+      // onStatus('error') may already have explained the failure. Do not
+      // replace that with the generic permission copy, and do not leave the
+      // composer looking idle with no message.
+      if (_listening ||
+          _voiceStatus == null ||
+          _voiceStatus == '正在启动语音输入') {
+        setState(() {
+          _listening = false;
+          _voiceStatus = '语音输入不可用，请检查麦克风权限';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('语音输入不可用，请检查麦克风权限')),
+        );
+      }
       return;
     }
     if (_listening) {
