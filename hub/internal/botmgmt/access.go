@@ -584,6 +584,12 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true, action)
 }
 
+// desktopQueuedLine is the fallback first sentence when a message is queued
+// behind a busy desktop and the intake LLM produced no ack of its own.
+// The mobile and desktop GUI show it so the person knows the command was
+// received and is waiting its turn, not lost.
+const desktopQueuedLine = "收到，这条先排着，忙完就接着做。"
+
 func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (outAdmission BotAdmission, outErr error) {
 	// A password typed into the message is taken out here, before routing,
 	// intake (an LLM call that may write a schedule row), the turn queue, or
@@ -792,6 +798,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			return BotAdmission{}, ErrNoDesktopTurn
 		}
 		if admit && errors.Is(busyErr, ErrDesktopBusy) && !desktopQueueSuppressed(ctx) && !hubStartedTurn(clientMessageID) {
+			queuedAck := intakeAck
+			if strings.TrimSpace(queuedAck) == "" {
+				queuedAck = desktopQueuedLine
+			}
 			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
 				ClientMessageID: clientMessageID,
 				Content:         content,
@@ -799,11 +809,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 				ContinueSession: continueSession,
 				Kind:            "new",
 				Instruction:     content,
-				Ack:             intakeAck,
+				Ack:             queuedAck,
 				Secrets:         desktopSecretBag(ctx),
 			})
 			if qerr == nil {
-				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: intakeAck, Kind: "new", ClientMessageID: clientMessageID}, nil
+				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: queuedAck, Kind: "new", ClientMessageID: clientMessageID}, nil
 			}
 		}
 		return BotAdmission{}, busyErr

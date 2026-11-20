@@ -124,6 +124,10 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 		if phase == "" {
 			phase = in.Phase
 		}
+		heldAck := decision.Ack
+		if strings.TrimSpace(heldAck) == "" {
+			heldAck = desktopQueuedLine
+		}
 		pos, err := s.enqueueDesktopMessage(in.TenantID, in.UserID, in.BotID, desktopQueueItem{
 			ClientMessageID: in.ClientMessageID,
 			Content:         content,
@@ -131,7 +135,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			ContinueSession: in.ContinueSession,
 			Kind:            "new",
 			Instruction:     order,
-			Ack:             decision.Ack,
+			Ack:             heldAck,
 			Held:            true,
 			Secrets:         desktopSecretBag(ctx),
 		})
@@ -141,6 +145,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			base.Held = true
 			base.Position = pos
 			base.Kind = "new"
+			base.Ack = heldAck
 			return content, base, true, nil
 		}
 	}
