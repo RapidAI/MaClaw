@@ -204,6 +204,15 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     return '';
   }
 
+  /// The header's status line: the live step phrase when Hub reports one,
+  /// otherwise the generic "working" label; idle when no run is in flight.
+  String _headerStatus(ChatState state) {
+    if (state.sending || state.activeRunId != null) {
+      return state.activity.isNotEmpty ? state.activity : context.S.chatProcessing;
+    }
+    return context.S.chatOnline;
+  }
+
   /// 一轮聆听的收口：最终识别词非空→自动发送；空（静默/超时）→稍后重新
   /// 聆听。onStatus 终态与 onResult 的 finalResult 都会进来（部分 OEM 识别
   /// 器只发结果不发终态状态），靠 _listening 幂等，先到者生效。
@@ -782,9 +791,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                         ? (_ttsBusy
                               ? context.S.chatVoiceSpeaking
                               : context.S.chatVoiceListening)
-                        : ((state.sending || state.activeRunId != null)
-                              ? context.S.chatProcessing
-                              : context.S.chatOnline),
+                        : _headerStatus(state),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: (state.sending || state.activeRunId != null)
                           ? Theme.of(context).colorScheme.primary

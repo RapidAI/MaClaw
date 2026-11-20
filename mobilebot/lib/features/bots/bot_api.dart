@@ -296,6 +296,8 @@ class BotApi {
   }
 
   /// One run poll. Returns null while the run is in flight (a 202 answer).
+  /// The 202 body may carry a live step phrase (activity) or status line —
+  /// both are read so the caller can show them in the header.
   Future<BotReply?> pollRun(String botId, String runId) async {
     final response = await _client.call(
       () => _client.dio.get<Map<String, dynamic>>(
@@ -304,12 +306,30 @@ class BotApi {
       ),
     );
     final status = response.statusCode ?? 0;
-    if (status == 202) return null;
+    if (status == 202) {
+      // A 202 body may carry a live step phrase (activity) or status line.
+      // Store it so the controller can read it after the await.
+      final data = response.data ?? const <String, dynamic>{};
+      final activity = syncText(data['activity']);
+      final statusLine = syncText(data['status_line']);
+      final display = activity.isNotEmpty ? activity : statusLine;
+      if (display.isNotEmpty) _lastRunActivity[runId] = display;
+      return null;
+    }
     if (status < 200 || status >= 300) {
       throw hubException(response);
     }
+    _lastRunActivity.remove(runId);
     return BotReply.fromJson(response.data ?? const <String, dynamic>{});
   }
+
+  /// Tracks the last activity/status line reported by each run while it is
+  /// in flight. Cleared when the run settles.
+  final Map<String, String> _lastRunActivity = {};
+
+  /// The live step phrase for a run, from the most recent 202 poll.
+  /// Returns an empty string when the run is not reporting a step.
+  String lastActivityForRun(String runId) => _lastRunActivity[runId] ?? '';
 
   Future<List<ActiveRun>> activeRuns(String botId) async {
     final data = await _client.guard(
@@ -353,6 +373,7 @@ class BotApi {
         options: _client.opts(),
       ),
     );
+    _lastRunActivity.remove(runId);
   }
 
   Future<void> pauseRun(String botId, String runId) async {

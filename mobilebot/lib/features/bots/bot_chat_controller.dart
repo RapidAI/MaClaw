@@ -18,6 +18,11 @@ class ChatState {
   final String? activeRunId;
   final String error;
 
+  /// The live step phrase Hub reports for the run still in flight
+  /// (`GET /runs/{id}` 202 body: `activity`). Empty when the run is
+  /// not actively reporting a step.
+  final String activity;
+
   /// A `bot#<id>` thread the person explicitly chose to continue — sent as
   /// `continue_session` on the next message, then cleared.
   final String continueThread;
@@ -29,6 +34,7 @@ class ChatState {
     this.sending = false,
     this.activeRunId,
     this.error = '',
+    this.activity = '',
     this.continueThread = '',
   });
 
@@ -38,6 +44,7 @@ class ChatState {
     bool? sending,
     String? Function()? activeRunId,
     String? error,
+    String? activity,
     String? continueThread,
   }) => ChatState(
     botId: botId,
@@ -46,6 +53,7 @@ class ChatState {
     sending: sending ?? this.sending,
     activeRunId: activeRunId != null ? activeRunId() : this.activeRunId,
     error: error ?? this.error,
+    activity: activity ?? this.activity,
     continueThread: continueThread ?? this.continueThread,
   );
 }
@@ -595,6 +603,12 @@ class BotChatController extends Notifier<ChatState> {
         // Hub is holding the message behind a running turn — no run yet.
         // The reply arrives through the shared-journal long-poll, so mark
         // the bubble queued and free the composer for the next message.
+        //
+        // Keep the previous run's activeRunId so the supplement affordance
+        // stays available: a queued message goes to the same run that is
+        // currently in flight, and steering that run is still the right
+        // action while the queued message waits its turn.
+        final previousRunId = state.activeRunId;
         final messages = [...state.messages];
         final index = messages.indexWhere((m) => m.id == userMessage.id);
         if (index >= 0) {
@@ -606,12 +620,23 @@ class BotChatController extends Notifier<ChatState> {
         }
         state = state.copyWith(messages: messages, sending: false);
         _appendAck(result);
+        // Poll the previous run so its activity keeps updating the header
+        // and the settle path clears the queued bubble when it lands.
+        if (previousRunId != null) _pollRun(previousRunId);
       } else if (result.isAdmitted) {
         _sessionForRun = result.session;
         // Free the composer: `sending` only guards the in-flight request.
         // While the run executes the person may queue the next message
         // (Hub answers `queued`) or answer an ask card — desktop parity.
+        // Mark the user bubble settled immediately: Hub accepted it, the
+        // run is in flight — the header tracks progress via `activity`.
+        final messages = [...state.messages];
+        final index = messages.indexWhere((m) => m.id == userMessage.id);
+        if (index >= 0) {
+          messages[index] = messages[index].copyWith(pending: false);
+        }
         state = state.copyWith(
+          messages: messages,
           sending: false,
           activeRunId: () => result.run!.runId,
         );
@@ -715,6 +740,13 @@ class BotChatController extends Notifier<ChatState> {
         final reply = await _api.pollRun(state.botId, runId);
         if (_disposed || state.activeRunId != runId) return;
         if (reply == null) {
+          // A 202 answer: the run is still in flight. Hub may report a live
+          // step phrase (activity) or status line — show it in the header.
+          // Only rebuild when the phrase actually changed.
+          final activity = _api.lastActivityForRun(runId);
+          if (activity != state.activity) {
+            state = state.copyWith(activity: activity);
+          }
           if (_foreground) _pollTimer = Timer(botPollInterval, tick);
           return;
         }
@@ -808,6 +840,7 @@ class BotChatController extends Notifier<ChatState> {
       messages: messages,
       sending: false,
       activeRunId: () => null,
+      activity: '',
     );
   }
 
@@ -833,6 +866,7 @@ class BotChatController extends Notifier<ChatState> {
       messages: messages,
       sending: false,
       activeRunId: () => null,
+      activity: '',
       error: error,
     );
   }
@@ -861,6 +895,7 @@ class BotChatController extends Notifier<ChatState> {
       messages: messages,
       sending: false,
       activeRunId: () => null,
+      activity: '',
     );
   }
 

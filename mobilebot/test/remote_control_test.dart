@@ -2030,9 +2030,9 @@ void main() {
     test('pending echo matches new user rows by text and count', () {
       final sentAt = DateTime(2026, 11, 21, 3, 25);
       final pending = [
-        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
-        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
-        PendingUserEcho(text: '另一条', sentAt: sentAt),
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt, sending: false),
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt, sending: false),
+        PendingUserEcho(text: '另一条', sentAt: sentAt, sending: false),
       ];
       final messages = [
         const RemoteMessage(role: 'user', content: '帮我查一下'),
@@ -2055,7 +2055,7 @@ void main() {
     test('pending echo drops a matching last user row after trim', () {
       final sentAt = DateTime(2026, 11, 21, 3, 25);
       final pending = [
-        PendingUserEcho(text: '  继续处理第二批  ', sentAt: sentAt),
+        PendingUserEcho(text: '  继续处理第二批  ', sentAt: sentAt, sending: false),
       ];
       final messages = [
         const RemoteMessage(role: 'user', content: '帮我查一下'),
@@ -2076,7 +2076,7 @@ void main() {
     test('pending echo keeps a same-text row that is older than the send', () {
       final sentAt = DateTime(2026, 11, 21, 3, 25);
       final pending = [
-        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt, sending: false),
       ];
       final messages = [
         const RemoteMessage(role: 'user', content: '继续处理第二批'),
@@ -2097,7 +2097,7 @@ void main() {
     test('pending echo ignores a match outside the send window', () {
       final sentAt = DateTime(2026, 11, 21, 3, 25);
       final pending = [
-        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt),
+        PendingUserEcho(text: '继续处理第二批', sentAt: sentAt, sending: false),
       ];
 
       reconcilePendingUserEchoes(
@@ -2115,8 +2115,8 @@ void main() {
     test('pending echo pairs repeated text in order and keeps the extra', () {
       final sentAt = DateTime(2026, 11, 21, 3, 25);
       final pending = [
-        PendingUserEcho(text: '再说一次', sentAt: sentAt),
-        PendingUserEcho(text: '再说一次', sentAt: sentAt),
+        PendingUserEcho(text: '再说一次', sentAt: sentAt, sending: false),
+        PendingUserEcho(text: '再说一次', sentAt: sentAt, sending: false),
       ];
 
       reconcilePendingUserEchoes(
@@ -2132,6 +2132,238 @@ void main() {
       expect(pending, hasLength(1));
       expect(pending.single.text, '再说一次');
     });
+
+    test('aligned window consumes a landed echo that is not the last row', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '刚发出去', sentAt: sentAt, sending: false),
+      ];
+      final acked = ['甲', '乙'];
+
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '乙'),
+          RemoteMessage(role: 'user', content: '刚发出去'),
+          RemoteMessage(role: 'assistant', content: '收到'),
+          RemoteMessage(role: 'user', content: '另一条'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, isEmpty);
+      expect(acked, ['乙', '刚发出去', '另一条']);
+    });
+
+    test('full window does not eat an older same-text row', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '再说一次', sentAt: sentAt, sending: false),
+      ];
+      final acked = [
+        for (var i = 0; i < remoteHistoryUserWindow - 1; i++) '旧行$i',
+        '再说一次',
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        [
+          for (var i = 1; i < remoteHistoryUserWindow - 1; i++)
+            RemoteMessage(role: 'user', content: '旧行$i'),
+          const RemoteMessage(role: 'user', content: '再说一次'),
+          const RemoteMessage(role: 'user', content: '后来又发了一条'),
+        ],
+        knownUserCount: remoteHistoryUserWindow,
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+    });
+
+    test('sending echo holds the baseline so a landed row stays matchable', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '还在飞', sentAt: sentAt, sending: true),
+      ];
+      final acked = ['甲'];
+
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '甲'),
+          RemoteMessage(role: 'user', content: '已经落地'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+      expect(acked, ['甲']);
+
+      pending.single.sending = false;
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '甲'),
+          RemoteMessage(role: 'user', content: '已经落地'),
+          RemoteMessage(role: 'user', content: '还在飞'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, isEmpty);
+      expect(acked, ['甲', '已经落地', '还在飞']);
+    });
+
+    test('failed echo is not consumed and does not freeze the baseline', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(
+          text: '发送失败',
+          sentAt: sentAt,
+          sending: false,
+          failed: true,
+          error: 'hub down',
+        ),
+      ];
+      final acked = ['甲'];
+
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '甲'),
+          RemoteMessage(role: 'user', content: '发送失败'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+      expect(pending.single.failed, isTrue);
+      expect(acked, ['甲', '发送失败']);
+    });
+
+    test('zero overlap keeps an echo the new window does not contain', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '还没落地', sentAt: sentAt, sending: false),
+      ];
+      final acked = ['旧甲', '旧乙'];
+
+      final known = reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '新甲'),
+          RemoteMessage(role: 'user', content: '新乙'),
+        ],
+        knownUserCount: 2,
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+      expect(known, 2);
+      expect(acked, ['新甲', '新乙']);
+    });
+
+    test('full overlap does not re-consume an already acked row', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '再说一次', sentAt: sentAt, sending: false),
+      ];
+      final acked = ['甲', '再说一次'];
+
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '甲'),
+          RemoteMessage(role: 'assistant', content: '收到'),
+          RemoteMessage(role: 'user', content: '再说一次'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, hasLength(1));
+      expect(acked, ['甲', '再说一次']);
+    });
+
+    test('user-row alignment finds the unacked tail after a slide', () {
+      expect(firstUnackedUserIndex(['甲', '乙', '丙'], ['乙', '丙', '丁']), 2);
+      expect(firstUnackedUserIndex(['甲', '乙'], ['甲', '乙']), 2);
+      expect(firstUnackedUserIndex(['旧甲', '旧乙'], ['新甲', '新乙']), 0);
+      expect(firstUnackedUserIndex(const [], ['新甲']), 0);
+    });
+
+    test('blank user rows stay out of the baseline so alignment does not shift', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '刚发出去', sentAt: sentAt, sending: false),
+      ];
+      final acked = ['甲'];
+
+      final known = reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '甲'),
+          RemoteMessage(role: 'user', content: '   '),
+          RemoteMessage(role: 'user', content: '〔远控〕'),
+          RemoteMessage(role: 'assistant', content: '收到'),
+          RemoteMessage(role: 'user', content: '〔远控〕刚发出去'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, isEmpty);
+      expect(known, 2);
+      expect(acked, ['甲', '刚发出去']);
+    });
+
+    test('repeated same text aligns by overlap and only consumes the new tail', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '再说一次', sentAt: sentAt, sending: false),
+      ];
+      final acked = ['再说一次', '再说一次', '再说一次'];
+
+      reconcilePendingUserEchoes(
+        pending,
+        const [
+          RemoteMessage(role: 'user', content: '再说一次'),
+          RemoteMessage(role: 'user', content: '再说一次'),
+          RemoteMessage(role: 'user', content: '再说一次'),
+          RemoteMessage(role: 'user', content: '再说一次'),
+        ],
+        ackedUserTexts: acked,
+        now: sentAt,
+      );
+
+      expect(pending, isEmpty);
+      expect(acked, ['再说一次', '再说一次', '再说一次', '再说一次']);
+    });
+
+    test('pending echo still matches when the clock steps backward', () {
+      final sentAt = DateTime(2026, 11, 21, 3, 25);
+      final pending = [
+        PendingUserEcho(text: '时钟回跳', sentAt: sentAt, sending: false),
+      ];
+
+      reconcilePendingUserEchoes(
+        pending,
+        [
+          const RemoteMessage(role: 'user', content: '时钟回跳'),
+        ],
+        knownUserCount: 0,
+        now: sentAt.subtract(const Duration(seconds: 5)),
+      );
+
+      expect(pending, isEmpty);
+    });
+
 
     test('echo status tracks sending, failure, and retry', () {
       final echo = PendingUserEcho(text: '立刻回显', sentAt: DateTime(2026));

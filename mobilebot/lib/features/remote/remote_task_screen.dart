@@ -56,8 +56,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   /// 已点发送、历史还没对上的用户消息。立刻在对话里回显，避免等 get_task。
   final List<PendingUserEcho> _pendingUser = [];
 
-  /// 上次对账时历史里已有的用户消息条数。窗口没滑动时只消费多出来的行。
+  /// 上次对账时历史里已有的用户消息条数。没有文本基线时才用它跳过旧行。
   int _ackedUserCount = 0;
+
+  /// 上次对账看到的用户行原文。窗口滑动后按这段对齐，只消费新增尾部。
+  final List<String> _ackedUserTexts = [];
   bool _downloading = false;
   bool _pollInFlight = false;
   bool _paused = false;
@@ -343,6 +346,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           _pendingUser,
           detail.messages,
           knownUserCount: _ackedUserCount,
+          ackedUserTexts: _ackedUserTexts,
         );
       });
     } on Object catch (error) {
@@ -1454,7 +1458,7 @@ String remoteEchoText(String raw) {
 }
 
 /// 用户行没有独立时间戳。行在历史末尾、或相对上次已确认条数是新增行时，
-/// 视为落在发送之后的合理范围内。
+/// 视为落在发送之后的合理范围内。没有文本基线时才走这条；有基线时按对齐结果。
 bool historyEchoArrivedAfterSend({
   required int index,
   required int userCount,
@@ -1473,13 +1477,34 @@ bool pendingEchoMatchesHistoryText(PendingUserEcho echo, String historyText) {
   return left.isNotEmpty && left == right;
 }
 
+/// 上次看到的用户行与这次窗口的最长后缀/前缀重叠。重叠之后才是新落地的行。
+/// 窗口从前面滑走旧行时，绝对序号对不上，只能靠这段重叠找新增尾部。
+int firstUnackedUserIndex(List<String> previous, List<String> users) {
+  final maxOverlap = previous.length < users.length
+      ? previous.length
+      : users.length;
+  for (var overlap = maxOverlap; overlap >= 0; overlap--) {
+    var matches = true;
+    for (var i = 0; i < overlap; i++) {
+      if (previous[previous.length - overlap + i] != users[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return overlap;
+  }
+  return 0;
+}
+
 /// 按顺序、按条数把历史里已落地的用户行配给待确认回显。
 /// 连续相同文本各占一条，更早的同文消息不会误删还没对上的回显。
-/// 返回这次看到的用户行数，供下次区分“新增”和“窗口滑动”。
+/// [ackedUserTexts] 有内容时按文本对齐，只消费新增尾部；调用后写回这次看到的用户行。
+/// 没有基线时仍用 [knownUserCount]。返回这次看到的用户行数。
 int reconcilePendingUserEchoes(
   List<PendingUserEcho> pending,
   List<RemoteMessage> messages, {
   int knownUserCount = 0,
+  List<String>? ackedUserTexts,
   DateTime? now,
 }) {
   final users = <String>[];
@@ -1490,35 +1515,48 @@ int reconcilePendingUserEchoes(
     users.add(text);
   }
   final nextKnown = users.length;
-  if (pending.isEmpty) return nextKnown;
+  final baseline = ackedUserTexts ?? const <String>[];
+  final aligned = baseline.isNotEmpty;
   final windowSlid =
-      knownUserCount > nextKnown || nextKnown >= remoteHistoryUserWindow;
-  final clock = now ?? DateTime.now();
+      !aligned &&
+      (knownUserCount > nextKnown || nextKnown >= remoteHistoryUserWindow);
   var cursor = 0;
-  if (!windowSlid && knownUserCount > 0 && knownUserCount < nextKnown) {
+  if (aligned) {
+    cursor = firstUnackedUserIndex(baseline, users);
+  } else if (!windowSlid && knownUserCount > 0 && knownUserCount < nextKnown) {
     cursor = knownUserCount;
   }
-  pending.removeWhere((echo) {
-    if (echo.failed) return false;
-    if (clock.difference(echo.sentAt) > pendingEchoMatchWindow) return false;
-    while (cursor < users.length) {
-      final index = cursor;
-      final text = users[cursor];
-      cursor++;
-      if (!historyEchoArrivedAfterSend(
-        index: index,
-        userCount: users.length,
-        knownUserCount: knownUserCount,
-        windowSlid: windowSlid,
-      )) {
-        continue;
+  if (pending.isNotEmpty) {
+    final clock = now ?? DateTime.now();
+    pending.removeWhere((echo) {
+      if (echo.failed || echo.sending) return false;
+      if (clock.difference(echo.sentAt) > pendingEchoMatchWindow) return false;
+      for (var index = cursor; index < users.length; index++) {
+        final eligible =
+            aligned ||
+            historyEchoArrivedAfterSend(
+              index: index,
+              userCount: users.length,
+              knownUserCount: knownUserCount,
+              windowSlid: windowSlid,
+            );
+        if (!eligible) continue;
+        if (!pendingEchoMatchesHistoryText(echo, users[index])) continue;
+        cursor = index + 1;
+        return true;
       }
-      if (pendingEchoMatchesHistoryText(echo, text)) return true;
-    }
-    return false;
-  });
+      return false;
+    });
+  }
+  // 还有发送中的回显时不要前移基线，否则这次已经落地的行下次对不上。
+  if (ackedUserTexts != null && !pending.any((echo) => echo.sending)) {
+    ackedUserTexts
+      ..clear()
+      ..addAll(users);
+  }
   return nextKnown;
 }
+
 
 /// 我的消息 — 右侧气泡。发送中在气泡下方给小号进度；失败标红并保留重试。
 class _UserBubble extends StatelessWidget {
