@@ -608,7 +608,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
 
   /// The finished answer already sits in the transcript. Keeping the live
   /// copy would show it twice. A get_task row cut at 4000 runes is not that
-  /// answer — the stream still has the rest.
+  /// answer — the stream still has the rest. Ownership is judged by content
+  /// overlap, not an exact prefix: one side containing the other, or a shared
+  /// leading run of [_ownershipPrefixMin] runes, is the same answer.
   bool _transcriptOwnsLive() {
     if (_ownRoundLatch) return true;
     if (!_live.responded && !_respondedLatch) return false;
@@ -622,17 +624,77 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       if (content.isEmpty || _historyIsCappedPrefix(content, body)) {
         return false;
       }
-      final n = body.length < 60 ? body.length : 60;
-      final owned = content.startsWith(body.substring(0, n));
+      var owned = content.contains(body) || body.contains(content);
+      if (!owned) {
+        var i = 0;
+        final n = content.length < body.length ? content.length : body.length;
+        while (i < n && content.codeUnitAt(i) == body.codeUnitAt(i)) {
+          i++;
+        }
+        owned = i >= _ownershipPrefixMin;
+      }
       if (owned) _ownRoundLatch = true;
       return owned;
     }
-    // 正文为空的轮（仅文件/思考）：尾行就是本轮时，历史即拥有。
-    if (_trimmedTailIsThisRound()) {
+    // 正文为空的轮（仅文件/思考）：尾行之后最近一条 user 行以前还有
+    // assistant 输出时，尾行即本轮，历史即拥有。
+    if (_assistantAfterLastUser(messages)) {
       _ownRoundLatch = true;
       return true;
     }
     return false;
+  }
+
+  /// At least one assistant row sits after the last user prompt — so the
+  /// tail row belongs to the latest round even when its body is empty.
+  bool _assistantAfterLastUser(List<RemoteMessage> messages) {
+    for (var i = messages.length - 1; i >= 0; i--) {
+      final role = messages[i].role;
+      if (role == 'assistant') return true;
+      if (role == 'user') return false;
+    }
+    return false;
+  }
+
+  /// Normalised texts already shown by the history tail row — live notes or
+  /// thinking blocks that restate one of these are the same copy, not new
+  /// output. Multi-line history rows contribute each trimmed line too, so a
+  /// note echoing one line of the row is still recognised as a duplicate.
+  Set<String> _historyTailTexts() {
+    final messages = _detail?.messages;
+    if (messages == null || messages.isEmpty) return const {};
+    final tail = messages.last;
+    if (tail.role != 'assistant') return const {};
+    final texts = <String>{};
+    for (final raw in [tail.content, tail.reasoning]) {
+      final trimmed = raw.trim();
+      if (trimmed.isEmpty) continue;
+      texts.add(trimmed);
+      for (final line in trimmed.split('\n')) {
+        final l = line.trim();
+        if (l.isNotEmpty) texts.add(l);
+      }
+    }
+    return texts;
+  }
+
+  /// Live thinking restates the history reasoning when both trims match, or
+  /// the shorter one is a [_thinkingPrefixMin]-rune-plus prefix of the other.
+  bool _thinkingOwnedByHistory(String thinking) {
+    final messages = _detail?.messages;
+    if (thinking.isEmpty || messages == null || messages.isEmpty) {
+      return false;
+    }
+    final tail = messages.last;
+    if (tail.role != 'assistant') return false;
+    final reasoning = tail.reasoning.trim();
+    if (reasoning.isEmpty) return false;
+    if (reasoning == thinking) return true;
+    final shorter = reasoning.length < thinking.length
+        ? reasoning
+        : thinking;
+    if (shorter.length < _thinkingPrefixMin) return false;
+    return reasoning.startsWith(thinking) || thinking.startsWith(reasoning);
   }
 
   bool _omitCappedHistoryTail(RemoteMessage message, bool isTail) {
@@ -853,6 +915,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             shownBody: shownBody,
                             recovery: _recovery,
                             syncing: _live.gap || _rewatching,
+                            suppressThinking: _thinkingOwnedByHistory([
+                              for (final block in _live.thinking)
+                                if (block.text.trim().isNotEmpty) block.text,
+                            ].join('\n\n')),
+                            historyTexts: _historyTailTexts(),
                             filePaths: _cappedTailFiles(),
                             downloading: _downloading,
                             onFetch: _fetchAndShare,
@@ -888,6 +955,14 @@ class _LiveRound extends StatelessWidget {
   final String shownBody;
   final String recovery;
   final bool syncing;
+
+  /// The history tail already shows this thinking text — rendering the live
+  /// block again would double it.
+  final bool suppressThinking;
+
+  /// Texts the history tail row already displays; live note lines that
+  /// duplicate one are dropped.
+  final Set<String> historyTexts;
   final List<String> filePaths;
   final bool downloading;
   final Future<void> Function(String path) onFetch;
@@ -898,6 +973,8 @@ class _LiveRound extends StatelessWidget {
     required this.shownBody,
     required this.recovery,
     required this.syncing,
+    this.suppressThinking = false,
+    this.historyTexts = const {},
     this.filePaths = const [],
     this.downloading = false,
     required this.onFetch,
@@ -909,31 +986,46 @@ class _LiveRound extends StatelessWidget {
     final theme = Theme.of(context);
     final S = context.S;
     final notes = <String>[];
-    final thinking = [
-      for (final block in state.thinking)
-        if (block.text.trim().isNotEmpty) block.text,
-    ].join('\n\n');
+    final thinking = suppressThinking
+        ? ''
+        : [
+            for (final block in state.thinking)
+              if (block.text.trim().isNotEmpty) block.text,
+          ].join('\n\n');
     final body = shownBody;
+    final seen = <String>{};
+    void addNote(String line) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty ||
+          historyTexts.contains(trimmed) ||
+          !seen.add(trimmed)) {
+        return;
+      }
+      notes.add(line);
+    }
+
     for (final row in state.timeline) {
       final title = row.title.isNotEmpty ? row.title : row.text;
       final line = row.phase.isNotEmpty ? '${row.phase} · $title' : title;
-      if (line.isNotEmpty) notes.add(line);
+      addNote(line);
     }
     for (final card in state.cards) {
       if (card.expired) {
-        notes.add(S.rtConfirmInvalid);
+        addNote(S.rtConfirmInvalid);
       } else if (card.text.isNotEmpty) {
-        notes.add(card.text);
+        addNote(card.text);
       } else if (card.kind == 'confirmation') {
-        notes.add(S.rtConfirmRequired);
+        addNote(S.rtConfirmRequired);
       }
     }
     for (final note in state.notices) {
-      if (note.text.isNotEmpty) notes.add(note.text);
+      if (note.text.isNotEmpty) addNote(note.text);
     }
-    if (state.trialStatus.isNotEmpty) notes.add(state.trialStatus);
-    if (state.trialFailures > 0) notes.add(S.rtFailures(state.trialFailures));
-    if (recovery.isNotEmpty) notes.add(recovery);
+    if (state.trialStatus.isNotEmpty) addNote(state.trialStatus);
+    if (state.trialFailures > 0) {
+      addNote(S.rtFailures(state.trialFailures));
+    }
+    if (recovery.isNotEmpty) addNote(recovery);
     if (thinking.isEmpty &&
         notes.isEmpty &&
         body.isEmpty &&
@@ -1025,6 +1117,14 @@ String viewerShownAnswer(String draft, String terminal) {
 const _historyTextCap = 4000;
 
 const _answerSliceOverlapMin = 16;
+
+/// Leading runes history and live must share before the transcript owns the
+/// live round — long enough that two different answers cannot collide.
+const _ownershipPrefixMin = 40;
+
+/// Shorter side must be at least this long before a prefix match counts as
+/// the same thinking text.
+const _thinkingPrefixMin = 20;
 
 /// Longest prefix of [tail] that is a suffix of [prefix].
 int _sharedEdge(String prefix, String tail) {

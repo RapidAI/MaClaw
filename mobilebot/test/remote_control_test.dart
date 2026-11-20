@@ -13,6 +13,7 @@ import 'package:mobilebot/features/remote/remote_api.dart';
 import 'package:mobilebot/features/remote/remote_models.dart';
 import 'package:mobilebot/features/remote/remote_screen.dart';
 import 'package:mobilebot/features/remote/remote_task_screen.dart';
+import 'package:mobilebot/features/remote/task_spaces.dart';
 
 final _account = Account(
   key: 'test@example.com',
@@ -296,6 +297,92 @@ void main() {
     });
   });
 
+  group('task spaces', () {
+    RemoteTask t(
+      String id, {
+      String workingDir = '',
+      bool pinned = false,
+      String lastActivity = '',
+      String activeStatus = '',
+    }) => RemoteTask(
+      id: id,
+      name: id,
+      projectPath: id,
+      workingDir: workingDir,
+      pinned: pinned,
+      lastActivity: lastActivity,
+      activePhase: activeStatus.isEmpty ? '' : '执行',
+      activeStatus: activeStatus,
+    );
+
+    test('groups by workingDir, falls back to project_path parent', () {
+      final spaces = groupTasksIntoSpaces([
+        t('/p/a', workingDir: r'D:\proj\web', lastActivity: '2026-01-01'),
+        t('/p/b', workingDir: r'D:\proj\web\', lastActivity: '2026-01-02'),
+        // 无 working_dir → 用 project_path 的父目录。
+        t('/repo/lib/main.dart', lastActivity: '2026-01-03'),
+        t('/repo/lib/util.dart', lastActivity: '2026-01-04'),
+        // 根目录文件 → 未分组。
+        t('/top.txt', lastActivity: '2026-01-05'),
+      ]);
+      expect(spaces.length, 3);
+      final web = spaces.firstWhere((s) => s.label == 'web');
+      expect(web.tasks.length, 2);
+      final lib = spaces.firstWhere((s) => s.label == 'lib');
+      expect(lib.tasks.length, 2);
+      final other = spaces.firstWhere((s) => s.isUngrouped);
+      expect(other.tasks.single.id, '/top.txt');
+    });
+
+    test('running space floats first; tasks sort pinned then recent', () {
+      final spaces = groupTasksIntoSpaces([
+        // 空闲空间但最近活动 — 应排在运行中空间之后。
+        t('/p/idle1', workingDir: '/idle', lastActivity: '2026-06-30'),
+        t('/p/run1', workingDir: '/busy', lastActivity: '2026-01-01',
+            activeStatus: 'running'),
+        t('/p/run2', workingDir: '/busy', lastActivity: '2026-01-02',
+            pinned: true),
+      ]);
+      expect(spaces.first.label, 'busy');
+      expect(spaces.first.running, isTrue);
+      expect(spaces.last.label, 'idle');
+      // 组内：pinned 先于 lastActivity 更晚的。
+      expect(spaces.first.tasks.map((x) => x.id).toList(),
+          ['/p/run2', '/p/run1']);
+    });
+
+    test('parentDir handles windows and posix paths', () {
+      expect(parentDir(r'D:\proj\web'), r'D:\proj');
+      expect(parentDir(r'D:\proj'), 'D:\\');
+      expect(parentDir('/home/x/y'), '/home/x');
+      expect(parentDir('/top'), '');
+      expect(parentDir(''), '');
+      expect(pathBaseName(r'D:\proj\web'), 'web');
+      expect(pathBaseName('D:\\'), 'D:\\');
+      expect(normalizeDir(r'D:\proj\web\'), r'D:\proj\web');
+    });
+
+    test('empty input and ungrouped ordering', () {
+      expect(groupTasksIntoSpaces(const []), isEmpty);
+      // 未分组空间不特殊处理 — 按 lastActivity 参与排序。
+      final spaces = groupTasksIntoSpaces([
+        t('/top.txt', lastActivity: '2026-06-01'), // 未分组但最新
+        t('/p/a', workingDir: '/old', lastActivity: '2026-01-01'),
+      ]);
+      expect(spaces.first.isUngrouped, isTrue);
+      expect(spaces.last.label, 'old');
+    });
+
+    test('working_dir differing only by trailing slash merges into one space', () {
+      final spaces = groupTasksIntoSpaces([
+        t('/p/a', workingDir: '/proj/web'),
+        t('/p/b', workingDir: '/proj/web/'),
+      ]);
+      expect(spaces, hasLength(1));
+      expect(spaces.single.tasks, hasLength(2));
+    });
+  });
+
   /// pumpAndSettle never settles while the "running" banner's progress
   /// indicator animates — step a few frames instead.
   Future<void> pumpFew(WidgetTester tester) async {
@@ -336,6 +423,138 @@ void main() {
       expect(find.text('任务乙'), findsOneWidget);
       expect(find.text('任务甲'), findsNothing);
       expect(api.calls, contains('list:g-ops'));
+    });
+
+    testWidgets('tasks group under a collapsible space header', (tester) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantOps])
+        ..tasksByGrant = {
+          'g-ops': const [
+            RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+              workingDir: r'D:\proj\web',
+            ),
+            RemoteTask(
+              id: '/p/b',
+              name: '任务乙',
+              projectPath: '/p/b',
+              workingDir: r'D:\proj\web',
+            ),
+            RemoteTask(id: '/任务丙.md', name: '任务丙', projectPath: '/任务丙.md'),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      // 一个 "web" 空间头 + 一个「其他」空间头；默认只展开最活跃的 web。
+      expect(find.text('web'), findsOneWidget);
+      expect(find.text('其他'), findsOneWidget);
+      expect(find.text('2 个任务'), findsOneWidget);
+      expect(find.text('1 个任务'), findsOneWidget);
+      expect(find.text('任务甲'), findsOneWidget);
+      // 「其他」空间默认折叠 → 组内任务不可见。
+      expect(find.text('任务丙'), findsNothing);
+
+      // 展开「其他」→ 任务丙出现。
+      await tester.tap(find.text('其他'));
+      await tester.pumpAndSettle();
+      expect(find.text('任务丙'), findsOneWidget);
+
+      // 折叠 web 空间 → 组内任务隐藏。
+      await tester.tap(find.text('web'));
+      await tester.pumpAndSettle();
+      expect(find.text('任务甲'), findsNothing);
+      expect(find.text('任务丙'), findsOneWidget);
+
+      // 再展开 → 任务回来。
+      await tester.tap(find.text('web'));
+      await tester.pumpAndSettle();
+      expect(find.text('任务甲'), findsOneWidget);
+    });
+
+    testWidgets('default-expands the space with a running task', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantOps])
+        ..tasksByGrant = {
+          'g-ops': const [
+            // idle 空间 lastActivity 更新，但 busy 有运行中 → busy 排第一
+            // 并默认展开，idle 折叠。
+            RemoteTask(
+              id: '/p/idle1',
+              name: '空闲任务',
+              projectPath: '/p/idle1',
+              workingDir: '/idle',
+              lastActivity: '2026-06-30',
+            ),
+            RemoteTask(
+              id: '/p/run1',
+              name: '在跑任务',
+              projectPath: '/p/run1',
+              workingDir: '/busy',
+              lastActivity: '2026-01-01',
+              activePhase: '执行',
+              activeStatus: 'running',
+            ),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await pumpFew(tester);
+
+      expect(find.text('busy'), findsOneWidget);
+      expect(find.text('idle'), findsOneWidget);
+      expect(find.text('在跑任务'), findsOneWidget);
+      expect(find.text('空闲任务'), findsNothing);
+    });
+
+    testWidgets('space header shows running-count badge only when running', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantOps])
+        ..tasksByGrant = {
+          'g-ops': const [
+            RemoteTask(
+              id: '/p/run1',
+              name: '在跑一',
+              projectPath: '/p/run1',
+              workingDir: '/busy',
+              activePhase: '执行',
+              activeStatus: 'running',
+            ),
+            RemoteTask(
+              id: '/p/run2',
+              name: '在跑二',
+              projectPath: '/p/run2',
+              workingDir: '/busy',
+              activePhase: '执行',
+              activeStatus: 'running',
+            ),
+            RemoteTask(
+              id: '/p/idle',
+              name: '闲着',
+              projectPath: '/p/idle',
+              workingDir: '/quiet',
+            ),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      // busy 空间有 2 个运行中 → primary 徽章 "2"，整个屏幕只有这一个徽章
+      // （quiet 空间无运行中 → 不渲染）。徽章 key 带空间 key 后缀。
+      final badge = find.byKey(
+        const ValueKey('rc-space-running-badge-/busy'),
+      );
+      expect(badge, findsOneWidget);
+      final box = tester.widget<Container>(badge);
+      expect((box.decoration! as BoxDecoration).color,
+          Theme.of(tester.element(badge)).colorScheme.primary);
+      expect(find.descendant(of: badge, matching: find.text('2')),
+          findsOneWidget);
     });
 
     testWidgets('view grant hides create button; operate grant shows it', (
@@ -399,6 +618,65 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(api.calls, contains('create:g-ops:报表整理:coding_dev:'));
+    });
+
+    testWidgets('space header add button opens sheet with prefilled dir', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantOps])
+        ..tasksByGrant = {
+          'g-ops': const [
+            RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+              workingDir: '/proj/web',
+            ),
+            RemoteTask(id: 'task-c', name: '任务丙', projectPath: 'task-c'),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      // web 空间头有「+」按钮（tooltip=新建任务），「其他」空间没有。
+      // 顶部 SectionHeader 的「新建任务」是 Text，空间头按钮是 IconButton。
+      // 探查结论（用 find.byTooltip('新建任务') 数实例）：旧数据 /p/c 时
+      // widgetWithIcon 命中 2 个是「真实存在的两个按钮」（web + p 空间各一），
+      // 而非祖先重复；现 任务丙→「其他」未分组后该空间无 '+'，但为稳妥仍用
+      // find.descendant 精确锁定 web 空间头（key=rc-space-/proj/web）内的按钮 → 共 1 个。
+      final addInSpace = find.descendant(
+        of: find.byKey(const ValueKey('rc-space-/proj/web')),
+        matching: find.widgetWithIcon(IconButton, Icons.add),
+      );
+      expect(addInSpace, findsOneWidget);
+
+      // 点击 → sheet 打开，工作目录预填为空间路径。
+      await tester.tap(addInSpace);
+      await tester.pumpAndSettle();
+      final dirField = tester.widget<TextField>(
+        find.widgetWithText(TextField, '工作目录（可选）'),
+      );
+      expect(dirField.controller!.text, '/proj/web');
+    });
+
+    testWidgets('view-only grant hides per-space add button', (tester) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantView])
+        ..tasksByGrant = {
+          'g-view': const [
+            RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+              workingDir: '/proj/web',
+            ),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithIcon(IconButton, Icons.add), findsNothing);
     });
   });
 
@@ -969,6 +1247,227 @@ void main() {
       // r2 arrives: latches reset, the new round's thinking is on screen.
       await pumpFew(tester);
       expect(find.text('新一轮思考', findRichText: true), findsOneWidget);
+    });
+
+    testWidgets(
+      'an answer that only heavily overlaps the transcript is shown once',
+      (tester) async {
+        // get_task rows are normalized copies of the terminal text — leading
+        // whitespace or a swapped opener keeps startsWith from matching even
+        // though the rest of the answer is identical.
+        const history = '  报告已经写入 /tmp/报告.pdf，共三页，可以随时取阅。';
+        final api = _FakeRemoteApi()
+          ..detail = RemoteTaskDetail(
+            task: const RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+            ),
+            messages: const [
+              RemoteMessage(role: 'user', content: '写报告'),
+              RemoteMessage(role: 'assistant', content: history),
+            ],
+          )
+          ..watchReplyLive = {
+            'request_id': 'r1',
+            'responded': true,
+            'cursor': 4,
+            'parts': [
+              {
+                'kind': 'text',
+                'text': '报告已经写入 /tmp/报告.pdf，共三页，可以随时取阅。',
+              },
+            ],
+          }
+          ..followEvents = [
+            {'event': 'heartbeat', 'cursor': 4},
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await pumpFew(tester);
+        // Ownership is by overlap, not an exact prefix: the body appears in
+        // exactly one MarkdownBody instead of a duplicate live round.
+        expect(find.byType(MarkdownBody), findsOneWidget);
+        expect(
+          find.textContaining('/tmp/报告.pdf', findRichText: true),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('live thinking that restates history reasoning stays hidden', (
+      tester,
+    ) async {
+      const reasoning =
+          '先确认输出目录是否存在，再生成报告正文，最后附上文件路径。';
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(
+            id: '/p/a',
+            name: '任务甲',
+            projectPath: '/p/a',
+          ),
+          messages: const [
+            RemoteMessage(role: 'user', content: '写报告'),
+            RemoteMessage(
+              role: 'assistant',
+              content: '写好了',
+              reasoning: reasoning,
+            ),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 4,
+          'parts': [
+            {'kind': 'thinking', 'text': reasoning, 'done': true},
+            {'kind': 'text', 'text': '收尾中'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 4},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      // The streamed thinking restates the same reasoning: only the history
+      // block renders (collapsed), the live duplicate is suppressed while the
+      // live body still shows.
+      expect(find.byType(ExpansionTile), findsOneWidget);
+      expect(find.text('收尾中', findRichText: true), findsOneWidget);
+      await tester.tap(find.byType(ExpansionTile));
+      await pumpFew(tester);
+      expect(
+        find.textContaining('先确认输出目录', findRichText: true),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'a live reply that duplicates the history tail renders once',
+      (tester) async {
+        // The full regression: the prompt arrives with a 〔…〕 context prefix
+        // that get_task did not keep, the streamed thinking restates the
+        // history reasoning, and the text part copies the tail body verbatim.
+        // Neither the thinking block nor the body may render a second copy.
+        const reply = '收到，立即执行全部低/中风险项的清理操作。';
+        const reasoning = '逐条比对风险登记册，低风险与中风险项都可以直接清理。';
+        final api = _FakeRemoteApi()
+          ..detail = RemoteTaskDetail(
+            task: const RemoteTask(
+              id: '/p/a',
+              name: '任务甲',
+              projectPath: '/p/a',
+            ),
+            messages: const [
+              RemoteMessage(role: 'user', content: '清理风险项'),
+              RemoteMessage(
+                role: 'assistant',
+                content: reply,
+                reasoning: reasoning,
+              ),
+            ],
+          )
+          ..watchReplyLive = {
+            'request_id': 'r1',
+            'responded': true,
+            'cursor': 4,
+            'display_text': '〔上下文 · 会话甲〕清理风险项',
+            'parts': [
+              {'kind': 'thinking', 'text': reasoning, 'done': true},
+              {'kind': 'text', 'text': reply},
+            ],
+          }
+          ..followEvents = [
+            {'event': 'heartbeat', 'cursor': 4},
+          ];
+        await tester.pumpWidget(
+          _app(
+            api,
+            home: const RemoteTaskScreen(
+              grant: _grantView,
+              taskPath: '/p/a',
+              taskName: '任务甲',
+            ),
+          ),
+        );
+        await pumpFew(tester);
+        // One assistant bubble: the history row. The live twin is owned by
+        // the transcript, so the body and the reasoning block each render
+        // exactly once.
+        expect(find.byType(MarkdownBody), findsOneWidget);
+        expect(find.byType(ExpansionTile), findsOneWidget);
+        expect(find.text(reply, findRichText: true), findsOneWidget);
+        await tester.tap(find.byType(ExpansionTile));
+        await pumpFew(tester);
+        expect(
+          find.textContaining('逐条比对风险登记册', findRichText: true),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('a live note line that repeats the history row is dropped', (
+      tester,
+    ) async {
+      const note = '已写入 /tmp/报告.pdf';
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(
+            id: '/p/a',
+            name: '任务甲',
+            projectPath: '/p/a',
+          ),
+          messages: const [
+            RemoteMessage(role: 'user', content: '写报告'),
+            RemoteMessage(role: 'assistant', content: note),
+          ],
+        )
+        ..watchReplyLive = {
+          'request_id': 'r1',
+          'cursor': 4,
+          'parts': [
+            {
+              'kind': 'progress',
+              'text': note,
+            },
+            {'kind': 'text', 'text': '新的输出'},
+          ],
+        }
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 4},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      // The history row already carries that line; the live note adds
+      // nothing and is filtered out.
+      expect(find.text(note, findRichText: true), findsOneWidget);
+      expect(find.text('新的输出', findRichText: true), findsOneWidget);
     });
     testWidgets(
       'a long transcript opens at the tail and stays put after the reader scrolls up',

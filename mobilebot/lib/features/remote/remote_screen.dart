@@ -9,6 +9,7 @@ import '../../core/ui_kit.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import 'remote_api.dart';
 import 'remote_models.dart';
+import 'task_spaces.dart';
 
 final remoteApiProvider = Provider<RemoteControlApi?>((ref) {
   final client = ref.watch(apiClientProvider);
@@ -772,12 +773,17 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
 }
 
 /// 打开新建任务底栏；创建成功后直接进任务详情。
-Future<void> _createRemoteTask(BuildContext context, RcGrant grant) async {
+/// [workDir] 非空时预填工作目录（空间头「+」入口按空间路径预填）。
+Future<void> _createRemoteTask(
+  BuildContext context,
+  RcGrant grant, {
+  String workDir = '',
+}) async {
   final created = await showModalBottomSheet<RemoteTask>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (_) => CreateRemoteTaskSheet(grant: grant),
+    builder: (_) => CreateRemoteTaskSheet(grant: grant, initialWorkDir: workDir),
   );
   if (created == null || !context.mounted || created.path.isEmpty) return;
   GoRouter.maybeOf(context)?.push(
@@ -841,29 +847,219 @@ class _TaskSection extends ConsumerWidget {
                 child: EmptyState(
                   icon: Icons.task_alt,
                   title: context.S.rcNoTasks,
-                  action: grant.canOperate
-                      ? FilledButton.tonalIcon(
-                          onPressed: () => _createRemoteTask(context, grant),
-                          icon: const Icon(Icons.add, size: 18),
-                          label: Text(context.S.rcNewFirstTask),
-                        )
-                      : null,
+                  // 新建入口只保留列表顶部的 SectionHeader trailing 按钮，
+                  // 空态不再重复放一个（否则页面出现两个「新建任务」）。
                 ),
               );
             }
-            final sorted = [...items]
-              ..sort((a, b) {
-                if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
-                return b.lastActivity.compareTo(a.lastActivity);
-              });
+            // WorkBuddy 风格：任务按工作目录聚成「空间」，每个空间一行
+            // 可折叠的头，组内任务仍是紧凑卡片。
+            final spaces = groupTasksIntoSpaces(items);
+            // 默认只展开"最活跃"空间：groupTasksIntoSpaces 已把 running
+            // 空间排最前、其余按 lastActivity 倒序，第一个即最活跃。
+            // items 非空时 spaces 必然非空；用 firstOrNull 守住这条
+            // 不变量，将来有人改动分组逻辑也不会抛 Bad state。
+            final activeKey = spaces.firstOrNull?.key;
             return Column(
               children: [
-                for (final task in sorted) _TaskCard(grant: grant, task: task),
+                for (final space in spaces)
+                  _SpaceGroup(
+                    // 按空间 key 绑定 element，空间重排后折叠状态不错配。
+                    key: ValueKey('rc-space-${space.key}'),
+                    grant: grant,
+                    space: space,
+                    initiallyExpanded: space.key == activeKey,
+                  ),
               ],
             );
           },
         ),
       ],
+    );
+  }
+}
+
+/// 一个空间（目录）及其任务的折叠组：一行可折叠的头 + 组内紧凑任务行。
+/// 头行右侧：运行计数徽章 → 「+」在该空间新建任务（预填目录）。
+class _SpaceGroup extends StatefulWidget {
+  final RcGrant grant;
+  final TaskSpace space;
+
+  /// 初次构建时是否展开 — 由上层按"最活跃空间"传入。
+  final bool initiallyExpanded;
+
+  const _SpaceGroup({
+    super.key,
+    required this.grant,
+    required this.space,
+    required this.initiallyExpanded,
+  });
+
+  @override
+  State<_SpaceGroup> createState() => _SpaceGroupState();
+}
+
+class _SpaceGroupState extends State<_SpaceGroup> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
+
+  @override
+  void didUpdateWidget(_SpaceGroup oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 刷新后"最活跃空间"变了：initiallyExpanded 由 false 变 true 时展开；
+    // true→false 不主动收起（用户手动展开过的状态保留）。
+    // didUpdateWidget 本身就会触发 rebuild，这里直接改状态即可。
+    if (!oldWidget.initiallyExpanded && widget.initiallyExpanded) {
+      _expanded = true;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final space = widget.space;
+    final title = space.isUngrouped ? context.S.rcSpaceOther : space.label;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 无障碍：给整行可点击区标 button 角色 + 展开/折叠态，读屏报
+        // "按钮，已展开/已折叠"。container:true 使该节点独立成组，不吞并
+        // 子级——计数 Semantics 与「+」IconButton 的 button 仍各自暴露。
+        Semantics(
+          button: true,
+          expanded: _expanded,
+          container: true,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+            child: Row(
+              children: [
+                Icon(
+                  _expanded
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 18,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.folder_outlined,
+                  size: 16,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Tooltip(
+                    message: space.fullPath.isNotEmpty ? space.fullPath : title,
+                    child: Text(
+                      title,
+                      style: theme.textTheme.titleSmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                // 状态汇总：有运行中任务时显示计数小徽章（primary），
+                // 没有就不显示。
+                if (space.runningCount > 0) ...[
+                  const SizedBox(width: 6),
+                  _RunningBadge(spaceKey: space.key, count: space.runningCount),
+                ],
+                const SizedBox(width: 6),
+                // 窄屏（360dp）下蒙古语 "N даалгавар" 或长数字会挤压标题：
+                // Flexible + ellipsis 让计数在空间不足时缩略而不是溢出；
+                // 缩略后用 Semantics 向读屏报完整计数，语义不丢。
+                Flexible(
+                  child: Semantics(
+                    label: context.S.rcSpaceTaskCount(space.tasks.length),
+                    child: Text(
+                      context.S.rcSpaceTaskCount(space.tasks.length),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                // 「+」在该空间新建任务（预填工作目录）。未分组空间没有目录
+                // 可预填，不显示；view-only grant 也没有新建权限。
+                if (widget.grant.canOperate && !space.isUngrouped) ...[
+                  const SizedBox(width: 2),
+                  SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: IconButton(
+                      tooltip: context.S.rcNewTask,
+                      icon: const Icon(Icons.add, size: 18),
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      onPressed: () => _createRemoteTask(
+                        context,
+                        widget.grant,
+                        workDir: space.fullPath,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          ),
+        ),
+        if (_expanded)
+          // 组内缩进：头文本从左 4dp（InkWell 的 fromLTRB(4,…)）起，
+          // 卡片列右移 4dp 与头文本起点对齐，形成轻量"组内"层级；
+          // 不嵌套 Card/不加阴影，层级全靠 4dp 缩进表达。
+          Padding(
+            padding: const EdgeInsets.only(left: 4),
+            child: Column(
+              children: [
+                for (final task in space.tasks)
+                  _TaskCard(grant: widget.grant, task: task),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 空间头的运行中任务计数徽章：primary 底 + onPrimary 数字，
+/// 仅在 runningCount > 0 时渲染（调用处已用 if 保证）。
+class _RunningBadge extends StatelessWidget {
+  final String spaceKey;
+  final int count;
+  const _RunningBadge({required this.spaceKey, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: ValueKey('rc-space-running-badge-$spaceKey'),
+      constraints: const BoxConstraints(minWidth: 18),
+      height: 18,
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primary,
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Text(
+        '$count',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onPrimary,
+          fontWeight: FontWeight.w600,
+          height: 1,
+        ),
+      ),
     );
   }
 }
@@ -929,21 +1125,21 @@ class _TaskCard extends ConsumerWidget {
               extra: (grant: grant, taskPath: task.path, taskName: task.title),
             ),
             child: Padding(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // 任务类型芯片 — tinted rounded square, hue carries the type.
                   Container(
-                    width: 42,
-                    height: 42,
+                    width: 32,
+                    height: 32,
                     decoration: BoxDecoration(
                       color: typeColor.withValues(alpha: 0.13),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(9),
                     ),
-                    child: Icon(typeIcon, size: 21, color: typeColor),
+                    child: Icon(typeIcon, size: 17, color: typeColor),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -971,18 +1167,18 @@ class _TaskCard extends ConsumerWidget {
                         ),
                         if (task.preview.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(top: 3),
+                            padding: const EdgeInsets.only(top: 2),
                             child: Text(
                               task.preview,
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
-                              maxLines: 2,
+                              maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         Padding(
-                          padding: const EdgeInsets.only(top: 6),
+                          padding: const EdgeInsets.only(top: 4),
                           child: Row(
                             children: [
                               // 状态徽章 — 运行中带脉冲点，终端态用语义色。
@@ -1037,10 +1233,16 @@ class _TaskCard extends ConsumerWidget {
 }
 
 /// 在远程机上新建任务 — 名称 + 模式 + 远程工作目录（经 list_dirs 浏览）。
+/// [initialWorkDir] 非空时预填目录输入框（空间头「+」入口传入空间路径）。
 class CreateRemoteTaskSheet extends ConsumerStatefulWidget {
   final RcGrant grant;
+  final String initialWorkDir;
 
-  const CreateRemoteTaskSheet({super.key, required this.grant});
+  const CreateRemoteTaskSheet({
+    super.key,
+    required this.grant,
+    this.initialWorkDir = '',
+  });
 
   @override
   ConsumerState<CreateRemoteTaskSheet> createState() =>
@@ -1053,6 +1255,12 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
   String _mode = '';
   bool _saving = false;
   String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _dirCtrl.text = widget.initialWorkDir;
+  }
 
   @override
   void dispose() {

@@ -534,6 +534,8 @@
   "rtOpen": "Нээх",
   "rcInviteHint": "Нөгөө тал өөрийн аль нэг компьютер дээр хүлээн авсны дараа та тухайн компьютерийг алсаас удирдаж болно.",
   "rcTasksTitle": "Даалгаврууд",
+  "rcSpaceOther": "Бусад",
+  "rcSpaceTaskCount": "{count} даалгавар",
   "chatVoiceInitFailed": "Дуут уншлагыг эхлүүлэх амжилтгүй боллоо",
   "chatVoiceAssistantOn": "Дуут туслах",
   "chatVoiceAssistantOff": "Дуут туслахыг унтраах",

@@ -534,6 +534,8 @@
   "rtOpen": "Open",
   "rcInviteHint": "Once they accept on one of their computers, you can control that machine remotely.",
   "rcTasksTitle": "Tasks",
+  "rcSpaceOther": "Other",
+  "rcSpaceTaskCount": "{count} tasks",
   "chatVoiceInitFailed": "Failed to initialize read-out",
   "chatVoiceAssistantOn": "Voice assistant",
   "chatVoiceAssistantOff": "Turn off the voice assistant",

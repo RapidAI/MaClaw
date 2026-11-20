@@ -534,6 +534,8 @@
   "rtOpen": "打开",
   "rcInviteHint": "对方在其中一台电脑上接受后，你就可以远控那台电脑。",
   "rcTasksTitle": "任务",
+  "rcSpaceOther": "其他",
+  "rcSpaceTaskCount": "{count} 个任务",
   "chatVoiceInitFailed": "语音朗读初始化失败",
   "chatVoiceAssistantOn": "语音助手",
   "chatVoiceAssistantOff": "关闭语音助手",
