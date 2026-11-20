@@ -652,7 +652,9 @@ func (a *App) mcpRetrySteps(ctx context.Context, projectPath string, rawIDs []st
 		return mcpTaskView{}, err
 	}
 	publishedID := ""
-	if inRegistry {
+	// The plan card's confirmation id is stored on the session holder so the
+	// next read keeps it. That id is not the retry credential.
+	if inRegistry && !mcpUnsealedSessionHolder(reg) {
 		publishedID = strings.TrimSpace(reg.ConfirmationID)
 	}
 	if publishedID != "" && publishedID != confirmationID {
@@ -749,6 +751,11 @@ func (a *App) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTas
 			}
 			return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 		}
+		if a.memoryStore != nil && mcpUnsealedSessionHolder(view) && a.mcpViewIsLiveRound(view) {
+			if known, err := a.remoteControlKnownTask(path); err == nil {
+				view = mcpProjectSessionHolder(view, a.mcpTaskViewFromStore(known), a.mcpLiveConfirmationPending(path))
+			}
+		}
 		return a.mcpReturnTask(view), nil
 	}
 	if view, ok := a.mcpViewFromRegistry(path); ok && view.Status == mcpStatusRunning {
@@ -769,6 +776,9 @@ func (a *App) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTas
 		store := a.mcpTaskViewFromStore(known)
 		if !hasReg {
 			return a.mcpReturnTask(store), nil
+		}
+		if mcpUnsealedSessionHolder(reg) {
+			return a.mcpReturnTask(mcpProjectSessionHolder(reg, store, a.mcpLiveConfirmationPending(path))), nil
 		}
 		return a.mcpReturnTask(mcpPreferTaskView(reg, store)), nil
 	}
@@ -804,7 +814,10 @@ func (a *App) mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView,
 		return mcpTaskView{}, stopErr
 	}
 	if view, ok := a.mcpViewFromRegistry(path); ok {
-		return a.mcpPublishTaskView(view), nil
+		if !mcpUnsealedSessionHolder(view) {
+			return a.mcpPublishTaskView(view), nil
+		}
+		return a.mcpPublishTaskView(mcpProjectSessionHolder(view, a.mcpTaskViewFromStore(path), false)), nil
 	}
 	return a.mcpPublishTaskView(a.mcpTaskViewFromStore(path)), nil
 }
@@ -841,6 +854,10 @@ func (a *App) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
 			if store.Mode == "" {
 				store.Mode = mcpModeFromTags(task.Tags)
 			}
+			if mcpUnsealedSessionHolder(view) {
+				out = append(out, a.mcpReturnTask(mcpProjectSessionHolder(view, store, a.mcpLiveConfirmationPending(path))))
+				continue
+			}
 			out = append(out, a.mcpReturnTask(mcpPreferTaskView(view, store)))
 			continue
 		}
@@ -862,6 +879,11 @@ func (a *App) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
 	}
 	a.mcpRunsMu.Unlock()
 	for _, view := range extra {
+		if a.memoryStore != nil && mcpUnsealedSessionHolder(view) {
+			if _, err := a.remoteControlKnownTask(view.ProjectPath); err == nil {
+				view = mcpProjectSessionHolder(view, a.mcpTaskViewFromStore(view.ProjectPath), a.mcpLiveConfirmationPending(view.ProjectPath))
+			}
+		}
 		out = append(out, a.mcpReturnTask(view))
 	}
 	return out, nil
@@ -1555,13 +1577,17 @@ func mcpScopeDecisionAllowed(kind, decision string) bool {
 	return false
 }
 
-func (a *App) mcpAnnotateRunningGates(view mcpTaskView) mcpTaskView {
-	if view.Status != mcpStatusRunning {
-		return view
-	}
-	var commands []string
-	extra := ""
-	kind := ""
+// mcpRunningGateOverlay is a desktop scope or critical confirmation. It is
+// collected from the pending approvals, independent of the task status that
+// is about to be published.
+type mcpRunningGateOverlay struct {
+	Kind     string
+	Commands []string
+	Extra    string
+}
+
+func (a *App) mcpCollectRunningGates(view mcpTaskView) mcpRunningGateOverlay {
+	var overlay mcpRunningGateOverlay
 	for _, item := range new(App).ListPendingScopeApprovals() {
 		if !mcpScopeApprovalMatches(view.ProjectPath, view.workspace, item.ProjectPath) {
 			continue
@@ -1573,44 +1599,79 @@ func (a *App) mcpAnnotateRunningGates(view mcpTaskView) mcpTaskView {
 		if line == "" {
 			line = "授权确认 " + item.ID
 		}
-		if line != "" && !strings.Contains(view.Text, line) && !strings.Contains(extra, line) {
-			if extra != "" {
-				extra += "\n\n"
+		if line != "" && !strings.Contains(view.Text, line) && !strings.Contains(overlay.Extra, line) {
+			if overlay.Extra != "" {
+				overlay.Extra += "\n\n"
 			}
-			extra += line
+			overlay.Extra += line
 		}
 		for _, decision := range mcpScopeApprovalDecisions(item.Kind) {
-			commands = mcpAppendCommand(commands, "__scope_approval__ "+item.ID+" "+decision)
+			overlay.Commands = mcpAppendCommand(overlay.Commands, "__scope_approval__ "+item.ID+" "+decision)
 		}
-		if kind == "" {
-			kind = "scope"
+		if overlay.Kind == "" {
+			overlay.Kind = "scope"
 		}
 	}
 	for _, item := range a.mcpCriticalConfirmPrompts(desktopAIAssistantUserIDForProjectPath(view.ProjectPath)) {
-		if item.Prompt != "" && !strings.Contains(view.Text, item.Prompt) && !strings.Contains(extra, item.Prompt) {
-			if extra != "" {
-				extra += "\n\n"
+		if item.Prompt != "" && !strings.Contains(view.Text, item.Prompt) && !strings.Contains(overlay.Extra, item.Prompt) {
+			if overlay.Extra != "" {
+				overlay.Extra += "\n\n"
 			}
-			extra += item.Prompt
+			overlay.Extra += item.Prompt
 		}
-		commands = mcpAppendCommand(commands, "__resolve_critical_confirm__ "+item.ID+" confirm")
-		commands = mcpAppendCommand(commands, "__resolve_critical_confirm__ "+item.ID+" reject")
-		if kind == "" {
-			kind = "critical"
+		overlay.Commands = mcpAppendCommand(overlay.Commands, "__resolve_critical_confirm__ "+item.ID+" confirm")
+		overlay.Commands = mcpAppendCommand(overlay.Commands, "__resolve_critical_confirm__ "+item.ID+" reject")
+		if overlay.Kind == "" {
+			overlay.Kind = "critical"
 		}
 	}
-	if kind == "" {
+	return overlay
+}
+
+func mcpApplyRunningGateOverlay(view mcpTaskView, overlay mcpRunningGateOverlay, replace bool) mcpTaskView {
+	if overlay.Kind == "" {
 		return view
 	}
-	view.ConfirmationKind = kind
-	view.Commands = commands
-	if extra != "" {
-		view.Text = strings.TrimSpace(view.Text + "\n\n" + extra)
+	if replace || strings.TrimSpace(view.ConfirmationKind) == "" {
+		view.ConfirmationKind = overlay.Kind
 	}
-	if hint := mcpConfirmationHint(kind); hint != "" && !strings.Contains(view.Text, "send_command") {
-		view.Text = strings.TrimSpace(view.Text + "\n\n" + hint)
+	if replace {
+		view.Commands = overlay.Commands
+	} else {
+		for _, command := range overlay.Commands {
+			view.Commands = mcpAppendCommand(view.Commands, command)
+		}
+	}
+	if overlay.Extra != "" {
+		view.Text = mcpInsertBeforePlanHint(view.Text, overlay.Extra)
+	}
+	if hint := mcpConfirmationHint(overlay.Kind); hint != "" && !strings.Contains(view.Text, "send_command") {
+		view.Text = mcpInsertBeforePlanHint(view.Text, hint)
 	}
 	return view
+}
+
+// mcpInsertBeforePlanHint places a gate in the decision text. The outcome cut
+// keeps everything in front of the plan hint, so the gate stays visible there.
+func mcpInsertBeforePlanHint(text, block string) string {
+	block = strings.TrimSpace(block)
+	text = strings.TrimSpace(text)
+	if block == "" || strings.Contains(text, block) {
+		return text
+	}
+	for _, hint := range []string{mcpPlanConfirmHint, mcpPlanReviewHint, mcpPlanDialogueHint} {
+		if i := strings.Index(text, hint); i >= 0 {
+			return strings.TrimSpace(text[:i] + block + "\n\n" + text[i:])
+		}
+	}
+	return strings.TrimSpace(text + "\n\n" + block)
+}
+
+func (a *App) mcpAnnotateRunningGates(view mcpTaskView) mcpTaskView {
+	if view.Status != mcpStatusRunning {
+		return view
+	}
+	return mcpApplyRunningGateOverlay(view, a.mcpCollectRunningGates(view), true)
 }
 
 func mcpPlanDecisionCommands() []string {

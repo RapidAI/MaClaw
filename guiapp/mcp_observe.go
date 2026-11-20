@@ -187,11 +187,180 @@ func (a *App) mcpPublishTaskView(view mcpTaskView) mcpTaskView {
 	}
 	view.Text = mcpRelabelSessionWorkspace(view.Text, view.SessionPath, firstNonEmpty(view.WorkingDirEffective, view.WorkingDir, view.workspace))
 	view = mcpGuardCompletion(view)
+	// Mint the session before the confirmation id. The id is stored on the
+	// live record, and a record created below has to exist first or the next
+	// read would mint a second confirmation id.
+	view = a.mcpAssignPlanSession(view)
+	view = a.mcpMergeHolderRunningGates(view)
 	view = a.mcpEnsureConfirmationID(view)
+	if mcpConfirmationBindsPlan(view.ConfirmationKind, view.Commands) {
+		view.Text = mcpAttachSessionLine(view.Text, mcpSessionDecisionLine(firstNonEmpty(view.RunID, view.CurrentRunID), view.ConfirmationID))
+	}
 	view = mcpPublishChildren(view)
 	view = a.mcpAnnotateStepFreshness(view)
 	view.Outcome = mcpCommandOutcome(view)
 	return view
+}
+
+// mcpAssignPlanSession gives a live coding-plan card a run id when the round
+// never received one. A desktop task can show /plan approve with both run
+// ids empty, and the caller then has no session to approve. The id is stored
+// on the live record and status_version is left alone: a read must not make
+// the next send_command look like a conflict. A task with no record gets an
+// idle session holder, not a copy of the plan card. A card that is not a
+// plan, and a legacy row that is not waiting on a plan, keep an empty run id.
+func (a *App) mcpAssignPlanSession(view mcpTaskView) mcpTaskView {
+	if a == nil || !mcpConfirmationBindsPlan(view.ConfirmationKind, view.Commands) {
+		return view
+	}
+	if strings.TrimSpace(view.RunID) != "" {
+		return view
+	}
+	if !a.mcpViewIsLiveRound(view) {
+		return view
+	}
+	if id := strings.TrimSpace(view.CurrentRunID); id != "" {
+		view.RunID = id
+		return view
+	}
+	path := normalizeProjectSessionPath(view.ProjectPath)
+	if path == "" {
+		return view
+	}
+	id := ""
+	persist := false
+	a.mcpRunsMu.Lock()
+	rec := a.mcpRuns[path]
+	switch {
+	case rec != nil && strings.TrimSpace(rec.RunID) != "":
+		id = strings.TrimSpace(rec.RunID)
+	case rec != nil:
+		rec.RunID = mcpNewRunID()
+		id = rec.RunID
+		persist = true
+	case rec == nil:
+		id = mcpNewRunID()
+		if a.mcpRuns == nil {
+			a.mcpRuns = map[string]*mcpRunRecord{}
+		}
+		// The record only holds the session. The live plan is applied on read,
+		// so a cleared plan does not keep offering approve, and a later
+		// desktop turn is not stuck on needs_confirmation. mcpCommitRun
+		// would force status_version to at least 1.
+		a.mcpRuns[path] = &mcpRunRecord{
+			ProjectPath:   path,
+			Name:          view.Name,
+			Mode:          view.Mode,
+			Status:        mcpStatusIdle,
+			Workspace:     firstNonEmpty(view.workspace, view.WorkingDir),
+			RunID:         id,
+			StatusVersion: view.StatusVersion,
+		}
+		persist = true
+	}
+	a.mcpRunsMu.Unlock()
+	if persist {
+		a.mcpPersistRun(path)
+	}
+	if id == "" {
+		return view
+	}
+	view.RunID = id
+	view.CurrentRunID = id
+	return view
+}
+
+// mcpUnsealedSessionHolder is the idle record a read mints so a desktop plan
+// has a session id. It is not a prompt and not a confirmation round: its
+// confirmation id must not gate retry, and the record must not hide the
+// desktop task.
+func mcpUnsealedSessionHolder(view mcpTaskView) bool {
+	return view.Status == mcpStatusIdle &&
+		strings.TrimSpace(view.Text) == "" &&
+		strings.TrimSpace(view.RequestID) == "" &&
+		strings.TrimSpace(view.ConfirmationKind) == "" &&
+		len(view.Commands) == 0 &&
+		len(view.Steps) == 0 &&
+		view.historyCount == 0 &&
+		strings.TrimSpace(view.historySeal) == ""
+}
+
+// mcpProjectSessionHolder keeps the holder's session id and status_version.
+// A live confirmation cannot use a running, failed, or cancelled snapshot:
+// those statuses skip the overlay. The transcript and the error still belong
+// on the card, and the status stays idle so the overlay still runs. Every
+// other snapshot is the task, with this session id attached.
+func mcpProjectSessionHolder(holder, store mcpTaskView, confirmationPending bool) mcpTaskView {
+	if confirmationPending {
+		switch store.Status {
+		case mcpStatusRunning, mcpStatusFailed, mcpStatusCancelled:
+			kept := holder
+			if text := strings.TrimSpace(store.Text); text != "" {
+				kept.Text = store.Text
+			}
+			if errText := strings.TrimSpace(store.Error); errText != "" {
+				kept.Error = errText
+			}
+			if strings.TrimSpace(kept.Name) == "" {
+				kept.Name = store.Name
+			}
+			if strings.TrimSpace(kept.Mode) == "" {
+				kept.Mode = store.Mode
+			}
+			if strings.TrimSpace(kept.workspace) == "" {
+				kept.workspace = firstNonEmpty(store.workspace, store.WorkingDir)
+			}
+			if strings.TrimSpace(kept.WorkingDir) == "" {
+				kept.WorkingDir = firstNonEmpty(store.WorkingDir, store.workspace)
+			}
+			return kept
+		}
+	}
+	merged := mcpFillTaskView(store, holder)
+	if id := strings.TrimSpace(holder.RunID); id != "" {
+		merged.RunID = id
+		merged.CurrentRunID = id
+	}
+	merged.StatusVersion = holder.StatusVersion
+	return merged
+}
+
+// mcpMergeHolderRunningGates keeps a desktop scope or critical gate on the
+// live session holder's confirmation card. Keeping that card idle lets the
+// plan, review, dialogue, confirm, or ask overlay run, and the same commands
+// are part of the confirmation id that send_command checks.
+func (a *App) mcpMergeHolderRunningGates(view mcpTaskView) mcpTaskView {
+	if a == nil || view.Status == mcpStatusRunning {
+		return view
+	}
+	switch strings.TrimSpace(view.ConfirmationKind) {
+	case "", "scope", "critical":
+		return view
+	}
+	if !a.mcpViewIsLiveRound(view) {
+		return view
+	}
+	path := normalizeProjectSessionPath(view.ProjectPath)
+	reg, ok := a.mcpViewFromRegistry(path)
+	if !ok || !mcpUnsealedSessionHolder(reg) {
+		return view
+	}
+	return mcpApplyRunningGateOverlay(view, a.mcpCollectRunningGates(view), false)
+}
+
+// mcpLiveConfirmationPending is true when a read of this idle session would
+// attach a confirmation card. The check is that overlay, so a plan, a review,
+// a dialogue, a confirm, and an ask all keep the card in front of a running,
+// failed, or cancelled desktop snapshot.
+func (a *App) mcpLiveConfirmationPending(projectPath string) bool {
+	if a == nil || strings.TrimSpace(projectPath) == "" {
+		return false
+	}
+	probed := a.mcpApplyLiveConfirmation(mcpTaskView{
+		ProjectPath: normalizeProjectSessionPath(projectPath),
+		Status:      mcpStatusIdle,
+	})
+	return strings.TrimSpace(probed.ConfirmationKind) != "" || len(probed.Commands) > 0
 }
 
 func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {

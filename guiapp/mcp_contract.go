@@ -158,8 +158,11 @@ func mcpCommandOutcome(view mcpTaskView) string {
 			lead = "这一轮需要确认。"
 		}
 		tail := "先看 status、commands 和 confirmation_id，再决定下一条命令。"
-		if id != "" {
-			tail = "会话标识是 " + id + "。" + tail
+		// The plan hint tells the caller to send /plan approve, and that
+		// command is rejected unless confirmation_id matches. State both ids
+		// here so a reader of outcome can approve without guessing.
+		if line := mcpSessionDecisionLine(id, view.ConfirmationID); line != "" && !strings.Contains(lead, line) {
+			tail = line + tail
 		}
 		return lead + "\n" + tail
 	case mcpStatusWaitingReview:
@@ -215,6 +218,40 @@ func mcpCommandOutcome(view mcpTaskView) string {
 		}
 		return ""
 	}
+}
+
+// mcpSessionDecisionLine is the session and confirmation the caller must
+// keep in order to approve or answer this card. An empty id is omitted.
+func mcpSessionDecisionLine(runID, confirmID string) string {
+	runID = strings.TrimSpace(runID)
+	confirmID = strings.TrimSpace(confirmID)
+	var b strings.Builder
+	if runID != "" {
+		b.WriteString("会话标识是 " + runID + "。")
+	}
+	if confirmID != "" {
+		b.WriteString("确认编号是 " + confirmID + "。")
+	}
+	return b.String()
+}
+
+// mcpAttachSessionLine places that sentence immediately after the plan hint.
+// The outcome cut removes the hint and everything after it, so the sentence
+// stays in text without becoming the decision lead. A card with no plan hint
+// keeps its text; the outcome tail still carries the sentence.
+func mcpAttachSessionLine(text, line string) string {
+	line = strings.TrimSpace(line)
+	text = strings.TrimSpace(text)
+	if line == "" || strings.Contains(text, line) {
+		return text
+	}
+	for _, hint := range []string{mcpPlanConfirmHint, mcpPlanReviewHint, mcpPlanDialogueHint} {
+		if i := strings.Index(text, hint); i >= 0 {
+			at := i + len(hint)
+			return strings.TrimSpace(text[:at] + "\n" + line + text[at:])
+		}
+	}
+	return text
 }
 
 // mcpOutcomeLead keeps the decision sentence and drops the plan body and the

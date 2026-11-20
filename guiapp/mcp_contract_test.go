@@ -1376,6 +1376,230 @@ func TestInboundMCPProductionPlanStaysOutOfOutcome(t *testing.T) {
 	}
 }
 
+func TestInboundMCPPlanApprovalCarriesSessionID(t *testing.T) {
+	app := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {
+			ProjectPath:      "p",
+			Status:           mcpStatusNeedsConfirmation,
+			Text:             "待确认\n\n" + mcpPlanConfirmHint,
+			ConfirmationKind: mcpConfirmKindPlan,
+			Commands:         mcpPlanDecisionCommands(),
+			StatusVersion:    4,
+		},
+	}}
+	first, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || !strings.HasPrefix(first.RunID, "run-") || first.CurrentRunID != first.RunID || first.StatusVersion != 4 {
+		t.Fatalf("minted session %+v err=%v", first, err)
+	}
+	if !strings.HasPrefix(first.ConfirmationID, mcpConfirmIDPrefix) || !containsAll(first.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("approval card %+v", first)
+	}
+	if !strings.Contains(first.Outcome, "会话标识是 "+first.RunID) || !strings.Contains(first.Outcome, "确认编号是 "+first.ConfirmationID) {
+		t.Fatalf("outcome %q", first.Outcome)
+	}
+	if strings.Count(first.Text, "会话标识是 "+first.RunID) != 1 || strings.Count(first.Text, "确认编号是 "+first.ConfirmationID) != 1 {
+		t.Fatalf("text %q", first.Text)
+	}
+	if got := app.mcpRuns["p"].StatusVersion; got != 4 || app.mcpRuns["p"].RunID != first.RunID {
+		t.Fatalf("record changed version=%d run=%q", got, app.mcpRuns["p"].RunID)
+	}
+	second, err := app.mcpGetTask(context.Background(), "p", first.RunID)
+	if err != nil || second.RunID != first.RunID || second.ConfirmationID != first.ConfirmationID || second.StatusVersion != 4 {
+		t.Fatalf("second read %+v err=%v", second, err)
+	}
+	if strings.Count(second.Text, "会话标识是 "+first.RunID) != 1 {
+		t.Fatalf("duplicated session %q", second.Text)
+	}
+
+	bare := &App{}
+	rememberMCPPendingPlan(bare, "p")
+	minted := bare.mcpReturnTask(mcpTaskView{ProjectPath: "p", Status: mcpStatusCompleted, Text: "待确认"})
+	if !strings.HasPrefix(minted.RunID, "run-") || minted.StatusVersion != 0 || minted.Status != mcpStatusNeedsConfirmation || !strings.Contains(minted.Outcome, "会话标识是 "+minted.RunID) || !strings.Contains(minted.Outcome, "确认编号是 "+minted.ConfirmationID) {
+		t.Fatalf("desktop plan %+v", minted)
+	}
+	again, err := bare.mcpGetTask(context.Background(), "p", minted.RunID)
+	if err != nil || again.RunID != minted.RunID || again.ConfirmationID != minted.ConfirmationID || again.StatusVersion != 0 || !containsAll(again.Commands, "/plan approve") {
+		t.Fatalf("stored desktop plan %+v err=%v", again, err)
+	}
+	if rec := bare.mcpRuns["p"]; rec == nil || rec.Status != mcpStatusIdle || rec.Text != "" || rec.ConfirmationKind != "" || len(rec.Commands) != 0 || rec.StatusVersion != 0 || rec.RunID != minted.RunID {
+		t.Fatalf("session holder %+v", rec)
+	}
+	if _, retryErr := bare.mcpRetrySteps(context.Background(), "p", []string{"T1"}, "", "", false); retryErr == nil || strings.Contains(retryErr.Error(), "确认编号") {
+		t.Fatalf("holder confirmation blocked retry: %v", retryErr)
+	}
+	holder := mcpTaskView{ProjectPath: "p", Status: mcpStatusIdle, RunID: minted.RunID, StatusVersion: 0}
+	running := mcpTaskView{ProjectPath: "p", Status: mcpStatusRunning, Name: "登录", Mode: taskCodingDevTag, Text: "正在改登录", Error: "编译失败", workspace: `D:\repo`, WorkingDir: `D:\repo`}
+	if got := mcpProjectSessionHolder(holder, running, true); got.Status != mcpStatusIdle || got.RunID != minted.RunID || got.StatusVersion != 0 || got.Text != "正在改登录" || got.Error != "编译失败" || got.Name != "登录" || got.Mode != taskCodingDevTag || got.workspace != `D:\repo` {
+		t.Fatalf("pending plan hid the desktop text %+v", got)
+	}
+	if got := mcpProjectSessionHolder(holder, running, false); got.Status != mcpStatusRunning || got.RunID != minted.RunID || got.StatusVersion != 0 {
+		t.Fatalf("desktop turn hidden %+v", got)
+	}
+	answered := mcpTaskView{ProjectPath: "p", Status: mcpStatusCompleted, Text: "计划写好了"}
+	if got := mcpProjectSessionHolder(holder, answered, true); got.Status != mcpStatusCompleted || got.Text != "计划写好了" || got.RunID != minted.RunID || got.StatusVersion != 0 {
+		t.Fatalf("plan transcript %+v", got)
+	}
+	owner := projectSessionOwnerID("p")
+	bare.imHandler.stickyCodingWorkbenchMemory.Store(stickyCodingMemoryKey(owner), stickyCodingWorkbenchMemory{})
+	cleared, err := bare.mcpGetTask(context.Background(), "p", minted.RunID)
+	if err != nil || cleared.RunID != minted.RunID || cleared.StatusVersion != 0 || cleared.Status == mcpStatusNeedsConfirmation || cleared.ConfirmationID != "" || containsAll(cleared.Commands, "/plan approve") {
+		t.Fatalf("cleared plan %+v err=%v", cleared, err)
+	}
+}
+
+func TestInboundMCPRunningSnapshotKeepsLiveConfirmation(t *testing.T) {
+	const runID = "run-hold"
+	app := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2},
+	}}
+	owner := projectSessionOwnerID("p")
+	key := stickyCodingMemoryKey(owner)
+	app.imHandler = &IMMessageHandler{}
+	app.imHandler.planReviewLive.Store(key, int64(1))
+	app.imHandler.stickyCodingWorkbenchMemory.Store(key, stickyCodingWorkbenchMemory{
+		PendingPlanJSON: `{"tasks":[{"index":1}]}`,
+	})
+	t.Cleanup(func() {
+		app.imHandler.planReviewLive.Delete(key)
+		app.imHandler.pendingAskUser.Delete(owner)
+	})
+	holder, ok := app.mcpViewFromRegistry("p")
+	if !ok || !mcpUnsealedSessionHolder(holder) {
+		t.Fatalf("holder %+v", holder)
+	}
+	running := mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusRunning, Name: "登录", Mode: taskCodingDevTag,
+		Text: "正在改登录", Error: "编译失败", workspace: `D:\repo`, WorkingDir: `D:\repo`,
+	}
+	// Review is live, so the stored plan is not an approvable card. A plan-only
+	// check would publish this running snapshot and skip the review overlay.
+	if app.imHandler.codingPlanHasPendingApproval(owner, app.imHandler.getStickyCodingWorkbenchMemory(owner)) {
+		t.Fatal("live review counted as an approvable plan")
+	}
+	if !app.mcpLiveConfirmationPending("p") {
+		t.Fatal("live review was not a confirmation")
+	}
+	reviewed := app.mcpReturnTask(mcpProjectSessionHolder(holder, running, app.mcpLiveConfirmationPending("p")))
+	if reviewed.Status != mcpStatusNeedsConfirmation || reviewed.ConfirmationKind != mcpConfirmKindPlanReview || reviewed.RunID != runID || reviewed.StatusVersion != 2 || reviewed.Error != "编译失败" || reviewed.Name != "登录" || reviewed.workspace != `D:\repo` {
+		t.Fatalf("review hidden %+v", reviewed)
+	}
+	if !strings.Contains(reviewed.Text, "正在改登录") || !strings.Contains(reviewed.Text, mcpPlanReviewHint) || commandsContainAny(reviewed.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("review card %+v", reviewed)
+	}
+	if rec := app.mcpRuns["p"]; rec == nil || rec.Status != mcpStatusIdle || rec.Text != "" || rec.Error != "" || rec.ConfirmationKind != "" || len(rec.Commands) != 0 || rec.StatusVersion != 2 || rec.RunID != runID {
+		t.Fatalf("review wrote the holder %+v", rec)
+	}
+
+	app.imHandler.planReviewLive.Delete(key)
+	app.imHandler.stickyCodingWorkbenchMemory.Store(key, stickyCodingWorkbenchMemory{PlanDialogue: true})
+	if !app.mcpLiveConfirmationPending("p") {
+		t.Fatal("plan dialogue was not a confirmation")
+	}
+	failed := running
+	failed.Status = mcpStatusFailed
+	dialogue := app.mcpReturnTask(mcpProjectSessionHolder(holder, failed, app.mcpLiveConfirmationPending("p")))
+	if dialogue.Status != mcpStatusNeedsConfirmation || dialogue.ConfirmationKind != mcpConfirmKindPlanDialogue || dialogue.RunID != runID || !strings.Contains(dialogue.Text, "正在改登录") || !strings.Contains(dialogue.Text, mcpPlanDialogueHint) {
+		t.Fatalf("dialogue hidden %+v", dialogue)
+	}
+
+	app.imHandler.stickyCodingWorkbenchMemory.Store(key, stickyCodingWorkbenchMemory{})
+	app.imHandler.pendingAskUser.Store(owner, &pendingAskUserState{
+		Question: "用哪个端口？", Options: []string{"8080", "9090"}, InputType: string(askUserInputChoice),
+	})
+	if !app.mcpLiveConfirmationPending("p") {
+		t.Fatal("ask was not a confirmation")
+	}
+	asked := app.mcpReturnTask(mcpProjectSessionHolder(holder, running, app.mcpLiveConfirmationPending("p")))
+	if asked.Status != mcpStatusNeedsConfirmation || asked.ConfirmationKind != "ask" || asked.RunID != runID || asked.StatusVersion != 2 || !strings.Contains(asked.Text, "正在改登录") || !strings.Contains(asked.Text, "用哪个端口？") || !containsAll(asked.Commands, "8080", "9090") {
+		t.Fatalf("ask hidden %+v", asked)
+	}
+
+	app.imHandler.pendingAskUser.Delete(owner)
+	if app.mcpLiveConfirmationPending("p") {
+		t.Fatal("empty desktop still looked like a confirmation")
+	}
+	plain := app.mcpReturnTask(mcpProjectSessionHolder(holder, running, app.mcpLiveConfirmationPending("p")))
+	if plain.Status != mcpStatusRunning || plain.RunID != runID || plain.StatusVersion != 2 || plain.ConfirmationKind != "" || plain.ConfirmationID != "" {
+		t.Fatalf("running turn hidden %+v", plain)
+	}
+	if rec := app.mcpRuns["p"]; rec == nil || rec.Status != mcpStatusIdle || rec.Text != "" || rec.StatusVersion != 2 || rec.RunID != runID {
+		t.Fatalf("running projection wrote the holder %+v", rec)
+	}
+}
+
+func TestInboundMCPHolderCardKeepsRunningGates(t *testing.T) {
+	const runID = "run-hold"
+	app := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2},
+	}}
+	owner := projectSessionOwnerID("p")
+	key := stickyCodingMemoryKey(owner)
+	app.imHandler = &IMMessageHandler{}
+	app.imHandler.planReviewLive.Store(key, int64(1))
+	t.Cleanup(func() { app.imHandler.planReviewLive.Delete(key) })
+	scopeCh := make(chan ScopeApprovalDecision, 1)
+	scopeID := storePendingScopeApproval(nil, ScopeApprovalRequest{
+		ProjectPath: "p",
+		Message:     "要写仓库外的文件",
+	}, scopeCh)
+	t.Cleanup(func() { pendingScopeApprovals.Delete(scopeID) })
+	app.imHandler.pendingCriticalConfirm.Store("crit_hold", &pendingCriticalConfirmEntry{
+		Ch: make(chan criticalRiskConfirmResponse, 1), Prompt: "安装危险技能", Owner: owner,
+	})
+	t.Cleanup(func() { app.imHandler.pendingCriticalConfirm.Delete("crit_hold") })
+
+	reviewed := app.mcpReturnTask(mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2, Text: "正在改登录",
+	})
+	if reviewed.Status != mcpStatusNeedsConfirmation || reviewed.ConfirmationKind != mcpConfirmKindPlanReview || reviewed.RunID != runID || reviewed.StatusVersion != 2 {
+		t.Fatalf("review card %+v", reviewed)
+	}
+	if !strings.Contains(reviewed.Text, "正在改登录") || !strings.Contains(reviewed.Text, "要写仓库外的文件") || !strings.Contains(reviewed.Text, "安装危险技能") || !strings.Contains(reviewed.Text, mcpPlanReviewHint) {
+		t.Fatalf("review text %q", reviewed.Text)
+	}
+	if !containsAll(reviewed.Commands,
+		"__scope_approval__ "+scopeID+" allow_dir",
+		"__scope_approval__ "+scopeID+" deny",
+		"__resolve_critical_confirm__ crit_hold confirm",
+		"__resolve_critical_confirm__ crit_hold reject",
+	) || commandsContainAny(reviewed.Commands, "/plan approve", "/plan skip", "/plan reject") {
+		t.Fatalf("review commands %v", reviewed.Commands)
+	}
+	if !strings.Contains(reviewed.Outcome, "要写仓库外的文件") || !strings.Contains(reviewed.Outcome, "会话标识是 "+runID) {
+		t.Fatalf("outcome %q", reviewed.Outcome)
+	}
+	if rec := app.mcpRuns["p"]; rec == nil || rec.Status != mcpStatusIdle || rec.Text != "" || rec.ConfirmationKind != "" || len(rec.Commands) != 0 || rec.StatusVersion != 2 {
+		t.Fatalf("gates wrote the holder %+v", rec)
+	}
+	again := app.mcpReturnTask(mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusIdle, RunID: runID, StatusVersion: 2, Text: "正在改登录",
+	})
+	reg, ok := app.mcpViewFromRegistry("p")
+	listed := app.mcpCurrentConfirmation("p", reg, ok)
+	if !strings.HasPrefix(reviewed.ConfirmationID, mcpConfirmIDPrefix) || again.ConfirmationID != reviewed.ConfirmationID || listed.ConfirmationID != reviewed.ConfirmationID || !containsAll(listed.Commands, "__scope_approval__ "+scopeID+" allow_dir", "__resolve_critical_confirm__ crit_hold confirm") {
+		t.Fatalf("gate id drifted reviewed=%s again=%s listed=%s commands=%v", reviewed.ConfirmationID, again.ConfirmationID, listed.ConfirmationID, listed.Commands)
+	}
+
+	real := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {
+			ProjectPath: "p", Status: mcpStatusNeedsConfirmation, RunID: "run-real", StatusVersion: 3,
+			RequestID: "mcp-real", Text: "待确认\n\n" + mcpPlanConfirmHint,
+			ConfirmationKind: mcpConfirmKindPlan, Commands: mcpPlanDecisionCommands(),
+		},
+	}}
+	kept, err := real.mcpGetTask(context.Background(), "p", "")
+	if err != nil || kept.ConfirmationKind != mcpConfirmKindPlan || commandsContainAny(kept.Commands, "__scope_approval__ "+scopeID+" allow_dir") {
+		t.Fatalf("real round took the holder gate %+v err=%v", kept, err)
+	}
+
+	running := app.mcpReturnTask(mcpTaskView{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: runID, StatusVersion: 2, Text: "正在改登录", workspace: `D:\repo`,
+	})
+	if running.Status != mcpStatusRunning || running.ConfirmationKind != "scope" || !containsAll(running.Commands, "__scope_approval__ "+scopeID+" allow_dir", "__resolve_critical_confirm__ crit_hold confirm") {
+		t.Fatalf("running gate %+v", running)
+	}
+}
+
 func rememberMCPPendingPlan(app *App, projectPath string) {
 	owner := projectSessionOwnerID(projectPath)
 	app.imHandler = &IMMessageHandler{}
