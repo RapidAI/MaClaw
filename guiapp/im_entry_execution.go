@@ -106,7 +106,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		// can merge the turn into another delivery plan.
 		if !opts.FreshTask && h.memory != nil {
 			if active := h.memory.ActiveUnfinishedSlot(msg.UserID); unreviewedExternalDeliverySlot(active) {
-				if turnContinuesTheUnreviewedSend(opts.Trimmed) {
+				if turnContinuesTheUnreviewedSend(opts.Trimmed, active) {
 					return h.returnExternalDeliveryReview(msg, active)
 				}
 				h.dropUnreviewedSendSlot(msg.UserID, active)

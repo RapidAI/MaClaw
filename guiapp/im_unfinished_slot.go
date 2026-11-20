@@ -726,17 +726,78 @@ func unreviewedExternalDeliverySlot(slot *agent.UnfinishedTaskSlot) bool {
 }
 
 // turnContinuesTheUnreviewedSend reports whether this turn is the person
-// continuing that task. The unreviewed-send record exists to stop a second
-// delivery, not to hold the whole conversation hostage: a new request in the
-// same session ("模型有多大？") is not a continuation and must run. While the
-// record stands, only the person's own continuation of the interrupted task is
-// refused, because that is the turn that would send again.
-func turnContinuesTheUnreviewedSend(text string) bool {
+// continuing that send. The record stops a second delivery of that send; it
+// does not hold the conversation. A new request ("模型有多大？") must run.
+// A resume cue, or a turn that only asks to finish that same send
+// ("把上次没发完的发出去"), is the turn that would deliver it again.
+func turnContinuesTheUnreviewedSend(text string, slot *agent.UnfinishedTaskSlot) bool {
 	if shouldResumeIncompleteTask(text) {
 		return true
 	}
 	wording := continuationTitleText(text)
-	return wording != "" && continuationCueOnly(wording)
+	if wording != "" && continuationCueOnly(wording) {
+		return true
+	}
+	return completesTheUnreviewedSend(text, slot)
+}
+
+// completesTheUnreviewedSend is a turn that would deliver the recorded send
+// again and does not name a different task. Courtesy, anaphora, and the send
+// word peel off. Nothing left means "send that one". A residue that is the
+// recorded task is the same send. A residue the record does not name
+// ("这首歌", "周报") is a new request and must not be refused.
+func completesTheUnreviewedSend(text string, slot *agent.UnfinishedTaskSlot) bool {
+	folded := strings.ToLower(strings.TrimSpace(text))
+	if folded == "" {
+		return false
+	}
+	courtesy := []string{"请你", "請你", "麻烦你", "麻煩你", "帮我", "幫我", "please ", "pls ", "请", "請", "麻烦", "麻煩"}
+	anaphora := []string{"上一次没发完的", "上次没发完的", "上一次没发完", "上次没发完", "没发完的", "未发完的", "没发完", "未发完", "剩下的", "剩余的", "上一次", "上次", "那一次", "那次"}
+	sendWords := []string{"send it again", "send again", "finish sending", "send the rest", "resend it", "resend", "send it", "send the ", "send ", "重新发送", "再发一次", "发送一下", "发出去", "发一下", "再发送", "补发", "重发", "再发", "发送", "发给", "发到", "发出"}
+	sawSend := false
+	for {
+		folded = strings.Trim(folded, " \t。.!！?？~…吧啊呀呢了，,、；;：:的把将给")
+		if folded == "" {
+			return sawSend
+		}
+		if next, ok := peelEitherEnd(folded, courtesy); ok {
+			folded = next
+			continue
+		}
+		if next, ok := peelEitherEnd(folded, anaphora); ok {
+			folded = next
+			continue
+		}
+		if next, ok := peelEitherEnd(folded, sendWords); ok {
+			folded = next
+			sawSend = true
+			continue
+		}
+		break
+	}
+	if !sawSend || slot == nil {
+		return false
+	}
+	task := strings.ToLower(strings.TrimSpace(slot.LastTask))
+	if task == "" || len([]rune(folded)) < 2 {
+		return false
+	}
+	return strings.Contains(task, folded)
+}
+
+func peelEitherEnd(text string, markers []string) (string, bool) {
+	for _, marker := range markers {
+		if marker == "" {
+			continue
+		}
+		if strings.HasPrefix(text, marker) {
+			return strings.TrimSpace(text[len(marker):]), true
+		}
+		if strings.HasSuffix(text, marker) && len(text) > len(marker) {
+			return strings.TrimSpace(text[:len(text)-len(marker)]), true
+		}
+	}
+	return text, false
 }
 
 // dropUnreviewedSendSlot retires an uncertain-send record when the person

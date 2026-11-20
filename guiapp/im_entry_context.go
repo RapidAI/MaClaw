@@ -119,9 +119,9 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	slotActionElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 
-	// Structural "no history" and the recovery classifier both run below.
-	// Either one can dismiss this slot and plan another send. The uncertain
-	// send stays until the user explicitly starts a new task.
+	// Later routing can still plan a delivery from this turn's own words.
+	// It must not be handed the uncertain send. A continuation keeps the
+	// record and stops here. Any other request retires the record first.
 	//
 	// Only a turn that continues that task is refused here. The record stops a
 	// second delivery; it must not swallow an unrelated new request in the same
@@ -130,7 +130,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// (BR-20261120-06EAE6635C0F).
 	if !result.FreshTask && !msg.IsBackground && !h.isPureCodingWorkbenchSession(msg.UserID) &&
 		unreviewedExternalDeliverySlot(result.UnfinishedSlot) {
-		if turnContinuesTheUnreviewedSend(h.trimmedOrEmpty(opts.Trimmed)) {
+		if turnContinuesTheUnreviewedSend(h.trimmedOrEmpty(opts.Trimmed), result.UnfinishedSlot) {
 			result.Handled = true
 			result.Response = h.returnExternalDeliveryReview(*msg, result.UnfinishedSlot)
 			return result
