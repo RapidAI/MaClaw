@@ -1965,10 +1965,19 @@
   padding: 12px 14px 10px;
   border: 1px solid var(--theme-border, #dce6f2);
   border-radius: 12px;
-  background: var(--theme-surface, #ffffff);
+  /* ~10% see-through. The blur turns the list behind the card into a tint,
+     so task titles do not print as a second line through the copy. */
+  background: color-mix(in srgb, var(--theme-surface, #ffffff) 90%, transparent);
+  backdrop-filter: blur(8px);
   box-shadow: 0 6px 20px rgba(20, 35, 60, .16);
   color: var(--theme-text-primary, #17212f);
   cursor: default;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mc-pinned-banner {
+    background: var(--theme-surface, #ffffff);
+    backdrop-filter: none;
+  }
 }
 .mc-pinned-banner__body {
   min-width: 0;
