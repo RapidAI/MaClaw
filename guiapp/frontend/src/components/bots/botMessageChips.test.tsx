@@ -59,6 +59,9 @@ describe('reply cards and beats', () => {
     it('splits beats on a bare --- line outside code', () => {
         expect(splitBotBeats('做完了。\n---\n你需要重启 GUI。')).toEqual(['做完了。', '你需要重启 GUI。']);
         expect(splitBotBeats('```\n---\n```')).toEqual(['```\n---\n```']);
+        expect(splitBotBeats('````\n---\n```\n---\n````\n---\n下一拍')).toEqual(['````\n---\n```\n---\n````', '下一拍']);
+        expect(splitBotBeats('~~~\n---\n~~~')).toEqual(['~~~\n---\n~~~']);
+        expect(splitBotBeats('```ts\n---\n``` end\n---\n```')).toEqual(['```ts\n---\n``` end\n---\n```']);
         expect(splitBotBeats('只有一句')).toEqual(['只有一句']);
         expect(splitBotBeats('a\n---\nb\n---\nc\n---\nd\n---\ne')).toEqual(['a', 'b', 'c', 'd\n\ne']);
     });

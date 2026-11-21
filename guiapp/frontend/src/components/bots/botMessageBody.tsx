@@ -242,10 +242,12 @@ function BotChip({ chip }: { chip: Chip }) {
 export function splitBotBeats(text: string): string[] {
     const beats: string[] = [];
     let current: string[] = [];
-    let fenced = false;
+    let fenceMarker = '';
     for (const line of text.split('\n')) {
-        if (line.trim().startsWith('```')) fenced = !fenced;
-        if (!fenced && line.trim() === '---') {
+        const marker = /^(?:`{3,}|~{3,})/.exec(line.trimStart())?.[0] ?? '';
+        if (!fenceMarker && marker) fenceMarker = marker;
+        else if (fenceMarker && marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length && line.trimStart().slice(marker.length).trim() === '') fenceMarker = '';
+        if (!fenceMarker && line.trim() === '---') {
             beats.push(current.join('\n').trim());
             current = [];
             continue;
