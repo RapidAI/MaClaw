@@ -180,7 +180,8 @@
     total: 0,
     statusFilter: '',
     categoryFilter: '',
-    currentView: 'list' // 'list' | 'create' | 'detail'
+    currentView: 'list', // 'list' | 'create' | 'detail'
+    submitting: false
   };
   let notifDetailData = null;
 
@@ -381,6 +382,32 @@
     return 'en';
   }
 
+  // Empty pinned buttons are stored as the source language's own label.
+  // The placeholder has to show that label, not the console language.
+  function notifDefaultButtonText(lang) {
+    switch (lang) {
+      case 'zh-Hant': return '\u67e5\u770b\u8a73\u60c5';
+      case 'en': return 'View details';
+      case 'mn': return '\u0414\u044d\u043b\u0433\u044d\u0440\u044d\u043d\u0433\u04af\u0439 \u0445\u0430\u0440\u0430\u0445';
+      default: return '\u67e5\u770b\u8be6\u60c5';
+    }
+  }
+
+  function notifSetSubmitLocked(locked) {
+    ['notifSubmitDraft', 'notifSubmitPublish'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.disabled = locked;
+    });
+  }
+
+  global.notifSyncButtonPlaceholder = function() {
+    var input = document.getElementById('notifInputButtonText');
+    if (!input) return;
+    var sel = document.getElementById('notifInputSourceLang');
+    var lang = (sel && sel.value) || notifDefaultSourceLang();
+    input.placeholder = notifDefaultButtonText(lang);
+  };
+
   var notifLangChoices = [
     ['zh-Hans', 'notifLangZhHans'],
     ['zh-Hant', 'notifLangZhHant'],
@@ -427,7 +454,7 @@
       + '<div id="notifPreviewPane" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:180px;background:#fff;overflow:auto;font-size:13px;line-height:1.6">'
       + '<div class="item-meta">' + escapeHtml(tr('notifPreview')) + '</div></div></div></div>'
       + '<div><label for="notifInputSourceLang">' + escapeHtml(tr('notifFormSourceLang')) + '</label>'
-      + '<select id="notifInputSourceLang">' + notifSourceLangOptions() + '</select>'
+      + '<select id="notifInputSourceLang" onchange="notifSyncButtonPlaceholder()">' + notifSourceLangOptions() + '</select>'
       + '<div class="item-meta" style="margin-top:6px">' + escapeHtml(tr('notifFormTranslateTargets')) + '</div>'
       + '<div style="display:flex;flex-wrap:wrap;gap:12px">' + notifTargetLangChecks() + '</div>'
       + '<div class="item-meta">' + escapeHtml(tr('notifFormTranslateHint')) + '</div></div>'
@@ -469,7 +496,7 @@
       + '<div><label for="notifInputLinkUrl">' + escapeHtml(tr('notifFormLink')) + '</label>'
       + '<input id="notifInputLinkUrl" maxlength="500" placeholder="' + escapeHtml(tr('notifFormLinkPlaceholder')) + '"></div>'
       + '<div><label for="notifInputButtonText">' + escapeHtml(tr('notifFormButtonText')) + '</label>'
-      + '<input id="notifInputButtonText" maxlength="20" placeholder="' + escapeHtml(tr('notifFormButtonTextPlaceholder')) + '"></div>'
+      + '<input id="notifInputButtonText" maxlength="20" placeholder="' + escapeHtml(notifDefaultButtonText(notifDefaultSourceLang())) + '"></div>'
       + '</div>'
       // Publish time
       + '<div><label>' + escapeHtml(tr('notifFormPublishAt')) + '</label>'
@@ -483,8 +510,8 @@
       + '<input type="datetime-local" id="notifInputExpireAt"></div>'
       // Actions
       + '<div class="actions" style="margin-top:8px">'
-      + '<button class="btn-secondary" type="button" onclick="notifSubmitCreate(\'draft\')">' + escapeHtml(tr('notifFormSaveDraft')) + '</button>'
-      + '<button class="btn-primary" type="button" onclick="notifSubmitCreate(\'publish\')">' + escapeHtml(tr('notifFormPublish')) + '</button>'
+      + '<button id="notifSubmitDraft" class="btn-secondary" type="button" onclick="notifSubmitCreate(\'draft\')">' + escapeHtml(tr('notifFormSaveDraft')) + '</button>'
+      + '<button id="notifSubmitPublish" class="btn-primary" type="button" onclick="notifSubmitCreate(\'publish\')">' + escapeHtml(tr('notifFormPublish')) + '</button>'
       + '</div></div>';
     panel.innerHTML = html;
     // Attach priority change listener
@@ -711,6 +738,9 @@
     if (!content.trim()) { showToast('Content is required', 'error'); return; }
     if (content.length > 2000) { showToast('Content exceeds 2000 characters', 'error'); return; }
     if (linkUrl && !/^https?:\/\//i.test(linkUrl)) { showToast('Link must start with http:// or https://', 'error'); return; }
+    if (notifState.submitting) return;
+    notifState.submitting = true;
+    notifSetSubmitLocked(true);
 
     const audienceIds = audienceType === 'all' ? [] :
       audienceIdsRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
@@ -751,6 +781,9 @@
       renderListView();
     } catch (err) {
       showToast(tr('notifCreateFailed', { error: err.message }), 'error');
+    } finally {
+      notifState.submitting = false;
+      notifSetSubmitLocked(false);
     }
   };
 

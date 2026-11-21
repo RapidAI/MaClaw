@@ -206,6 +206,7 @@ TAB_ICONS.notifications = '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7
 var notifPage = 1;
 var notifStatusFilter = '';
 var notifViewMode = 'list'; // 'list' | 'create' | 'detail'
+var notifSubmitting = false;
 var notifCurrentId = null;
 var notifHubListCache = null;
 var notifTenantTargets = [];
@@ -494,6 +495,32 @@ function notifDefaultSourceLang() {
   return 'en';
 }
 
+// Empty pinned buttons are stored as the source language's own label.
+// The placeholder has to show that label, not the console language.
+function notifDefaultButtonText(lang) {
+  switch (lang) {
+    case 'zh-Hant': return '查看詳情';
+    case 'en': return 'View details';
+    case 'mn': return 'Дэлгэрэнгүй харах';
+    default: return '查看详情';
+  }
+}
+
+function notifSyncButtonPlaceholder() {
+  var input = document.getElementById('notifButtonTextInput');
+  if (!input) return;
+  var sel = document.getElementById('notifSourceLang');
+  var lang = (sel && sel.value) || notifDefaultSourceLang();
+  input.placeholder = notifDefaultButtonText(lang);
+}
+
+function notifSetSubmitLocked(locked) {
+  ['notifSubmitDraft', 'notifSubmitPublish'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.disabled = locked;
+  });
+}
+
 var notifLangChoices = [
   ['zh-Hans', 'notifLangZhHans'],
   ['zh-Hant', 'notifLangZhHant'],
@@ -533,7 +560,7 @@ function renderNotifCreate() {
     + '<div><label for="notifContentInput">' + tr('notifFormContent') + '</label>'
     + '<textarea id="notifContentInput" maxlength="2000" rows="6" placeholder="' + tr('notifFormContentPlaceholder') + '"></textarea></div>'
     + '<div><label for="notifSourceLang">' + tr('notifFormSourceLang') + '</label>'
-    + '<select id="notifSourceLang">' + notifSourceLangOptions() + '</select>'
+    + '<select id="notifSourceLang" onchange="notifSyncButtonPlaceholder()">' + notifSourceLangOptions() + '</select>'
     + '<div class="item-meta section-gap-sm">' + tr('notifFormTranslateTargets') + '</div>'
     + '<div class="notif-lang-checks">' + notifTargetLangChecks() + '</div>'
     + '<div class="hint">' + tr('notifFormTranslateHint') + '</div></div>'
@@ -584,11 +611,11 @@ function renderNotifCreate() {
     + '<div><label for="notifLinkUrlInput">' + tr('notifFormLink') + '</label>'
     + '<input id="notifLinkUrlInput" maxlength="500" placeholder="' + tr('notifFormLinkPlaceholder') + '"></div>'
     + '<div><label for="notifButtonTextInput">' + tr('notifFormButtonText') + '</label>'
-    + '<input id="notifButtonTextInput" maxlength="20" placeholder="' + tr('notifFormButtonTextPlaceholder') + '"></div>'
+    + '<input id="notifButtonTextInput" maxlength="20" placeholder="' + escapeHtml(notifDefaultButtonText(notifDefaultSourceLang())) + '"></div>'
     + '</div>'
     + '<div class="actions section-gap">'
-    + '<button class="btn-primary" onclick="notifSubmit(\'published\')">' + tr('notifFormPublishNow') + '</button>'
-    + '<button class="btn-secondary" onclick="notifSubmit(\'draft\')">' + tr('notifFormSaveDraft') + '</button>'
+    + '<button id="notifSubmitPublish" class="btn-primary" type="button" onclick="notifSubmit(\'published\')">' + tr('notifFormPublishNow') + '</button>'
+    + '<button id="notifSubmitDraft" class="btn-secondary" type="button" onclick="notifSubmit(\'draft\')">' + tr('notifFormSaveDraft') + '</button>'
     + '</div></div>';
   notifTenantTargets = [];
   notifLoadHubCheckboxes();
@@ -742,6 +769,9 @@ function notifSubmit(status) {
     audienceIds = notifTenantTargets.map(function(t) { return t.value; }).filter(Boolean);
     if (audienceIds.length === 0) { notifToast(tr('notifValidationAudience'), 'warn'); return; }
   }
+  if (notifSubmitting) return;
+  notifSubmitting = true;
+  notifSetSubmitLocked(true);
 
   var body = {
     title: title,
@@ -767,6 +797,9 @@ function notifSubmit(status) {
     renderNotifList();
   }).catch(function(err) {
     notifToast(tr('notifCreateFailed', { error: err.message }), 'danger');
+  }).then(function() {
+    notifSubmitting = false;
+    notifSetSubmitLocked(false);
   });
 }
 
@@ -806,6 +839,7 @@ Object.assign(window, {
   notifRemoveTenantTarget: notifRemoveTenantTarget,
   notifChangePage: notifChangePage,
   notifSubmit: notifSubmit,
+  notifSyncButtonPlaceholder: notifSyncButtonPlaceholder,
   notifRevoke: notifRevoke,
   notifDelete: notifDelete
 });
