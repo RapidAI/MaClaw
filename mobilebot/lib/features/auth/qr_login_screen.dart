@@ -6,6 +6,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/hub_config.dart';
 import '../../core/locale.dart';
 import '../../core/providers.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart';
 import 'desktop_auth_qr.dart';
 
 /// What a scanned QR is for.
@@ -249,19 +251,34 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
     final scheme = theme.colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _isAuthorize ? '授权设备' : context.S.scanToSignIn,
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Flexible(
+              child: Text(
+                _isAuthorize ? '授权设备' : context.S.scanToSignIn,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.xl,
+            AppSpacing.lg,
+            AppSpacing.xl,
+            AppSpacing.xxl + AppSpacing.xs,
+          ),
           children: [
             Text(
               _isAuthorize ? '扫描电脑端的授权二维码' : context.S.qrScanTitle,
               style: theme.textTheme.titleLarge,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             Text(
               _isAuthorize
                   ? '确认后，该设备将可以使用你账号下的 MaClaw 官方服务。'
@@ -270,19 +287,16 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
                 color: scheme.onSurfaceVariant,
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.lg),
             AspectRatio(
               aspectRatio: 1,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(AppRadius.lg),
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: scheme.surfaceContainer,
-                    border: Border.all(
-                      color: scheme.primary.withValues(alpha: 0.45),
-                      width: 1.6,
-                    ),
-                    borderRadius: BorderRadius.circular(16),
+                    color: scheme.surfaceContainerLow,
+                    border: Border.all(color: scheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
                   ),
                   child:
                       widget.scannerBuilder?.call(_submit) ??
@@ -293,17 +307,22 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.lg),
             TextField(
               controller: _manualCtrl,
               minLines: 2,
               maxLines: 4,
               decoration: InputDecoration(
                 labelText: context.S.qrPasteLabel,
-                prefixIcon: Icon(Icons.qr_code_2_outlined),
+                prefixIcon: const Icon(Icons.qr_code_2_outlined),
+                border: const OutlineInputBorder(
+                  borderRadius: BorderRadius.all(
+                    Radius.circular(AppRadius.md),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.md),
             FilledButton.icon(
               onPressed: _submitting ? null : () => _submit(_manualCtrl.text),
               icon: _submitting
@@ -319,7 +338,7 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
               ),
             ),
             if (_message != null) ...[
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.md),
               Text(
                 _message!,
                 style: theme.textTheme.bodyMedium?.copyWith(

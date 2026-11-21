@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'bots_controller.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart';
 
 /// 当前模型 — 只读展示 `GET /api/v1/bots/llm` 的各阶段生效配置
 /// （前台/后台/电脑操作/界面定位）。编辑入口留在桌面端。
@@ -58,14 +60,22 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(context.S.acCurrentModel)),
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.acCurrentModel),
+          ],
+        ),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _load,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(AppSpacing.lg),
                 children: [
                   Row(
                     children: [
@@ -74,7 +84,7 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                         size: 18,
                         color: theme.colorScheme.primary,
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: AppSpacing.sm),
                       Text(
                         _mode == 'custom'
                             ? context.S.llmCustom
@@ -85,11 +95,11 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                   ),
                   if (_warning.isNotEmpty)
                     Container(
-                      margin: const EdgeInsets.only(top: 12),
-                      padding: const EdgeInsets.all(10),
+                      margin: const EdgeInsets.only(top: AppSpacing.md),
+                      padding: const EdgeInsets.all(AppSpacing.md),
                       decoration: BoxDecoration(
                         color: theme.colorScheme.tertiaryContainer,
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(AppRadius.md),
                       ),
                       child: Text(
                         _warning,
@@ -100,33 +110,44 @@ class _BotLLMScreenState extends ConsumerState<BotLLMScreen> {
                     ),
                   if (_error.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 12),
+                      padding: const EdgeInsets.only(top: AppSpacing.md),
                       child: Text(
                         _error,
                         style: TextStyle(color: theme.colorScheme.error),
                       ),
                     ),
                   if (_effective.isNotEmpty) ...[
-                    const SizedBox(height: 20),
+                    const SizedBox(height: AppSpacing.xl),
                     Text(
                       context.S.llmStages,
                       style: theme.textTheme.titleSmall,
                     ),
-                    const SizedBox(height: 4),
-                    for (final role in [
-                      ('foreground', context.S.llmForeground),
-                      ('background', context.S.llmBackground),
-                      ('computer_use', context.S.llmComputerUse),
-                      ('grounder', context.S.llmGrounder),
-                    ])
-                      _EffectiveRoleRow(
-                        label: role.$2,
-                        role: _effective[role.$1],
+                    const SizedBox(height: AppSpacing.sm),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.xs,
+                        ),
+                        child: Column(
+                          children: [
+                            for (final role in [
+                              ('foreground', context.S.llmForeground),
+                              ('background', context.S.llmBackground),
+                              ('computer_use', context.S.llmComputerUse),
+                              ('grounder', context.S.llmGrounder),
+                            ])
+                              _EffectiveRoleRow(
+                                label: role.$2,
+                                role: _effective[role.$1],
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                  ],
+                    ],
                   if (_effective.isEmpty && _error.isEmpty && _warning.isEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 20),
+                      padding: const EdgeInsets.only(top: AppSpacing.xl),
                       child: Text(
                         context.S.llmNoConfig,
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -164,7 +185,9 @@ class _EffectiveRoleRow extends StatelessWidget {
           ].where((s) => s.isNotEmpty).join(' · ');
     return ListTile(
       dense: true,
-      contentPadding: EdgeInsets.zero,
+      contentPadding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+      ),
       title: Text(label, style: theme.textTheme.bodyMedium),
       trailing: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 210),

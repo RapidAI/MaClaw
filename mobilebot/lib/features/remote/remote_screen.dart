@@ -73,7 +73,13 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
     final state = ref.watch(remoteStateProvider);
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.S.rcTitle),
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.rcTitle),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: context.S.rcManageDevices,
@@ -100,6 +106,7 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
             icon: const Icon(Icons.refresh),
             onPressed: () => ref.invalidate(remoteStateProvider),
           ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
       body: state.when(
@@ -136,9 +143,10 @@ class _RemoteError extends StatelessWidget {
     return EmptyState(
       icon: Icons.cloud_off,
       title: message,
-      action: FilledButton.tonal(
+      action: FilledButton.tonalIcon(
         onPressed: onRetry,
-        child: Text(context.S.retry),
+        icon: const Icon(Icons.refresh, size: 18),
+        label: Text(context.S.retry),
       ),
     );
   }
@@ -173,19 +181,19 @@ class _RemoteBody extends ConsumerWidget {
     return RefreshIndicator(
       onRefresh: () => _refreshAll(ref, selected),
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         children: [
           if (snapshot.invites.isNotEmpty) ...[
-            SectionHeader(title: context.S.rcSectionInvites),
+            SectionHeader(title: context.S.rcSectionInvites, dense: true),
             for (final grant in snapshot.invites)
               _IncomingInviteCard(grant: grant, machines: snapshot.machines),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.lg),
           ],
           SectionHeader(title: context.S.rcSectionMachines),
           if (usable.isEmpty)
             Card(
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(AppSpacing.lg),
                 child: Text(
                   context.S.rcNoMachines,
                   style: theme.textTheme.bodyMedium?.copyWith(
@@ -201,7 +209,7 @@ class _RemoteBody extends ConsumerWidget {
               onChanged: (grant) =>
                   ref.read(selectedGrantProvider.notifier).state = grant,
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           if (selected != null) _TaskSection(grant: selected),
         ],
       ),
@@ -224,10 +232,15 @@ class _ManageSheet extends ConsumerWidget {
       maxChildSize: 0.95,
       builder: (context, scrollCtrl) => ListView(
         controller: scrollCtrl,
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.xl,
+          0,
+          AppSpacing.xl,
+          AppSpacing.xxl,
+        ),
         children: [
           Text(context.S.rcManageDevices, style: theme.textTheme.titleMedium),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
           if (snapshot == null)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 40),
@@ -239,31 +252,31 @@ class _ManageSheet extends ConsumerWidget {
                 context.S.rcControlledByOthers,
                 style: theme.textTheme.titleSmall,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.sm),
               for (final grant in snapshot.controlled)
                 _ControlledRow(grant: grant),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
             ],
             if (snapshot.pending.isNotEmpty) ...[
               Text(
                 context.S.rcPendingOutgoing,
                 style: theme.textTheme.titleSmall,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.sm),
               for (final grant in snapshot.pending)
                 _PendingOutgoingRow(grant: grant),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
             ],
             if (snapshot.usableControlled.isNotEmpty) ...[
               Text(context.S.rcICanControl, style: theme.textTheme.titleSmall),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.sm),
               for (final grant in snapshot.usableControlled)
                 _GrantRow(grant: grant, revocable: true),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
             ],
             if (snapshot.machines.isNotEmpty) ...[
               Text(context.S.rcMyDevices, style: theme.textTheme.titleSmall),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppSpacing.sm),
               for (final machine in snapshot.machines)
                 _MachineRow(machine: machine),
             ],
@@ -289,6 +302,28 @@ class _ManageSheet extends ConsumerWidget {
   }
 }
 
+/// Tinted rounded square for a sheet or dialog row, matching the settings
+/// leading chips so a grant reads as a workspace card, not a menu item.
+class _SheetIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+
+  const _SheetIcon({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Icon(icon, size: 18, color: color),
+    );
+  }
+}
+
 class _MachineDropdown extends StatelessWidget {
   final List<RcGrant> grants;
   final RcGrant? selected;
@@ -305,10 +340,9 @@ class _MachineDropdown extends StatelessWidget {
     final theme = Theme.of(context);
     return DropdownButtonFormField<RcGrant>(
       initialValue: selected,
-      decoration: const InputDecoration(
-        border: OutlineInputBorder(),
+      decoration: InputDecoration(
         isDense: true,
-        prefixIcon: Icon(Icons.computer),
+        prefixIcon: Icon(Icons.computer_rounded, color: theme.colorScheme.primary),
       ),
       items: [
         for (final grant in grants)
@@ -325,7 +359,7 @@ class _MachineDropdown extends StatelessWidget {
                       ? theme.colorScheme.primary
                       : theme.colorScheme.outline,
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 180),
                   child: Text(
@@ -334,7 +368,7 @@ class _MachineDropdown extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 Text(
                   grant.permissionLabel(context.S),
                   style: theme.textTheme.labelSmall?.copyWith(
@@ -398,11 +432,13 @@ class _IncomingInviteCard extends ConsumerWidget {
               child: Row(
                 children: [
                   Icon(
-                    Icons.computer,
+                    Icons.computer_rounded,
                     size: 18,
-                    color: m.online ? null : Theme.of(context).disabledColor,
+                    color: m.online
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).disabledColor,
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: AppSpacing.sm),
                   Expanded(child: Text(m.title)),
                   if (!m.online)
                     Text(
@@ -431,7 +467,7 @@ class _IncomingInviteCard extends ConsumerWidget {
         : (grant.account.isNotEmpty ? grant.account : context.S.rcCounterparty);
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -439,14 +475,14 @@ class _IncomingInviteCard extends ConsumerWidget {
               context.S.rcWantsToControl(who, grant.permissionLabel(context.S)),
               style: theme.textTheme.bodyMedium,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             Row(
               children: [
                 FilledButton.tonal(
                   onPressed: () => _accept(context, ref),
                   child: Text(context.S.rcAccept),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 TextButton(
                   onPressed: () => _runGrantAction(
                     context,
@@ -485,10 +521,9 @@ class _PendingOutgoingRow extends ConsumerWidget {
     return Card(
       child: ListTile(
         dense: true,
-        leading: Icon(
-          Icons.hourglass_top,
-          size: 18,
-          color: theme.colorScheme.onSurfaceVariant,
+        leading: _SheetIcon(
+          icon: Icons.hourglass_top_rounded,
+          color: theme.colorScheme.tertiary,
         ),
         title: Text(
           grant.account.isNotEmpty ? grant.account : grant.title,
@@ -523,7 +558,10 @@ class _ControlledRow extends ConsumerWidget {
     return Card(
       child: ListTile(
         dense: true,
-        leading: Icon(Icons.circle, size: 10, color: theme.colorScheme.primary),
+        leading: _SheetIcon(
+          icon: Icons.sensors_rounded,
+          color: theme.colorScheme.primary,
+        ),
         title: Text(who, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(
           '${context.S.rcControlling(grant.machineName.isNotEmpty ? grant.machineName : context.S.rcMyMachine)} · ${grant.permissionLabel(context.S)}',
@@ -550,9 +588,8 @@ class _GrantRow extends ConsumerWidget {
     return Card(
       child: ListTile(
         dense: true,
-        leading: Icon(
-          Icons.circle,
-          size: 10,
+        leading: _SheetIcon(
+          icon: Icons.computer_rounded,
           color: grant.online
               ? theme.colorScheme.primary
               : theme.colorScheme.outline,
@@ -601,7 +638,7 @@ class _MachineRow extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(context.S.rcPairHint),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppSpacing.md),
                 SegmentedButton<String>(
                   segments: [
                     ButtonSegment(
@@ -647,8 +684,8 @@ class _MachineRow extends ConsumerWidget {
     return Card(
       child: ListTile(
         dense: true,
-        leading: Icon(
-          Icons.computer,
+        leading: _SheetIcon(
+          icon: Icons.desktop_windows_outlined,
           color: machine.online
               ? theme.colorScheme.primary
               : theme.colorScheme.outline,
@@ -716,7 +753,12 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
+      padding: EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        0,
+        AppSpacing.xl,
+        AppSpacing.xl + bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -725,21 +767,20 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
             context.S.rcInviteOthers,
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Text(
             context.S.rcInviteHint,
             style: Theme.of(context).textTheme.bodySmall,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
           TextField(
             controller: _accountCtrl,
             keyboardType: TextInputType.emailAddress,
             decoration: InputDecoration(
               labelText: context.S.rcIdentityLabel,
-              border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           SegmentedButton<String>(
             segments: [
               ButtonSegment(value: 'view', label: Text(context.S.rcViewOnly)),
@@ -750,13 +791,13 @@ class _InviteSheetState extends ConsumerState<_InviteSheet> {
           ),
           if (_error.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: AppSpacing.sm),
               child: Text(
                 _error,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           FilledButton(
             onPressed: _saving ? null : _send,
             child: _saving
@@ -817,24 +858,34 @@ class _TaskSection extends ConsumerWidget {
                   message: context.S.rcViewOnlyTooltip,
                   triggerMode: TooltipTriggerMode.tap,
                   child: Chip(
-                    avatar: const Icon(Icons.visibility_outlined, size: 14),
+                    avatar: Icon(
+                      Icons.visibility_outlined,
+                      size: 14,
+                      color: theme.colorScheme.primary,
+                    ),
                     label: Text(context.S.rcViewOnly),
+                    side: BorderSide(
+                      color: theme.colorScheme.outlineVariant.withValues(
+                        alpha: 0.7,
+                      ),
+                    ),
+                    backgroundColor: theme.colorScheme.surface,
                     visualDensity: VisualDensity.compact,
                   ),
                 ),
         ),
         tasks.when(
           loading: () => const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4),
+            padding: EdgeInsets.symmetric(vertical: AppSpacing.xs),
             child: SkeletonBox(
               width: double.infinity,
               height: 76,
-              radius: BorderRadius.all(Radius.circular(18)),
+              radius: BorderRadius.all(Radius.circular(AppRadius.lg)),
             ),
           ),
           error: (error, _) => Card(
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Text(
                 failureMessage(error),
                 style: TextStyle(color: theme.colorScheme.error),
@@ -844,7 +895,7 @@ class _TaskSection extends ConsumerWidget {
           data: (items) {
             if (items.isEmpty) {
               return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xxl),
                 child: EmptyState(
                   icon: Icons.task_alt,
                   title: context.S.rcNoTasks,
@@ -936,10 +987,15 @@ class _SpaceGroupState extends State<_SpaceGroup> {
           expanded: _expanded,
           container: true,
           child: InkWell(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.xs,
+              AppSpacing.sm,
+              AppSpacing.xs,
+              AppSpacing.sm - 2,
+            ),
             child: Row(
               children: [
                 Icon(
@@ -949,13 +1005,13 @@ class _SpaceGroupState extends State<_SpaceGroup> {
                   size: 18,
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 4),
+                const SizedBox(width: AppSpacing.xs),
                 Icon(
                   Icons.folder_outlined,
                   size: 16,
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: AppSpacing.sm - 2),
                 Expanded(
                   child: Tooltip(
                     message: space.fullPath.isNotEmpty ? space.fullPath : title,
@@ -970,10 +1026,10 @@ class _SpaceGroupState extends State<_SpaceGroup> {
                 // 状态汇总：有运行中任务时显示计数小徽章（primary），
                 // 没有就不显示。
                 if (space.runningCount > 0) ...[
-                  const SizedBox(width: 6),
+                  const SizedBox(width: AppSpacing.sm - 2),
                   _RunningBadge(spaceKey: space.key, count: space.runningCount),
                 ],
-                const SizedBox(width: 6),
+                const SizedBox(width: AppSpacing.sm - 2),
                 // 窄屏（360dp）下蒙古语 "N даалгавар" 或长数字会挤压标题：
                 // Flexible + ellipsis 让计数在空间不足时缩略而不是溢出；
                 // 缩略后用 Semantics 向读屏报完整计数，语义不丢。
@@ -993,7 +1049,7 @@ class _SpaceGroupState extends State<_SpaceGroup> {
                 // 「+」在该空间新建任务（预填工作目录）。未分组空间没有目录
                 // 可预填，不显示；view-only grant 也没有新建权限。
                 if (widget.grant.canOperate && !space.isUngrouped) ...[
-                  const SizedBox(width: 2),
+                  const SizedBox(width: AppSpacing.xs / 2),
                   SizedBox(
                     width: 30,
                     height: 30,
@@ -1051,7 +1107,7 @@ class _RunningBadge extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: theme.colorScheme.primary,
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Text(
         '$count',
@@ -1121,13 +1177,16 @@ class _TaskCard extends ConsumerWidget {
     final (stateKind, stateLabel, stateColor) = _stateOf(context);
     return Card(
           child: InkWell(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
             onTap: () => context.push(
               '/remote/task',
               extra: (grant: grant, taskPath: task.path, taskName: task.title),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.md - 2,
+                vertical: AppSpacing.sm + 1,
+              ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1137,11 +1196,11 @@ class _TaskCard extends ConsumerWidget {
                     height: 32,
                     decoration: BoxDecoration(
                       color: typeColor.withValues(alpha: 0.13),
-                      borderRadius: BorderRadius.circular(9),
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
                     ),
                     child: Icon(typeIcon, size: 17, color: typeColor),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: AppSpacing.md - 2),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1244,7 +1303,7 @@ class _TaskCard extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: AppSpacing.xs),
                   Icon(
                     Icons.chevron_right,
                     size: 18,
@@ -1281,7 +1340,7 @@ class _TaskCard extends ConsumerWidget {
           children: [
             if (icon != null) ...[
               Icon(icon, size: 12, color: foreground),
-              const SizedBox(width: 4),
+              const SizedBox(width: AppSpacing.xs),
             ],
             Flexible(
               child: Text(
@@ -1394,7 +1453,12 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottom),
+      padding: EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        0,
+        AppSpacing.xl,
+        AppSpacing.xl + bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1403,15 +1467,14 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
             context.S.rcCreateTaskOn(widget.grant.title),
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.lg),
           TextField(
             controller: _nameCtrl,
             decoration: InputDecoration(
               labelText: context.S.rcTaskNameLabel,
-              border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           SegmentedButton<String>(
             segments: [
               ButtonSegment(value: '', label: Text(context.S.rcModeChat)),
@@ -1423,13 +1486,12 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
             selected: {_mode},
             onSelectionChanged: (v) => setState(() => _mode = v.first),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           TextField(
             controller: _dirCtrl,
             decoration: InputDecoration(
               labelText: context.S.rcWorkDirLabel,
               hintText: context.S.rcWorkDirHint,
-              border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 tooltip: context.S.rcBrowseTheirDir,
                 icon: const Icon(Icons.folder_open),
@@ -1439,13 +1501,13 @@ class _CreateRemoteTaskSheetState extends ConsumerState<CreateRemoteTaskSheet> {
           ),
           if (_error.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: AppSpacing.sm),
               child: Text(
                 _error,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           FilledButton(
             onPressed: _saving ? null : _create,
             child: _saving
@@ -1510,7 +1572,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
             child: Row(
               children: [
                 Expanded(
@@ -1529,10 +1591,10 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
               ],
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           if (_error.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
               child: Text(
                 _error,
                 style: TextStyle(color: theme.colorScheme.error),
@@ -1543,22 +1605,30 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
               height: 40,
               child: ListView(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
                 children: [
                   if (page.home.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.only(right: AppSpacing.sm - 2),
                       child: ActionChip(
-                        avatar: const Icon(Icons.home_outlined, size: 16),
+                        avatar: Icon(
+                          Icons.home_outlined,
+                          size: 16,
+                          color: theme.colorScheme.primary,
+                        ),
                         label: Text(context.S.rcHomeDir),
                         onPressed: () => _browse(page.home),
                       ),
                     ),
                   for (final root in page.roots)
                     Padding(
-                      padding: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.only(right: AppSpacing.sm - 2),
                       child: ActionChip(
-                        avatar: const Icon(Icons.storage_outlined, size: 16),
+                        avatar: Icon(
+                          Icons.storage_outlined,
+                          size: 16,
+                          color: theme.colorScheme.primary,
+                        ),
                         label: Text(root),
                         onPressed: () => _browse(root),
                       ),
@@ -1600,7 +1670,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                           ),
                       if (page != null && page.truncated)
                         Padding(
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(AppSpacing.md),
                           child: Text(
                             context.S.rcTooManyDirs,
                             style: theme.textTheme.labelSmall?.copyWith(
@@ -1612,7 +1682,7 @@ class _RemoteDirPickerState extends ConsumerState<_RemoteDirPicker> {
                           page.dirs.isEmpty &&
                           page.parent.isEmpty)
                         Padding(
-                          padding: const EdgeInsets.all(20),
+                          padding: const EdgeInsets.all(AppSpacing.xl),
                           child: Text(context.S.rcNoSubdirs),
                         ),
                     ],

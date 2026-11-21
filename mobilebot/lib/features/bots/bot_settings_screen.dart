@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart';
 import 'widgets.dart';
 
 /// Bot 设置 — 对应桌面 GUI 的 BotEditDialog / BotStyleDialog /
@@ -214,10 +216,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
         showDragHandle: true,
         builder: (context) => Padding(
           padding: EdgeInsets.fromLTRB(
-            20,
+            AppSpacing.xl,
             0,
-            20,
-            24 + MediaQuery.viewInsetsOf(context).bottom,
+            AppSpacing.xl,
+            AppSpacing.xxl + MediaQuery.viewInsetsOf(context).bottom,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -227,22 +229,26 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                 context.S.stLongTermPrefs,
                 style: Theme.of(context).textTheme.titleMedium,
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: AppSpacing.xs),
               Text(
                 context.S.stPrefsHint,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.md),
               TextField(
                 controller: ctrl,
                 minLines: 2,
                 maxLines: 4,
                 decoration: InputDecoration(
                   hintText: context.S.stPrefsFieldHint,
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(AppRadius.md),
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.md),
               Row(
                 children: [
                   TextButton.icon(
@@ -364,7 +370,13 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.S.stScreenTitle),
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.stScreenTitle),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: _saving ? null : _save,
@@ -379,11 +391,16 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.xxl,
+        ),
         children: [
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               child: Column(
                 children: [
                   TextField(
@@ -392,7 +409,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       labelText: context.S.stNameLabel,
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppSpacing.md),
                   TextField(
                     controller: _descCtrl,
                     decoration: InputDecoration(
@@ -404,10 +421,15 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.md,
+                AppSpacing.sm,
+                AppSpacing.md,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -415,7 +437,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     context.S.stScheduleTitle,
                     style: theme.textTheme.titleSmall,
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: AppSpacing.xs),
                   if (_scheduleNote.isNotEmpty)
                     Text(
                       _scheduleNote,
@@ -444,10 +466,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -455,10 +477,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     context.S.stAppearance,
                     style: theme.textTheme.titleSmall,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppSpacing.md),
                   Wrap(
-                    spacing: 10,
-                    runSpacing: 8,
+                    spacing: AppSpacing.sm + 2,
+                    runSpacing: AppSpacing.sm,
                     children: [
                       for (final hex in botColors)
                         GestureDetector(
@@ -487,9 +509,9 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                         ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppSpacing.md),
                   Wrap(
-                    spacing: 8,
+                    spacing: AppSpacing.sm,
                     children: [
                       for (final shape in botShapes)
                         ChoiceChip(
@@ -503,10 +525,10 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -514,7 +536,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     context.S.stComputerSection,
                     style: theme.textTheme.titleSmall,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppSpacing.md),
                   SizedBox(
                     width: double.infinity,
                     child: SegmentedButton<String>(
@@ -545,7 +567,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                       },
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.sm),
                   Text(
                     switch (_desktopMode) {
                       'none' => context.S.stModeNoneHint,
@@ -558,7 +580,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                   ),
                   if (ref.watch(botsProvider).quota.label(context.S).isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 4),
+                      padding: const EdgeInsets.only(top: AppSpacing.xs),
                       child: Text(
                         ref.watch(botsProvider).quota.label(context.S),
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -570,7 +592,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Column(
               children: [
@@ -583,7 +605,11 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     '/bot/${Uri.encodeComponent(widget.bot.id)}/style',
                   ),
                 ),
-                const Divider(height: 1, indent: 16, endIndent: 16),
+                const Divider(
+                  height: 1,
+                  indent: AppSpacing.lg,
+                  endIndent: AppSpacing.lg,
+                ),
                 ListTile(
                   leading: const Icon(Icons.tune),
                   title: Text(context.S.stLongTermPrefs),
@@ -606,7 +632,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: ListTile(
               leading: const Icon(Icons.star_outline),
@@ -624,7 +650,7 @@ class _BotSettingsScreenState extends ConsumerState<BotSettingsScreen> {
                     ),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: AppSpacing.xl),
           FilledButton.tonalIcon(
             style: FilledButton.styleFrom(
               foregroundColor: theme.colorScheme.error,
@@ -756,7 +782,13 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.S.stPersonaMemory),
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.stPersonaMemory),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: _saving || _loading || !_enabled ? null : _save,
@@ -769,11 +801,11 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
           : !_enabled
           ? Center(child: Text(context.S.stPersonaDisabled))
           : ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               children: [
                 if (_error.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.only(bottom: AppSpacing.md),
                     child: Text(
                       _error,
                       style: TextStyle(
@@ -786,29 +818,37 @@ class _BotStyleScreenState extends ConsumerState<BotStyleScreen> {
                   decoration: InputDecoration(
                     labelText: context.S.stPersonaLabel,
                     hintText: context.S.stPersonaFieldHint,
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(AppRadius.md),
+                      ),
+                    ),
                     alignLabelWithHint: true,
                   ),
                   maxLines: 6,
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppSpacing.md),
                 TextField(
                   controller: _memoryCtrl,
                   decoration: InputDecoration(
                     labelText: context.S.stMemoryLabel,
                     hintText: context.S.stMemoryFieldHint,
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(AppRadius.md),
+                      ),
+                    ),
                     alignLabelWithHint: true,
                   ),
                   maxLines: 6,
                 ),
                 if (_history.isNotEmpty) ...[
-                  const SizedBox(height: 24),
+                  const SizedBox(height: AppSpacing.xxl),
                   Text(
                     context.S.stHistoryTitle,
                     style: theme.textTheme.titleSmall,
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.sm),
                   for (final item in _history.reversed)
                     ListTile(
                       dense: true,

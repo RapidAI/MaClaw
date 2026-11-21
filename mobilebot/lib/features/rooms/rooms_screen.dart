@@ -7,6 +7,7 @@ import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
 import '../../core/chat_ui.dart' show ChatComposer;
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import '../status/status_screen.dart' show shareInboxFile;
 
@@ -26,7 +27,15 @@ class RoomsScreen extends ConsumerWidget {
     final data = ref.watch(_roomsProvider);
     final bots = ref.watch(botsProvider).bots;
     return Scaffold(
-      appBar: AppBar(title: Text(context.S.stBotRooms)),
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.stBotRooms),
+          ],
+        ),
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(context, ref, bots, null),
         icon: const Icon(Icons.add),
@@ -46,7 +55,10 @@ class RoomsScreen extends ConsumerWidget {
           error: (error, _) => ListView(
             children: [
               const SizedBox(height: 120),
-              Center(child: Text(failureMessage(error))),
+              EmptyState(
+                icon: Icons.cloud_off_rounded,
+                title: failureMessage(error),
+              ),
             ],
           ),
           data: (rooms) {
@@ -63,7 +75,12 @@ class RoomsScreen extends ConsumerWidget {
               );
             }
             return ListView.builder(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.sm,
+                AppSpacing.lg,
+                104,
+              ),
               itemCount: rooms.length,
               itemBuilder: (context, index) {
                 final room = rooms[index];
@@ -72,13 +89,13 @@ class RoomsScreen extends ConsumerWidget {
                     bots.where((b) => b.id == id).firstOrNull?.title ?? id,
                 ].join('、');
                 return Card(
+                  margin: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
+                  clipBehavior: Clip.antiAlias,
                   child: ListTile(
-                    leading: CircleAvatar(
-                      child: Text(
-                        room.name.isEmpty
-                            ? context.S.roomInitial
-                            : room.name.characters.first,
-                      ),
+                    leading: _RoomMark(
+                      label: room.name.isEmpty
+                          ? context.S.roomInitial
+                          : room.name.characters.first,
                     ),
                     title: Text(
                       room.name.isEmpty ? context.S.roomUnnamed : room.name,
@@ -123,6 +140,34 @@ class RoomsScreen extends ConsumerWidget {
       builder: (_) => RoomEditorSheet(bots: bots, room: room),
     );
     if (changed == true) ref.invalidate(_roomsProvider);
+  }
+}
+
+/// Rounded initial tile so a room reads as a workspace card, not a contact.
+class _RoomMark extends StatelessWidget {
+  final String label;
+
+  const _RoomMark({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 40,
+      height: 40,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+          color: scheme.primary,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
   }
 }
 
@@ -230,10 +275,10 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
     final S = context.S;
     return Padding(
       padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
-        top: 16,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        left: AppSpacing.lg,
+        right: AppSpacing.lg,
+        top: AppSpacing.lg,
+        bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.lg,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -243,15 +288,12 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
             widget.room == null ? S.roomNew : S.roomEdit,
             style: theme.textTheme.titleMedium,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           TextField(
             controller: _nameCtrl,
-            decoration: InputDecoration(
-              labelText: S.roomNameLabel,
-              border: const OutlineInputBorder(),
-            ),
+            decoration: InputDecoration(labelText: S.roomNameLabel),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           Text(S.roomMembers, style: theme.textTheme.titleSmall),
           Flexible(
             child: ListView(
@@ -297,7 +339,7 @@ class _RoomEditorSheetState extends ConsumerState<RoomEditorSheet> {
               ],
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
           Row(
             children: [
               if (widget.room != null)
@@ -413,6 +455,8 @@ class _RoomChatScreenState extends ConsumerState<RoomChatScreen> {
           children: [
             Text(
               widget.room.name.isEmpty ? S.roomDefaultName : widget.room.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
             Text(
               widget.room.members
@@ -493,7 +537,10 @@ class _RoomTranscript extends ConsumerWidget {
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 const SizedBox(height: 140),
-                Center(child: Text(failureMessage(error))),
+                EmptyState(
+                  icon: Icons.cloud_off_rounded,
+                  title: failureMessage(error),
+                ),
               ],
             ),
           ),
@@ -505,7 +552,10 @@ class _RoomTranscript extends ConsumerWidget {
                   physics: const AlwaysScrollableScrollPhysics(),
                   children: [
                     const SizedBox(height: 160),
-                    Center(child: Text(context.S.roomEmptyTranscript)),
+                    EmptyState(
+                      icon: Icons.forum_outlined,
+                      title: context.S.roomEmptyTranscript,
+                    ),
                   ],
                 ),
               );
@@ -514,7 +564,7 @@ class _RoomTranscript extends ConsumerWidget {
               onRefresh: () => _refresh(ref),
               child: ListView.builder(
                 controller: scrollCtrl,
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(AppSpacing.lg),
                 itemCount: notes.length,
                 itemBuilder: (context, index) {
                   final note = notes[index];
@@ -527,23 +577,28 @@ class _RoomTranscript extends ConsumerWidget {
                       constraints: BoxConstraints(
                         maxWidth: MediaQuery.of(context).size.width * 0.82,
                       ),
-                      margin: const EdgeInsets.only(bottom: 8),
+                      margin: const EdgeInsets.only(bottom: AppSpacing.md),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
+                        horizontal: 14,
+                        vertical: 10,
                       ),
                       decoration: BoxDecoration(
                         color: mine
                             ? theme.colorScheme.primary
-                            : theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(14),
+                            : theme.colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(mine ? 20 : 8),
+                          topRight: const Radius.circular(20),
+                          bottomLeft: Radius.circular(mine ? 20 : 8),
+                          bottomRight: Radius.circular(mine ? 6 : 8),
+                        ),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (!mine)
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 2),
+                              padding: const EdgeInsets.only(bottom: AppSpacing.xs / 2),
                               child: Text(
                                 _botName(note.from),
                                 style: theme.textTheme.labelSmall?.copyWith(
@@ -597,7 +652,7 @@ class _RoomTranscript extends ConsumerWidget {
                             ),
                           if (note.createdAt != null)
                             Padding(
-                              padding: const EdgeInsets.only(top: 2),
+                              padding: const EdgeInsets.only(top: AppSpacing.xs / 2),
                               child: Text(
                                 DateFormat(
                                   'MM-dd HH:mm',

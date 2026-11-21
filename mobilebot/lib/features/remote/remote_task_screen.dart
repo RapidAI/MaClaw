@@ -16,7 +16,8 @@ import '../bots/bots_controller.dart' show failureMessage;
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
 import '../../core/theme.dart';
-import '../../core/ui_kit.dart' show linkifyMarkdownUrls, openExternalUrl;
+import '../../core/ui_kit.dart'
+    show EmptyState, linkifyMarkdownUrls, openExternalUrl;
 import 'remote_api.dart';
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
@@ -445,7 +446,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           content: TextField(
             controller: ctrl,
             autofocus: true,
-            decoration: const InputDecoration(border: OutlineInputBorder()),
+            decoration: const InputDecoration(),
           ),
           actions: [
             TextButton(
@@ -823,7 +824,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                   ),
                 ),
                 if (task != null) ...[
-                  const SizedBox(width: 6),
+                  const SizedBox(width: AppSpacing.sm - 2),
                   Flexible(
                     child: _KindChip(
                       label: task.isCoding
@@ -885,17 +886,13 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error.isNotEmpty
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_error),
-                  const SizedBox(height: 12),
-                  FilledButton.tonal(
-                    onPressed: _load,
-                    child: Text(context.S.retry),
-                  ),
-                ],
+          ? EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: _error,
+              action: FilledButton.tonalIcon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: Text(context.S.retry),
               ),
             )
           : Column(
@@ -903,12 +900,21 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                 if (detail != null && detail.task.running)
                   Container(
                     width: double.infinity,
-                    color: theme.colorScheme.primaryContainer.withValues(
-                      alpha: .5,
+                    margin: const EdgeInsets.fromLTRB(
+                      AppSpacing.lg,
+                      AppSpacing.sm,
+                      AppSpacing.lg,
+                      0,
+                    ),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primaryContainer.withValues(
+                        alpha: .55,
+                      ),
+                      borderRadius: BorderRadius.circular(AppRadius.md),
                     ),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 8,
+                      horizontal: AppSpacing.md + 2,
+                      vertical: AppSpacing.sm,
                     ),
                     child: Row(
                       children: [
@@ -920,7 +926,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             color: theme.colorScheme.primary,
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: AppSpacing.sm),
                         Expanded(
                           child: Text(
                             detail.task.activePhase.isNotEmpty
@@ -942,11 +948,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                     child: ListView(
                       key: const ValueKey('remote-task-transcript'),
                       controller: _scrollCtrl,
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(AppSpacing.md),
                       children: [
                         if (_degraded)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                             child: Text(
                               context.S.rtTimelineDegraded,
                               style: theme.textTheme.bodySmall?.copyWith(
@@ -978,14 +984,10 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             _pendingUser.isEmpty &&
                             !_liveHasCopy())
                           Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 24),
-                            child: Center(
-                              child: Text(
-                                context.S.rtNoTranscript,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
+                            padding: const EdgeInsets.symmetric(vertical: AppSpacing.xxl),
+                            child: EmptyState(
+                              icon: Icons.forum_outlined,
+                              title: context.S.rtNoTranscript,
                             ),
                           ),
                         if (!_transcriptOwnsLive())
@@ -1113,27 +1115,32 @@ class _LiveRound extends StatelessWidget {
       return const SizedBox.shrink();
     }
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: AppSpacing.md),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            radius: 15,
-            backgroundColor: theme.colorScheme.primaryContainer,
+          Container(
+            width: 30,
+            height: 30,
+            margin: const EdgeInsets.only(top: AppSpacing.xs / 2),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+            ),
             child: Icon(
-              Icons.smart_toy_outlined,
-              size: 17,
-              color: theme.colorScheme.onPrimaryContainer,
+              Icons.auto_awesome_rounded,
+              size: 16,
+              color: theme.colorScheme.primary,
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: AppSpacing.md - 2),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (thinking.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
                     child: _ReasoningBlock(
                       text: thinking,
                       streaming: true,
@@ -1142,7 +1149,7 @@ class _LiveRound extends StatelessWidget {
                   ),
                 for (final line in notes)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
                     child: _NoteLine(text: line),
                   ),
                 if (body.isNotEmpty)
@@ -1156,7 +1163,7 @@ class _LiveRound extends StatelessWidget {
                   ),
                 if (syncing)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: AppSpacing.xs),
                     child: Text(
                       context.S.rtResuming,
                       style: theme.textTheme.bodySmall?.copyWith(
@@ -1270,10 +1277,15 @@ class _ArtifactStrip extends StatelessWidget {
         constraints: const BoxConstraints(maxHeight: 132),
         child: ListView(
           shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.md,
+            AppSpacing.xs,
+            AppSpacing.md,
+            AppSpacing.xs,
+          ),
           children: [
             Text(context.S.rtArtifacts, style: theme.textTheme.titleSmall),
-            const SizedBox(height: 4),
+            const SizedBox(height: AppSpacing.xs),
             for (final artifact in artifacts)
               Card(
                 child: ListTile(
@@ -1284,7 +1296,10 @@ class _ArtifactStrip extends StatelessWidget {
                   onTap: artifact.downloadable && artifact.sourceUrl.isNotEmpty
                       ? () => onOpen(artifact.sourceUrl)
                       : null,
-                  leading: const Icon(Icons.description_outlined),
+                  leading: Icon(
+                    Icons.description_outlined,
+                    color: theme.colorScheme.primary,
+                  ),
                   title: Text(
                     artifact.title.isNotEmpty
                         ? artifact.title
@@ -1378,7 +1393,7 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
     ),
     codeblockDecoration: BoxDecoration(
       color: theme.colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(AppRadius.sm),
     ),
   );
 }
@@ -1395,7 +1410,10 @@ class _KindChip extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 96),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: 2,
+        ),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(AppRadius.sm),
@@ -1647,13 +1665,16 @@ class _UserBubble extends StatelessWidget {
             MessageBubble(
               role: ChatRole.user,
               maxWidth: MediaQuery.of(context).size.width * 0.78,
-              margin: const EdgeInsets.only(top: 4),
+              margin: const EdgeInsets.only(top: AppSpacing.xs),
               child: SelectableText(text, style: const TextStyle(height: 1.45)),
             ),
             if (sending)
               Padding(
                 key: const ValueKey('pending-echo-sending'),
-                padding: const EdgeInsets.only(bottom: 4, right: 4),
+                padding: const EdgeInsets.only(
+                  bottom: AppSpacing.xs,
+                  right: AppSpacing.xs,
+                ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1665,7 +1686,7 @@ class _UserBubble extends StatelessWidget {
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: AppSpacing.sm - 2),
                     Text(
                       context.S.chatSending,
                       style: theme.textTheme.labelSmall?.copyWith(
@@ -1678,7 +1699,10 @@ class _UserBubble extends StatelessWidget {
             if (failed)
               Padding(
                 key: const ValueKey('pending-echo-failed'),
-                padding: const EdgeInsets.only(bottom: 4, right: 4),
+                padding: const EdgeInsets.only(
+                  bottom: AppSpacing.xs,
+                  right: AppSpacing.xs,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
@@ -1692,7 +1716,7 @@ class _UserBubble extends StatelessWidget {
                     TextButton(
                       onPressed: onRetry,
                       style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
@@ -1732,14 +1756,18 @@ class _AssistantTurn extends StatelessWidget {
     return MessageBubble(
       role: ChatRole.assistant,
       maxWidth: MediaQuery.of(context).size.width * 0.84,
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      leading: CircleAvatar(
-        radius: 15,
-        backgroundColor: theme.colorScheme.primaryContainer,
+      margin: const EdgeInsets.symmetric(vertical: AppSpacing.sm - 2),
+      leading: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primaryContainer,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+        ),
         child: Icon(
-          Icons.smart_toy_outlined,
-          size: 17,
-          color: theme.colorScheme.onPrimaryContainer,
+          Icons.auto_awesome_rounded,
+          size: 16,
+          color: theme.colorScheme.primary,
         ),
       ),
       child: Column(
@@ -1747,7 +1775,7 @@ class _AssistantTurn extends StatelessWidget {
         children: [
           if (message.reasoning.isNotEmpty) ...[
             _ReasoningBlock(text: message.reasoning),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
           ],
           if (message.content.isNotEmpty)
             MermaidMarkdown(
@@ -1760,11 +1788,11 @@ class _AssistantTurn extends StatelessWidget {
             ),
           if (message.resultStatus.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.only(top: AppSpacing.sm),
               child: _StatusChip(status: message.resultStatus),
             ),
           if (message.filePaths.isNotEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             for (final path in message.filePaths)
               _FileCard(
                 path: path,
@@ -1801,13 +1829,18 @@ class _ReasoningBlock extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: ExpansionTile(
         dense: true,
         initiallyExpanded: initiallyExpanded,
-        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
-        childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+        tilePadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md - 2),
+        childrenPadding: const EdgeInsets.fromLTRB(
+          AppSpacing.md - 2,
+          0,
+          AppSpacing.md - 2,
+          AppSpacing.md - 2,
+        ),
         leading: Icon(
           Icons.psychology_outlined,
           size: 16,
@@ -1842,10 +1875,13 @@ class _StatusChip extends StatelessWidget {
         ? theme.colorScheme.error
         : theme.colorScheme.onSurfaceVariant;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 3,
+      ),
       decoration: BoxDecoration(
         color: color.withValues(alpha: .12),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1855,7 +1891,7 @@ class _StatusChip extends StatelessWidget {
             size: 12,
             color: color,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           Text(
             status,
             style: theme.textTheme.labelSmall?.copyWith(color: color),
@@ -1921,21 +1957,27 @@ class _FileCard extends StatelessWidget {
     final theme = Theme.of(context);
     final name = path.split(RegExp(r'[\\/]')).last;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm - 2),
       child: InkWell(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         onTap: downloading ? null : onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md - 2,
+            vertical: AppSpacing.sm,
+          ),
           decoration: BoxDecoration(
-            border: Border.all(color: theme.colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(10),
+            color: theme.colorScheme.surface,
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.7),
+            ),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(_iconFor(name), size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: 8),
+              const SizedBox(width: AppSpacing.sm),
               Flexible(
                 child: Text(
                   name,
@@ -1946,10 +1988,10 @@ class _FileCard extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: AppSpacing.xs),
               downloading
                   ? const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12),
+                      padding: EdgeInsets.symmetric(horizontal: AppSpacing.md),
                       child: SizedBox(
                         width: 14,
                         height: 14,
@@ -1971,7 +2013,7 @@ class _FileCard extends StatelessWidget {
                           color: theme.colorScheme.primary,
                           onPressed: onOpen,
                         ),
-                        const SizedBox(width: 2),
+                        const SizedBox(width: AppSpacing.xs / 2),
                         Icon(
                           Icons.download_outlined,
                           size: 16,

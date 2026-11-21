@@ -6,6 +6,7 @@ import '../../core/account_store.dart';
 import '../../core/providers.dart';
 import '../../core/locale.dart';
 import '../../core/platform.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
@@ -24,7 +25,13 @@ class AccountScreen extends ConsumerWidget {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.S.tabMe),
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.tabMe),
+          ],
+        ),
         actions: [
           if (active != null)
             IconButton(
@@ -40,12 +47,12 @@ class AccountScreen extends ConsumerWidget {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         children: [
           if (active != null) _AccountCard(account: active, active: true),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           const _CreditsCard(),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppSpacing.md),
           Card(
             child: Column(
               children: [
@@ -122,7 +129,7 @@ class AccountScreen extends ConsumerWidget {
               account: account,
               isActive: account.key == active?.key,
             ),
-          const SizedBox(height: 24),
+          const SizedBox(height: AppSpacing.xxl),
           if (active != null)
             FilledButton.tonalIcon(
               style: FilledButton.styleFrom(
@@ -132,7 +139,7 @@ class AccountScreen extends ConsumerWidget {
               icon: const Icon(Icons.logout),
               label: Text(context.S.acSignOut),
             ),
-          const SizedBox(height: 24),
+          const SizedBox(height: AppSpacing.xxl),
           Center(
             child: Text(
               context.S.acFooter,
@@ -240,21 +247,24 @@ class _CreditsCard extends ConsumerWidget {
     final progress = total > 0 ? (used / total).clamp(0.0, 1.0) : 0.0;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Icon(Icons.bolt, size: 18, color: theme.colorScheme.primary),
-                const SizedBox(width: 6),
+                const SizedBox(width: AppSpacing.sm),
                 Text(context.S.acCredits, style: theme.textTheme.titleSmall),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: AppSpacing.md),
             if (total > 0) ...[
-              LinearProgressIndicator(value: progress),
-              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: AppRadius.pill,
+                child: LinearProgressIndicator(value: progress),
+              ),
+              const SizedBox(height: AppSpacing.sm),
               Text(
                 context.S.acCreditsUsedRemain(
                   used.toStringAsFixed(1),
@@ -293,30 +303,23 @@ class _AccountCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.lg),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: scheme.primary,
-              child: Text(
-                account.label.isNotEmpty
-                    ? account.label.characters.first.toUpperCase()
-                    : '?',
-                style: TextStyle(
-                  color: scheme.onPrimary,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+            _AccountMark(
+              label: account.label.isNotEmpty
+                  ? account.label.characters.first.toUpperCase()
+                  : '?',
+              filled: true,
+              size: 56,
             ),
-            const SizedBox(width: 14),
+            const SizedBox(width: AppSpacing.md + 2),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(account.label, style: theme.textTheme.titleMedium),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: AppSpacing.xs / 2),
                   Text(
                     account.subtitle,
                     style: theme.textTheme.bodySmall?.copyWith(
@@ -340,6 +343,45 @@ class _AccountCard extends StatelessWidget {
   }
 }
 
+/// Rounded initial tile so an account reads as a workspace card, not a contact.
+class _AccountMark extends StatelessWidget {
+  final String label;
+  final bool filled;
+  final double size;
+
+  const _AccountMark({
+    required this.label,
+    required this.filled,
+    this.size = 40,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: filled
+            ? scheme.primary
+            : scheme.primary.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(
+          size >= 56 ? AppRadius.md : AppRadius.sm,
+        ),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+          color: filled ? scheme.onPrimary : scheme.primary,
+          fontWeight: FontWeight.w700,
+          fontSize: size >= 56 ? 22 : null,
+        ),
+      ),
+    );
+  }
+}
+
 /// Rounded tinted chip behind a settings tile's leading icon — the modern
 /// grouped-settings look (one hue per row).
 class _SettingsIcon extends StatelessWidget {
@@ -355,7 +397,7 @@ class _SettingsIcon extends StatelessWidget {
       height: 40,
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Icon(icon, size: 21, color: color),
     );
@@ -372,22 +414,13 @@ class _AccountTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: isActive
-              ? theme.colorScheme.primary
-              : theme.colorScheme.surfaceContainerHighest,
-          child: Text(
-            account.label.isNotEmpty
-                ? account.label.characters.first.toUpperCase()
-                : '?',
-            style: TextStyle(
-              color: isActive
-                  ? theme.colorScheme.onPrimary
-                  : theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
+        leading: _AccountMark(
+          label: account.label.isNotEmpty
+              ? account.label.characters.first.toUpperCase()
+              : '?',
+          filled: isActive,
         ),
         title: Text(
           account.label,

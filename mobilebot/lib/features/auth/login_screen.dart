@@ -9,6 +9,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/locale.dart';
 import '../../l10n/gen/app_localizations.dart';
 import '../../core/providers.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import 'auth_api.dart';
 import 'qr_login_screen.dart';
@@ -238,8 +239,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             child: Center(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 28,
-                  vertical: 24,
+                  horizontal: AppSpacing.xxl + AppSpacing.xs,
+                  vertical: AppSpacing.xxl,
                 ),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 420),
@@ -249,13 +250,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                             children: [
                               if (!widget.addingAccount) ...[
                                 const Center(child: BrandMark(size: 88)),
-                                const SizedBox(height: 18),
+                                const SizedBox(height: AppSpacing.lg + 2),
                                 Text(
                                   'MaclawGo',
                                   textAlign: TextAlign.center,
                                   style: theme.textTheme.displaySmall,
                                 ),
-                                const SizedBox(height: 6),
+                                const SizedBox(height: AppSpacing.xs + 2),
                                 Text(
                                   context.S.loginTagline,
                                   textAlign: TextAlign.center,
@@ -263,15 +264,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                     color: theme.colorScheme.onSurfaceVariant,
                                   ),
                                 ),
-                                const SizedBox(height: 28),
+                                const SizedBox(height: AppSpacing.xxl + AppSpacing.xs),
                               ],
                               if (widget.relogin)
                                 Container(
-                                  margin: const EdgeInsets.only(bottom: 16),
-                                  padding: const EdgeInsets.all(12),
+                                  margin: const EdgeInsets.only(
+                                    bottom: AppSpacing.lg,
+                                  ),
+                                  padding: const EdgeInsets.all(AppSpacing.md),
                                   decoration: BoxDecoration(
                                     color: theme.colorScheme.errorContainer,
-                                    borderRadius: BorderRadius.circular(12),
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadius.md,
+                                    ),
                                   ),
                                   child: Text(
                                     context.S.sessionExpired,
@@ -288,7 +293,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                   Tab(text: context.S.loginTabPhone),
                                 ],
                               ),
-                              const SizedBox(height: 20),
+                              const SizedBox(height: AppSpacing.xl),
                               TextField(
                                 controller: _identityCtrl,
                                 keyboardType: _method == AuthMethod.email
@@ -302,11 +307,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                         ? Icons.mail_outline
                                         : Icons.phone_iphone,
                                   ),
-                                  border: const OutlineInputBorder(),
+                                  border: const OutlineInputBorder(
+                                    borderRadius: BorderRadius.all(
+                                      Radius.circular(AppRadius.md),
+                                    ),
+                                  ),
                                 ),
                                 enabled: !_verifying,
                               ),
-                              const SizedBox(height: 14),
+                              const SizedBox(height: AppSpacing.md + 2),
                               Row(
                                 children: [
                                   Expanded(
@@ -320,7 +329,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                         prefixIcon: const Icon(
                                           Icons.pin_outlined,
                                         ),
-                                        border: const OutlineInputBorder(),
+                                        border: const OutlineInputBorder(
+                                          borderRadius: BorderRadius.all(
+                                            Radius.circular(AppRadius.md),
+                                          ),
+                                        ),
                                         helperText: _method == AuthMethod.email
                                             ? context.S.codeExpiryEmail
                                             : context.S.codeExpirySms,
@@ -329,7 +342,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                       onSubmitted: (_) => _verify(),
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
+                                  const SizedBox(width: AppSpacing.sm + 2),
                                   SizedBox(
                                     height: 48,
                                     child: FilledButton.tonal(
@@ -357,10 +370,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 18),
+                              const SizedBox(height: AppSpacing.lg + 2),
                               if (_info.isNotEmpty)
                                 Padding(
-                                  padding: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
                                   child: Text(
                                     _info,
                                     style: theme.textTheme.bodySmall?.copyWith(
@@ -370,7 +383,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                 ),
                               if (_error.isNotEmpty)
                                 Padding(
-                                  padding: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
                                   child: Text(
                                     _error,
                                     style: theme.textTheme.bodySmall?.copyWith(
@@ -392,7 +405,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                       )
                                     : Text(context.S.signIn),
                               ),
-                              const SizedBox(height: 10),
+                              const SizedBox(height: AppSpacing.sm + 2),
                               OutlinedButton.icon(
                                 onPressed: _verifying
                                     ? null
@@ -404,7 +417,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                                 icon: const Icon(Icons.qr_code_scanner),
                                 label: Text(context.S.scanToSignIn),
                               ),
-                              const SizedBox(height: 12),
+                              const SizedBox(height: AppSpacing.md),
                               Text(
                                 context.S.loginFooter,
                                 textAlign: TextAlign.center,

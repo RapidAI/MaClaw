@@ -13,10 +13,11 @@ import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import 'bot_api.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart' show BrandMark, EmptyState;
 import 'bot_models.dart';
 import 'bots_controller.dart';
 import 'desktop_wake_text.dart';
-import '../../core/ui_kit.dart' show EmptyState;
 
 /// 电脑画面 — the mobile counterpart of the desktop stage in the GUI's
 /// DesktopBotWorkspace. The watch hold pins the bot's desktop while the page
@@ -485,7 +486,12 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
           return SafeArea(
             child: ListView(
               shrinkWrap: true,
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.xl,
+                0,
+                AppSpacing.xl,
+                AppSpacing.xxl,
+              ),
               children: [
                 Text(
                   context.S.dtProxyMode,
@@ -493,7 +499,10 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                 ),
                 if (proxy.locked)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4, bottom: 4),
+                    padding: const EdgeInsets.only(
+                      top: AppSpacing.xs,
+                      bottom: AppSpacing.xs,
+                    ),
                     child: Text(context.S.dtProxyLocked),
                   ),
                 RadioGroup<String>(
@@ -523,24 +532,24 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                     ],
                   ),
                 ),
-                const Divider(height: 24),
+                const Divider(height: AppSpacing.xxl),
                 Text(
                   context.S.dtMaintenance,
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: AppSpacing.xs),
                 Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
                   children: [
-                    OutlinedButton.icon(
+                    FilledButton.tonalIcon(
                       onPressed: caps.restartAllowed
                           ? () => computerAction('restart', context.S.dtRestart)
                           : null,
                       icon: const Icon(Icons.restart_alt),
                       label: Text(context.S.dtRestart),
                     ),
-                    OutlinedButton.icon(
+                    FilledButton.tonalIcon(
                       onPressed: caps.resetAllowed
                           ? () => computerAction('reset', context.S.dtReset)
                           : null,
@@ -551,7 +560,7 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
                 ),
                 if (!caps.restartAllowed && !caps.resetAllowed)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: AppSpacing.xs),
                     child: Text(
                       context.S.dtMaintenanceUnavailable,
                       style: Theme.of(context).textTheme.bodySmall,
@@ -569,8 +578,25 @@ class _BotDesktopScreenState extends ConsumerState<BotDesktopScreen>
   Widget build(BuildContext context) {
     if (_noComputer) {
       return Scaffold(
-        appBar: AppBar(title: Text(context.S.dtTitle(widget.bot.title))),
-        body: Center(child: Text(context.S.dtNoComputer)),
+        appBar: AppBar(
+          title: Row(
+            children: [
+              const BrandMark(size: 26, tile: true),
+              const SizedBox(width: AppSpacing.sm + 2),
+              Flexible(
+                child: Text(
+                  context.S.dtTitle(widget.bot.title),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+        body: EmptyState(
+          icon: Icons.desktop_access_disabled_outlined,
+          title: context.S.dtNoComputer,
+        ),
       );
     }
     final theme = Theme.of(context);
