@@ -93,10 +93,35 @@ func TestReadResponseRejectsMismatchedID(t *testing.T) {
 	}
 }
 
+func TestAwaitMismatchRetiresConnection(t *testing.T) {
+	rt := &runtime{pipe: &scriptedPipe{reads: []pipeRead{
+		{line: []byte(`{"jsonrpc":"2.0","id":99,"result":{"ok":true}}`)},
+	}}}
+	_, err := rt.await(1, context.Background())
+	if err == nil || !strings.Contains(err.Error(), "does not answer") {
+		t.Fatalf("mismatched id must fail, got %v", err)
+	}
+	if !rt.closed.Load() {
+		t.Fatal("await must retire a desynced connection")
+	}
+}
+
 func TestDecodeToolResultRejectsOKFalseWithoutError(t *testing.T) {
 	_, _, _, err := decodeToolResult([]byte(`{"ok":false}`))
 	if err == nil {
 		t.Fatal("ok:false must not decode as a successful tool value")
+	}
+}
+
+func TestReadLineConnKeepsTailOfCoalescedRead(t *testing.T) {
+	cr := &connReader{r: strings.NewReader("{\"id\":1}\n{\"id\":2}\n")}
+	first, err := readLineConn(context.Background(), cr)
+	if err != nil || string(first) != `{"id":1}` {
+		t.Fatalf("first = %q err=%v", first, err)
+	}
+	second, err := readLineConn(context.Background(), cr)
+	if err != nil || string(second) != `{"id":2}` {
+		t.Fatalf("second = %q err=%v", second, err)
 	}
 }
 

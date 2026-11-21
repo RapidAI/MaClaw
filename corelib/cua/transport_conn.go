@@ -7,32 +7,48 @@ import (
 	"time"
 )
 
-// readLineConn reads one newline-terminated line from a stream. A net.Conn
-// read is cancellable through its deadline, so no goroutine is needed.
-// Unix and tcp sockets are how desktopd inside a container reaches its
-// cua-driver; Windows uses the named pipe in transport_windows.go.
-func readLineConn(ctx context.Context, r io.Reader) ([]byte, error) {
-	if setter, ok := r.(interface{ SetReadDeadline(time.Time) error }); ok {
+// connReader is a stream that can hand bytes back. net.Conn does not, so
+// the runtime keeps one of these per connection.
+type connReader struct {
+	r   io.Reader
+	buf []byte
+}
+
+// readLineConn reads one newline-terminated line. Bytes after that newline
+// stay buffered: a socket Read can return two frames, and dropping the tail
+// shifts every later response onto the wrong request.
+func readLineConn(ctx context.Context, cr *connReader) ([]byte, error) {
+	if cr == nil || cr.r == nil {
+		return nil, ErrNoDriver
+	}
+	if setter, ok := cr.r.(interface{ SetReadDeadline(time.Time) error }); ok {
 		if dl, ok := ctx.Deadline(); ok {
 			_ = setter.SetReadDeadline(dl)
+		} else {
+			_ = setter.SetReadDeadline(time.Time{})
 		}
 	}
-	var out []byte
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := r.Read(buf)
-		out = append(out, buf[:n]...)
-		if i := strings.IndexByte(string(out), '\n'); i >= 0 {
-			return out[:i], nil
+		if i := strings.IndexByte(string(cr.buf), '\n'); i >= 0 {
+			line := append([]byte(nil), cr.buf[:i]...)
+			cr.buf = append([]byte(nil), cr.buf[i+1:]...)
+			return line, nil
+		}
+		n, err := cr.r.Read(buf)
+		if n > 0 {
+			cr.buf = append(cr.buf, buf[:n]...)
+			if len(cr.buf) > 16<<20 {
+				return nil, ErrNoDriver
+			}
 		}
 		if err != nil {
-			if err == io.EOF && len(out) > 0 {
-				return out, nil
+			if err == io.EOF && len(cr.buf) > 0 {
+				line := append([]byte(nil), cr.buf...)
+				cr.buf = nil
+				return line, nil
 			}
-			return out, err
-		}
-		if len(out) > 16<<20 {
-			return nil, ErrNoDriver
+			return nil, err
 		}
 	}
 }

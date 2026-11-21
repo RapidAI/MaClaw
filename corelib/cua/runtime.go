@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -28,6 +30,7 @@ import (
 type runtime struct {
 	mu     sync.Mutex
 	conn   net.Conn
+	lines  connReader
 	pipe   pipeTransport
 	nextID atomic.Int64
 	// closed is atomic so Close can retire the connection without waiting
@@ -66,7 +69,7 @@ func newRuntime(addr string) (*runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cua: dial %q: %w", addr, err)
 	}
-	return &runtime{conn: conn}, nil
+	return &runtime{conn: conn, lines: connReader{r: conn}}, nil
 }
 
 // roundTrip sends one JSON-RPC request and reads frames until the matching
@@ -101,6 +104,7 @@ func (rt *runtime) await(id int64, ctx context.Context) (json.RawMessage, error)
 	for {
 		line, err := rt.readLine(ctx)
 		if err != nil {
+			rt.retireOnReadError(err)
 			return nil, fmt.Errorf("cua: read: %w", err)
 		}
 		var frame struct {
@@ -128,6 +132,9 @@ func (rt *runtime) await(id int64, ctx context.Context) (json.RawMessage, error)
 			return nil, ErrDriver{Tool: "request", Detail: errText(frame.Error)}
 		}
 		if frame.ID.String() != fmt.Sprint(id) {
+			// Same desync as readResponse: the leftover frame is not this
+			// request's, and the next caller must not consume it.
+			rt.close()
 			return nil, fmt.Errorf("cua: response id %s does not answer request %d", frame.ID, id)
 		}
 		if len(frame.Result) == 0 {
@@ -225,6 +232,7 @@ func (rt *runtime) readResponse(ctx context.Context, id int64) (json.RawMessage,
 	for {
 		line, err := rt.readLine(ctx)
 		if err != nil {
+			rt.retireOnReadError(err)
 			return nil, fmt.Errorf("cua: read: %w", err)
 		}
 		var frame struct {
@@ -311,6 +319,7 @@ func (rt *runtime) probe(ctx context.Context) (json.RawMessage, error) {
 	line, err := rt.readLine(ctx)
 	rt.mu.Unlock()
 	if err != nil {
+		rt.retireOnReadError(err)
 		return nil, fmt.Errorf("cua: read: %w", err)
 	}
 	return json.RawMessage(line), nil
@@ -340,7 +349,18 @@ func (rt *runtime) readLine(ctx context.Context) ([]byte, error) {
 	if rt.conn == nil {
 		return nil, ErrNoDriver
 	}
-	return readLineConn(ctx, rt.conn)
+	return readLineConn(ctx, &rt.lines)
+}
+
+// retireOnReadError closes a stream a caller already gave up on. A
+// cancelled or failed read can leave the answer to that request still in
+// the kernel; the next call must not treat those bytes as its own. A clean
+// EOF is the end of a frame, not a desync.
+func (rt *runtime) retireOnReadError(err error) {
+	if err == nil || errors.Is(err, io.EOF) {
+		return
+	}
+	rt.close()
 }
 
 // close releases the connection. It does not take mu: the in-flight read
