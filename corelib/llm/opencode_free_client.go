@@ -520,6 +520,7 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		Role     string `json:"role"`
 		Content  string `json:"content"`
 		fromTool bool   `json:"-"`
+		userTurn bool   `json:"-"`
 	}
 	messages := []message{{Role: "system", Content: openCodeFreeSystemPromptNow()}}
 	for _, item := range incoming.Messages {
@@ -531,12 +532,14 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		// user turns. Merging one into the adjacent user message puts a
 		// later host note inside the observation. Merging two observations
 		// hides which result failed. function is the legacy tool-result role.
+		// developer maps to user too, and is not a user turn either.
+		userTurn := openCodeFreeUserTurn(item.Role)
 		fromTool := openCodeFreeToolObservation(item.Role)
-		if n := len(messages); n > 1 && !fromTool && !messages[n-1].fromTool && messages[n-1].Role == role {
+		if n := len(messages); n > 1 && userTurn && messages[n-1].userTurn && messages[n-1].Role == role {
 			messages[n-1].Content += "\n" + text
 			continue
 		}
-		messages = append(messages, message{Role: role, Content: text, fromTool: fromTool})
+		messages = append(messages, message{Role: role, Content: text, fromTool: fromTool, userTurn: userTurn})
 	}
 	if len(messages) == 1 {
 		return nil, fmt.Errorf("opencode free client: empty conversation")
@@ -548,7 +551,7 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 	if note := openCodeFreeCallerHostNote(caller); note != "" {
 		noteAt := -1
 		for i := len(messages) - 1; i >= 1; i-- {
-			if messages[i].Role == "user" && !messages[i].fromTool {
+			if messages[i].userTurn {
 				noteAt = i
 				break
 			}
@@ -590,6 +593,10 @@ type openCodeFreeToolCall struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	} `json:"function"`
+}
+
+func openCodeFreeUserTurn(role string) bool {
+	return strings.EqualFold(strings.TrimSpace(role), "user")
 }
 
 func openCodeFreeToolObservation(role string) bool {

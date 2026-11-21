@@ -78,6 +78,61 @@ func TestOpenCodeFreeLegacyFunctionResultIsNotUserTurn(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeAdjacentUserTurnsStillMerge(t *testing.T) {
+	caller := map[string]any{
+		"model": "hy4-flash-free",
+		"messages": []map[string]any{
+			{"role": "user", "content": "第一段任务"},
+			{"role": "user", "content": "第二段任务"},
+		},
+	}
+	body := openCodeFreeMergeBody(t, caller)
+	var users int
+	for _, msg := range openCodeFreeMergeMessages(t, body) {
+		if strings.Contains(msg, "第一段任务") && strings.Contains(msg, "第二段任务") {
+			users++
+			if strings.Contains(msg, "<system-reminder>") {
+				t.Fatalf("plain user turn gained a note: %s", msg)
+			}
+		}
+	}
+	if users != 1 {
+		t.Fatalf("adjacent user turns = %d\n%s", users, body)
+	}
+}
+
+func TestOpenCodeFreeDeveloperTurnIsNotUserTurn(t *testing.T) {
+	caller := map[string]any{
+		"model": "hy4-flash-free",
+		"tools": []map[string]any{
+			{"type": "function", "function": map[string]string{"name": "chat_task_request_input"}},
+		},
+		"messages": []map[string]any{
+			{"role": "user", "content": "扫描论文"},
+			{"role": "developer", "content": "只报告标点，不要改文件"},
+		},
+	}
+	body := openCodeFreeMergeBody(t, caller)
+	var sawTask, sawDeveloper bool
+	for _, msg := range openCodeFreeMergeMessages(t, body) {
+		switch {
+		case strings.HasPrefix(msg, "扫描论文"):
+			sawTask = true
+			if strings.Count(msg, "<system-reminder>") != 1 || strings.Contains(msg, "只报告标点") {
+				t.Fatalf("task turn = %s", msg)
+			}
+		case strings.Contains(msg, "只报告标点"):
+			sawDeveloper = true
+			if strings.Contains(msg, "<system-reminder>") || strings.Contains(msg, "扫描论文") {
+				t.Fatalf("developer turn = %s", msg)
+			}
+		}
+	}
+	if !sawTask || !sawDeveloper {
+		t.Fatalf("body = %s", body)
+	}
+}
+
 func openCodeFreeMergeBody(t *testing.T, caller map[string]any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(caller)
