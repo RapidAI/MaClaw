@@ -132,3 +132,41 @@ corelib/cua/
 4. 容器化：`maclaw-gui:2` 加 cua-driver + supervisor 托管 + socket 约定；
    desktopd ctl 增加 `cua_*` 通道；desktopmcp 工具面后端切换。
 5. 清理：YOLO 默认降为可选（`MACLAW_CUA_YOLO=auto`），SoM 映射层退场。
+
+## 七、已实现（本轮）
+
+### 协议（实测 cua-driver 0.52.9）
+
+`cua-driver serve` 的命名管道与 MCP stdio 不同，以下几点都对着真实守护进程验证过：
+
+- 请求：`{"jsonrpc":"2.0","id":N,"method":"call","name":"<tool>","args":{...}}`
+  - **工具参数在顶层 `args` 字段**。用 MCP 的 `arguments` 会被收下但读成空参数，症状是工具报
+    “Missing required integer field pid”。
+- 回复：`{"ok":true,"result":{"content":[{"type":"text","text":...}],"structuredContent":...,"isError":...}}`
+  - **不带 `id`**；`tools/list` 不提供服务，回 `Unknown method: tools/list`（这本身就证明守护进程活着）。
+- `run_script` 只接受 `script`（可带 `timeout_ms` / `max_calls`），返回值在结构化结果的 `value` 字段；
+  脚本内只允许 16 个动作（click/type/…），`verify_state`、`invoke_menu` **不能**在脚本里调用。
+- `verify_state` 选择器只有 `role` 与 `label_contains`（大小写不敏感）；**不能断言元素不存在**
+  （驱动明确拒绝，因为元素快照不是穷举的），消失类判断只能走 `{"window":{"exists":false}}`。
+- 管道地址：`\.\pipe
+ame` 的命名空间是「两个分隔符 + . + pipe + 分隔符」。配置里拿到
+  `\.\pipe
+ame`（少一个分隔符）时，由 `pipeName` 取名字、`pipeTarget` 补命名空间。
+
+### 代码
+
+- `corelib/cua/`：`Driver`（Open/Health/Call/CallDetail）、`Snapshot`/`Match`/`Pick`、
+  `Verify`+`Verdict`+`Expect`、`WaitUntil`+`WaitSpec`+`WaitText`。传输：Windows 命名管道（同步句柄 +
+  读 goroutine 配超时）、unix/tcp。
+- MaClawSrv：新增 `action=verify_state`、`action=wait_until`（`desktop_cua.go`），两者都是只读，
+  排在 `desktopCtlAction` 之前路由，已加入 execute 与 plan 两个动作表。没有 `MACLAW_CUA_SOCKET`
+  时只回一行说明并沿用原有回读路径。
+- guiapp：新增 `computer_verify`、`computer_wait_until`（`tools_computer_verify.go`），与 bot 侧共用
+  corelib/cua，同样在没有驱动时给出单行说明。
+
+### 测试
+
+- `go test ./corelib/cua/`：离线用例 + 对着真实守护进程的 live 用例（未配置 socket 时 skip）。
+- `go test ./MaClawSrv/ -run TestDesktopCua`：两个 action 的解析与端到端（live 用例同样可 skip）。
+- 本机（Windows）上 MaClawSrv 里另有若干与本次无关的失败：`setsid`/`docker` 缺失、
+  set-and-path 相关的日志路径断言、以及 Windows 临时目录清理占用；均未触及本次改动。
