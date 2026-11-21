@@ -62,4 +62,29 @@ void main() {
     expect(find.byKey(const ValueKey('listen-pulse')), findsOneWidget);
     expect(find.byKey(const ValueKey('listen-level-bar')), findsNothing);
   });
+
+  testWidgets('listen status stays above the input and can name the fallback', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      l10nApp(
+        child: Scaffold(
+          body: ChatComposer(
+            controller: TextEditingController(),
+            hint: 'hint',
+            sending: false,
+            onSend: () {},
+            onMic: () {},
+            listening: true,
+            listenStatus: '系统识别不可用，已转本地识别',
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('listen-status')), findsOneWidget);
+    expect(find.text('系统识别不可用，已转本地识别'), findsOneWidget);
+    final status = tester.getTopLeft(find.byKey(const ValueKey('listen-status')));
+    final field = tester.getTopLeft(find.byType(TextField));
+    expect(status.dy, lessThan(field.dy));
+  });
 }

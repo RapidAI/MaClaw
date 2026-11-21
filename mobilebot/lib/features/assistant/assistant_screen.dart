@@ -68,6 +68,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   bool _busy = false;
   bool _listening = false;
 
+  /// 当前实际生效的识别引擎。回退时改成 local，并保留原因行。
+  AsrEngine _activeAsr = AsrEngine.system;
+  bool _asrFellBack = false;
+  bool _recognizing = false;
+
   /// Live PCM level for the composer meter. Null means the current path has
   /// no samples (system recognition) — the composer then pulses instead.
   final ValueNotifier<double?> _listenLevel = ValueNotifier<double?>(null);
@@ -76,6 +81,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   /// after the user already cancelled or a callback arrived.
   int _listenGen = 0;
   Timer? _listenWatchdog;
+
+  /// Set when the composer drops the listening chrome *before* the session
+  /// generation is retired. speech_to_text 7.4 can deliver `notListening`
+  /// and the final hypothesis only after that. The watchdog and result
+  /// callback still own this generation until [_noteListenCallback].
+  bool _listenUiReset = false;
 
   /// 回复自动朗读 — 默认开启（产品要求），右上可关。
   bool _readOut = true;
@@ -99,6 +110,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     // 先作废会话再拆输入框：stop() 的迟到回调不能写已释放的 controller。
     _noteListenCallback();
     _listening = false;
+    _recognizing = false;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _listenLevel.value = null;
@@ -294,8 +306,36 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   // ---- 语音输入：系统 ASR → 本地 SenseVoice 兜底（同 Bot 聊天） ----
 
+  String? _listenStatusText() {
+    if (!_listening && !_recognizing && !_asrFellBack) return null;
+    final S = context.S;
+    if (_asrFellBack && _activeAsr == AsrEngine.local) {
+      return S.chatListenFallbackLocal;
+    }
+    if (_recognizing) {
+      return _activeAsr == AsrEngine.local
+          ? S.chatRecognizingLocal
+          : S.chatRecognizingSystem;
+    }
+    return _activeAsr == AsrEngine.local
+        ? S.chatListenLocal
+        : S.chatListenSystem;
+  }
+
+  void _beginListen(AsrEngine engine, {bool fellBack = false}) {
+    _listenUiReset = false;
+    setState(() {
+      _listening = true;
+      _recognizing = false;
+      _activeAsr = engine;
+      if (fellBack) _asrFellBack = true;
+      if (!fellBack && engine == AsrEngine.system) _asrFellBack = false;
+    });
+  }
+
   Future<void> _dictate() async {
     if (!supportsVoiceInput || _listening) return;
+    _asrFellBack = false;
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
     final localReady = await engine.localAsrReady();
@@ -341,9 +381,17 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   /// 作废当前会话：之后到期的看门狗看到代次不符就不再回退。
   /// 音量回调不能走这里——健康识别器会持续打 onRmsChanged，一加代
   /// 看门狗就永远对不上，静默会话不会回退。
+  /// 只清聆听态时走 [_markListenUiReset]，不要加代：终态和识别结果
+  /// 经常晚于界面复位，加代会把它们和看门狗一起丢掉。
   void _noteListenCallback() {
     _listenGen++;
+    _listenUiReset = false;
     _cancelListenWatchdog();
+  }
+
+  void _markListenUiReset() {
+    _listenUiReset = true;
+    if (mounted) setState(() => _listening = false);
   }
 
   void _keepListenAlive() {
@@ -360,6 +408,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             armedGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
         return;
       }
@@ -394,6 +443,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   /// 系统路径已经失败。本地就绪才采集；否则后台拉模型并明确提示。
   Future<void> _fallbackToLocalDictate({required bool localReady}) async {
+    _asrFellBack = true;
+    _activeAsr = AsrEngine.local;
+    if (mounted) setState(() {});
     if (!localReady) {
       final hub = ref.read(sessionProvider).active?.hubUrl;
       unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
@@ -413,49 +465,65 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     // 代次在 initialize 前捕获：它的 onError/onStatus 会晚于 stop() 到达，
     // 必须能和下一轮区分开。
     final gen = ++_listenGen;
-    final ok = await _speech.initialize(
+    final bool ok;
+    try {
+      ok = await _speech
+          .initialize(
       onError: (_) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        // 平台报错说明会话已死，但终态/结果可能还在通道里。先只复位
+        // 界面，等看门狗用同一代次回退；这里加代会让看门狗对不上。
+        _markListenUiReset();
       },
       onStatus: (status) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
         // 中间态只续命。一加代，后面的 partial 会被当成过期回调丢掉。
-        if (status != 'done' && status != 'notListening') {
+        if (!listenStatusEndsTurn(status)) {
           _keepListenAlive();
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        // 终态先到：界面复位，但代次留给随后的 onResult。看门狗仍拥有
+        // 这一代；若结果一直不来，到期后回退本地，而不是永远停在聆听中。
+        _markListenUiReset();
       },
-    );
+          )
+          .timeout(kSystemListenProbeTimeout);
+    } on Object {
+      // recognizerNotAvailable / 通道挂起：没有识别器，立刻回退。
+      _noteListenCallback();
+      return false;
+    }
     if (!ok || !mounted) return false;
     final prefix = _inputCtrl.text;
     final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
-    setState(() => _listening = true);
+    // 上一轮的界面复位不能算到这一轮。否则迟到终态会被当成当前会话。
+    _listenUiReset = false;
     try {
-      // speech_to_text 7.x：启动失败抛 ListenFailedException，成功则无返回值。
-      final locales = await _speech.locales();
+      // speech_to_text 7.x：启动失败只在 MethodChannel 异常时抛。
+      // initialize 已返回 true 时，空语言列表或 lastError 仍表示没有识别器。
+      // 这两种情况 listen() 不抛也不回调，必须在开麦前退回本地。
+      final before = await _probeSystemListen(fallbackLocaleId);
       if (!mounted) return false;
-      final params = SystemListenParams(
-        localeId: pickAsrLocale(
-          locales,
-          fallbackLocaleId: fallbackLocaleId,
-        ),
-      );
+      if (systemListenUnavailable(before.probe)) {
+        _noteListenCallback();
+        return false;
+      }
+      _beginListen(AsrEngine.system);
+      final params = SystemListenParams(localeId: before.localeId);
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -470,6 +538,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             callbackGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
             return;
           }
@@ -480,6 +549,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             text: text,
             selection: TextSelection.collapsed(offset: text.length),
           );
+          // 词已上屏。作废这一代，看门狗不能再回退开第二只麦。
+          if (r.recognizedWords.trim().isNotEmpty) _noteListenCallback();
         },
       );
     } on Object {
@@ -489,11 +560,64 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       if (mounted) setState(() => _listening = false);
       return false;
     }
-    // listen 正常返回即已启动。不要用 isListening 判断：它要等平台
-    // status 回调，成功启动时也可能仍是 false，误判会和系统识别抢麦。
-    // 之后若音量/识别/错误一个都不来，看门狗停掉并回退本地。
+    if (!mounted) return false;
+    // listen 正常返回仍可能是空识别器：插件丢掉了平台 bool，并在
+    // speechRecognizer 为 null 时也 success(true)。再探一次；已经报错、
+    // 没权限或语言列表变空就立刻回退，不要只等看门狗。
+    final after = await _probeSystemListen(fallbackLocaleId);
+    if (!mounted) return false;
+    if (systemListenUnavailable(after.probe)) {
+      _noteListenCallback();
+      try {
+        await _speech.stop();
+      } on Object {
+        // 平台会话可能根本没起来。
+      }
+      if (mounted) setState(() => _listening = false);
+      return false;
+    }
+    // 不要用 isListening 判断：它要等平台 status 回调，成功启动时也可能
+    // 仍是 false，误判会和系统识别抢麦。语言列表非空且没有错误时，仍由
+    // 看门狗兜住「一个回调都不来」的机型。
     if (mounted) _armListenWatchdog(gen);
     return mounted;
+  }
+
+  /// listen 前后各探一次。语言列表查询失败按空列表处理——那就是
+  /// 「没有可用识别器」，不能当成健康会话。
+  Future<({SystemListenProbe probe, String? localeId})> _probeSystemListen(
+    String fallbackLocaleId,
+  ) async {
+    var granted = false;
+    var timedOut = false;
+    try {
+      granted = await _speech.hasPermission.timeout(kSystemListenProbeTimeout);
+    } on TimeoutException {
+      timedOut = true;
+    } on Object {
+      granted = false;
+    }
+    var locales = const <stt.LocaleName>[];
+    if (!timedOut) {
+      try {
+        locales = await _speech.locales().timeout(kSystemListenProbeTimeout);
+      } on TimeoutException {
+        timedOut = true;
+      } on Object {
+        locales = const [];
+      }
+    }
+    final err = _speech.lastError;
+    return (
+      probe: SystemListenProbe(
+        permissionGranted: timedOut || granted,
+        localeCount: locales.length,
+        permanentError: err?.permanent ?? false,
+        errorCode: err?.errorMsg ?? '',
+        timedOut: timedOut,
+      ),
+      localeId: pickAsrLocale(locales, fallbackLocaleId: fallbackLocaleId),
+    );
   }
 
   Future<Uint8List?> _capturePcm() async {
@@ -517,7 +641,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       return null;
     }
     if (mounted) {
-      setState(() => _listening = true);
+      _beginListen(AsrEngine.local, fellBack: _asrFellBack);
       _listenLevel.value = 0;
     }
     final buf = BytesBuilder(copy: false);
@@ -589,7 +713,6 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       _toast(S.chatAsrUnavailableDownloading);
       return;
     }
-    setState(() => _listening = true);
     final pcm = await _capturePcm();
     // 权限/开麦失败时 _capturePcm 已 toast。未挂载则页面已走，不必再提示。
     if (pcm == null || !mounted) return;
@@ -755,6 +878,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                 : null,
             listening: _listening,
             level: _listenLevel,
+            listenStatus: _listenStatusText(),
           ),
         ],
       ),

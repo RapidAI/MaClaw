@@ -124,6 +124,28 @@ void main() {
         listenWatchdogStillOwns(armedGen: 3, currentGen: 4, listening: true),
         isFalse,
       );
+      // UI already dropped the listening chrome, but nobody bumped the
+      // generation: the silent-session watchdog must still fire.
+      expect(
+        listenWatchdogStillOwns(
+          armedGen: 3,
+          currentGen: 3,
+          listening: false,
+          uiReset: true,
+        ),
+        isTrue,
+      );
+      // User cancel / dispose bumps the generation. UI reset cannot revive it.
+      expect(
+        listenWatchdogStillOwns(
+          armedGen: 3,
+          currentGen: 4,
+          listening: false,
+          uiReset: true,
+        ),
+        isFalse,
+      );
+      // listening=false without an early UI reset is a retired session.
       expect(
         listenWatchdogStillOwns(armedGen: 3, currentGen: 3, listening: false),
         isFalse,
@@ -147,6 +169,26 @@ void main() {
         ),
         isFalse,
       );
+      // Composer already reset, same generation: the result still lands.
+      expect(
+        listenCallbackStillCurrent(
+          callbackGen: 2,
+          currentGen: 2,
+          listening: false,
+          uiReset: true,
+        ),
+        isTrue,
+      );
+      // Next turn already started. A late stop must not clear it.
+      expect(
+        listenCallbackStillCurrent(
+          callbackGen: 2,
+          currentGen: 3,
+          listening: false,
+          uiReset: true,
+        ),
+        isFalse,
+      );
       expect(
         listenCallbackStillCurrent(
           callbackGen: 2,
@@ -155,6 +197,97 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    test('missing recognizer is unavailable before the watchdog', () {
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 0,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: false,
+            localeCount: 2,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 1,
+            errorCode: 'recognizerNotAvailable',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 1,
+            permanentError: true,
+            errorCode: 'error_client',
+          ),
+        ),
+        isTrue,
+      );
+      // A healthy probe, including an empty-result code, must not abort.
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 1,
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 3,
+            errorCode: 'error_no_match',
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 1,
+            errorCode: 'error_speech_timeout',
+          ),
+        ),
+        isFalse,
+      );
+      // locales() that never returns is a missing recognizer, not a slow one.
+      expect(kSystemListenProbeTimeout, const Duration(milliseconds: 800));
+      expect(
+        systemListenUnavailable(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 2,
+            timedOut: true,
+          ),
+        ),
+        isTrue,
+      );
+    });
+
+    test('only done and notListening end the listen turn', () {
+      expect(listenStatusEndsTurn('done'), isTrue);
+      expect(listenStatusEndsTurn('notListening'), isTrue);
+      expect(listenStatusEndsTurn('listening'), isFalse);
+      expect(listenStatusEndsTurn(''), isFalse);
     });
 
     test('PCM RMS maps onto 0..1 and a missing level stays null', () {

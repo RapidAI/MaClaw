@@ -53,6 +53,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   double? _uploadProgress;
   String _uploadingName = '';
   bool _listening = false;
+  AsrEngine _activeAsr = AsrEngine.system;
+  bool _asrFellBack = false;
+  bool _recognizing = false;
 
   /// Live PCM level for the composer meter. Null on the system path.
   final ValueNotifier<double?> _listenLevel = ValueNotifier<double?>(null);
@@ -60,6 +63,11 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   String _speechPrefix = '';
   int _listenGen = 0;
   Timer? _listenWatchdog;
+
+  /// Composer chrome already cleared, session generation not yet retired.
+  /// Same contract as the assistant page: a late result and the silent
+  /// watchdog still belong to this generation.
+  bool _listenUiReset = false;
 
   /// 语音助手模式（豆包式）：开启后自动聆听→识别即发送→朗读回复→再聆听。
   FlutterTts? _tts;
@@ -95,6 +103,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     // 先作废会话再拆输入框：stop() 的迟到回调不能写已释放的 controller。
     _noteListenCallback();
     _listening = false;
+    _recognizing = false;
     _stopVoiceMode();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
@@ -114,9 +123,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 作废当前会话：之后到期的看门狗看到代次不符就不再回退。
   /// 音量回调不能走这里——健康识别器会持续打 onRmsChanged，一加代
   /// 看门狗就永远对不上，静默会话不会回退。
+  /// 只清聆听态时走 [_markListenUiReset]，不要加代。
   void _noteListenCallback() {
     _listenGen++;
+    _listenUiReset = false;
     _cancelListenWatchdog();
+  }
+
+  void _markListenUiReset() {
+    _listenUiReset = true;
+    _listening = false;
+    if (mounted) setState(() {});
   }
 
   void _keepListenAlive() {
@@ -134,6 +151,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             armedGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
         return;
       }
@@ -172,6 +190,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             armedGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
         return;
       }
@@ -200,9 +219,37 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     await _fallbackVoiceToLocal();
   }
 
+  String? _listenStatusText() {
+    if (!_listening && !_recognizing && !_asrFellBack) return null;
+    final S = context.S;
+    if (_asrFellBack && _activeAsr == AsrEngine.local) {
+      return S.chatListenFallbackLocal;
+    }
+    if (_recognizing) {
+      return _activeAsr == AsrEngine.local
+          ? S.chatRecognizingLocal
+          : S.chatRecognizingSystem;
+    }
+    return _activeAsr == AsrEngine.local
+        ? S.chatListenLocal
+        : S.chatListenSystem;
+  }
+
+  void _beginListen(AsrEngine engine, {bool fellBack = false}) {
+    _listenUiReset = false;
+    setState(() {
+      _listening = true;
+      _recognizing = false;
+      _activeAsr = engine;
+      if (fellBack) _asrFellBack = true;
+      if (!fellBack && engine == AsrEngine.system) _asrFellBack = false;
+    });
+  }
+
   /// On-device speech-to-text: words land straight in the composer so the
   /// person can edit before sending.
   Future<void> _toggleListening() async {
+    if (!_listening) _asrFellBack = false;
     if (_listening) {
       _noteListenCallback();
       await _speech.stop();
@@ -219,34 +266,46 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     }
     // 代次在 initialize 前捕获：它的 onError/onStatus 会晚于 stop() 到达。
     final gen = ++_listenGen;
-    final ok = await _speech.initialize(
+    final bool ok;
+    try {
+      ok = await _speech
+          .initialize(
       onError: (_) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        // 只复位界面。加代会让还没到期的看门狗放弃回退。
+        _markListenUiReset();
       },
       onStatus: (status) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        if (status != 'done' && status != 'notListening') {
+        if (!listenStatusEndsTurn(status)) {
           _keepListenAlive();
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        // 终态先到不retire代次：随后的识别词仍要进输入框。一直没有
+        // 结果时，看门狗用同一代次回退本地。
+        _markListenUiReset();
       },
-    );
+          )
+          .timeout(kSystemListenProbeTimeout);
+    } on Object {
+      if (!mounted) return;
+      await _fallbackComposerToLocal();
+      return;
+    }
     if (!mounted) return;
     if (!ok) {
       // 系统识别不可用（无 GMS/华为等）→ 本地 SenseVoice 听写兜底；
@@ -260,6 +319,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   /// 系统听写没起来。本地就绪才采集；否则后台拉模型并明确提示。
   Future<void> _fallbackComposerToLocal() async {
+    _asrFellBack = true;
+    _activeAsr = AsrEngine.local;
+    if (mounted) setState(() {});
     final engine = ref.read(voiceEngineProvider);
     final unavailable = context.S.chatAsrUnavailableDownloading;
     if (!await engine.localAsrReady()) {
@@ -275,20 +337,22 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   Future<bool> _listenSystemDictate() async {
     _speechPrefix = _inputCtrl.text;
     final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
-    setState(() => _listening = true);
+    // 上一轮的界面复位不能算到这一轮。
+    _listenUiReset = false;
     // 输入框路径的 initialize 已经占了当前代次；这里复用，避免再加一代
     // 让看门狗和回调对不上。语音助手路径不会进这个函数。
     final gen = _listenGen;
     try {
-      // speech_to_text 7.x：启动失败抛 ListenFailedException，成功则无返回值。
-      final locales = await _speech.locales();
+      // initialize 返回 true 仍可能没有识别器。listen() 在那种机型上
+      // 不抛也不回调，开麦前就要退回本地，不能只等看门狗。
+      final before = await _probeSystemListen(fallbackLocaleId);
       if (!mounted) return false;
-      final params = SystemListenParams(
-        localeId: pickAsrLocale(
-          locales,
-          fallbackLocaleId: fallbackLocaleId,
-        ),
-      );
+      if (systemListenUnavailable(before.probe)) {
+        _noteListenCallback();
+        return false;
+      }
+      _beginListen(AsrEngine.system);
+      final params = SystemListenParams(localeId: before.localeId);
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -303,6 +367,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             callbackGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
             return;
           }
@@ -316,10 +381,25 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             text: text,
             selection: TextSelection.collapsed(offset: text.length),
           );
+          // 词已上屏。作废这一代，看门狗不能再回退开第二只麦。
+          if (result.recognizedWords.trim().isNotEmpty) _noteListenCallback();
         },
       );
     } on Object {
       _noteListenCallback();
+      if (mounted) setState(() => _listening = false);
+      return false;
+    }
+    if (!mounted) return false;
+    final after = await _probeSystemListen(fallbackLocaleId);
+    if (!mounted) return false;
+    if (systemListenUnavailable(after.probe)) {
+      _noteListenCallback();
+      try {
+        await _speech.stop();
+      } on Object {
+        // 平台会话可能根本没起来。
+      }
       if (mounted) setState(() => _listening = false);
       return false;
     }
@@ -358,6 +438,8 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _relistenQueued = false;
     _voiceCaptured = '';
     _listening = false;
+    _recognizing = false;
+    _asrFellBack = false;
     if (mounted) _listenLevel.value = null;
     _ttsBusy = false;
     _speech.stop();
@@ -418,6 +500,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   /// 系统路径已经静默失败。本地没就绪时明确提示并退出，不能只停麦。
   Future<void> _fallbackVoiceToLocal() async {
+    _asrFellBack = true;
+    _activeAsr = AsrEngine.local;
+    if (mounted) setState(() {});
     final engine = ref.read(voiceEngineProvider);
     if (await engine.localAsrReady()) {
       await _recordListen();
@@ -432,6 +517,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 聆听一轮：最终识别结果非空→自动发送；空（静默/超时）→稍后重新聆听。
   Future<void> _voiceListen() async {
     if (!_voiceMode || _listening || _ttsBusy) return;
+    _asrFellBack = false;
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
     final localReady = await engine.localAsrReady();
@@ -480,50 +566,66 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   Future<bool> _startSystemVoiceTurn() async {
     // 代次在 initialize 前捕获：stop() 后的迟到终态不能结束下一轮。
     final gen = ++_listenGen;
-    final ok = await _speech.initialize(
+    final bool ok;
+    try {
+      ok = await _speech
+          .initialize(
       onError: (_) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        _noteListenCallback();
-        _listening = false;
-        if (mounted) setState(() {});
-        _scheduleVoiceRelisten();
+        // 麦克风已开，这里切本地会抢麦。先复位，等看门狗回退；
+        // 若终态随后把词带回来，由 onResult 上屏并取消看门狗。
+        _markListenUiReset();
       },
       onStatus: (status) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        if (status != 'done' && status != 'notListening') {
+        if (!listenStatusEndsTurn(status)) {
           _keepListenAlive();
           return;
         }
-        _noteListenCallback();
-        _handleVoiceTurnEnd();
+        // 已有识别词才收口并作废这一代。空终态只复位界面：部分 OEM
+        // 先发 notListening，识别词随后才到。这里加代会把词丢掉，
+        // 看门狗也对不上，静默会话不再回退。
+        if (_voiceCaptured.trim().isNotEmpty) {
+          _handleVoiceTurnEnd();
+          _noteListenCallback();
+          return;
+        }
+        _markListenUiReset();
       },
-    );
+          )
+          .timeout(kSystemListenProbeTimeout);
+    } on Object {
+      _noteListenCallback();
+      return false;
+    }
     if (!ok || !mounted || !_voiceMode) return false;
     _voiceCaptured = '';
     _speechPrefix = _inputCtrl.text;
     final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
-    setState(() => _listening = true);
+    _listenUiReset = false;
     try {
-      final locales = await _speech.locales();
-      if (!mounted) return false;
-      final params = SystemListenParams(
-        localeId: pickAsrLocale(
-          locales,
-          fallbackLocaleId: fallbackLocaleId,
-        ),
-      );
+      final before = await _probeSystemListen(fallbackLocaleId);
+      if (!mounted || !_voiceMode) return false;
+      if (systemListenUnavailable(before.probe)) {
+        _noteListenCallback();
+        return false;
+      }
+      _beginListen(AsrEngine.system);
+      final params = SystemListenParams(localeId: before.localeId);
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -538,12 +640,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             callbackGen: gen,
             currentGen: _listenGen,
             listening: _listening,
+            uiReset: _listenUiReset,
           )) {
             return;
           }
           _keepListenAlive();
-          // 终态可能先到并已自动发送。迟到的 partial 不能再写回输入框。
-          if (!_listening) return;
+          // 终态可能先到并已自动发送。那一次会加代，上面的判定已拦住。
+          // 同一代次里界面已复位时，识别词仍要进输入框。
           _voiceCaptured = result.recognizedWords;
           if (mounted) {
             final text = applyRecognitionHypothesis(
@@ -555,7 +658,11 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
               selection: TextSelection.collapsed(offset: text.length),
             );
           }
-          if (result.finalResult) _handleVoiceTurnEnd();
+          if (result.finalResult) {
+            _handleVoiceTurnEnd();
+            // 本轮已收口（发出或判定为空）。看门狗不能再回退开麦。
+            _noteListenCallback();
+          }
         },
       );
     } on Object {
@@ -564,42 +671,99 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       if (mounted) setState(() {});
       return false;
     }
+    if (!mounted || !_voiceMode) return false;
+    final after = await _probeSystemListen(fallbackLocaleId);
+    if (!mounted || !_voiceMode) return false;
+    if (systemListenUnavailable(after.probe)) {
+      _noteListenCallback();
+      try {
+        await _speech.stop();
+      } on Object {
+        // 平台会话可能根本没起来。
+      }
+      if (mounted) setState(() => _listening = false);
+      return false;
+    }
     if (mounted && _voiceMode) _armVoiceWatchdog(gen);
     return mounted && _voiceMode;
+  }
+
+  /// listen 前后各探一次。查询失败按不可用处理，立刻回退而不是空等。
+  Future<({SystemListenProbe probe, String? localeId})> _probeSystemListen(
+    String fallbackLocaleId,
+  ) async {
+    var granted = false;
+    var timedOut = false;
+    try {
+      granted = await _speech.hasPermission.timeout(kSystemListenProbeTimeout);
+    } on TimeoutException {
+      timedOut = true;
+    } on Object {
+      granted = false;
+    }
+    var locales = const <stt.LocaleName>[];
+    if (!timedOut) {
+      try {
+        locales = await _speech.locales().timeout(kSystemListenProbeTimeout);
+      } on TimeoutException {
+        timedOut = true;
+      } on Object {
+        locales = const [];
+      }
+    }
+    final err = _speech.lastError;
+    return (
+      probe: SystemListenProbe(
+        permissionGranted: timedOut || granted,
+        localeCount: locales.length,
+        permanentError: err?.permanent ?? false,
+        errorCode: err?.errorMsg ?? '',
+        timedOut: timedOut,
+      ),
+      localeId: pickAsrLocale(locales, fallbackLocaleId: fallbackLocaleId),
+    );
   }
 
   /// 输入框听写的系统路径。成功启动返回 true。
   Future<bool> _startComposerSystemDictate() async {
     // 代次在 initialize 前捕获，和听写回调共用，迟到 stop() 不能清下一轮。
     final gen = ++_listenGen;
-    final ok = await _speech.initialize(
+    final bool ok;
+    try {
+      ok = await _speech
+          .initialize(
       onError: (_) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        _markListenUiReset();
       },
       onStatus: (status) {
         if (!listenCallbackStillCurrent(
           callbackGen: gen,
           currentGen: _listenGen,
           listening: _listening,
+          uiReset: _listenUiReset,
         )) {
           return;
         }
-        if (status != 'done' && status != 'notListening') {
+        if (!listenStatusEndsTurn(status)) {
           _keepListenAlive();
           return;
         }
-        _noteListenCallback();
-        if (mounted) setState(() => _listening = false);
+        _markListenUiReset();
       },
-    );
+          )
+          .timeout(kSystemListenProbeTimeout);
+    } on Object {
+      _noteListenCallback();
+      return false;
+    }
     if (!ok || !mounted) return false;
     return _listenSystemDictate();
   }
@@ -633,7 +797,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       return null;
     }
     if (mounted) {
-      setState(() => _listening = true);
+      _beginListen(AsrEngine.local, fellBack: _asrFellBack);
       _listenLevel.value = 0;
     }
     final buf = BytesBuilder(copy: false);
@@ -1259,6 +1423,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                 : null,
             listening: _listening,
             level: _listenLevel,
+            listenStatus: _listenStatusText(),
             onSupplement: state.activeRunId != null ? _supplement : null,
             onStop: state.activeRunId != null
                 ? () => ref.read(botChatProvider.notifier).cancelActiveRun()

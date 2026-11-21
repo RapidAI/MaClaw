@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/account_store.dart';
 import '../../core/providers.dart';
-import '../../core/native_voice.dart';
 import '../../core/locale.dart';
 import '../../core/platform.dart';
 import '../../core/ui_kit.dart';
@@ -60,7 +59,7 @@ class AccountScreen extends ConsumerWidget {
                   trailing: const Icon(Icons.chevron_right, size: 20),
                   onTap: () => context.push('/llm-settings'),
                 ),
-                if (NativeVoice.supported) ...[
+                if (supportsVoiceInput || supportsVoiceOutput) ...[
                   const Divider(indent: 68),
                   ListTile(
                     leading: _SettingsIcon(

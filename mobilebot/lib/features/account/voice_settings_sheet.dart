@@ -1,11 +1,12 @@
-/// 语音引擎设置 — 系统 TTS / 本地 Kokoro（与桌面同款模型），
-/// 系统 ASR / 本地 SenseVoice 兜底，附模型下载与音色选择。
+/// 语音设置 — 朗读音色，以及一段「语音识别」（系统识别 / 本地 SenseVoice）。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/locale.dart';
+import '../../core/native_voice.dart';
+import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/voice_assets.dart';
 import '../../core/voice_engine.dart';
@@ -162,94 +163,104 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
           Text(context.S.voiceTitle, style: theme.textTheme.titleMedium),
           const SizedBox(height: 16),
 
-          Text(context.S.vsTts, style: theme.textTheme.labelLarge),
-          const SizedBox(height: 6),
-          SegmentedButton<TtsEngine>(
-            segments: [
-              ButtonSegment(
-                value: TtsEngine.system,
-                label: Text(context.S.vsTtsSystem),
-              ),
-              ButtonSegment(value: TtsEngine.kokoro, label: Text('Kokoro')),
-            ],
-            selected: {_ttsEngine},
-            onSelectionChanged: busy
-                ? null
-                : (v) async {
-                    await _engine.setTtsEngine(v.first);
-                    setState(() => _ttsEngine = v.first);
-                  },
-          ),
-          const SizedBox(height: 8),
-          if (!_ttsReady)
-            OutlinedButton.icon(
-              onPressed: busy ? null : _downloadTts,
-              icon: const Icon(Icons.download, size: 16),
-              label: Text(context.S.vsDownloadKokoro),
-            )
-          else ...[
-            Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              initialValue: _voice,
-              isDense: true,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-              items: [
-                for (final id in VoiceAssets.voiceIds)
-                  DropdownMenuItem(
-                    value: id,
-                    child: Text(_voiceNames[id] ?? id),
+          if (supportsVoiceOutput) ...[
+            Text(context.S.vsTts, style: theme.textTheme.labelLarge),
+            const SizedBox(height: 6),
+            SegmentedButton<TtsEngine>(
+              segments: [
+                ButtonSegment(
+                  value: TtsEngine.system,
+                  label: Text(context.S.vsTtsSystem),
+                ),
+                if (NativeVoice.supported)
+                  ButtonSegment(
+                    value: TtsEngine.kokoro,
+                    label: Text('Kokoro'),
                   ),
               ],
-              onChanged: busy
+              selected: {_ttsEngine},
+              onSelectionChanged: busy
                   ? null
                   : (v) async {
-                      if (v == null) return;
-                      await _engine.setTtsVoice(v);
-                      setState(() => _voice = v);
+                      await _engine.setTtsEngine(v.first);
+                      setState(() => _ttsEngine = v.first);
                     },
             ),
-          ],
-          const SizedBox(height: 20),
-
-          Text(context.S.vsAsr, style: theme.textTheme.labelLarge),
-          const SizedBox(height: 6),
-          SegmentedButton<AsrEngine>(
-            segments: [
-              ButtonSegment(
-                value: AsrEngine.system,
-                label: Text(context.S.vsAsrSystem),
-              ),
-              ButtonSegment(
-                value: AsrEngine.local,
-                label: Text(context.S.vsAsrLocal),
+            const SizedBox(height: 8),
+            if (NativeVoice.supported && !_ttsReady)
+              OutlinedButton.icon(
+                onPressed: busy ? null : _downloadTts,
+                icon: const Icon(Icons.download, size: 16),
+                label: Text(context.S.vsDownloadKokoro),
+              )
+            else if (NativeVoice.supported) ...[
+              Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<String>(
+                initialValue: _voice,
+                isDense: true,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: [
+                  for (final id in VoiceAssets.voiceIds)
+                    DropdownMenuItem(
+                      value: id,
+                      child: Text(_voiceNames[id] ?? id),
+                    ),
+                ],
+                onChanged: busy
+                    ? null
+                    : (v) async {
+                        if (v == null) return;
+                        await _engine.setTtsVoice(v);
+                        setState(() => _voice = v);
+                      },
               ),
             ],
-            selected: {_asrEngine},
-            onSelectionChanged: busy
-                ? null
-                : (v) async {
-                    await _engine.setAsrEngine(v.first);
-                    setState(() => _asrEngine = v.first);
-                  },
-          ),
-          const SizedBox(height: 8),
-          if (!_asrReady)
-            OutlinedButton.icon(
-              onPressed: busy ? null : _downloadAsr,
-              icon: const Icon(Icons.download, size: 16),
-              label: Text(context.S.vsDownloadSenseVoice),
-            )
-          else
-            Text(
-              context.S.vsSenseVoiceReady,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+          ],
+          if (supportsVoiceOutput && supportsVoiceInput)
+            const SizedBox(height: 20),
+
+          if (supportsVoiceInput) ...[
+            Text(context.S.vsAsr, style: theme.textTheme.labelLarge),
+            const SizedBox(height: 6),
+            SegmentedButton<AsrEngine>(
+              segments: [
+                ButtonSegment(
+                  value: AsrEngine.system,
+                  label: Text(context.S.vsAsrSystem),
+                ),
+                if (NativeVoice.supported)
+                  ButtonSegment(
+                    value: AsrEngine.local,
+                    label: Text(context.S.vsAsrLocal),
+                  ),
+              ],
+              selected: {_asrEngine},
+              onSelectionChanged: busy
+                  ? null
+                  : (v) async {
+                      await _engine.setAsrEngine(v.first);
+                      setState(() => _asrEngine = v.first);
+                    },
             ),
+            const SizedBox(height: 8),
+            if (NativeVoice.supported && !_asrReady)
+              OutlinedButton.icon(
+                onPressed: busy ? null : _downloadAsr,
+                icon: const Icon(Icons.download, size: 16),
+                label: Text(context.S.vsDownloadSenseVoice),
+              )
+            else if (NativeVoice.supported)
+              Text(
+                context.S.vsSenseVoiceReady,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
 
           if (_progress >= 0 && _progress < 1) ...[
             const SizedBox(height: 16),

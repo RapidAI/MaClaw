@@ -93,6 +93,10 @@ class ChatComposer extends StatelessWidget {
   final VoidCallback? onMic;
   final bool listening;
 
+  /// 输入栏上方的常驻聆听行。空则不占位。回退时由调用方换成
+  /// 实际引擎文案，并保留原因。
+  final String? listenStatus;
+
   /// Optional 0..1 PCM level. Null while [listening] means the path has no
   /// samples (system recognition) — pulse only, do not invent a meter.
   /// Widget tests inject this; production passes the capture notifier.
@@ -113,6 +117,7 @@ class ChatComposer extends StatelessWidget {
     this.attachTooltip,
     this.onMic,
     this.listening = false,
+    this.listenStatus,
     this.level,
     this.onSupplement,
     this.onStop,
@@ -125,9 +130,26 @@ class ChatComposer extends StatelessWidget {
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (listenStatus != null && listenStatus!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, right: 8, bottom: 4),
+                child: Text(
+                  listenStatus!,
+                  key: const ValueKey('listen-status'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.primary,
+                  ),
+                ),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
@@ -215,6 +237,8 @@ class ChatComposer extends StatelessWidget {
                     tooltip: context.S.composerStop,
                   ),
               ],
+            ),
+          ],
             ),
           ],
         ),

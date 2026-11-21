@@ -19,6 +19,15 @@ enum AsrFallbackChoice { system, local, retryLater }
 /// does not leave the composer stuck at 聆听中.
 const Duration kListenSilentWatchdog = Duration(milliseconds: 2500);
 
+/// Bound for one `hasPermission` / `locales` / `initialize` call.
+///
+/// speech_to_text 7.4 on API 33+ answers `locales()` only from
+/// `checkRecognitionSupport`. When on-device recognition is missing, or
+/// `onError` never completes the MethodChannel result, that future never
+/// returns. A probe that hangs is the same as a missing recognizer: fall
+/// back now, do not wait for the silent watchdog.
+const Duration kSystemListenProbeTimeout = Duration(milliseconds: 800);
+
 /// Upper bound for one system-recognition turn. speech_to_text 7.4 treats
 /// this as a maximum the plugin will enforce; some OEMs stop sooner anyway.
 /// Leaving it null lets those OEMs apply a few-second platform default.
@@ -134,23 +143,107 @@ String restoreComposerAfterHypothesis({
 /// A sound-level tick must not retire the watchdog: speech_to_text 7.4
 /// emits `onRmsChanged` for the whole healthy session, so treating it as
 /// a generation bump makes the silent-session fallback unreachable.
-/// [callbackGen] is the generation captured by that session's callbacks.
+///
+/// [uiReset] is the composer flag cleared *before* the session is retired.
+/// speech_to_text often delivers `notListening` (and some OEMs a final
+/// hypothesis) only after the page has already dropped the listening chrome.
+/// Gating the watchdog on that flag makes a dead session with no result
+/// and no error unreachable: the timer fires, sees listening=false, and
+/// returns. Ownership is the generation. A user cancel or a real callback
+/// bumps [currentGen]; the UI reset must not.
 bool listenWatchdogStillOwns({
   required int armedGen,
   required int currentGen,
   required bool listening,
+  bool uiReset = false,
 }) {
-  return listening && currentGen == armedGen;
+  if (currentGen != armedGen) return false;
+  return listening || uiReset;
 }
 
 /// A platform callback may change composer state only while its session
 /// is still current. A late `stop()` status must not clear the next turn.
+///
+/// Same split as [listenWatchdogStillOwns]: [uiReset] means this page
+/// already cleared the listening chrome for *this* generation. The result
+/// and the terminal status still belong here. Only a generation bump
+/// (cancel, dispose, or the next `initialize`) rejects the callback.
 bool listenCallbackStillCurrent({
   required int callbackGen,
   required int currentGen,
   required bool listening,
+  bool uiReset = false,
 }) {
-  return listening && currentGen == callbackGen;
+  if (currentGen != callbackGen) return false;
+  return listening || uiReset;
+}
+
+/// Terminal speech_to_text status. `done` / `notListening` end the turn.
+/// Anything else (`listening`, empty, OEM intermediates) only keeps the
+/// watchdog alive — it must not bump the generation, or the following
+/// partial is treated as a stale callback and never reaches the composer.
+bool listenStatusEndsTurn(String status) {
+  return status == 'done' || status == 'notListening';
+}
+
+/// Snapshot taken immediately before and after `listen()`.
+///
+/// speech_to_text 7.4's Dart `listen()` drops the platform bool and only
+/// throws on a MethodChannel [PlatformException]. Android
+/// `startListening` still answers `success(true)` and then posts
+/// `startListening` even when `speechRecognizer` is null, so a missing
+/// recognizer produces neither an exception nor a callback. The only
+/// signals that are already settled at that moment are permission, an
+/// empty locale list, and a [SpeechRecognitionError] already stored on
+/// the plugin (`lastError`). A non-empty locale list is not proof the
+/// recognizer will speak — keep the watchdog for that case.
+class SystemListenProbe {
+  const SystemListenProbe({
+    required this.permissionGranted,
+    required this.localeCount,
+    this.permanentError = false,
+    this.errorCode = '',
+    this.timedOut = false,
+  });
+
+  final bool permissionGranted;
+  final int localeCount;
+  final bool permanentError;
+
+  /// `hasPermission` or `locales()` did not settle within
+  /// [kSystemListenProbeTimeout]. Treat as no recognizer.
+  final bool timedOut;
+
+  /// speech_to_text `SpeechRecognitionError.errorMsg`, or the method-channel
+  /// code (`recognizerNotAvailable`) when `initialize` itself failed.
+  final String errorCode;
+}
+
+/// True when this probe already proves the platform recognizer cannot
+/// produce text. Callers must fall back (or toast) immediately instead of
+/// waiting out [kListenSilentWatchdog]. A timed-out probe is unavailable:
+/// `locales()` that never completes is a missing recognizer, not a slow one.
+bool systemListenUnavailable(SystemListenProbe probe) {
+  if (probe.timedOut) return true;
+  if (!probe.permissionGranted) return true;
+  if (probe.localeCount <= 0) return true;
+  if (probe.permanentError) return true;
+  final code = probe.errorCode.trim().toLowerCase();
+  if (code.isEmpty) return false;
+  // error_no_match / error_speech_timeout are a finished empty turn, not
+  // a missing recognizer. Those stay on the watchdog / status path.
+  return code == 'recognizernotavailable' ||
+      code == 'error_language_not_supported' ||
+      code == 'error_language_unavailable' ||
+      code == 'error_service_not_allowed' ||
+      code == 'error_client' ||
+      code == 'error_server' ||
+      code == 'error_server_disconnected' ||
+      code == 'error_network' ||
+      code == 'error_network_timeout' ||
+      code == 'error_recognizer_busy' ||
+      code == 'error_insufficient_permissions' ||
+      code == 'error_audio';
 }
 
 /// One decision for both chat pages. Already falling back once returns
