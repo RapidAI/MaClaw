@@ -34,7 +34,10 @@ func (b *lineBuffer) append(chunk []byte) error {
 		return ErrNoDriver
 	}
 	b.buf = append(b.buf, chunk...)
+	// Same rule as the socket reader: a complete line inside an oversized
+	// chunk is still a frame that must not be parsed.
 	if len(b.buf) > 16<<20 {
+		b.buf = nil
 		return fmt.Errorf("cua: response line over 16MiB")
 	}
 	return nil

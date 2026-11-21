@@ -1,6 +1,7 @@
 package cua
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -110,6 +111,38 @@ func TestDecodeToolResultRejectsOKFalseWithoutError(t *testing.T) {
 	_, _, _, err := decodeToolResult([]byte(`{"ok":false}`))
 	if err == nil {
 		t.Fatal("ok:false must not decode as a successful tool value")
+	}
+}
+
+func TestReadLineConnRejectsOversizedCompleteLine(t *testing.T) {
+	// One Read can already contain a newline and still exceed the cap.
+	// Returning that line would hand an unbounded frame to json.Unmarshal.
+	body := strings.Repeat("a", (16<<20)+8) + "\n"
+	cr := &connReader{r: strings.NewReader(body)}
+	line, err := readLineConn(context.Background(), cr)
+	if err == nil || !strings.Contains(err.Error(), "16MiB") {
+		t.Fatalf("oversized line = %d bytes, err=%v", len(line), err)
+	}
+	if len(cr.buf) != 0 {
+		t.Fatal("an oversized frame must not stay buffered for the next call")
+	}
+}
+
+func TestReadLineConnRejectsOversizedLineWithoutNewline(t *testing.T) {
+	cr := &connReader{r: strings.NewReader(strings.Repeat("b", (16<<20)+8))}
+	if _, err := readLineConn(context.Background(), cr); err == nil || !strings.Contains(err.Error(), "16MiB") {
+		t.Fatalf("unterminated oversized line err=%v", err)
+	}
+}
+
+func TestLineBufferRejectsOversizedCompleteLine(t *testing.T) {
+	var b lineBuffer
+	err := b.append(append(bytes.Repeat([]byte("c"), (16<<20)+8), '\n'))
+	if err == nil || !strings.Contains(err.Error(), "16MiB") {
+		t.Fatalf("oversized append err=%v", err)
+	}
+	if _, ok, takeErr := b.takeLine(); ok || takeErr != nil {
+		t.Fatalf("rejected frame must not be readable, ok=%v err=%v", ok, takeErr)
 	}
 }
 

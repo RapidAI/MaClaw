@@ -2,8 +2,8 @@ package cua
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"strings"
 	"time"
 )
 
@@ -30,7 +30,14 @@ func readLineConn(ctx context.Context, cr *connReader) ([]byte, error) {
 	}
 	buf := make([]byte, 32*1024)
 	for {
-		if i := strings.IndexByte(string(cr.buf), '\n'); i >= 0 {
+		if i := indexOfByte(cr.buf, '\n'); i >= 0 {
+			// A newline does not waive the cap. A coalesced read can already
+			// hold more than one frame, and returning the first line would
+			// leave the oversized tail for the next caller.
+			if len(cr.buf) > 16<<20 {
+				cr.buf = nil
+				return nil, fmt.Errorf("cua: response line over 16MiB")
+			}
 			line := append([]byte(nil), cr.buf[:i]...)
 			cr.buf = append([]byte(nil), cr.buf[i+1:]...)
 			return line, nil
@@ -38,8 +45,9 @@ func readLineConn(ctx context.Context, cr *connReader) ([]byte, error) {
 		n, err := cr.r.Read(buf)
 		if n > 0 {
 			cr.buf = append(cr.buf, buf[:n]...)
-			if len(cr.buf) > 16<<20 {
-				return nil, ErrNoDriver
+			if len(cr.buf) > 16<<20 && indexOfByte(cr.buf, '\n') < 0 {
+				cr.buf = nil
+				return nil, fmt.Errorf("cua: response line over 16MiB")
 			}
 		}
 		if err != nil {
