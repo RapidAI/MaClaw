@@ -817,6 +817,11 @@ func mcpPushLogLocked(rec *mcpRunRecord, ev mcpLogEvent) {
 	if ev.Text == "" && ev.Name == "" {
 		return
 	}
+	// A transport heartbeat is not host-visible progress. Drop it before it
+	// can renew the stall clock or land in the polled log.
+	if ev.Kind == "progress" && !mcpProgressExtendsRun(ev.Text) {
+		return
+	}
 	if strings.TrimSpace(ev.RunID) == "" {
 		ev.RunID = rec.RunID
 	}
@@ -829,7 +834,11 @@ func mcpPushLogLocked(rec *mcpRunRecord, ev mcpLogEvent) {
 	if len(rec.logs) > mcpLogLimit {
 		rec.logs = append([]mcpLogEvent(nil), rec.logs[len(rec.logs)-mcpLogLimit:]...)
 	}
-	rec.progressAt = time.Now()
+	// A stall failure is logged after the round has already gone quiet.
+	// Stamping that row would make the failure look like fresh activity.
+	if ev.Kind != "error" || ev.Text != errMCPRunStalled.Error() {
+		rec.progressAt = time.Now()
+	}
 	mcpTouchLocked(rec)
 }
 

@@ -154,7 +154,8 @@ type mcpRunRecord struct {
 	cancel             context.CancelFunc
 	// progressAt is the last host-visible activity on this round: a token,
 	// a progress line, a tool event, or the moment the round started.
-	// The session watchdog reads it. It is not a per-request LLM deadline.
+	// A bare __heartbeat__ is not activity. The session watchdog reads
+	// this stamp. It is not a per-request LLM deadline.
 	progressAt time.Time
 	// hostWaitEnded is set only by this process's own wait budget, and only
 	// while the run is still waiting. It is not a confirmed execution timeout.
@@ -941,7 +942,11 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	var timer *time.Timer
 	var watch func()
 	watch = func() {
-		if a.mcpRunMadeProgress(path, requestID, time.Now().Add(-mcpRunStallWindow)) {
+		// Reset only while this callback owns the timer. time.Timer.Reset
+		// from another goroutine races with the fired callback, and a false
+		// return would drop the only stall check for a round that is still
+		// producing activity.
+		if a.mcpExtendQuietRun(path, requestID, mcpRunStallWindow) {
 			timer.Reset(mcpRunStallWindow)
 			return
 		}
@@ -1049,9 +1054,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 			},
 			OnProgress: func(text string) {
 				a.mirrorMCPProgress(requestID, userID, text)
-				if strings.TrimSpace(text) != "" {
-					a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
-				}
+				a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
 			},
 			OnToolEvent: func(ev ACPToolEvent) {
 				a.mcpRecordToolEvent(path, requestID, ev)
@@ -2419,6 +2422,15 @@ func (a *App) mcpCancelRun(path string) {
 	}
 }
 
+// mcpProgressExtendsRun reports host-visible activity. A blank line and the
+// bare __heartbeat__ keep a transport alive; they are not progress, so they
+// must not renew the stall window. A long tool call still counts when it
+// emits a real progress line, including "command still running".
+func mcpProgressExtendsRun(text string) bool {
+	text = strings.TrimSpace(text)
+	return text != "" && text != imHeartbeatMsg
+}
+
 // mcpNoteRunProgress records host-visible activity on a round that is still
 // running. The session watchdog reads progressAt and keeps the round alive
 // while activity arrives. A user stop, or a different request, is left alone.
@@ -2438,6 +2450,36 @@ func (a *App) mcpNoteRunProgress(path, requestID string) {
 		return
 	}
 	rec.progressAt = time.Now()
+}
+
+// mcpExtendQuietRun reports whether this waiting round still has activity
+// inside window, and if so moves progressAt to now. The stall callback is
+// the only caller. Stamping here keeps the next check one full window after
+// the last renewal, including a round whose only signal is that it is still
+// the live request. A missing stamp is activity: an older record must not
+// be failed just because it predates the stall clock. A user stop, or a
+// different request, is left alone.
+func (a *App) mcpExtendQuietRun(path, requestID string, window time.Duration) bool {
+	if a == nil || window <= 0 {
+		return false
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return false
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return false
+	}
+	now := time.Now()
+	if !rec.progressAt.IsZero() && rec.progressAt.Before(now.Add(-window)) {
+		return false
+	}
+	rec.progressAt = now
+	return true
 }
 
 // mcpRunMadeProgress reports whether this round has host-visible activity at
@@ -2578,7 +2620,7 @@ func (a *App) mcpFinishRunCause(path, requestID, status, text, errText string, k
 	rec.Stop = mcpStopFor(status, errText, steps, cause, rec.FinishedAt)
 	versionBefore := rec.StatusVersion
 	if strings.TrimSpace(errText) != "" {
-		mcpPushLogLocked(rec, mcpLogEvent{Kind: "error", Text: errText})
+		mcpPushLogLocked(rec, mcpLogEvent{Kind: "error", Text: errText, At: mcpFormatTime(rec.FinishedAt)})
 	}
 	if rec.StatusVersion == versionBefore {
 		mcpTouchLocked(rec)

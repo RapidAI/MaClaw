@@ -3611,6 +3611,18 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 	if !app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-mcpRunStallWindow)) {
 		t.Fatal("a token must keep the round inside the stall window")
 	}
+	beforeHeartbeat := app.mcpRuns["moving"].progressAt
+	app.mcpAppendLog("moving", "mcp-move", mcpLogEvent{Kind: "progress", Text: imHeartbeatMsg})
+	if app.mcpRuns["moving"].progressAt != beforeHeartbeat || len(app.mcpRuns["moving"].logs) != 0 {
+		t.Fatal("a bare heartbeat must not count as progress")
+	}
+	app.mcpAppendLog("moving", "mcp-move", mcpLogEvent{Kind: "progress", Text: "command still running (600s): go test"})
+	if !app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-time.Second)) {
+		t.Fatal("a long tool call's progress line must renew the stall window")
+	}
+	if !app.mcpExtendQuietRun("moving", "mcp-move", mcpRunStallWindow) {
+		t.Fatal("the stall callback must renew a live round under the run lock")
+	}
 	quietSince := time.Now().Add(-mcpRunStallWindow - time.Second)
 	app.mcpRunsMu.Lock()
 	app.mcpRuns["moving"].progressAt = quietSince
@@ -3652,8 +3664,8 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "fresh", Status: mcpStatusRunning, RequestID: "mcp-fresh", RunID: "run-fresh",
 		StartedAt: time.Now().Add(-time.Minute), progressAt: time.Now().Add(-time.Minute),
 	})
-	if fresh.Status != mcpStatusFailed || fresh.Stop == nil || fresh.Stop.Class != mcpStopNoProgress || fresh.Stop.Class == mcpStopUnconfirmed {
-		t.Fatalf("reloaded run has no live prompt, status=%s stop=%+v", fresh.Status, fresh.Stop)
+	if fresh.Status != mcpStatusRunning || fresh.Stop != nil || fresh.cancel != nil {
+		t.Fatalf("a loaded round inside the stall window must stay running, status=%s stop=%+v", fresh.Status, fresh.Stop)
 	}
 	aged := mcpSettleLoadedRun(&mcpRunRecord{
 		ProjectPath: "aged", Status: mcpStatusRunning, RequestID: "mcp-aged", RunID: "run-aged",
@@ -3666,8 +3678,8 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "legacy", Status: mcpStatusRunning, RequestID: "mcp-legacy", RunID: "run-legacy",
 		StartedAt: time.Now().Add(-time.Minute),
 	})
-	if legacy.Status != mcpStatusFailed || legacy.Stop == nil || legacy.Stop.Class != mcpStopNoProgress || legacy.progressAt.IsZero() {
-		t.Fatalf("legacy loaded run %+v", legacy)
+	if legacy.Status != mcpStatusRunning || legacy.Stop != nil || legacy.progressAt.IsZero() {
+		t.Fatalf("a legacy loaded run inside the stall window must stay running, %+v", legacy)
 	}
 	done := mcpSettleLoadedRun(&mcpRunRecord{ProjectPath: "done", Status: mcpStatusCompleted, RequestID: "mcp-done"})
 	if done.Status != mcpStatusCompleted {
