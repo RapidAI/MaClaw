@@ -295,6 +295,26 @@ func TestRemoteCodingBaselineBlockErrorKeepsUnrelatedFailures(t *testing.T) {
 	}
 }
 
+func TestRunGUIRemoteCodingTaskWaitsForScopeApprovalBeforeExecutor(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	calls := 0
+	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(
+		context.Background(), store, "owner", "workflow", "phase", "remote-target", "/srv/repo", "edit external file", false,
+		nil, "", "", codingRuntimeApprovalGate(func() string { return "external project path requires approval" }), nil,
+		func() *RemoteCodingSubAgentResult {
+			calls++
+			return &RemoteCodingSubAgentResult{Status: "success"}
+		},
+	)
+	if err != nil || attempt != nil || calls != 0 || result == nil || result.Status != "waiting_approval" || !strings.Contains(result.Error, "scope_approval_required") {
+		t.Fatalf("result=%#v attempt=%#v calls=%d err=%v", result, attempt, calls, err)
+	}
+	task, getErr := store.GetTask(result.RuntimeTaskID)
+	if getErr != nil || task == nil || task.Status != codingruntime.TaskWaitingApproval {
+		t.Fatalf("task=%#v err=%v; approval pause must stay resumable", task, getErr)
+	}
+}
+
 func TestRunGUIRemoteCodingTaskReadOnlyInquiryProceedsWithoutWorkspaceBaseline(t *testing.T) {
 	store := codingruntime.NewMemoryStore()
 	calls := 0
@@ -303,7 +323,7 @@ func TestRunGUIRemoteCodingTaskReadOnlyInquiryProceedsWithoutWorkspaceBaseline(t
 		codingruntime.WorkspaceProberFunc(func(context.Context, codingruntime.Task, codingruntime.Attempt) (*codingruntime.WorkspaceProbe, error) {
 			return nil, errors.New("not a git repository")
 		}),
-		"", "", nil,
+		"", "", nil, nil,
 		func() *RemoteCodingSubAgentResult {
 			calls++
 			return &RemoteCodingSubAgentResult{Status: "success", Summary: "host is up"}
@@ -322,7 +342,7 @@ func TestRunGUIRemoteCodingTaskWriterStillBlocksWhenEmptyDirectoryHasNoBaseline(
 		codingruntime.WorkspaceProberFunc(func(context.Context, codingruntime.Task, codingruntime.Attempt) (*codingruntime.WorkspaceProbe, error) {
 			return nil, errors.New("remote read-only git probe returned no unambiguous HEAD")
 		}),
-		"", "", nil,
+		"", "", nil, nil,
 		func() *RemoteCodingSubAgentResult {
 			calls++
 			return &RemoteCodingSubAgentResult{Status: "success"}
@@ -567,7 +587,7 @@ func TestRunGUIRemoteCodingTaskWithLedgerStartsFreshAttemptForExplicitChildRevie
 	if err != nil || continuation == nil {
 		t.Fatalf("prepare continuation=%#v err=%v", continuation, err)
 	}
-	review, reviewAttempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "owner", "workflow", "phase", "remote-target", "/srv/repo", "review only bounded remote child result", false, nil, continuation.Task.TaskID, continuation.ParentAttemptID, nil, func() *RemoteCodingSubAgentResult {
+	review, reviewAttempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "owner", "workflow", "phase", "remote-target", "/srv/repo", "review only bounded remote child result", false, nil, continuation.Task.TaskID, continuation.ParentAttemptID, nil, nil, func() *RemoteCodingSubAgentResult {
 		return &RemoteCodingSubAgentResult{Status: "success", Summary: "reviewed remote child evidence"}
 	})
 	if err != nil || review == nil || reviewAttempt == nil || reviewAttempt.AttemptID == parentAttempt.AttemptID || reviewAttempt.AttemptNo != 2 || review.RuntimeTaskID != result.RuntimeTaskID {
@@ -591,7 +611,7 @@ func TestRunGUIRemoteCodingTaskWithLedgerRejectsConcurrentChildReviewWithoutSeco
 		t.Fatal(err)
 	}
 	calls := 0
-	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "second-review", "workflow", "phase", "remote-target", "/srv/repo", "review", false, nil, task.TaskID, "", nil, func() *RemoteCodingSubAgentResult {
+	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "second-review", "workflow", "phase", "remote-target", "/srv/repo", "review", false, nil, task.TaskID, "", nil, nil, func() *RemoteCodingSubAgentResult {
 		calls++
 		return &RemoteCodingSubAgentResult{Status: "success"}
 	})

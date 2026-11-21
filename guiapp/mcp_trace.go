@@ -75,6 +75,14 @@ func mcpPresentSteps(steps []mcpStepView) []mcpStepView {
 // text in its note is not a second review.
 func mcpPresentStep(step mcpStepView) mcpStepView {
 	status := strings.TrimSpace(step.Status)
+	if mcpSkipIsApprovalWait(step.Error) && status != mcpStepPassed && status != mcpStepFailed && status != mcpStepWaiting {
+		step.Status = mcpStatusNeedsConfirmation
+		step.Retryable = false
+		if strings.TrimSpace(step.Error) == "" {
+			step.Error = mcpApprovalWaitErrorText
+		}
+		return step
+	}
 	handoff := status == mcpStepWaiting ||
 		((status == codingStepSkipped || status == "") && mcpSkipIsReviewHandoff(step.Error))
 	if !handoff {
@@ -159,6 +167,32 @@ func mcpUnexecutedReason(step mcpStepView, rootReason, rootClass string) string 
 	return "这一步还没有执行"
 }
 
+// mcpStepsAwaitApprovalOnly reports a run parked on scope approval.
+// Passed rows may sit beside it. A failure, a cancellation, or a child
+// review is a different stop and must not be flattened into this pause.
+func mcpStepsAwaitApprovalOnly(steps []mcpStepView) bool {
+	saw := false
+	for _, step := range steps {
+		status := strings.TrimSpace(step.Status)
+		switch status {
+		case mcpStepPassed:
+			continue
+		case mcpStatusNeedsConfirmation:
+			saw = true
+		case mcpStepSkipped:
+			if !mcpSkipIsApprovalWait(step.Error) {
+				return false
+			}
+			saw = true
+		case "":
+			return false
+		default:
+			return false
+		}
+	}
+	return saw
+}
+
 func mcpStepsAwaitReviewOnly(steps []mcpStepView) bool {
 	saw := false
 	for _, step := range steps {
@@ -186,6 +220,9 @@ func mcpApplyStepGate(status, errText string, steps []mcpStepView) (string, stri
 	switch status {
 	case mcpStatusCancelled, mcpStatusNeedsConfirmation, mcpStatusRunning, mcpStatusIdle:
 		return status, errText, steps
+	}
+	if mcpStepsAwaitApprovalOnly(steps) {
+		return mcpStatusNeedsConfirmation, mcpApprovalWaitErrorText, steps
 	}
 	if mcpStepsAwaitReviewOnly(steps) {
 		if status == mcpStatusFailed && strings.TrimSpace(errText) != "" && !mcpSkipIsReviewHandoff(errText) && errText != "有步骤失败或未完成" {
@@ -643,6 +680,9 @@ func mcpStepsFromWorkbench(steps []codingWorkbenchStepStatus) []mcpStepView {
 	for _, step := range steps {
 		status := strings.TrimSpace(step.Status)
 		errText := strings.TrimSpace(step.Summary)
+		if mcpSkipIsApprovalWait(errText) && status != mcpStepPassed && status != mcpStepFailed && status != mcpStepWaiting {
+			status = mcpStatusNeedsConfirmation
+		}
 		if status == codingStepSkipped && mcpSkipIsReviewHandoff(errText) {
 			status = mcpStepWaiting
 		}

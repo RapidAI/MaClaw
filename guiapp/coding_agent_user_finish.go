@@ -824,6 +824,14 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 		rr.Status = v2.TaskSkipped
 		rr.RuntimeHandoff = true
 		rr.Error = result.Error
+	case "waiting_approval":
+		// Scope approval has not started the work. A failed row would close
+		// the plan and skip the tail. Keep a resumable confirmation skip.
+		rr.Status = v2.TaskSkipped
+		rr.Error = strings.TrimSpace(result.Error)
+		if rr.Error == "" {
+			rr.Error = "scope_approval_required"
+		}
 	default:
 		rr.Status = v2.TaskFailed
 		rr.Error = result.Error
@@ -859,6 +867,10 @@ func remoteCodingStickyStep(result *RemoteCodingSubAgentResult) (stepStatus, sum
 	if result.RuntimeHandoff || strings.EqualFold(strings.TrimSpace(result.Status), "waiting_child") || mcpSkipIsReviewHandoff(result.Error) {
 		stepStatus = mcpStepWaiting
 		summary = mcpReviewHandoffErrorText
+	}
+	if stepStatus == codingStepFailed && (strings.EqualFold(strings.TrimSpace(result.Status), "waiting_approval") || mcpSkipIsApprovalWait(result.Error)) {
+		stepStatus = mcpStatusNeedsConfirmation
+		summary = mcpApprovalWaitErrorText
 	}
 	if stepStatus == codingStepFailed && codingLoopIterationExhausted(result.Error) {
 		stepStatus = codingStepRunning
@@ -897,6 +909,11 @@ func remoteCodingResultIsUserCancel(status string) bool {
 // leaves them for the next round. A real failure still records the skip.
 func remoteCodingDependentsAfterStop(status, errText string) string {
 	if remoteCodingHostSuccess(status) || remoteCodingResultIsUserCancel(status) || codingLoopIterationExhausted(errText) {
+		return ""
+	}
+	// A scope-approval pause has not failed the step. Later rows stay open
+	// so approval can resume them; a prior-step skip would count them done.
+	if strings.EqualFold(strings.TrimSpace(status), "waiting_approval") || mcpSkipIsApprovalWait(errText) {
 		return ""
 	}
 	return "skipped: prior step failed"

@@ -23,6 +23,7 @@ func TestCodingWorkbenchStepOutcome(t *testing.T) {
 		{name: "transient 503", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `LLM call failed: HTTP 503: service unavailable`}, wantStatus: v2.TaskSkipped, wantStep: codingStepSkipped},
 		{name: "real step failure", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `go test failed: expected 200 got 500`}, wantStatus: v2.TaskFailed, wantStep: codingStepFailed},
 		{name: "iteration budget", res: &CodingSubAgentResult{Status: TaskExecFailed, Error: `max iterations reached (156)`}, wantStatus: v2.TaskFailed, wantStep: codingStepRunning},
+		{name: "scope approval", res: &CodingSubAgentResult{Status: TaskExecWaitingApproval, Error: "scope_approval_required: external path"}, wantStatus: v2.TaskSkipped, wantStep: mcpStatusNeedsConfirmation},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

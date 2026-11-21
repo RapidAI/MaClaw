@@ -53,6 +53,49 @@ func TestTaskListShowsFailedWorkbenchTurnAsFailed(t *testing.T) {
 	}
 }
 
+func TestTaskListKeepsApprovalWaitOutOfCompleted(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	app.aiConversationMemory = memory
+
+	const projectPath = "D:/work/approval-task"
+	const workDir = "D:/repo"
+	owner := projectSessionOwnerID(projectPath)
+	handler := &IMMessageHandler{app: app}
+	handler.stickyCodingWorkbenchMemory.Store(owner, stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "paused", LastOutcomeAtUnix: time.Now().Unix(),
+	})
+	app.imHandler = handler
+
+	result := &ProjectSearchResult{
+		ProjectPath: projectPath,
+		HasOutput:   true,
+		Tags:        []string{"coding_dev", "working_dir:" + workDir},
+	}
+	app.applyTaskListWorkflow(result, projectPath, nil, nil, nil, nil, nil)
+	if result.ActiveWorkflow == nil || result.ActiveWorkflow.Status != "paused" || !result.ActiveWorkflow.PendingReview {
+		t.Fatalf("approval wait row = %#v, want paused over has_output", result.ActiveWorkflow)
+	}
+
+	// A foreground signal does not resume the parked approval. The row stays
+	// paused until the work itself finishes.
+	live := map[string]struct{}{normalizeRecentTaskPathKey(projectPath): {}}
+	app.applyTaskListWorkflow(result, projectPath, nil, nil, nil, nil, live)
+	if result.ActiveWorkflow == nil || result.ActiveWorkflow.Status != "paused" || !result.ActiveWorkflow.PendingReview {
+		t.Fatalf("parked row = %#v, want the approval pause kept", result.ActiveWorkflow)
+	}
+
+	handler.stickyCodingWorkbenchMemory.Store(owner, stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "completed", LastOutcomeAtUnix: time.Now().Add(time.Second).Unix(),
+	})
+	app.applyTaskListWorkflow(result, projectPath, nil, nil, nil, nil, nil)
+	if result.ActiveWorkflow == nil || result.ActiveWorkflow.Status != "completed" || result.ActiveWorkflow.PendingReview {
+		t.Fatalf("finished row = %#v, want completed only after the work itself finished", result.ActiveWorkflow)
+	}
+}
+
 // A later successful turn is the newer fact: it replaces an older failed
 // ledger row and restores the row to completed.
 func TestLaterWorkbenchSuccessReplacesOlderLedgerFailure(t *testing.T) {
@@ -272,6 +315,16 @@ func TestLocalCodingTurnOutcomeUsesTheWholePlan(t *testing.T) {
 	// Every step skipped without a stop says nothing.
 	if got := localCodingTurnOutcome([]workflow.TaskRunResult{skipped}, nil); got != "" {
 		t.Fatalf("all skipped = %q, want no verdict", got)
+	}
+	waiting := workflow.TaskRunResult{TaskIndex: 2, Status: workflow.TaskSkipped, Error: "scope_approval_required: external path"}
+	if got := localCodingTurnOutcome([]workflow.TaskRunResult{passed, waiting}, nil); got != "paused" {
+		t.Fatalf("approval wait beside a pass = %q, want paused", got)
+	}
+	if got := localCodingTurnOutcome([]workflow.TaskRunResult{waiting}, nil); got != "paused" {
+		t.Fatalf("approval wait alone = %q, want paused", got)
+	}
+	if got := codingWorkbenchTurnOutcomeLocal(TaskExecWaitingApproval); got != "paused" {
+		t.Fatalf("executor approval wait = %q", got)
 	}
 
 	if got := codingWorkbenchTurnOutcomeFromPlan("completed", 2, false); got != "failed" {

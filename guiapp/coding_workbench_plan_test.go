@@ -3097,6 +3097,26 @@ func TestExecutionPlanPersistKeepsTheLastStep(t *testing.T) {
 	}
 }
 
+func TestResumeRerunsScopeApprovalPause(t *testing.T) {
+	mem := stickyCodingWorkbenchMemory{
+		PlanRunStarted: true,
+		StepStatuses: []codingWorkbenchStepStatus{
+			{Index: 1, Title: "已通过", Status: codingStepPassed},
+			{Index: 2, Title: "等审批", Status: mcpStatusNeedsConfirmation, Summary: mcpApprovalWaitErrorText},
+		},
+	}
+	tasks, ok := selectIncompleteCodingPlanTasks("继续", mem)
+	if !ok || len(tasks) != 1 || tasks[0].Index != 2 {
+		t.Fatalf("approval resume tasks=%#v ok=%v", tasks, ok)
+	}
+	if !codingPlanStepWasStarted(mcpStatusNeedsConfirmation) || !codingPlanStepNeedsResume(mcpStatusNeedsConfirmation) {
+		t.Fatal("approval pause must stay started and resumable")
+	}
+	if codingPlanStepIsReviewHandoff(mem.StepStatuses[1]) {
+		t.Fatal("scope approval must not be treated as a child-review handoff")
+	}
+}
+
 func TestResumeIncludesSkippedTailWithoutTheBillingError(t *testing.T) {
 	mem := stickyCodingWorkbenchMemory{
 		StepStatuses: []codingWorkbenchStepStatus{

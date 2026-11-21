@@ -556,7 +556,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 			return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding runtime requires a read-only workspace probe before a writer starts"}
 		}
 	}
-	result, finishedAttempt, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, readOnly, workspaceProber, r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
+	result, finishedAttempt, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, readOnly, workspaceProber, r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, nil, func(request codingruntime.ExecutionRequest) {
 		execution.runtimeStore = store
 		attempt := request.Attempt
 		execution.runtimeAttempt = &attempt
@@ -600,6 +600,13 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	execution.correlatedRemoteExecution = false
 	execution.verifiedTaskRelationService, execution.verifiedTaskHandle = nil, nil
 	execution.verifiedTaskSubject = verifiedCodingSubject{}
+	if _, waiting := ledgerErr.(codingruntime.ApprovalRequiredError); waiting {
+		return &RemoteCodingSubAgentResult{
+			Status:  "waiting_approval",
+			Summary: "Coding task was not started because required scope approval was not granted.",
+			Error:   "scope_approval_required: " + ledgerErr.Error(),
+		}
+	}
 	if ledgerErr != nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "coding execution ledger failed: " + ledgerErr.Error()}
 	}

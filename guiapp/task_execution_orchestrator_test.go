@@ -377,6 +377,32 @@ func TestProgressSummaryShowsWaitingChildAsPendingHandoff(t *testing.T) {
 	}
 }
 
+func TestAllDoneKeepsApprovalAndHandoffRunsOpen(t *testing.T) {
+	for _, status := range []TaskExecStatus{TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted, TaskExecPending} {
+		t.Run(string(status), func(t *testing.T) {
+			o := NewTaskExecutionOrchestrator()
+			o.Active = true
+			o.Tasks = []*TaskItem{
+				{Index: 0, Title: "done", Status: TaskExecPassed},
+				{Index: 1, Title: "parked", Status: status},
+			}
+			if o.AllDone() {
+				t.Fatalf("status %s must keep the run open so approval or recovery can resume it", status)
+			}
+		})
+	}
+	o := NewTaskExecutionOrchestrator()
+	o.Tasks = []*TaskItem{
+		{Index: 0, Title: "passed", Status: TaskExecPassed},
+		{Index: 1, Title: "failed", Status: TaskExecFailed},
+		{Index: 2, Title: "skipped", Status: TaskExecSkipped},
+		nil,
+	}
+	if !o.AllDone() {
+		t.Fatal("passed, failed, and skipped are the only finished statuses")
+	}
+}
+
 func TestDependencyDeadlockDoesNotDiscardTasksBehindRuntimeHandoff(t *testing.T) {
 	for _, parentStatus := range []TaskExecStatus{TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted} {
 		t.Run(string(parentStatus), func(t *testing.T) {

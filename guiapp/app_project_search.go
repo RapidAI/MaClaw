@@ -5415,10 +5415,14 @@ func taskListSnapshotAwaitsUser(state *ProjectWorkflowState) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(state.Status)) {
-	case "paused", "pause", "interrupted", "suspended",
+	case "interrupted", "suspended",
 		"completed", "complete", "success", "succeeded", "done", "passed",
 		"failed", "failure", "error", "blocked", "cancelled", "canceled":
 		return false
+	case "paused", "pause":
+		// A stopped attempt is not a current request. A scope-approval pause
+		// is: the live run is parked on that decision and must stay visible.
+		return state.PendingReview
 	}
 	if state.PendingReview {
 		return true
@@ -5708,8 +5712,16 @@ func (a *App) stickyCodingTurnOutcomeForTask(projectPath string, tags []string) 
 		mem = loaded
 	}
 	outcome := strings.ToLower(strings.TrimSpace(mem.LastOutcome))
+	status := outcome
+	pendingReview := false
 	switch outcome {
 	case "completed", "failed", "interrupted", "cancelled", "canceled":
+	case "waiting_approval", "needs_confirmation", "paused", "pause":
+		// A turn parked on scope approval is a pause, not a finished write
+		// and not a child-review handoff. PendingReview keeps the live run
+		// from replacing it; approval resumes the same attempt.
+		status = "paused"
+		pendingReview = true
 	default:
 		return nil
 	}
@@ -5717,9 +5729,10 @@ func (a *App) stickyCodingTurnOutcomeForTask(projectPath string, tags []string) 
 		return nil
 	}
 	return &ProjectWorkflowState{
-		Status:      outcome,
-		ProjectPath: projectPath,
-		UpdatedAt:   time.Unix(mem.LastOutcomeAtUnix, 0),
+		Status:        status,
+		PendingReview: pendingReview,
+		ProjectPath:   projectPath,
+		UpdatedAt:     time.Unix(mem.LastOutcomeAtUnix, 0),
 	}
 }
 
@@ -5825,8 +5838,9 @@ func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]st
 		// projected here so the task list can show 已完成.
 		return &ProjectWorkflowState{Status: string(codingruntime.TaskCompleted)}
 	case codingruntime.TaskWaitingApproval:
-		// Only an approval is waiting on the user. There is a concrete decision.
-		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true, RuntimeLive: true}
+		// Scope approval parks the task. It is a pause the user can resume,
+		// not a child review and not a finished write.
+		return &ProjectWorkflowState{Status: "paused", PendingReview: true, RuntimeLive: true}
 	case codingruntime.TaskFailed:
 		// The ledger outcome is the task outcome. A later has_output check must
 		// not turn this into a completed row.

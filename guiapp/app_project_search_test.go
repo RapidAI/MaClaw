@@ -5821,6 +5821,8 @@ func TestTaskListLiveRunReplacesEndedAttemptSnapshots(t *testing.T) {
 		{Status: "pending"},
 		{Status: "paused"},
 		{Status: "paused", Phase: "execute"},
+		// A pause with no decision belongs to the attempt that already stopped.
+		{Status: "paused", PendingReview: false},
 		{Status: "interrupted"},
 		// The recovery prompt belongs to the attempt the live run continued.
 		{Status: "interrupted", PendingReview: true},
@@ -5842,6 +5844,9 @@ func TestTaskListLiveRunReplacesEndedAttemptSnapshots(t *testing.T) {
 	for _, state := range []*ProjectWorkflowState{
 		{Status: "waiting_review", PendingReview: true},
 		{Status: "waiting_approval"},
+		// Scope approval is a pause the user still owes. A newer live signal
+		// must not paint that parked attempt as running.
+		{Status: "paused", PendingReview: true},
 		// A V1 workflow keeps "active" while it waits on a review gate.
 		{Status: "active", PendingReview: true},
 		// A review request is a current decision even when the status is vague.

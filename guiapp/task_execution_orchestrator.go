@@ -704,12 +704,22 @@ func (o *TaskExecutionOrchestrator) SetCurrentSessionID(sessionID string) {
 	}
 }
 
-// AllDone returns true if all tasks have been executed (passed, failed, or skipped).
+// AllDone returns true only when every task has a real terminal result:
+// passed, failed, or skipped. A scope-approval pause, a child-review
+// handoff, and an interrupted attempt are not finished. ReadyTaskHandles
+// will not pick them up, but the run must stay active so approval or
+// recovery can resume the same tasks. Counting those rows done deactivates
+// the orchestrator and the next turn starts over.
 func (o *TaskExecutionOrchestrator) AllDone() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, t := range o.Tasks {
-		if t.Status == TaskExecPending || t.Status == TaskExecInProgress || t.Status == TaskExecTesting {
+		if t == nil {
+			continue
+		}
+		switch t.Status {
+		case TaskExecPassed, TaskExecFailed, TaskExecSkipped:
+		default:
 			return false
 		}
 	}

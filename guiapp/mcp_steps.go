@@ -148,8 +148,24 @@ func mcpSkipIsRetryable(errText string) bool {
 
 const mcpReviewHandoffErrorText = "子任务结果待审阅"
 
+// mcpApprovalWaitErrorText is the checklist sentence for a scope approval
+// that has not been granted. It is a pause, not a child-review handoff:
+// 继续 reruns the step after the decision, and the completion gate must
+// not treat the row as finished work.
+const mcpApprovalWaitErrorText = "范围审批待确认，确认后才会继续执行"
+
 func mcpSkipWaits(errText string) bool {
-	return mcpSkipWaitsOnPrior(errText) || mcpSkipIsReviewHandoff(errText)
+	return mcpSkipWaitsOnPrior(errText) || mcpSkipIsReviewHandoff(errText) || mcpSkipIsApprovalWait(errText)
+}
+
+// mcpSkipIsApprovalWait reports a coding step parked before execution
+// because scope approval is still required. The runner has no waiting
+// status, so the row is often only skipped; that skip is not completion.
+func mcpSkipIsApprovalWait(errText string) bool {
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "scope_approval_required") ||
+		strings.Contains(lower, "waiting_approval") ||
+		strings.Contains(errText, mcpApprovalWaitErrorText)
 }
 
 // mcpSkipIsReviewHandoff is a child-review handoff. The projected step is

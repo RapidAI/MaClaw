@@ -4273,8 +4273,31 @@ func TestInboundMCPCancelledSkipIsNotComplete(t *testing.T) {
 		t.Fatalf("round %+v", shown)
 	}
 
-	if codingRunnerSkipStickyStatus("cancelled") != codingStepInterrupted || codingRunnerSkipStickyStatus("skipped: prior step failed") != codingStepSkipped {
+	if codingRunnerSkipStickyStatus("cancelled") != codingStepInterrupted || codingRunnerSkipStickyStatus("skipped: prior step failed") != codingStepSkipped || codingRunnerSkipStickyStatus("scope_approval_required: external path") != mcpStatusNeedsConfirmation {
 		t.Fatal("runner skip status")
+	}
+
+	approval, approvalStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Summary: "ok"},
+		{Index: 2, Status: codingStepSkipped, Summary: "scope_approval_required: external path"},
+	})
+	if approval != mcpStatusNeedsConfirmation || approvalStop != nil {
+		t.Fatalf("approval wait published %s stop=%+v", approval, approvalStop)
+	}
+	resumed := []codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Summary: "ok"},
+		{Index: 2, Status: codingStepRunning, Summary: ""},
+	}
+	running, runningStop := mcpExecutionFromWorkbench(resumed)
+	if running != mcpStatusRunning || runningStop != nil {
+		t.Fatalf("approval resume published %s stop=%+v", running, runningStop)
+	}
+	finished, finishedStop := mcpExecutionFromWorkbench([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed, Summary: "ok"},
+		{Index: 2, Status: codingStepPassed, Summary: "done"},
+	})
+	if finished != mcpStatusCompleted || finishedStop != nil {
+		t.Fatalf("real completion published %s stop=%+v", finished, finishedStop)
 	}
 	if !codingPlanStepWasStarted(codingStepInterrupted) {
 		t.Fatal("interrupted plan was not started")
@@ -4365,6 +4388,18 @@ func TestInboundMCPRemoteCancelLeavesTheTailOpen(t *testing.T) {
 	}
 	if remoteCodingDependentsAfterStop("waiting_child", "waiting_child") != "skipped: prior step failed" {
 		t.Fatal("review tail")
+	}
+	approval := &RemoteCodingSubAgentResult{Status: "waiting_approval", Error: "scope_approval_required: external path"}
+	approvalStatus, approvalSummary, _ := remoteCodingStickyStep(approval)
+	if approvalStatus != mcpStatusNeedsConfirmation || approvalSummary != mcpApprovalWaitErrorText {
+		t.Fatalf("approval row %s %q", approvalStatus, approvalSummary)
+	}
+	approvalRun := remoteCodingStepToRunResult(&v2.TaskItem{Index: 2, Title: "等审批"}, approval)
+	if approvalRun.Status != v2.TaskSkipped || !mcpSkipIsApprovalWait(approvalRun.Error) || approvalRun.RuntimeHandoff {
+		t.Fatalf("approval result %+v", approvalRun)
+	}
+	if remoteCodingDependentsAfterStop("waiting_approval", "scope_approval_required") != "" {
+		t.Fatal("approval tail was recorded as a finished skip")
 	}
 	if remoteCodingDependentsAfterStop("success", "") != "" || remoteCodingDependentsAfterStop("failed", "max iterations reached (8/8)") != "" {
 		t.Fatal("open tail")

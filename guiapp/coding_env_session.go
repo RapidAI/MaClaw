@@ -122,8 +122,8 @@ type stickyCodingWorkbenchMemory struct {
 	// plan is confirmed in the same second it was stored, and a late copy of
 	// that earlier snapshot would put Start / Skip / Reject back.
 	StepsEmitSeq int64 `json:"steps_emit_seq,omitempty"`
-	// LastOutcome is the finished turn's terminal result as a workflow-status
-	// word ("completed" | "failed" | "interrupted" | "cancelled"), written with
+	// LastOutcome is the turn's durable result as a workflow-status word
+	// ("completed" | "failed" | "interrupted" | "cancelled" | "paused"), written with
 	// LastOutcomeAtUnix by the same turn that produced it. The task list
 	// projects it onto the task row: a pure coding workbench turn often enters
 	// no runtime ledger and leaves no V2 workflow, so without this the row
@@ -904,6 +904,10 @@ func codingWorkbenchTurnOutcomeLocal(status TaskExecStatus) string {
 		return "failed"
 	case TaskExecInterrupted:
 		return "interrupted"
+	case TaskExecWaitingApproval:
+		// Scope approval has not started the work. The task list already
+		// understands paused as a stop that approval can resume.
+		return "paused"
 	default:
 		return ""
 	}

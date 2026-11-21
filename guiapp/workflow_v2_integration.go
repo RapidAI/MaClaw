@@ -3265,6 +3265,18 @@ func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatu
 		)
 		stepSummary = resultErr
 	}
+	// Scope approval is a pause, not a skip and not a child-review handoff.
+	// The runner has no waiting value, so the run stays skipped and 继续 can
+	// start a fresh attempt after the decision. The checklist row must not
+	// be an ordinary skip: that is what the completion gate treats as done.
+	if v1Result.Status == TaskExecWaitingApproval && !v1Result.RuntimeHandoff && !mcpSkipIsReviewHandoff(resultErr) {
+		status = v2.TaskSkipped
+		stepStatus = mcpStatusNeedsConfirmation
+		if strings.TrimSpace(resultErr) == "" {
+			resultErr = "scope_approval_required"
+		}
+		stepSummary = mcpApprovalWaitErrorText
+	}
 	// A child-review handoff is not a failed step and not an ordinary skip.
 	// The review command resumes it. retry_steps must not start the parent again.
 	if v1Result.RuntimeHandoff || v1Result.Status == TaskExecWaitingChild || mcpSkipIsReviewHandoff(resultErr) {
@@ -3300,6 +3312,13 @@ func codingRunnerSkipNeedsStickyMirror(rr v2.TaskRunResult) bool {
 func codingRunnerSkipStickyStatus(errText string) string {
 	if isCodingExecCancelError(errText) {
 		return codingStepInterrupted
+	}
+	// TaskRunner stores a scope-approval pause as a skip because it has no
+	// waiting status. Mirroring that skip onto the checklist makes the
+	// completion gate treat the row as finished. Keep the confirmation row
+	// so approval can resume the same step.
+	if mcpSkipIsApprovalWait(errText) {
+		return mcpStatusNeedsConfirmation
 	}
 	return codingStepSkipped
 }
@@ -3676,7 +3695,7 @@ func goalContinuationFailedStart(userText string, resp *IMAgentResponse) *IMAgen
 // including a parallel wave whose last-finishing step passed; a plan where
 // nothing actually ran records no verdict.
 func localCodingTurnOutcome(results []v2.TaskRunResult, ctx context.Context) string {
-	passed, failed := 0, 0
+	passed, failed, waitingApproval := 0, 0, 0
 	for _, rr := range results {
 		switch rr.Status {
 		case v2.TaskFailed:
@@ -3686,10 +3705,17 @@ func localCodingTurnOutcome(results []v2.TaskRunResult, ctx context.Context) str
 			failed++
 		case v2.TaskPassed:
 			passed++
+		case v2.TaskSkipped:
+			if mcpSkipIsApprovalWait(rr.Error) {
+				waitingApproval++
+			}
 		}
 	}
 	executorOutcome := ""
-	if passed > 0 && failed == 0 {
+	if waitingApproval > 0 && failed == 0 {
+		// Parked on scope approval. Not completed, and not a child review.
+		executorOutcome = "paused"
+	} else if passed > 0 && failed == 0 {
 		executorOutcome = "completed"
 	}
 	return codingWorkbenchTurnOutcomeFromPlan(executorOutcome, failed, ctx != nil && ctx.Err() != nil)
