@@ -404,11 +404,11 @@ func TestInboundMCPLoadedRunningIsHostWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Status != mcpStatusRunning || view.Stop != nil {
-		t.Fatalf("a round still inside the stall window must stay running, got %+v stop=%+v", view, view.Stop)
+	if view.Status != mcpStatusFailed || view.EndReason != mcpStatusFailed || view.Stop == nil || view.Stop.Class != mcpStopNoProgress || view.Stop.Source != "no_progress" || view.Stop.Reason != errMCPRunStalled.Error() || view.Stop.Class == mcpStopUser || view.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("a reloaded round has no live prompt, got %+v stop=%+v", view, view.Stop)
 	}
 	if !mcpAutoResumeAllowed(view) {
-		t.Fatal("a live loaded run must stay resumable")
+		t.Fatal("a no-progress reload must stay explicitly resumable")
 	}
 
 	quietDir := t.TempDir()

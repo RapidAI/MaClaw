@@ -275,27 +275,17 @@ func mcpSettleLoadedRun(rec *mcpRunRecord) *mcpRunRecord {
 	if rec == nil || rec.Status != mcpStatusRunning {
 		return rec
 	}
-	// A loaded snapshot has no live cancel func. That does not mean the
-	// round was cancelled. Keep it running while its last host-visible
-	// activity is still inside the stall window, including a snapshot that
-	// predates the progress clock. A quiet round fails as no progress.
-	// It is not a user stop and not an unconfirmed host-wait ending.
+	// Loading does not resume the programming prompt. The snapshot has no
+	// cancel func and no live model call, so it cannot still be advancing
+	// in this process. Leaving it running would block the next command and
+	// would also claim a round is live when nothing is producing activity.
+	// That is a confirmed lack of progress, not a user stop and not an
+	// unconfirmed host-wait ending. A snapshot whose last activity is still
+	// inside the stall window uses the same failure: the process that was
+	// producing that activity is gone.
 	now := time.Now()
-	// A snapshot written before the progress clock has no activity stamp.
-	// StartedAt is that round's last known host-visible moment. A zero
-	// stamp with no start is not evidence the round is still advancing.
-	last := rec.progressAt
-	if last.IsZero() {
-		last = rec.StartedAt
-	}
-	if !last.IsZero() && !last.Before(now.Add(-mcpRunStallWindow)) {
-		if rec.progressAt.IsZero() {
-			rec.progressAt = last
-		}
-		rec.cancel = nil
-		rec.hostWaitEnded = false
-		rec.stalled = false
-		return rec
+	if rec.progressAt.IsZero() {
+		rec.progressAt = rec.StartedAt
 	}
 	rec.Status = mcpStatusFailed
 	rec.FinishedAt = now

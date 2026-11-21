@@ -3652,8 +3652,8 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "fresh", Status: mcpStatusRunning, RequestID: "mcp-fresh", RunID: "run-fresh",
 		StartedAt: time.Now().Add(-time.Minute), progressAt: time.Now().Add(-time.Minute),
 	})
-	if fresh.Status != mcpStatusRunning || fresh.Stop != nil {
-		t.Fatalf("recent loaded run %+v", fresh)
+	if fresh.Status != mcpStatusFailed || fresh.Stop == nil || fresh.Stop.Class != mcpStopNoProgress || fresh.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("reloaded run has no live prompt, status=%s stop=%+v", fresh.Status, fresh.Stop)
 	}
 	aged := mcpSettleLoadedRun(&mcpRunRecord{
 		ProjectPath: "aged", Status: mcpStatusRunning, RequestID: "mcp-aged", RunID: "run-aged",
@@ -3666,7 +3666,7 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "legacy", Status: mcpStatusRunning, RequestID: "mcp-legacy", RunID: "run-legacy",
 		StartedAt: time.Now().Add(-time.Minute),
 	})
-	if legacy.Status != mcpStatusRunning || legacy.progressAt.IsZero() {
+	if legacy.Status != mcpStatusFailed || legacy.Stop == nil || legacy.Stop.Class != mcpStopNoProgress || legacy.progressAt.IsZero() {
 		t.Fatalf("legacy loaded run %+v", legacy)
 	}
 	done := mcpSettleLoadedRun(&mcpRunRecord{ProjectPath: "done", Status: mcpStatusCompleted, RequestID: "mcp-done"})
