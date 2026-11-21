@@ -259,21 +259,87 @@ func (p *publishRun) pasteFile(obj string, k int) error {
 // pictureWait is how long one pasted picture may take to upload and show.
 const pictureWait = 25 * time.Second
 
+// publishImageDeliverFn hands one picker file to a contenteditable editor.
+// A ClipboardEvent built with clipboardData is empty in Chrome (the browser
+// does not keep that field on an untrusted paste), so editors that insert
+// pictures from the clipboard never see the file. A drop event does keep
+// its DataTransfer, and a paste event gets the same object defined on it.
+const publishImageDeliverFn = `function(k) {
+  const input = document.getElementById('__pub_picker');
+  const f = input && input.files ? input.files[k] : null;
+  if (!f) return 'no-file';
+  const dt = new DataTransfer();
+  dt.items.add(f);
+  const fire = (type, Ctor) => {
+    let ev;
+    try { ev = new Ctor(type, {bubbles: true, cancelable: true, dataTransfer: dt}); }
+    catch (e) { try { ev = new Event(type, {bubbles: true, cancelable: true}); } catch (e2) { return; } }
+    try { Object.defineProperty(ev, 'dataTransfer', {configurable: true, value: dt}); } catch (e) {}
+    try { Object.defineProperty(ev, 'clipboardData', {configurable: true, value: dt}); } catch (e) {}
+    this.dispatchEvent(ev);
+  };
+  this.focus();
+  fire('dragenter', DragEvent);
+  fire('dragover', DragEvent);
+  fire('drop', DragEvent);
+  fire('paste', Event);
+  return 'ok';
+}`
+
 func (p *publishRun) pasteImageHere(obj string, k int) error {
 	before := p.imgCount(obj)
-	fn := `function(k) { const f = document.getElementById('__pub_picker').files[k]; const dt = new DataTransfer(); dt.items.add(f); this.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); return 'ok'; }`
-	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": fn, "arguments": []map[string]interface{}{{"value": k}}, "returnByValue": true}); err != nil {
+	if _, err := p.send("Runtime.callFunctionOn", map[string]interface{}{"objectId": obj, "functionDeclaration": publishImageDeliverFn, "arguments": []map[string]interface{}{{"value": k}}, "returnByValue": true}); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(pictureWait)
+	t0 := time.Now()
+	deadline := t0.Add(pictureWait)
+	var rose time.Time
 	for time.Now().Before(deadline) {
-		if p.imgCount(obj) > before {
+		nowN := p.imgCount(obj)
+		if nowN > before && rose.IsZero() {
+			rose = time.Now()
+		}
+		if nowN <= before {
+			rose = time.Time{}
+		}
+		var started, ok, failed, open int
+		if p.net != nil {
+			started, ok, failed, open = p.net.uploadStats(t0)
+		}
+		ready, waitErr := imageInsertReady(before, nowN, rose, started, ok, open, failed, time.Now())
+		if waitErr != nil {
+			return fmt.Errorf("picture %d: %w", k+1, waitErr)
+		}
+		if ready {
 			time.Sleep(300 * time.Millisecond)
-			return nil
+			if p.imgCount(obj) > before {
+				return nil
+			}
+			rose = time.Time{}
 		}
 		time.Sleep(400 * time.Millisecond)
 	}
-	return fmt.Errorf("picture %d did not show in the editor", k+1)
+	return fmt.Errorf("picture %d did not stay in the editor", k+1)
+}
+
+// imageInsertReady reports that one delivered picture is still in the editor
+// and, when the page started an upload, that upload has finished. A count
+// that only flickered up is not ready. rose is when the count first rose.
+func imageInsertReady(before, now int, rose time.Time, started, ok, open, failed int, nowT time.Time) (bool, error) {
+	if failed > 0 {
+		return false, fmt.Errorf("the editor's upload failed")
+	}
+	if now <= before || rose.IsZero() {
+		return false, nil
+	}
+	held := nowT.Sub(rose) >= 800*time.Millisecond
+	if !held {
+		return false, nil
+	}
+	if started > 0 {
+		return open == 0 && ok > 0, nil
+	}
+	return true, nil
 }
 
 func (p *publishRun) pasteHTML(obj, h, text string) error {
