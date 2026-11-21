@@ -1,0 +1,13 @@
+{
+  "name": "browser-observation-ab",
+  "private": true,
+  "type": "module",
+  "description": "Isolated synthetic harness comparing screenshot coordinates with semantic refs. No OpenBot source.",
+  "scripts": {
+    "mechanical": "node run.mjs --mode mechanical",
+    "agent": "node run.mjs --mode agent"
+  },
+  "dependencies": {
+    "playwright": "1.65.1"
+  }
+}
