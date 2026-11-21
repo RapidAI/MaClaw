@@ -17,6 +17,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../components/mermaid/mermaid.dart';
 import '../../core/asr_fallback.dart';
+import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
@@ -447,6 +448,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     _activeAsr = AsrEngine.local;
     if (mounted) setState(() {});
     if (!localReady) {
+      if (!NativeVoice.supported) {
+        _toast(context.S.vsEngineMissing);
+        return;
+      }
       final hub = ref.read(sessionProvider).active?.hubUrl;
       unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
       _toast(context.S.chatAsrUnavailableDownloading);
@@ -708,6 +713,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
+      if (!NativeVoice.supported) {
+        _toast(S.vsEngineMissing);
+        return;
+      }
       final hub = ref.read(sessionProvider).active?.hubUrl;
       unawaited(engine.autoEnsure(hubBase: hub));
       _toast(S.chatAsrUnavailableDownloading);
@@ -734,6 +743,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         if (engine.asrEngine == AsrEngine.local) {
           final started = await _startSystemDictate();
           if (started) return;
+        }
+        if (!NativeVoice.supported) {
+          _toast(S.vsEngineMissing);
+          return;
         }
         final hub = ref.read(sessionProvider).active?.hubUrl;
         unawaited(engine.autoEnsure(hubBase: hub));

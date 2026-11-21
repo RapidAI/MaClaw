@@ -92,6 +92,18 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
 
   String? get _hubBase => ref.read(sessionProvider).active?.hubUrl;
 
+  /// The local engine is a native library, not a downloadable asset. When it
+  /// is absent from the build, say so instead of offering a download that
+  /// cannot make the model usable.
+  Widget _engineMissingNote(ThemeData theme) {
+    return Text(
+      context.S.vsEngineMissing,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+
   Future<void> _downloadTts() async {
     setState(() {
       _stage = '';
@@ -187,7 +199,9 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                     },
             ),
             const SizedBox(height: 8),
-            if (NativeVoice.supported && !_ttsReady)
+            if (!NativeVoice.supported)
+              _engineMissingNote(theme)
+            else if (!_ttsReady)
               OutlinedButton.icon(
                 onPressed: busy ? null : _downloadTts,
                 icon: const Icon(Icons.download, size: 16),
@@ -247,7 +261,13 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                     },
             ),
             const SizedBox(height: 8),
-            if (NativeVoice.supported && !_asrReady)
+            if (!NativeVoice.supported)
+              // This build has no libmaclaw_voice.so: a download could never
+              // fix it, so stop pointing the person at one (papers
+              // 2026-11-22 03:05: the assistant kept saying "downloading the
+              // local model, try again later" forever).
+              _engineMissingNote(theme)
+            else if (!_asrReady)
               OutlinedButton.icon(
                 onPressed: busy ? null : _downloadAsr,
                 icon: const Icon(Icons.download, size: 16),
