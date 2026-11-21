@@ -34,8 +34,8 @@ A selected `go test` that prints `[no tests to run]` or `[no test files]`, or th
 
 `lifecycle` (`go test -race -count=1`, `MACLAW_TEST_MODELS=off`):
 
-- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`
-- `./corelib/agentservice`: `TestDesktopDeliverablesOnlyForExecuteDesktopTurns`
+- `./MaClawSrv`: `TestDesktopReceiptPersistsVisibleOutcome`, `TestDesktopDeliverableExtractionChain`, `TestPlanFileIsNotDelivery`, `TestTextItemsNeedExplicitIDs`, `TestHTTPReadDuringFinalize`, `TestDesktopReceiptStaysUnreadyPastTwoSeconds`, `TestDesktopAbandonedReceiptBecomesUnverified`, `TestDesktopReceiptPersistFailureIsNotReady`, `TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn`, `TestNoDesktopAsyncFinishKeepsGeneratedPDF`, `TestDesktopBotCapabilitiesUserConfigPreservesManagedDocument`
+- `./corelib/agentservice`: `TestDesktopDeliverablesOnlyForExecuteDesktopTurns`, `TestRawManagedCapabilitySavesKeepAdminDocument`
 
 `hub-outcome` (no race, httptest, no credentials):
 

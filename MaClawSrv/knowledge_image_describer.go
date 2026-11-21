@@ -194,7 +194,7 @@ func newSrvKnowledgeImageDescriber(svc *agentservice.Service, dataRoot string) *
 			return
 		}
 		current.AppConfig.KnowledgeVisionLLM.Verified = failed.Verified
-		if _, err := svc.UpdateUserConfig(ctx, principal, current.AppConfig); err != nil {
+		if _, err := svc.UpdateUserVisibleConfig(ctx, principal, current.AppConfig); err != nil {
 			log.Printf("[knowledge-vision] persist verification state failed: %v", err)
 		}
 	}

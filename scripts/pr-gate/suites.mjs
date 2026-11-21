@@ -18,9 +18,11 @@ export const lifecycleSuite = {
       "TestDesktopReceiptPersistFailureIsNotReady",
       "TestBotPDFWorksWithAndWithoutDesktopAndAttachesToTurn",
       "TestNoDesktopAsyncFinishKeepsGeneratedPDF",
+      "TestDesktopBotCapabilitiesUserConfigPreservesManagedDocument",
     ],
     "./corelib/agentservice": [
       "TestDesktopDeliverablesOnlyForExecuteDesktopTurns",
+      "TestRawManagedCapabilitySavesKeepAdminDocument",
     ],
   },
 };

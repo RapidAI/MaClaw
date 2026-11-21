@@ -1227,7 +1227,7 @@ func (s *HTTPServer) updatePlatformUserLLMConfig(r *http.Request, p agentservice
 		return err
 	}
 	app := platformLLMAppConfig(cfg.AppConfig, llmURL, llmKey, llmModel)
-	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	_, err = s.svc.UpdateUserVisibleConfig(r.Context(), p, app)
 	return err
 }
 
@@ -1947,7 +1947,7 @@ func (s *HTTPServer) updatePlatformUserSSHHosts(r *http.Request, p agentservice.
 	}
 	app := cfg.AppConfig
 	app.SSHHosts = normalizePlatformSSHHosts(hosts)
-	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	_, err = s.svc.UpdateUserVisibleConfig(r.Context(), p, app)
 	return err
 }
 
@@ -2011,7 +2011,7 @@ func (s *HTTPServer) updatePlatformUserMaclawSrvConfig(r *http.Request, p agents
 		app.ThirdPartyGatewayPort = *in.ThirdPartyGatewayPort
 	}
 	applyBoolPtr(&app.ThirdPartyGatewayLocalMode, in.ThirdPartyGatewayLocalMode)
-	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	_, err = s.svc.UpdateUserVisibleConfig(r.Context(), p, app)
 	return err
 }
 
@@ -2064,7 +2064,7 @@ func (s *HTTPServer) repairPlatformHubServiceGroupModel(r *http.Request, binding
 	if !changed {
 		return nil
 	}
-	_, err = s.svc.UpdateUserConfig(r.Context(), principal, app)
+	_, err = s.svc.UpdateUserVisibleConfig(r.Context(), principal, app)
 	return err
 }
 
@@ -2129,7 +2129,7 @@ func (s *HTTPServer) ensurePlatformSourceUserDefaultConfig(r *http.Request, p ag
 	if strings.TrimSpace(app.MaclawLLMModel) == "" {
 		app.MaclawLLMModel = platformHubLLMModel
 	}
-	_, err = s.svc.UpdateUserConfig(r.Context(), p, app)
+	_, err = s.svc.UpdateUserVisibleConfig(r.Context(), p, app)
 	return err
 }
 

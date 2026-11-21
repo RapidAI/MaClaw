@@ -232,7 +232,7 @@ func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code stri
 	// binding.  If configuration persistence fails, no binding is left behind
 	// for an unusable credential.  A later binding failure is compensated by
 	// restoring the exact prior configuration below.
-	if _, err := s.svc.UpdateUserConfig(ctx, rec.Principal, cfg.AppConfig); err != nil {
+	if _, err := s.svc.UpdateUserVisibleConfig(ctx, rec.Principal, cfg.AppConfig); err != nil {
 		return nil, fmt.Errorf("could not activate device gateway")
 	}
 	var bindingErr error
@@ -246,7 +246,7 @@ func (s *HTTPServer) pairHardwareDevice(ctx context.Context, clientID, code stri
 		bindingErr = s.reserveHardwareDeviceForPairing(principal, clientID)
 	}
 	if bindingErr != nil {
-		if _, rollbackErr := s.svc.UpdateUserConfig(ctx, rec.Principal, before); rollbackErr != nil {
+		if _, rollbackErr := s.svc.UpdateUserVisibleConfig(ctx, rec.Principal, before); rollbackErr != nil {
 			return nil, fmt.Errorf("could not bind device (%v); gateway configuration rollback failed: %v", bindingErr, rollbackErr)
 		}
 		return nil, bindingErr

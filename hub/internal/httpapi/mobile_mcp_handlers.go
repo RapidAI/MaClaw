@@ -77,7 +77,7 @@ func MobileAgentMCPHandler(identity *auth.IdentityService) http.HandlerFunc {
 			next.MCPServers = mobileNormalizeMCPServers(req.MCPServers)
 			// Do not accept local MCP mutation from mobile (host security).
 			// Preserve existing LocalMCPServers from server-side config only.
-			updated, err := svc.UpdateUserConfig(r.Context(), p, next)
+			updated, err := svc.UpdateUserVisibleConfig(r.Context(), p, next)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_FAILED", "failed to save MCP config")
 				return

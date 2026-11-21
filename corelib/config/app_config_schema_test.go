@@ -51,6 +51,13 @@ func TestAppConfigSchemaHonorsHostAndUserVisibility(t *testing.T) {
 	if !IsUserWebVisibleField("maclaw_llm_url") {
 		t.Fatal("basic LLM URL should remain user-web visible")
 	}
+	managed, ok := AppConfigFieldMap()["desktop_bot_capabilities"]
+	if !ok {
+		t.Fatal("schema missing desktop_bot_capabilities")
+	}
+	if IsUserWebVisibleField("desktop_bot_capabilities") || managed.UserWebVisible || managed.Scope != AppConfigScopeService || IsSharedClientField("desktop_bot_capabilities") || !IsAvailableInMaClawSrv("desktop_bot_capabilities") {
+		t.Fatalf("managed bot capabilities must stay on MaClawSrv, off the user web and off the default-client overlay: %#v", managed)
+	}
 }
 
 func TestAppConfigSchemaReturnsIndependentMapCopies(t *testing.T) {

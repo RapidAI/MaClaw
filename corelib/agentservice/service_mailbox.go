@@ -36,7 +36,15 @@ func (s *Service) ReplaceMailboxAccounts(ctx context.Context, p Principal, accou
 	next.MailboxSignatures = signatures
 	// Save the mailbox slices only. UpdateUserConfig would revoke dynamic
 	// capability contracts and is the partial-config path that drops fields
-	// the caller omitted.
+	// the caller omitted. The barrier runs after this snapshot and before
+	// the lock, so a Hub or admin write in that window is the managed
+	// document the locked read keeps.
+	runRawManagedSaveBeforeLock()
+	s.userConfigMu.Lock()
+	if err := s.keepStoredManagedCapabilitiesLocked(p, &next); err != nil {
+		s.userConfigMu.Unlock()
+		return nil, err
+	}
 	merged := normalizeLLMConfigForSave(current.AppConfig, next)
 	now := time.Now()
 	if s.now != nil {
@@ -44,11 +52,14 @@ func (s *Service) ReplaceMailboxAccounts(ctx context.Context, p Principal, accou
 	}
 	cfg := UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: merged, UpdatedAt: now}
 	if err := s.store.SaveUserConfig(cfg); err != nil {
+		s.userConfigMu.Unlock()
 		return nil, err
 	}
 	if err := saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg); err != nil {
+		s.userConfigMu.Unlock()
 		return nil, err
 	}
+	s.userConfigMu.Unlock()
 	if err := s.refreshUserInstanceReadinessCache(p.TenantID, p.UserID, ValidateAppConfig(cfg.AppConfig), cfg.UpdatedAt); err != nil {
 		return nil, err
 	}

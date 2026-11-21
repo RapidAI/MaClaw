@@ -29,7 +29,7 @@ func reviewedHostConfigInvocationSchema() map[string]interface{} {
 			// An unlabelled string leaves the model to guess the spelling. The
 			// canonicalizer does not read enum, so the check in the administer
 			// path stays the boundary and this is documentation for the model.
-			"thinking_mode":  map[string]interface{}{"type": "string", "enum": corelib.GlobalThinkingModeOptions()},
+			"thinking_mode": map[string]interface{}{"type": "string", "enum": corelib.GlobalThinkingModeOptions()},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -227,7 +227,7 @@ func (s *Service) AdministerReviewedHostConfig(ctx context.Context, principal Pr
 		}
 		next.MaclawLLMThinkingMode = mode
 	}
-	updated, err := s.UpdateUserConfig(ctx, principal, next)
+	updated, err := s.UpdateUserVisibleConfig(ctx, principal, next)
 	if err != nil {
 		return "", err
 	}
