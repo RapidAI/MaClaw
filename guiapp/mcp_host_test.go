@@ -3621,14 +3621,24 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		t.Fatal("a long tool call's progress line must renew the stall window")
 	}
 	if !app.mcpExtendQuietRun("moving", "mcp-move", mcpRunStallWindow) {
-		t.Fatal("the stall callback must renew a live round under the run lock")
+		t.Fatal("host-visible activity inside the window must keep the stall callback waiting")
+	}
+	extendedAt := app.mcpRuns["moving"].progressAt
+	if !app.mcpExtendQuietRun("moving", "mcp-move", mcpRunStallWindow) || !app.mcpRuns["moving"].progressAt.Equal(extendedAt) {
+		t.Fatal("the stall callback must not stamp progress and renew itself")
+	}
+	app.mcpRunsMu.Lock()
+	app.mcpRuns["moving"].progressAt = time.Time{}
+	app.mcpRunsMu.Unlock()
+	if app.mcpExtendQuietRun("moving", "mcp-move", mcpRunStallWindow) {
+		t.Fatal("a missing activity stamp must not keep the round alive")
 	}
 	quietSince := time.Now().Add(-mcpRunStallWindow - time.Second)
 	app.mcpRunsMu.Lock()
 	app.mcpRuns["moving"].progressAt = quietSince
 	app.mcpRunsMu.Unlock()
-	if app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-mcpRunStallWindow)) {
-		t.Fatal("a quiet round must not look like progress")
+	if app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-mcpRunStallWindow)) || app.mcpExtendQuietRun("moving", "mcp-move", mcpRunStallWindow) {
+		t.Fatal("a quiet round must not look like progress or renew the stall callback")
 	}
 	app.mcpNoteRunStalled("moving", "mcp-other")
 	if app.mcpRunStalled("moving", "mcp-move") {

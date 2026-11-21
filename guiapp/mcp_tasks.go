@@ -2452,13 +2452,11 @@ func (a *App) mcpNoteRunProgress(path, requestID string) {
 	rec.progressAt = time.Now()
 }
 
-// mcpExtendQuietRun reports whether this waiting round still has activity
-// inside window, and if so moves progressAt to now. The stall callback is
-// the only caller. Stamping here keeps the next check one full window after
-// the last renewal, including a round whose only signal is that it is still
-// the live request. A missing stamp is activity: an older record must not
-// be failed just because it predates the stall clock. A user stop, or a
-// different request, is left alone.
+// mcpExtendQuietRun reports whether this waiting round still has host-visible
+// activity inside window. The stall callback is the only caller, and it must
+// not stamp progressAt: that stamp is the next check's only evidence, so
+// writing now here would renew a quiet round forever. A missing stamp is not
+// activity. A user stop, or a different request, is left alone.
 func (a *App) mcpExtendQuietRun(path, requestID string, window time.Duration) bool {
 	if a == nil || window <= 0 {
 		return false
@@ -2474,12 +2472,10 @@ func (a *App) mcpExtendQuietRun(path, requestID string, window time.Duration) bo
 	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
 		return false
 	}
-	now := time.Now()
-	if !rec.progressAt.IsZero() && rec.progressAt.Before(now.Add(-window)) {
+	if rec.progressAt.IsZero() {
 		return false
 	}
-	rec.progressAt = now
-	return true
+	return !rec.progressAt.Before(time.Now().Add(-window))
 }
 
 // mcpRunMadeProgress reports whether this round has host-visible activity at
