@@ -57,9 +57,13 @@ type mcpCreateArgs struct {
 	ArgError string
 }
 
+// mcpHTTP carries the live in-memory token plus a fallback reader for the
+// key file, so a just-rotated key stays valid until the user generates a
+// new one.
 type mcpHTTP struct {
-	token func() string
-	api   mcpTaskAPI
+	token       func() string
+	tokenFile   func() string
+	api         mcpTaskAPI
 	// lanAllowed reports the wildcard-bind opt-in state; nil means loopback
 	// only. LAN clients still need the Bearer key.
 	lanAllowed func() bool
@@ -73,7 +77,24 @@ func newMCPHTTPLAN(token func() string, api mcpTaskAPI, lanAllowed func() bool) 
 	if token == nil {
 		token = func() string { return "" }
 	}
-	return &mcpHTTP{token: token, api: api, lanAllowed: lanAllowed}
+	return &mcpHTTP{token: token, tokenFile: readMCPAPIKeyOrEmpty, api: api, lanAllowed: lanAllowed}
+}
+
+// tokenMatches reports whether req is the live in-memory token or the key
+// stored on disk. The disk key is the "old" key: after a rotation it stays
+// usable until the user generates the next one.
+func (h *mcpHTTP) tokenMatches(req string) bool {
+	req = strings.TrimSpace(req)
+	if req == "" {
+		return false
+	}
+	if secureTokenEqual(req, h.token()) {
+		return true
+	}
+	if h.tokenFile != nil {
+		return secureTokenEqual(req, h.tokenFile())
+	}
+	return false
 }
 
 type mcpRPCError struct {
@@ -100,7 +121,7 @@ func (h *mcpHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !secureTokenEqual(mcpRequestToken(r), h.token()) {
+	if !h.tokenMatches(mcpRequestToken(r)) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -108,7 +129,7 @@ func (h *mcpHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Authenticated requests carry who they are: create_task/send_command log
 	// the caller (IP + masked key) the moment a task actually starts.
 	ctx := r.Context()
-	if info, ok := mcpClientInfoFromRequest(r, h.token()); ok {
+	if info, ok := mcpClientInfoFromRequest(r, mcpRequestToken(r)); ok {
 		ctx = context.WithValue(ctx, mcpClientInfoContextKey{}, info)
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, mcpBodyLimit))

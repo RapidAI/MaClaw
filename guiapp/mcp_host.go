@@ -404,8 +404,9 @@ func mcpExecutablePath() string {
 	return exe
 }
 
-// GenerateMCPHostAPIKey replaces the local API key. The previous key stops
-// working on the next request. The server must already be enabled.
+// GenerateMCPHostAPIKey generates a new local API key. The previous key
+// stays valid: requests may carry either the old or the new key until the
+// user generates the next one. The server must already be enabled.
 func (a *App) GenerateMCPHostAPIKey() (map[string]any, error) {
 	if a == nil {
 		return nil, fmt.Errorf("请先打开 MCP 服务器")
@@ -459,6 +460,16 @@ func readMCPAPIKey() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// readMCPAPIKeyOrEmpty returns the stored key without an error, so callers
+// that only need the value (e.g. token fallback) can ignore a missing file.
+func readMCPAPIKeyOrEmpty() string {
+	key, err := readMCPAPIKey()
+	if err != nil {
+		return ""
+	}
+	return key
 }
 
 func rotateMCPAPIKey() (string, error) {

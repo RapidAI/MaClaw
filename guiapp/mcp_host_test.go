@@ -1433,12 +1433,14 @@ func TestInboundMCPStdioProxySkipsNotifications(t *testing.T) {
 		t.Fatalf("stdout %q", out.String())
 	}
 
+	// After rotating the disk key, the old in-memory key still works
+	// (tokenMatches accepts both the live token and the disk key).
 	if err := writeMCPAPIKey("mck_stdio_proxy_key_02"); err != nil {
 		t.Fatal(err)
 	}
 	var rotated strings.Builder
-	if code := runMCPStdioProxy(strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n"), &rotated); code != 0 || !strings.Contains(rotated.String(), "-32000") || strings.Contains(rotated.String(), `"result"`) || strings.Contains(rotated.String(), "未运行") || !strings.Contains(rotated.String(), "API key") {
-		t.Fatalf("rotated key code %d %s", code, rotated.String())
+	if code := runMCPStdioProxy(strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n"), &rotated); code != 0 || !strings.Contains(rotated.String(), `"id":2`) {
+		t.Fatalf("old key after rotation must still be accepted, code %d %s", code, rotated.String())
 	}
 
 	var missing strings.Builder
