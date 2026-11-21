@@ -200,7 +200,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	progressLang := h.imUILang()
 	acpToolCallID := ""
 	acpEndEmitted := false
-	if result.Text == "" && isACPProgrammingRequestID(requestID) {
+	if result.Text == "" && hostProgrammingToolRequest(requestID) {
 		acpToolCallID = strings.TrimSpace(tc.ID)
 		if acpToolCallID == "" {
 			acpToolCallID = newACPToolCallID(tc.Function.Name)
@@ -213,7 +213,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 				defer pcancel()
 			}
 		}
-		allowed, reason := globalACPPermission.check(pctx, requestID, tc.Function.Name, tc.Function.Arguments)
+		allowed, reason := true, ""
+		if isACPProgrammingRequestID(requestID) {
+			allowed, reason = globalACPPermission.check(pctx, requestID, tc.Function.Name, tc.Function.Arguments)
+		}
 		// Dual-run observation (Phase 1, R3): compares the client-negotiated
 		// decision with host policy; never changes the check outcome.
 		acpPermissionDualEval(h.acpPermissionDualEvalSnapshot(), tc.Function.Name, tc.Function.Arguments, allowed)
@@ -315,7 +318,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if opts.MilestoneTracker != nil {
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
 	}
-	if !acpEndEmitted && (acpToolCallID != "" || (isACPProgrammingRequestID(requestID) && strings.TrimSpace(tc.Function.Name) != "")) {
+	if !acpEndEmitted && (acpToolCallID != "" || (hostProgrammingToolRequest(requestID) && strings.TrimSpace(tc.Function.Name) != "")) {
 		id := acpToolCallID
 		if id == "" {
 			id = strings.TrimSpace(tc.ID)

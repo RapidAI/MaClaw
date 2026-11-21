@@ -3697,6 +3697,69 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 	}
 }
 
+func TestInboundMCPToolActivityReachesMCPRequest(t *testing.T) {
+	app := &App{}
+	quietSince := time.Now().Add(-mcpRunStallWindow + time.Minute)
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "tooling", Status: mcpStatusRunning, RequestID: "mcp-tool", RunID: "run-tool",
+		StartedAt: quietSince, progressAt: quietSince,
+	})
+	before := app.mcpRuns["tooling"].progressAt
+	var saw string
+	clear := globalACPToolSinks.set("mcp-tool", func(ev ACPToolEvent) {
+		saw = ev.Phase + ":" + ev.Name
+		app.mcpRecordToolEvent("tooling", "mcp-tool", ev)
+	})
+	defer clear()
+
+	if !hostProgrammingToolRequest("mcp-tool") || hostProgrammingToolRequest("chat-1") {
+		t.Fatal("an mcp- programming request must publish tool activity; a chat request must not")
+	}
+	emitACPToolEventForRequest("mcp-tool", ACPToolEvent{Phase: "start", Name: "bash", ArgsJSON: `{"command":"go test"}`})
+	if saw != "start:bash" {
+		t.Fatalf("mcp tool start was not emitted, saw %q", saw)
+	}
+	if !app.mcpRuns["tooling"].progressAt.After(before) {
+		t.Fatal("a tool start on an mcp- request must renew the stall clock")
+	}
+	if !app.mcpExtendQuietRun("tooling", "mcp-tool", mcpRunStallWindow) {
+		t.Fatal("a live tool call must not look quiet")
+	}
+
+	loop := NewLoopContext("mcp-tool-loop", 1, nil)
+	loop.Runtime.RequestID = "mcp-tool"
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, loopCtx: loop}
+	end := cb.finishSharedToolExecution("mcp-tool", "call-1", "bash", `{"command":"go test"}`, "ok", true, nil)
+	if end != "ok" || saw != "end:bash" {
+		t.Fatalf("mcp tool end end=%q saw=%q", end, saw)
+	}
+	page, err := app.mcpReadLog(context.Background(), "tooling", "run-tool", 0)
+	if err != nil || len(page.Events) != 2 || page.Events[0].Kind != "tool" || page.Events[1].Kind != "tool" {
+		t.Fatalf("tool log %+v err=%v", page, err)
+	}
+	if !strings.Contains(page.Events[0].Text, "bash") || !strings.Contains(page.Events[1].Text, "bash") {
+		t.Fatalf("tool log text %+v", page.Events)
+	}
+
+	plain := cb.finishSharedToolExecution("chat-1", "call-2", "read_file", `{"path":"missing.go"}`, "ok", true, nil)
+	if plain != "ok" || strings.Contains(saw, "read_file") {
+		t.Fatalf("a non-programming request must not stamp tool activity, saw %q", saw)
+	}
+
+	filter := newIMProgressVisibilityFilter(nil)
+	if text, ok := filter.ForwardProgressOrHeartbeat("命令仍在执行中（已 30s）: go test"); !ok || text == imHeartbeatMsg {
+		t.Fatalf("first long-tool line must stay visible, text=%q ok=%v", text, ok)
+	}
+	if text, ok := filter.ForwardProgressOrHeartbeat("命令仍在执行中（已 60s）: go test"); !ok || text != imHeartbeatMsg {
+		t.Fatalf("later long-tool line collapses to heartbeat, text=%q ok=%v", text, ok)
+	}
+	heartbeatAt := app.mcpRuns["tooling"].progressAt
+	app.mcpAppendLog("tooling", "mcp-tool", mcpLogEvent{Kind: "progress", Text: imHeartbeatMsg})
+	if !app.mcpRuns["tooling"].progressAt.Equal(heartbeatAt) {
+		t.Fatal("a collapsed long-tool heartbeat must not renew the stall clock")
+	}
+}
+
 func TestInboundMCPStallWatchStopWaitsForRenewal(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

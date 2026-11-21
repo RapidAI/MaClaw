@@ -11,6 +11,15 @@ func isACPProgrammingRequestID(requestID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(requestID), "acp-")
 }
 
+// hostProgrammingToolRequest reports a programming turn whose tool start and
+// end must reach the host. ACP Mode B uses acp- ids. An MCP programming round
+// uses mcp- ids; its stall clock is renewed by OnToolEvent, so a long tool
+// that emits no token still counts as activity. ACP permission stays on the
+// acp- prefix only.
+func hostProgrammingToolRequest(requestID string) bool {
+	return isACPProgrammingRequestID(requestID) || isMCPProgrammingRequestID(requestID)
+}
+
 func isACPProgrammingMessage(msg IMUserMessage) bool {
 	return isACPProgrammingRequestID(msg.RequestID)
 }

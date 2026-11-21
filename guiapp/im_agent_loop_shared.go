@@ -6612,8 +6612,11 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	}
 	c.noteWorkspaceDocumentBaseline()
 	toolCallID := newACPToolCallID(name)
-	if isACPProgrammingRequestID(requestID) {
-		allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON)
+	if hostProgrammingToolRequest(requestID) {
+		allowed, reason := true, ""
+		if isACPProgrammingRequestID(requestID) {
+			allowed, reason = globalACPPermission.check(execCtx, requestID, name, argsJSON)
+		}
 		// Dual-run observation (Phase 1, R3): compares the client-negotiated
 		// decision with host policy; never changes the check outcome.
 		acpPermissionDualEval(c.handler.acpPermissionDualEvalSnapshot(), name, argsJSON, allowed)
@@ -10447,7 +10450,7 @@ func (c *sharedAgentLoopCallbacks) finishSharedToolExecution(requestID, toolCall
 	if strings.HasPrefix(trimmed, "[system rejected]") || strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "[mcp error]") {
 		ok = false
 	}
-	if !isACPProgrammingRequestID(requestID) {
+	if !hostProgrammingToolRequest(requestID) {
 		return result
 	}
 	paths := append([]string(nil), acpPathsFromToolArgs(name, argsJSON)...)
