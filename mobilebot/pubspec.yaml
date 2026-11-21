@@ -124,6 +124,9 @@ flutter:
 
   assets:
     - assets/fonts/
+    # Bundled Mermaid 11.14.0 (same release as guiapp) plus the offline shell.
+    # A directory entry so loadFlutterAsset can resolve the script relatively.
+    - assets/mermaid/
 
   # Inter for latin/digits — bundled (not google_fonts) so it works offline;
   # CJK glyphs fall back to the system font automatically.

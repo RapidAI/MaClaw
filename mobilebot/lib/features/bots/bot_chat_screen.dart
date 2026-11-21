@@ -14,6 +14,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import '../../components/mermaid/mermaid.dart';
 import '../../core/asr_fallback.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
@@ -1031,7 +1032,7 @@ class _MessageBubble extends ConsumerWidget {
                       decorationColor: textColor,
                     ),
                   )
-                : MarkdownBody(
+                : MermaidMarkdown(
                     data: linkifyMarkdownUrls(message.content),
                     selectable: true,
                     onTapLink: (text, href, title) {

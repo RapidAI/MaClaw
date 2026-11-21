@@ -11,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../../components/mermaid/mermaid.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
@@ -1145,7 +1146,7 @@ class _LiveRound extends StatelessWidget {
                     child: _NoteLine(text: line),
                   ),
                 if (body.isNotEmpty)
-                  MarkdownBody(
+                  MermaidMarkdown(
                     data: linkifyMarkdownUrls(body),
                     selectable: true,
                     onTapLink: (text, href, title) {
@@ -1340,7 +1341,7 @@ class _NoteLine extends StatelessWidget {
             height: 1.5,
           )
         : theme.textTheme.bodyMedium?.copyWith(height: 1.45);
-    return MarkdownBody(
+    return MermaidMarkdown(
       // 推理/笔记里的链接要可点（桌面端同行为），文本可选中以便复制。
       data: linkifyMarkdownUrls(text),
       selectable: true,
@@ -1749,7 +1750,7 @@ class _AssistantTurn extends StatelessWidget {
             const SizedBox(height: 8),
           ],
           if (message.content.isNotEmpty)
-            MarkdownBody(
+            MermaidMarkdown(
               data: linkifyMarkdownUrls(message.content),
               selectable: true,
               onTapLink: (text, href, title) {

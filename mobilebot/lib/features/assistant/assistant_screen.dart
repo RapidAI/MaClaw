@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
 import '../../core/ui_kit.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -16,6 +15,7 @@ import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:uuid/uuid.dart';
 
+import '../../components/mermaid/mermaid.dart';
 import '../../core/asr_fallback.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
@@ -634,7 +634,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           else if (m.isUser)
             Text(m.text)
           else ...[
-            MarkdownBody(data: m.text, selectable: true),
+            MermaidMarkdown(data: m.text, selectable: true),
             if (m.failed)
               TextButton.icon(
                 onPressed: () => _retry(m),

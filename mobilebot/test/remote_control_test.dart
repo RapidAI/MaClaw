@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'l10n_test_helper.dart';
@@ -12,6 +11,7 @@ import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/features/remote/remote_api.dart';
 import 'package:mobilebot/features/remote/remote_models.dart';
 import 'package:mobilebot/features/remote/remote_screen.dart';
+import 'package:mobilebot/components/mermaid/mermaid.dart';
 import 'package:mobilebot/features/remote/remote_task_screen.dart';
 import 'package:mobilebot/features/remote/task_spaces.dart';
 
@@ -1457,8 +1457,8 @@ void main() {
         );
         await pumpFew(tester);
         // Ownership is by overlap, not an exact prefix: the body appears in
-        // exactly one MarkdownBody instead of a duplicate live round.
-        expect(find.byType(MarkdownBody), findsOneWidget);
+        // exactly one MermaidMarkdown instead of a duplicate live round.
+        expect(find.byType(MermaidMarkdown), findsOneWidget);
         expect(
           find.textContaining('/tmp/报告.pdf', findRichText: true),
           findsOneWidget,
@@ -1574,7 +1574,7 @@ void main() {
         // One assistant bubble: the history row. The live twin is owned by
         // the transcript, so the body and the reasoning block each render
         // exactly once.
-        expect(find.byType(MarkdownBody), findsOneWidget);
+        expect(find.byType(MermaidMarkdown), findsOneWidget);
         expect(find.byType(ExpansionTile), findsOneWidget);
         expect(find.text(reply, findRichText: true), findsOneWidget);
         await tester.tap(find.byType(ExpansionTile));
@@ -1971,7 +1971,7 @@ void main() {
         ),
       );
       await pumpFew(tester);
-      expect(find.byType(MarkdownBody), findsOneWidget);
+      expect(find.byType(MermaidMarkdown), findsOneWidget);
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
       expect(find.text('报告.pdf'), findsOneWidget);
     });
@@ -2012,7 +2012,7 @@ void main() {
         ),
       );
       await pumpFew(tester);
-      expect(find.byType(MarkdownBody), findsOneWidget);
+      expect(find.byType(MermaidMarkdown), findsOneWidget);
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
       expect(find.textContaining('…', findRichText: true), findsNothing);
     });
@@ -2052,7 +2052,7 @@ void main() {
         ),
       );
       await pumpFew(tester);
-      expect(find.byType(MarkdownBody), findsNWidgets(2));
+      expect(find.byType(MermaidMarkdown), findsNWidgets(2));
       expect(find.textContaining('结尾', findRichText: true), findsOneWidget);
     });
 
