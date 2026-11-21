@@ -358,20 +358,21 @@ func TestOpenCodeFreeHostCallRoundTripAndReplay(t *testing.T) {
 	if len(parsed.Messages) != 4 {
 		t.Fatalf("messages = %+v", parsed.Messages)
 	}
-	if parsed.Messages[1].Content != "做计划" {
-		t.Fatalf("user = %s", parsed.Messages[1].Content)
+	userTurn := parsed.Messages[1].Content
+	if !strings.HasPrefix(userTurn, "做计划") || strings.Count(userTurn, "<system-reminder>") != 1 || !strings.Contains(userTurn, `MACLAW_CALL("goal"`) {
+		t.Fatalf("user = %s", userTurn)
 	}
 	assistant := parsed.Messages[2].Content
 	if !strings.Contains(assistant, "execute") || !strings.Contains(assistant, `return MACLAW_CALL("goal"`) || strings.Contains(assistant, `\"`) || strings.HasPrefix(strings.TrimSpace(assistant), "goal") {
 		t.Fatalf("assistant replay = %s", assistant)
 	}
 	last := parsed.Messages[3].Content
-	if !strings.HasPrefix(last, "plan stored") || strings.Count(last, "<system-reminder>") != 1 || !strings.Contains(last, `MACLAW_CALL("goal"`) {
-		t.Fatalf("tail = %s", last)
+	if last != "plan stored" || strings.Contains(last, "<system-reminder>") {
+		t.Fatalf("tool observation = %s", last)
 	}
 
 	note := OpenCodeFreeHostChannelNote([]string{"goal"})
-	encoded, err := json.Marshal(last)
+	encoded, err := json.Marshal(userTurn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +386,44 @@ func TestOpenCodeFreeHostCallRoundTripAndReplay(t *testing.T) {
 	}
 	if note == "" {
 		t.Fatal("note")
+	}
+
+	// BR-20261121-1B807E2B4CDB: official execute returned a denial, and the
+	// next body appended the harness reminder onto that tool observation.
+	denied := []byte(`{"model":"hy4-flash-free","tools":[{"type":"function","function":{"name":"chat_task_request_input"}}],"messages":[{"role":"user","content":"扫描论文"},{"role":"assistant","content":"","tool_calls":[{"function":{"name":"execute","arguments":"{\"code\":\"const fs = require('fs');\"}"}}]},{"role":"tool","content":"Error: this execute call did not deliver a host tool. Submit one return MACLAW_CALL statement. Host tools: chat_task_request_input. Do not inspect the catalog."}]}`)
+	deniedBody, err := openCodeFreeClientBody(denied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := userReminderCount(t, deniedBody); n != 1 {
+		t.Fatalf("denied reminder count = %d\n%s", n, deniedBody)
+	}
+	var deniedParsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(deniedBody, &deniedParsed); err != nil {
+		t.Fatal(err)
+	}
+	var sawTask, sawDenial bool
+	for _, msg := range deniedParsed.Messages {
+		if strings.Contains(msg.Content, "did not deliver a host tool") {
+			sawDenial = true
+			if strings.Contains(msg.Content, "<system-reminder>") || strings.Contains(msg.Content, "扫描论文") {
+				t.Fatalf("reminder rode on the tool observation: %s", msg.Content)
+			}
+		}
+		if strings.HasPrefix(msg.Content, "扫描论文") {
+			sawTask = true
+			if strings.Count(msg.Content, "<system-reminder>") != 1 {
+				t.Fatalf("task turn = %s", msg.Content)
+			}
+		}
+	}
+	if !sawTask || !sawDenial {
+		t.Fatalf("denied body = %s", deniedBody)
 	}
 }
 

@@ -517,8 +517,9 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		return nil, fmt.Errorf("opencode free client: empty model")
 	}
 	type message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role     string `json:"role"`
+		Content  string `json:"content"`
+		fromTool bool   `json:"-"`
 	}
 	messages := []message{{Role: "system", Content: openCodeFreeSystemPromptNow()}}
 	for _, item := range incoming.Messages {
@@ -526,21 +527,33 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		if !keep {
 			continue
 		}
-		if n := len(messages); n > 1 && messages[n-1].Role == role {
+		// Tool results share the user role on this wire, but they are not
+		// user turns. Merging them into the adjacent user message would put
+		// a later host note inside the tool observation.
+		fromTool := strings.EqualFold(strings.TrimSpace(item.Role), "tool")
+		if n := len(messages); n > 1 && messages[n-1].Role == role && messages[n-1].fromTool == fromTool {
 			messages[n-1].Content += "\n" + text
 			continue
 		}
-		messages = append(messages, message{Role: role, Content: text})
+		messages = append(messages, message{Role: role, Content: text, fromTool: fromTool})
 	}
 	if len(messages) == 1 {
 		return nil, fmt.Errorf("opencode free client: empty conversation")
 	}
 	// The fingerprint is the official system prompt plus the 12 tools. Host
-	// tools stay off that list. The note rides on the last user message of
-	// this body only, and a tail that already ends with it is not extended.
+	// tools stay off that list. The note rides on the latest real user turn
+	// of this body only. A tool observation flattened to the user role is
+	// not that turn, and a tail that already ends with the note is not extended.
 	if note := openCodeFreeCallerHostNote(caller); note != "" {
-		if n := len(messages); n > 0 && messages[n-1].Role == "user" {
-			messages[n-1].Content = joinOpenCodeFreeHostNote(messages[n-1].Content, note)
+		noteAt := -1
+		for i := len(messages) - 1; i >= 1; i-- {
+			if messages[i].Role == "user" && !messages[i].fromTool {
+				noteAt = i
+				break
+			}
+		}
+		if noteAt >= 0 {
+			messages[noteAt].Content = joinOpenCodeFreeHostNote(messages[noteAt].Content, note)
 		} else {
 			messages = append(messages, message{Role: "user", Content: note})
 		}

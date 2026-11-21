@@ -11,8 +11,9 @@ import (
 // from the captured OpenCode client. Host tools such as goal cannot be added
 // to that list. The model still has execute, so a host call travels inside
 // that one official tool and is rewritten back to the host name before
-// admission. The note is appended to the last user message of the outbound
-// body. The system prompt bytes are part of the fingerprint and must stay
+// admission. The note is appended to the latest real user turn of the
+// outbound body. A tool result flattened onto the user role is not that
+// turn. The system prompt bytes are part of the fingerprint and must stay
 // intact. A tail that already ends with the same note is left alone. A
 // failed execute is a short tool result, not a second copy of the note. A
 // host call already in the transcript is shown back as execute plus
