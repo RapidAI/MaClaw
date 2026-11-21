@@ -290,6 +290,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		msg = userMessage[0]
 	}
 	promptUserID := h.promptRuntimeUserID(loopCtx)
+	diagramOwnerID := diagramSurfaceOwnerID(h, loopCtx, diagramPromptFallbackOwner(loopCtx, promptUserID))
 
 	// Expert session: replace the global role persona with the expert's own
 	// name + system prompt (capability sections are appended unchanged below).
@@ -388,7 +389,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			// can draw a mermaid fence; see replyRendersDiagrams. The model
 			// decides whether this turn needs a picture. Keywords strengthen
 			// that judgment; they are not the switch.
-			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx, promptUserID)),
+			DiagramRenderingSupported: replyRendersDiagrams(diagramOwnerID),
 		},
 		MemoryStore:       h.currentMemoryStore(),
 		MemoryOwnerID:     promptUserID,
@@ -626,12 +627,12 @@ func replyRendersDiagrams(promptUserID string) bool {
 // (runtime_context.go sets PolicyOwnerID / WorkflowOwnerID from msg.UserID),
 // so this only differs when that context is absent.
 //
-// promptUserID is the same owner the rest of this prompt already resolved,
-// including the desktop fallback used for local tool sections. A desktop
-// markdown session must not lose the drawing rule just because the loop
-// context omitted PolicyOwnerID. Scheduled and group owners still lose:
-// replyRendersDiagrams rejects those ids even when they arrive through this
-// fallback. Returns "" only when neither source has an owner.
+// promptUserID is accepted only when the caller has already checked that the
+// turn is a desktop markdown session. Background prompt builders call this
+// helper without the inbound message, and their promptRuntimeUserID falls
+// back to desktop-user; passing that guess here would ask a scheduled task
+// for a picture. Returns "" when neither the loop nor the checked fallback
+// has an owner.
 func diagramSurfaceOwnerID(h *IMMessageHandler, loopCtx *LoopContext, promptUserID string) string {
 	if loopCtx != nil {
 		if ownerID := strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID); ownerID != "" {
@@ -649,7 +650,24 @@ func diagramSurfaceOwnerID(h *IMMessageHandler, loopCtx *LoopContext, promptUser
 			return ownerID
 		}
 	}
+	if ownerID := strings.TrimSpace(promptUserID); ownerID != "" {
+		return ownerID
+	}
 	return ""
+}
+
+// diagramPromptFallbackOwner keeps a desktop markdown session on the drawing
+// rule when the loop context omitted its owner. Other platforms stay empty:
+// promptRuntimeUserID's desktop-user fallback must not relabel them.
+func diagramPromptFallbackOwner(loopCtx *LoopContext, promptUserID string) string {
+	if loopCtx == nil {
+		return ""
+	}
+	platform := strings.ToLower(strings.TrimSpace(loopCtx.Platform))
+	if platform != "" && platform != desktopPlatform && platform != "local" {
+		return ""
+	}
+	return strings.TrimSpace(promptUserID)
 }
 
 // workflowDocDeliverySection is the channel document-delivery contract.

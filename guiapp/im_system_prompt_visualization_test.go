@@ -55,14 +55,14 @@ func TestBuildLightIMSystemPrompt_OmitsDiagramCueForExternalDelivery(t *testing.
 	}
 }
 
-// TestBuildLightIMSystemPrompt_OmitsDiagramCueUntilAsked keeps the drawing
-// rule on demand. A desktop markdown turn that only asks for an explanation
-// must not be told to emit a mermaid fence.
-func TestBuildLightIMSystemPrompt_OmitsDiagramCueUntilAsked(t *testing.T) {
+// TestBuildLightIMSystemPrompt_CarriesDiagramCueWithoutKeyword keeps the
+// drawing rule on every desktop markdown turn. A keyword strengthens the
+// model's choice; it is not the switch that injects the rule.
+func TestBuildLightIMSystemPrompt_CarriesDiagramCueWithoutKeyword(t *testing.T) {
 	msg := IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "解释一下这个系统的架构"}
 	prompt := buildLightIMSystemPrompt(msg, ExecutionProfile{}, nil, "")
-	if strings.Contains(prompt, "讲解配图") || strings.Contains(prompt, "```mermaid") {
-		t.Fatal("desktop conversation must not carry the drawing rule until the user asks for a diagram")
+	if !strings.Contains(prompt, "讲解配图") || !strings.Contains(prompt, "```mermaid") {
+		t.Fatal("desktop markdown conversation must carry the drawing rule without a diagram keyword")
 	}
 }
 
