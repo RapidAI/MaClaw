@@ -872,6 +872,10 @@ class ChatMessage {
   final String content;
   final bool pending;
   final bool failed;
+
+  /// Why this send failed. Local only — not written to the shared journal.
+  /// Empty when the bubble is not failed, or when a synced copy has no reason.
+  final String failureReason;
   final bool queued;
 
   /// Live queue position from `GET /bots/{id}/queue/{cmid}` — 0 when the
@@ -914,6 +918,7 @@ class ChatMessage {
     this.content = '',
     this.pending = false,
     this.failed = false,
+    this.failureReason = '',
     this.queued = false,
     this.queuePosition = 0,
     this.queueHeld = false,
@@ -944,6 +949,7 @@ class ChatMessage {
     String? content,
     bool? pending,
     bool? failed,
+    String? failureReason,
     bool? queued,
     int? queuePosition,
     bool? queueHeld,
@@ -960,6 +966,7 @@ class ChatMessage {
     content: content ?? this.content,
     pending: pending ?? this.pending,
     failed: failed ?? this.failed,
+    failureReason: failureReason ?? this.failureReason,
     queued: queued ?? this.queued,
     queuePosition: queuePosition ?? this.queuePosition,
     queueHeld: queueHeld ?? this.queueHeld,
@@ -1004,6 +1011,7 @@ class ChatMessage {
     if (conversation.isNotEmpty) out['conversation'] = conversation;
     if (ack) out['ack'] = true;
     if (chat) out['chat'] = true;
+    if (pending) out['pending'] = true;
     if (queued) out['queued'] = true;
     if (options.isNotEmpty) out['options'] = options;
     if (optionsUsed) out['optionsUsed'] = true;
@@ -1044,7 +1052,9 @@ class ChatMessage {
           ? (data['role'] as String).trim()
           : 'assistant',
       content: syncText(data['content']),
+      pending: data['pending'] == true,
       failed: data['failed'] == true,
+      failureReason: syncText(data['failureReason']),
       queued: data['queued'] == true,
       ack: data['ack'] == true,
       chat: data['chat'] == true,

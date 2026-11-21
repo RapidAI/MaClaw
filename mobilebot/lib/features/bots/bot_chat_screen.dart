@@ -30,6 +30,7 @@ import 'package:go_router/go_router.dart';
 import 'bot_chat_controller.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart'
     show LinkifiedText, linkifyMarkdownUrls, openExternalUrl;
 import 'widgets.dart';
@@ -95,6 +96,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         if (!foreground) _stopVoiceMode();
       },
     );
+    // 发送键跟随输入框内容：有字就可点。
+    _inputCtrl.addListener(_onInputChanged);
+  }
+
+  // 输入框重绘只为一件事：有字时发送键可点（见 build 里的 sending）。
+  void _onInputChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -105,6 +113,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _listening = false;
     _recognizing = false;
     _stopVoiceMode();
+    _inputCtrl.removeListener(_onInputChanged);
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _listenLevel.value = null;
@@ -1042,6 +1051,15 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     }
   }
 
+  void _retryLatestFailed() {
+    final failed = ref
+        .read(botChatProvider)
+        .messages
+        .where((m) => m.failed && m.isUser);
+    if (failed.isEmpty) return;
+    ref.read(botChatProvider.notifier).retry(failed.last);
+  }
+
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -1365,6 +1383,13 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
                 ],
               ),
             ),
+          if (state.channelError.isNotEmpty)
+            _ChannelDownBar(
+              message: state.channelError,
+              onDismiss: () =>
+                  ref.read(botChatProvider.notifier).dismissChannelError(),
+              onRetry: _retryLatestFailed,
+            ),
           if (state.continueThread.isNotEmpty)
             Material(
               color: Theme.of(context).colorScheme.secondaryContainer,
@@ -1404,7 +1429,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
             hint: _listening
                 ? context.S.chatVoiceListening
                 : context.S.chatComposerHint,
-            sending: state.sending,
+            sending: state.sending && _inputCtrl.text.trim().isEmpty,
             onSend: () {
               final text = _inputCtrl.text;
               if (text.trim().isEmpty) return;
@@ -1456,19 +1481,49 @@ class _MessageList extends ConsumerWidget {
     if (messages.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Text(
-            context.S.chatEmptyGreeting(bot.title),
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.xxl + 8,
+            vertical: AppSpacing.xl,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              BotAvatar(bot: bot, radius: 28),
+              const SizedBox(height: AppSpacing.lg + 2),
+              Text(
+                context.S.chatEmptyGreeting(bot.title),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontSize: 17,
+                  height: 1.45,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+              if (bot.description.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  bot.description,
+                  textAlign: TextAlign.center,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       );
     }
     return ListView.builder(
       controller: scrollCtrl,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.md,
+        AppSpacing.lg,
+        AppSpacing.sm,
+      ),
       itemCount: messages.length,
       itemBuilder: (context, index) => _MessageBubble(
         message: messages[index],
@@ -1501,15 +1556,16 @@ class _MessageBubble extends ConsumerWidget {
     final textColor = isUser
         ? theme.colorScheme.onPrimary
         : theme.colorScheme.onSurface;
-    return MessageBubble(
+    final bubbleWidth = MediaQuery.of(context).size.width * 0.82;
+    final bubble = MessageBubble(
       role: isUser ? ChatRole.user : ChatRole.assistant,
       color: message.failed ? theme.colorScheme.errorContainer : null,
-      maxWidth: MediaQuery.of(context).size.width * 0.78,
+      maxWidth: bubbleWidth,
       leading: isUser
           ? null
           : Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: BotAvatar(bot: bot, radius: 14),
+              child: BotAvatar(bot: bot, radius: 15),
             ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1545,7 +1601,7 @@ class _MessageBubble extends ConsumerWidget {
                       ),
                     ),
                   ),
-          if (message.pending)
+          if (message.pending && !message.failed)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Row(
@@ -1573,35 +1629,6 @@ class _MessageBubble extends ConsumerWidget {
               child: Text(
                 _queueTag(message, context.S),
                 style: TextStyle(fontSize: 11, color: textColor),
-              ),
-            ),
-          if (message.failed)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    context.S.chatSendFailed,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () =>
-                        ref.read(botChatProvider.notifier).retry(message),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(
-                      context.S.chatResend,
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                ],
               ),
             ),
           if (!isUser &&
@@ -1672,6 +1699,16 @@ class _MessageBubble extends ConsumerWidget {
         ],
       ),
     );
+    if (!message.failed) return bubble;
+    return Column(
+      crossAxisAlignment: isUser
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        bubble,
+        _FailedSendLine(message: message, maxWidth: bubbleWidth),
+      ],
+    );
   }
 }
 
@@ -1706,6 +1743,122 @@ class _ReplyImage extends StatelessWidget {
     } on Object {
       return null;
     }
+  }
+}
+
+/// Persistent line above the composer when the last send never reached
+/// the server. Dismissible, and retry resends the latest failed bubble.
+/// It does not block the next send.
+class _ChannelDownBar extends StatelessWidget {
+  final String message;
+  final VoidCallback onDismiss;
+  final VoidCallback onRetry;
+
+  const _ChannelDownBar({
+    required this.message,
+    required this.onDismiss,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        child: Row(
+          children: [
+            Icon(Icons.cloud_off, size: 18, color: scheme.onErrorContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                key: const ValueKey('channel-down'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onErrorContainer,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: onRetry,
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: scheme.onErrorContainer,
+              ),
+              child: Text(context.S.retry),
+            ),
+            IconButton(
+              onPressed: onDismiss,
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.close, size: 18, color: scheme.onErrorContainer),
+              tooltip: context.S.chatAcknowledge,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FailedSendLine extends ConsumerWidget {
+  final ChatMessage message;
+  final double maxWidth;
+
+  const _FailedSendLine({required this.message, required this.maxWidth});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final raw = message.failureReason.trim();
+    final reason = raw.isEmpty ? '' : userFacingSendFailure(message: raw);
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _failedSendActions(context, ref, errorColor),
+            if (reason.isNotEmpty) _failedSendReason(reason, errorColor),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _failedSendActions(BuildContext context, WidgetRef ref, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          context.S.chatSendFailed,
+          style: TextStyle(fontSize: 11, color: color),
+        ),
+        Text(' · ', style: TextStyle(fontSize: 11, color: color)),
+        TextButton(
+          onPressed: () => ref.read(botChatProvider.notifier).retry(message),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: Text(context.S.chatResend, style: const TextStyle(fontSize: 11)),
+        ),
+      ],
+    );
+  }
+
+  Widget _failedSendReason(String reason, Color color) {
+    return Text(
+      reason,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontSize: 11, color: color),
+    );
   }
 }
 

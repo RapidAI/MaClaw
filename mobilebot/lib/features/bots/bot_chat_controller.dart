@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'message_order.dart';
 
@@ -27,6 +28,11 @@ class ChatState {
   /// `continue_session` on the next message, then cleared.
   final String continueThread;
 
+  /// Sticky notice that the last send never reached the server. Cleared by
+  /// a successful send, an explicit dismiss, or a Hub business rejection.
+  /// A later send is never blocked by this flag.
+  final String channelError;
+
   const ChatState({
     required this.botId,
     this.messages = const [],
@@ -36,6 +42,7 @@ class ChatState {
     this.error = '',
     this.activity = '',
     this.continueThread = '',
+    this.channelError = '',
   });
 
   ChatState copyWith({
@@ -46,6 +53,7 @@ class ChatState {
     String? error,
     String? activity,
     String? continueThread,
+    String? channelError,
   }) => ChatState(
     botId: botId,
     messages: messages ?? this.messages,
@@ -55,18 +63,59 @@ class ChatState {
     error: error ?? this.error,
     activity: activity ?? this.activity,
     continueThread: continueThread ?? this.continueThread,
+    channelError: channelError ?? this.channelError,
   );
 }
 
 /// One bot's chat: history from the shared journal, sends via the messages
 /// API with run polling, and a long-poll loop that keeps this transcript in
 /// step with the desktop GUI's.
+class _OutboundSend {
+  final String messageId;
+  final String text;
+  final BotPhase? phase;
+  final String? askRun;
+  final String? continueSession;
+  final Completer<bool> done;
+  final DateTime enqueuedAt;
+
+  _OutboundSend({
+    required this.messageId,
+    required this.text,
+    required this.phase,
+    required this.askRun,
+    required this.continueSession,
+    required this.done,
+    DateTime? enqueuedAt,
+  }) : enqueuedAt = enqueuedAt ?? DateTime.now();
+}
+
 class BotChatController extends Notifier<ChatState> {
-  BotApi get _api => ref.read(botApiProvider)!;
+  BotApi? get _apiOrNull => ref.read(botApiProvider);
+  BotApi get _api => _apiOrNull!;
   String get _clientId => ref.read(sessionProvider).active?.clientId ?? '';
 
   Timer? _pollTimer;
   Timer? _syncTimer;
+  Timer? _sendWatch;
+
+  /// POSTs waiting behind the one already on the wire. Each already has a
+  /// pending bubble, so a second tap is visible and still gets a result.
+  final List<_OutboundSend> _outbound = [];
+  bool _sendBusy = false;
+  String? _postingId;
+
+  /// The job currently being posted. It leaves _outbound before its POST
+  /// starts, so this is the only handle on a send that is on the wire.
+  _OutboundSend? _postingJob;
+
+  /// How long a pending send may stay unanswered before the bubble is
+  /// marked failed. The clock starts when the bubble is shown, not when
+  /// its POST starts, so a line waiting behind a stuck send cannot sit on
+  /// "sending…" with no ending of its own. Tests inject a short bound;
+  /// production uses the hub send timeout.
+  @visibleForTesting
+  static Duration sendWatchLimit = hubSendTimeout;
   int _cursor = 0;
   bool _disposed = false;
   bool _foreground = true;
@@ -86,6 +135,7 @@ class BotChatController extends Notifier<ChatState> {
     ref.onDispose(() {
       _disposed = true;
       _pollTimer?.cancel();
+      _sendWatch?.cancel();
       _syncTimer?.cancel();
     });
     Future.microtask(_loadHistory);
@@ -266,6 +316,19 @@ class BotChatController extends Notifier<ChatState> {
     if (next.files.isEmpty && current.files.isNotEmpty) {
       next = next.copyWith(files: current.files);
     }
+    // The failure ending is local. A journal echo of the optimistic
+    // projection must not clear it or put the spinner back.
+    if (current.failed) {
+      next = next.copyWith(
+        failed: true,
+        pending: false,
+        failureReason: next.failureReason.isNotEmpty
+            ? next.failureReason
+            : current.failureReason,
+      );
+    } else if (current.failureReason.isNotEmpty && next.failureReason.isEmpty) {
+      next = next.copyWith(failureReason: current.failureReason);
+    }
     return next;
   }
 
@@ -415,9 +478,17 @@ class BotChatController extends Notifier<ChatState> {
       final unsynced = messages.where((m) => m.syncSeq <= 0).toList();
       final merged = [...synced, ...unsynced];
       // Sweep orphaned pending bubbles — a spinner that can never settle is
-      // worse than admitting the turn died.
+      // worse than admitting the turn died. Mark failed with a reason so
+      // the bubble does not vanish while still saying "sending…".
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      merged.removeWhere((m) => _isOrphanedPending(m, nowMs));
+      for (var i = 0; i < merged.length; i++) {
+        if (!_isOrphanedPending(merged[i], nowMs)) continue;
+        merged[i] = merged[i].copyWith(
+          pending: false,
+          failed: true,
+          failureReason: sharedL10n.chatReplyTimedOut,
+        );
+      }
       // The queue is serial per bot: every real reply that landed in this
       // page consumes the oldest still-queued user instruction, so the
       // "排队中" tag clears exactly when its turn produces an answer.
@@ -550,9 +621,10 @@ class BotChatController extends Notifier<ChatState> {
     }
   }
 
-  /// Returns false when the message never reached the wire (empty, a send
-  /// already in flight, or the request failed) — callers that gate follow-up
-  /// state on the send (ask cards, options) must not mark it resolved then.
+  /// Returns false when the message never reached the wire (empty, or the
+  /// request failed). A send already in flight is queued, not dropped —
+  /// callers that gate follow-up state (ask cards, options) wait for the
+  /// real result.
   Future<bool> send(
     String content, {
     BotPhase? phase,
@@ -560,10 +632,11 @@ class BotChatController extends Notifier<ChatState> {
     String? continueSession,
   }) async {
     final text = content.trim();
-    if (text.isEmpty || state.sending) return false;
+    if (text.isEmpty) return false;
     if (text.toLowerCase() == '/clear') {
-      // Local transcript clear (isDesktopBotClearCommand): keep only
-      // in-flight bubbles; synced history rebuilds on the next load.
+      // Local only, and only when nothing is on the wire. Queuing it would
+      // post "/clear" to Hub, which this client never does.
+      if (_sendBusy) return false;
       state = state.copyWith(
         messages: state.messages.where((m) => m.pending || m.queued).toList(),
         error: '',
@@ -580,24 +653,93 @@ class BotChatController extends Notifier<ChatState> {
     );
     state = state.copyWith(
       messages: [...state.messages, userMessage],
-      sending: true,
       error: '',
     );
     _writeProjection(userMessage.copyWith(pending: false));
+    final job = _OutboundSend(
+      messageId: userMessage.id,
+      text: text,
+      phase: phase,
+      askRun: askRun,
+      continueSession: continueSession,
+      done: Completer<bool>(),
+    );
+    _outbound.add(job);
+    _armSendWatch(job.messageId);
+    if (!_sendBusy) unawaited(_drainOutbound());
+    return job.done.future;
+  }
+
+  Future<void> _drainOutbound() async {
+    if (_sendBusy) return;
+    _sendBusy = true;
     try {
-      final result = await _api.sendMessage(
+      while (_outbound.isNotEmpty && !_disposed) {
+        _expireStaleSends();
+        if (_outbound.isEmpty) break;
+        final job = _outbound.removeAt(0);
+        if (_alreadyFailed(job.messageId)) {
+          if (!job.done.isCompleted) job.done.complete(false);
+          continue;
+        }
+        var ok = false;
+        try {
+          ok = await _postOutbound(job);
+        } on Object {
+          ok = false;
+        }
+        if (!job.done.isCompleted) job.done.complete(ok);
+      }
+    } finally {
+      _sendBusy = false;
+      if (_disposed) {
+        for (final leftover in _outbound) {
+          if (!leftover.done.isCompleted) leftover.done.complete(false);
+        }
+        _outbound.clear();
+      }
+    }
+  }
+
+  Future<bool> _postOutbound(_OutboundSend job) async {
+    final text = job.text;
+    final phase = job.phase;
+    final askRun = job.askRun;
+    final continueSession = job.continueSession;
+    _postingId = job.messageId;
+    _postingJob = job;
+    state = state.copyWith(sending: true);
+    _armSendWatch(job.messageId);
+    final api = _apiOrNull;
+    if (api == null) {
+      _sendWatch?.cancel();
+      _markFailed(
+        job.messageId,
+        sharedL10n.netConnectionError,
+        channelDown: true,
+      );
+      return false;
+    }
+    try {
+      final result = await api.sendMessage(
         state.botId,
         content: text,
         phase: phase,
-        clientMessageId: userMessage.id,
+        clientMessageId: job.messageId,
         continueSession:
             continueSession ??
             (state.continueThread.isEmpty ? null : state.continueThread),
         askRun: askRun,
       );
       if (_disposed) return false;
-      if (state.continueThread.isNotEmpty) {
-        state = state.copyWith(continueThread: '');
+      _sendWatch?.cancel();
+      // The watch already gave this bubble a failed ending. A late admit
+      // must not flip it back to "sent" and hide the timeout.
+      if (state.messages.any((m) => m.id == job.messageId && m.failed)) {
+        return false;
+      }
+      if (state.continueThread.isNotEmpty || state.channelError.isNotEmpty) {
+        state = state.copyWith(continueThread: '', channelError: '');
       }
       if (result.queued) {
         // Hub is holding the message behind a running turn — no run yet.
@@ -610,7 +752,7 @@ class BotChatController extends Notifier<ChatState> {
         // action while the queued message waits its turn.
         final previousRunId = state.activeRunId;
         final messages = [...state.messages];
-        final index = messages.indexWhere((m) => m.id == userMessage.id);
+        final index = messages.indexWhere((m) => m.id == job.messageId);
         if (index >= 0) {
           messages[index] = messages[index].copyWith(
             pending: false,
@@ -631,8 +773,8 @@ class BotChatController extends Notifier<ChatState> {
         // Mark the user bubble settled immediately: Hub accepted it, the
         // run is in flight — the header tracks progress via `activity`.
         final messages = [...state.messages];
-        final index = messages.indexWhere((m) => m.id == userMessage.id);
-        if (index >= 0) {
+        final index = messages.indexWhere((m) => m.id == job.messageId);
+        if (index >= 0 && !messages[index].failed) {
           messages[index] = messages[index].copyWith(pending: false);
         }
         state = state.copyWith(
@@ -644,15 +786,112 @@ class BotChatController extends Notifier<ChatState> {
         _pollRun(result.run!.runId);
       } else {
         _sessionForRun = result.session;
-        _settleReply(result.reply ?? const BotReply());
+        _settleReply(
+          result.reply ?? const BotReply(),
+          sentMessageId: job.messageId,
+        );
       }
       return true;
     } on Object catch (error) {
       if (_disposed) return false;
+      _sendWatch?.cancel();
+      if (state.messages.any((m) => m.id == job.messageId && m.failed)) {
+        return false;
+      }
       noteAuthFailure(ref, error);
-      _markFailed(userMessage.id, failureMessage(error));
+      _markFailed(
+        job.messageId,
+        failureMessage(error),
+        channelDown: sendNeverReachedServer(error),
+      );
       return false;
+    } finally {
+      if (_postingId == job.messageId) _postingId = null;
+      if (_postingJob == job) _postingJob = null;
     }
+  }
+
+  bool _alreadyFailed(String messageId) =>
+      state.messages.any((m) => m.id == messageId && m.failed);
+
+  bool _sendAgedOut(_OutboundSend job, {required bool onWire}) {
+    final waited = DateTime.now().difference(job.enqueuedAt);
+    if (onWire) return waited >= sendWatchLimit;
+    // A line still waiting its turn may sit behind one full POST. Past
+    // that, "sending…" is a lie: this bubble has had no ending of its own.
+    return waited >= sendWatchLimit * 2;
+  }
+
+  /// Pending bubbles must not keep saying "sending…" with no explanation.
+  /// The on-wire clock is one send timeout. A line waiting behind that POST
+  /// gets the same ending once its own wait runs out. A late answer must
+  /// not rewrite a bubble this watch already marked failed.
+  void _armSendWatch(String messageId) {
+    _OutboundSend? job;
+    for (final candidate in _outbound) {
+      if (candidate.messageId == messageId) job = candidate;
+    }
+    // A job taken off _outbound is on the wire and keeps its own clock:
+    // without it a short injected bound found no job and failed the bubble
+    // on the spot, and a real one lost the age of a long POST.
+    job ??= _postingJob;
+    final onWire = messageId == _postingId;
+    final limit = onWire ? sendWatchLimit : sendWatchLimit * 2;
+    final waited = job == null
+        ? Duration.zero
+        : DateTime.now().difference(job.enqueuedAt);
+    final wait = limit - waited;
+    _sendWatch?.cancel();
+    _sendWatch = Timer(wait.isNegative ? Duration.zero : wait, () {
+      if (_disposed) return;
+      _expireStaleSends();
+    });
+  }
+
+  void _expireStaleSends() {
+    if (_disposed) return;
+    String? expired;
+    // The line being posted is no longer in _outbound, so it has to be
+    // aged on its own: a send that never answers must stop saying
+    // "sending…" even though nothing is queued behind it.
+    final onWire = _postingJob;
+    if (onWire != null && !_alreadyFailed(onWire.messageId)) {
+      if (_sendAgedOut(onWire, onWire: true)) expired = onWire.messageId;
+    }
+    for (final job in _outbound) {
+      if (expired != null) break;
+      if (_alreadyFailed(job.messageId)) continue;
+      if (_sendAgedOut(job, onWire: job.messageId == _postingId)) {
+        expired = job.messageId;
+        break;
+      }
+    }
+    if (expired == null) {
+      _armNextSendWatch();
+      return;
+    }
+    _markFailed(expired, sharedL10n.netTimeout, channelDown: true);
+  }
+
+  void _armNextSendWatch() {
+    final onWire = _postingJob;
+    if (_outbound.isEmpty && onWire == null) {
+      _sendWatch?.cancel();
+      _sendWatch = null;
+      return;
+    }
+    if (_outbound.isEmpty) {
+      _armSendWatch(onWire!.messageId);
+      return;
+    }
+    var next = _outbound.first;
+    for (final job in _outbound) {
+      if (job.enqueuedAt.isBefore(next.enqueuedAt)) next = job;
+    }
+    if (onWire != null && onWire.enqueuedAt.isBefore(next.enqueuedAt)) {
+      next = onWire;
+    }
+    _armSendWatch(next.messageId);
   }
 
   /// Continue a per-run thread (`bot#<id>`) explicitly — the next send goes
@@ -667,7 +906,7 @@ class BotChatController extends Notifier<ChatState> {
   /// Re-send a failed user message — drops the failed bubble and posts the
   /// same content again as a fresh message.
   Future<void> retry(ChatMessage message) async {
-    if (state.sending || !message.failed) return;
+    if (!message.failed) return;
     final content = message.content;
     state = state.copyWith(
       messages: [
@@ -772,7 +1011,10 @@ class BotChatController extends Notifier<ChatState> {
     _pollTimer = Timer(botPollInterval, tick);
   }
 
-  void _settleReply(BotReply reply) {
+  bool _ownedBySend(String id) =>
+      id == _postingId || _outbound.any((job) => job.messageId == id);
+
+  void _settleReply(BotReply reply, {String? sentMessageId}) {
     final messages = [...state.messages];
     final text = reply.isEmpty ? sharedL10n.chatDoneNoReply : reply.text;
     // The same reply may already be visible: another client (or the Hub's
@@ -834,12 +1076,18 @@ class BotChatController extends Notifier<ChatState> {
       state = state.copyWith(messages: messages);
     }
     _sessionForRun = '';
-    // Mark the pending user bubble settled.
+    // Mark the pending user bubble settled. A failed send already has
+    // its ending and must not be rewritten as a success.
     for (var i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].pending) {
-        messages[i] = messages[i].copyWith(pending: false);
-        break;
+      final pending = messages[i];
+      if (!pending.pending || pending.failed) continue;
+      if (sentMessageId != null) {
+        if (pending.id != sentMessageId) continue;
+      } else if (_ownedBySend(pending.id)) {
+        continue;
       }
+      messages[i] = pending.copyWith(pending: false);
+      break;
     }
     state = state.copyWith(
       messages: messages,
@@ -849,21 +1097,54 @@ class BotChatController extends Notifier<ChatState> {
     );
   }
 
-  void _markFailed(String messageId, String error) {
+  void _failQueuedSends(String error) {
+    if (_outbound.isEmpty) return;
+    final ids = {for (final job in _outbound) job.messageId};
+    for (final job in _outbound) {
+      if (!job.done.isCompleted) job.done.complete(false);
+    }
+    _outbound.clear();
     final messages = [
       for (final m in state.messages)
-        m.id == messageId ? m.copyWith(pending: false, failed: true) : m,
+        ids.contains(m.id) && !m.failed
+            ? m.copyWith(pending: false, failed: true, failureReason: error)
+            : m,
+    ];
+    state = state.copyWith(messages: messages, sending: false);
+  }
+
+  void _markFailed(String messageId, String error, {bool channelDown = false}) {
+    final messages = [
+      for (final m in state.messages)
+        m.id == messageId
+            ? m.copyWith(pending: false, failed: true, failureReason: error)
+            : m,
     ];
     // A failed send does not touch an active run: the failed bubble gets
     // its retry button, the running turn keeps its watch and controls.
-    state = state.copyWith(messages: messages, sending: false, error: error);
+    // Channel failures stay on the composer. A business rejection stays on
+    // its own bubble and must not clear a channel notice that is still true.
+    state = state.copyWith(
+      messages: messages,
+      sending: false,
+      error: error,
+      channelError: channelDown ? error : null,
+    );
+    // The wire never accepted this turn. Sibling bubbles still saying
+    // "sending…" never left either — fail them with the same channel state
+    // instead of leaving a silent queue behind one failed bubble.
+    if (channelDown) _failQueuedSends(error);
   }
 
   void _settleError(String error) {
     final messages = [...state.messages];
     for (var i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].pending) {
-        messages[i] = messages[i].copyWith(pending: false, failed: true);
+      if (messages[i].pending && !_ownedBySend(messages[i].id)) {
+        messages[i] = messages[i].copyWith(
+          pending: false,
+          failed: true,
+          failureReason: error,
+        );
         break;
       }
     }
@@ -873,6 +1154,7 @@ class BotChatController extends Notifier<ChatState> {
       activeRunId: () => null,
       activity: '',
       error: error,
+      channelError: '',
     );
   }
 
@@ -891,7 +1173,7 @@ class BotChatController extends Notifier<ChatState> {
     _pollTimer?.cancel();
     final messages = [...state.messages];
     for (var i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].pending) {
+      if (messages[i].pending && !messages[i].failed) {
         messages[i] = messages[i].copyWith(pending: false);
         break;
       }
@@ -1010,6 +1292,13 @@ class BotChatController extends Notifier<ChatState> {
   void clearError() {
     if (state.error.isNotEmpty) {
       state = state.copyWith(error: '');
+    }
+  }
+
+  /// Dismiss the composer channel line without blocking the next send.
+  void dismissChannelError() {
+    if (state.channelError.isNotEmpty) {
+      state = state.copyWith(channelError: '');
     }
   }
 

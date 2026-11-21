@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:characters/characters.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobilebot/core/account_store.dart';
@@ -8,7 +9,9 @@ import 'package:mobilebot/core/providers.dart';
 import 'package:mobilebot/features/bots/bot_api.dart';
 import 'package:mobilebot/features/bots/bot_chat_controller.dart';
 import 'package:mobilebot/features/bots/bot_models.dart';
+import 'package:mobilebot/core/hub_config.dart';
 import 'package:mobilebot/features/bots/bots_controller.dart';
+import 'package:mobilebot/features/bots/message_order.dart';
 
 final _account = Account(
   key: 'test@example.com',
@@ -151,6 +154,7 @@ ConversationEntry _msg(
   bool withAt = true,
   String runId = '',
   List<String> attachmentIds = const [],
+  bool pending = false,
 }) => ConversationEntry(
   seq: seq,
   createdSeq: created ?? seq,
@@ -163,6 +167,7 @@ ConversationEntry _msg(
     if (requestId.isNotEmpty) 'requestId': requestId,
     if (runId.isNotEmpty) 'runId': runId,
     if (attachmentIds.isNotEmpty) 'attachmentIds': attachmentIds,
+    if (pending) 'pending': true,
     if (withAt)
       'at': DateTime.fromMillisecondsSinceEpoch(
         seq * 1000,
@@ -734,6 +739,91 @@ void main() {
     expect(api.lastSent, isNull); // never reaches the Hub
   });
 
+  test('send failure copy maps codes and stays one line', () {
+    expect(
+      userFacingSendFailure(code: 'BOT_DISABLED', message: '服务器没有开通bot功能'),
+      '当前账号未开通 Bot，请联系管理员',
+    );
+    expect(
+      userFacingSendFailure(message: 'bot service is unavailable'),
+      '无法连接服务器，请检查网络',
+    );
+    expect(
+      userFacingSendFailure(message: 'StateError: hub down'),
+      'hub down',
+    );
+    final long = userFacingSendFailure(
+      message: '这是一段很长的未知失败说明，用来确认气泡下方不会被撑开布局。',
+      maxChars: 12,
+    );
+    expect(long.characters.length, 12);
+    expect(long.endsWith('…'), isTrue);
+    expect(
+      failureMessage(const HubApiException('HTTP_401', '', statusCode: 401)),
+      '登录已过期，请重新登录',
+    );
+    expect(sendNeverReachedServer(StateError('SocketException: failed')), isTrue);
+    expect(
+      sendNeverReachedServer(
+        const HubApiException('HTTP_503', 'bad gateway', statusCode: 503),
+      ),
+      isTrue,
+    );
+    expect(
+      sendNeverReachedServer(
+        const HubApiException('BOT_DISABLED', 'off', statusCode: 403),
+      ),
+      isFalse,
+    );
+    expect(
+      userFacingSendFailure(code: 'HTTP_502', statusCode: 502),
+      '无法连接服务器，请检查网络',
+    );
+    expect(
+      userFacingSendFailure(code: 'HTTP_500', statusCode: 500),
+      '服务器异常，请稍后重试',
+    );
+    expect(
+      userFacingSendFailure(code: 'DESKTOP_ASLEEP', message: 'asleep'),
+      '桌面在休眠，请先唤醒再发送',
+    );
+    expect(
+      userFacingSendFailure(code: 'RATE_LIMITED', statusCode: 429),
+      '发送太频繁，请稍后再试',
+    );
+    expect(
+      userFacingSendFailure(message: '等待回复超时'),
+      '等待回复超时，Bot 可能仍在处理，可稍后查看任务状态',
+    );
+    expect(
+      userFacingSendFailure(message: 'credits limit is exhausted'),
+      'Credits 已用完，请充值或改用自己的模型',
+    );
+    expect(userFacingSendFailure(), '操作失败，请重试');
+    expect(
+      sendNeverReachedServer(
+        const HubApiException('HTTP_504', 'gateway', statusCode: 504),
+      ),
+      isTrue,
+    );
+    expect(
+      sendNeverReachedServer(
+        const HubApiException('UNKNOWN', 'no answer'),
+      ),
+      isTrue,
+    );
+    expect(
+      sendNeverReachedServer(
+        const HubApiException('RATE_LIMITED', 'slow down', statusCode: 429),
+      ),
+      isFalse,
+    );
+    expect(
+      failureMessage(const HubApiException('BOT_NOT_FOUND', 'gone', statusCode: 404)),
+      '该 Bot 不存在或已被删除',
+    );
+  });
+
   test('failed send marks the bubble and retry resends it', () async {
     final api = _FakeApi()..sendError = StateError('hub down');
     final container = _container(api);
@@ -743,14 +833,222 @@ void main() {
     await container.read(botChatProvider.notifier).send('试一次');
     var state = container.read(botChatProvider);
     expect(state.messages.single.failed, isTrue);
+    expect(state.messages.single.failureReason, isNotEmpty);
+    expect(state.error, state.messages.single.failureReason);
+    expect(state.channelError, state.messages.single.failureReason);
     expect(state.sending, isFalse);
+
+    // A down channel must not swallow the next send.
+    await container.read(botChatProvider.notifier).send('再试一次');
+    state = container.read(botChatProvider);
+    expect(state.messages.where((m) => m.failed), hasLength(2));
+    expect(api.lastSent, '再试一次');
 
     // Hub recovers; retry drops the failed bubble and sends again.
     api.sendError = null;
-    await container.read(botChatProvider.notifier).retry(state.messages.single);
+    await container
+        .read(botChatProvider.notifier)
+        .retry(state.messages.lastWhere((m) => m.failed));
     state = container.read(botChatProvider);
-    expect(state.messages.where((m) => m.failed), isEmpty);
     expect(state.messages.last.content, '好的，收到');
+    expect(state.channelError, isEmpty);
+  });
+
+
+  test('a second send while the first is on the wire is not dropped', () async {
+    final gate = Completer<void>();
+    final api = _FakeApi()..sendGate = gate;
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    final first = notifier.send('第一条');
+    await _until(() => container.read(botChatProvider).sending);
+    final second = notifier.send('第二条');
+    await _until(
+      () => container.read(botChatProvider).messages.length >= 2,
+    );
+
+    var state = container.read(botChatProvider);
+    expect(state.messages.map((m) => m.content), ['第一条', '第二条']);
+    expect(state.messages.last.pending, isTrue);
+    expect(api.lastSent, '第一条');
+
+    gate.complete();
+    expect(await first, isTrue);
+    expect(await second, isTrue);
+    state = container.read(botChatProvider);
+    expect(
+      state.messages.where((m) => m.isUser).map((m) => m.content),
+      ['第一条', '第二条'],
+    );
+    expect(state.messages.where((m) => m.isUser && m.failed), isEmpty);
+    expect(state.messages.where((m) => m.isUser && m.pending), isEmpty);
+    expect(api.lastSent, '第二条');
+  });
+
+
+  test('a channel failure fails the whole unsent round, then the next send still goes', () async {
+    final gate = Completer<void>();
+    final api = _FakeApi()
+      ..sendGate = gate
+      ..sendError = StateError('SocketException: offline');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    final first = notifier.send('第一条');
+    await _until(() => container.read(botChatProvider).sending);
+    final second = notifier.send('第二条');
+    await _until(() => container.read(botChatProvider).messages.length >= 2);
+
+    gate.complete();
+    expect(await first, isFalse);
+    expect(await second, isFalse);
+
+    var state = container.read(botChatProvider);
+    expect(state.messages.where((m) => m.isUser && m.failed), hasLength(2));
+    expect(state.messages.where((m) => m.pending), isEmpty);
+    expect(state.channelError, isNotEmpty);
+    expect(state.sending, isFalse);
+    expect(api.lastSent, '第一条');
+
+    // A down channel must not swallow a later attempt.
+    final third = notifier.send('第三条');
+    expect(await third, isFalse);
+    state = container.read(botChatProvider);
+    expect(state.messages.where((m) => m.isUser).map((m) => m.content), [
+      '第一条',
+      '第二条',
+      '第三条',
+    ]);
+    expect(state.messages.every((m) => m.failed), isTrue);
+    expect(api.lastSent, '第三条');
+    expect(state.channelError, isNotEmpty);
+  });
+
+
+  test('a business rejection does not clear an existing channel notice', () async {
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    await notifier.send('断网');
+    final down = container.read(botChatProvider).channelError;
+    expect(down, isNotEmpty);
+
+    api.sendError = const HubApiException(
+      'DESKTOP_ASLEEP',
+      'desktop is asleep',
+      statusCode: 409,
+    );
+    await notifier.send('叫醒它');
+    final state = container.read(botChatProvider);
+    expect(state.channelError, down);
+    expect(state.messages.last.failed, isTrue);
+    expect(state.messages.last.failureReason, isNot(down));
+  });
+
+
+  test('a send before the client exists fails the bubble and the channel', () async {
+    final container = ProviderContainer(
+      overrides: [
+        botApiProvider.overrideWithValue(null),
+        botChatBotIdProvider.overrideWithValue('b1'),
+        sessionProvider.overrideWith(_FakeSession.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final sent = container.read(botChatProvider.notifier).send('还没登录');
+    await _until(() => container.read(botChatProvider).messages.isNotEmpty);
+    expect(await sent, isFalse);
+
+    final state = container.read(botChatProvider);
+    expect(state.messages.single.failed, isTrue);
+    expect(state.messages.single.pending, isFalse);
+    expect(state.channelError, isNotEmpty);
+    expect(state.sending, isFalse);
+  });
+
+  test('a send that never returns stops saying sending', () async {
+    final api = _FakeApi()..sendGate = Completer<void>();
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    BotChatController.sendWatchLimit = const Duration(milliseconds: 40);
+    addTearDown(() {
+      BotChatController.sendWatchLimit = hubSendTimeout;
+    });
+    final send = container.read(botChatProvider.notifier).send('卡住了');
+    await _until(
+      () => container.read(botChatProvider).messages.any((m) => m.pending),
+    );
+    await _until(
+      () => container.read(botChatProvider).messages.any((m) => m.failed),
+    );
+    final state = container.read(botChatProvider);
+    final bubble = state.messages.single;
+    expect(bubble.pending, isFalse);
+    expect(bubble.failed, isTrue);
+    expect(bubble.failureReason, isNotEmpty);
+    expect(state.sending, isFalse);
+    expect(state.channelError, bubble.failureReason);
+
+    // A late success must not rewrite the failed ending.
+    api.sendGate!.complete();
+    await send;
+    expect(container.read(botChatProvider).messages.single.failed, isTrue);
+  });
+
+  test('a journal echo does not clear a failed send', () async {
+    final api = _FakeApi()..sendError = StateError('hub down');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('回声');
+    final failed = container.read(botChatProvider).messages.single;
+    expect(failed.failed, isTrue);
+    api.page = ConversationPage(
+      head: 1,
+      entries: [_msg(1, failed.id, 'user', '回声', withAt: false)],
+    );
+    await _until(() {
+      final m = container.read(botChatProvider).messages.single;
+      return m.syncSeq == 1;
+    });
+    final after = container.read(botChatProvider).messages.single;
+    expect(after.pending, isFalse);
+    expect(after.failed, isTrue);
+    expect(after.failureReason, failed.failureReason);
+  });
+
+  test('a stale pending bubble fails instead of vanishing', () async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final staleId =
+        'm-${(now - botPendingReplyWaitMs - 60000).toRadixString(36)}-old';
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, staleId, 'user', '昨天发出去的', pending: true, withAt: false),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+    final bubble = container.read(botChatProvider).messages.single;
+    expect(bubble.id, staleId);
+    expect(bubble.pending, isFalse);
+    expect(bubble.failed, isTrue);
+    expect(bubble.failureReason, isNotEmpty);
+    expect(bubble.content, '昨天发出去的');
   });
 
   test('continueTask threads the next send via continue_session', () async {

@@ -10,6 +10,7 @@ import 'package:mobilebot/features/bots/bot_chat_controller.dart';
 import 'package:mobilebot/features/bots/bot_chat_screen.dart';
 import 'package:mobilebot/features/bots/bot_models.dart';
 import 'package:mobilebot/features/bots/bots_controller.dart';
+import 'package:mobilebot/core/hub_config.dart';
 
 final _account = Account(
   key: 'test@example.com',
@@ -41,6 +42,8 @@ class _FakeApi extends BotApi {
 
   String? lastSent;
   BotPhase? lastPhase;
+  Object? sendError;
+  int sendCalls = 0;
 
   @override
   Future<SendResult> sendMessage(
@@ -53,6 +56,8 @@ class _FakeApi extends BotApi {
   }) async {
     lastSent = content;
     lastPhase = phase;
+    sendCalls++;
+    if (sendError != null) throw sendError!;
     return SendResult.settled(const BotReply(text: '好的'));
   }
 
@@ -132,6 +137,108 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('排队中，Bot 忙完后处理'), findsOneWidget);
+  });
+
+  testWidgets('failed user bubble shows the reason under resend', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          _msg(1, 'u1', {
+            'role': 'user',
+            'content': '没发出去',
+            'failed': true,
+            'failureReason': 'BOT_DISABLED',
+          }),
+        ],
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    expect(find.text('发送失败'), findsOneWidget);
+    expect(find.text('重发'), findsOneWidget);
+    expect(find.text('当前账号未开通 Bot，请联系管理员'), findsOneWidget);
+  });
+
+  testWidgets('a send that never reaches the server stays above the composer', (
+    tester,
+  ) async {
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '发不出去');
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('发不出去'), findsOneWidget);
+    expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+    expect(api.sendCalls, 1);
+
+    await tester.enterText(find.byType(TextField), '再发一条');
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('再发一条'), findsOneWidget);
+    expect(api.sendCalls, 2);
+    expect(api.lastSent, '再发一条');
+    expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
+
+    await tester.tap(find.byTooltip('知道了'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('channel-down')), findsNothing);
+  });
+
+  testWidgets('a 5xx send shows the mapped reason and the channel bar', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..sendError = const HubApiException(
+        'HTTP_503',
+        'bad gateway',
+        statusCode: 503,
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '网关挂了');
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无法连接服务器，请检查网络'), findsAtLeast(2));
+    expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
+    expect(find.text('发送中…'), findsNothing);
+    expect(find.text('发送失败'), findsOneWidget);
+
+    await tester.tap(find.text('重试'));
+    await tester.pumpAndSettle();
+    expect(api.sendCalls, 2);
+    expect(api.lastSent, '网关挂了');
+  });
+
+  testWidgets('a business rejection stays on the bubble, not the channel bar', (
+    tester,
+  ) async {
+    final api = _FakeApi()
+      ..sendError = const HubApiException(
+        'DESKTOP_ASLEEP',
+        'desktop is asleep',
+        statusCode: 409,
+      );
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '叫醒它');
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('桌面在休眠，请先唤醒再发送'), findsWidgets);
+    expect(find.text('发送失败'), findsOneWidget);
+    expect(find.byKey(const ValueKey('channel-down')), findsNothing);
+    expect(find.text('发送中…'), findsNothing);
   });
 
   testWidgets('plan replies offer the run-it chip', (tester) async {
