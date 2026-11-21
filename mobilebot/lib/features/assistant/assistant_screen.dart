@@ -68,6 +68,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   bool _busy = false;
   bool _listening = false;
 
+  /// Live PCM level for the composer meter. Null means the current path has
+  /// no samples (system recognition) — the composer then pulses instead.
+  final ValueNotifier<double?> _listenLevel = ValueNotifier<double?>(null);
+
+  /// Bumped on every listen start/stop so a late watchdog cannot fall back
+  /// after the user already cancelled or a callback arrived.
+  int _listenGen = 0;
+  Timer? _listenWatchdog;
+
   /// 回复自动朗读 — 默认开启（产品要求），右上可关。
   bool _readOut = true;
 
@@ -87,11 +96,16 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   @override
   void dispose() {
+    // 先作废会话再拆输入框：stop() 的迟到回调不能写已释放的 controller。
+    _noteListenCallback();
+    _listening = false;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
+    _listenLevel.value = null;
     _speech.stop();
     _tts?.stop();
     _recorder?.stop();
+    _listenLevel.dispose();
     ref.read(voiceEngineProvider).stopSpeaking();
     super.dispose();
   }
@@ -295,17 +309,96 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       // 选了本地但模型缺失/校验未过时，localAsrReady 一直是 false。
       // 先试系统识别，别只 toast「稍后再试」就结束。
       final started = await _startSystemDictate();
-      if (started ||
-          decideAsrFallback(
-                systemStarted: started,
-                localReady: localReady,
-                alreadyFellBack: true,
-                engine: engine.asrEngine,
-              ) ==
-              AsrFallbackChoice.retryLater) {
+      if (started) return;
+      // alreadyFellBack 表示本地采集也失败过。这里只是系统没起来，
+      // 传 true 会把「本地已就绪」也判成稍后再试，下面的本地听写走不到。
+      // 再查一次：点麦克风时未就绪，等系统 initialize 期间可能已下完。
+      // 用这次结果做判定，不能只传给回退函数——旧的 false 会提前返回。
+      final readyNow = await engine.localAsrReady();
+      if (decideAsrFallback(
+            systemStarted: started,
+            localReady: readyNow,
+            alreadyFellBack: false,
+            engine: engine.asrEngine,
+          ) ==
+          AsrFallbackChoice.retryLater) {
+        // 系统没起来、本地也不可用：和 Bot 页一样明确提示，不要静默结束。
+        await _fallbackToLocalDictate(localReady: false);
         return;
       }
       // 系统也起不来且本地模型已就绪：继续本地听写。
+    }
+    await _fallbackToLocalDictate(
+      localReady: await engine.localAsrReady(),
+    );
+  }
+
+  void _cancelListenWatchdog() {
+    _listenWatchdog?.cancel();
+    _listenWatchdog = null;
+  }
+
+  /// 作废当前会话：之后到期的看门狗看到代次不符就不再回退。
+  /// 音量回调不能走这里——健康识别器会持续打 onRmsChanged，一加代
+  /// 看门狗就永远对不上，静默会话不会回退。
+  void _noteListenCallback() {
+    _listenGen++;
+    _cancelListenWatchdog();
+  }
+
+  void _keepListenAlive() {
+    _cancelListenWatchdog();
+  }
+
+  /// `listen()` 正常返回后若平台一个回调都不发，输入栏会永远停在「聆听中」。
+  /// 超时则停系统识别、复位，并回退本地 SenseVoice 一次。
+  void _armListenWatchdog(int gen) {
+    _listenWatchdog?.cancel();
+    _listenWatchdog = Timer(kListenSilentWatchdog, () {
+      if (!mounted ||
+          !listenWatchdogStillOwns(
+            armedGen: gen,
+            currentGen: _listenGen,
+            listening: _listening,
+          )) {
+        return;
+      }
+      unawaited(_recoverSilentListen());
+    });
+  }
+
+  Future<void> _recoverSilentListen() async {
+    // 先换代：stop() 的迟到终态不能把随后的本地采集清掉。
+    _noteListenCallback();
+    try {
+      await _speech.stop();
+    } on Object {
+      // 平台会话已经死了——停不掉也不影响回退。
+    }
+    try {
+      await _recorder?.stop();
+    } on Object {
+      // 系统路径没开本地采集，或会话已经停了。
+    }
+    if (mounted) {
+      _listenLevel.value = null;
+      setState(() => _listening = false);
+    }
+    if (!mounted) return;
+    // 与 Bot 输入框同一判定：本地模型没就绪就提示下载，不要空转再开麦。
+    final engine = ref.read(voiceEngineProvider);
+    await _fallbackToLocalDictate(
+      localReady: await engine.localAsrReady(),
+    );
+  }
+
+  /// 系统路径已经失败。本地就绪才采集；否则后台拉模型并明确提示。
+  Future<void> _fallbackToLocalDictate({required bool localReady}) async {
+    if (!localReady) {
+      final hub = ref.read(sessionProvider).active?.hubUrl;
+      unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
+      _toast(context.S.chatAsrUnavailableDownloading);
+      return;
     }
     await _localDictate();
   }
@@ -315,14 +408,37 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   /// 识别词直接进输入框（同 Bot 聊天）：部分 OEM 只发结果不发终态，等
   /// 'done' 再上屏会让输入栏卡在「聆听中」而一个字都不落。
   /// 会话中途的 onError 只结束聆听态，不在这里回退——麦克风已开，再切
-  /// 本地采集会抢麦。
+  /// 本地采集会抢麦。完全没有回调则由看门狗回退一次。
   Future<bool> _startSystemDictate() async {
+    // 代次在 initialize 前捕获：它的 onError/onStatus 会晚于 stop() 到达，
+    // 必须能和下一轮区分开。
+    final gen = ++_listenGen;
     final ok = await _speech.initialize(
       onError: (_) {
+        if (!listenCallbackStillCurrent(
+          callbackGen: gen,
+          currentGen: _listenGen,
+          listening: _listening,
+        )) {
+          return;
+        }
+        _noteListenCallback();
         if (mounted) setState(() => _listening = false);
       },
       onStatus: (status) {
-        if (status != 'done' && status != 'notListening') return;
+        if (!listenCallbackStillCurrent(
+          callbackGen: gen,
+          currentGen: _listenGen,
+          listening: _listening,
+        )) {
+          return;
+        }
+        // 中间态只续命。一加代，后面的 partial 会被当成过期回调丢掉。
+        if (status != 'done' && status != 'notListening') {
+          _keepListenAlive();
+          return;
+        }
+        _noteListenCallback();
         if (mounted) setState(() => _listening = false);
       },
     );
@@ -334,30 +450,49 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       // speech_to_text 7.x：启动失败抛 ListenFailedException，成功则无返回值。
       final locales = await _speech.locales();
       if (!mounted) return false;
+      final params = SystemListenParams(
+        localeId: pickAsrLocale(
+          locales,
+          fallbackLocaleId: fallbackLocaleId,
+        ),
+      );
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
-          localeId: pickAsrLocale(
-            locales,
-            fallbackLocaleId: fallbackLocaleId,
-          ),
+          localeId: params.localeId,
+          partialResults: params.partialResults,
+          listenFor: params.listenFor,
+          pauseFor: params.pauseFor,
+          listenMode: stt.ListenMode.dictation,
         ),
+        onSoundLevelChange: (_) => _keepListenAlive(),
         onResult: (r) {
-          _inputCtrl.text = prefix.isEmpty
-              ? r.recognizedWords
-              : '$prefix ${r.recognizedWords}';
-          _inputCtrl.selection = TextSelection.collapsed(
-            offset: _inputCtrl.text.length,
+          if (!listenCallbackStillCurrent(
+            callbackGen: gen,
+            currentGen: _listenGen,
+            listening: _listening,
+          )) {
+            return;
+          }
+          _keepListenAlive();
+          if (!mounted) return;
+          final text = applyRecognitionHypothesis(prefix, r.recognizedWords);
+          _inputCtrl.value = TextEditingValue(
+            text: text,
+            selection: TextSelection.collapsed(offset: text.length),
           );
         },
       );
     } on Object {
       // ListenFailedException / 通道错误：识别器没起来。复位后再回退，
       // 避免输入栏停在「聆听中」。
+      _noteListenCallback();
       if (mounted) setState(() => _listening = false);
       return false;
     }
     // listen 正常返回即已启动。不要用 isListening 判断：它要等平台
     // status 回调，成功启动时也可能仍是 false，误判会和系统识别抢麦。
+    // 之后若音量/识别/错误一个都不来，看门狗停掉并回退本地。
+    if (mounted) _armListenWatchdog(gen);
     return mounted;
   }
 
@@ -381,9 +516,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       _toast(S.chatMicOpenFailed);
       return null;
     }
-    if (mounted) setState(() => _listening = true);
+    if (mounted) {
+      setState(() => _listening = true);
+      _listenLevel.value = 0;
+    }
     final buf = BytesBuilder(copy: false);
     var lastLoud = DateTime.now();
+    DateTime? lastLevelPublish;
+    double? lastRms;
+    var levelPending = false;
     try {
       await for (final chunk in stream) {
         if (!_listening) break;
@@ -395,9 +536,23 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           sum += s * s;
         }
         final rms = n > 0 ? math.sqrt(sum / n) : 0.0;
-        if (rms > 400) lastLoud = DateTime.now();
+        lastRms = rms;
+        final now = DateTime.now();
+        // ~32ms chunks; publish at kListenLevelThrottle so the meter does
+        // not rebuild every chunk. A skipped chunk stays pending and is
+        // flushed once when the stream ends.
+        final publish = shouldPublishListenLevel(
+          now: now,
+          lastPublish: lastLevelPublish,
+        );
+        levelPending = !publish;
+        if (mounted && publish) {
+          _listenLevel.value = normalizeListenLevel(rms);
+          lastLevelPublish = now;
+        }
+        if (rms > 400) lastLoud = now;
         final totalMs = buf.length / 32;
-        final silenceMs = DateTime.now().difference(lastLoud).inMilliseconds;
+        final silenceMs = now.difference(lastLoud).inMilliseconds;
         if ((totalMs > 700 && silenceMs > 1200) || totalMs > 20000) {
           await recorder.stop();
           break;
@@ -406,8 +561,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     } on Object {
       // stream error → end of turn
     }
+    // Stop, stream end, and stream error all leave here. A chunk skipped
+    // by the throttle is still the last value and must be published once
+    // before the meter is cleared below. Not a second clock check: the
+    // gap may already have elapsed by the time we get here.
+    if (mounted && levelPending && lastRms != null) {
+      _listenLevel.value = normalizeListenLevel(lastRms);
+      // One frame, not the whole throttle window: clearing in this turn
+      // notifies twice before paint, so the last level never shows. A full
+      // 70ms hold would delay stop and the transcript.
+      await Future<void>.delayed(kListenLevelFlushHold);
+    }
     await recorder.stop();
-    if (mounted) setState(() => _listening = false);
+    if (mounted) {
+      _listenLevel.value = null;
+      setState(() => _listening = false);
+    }
     return buf.takeBytes();
   }
 
@@ -422,6 +591,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
     setState(() => _listening = true);
     final pcm = await _capturePcm();
+    // 权限/开麦失败时 _capturePcm 已 toast。未挂载则页面已走，不必再提示。
     if (pcm == null || !mounted) return;
     if (pcm.length < 32000) {
       _toast(S.chatNotHeard);
@@ -436,9 +606,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       }
     } on Object {
       if (!await engine.localAsrReady()) {
-        // 权重校验/加载失败：文件已丢弃。不要停在「识别失败」。
-        final started = await _startSystemDictate();
-        if (started) return;
+        // 权重校验/加载失败：文件已丢弃。选了本地才再试系统，和 Bot 输入框
+        // 同一条件。系统路径失败后进来的调用方不再开麦。
+        if (engine.asrEngine == AsrEngine.local) {
+          final started = await _startSystemDictate();
+          if (started) return;
+        }
         final hub = ref.read(sessionProvider).active?.hubUrl;
         unawaited(engine.autoEnsure(hubBase: hub));
         _toast(S.chatAsrUnavailableDownloading);
@@ -572,6 +745,8 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             onMic: supportsVoiceInput
                 ? (_listening
                       ? () {
+                          _noteListenCallback();
+                          _listenLevel.value = null;
                           _speech.stop();
                           _recorder?.stop();
                           setState(() => _listening = false);
@@ -579,6 +754,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                       : _dictate)
                 : null,
             listening: _listening,
+            level: _listenLevel,
           ),
         ],
       ),

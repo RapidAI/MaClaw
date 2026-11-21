@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'locale.dart';
@@ -91,6 +92,12 @@ class ChatComposer extends StatelessWidget {
   final String? attachTooltip;
   final VoidCallback? onMic;
   final bool listening;
+
+  /// Optional 0..1 PCM level. Null while [listening] means the path has no
+  /// samples (system recognition) — pulse only, do not invent a meter.
+  /// Widget tests inject this; production passes the capture notifier.
+  final ValueListenable<double?>? level;
+
   final VoidCallback? onSupplement;
   final VoidCallback? onStop;
 
@@ -106,6 +113,7 @@ class ChatComposer extends StatelessWidget {
     this.attachTooltip,
     this.onMic,
     this.listening = false,
+    this.level,
     this.onSupplement,
     this.onStop,
   });
@@ -159,9 +167,12 @@ class ChatComposer extends StatelessWidget {
                       IconButton(
                         onPressed: onMic,
                         visualDensity: VisualDensity.compact,
-                        icon: Icon(
-                          listening ? Icons.mic : Icons.mic_none,
-                          color: listening ? scheme.error : null,
+                        icon: _MicLevelIcon(
+                          listening: listening,
+                          level: level,
+                          color: listening
+                              ? scheme.error
+                              : scheme.onSurfaceVariant,
                         ),
                         tooltip: listening
                             ? context.S.composerMicStop
@@ -207,6 +218,139 @@ class ChatComposer extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+
+/// Mic glyph that follows an injected level, or pulses when listening
+/// without PCM. [level] is nullable so widget tests never open a mic.
+class _MicLevelIcon extends StatelessWidget {
+  final bool listening;
+  final ValueListenable<double?>? level;
+  final Color color;
+
+  const _MicLevelIcon({
+    required this.listening,
+    required this.level,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = Icon(
+      listening ? Icons.mic : Icons.mic_none,
+      color: color,
+    );
+    if (!listening) return icon;
+    final source = level;
+    if (source == null) return _ListenPulse(color: color, child: icon);
+    return ValueListenableBuilder<double?>(
+      valueListenable: source,
+      builder: (context, value, _) {
+        if (value == null) return _ListenPulse(color: color, child: icon);
+        return _LevelMic(level: value, color: color, child: icon);
+      },
+    );
+  }
+}
+
+class _ListenPulse extends StatefulWidget {
+  final Color color;
+  final Widget child;
+
+  const _ListenPulse({required this.color, required this.child});
+
+  @override
+  State<_ListenPulse> createState() => _ListenPulseState();
+}
+
+class _ListenPulseState extends State<_ListenPulse>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_ctrl.value);
+        return SizedBox(
+          key: const ValueKey('listen-pulse'),
+          width: 28,
+          height: 28,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: 16 + 10 * t,
+                height: 16 + 10 * t,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.color.withValues(alpha: 0.18 + 0.22 * (1 - t)),
+                ),
+              ),
+              child!,
+            ],
+          ),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+class _LevelMic extends StatelessWidget {
+  final double level;
+  final Color color;
+  final Widget child;
+
+  const _LevelMic({
+    required this.level,
+    required this.color,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = level.clamp(0.0, 1.0);
+    return SizedBox(
+      key: const ValueKey('listen-level'),
+      width: 36,
+      height: 28,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          child,
+          const SizedBox(width: 2),
+          Container(
+            key: const ValueKey('listen-level-bar'),
+            width: 4,
+            height: 6 + 16 * clamped,
+            margin: const EdgeInsets.only(bottom: 4),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ],
       ),
     );
   }
