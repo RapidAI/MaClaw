@@ -88,6 +88,9 @@ func TestReadResponseRejectsMismatchedID(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not answer") {
 		t.Fatalf("mismatched id must fail, got %v", err)
 	}
+	if !rt.closed.Load() {
+		t.Fatal("a mismatched id must retire the connection")
+	}
 }
 
 func TestDecodeToolResultRejectsOKFalseWithoutError(t *testing.T) {
