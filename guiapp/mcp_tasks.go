@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -939,21 +940,13 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	// MaxAgentTimeoutSec). A live command still uses MaxLongRunTimeoutSec.
 	// This watchdog only ends the round when host-visible activity stops.
 	runCtx, cancel := context.WithCancel(context.Background())
-	var timer *time.Timer
-	var watch func()
-	watch = func() {
-		// Reset only while this callback owns the timer. time.Timer.Reset
-		// from another goroutine races with the fired callback, and a false
-		// return would drop the only stall check for a round that is still
-		// producing activity.
-		if a.mcpExtendQuietRun(path, requestID, mcpRunStallWindow) {
-			timer.Reset(mcpRunStallWindow)
-			return
-		}
+	watch := mcpNewStallWatch(mcpRunStallWindow, func() bool {
+		return a.mcpExtendQuietRun(path, requestID, mcpRunStallWindow)
+	}, func() {
 		a.mcpNoteRunStalled(path, requestID)
 		cancel()
-	}
-	timer = time.AfterFunc(mcpRunStallWindow, watch)
+	})
+	stopStallWatch := watch.stop
 	mark := a.mcpConversationMark(path)
 	reqProvider := strings.TrimSpace(view.ProviderRequested)
 	reqModel := strings.TrimSpace(view.ModelRequested)
@@ -1005,7 +998,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	}
 	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
 	if err != nil {
-		timer.Stop()
+		stopStallWatch()
 		cancel()
 		return mcpTaskView{}, err
 	}
@@ -1029,7 +1022,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		defer timer.Stop()
+		defer stopStallWatch()
 		defer cancel()
 		resp, err := a.RunAIAssistantProgrammingPrompt(runCtx, AIAssistantSendRequest{
 			Text:                        bound.Text,
@@ -1060,7 +1053,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 				a.mcpRecordToolEvent(path, requestID, ev)
 			},
 		})
-		timer.Stop()
+		stopStallWatch()
 		cause := runCtx.Err()
 		if cause != nil && a.mcpRunStalled(path, requestID) {
 			cause = errMCPRunStalled
@@ -2450,6 +2443,94 @@ func (a *App) mcpNoteRunProgress(path, requestID string) {
 		return
 	}
 	rec.progressAt = time.Now()
+}
+
+// mcpStallWatch is the round's no-progress timer. Stop waits for a fired
+// callback so that callback cannot Reset after the prompt has finished and
+// leave a timer with no owner.
+type mcpStallWatch struct {
+	timer   *time.Timer
+	mu      sync.Mutex
+	done    chan struct{}
+	running bool
+	stopped bool
+}
+
+func mcpNewStallWatch(window time.Duration, active func() bool, stall func()) *mcpStallWatch {
+	w := &mcpStallWatch{}
+	var fire func()
+	fire = func() {
+		// Publish entry before reading stop. AfterFunc.Stop cannot tell a
+		// callback that has not started from one that has already finished.
+		w.beginFire()
+		defer w.finishFire()
+		w.mu.Lock()
+		stopped := w.stopped
+		w.mu.Unlock()
+		if stopped {
+			return
+		}
+		// Read activity before the stop decision. A slow progress check
+		// must not hide a stop that already won, and it must not be
+		// followed by a stall of a round the caller has already finished.
+		stillActive := active != nil && active()
+		w.mu.Lock()
+		stopped = w.stopped
+		// Reset only while this callback owns the timer. Reset from another
+		// goroutine races with the fired callback, and a false return would
+		// drop the only stall check for a round that is still producing
+		// activity. A false return here is expected: this callback already
+		// owns the expired timer.
+		if !stopped && stillActive {
+			w.timer.Reset(window)
+		}
+		w.mu.Unlock()
+		if stopped || stillActive || stall == nil {
+			return
+		}
+		stall()
+	}
+	w.timer = time.AfterFunc(window, fire)
+	return w
+}
+
+func (w *mcpStallWatch) beginFire() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.running = true
+	if w.done == nil {
+		w.done = make(chan struct{})
+	}
+}
+
+func (w *mcpStallWatch) finishFire() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.running = false
+	if w.done != nil {
+		close(w.done)
+		w.done = nil
+	}
+}
+
+func (w *mcpStallWatch) stop() {
+	if w == nil || w.timer == nil {
+		return
+	}
+	w.mu.Lock()
+	w.stopped = true
+	w.timer.Stop()
+	// The stopped flag is published before this snapshot. A callback that
+	// has not entered yet sees it and returns. A callback already inside
+	// active() has published done, so this wait cannot return early.
+	var done chan struct{}
+	if w.running {
+		done = w.done
+	}
+	w.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // mcpExtendQuietRun reports whether this waiting round still has host-visible

@@ -276,25 +276,15 @@ func mcpSettleLoadedRun(rec *mcpRunRecord) *mcpRunRecord {
 		return rec
 	}
 	// Loading does not resume the programming prompt. The snapshot has no
-	// cancel func and no live model call. A quiet snapshot is a confirmed
-	// lack of progress, not a user stop and not an unconfirmed host-wait
-	// ending. A snapshot whose last activity is still inside the stall
-	// window stays running: failing it here would call a live round dead,
-	// and leaving every reload running would block the next command after
-	// the process that was producing activity is gone.
+	// cancel func and no live model call, so a recent progressAt is not a
+	// live round. Keeping it running would block the next command until the
+	// stall window expired, with nothing left that can produce activity.
+	// A loaded running snapshot is a confirmed lack of progress, not a user
+	// stop and not an unconfirmed host-wait ending.
 	now := time.Now()
 	last := rec.progressAt
 	if last.IsZero() {
 		last = rec.StartedAt
-	}
-	if !last.IsZero() && !last.Before(now.Add(-mcpRunStallWindow)) {
-		if rec.progressAt.IsZero() {
-			rec.progressAt = last
-		}
-		rec.cancel = nil
-		rec.hostWaitEnded = false
-		rec.stalled = false
-		return rec
 	}
 	if rec.progressAt.IsZero() {
 		rec.progressAt = last

@@ -404,12 +404,14 @@ func TestInboundMCPLoadedRunningIsHostWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Status != mcpStatusRunning || view.Stop != nil {
-		t.Fatalf("a round still inside the stall window must stay running, got %+v stop=%+v", view, view.Stop)
+	if view.Status != mcpStatusFailed || view.EndReason != mcpStatusFailed || view.Stop == nil || view.Stop.Class != mcpStopNoProgress || view.Stop.Source != "no_progress" || view.Stop.Reason != errMCPRunStalled.Error() || view.Stop.Class == mcpStopUser || view.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("a loaded running snapshot has no model call, got %+v stop=%+v", view, view.Stop)
 	}
-	if _, err := again.mcpSendCommand(context.Background(), "live", "continue", "", "", false); !errors.Is(err, errMCPTaskRunning) {
-		t.Fatalf("a live loaded round must still block the next command, err=%v", err)
+	token, err := again.mcpAcquireTurn("live", false)
+	if err != nil {
+		t.Fatalf("a loaded running snapshot must not block the next command, err=%v", err)
 	}
+	again.mcpReleaseTurn("live", token)
 
 	quietDir := t.TempDir()
 	quiet := &App{mcpStateDir: quietDir}

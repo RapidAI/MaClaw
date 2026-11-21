@@ -3674,8 +3674,8 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "fresh", Status: mcpStatusRunning, RequestID: "mcp-fresh", RunID: "run-fresh",
 		StartedAt: time.Now().Add(-time.Minute), progressAt: time.Now().Add(-time.Minute),
 	})
-	if fresh.Status != mcpStatusRunning || fresh.Stop != nil || fresh.cancel != nil {
-		t.Fatalf("a loaded round inside the stall window must stay running, status=%s stop=%+v", fresh.Status, fresh.Stop)
+	if fresh.Status != mcpStatusFailed || fresh.Stop == nil || fresh.Stop.Class != mcpStopNoProgress || fresh.Stop.Class == mcpStopUser || fresh.Stop.Class == mcpStopUnconfirmed || fresh.cancel != nil {
+		t.Fatalf("a loaded running snapshot has no model call, status=%s stop=%+v", fresh.Status, fresh.Stop)
 	}
 	aged := mcpSettleLoadedRun(&mcpRunRecord{
 		ProjectPath: "aged", Status: mcpStatusRunning, RequestID: "mcp-aged", RunID: "run-aged",
@@ -3688,13 +3688,56 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 		ProjectPath: "legacy", Status: mcpStatusRunning, RequestID: "mcp-legacy", RunID: "run-legacy",
 		StartedAt: time.Now().Add(-time.Minute),
 	})
-	if legacy.Status != mcpStatusRunning || legacy.Stop != nil || legacy.progressAt.IsZero() {
-		t.Fatalf("a legacy loaded run inside the stall window must stay running, %+v", legacy)
+	if legacy.Status != mcpStatusFailed || legacy.Stop == nil || legacy.Stop.Class != mcpStopNoProgress || legacy.Stop.Class == mcpStopUser || legacy.progressAt.IsZero() {
+		t.Fatalf("a legacy loaded running snapshot has no model call, %+v stop=%+v", legacy, legacy.Stop)
 	}
 	done := mcpSettleLoadedRun(&mcpRunRecord{ProjectPath: "done", Status: mcpStatusCompleted, RequestID: "mcp-done"})
 	if done.Status != mcpStatusCompleted {
 		t.Fatalf("finished loaded run %+v", done)
 	}
+}
+
+func TestInboundMCPStallWatchStopWaitsForRenewal(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	watch := mcpNewStallWatch(time.Millisecond, func() bool {
+		once.Do(func() { close(started) })
+		<-release
+		return true
+	}, func() {
+		t.Error("a stop that wins must not let the fired callback fail the round")
+	})
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stall callback did not fire")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		watch.stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("stop returned before the fired callback finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not wait for the fired callback")
+	}
+
+	stalled := make(chan struct{})
+	quiet := mcpNewStallWatch(time.Millisecond, func() bool { return false }, func() { close(stalled) })
+	select {
+	case <-stalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a quiet watch must stall")
+	}
+	quiet.stop()
 }
 
 func TestInboundMCPCancelledSkipIsNotComplete(t *testing.T) {
