@@ -44,24 +44,43 @@ func desktopWithReadback(kind, text string, err error, verdict string) (string, 
 	return strings.TrimRight(text, "\n") + "\n\n" + browser.NotAppliedAdvice, nil
 }
 
-// desktopVerifyBrowserType reads back the field a browser type wrote into.
-func desktopVerifyBrowserType(session *browser.BrowserAgentSession, typed, text string, err error) (string, error) {
-	if err != nil || !desktopVerifyEnabled() || session == nil {
+// desktopVerifyBrowserType reads the field back through the exact correction
+// loop. A prefix, case, or whitespace fold is not success.
+func desktopVerifyBrowserType(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession, typed, text string, err error) (string, error) {
+	if !desktopVerifyEnabled() {
 		return text, err
 	}
-	return desktopWithReadback("type", text, err, session.ReadBack(typed, false))
+	if strings.TrimSpace(typed) == "" {
+		return text, err
+	}
+	if session == nil {
+		if err != nil {
+			return text, err
+		}
+		return "", &desktopInputOutcomeError{Status: "unverified", Reason: "observation_unavailable"}
+	}
+	out, oerr, _ := desktopCorrectBrowserType(ctx, scope, session, typed, text, err)
+	return out, oerr
 }
 
-// desktopVerifyBrowserScript reads back the literal text a script wrote.
-func desktopVerifyBrowserScript(session *browser.BrowserAgentSession, script, text string, err error) (string, error) {
-	if err != nil || !desktopVerifyEnabled() || session == nil {
+// desktopVerifyBrowserScript reads the literal text a script wrote through
+// the same exact loop. It does not accept a prefix of that text.
+func desktopVerifyBrowserScript(ctx context.Context, scope agentruntime.Scope, session *browser.BrowserAgentSession, script, text string, err error) (string, error) {
+	if !desktopVerifyEnabled() {
 		return text, err
 	}
 	written := browser.ScriptWrittenText(script)
 	if written == "" {
 		return text, err
 	}
-	return desktopWithReadback("script", text, err, session.ReadBack(written, true))
+	if session == nil {
+		if err != nil {
+			return text, err
+		}
+		return "", &desktopInputOutcomeError{Status: "unverified", Reason: "observation_unavailable"}
+	}
+	out, oerr, _ := desktopCorrectBrowserType(ctx, scope, session, written, text, err)
+	return out, oerr
 }
 
 // desktopStepsInsertedText is the text of the last type/paste/set_text step.
@@ -150,31 +169,21 @@ func desktopReadbackVerdict(inserted string, fields []string, page func(string) 
 	return desktopA11yFieldsVerdict(inserted, fields)
 }
 
-// desktopVerifySteps reads back desktop-level typing. The focused page
-// decides when it holds the keyboard focus. Accessibility fields are used
-// when that page cannot be read.
+// desktopVerifySteps reads back desktop-level typing. An exact correction
+// runs first when the desktop relay can see the field. The focused page
+// decides when that correction cannot observe. Accessibility fields are
+// used when that page cannot be read.
 func desktopVerifySteps(ctx context.Context, scope agentruntime.Scope, display string, raw any, session func() *browser.BrowserAgentSession, text string, err error) (string, error) {
-	if err != nil || !desktopVerifyEnabled() {
+	if !desktopVerifyEnabled() {
 		return text, err
 	}
 	inserted := desktopStepsInsertedText(raw)
-	if browser.ReadbackProbe(inserted) == "" {
+	if strings.TrimSpace(inserted) == "" {
 		return text, err
 	}
-	// The page answers in one eval when it has focus. The accessibility walk
-	// runs only when that eval cannot tell, so a browser field does not wait
-	// on the desktop tree.
-	var page func(string) string
-	pageVerdict := browser.ReadbackUnknown
-	if session != nil {
-		if s := session(); s != nil {
-			pageVerdict = s.ReadBackIfFocused(inserted)
-			page = func(string) string { return pageVerdict }
-		}
+	out, oerr, handled := desktopCorrectDesktopSteps(ctx, scope, display, raw, text, err)
+	if !handled {
+		return text, err
 	}
-	var fields []string
-	if page == nil || pageVerdict == "" || pageVerdict == browser.ReadbackUnknown {
-		fields, _ = desktopFocusedA11yFields(ctx, scope, display)
-	}
-	return desktopWithReadback("app_run", text, err, desktopReadbackVerdict(inserted, fields, page))
+	return out, oerr
 }
