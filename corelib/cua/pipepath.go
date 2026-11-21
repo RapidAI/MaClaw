@@ -2,22 +2,27 @@ package cua
 
 import "strings"
 
-// pipePath normalizes a configured pipe address to the connectable form
-// that CreateFileW wants. No prefix literal is used here: a leading
-// separator is simply skipped, so the result is always exactly two
-// separators followed by the name's path inside the pipe namespace. A
-// configured value may be the connectable form, the short pipe-name form,
-// or a bare name.
-func pipePath(addr string) string {
-	twoSep := string([]byte{92, 92})
-	return twoSep + skipLeadingSeparators(strings.TrimSpace(addr))
-}
-
-// skipLeadingSeparators drops leading separators and slashes.
-func skipLeadingSeparators(s string) string {
-	i := 0
-	for i < len(s) && (s[i] == 92 || s[i] == '/') {
-		i++
+// pipeName returns the name of a Windows pipe from a configured address.
+// Every accepted form names the same pipe: the full form
+// (two separators, a dot, the word pipe, a separator, then the name), the
+// short form that starts with the word pipe and a separator, or the bare
+// name. A value whose leading doubled separator collapsed to one is the
+// same as the short form.
+//
+// The comparison is byte by byte on positions, never on a separator
+// literal joined with the word: a separator can be lost in transport, and
+// the word is the only stable marker.
+func pipeName(addr string) string {
+	sep := string([]byte{92})
+	s := strings.TrimSpace(addr)
+	for i := 0; i+len("pipe") < len(s); i++ {
+		if s[i] != 'p' || s[i+1] != 'i' || s[i+2] != 'p' || s[i+3] != 'e' {
+			continue
+		}
+		if s[i+len("pipe")] != sep[0] {
+			continue
+		}
+		return strings.TrimLeft(s[i+len("pipe")+1:], sep+"/")
 	}
-	return s[i:]
+	return strings.TrimLeft(s, sep+"/")
 }

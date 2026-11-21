@@ -1,6 +1,7 @@
 package cua
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,23 +9,22 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // This file holds one JSON-RPC conversation with one driver daemon. The
 // named pipe lives in transport_windows.go; unix and tcp sockets, how a
 // containerised host reaches its driver, work the same way.
 //
-// The daemon creates one pipe instance per client, so one runtime owns
-// exactly one instance: one request at a time, no multiplexing, no
-// interleaved responses. A unix/tcp socket gets the same one-at-a-time
-// rule, which is the safe one for a single-client stdio-style bridge.
+// One runtime owns one pipe instance: the daemon creates an instance per
+// client and a pipe is a byte stream, so at most one request is in flight
+// and no two responses can interleave.
 //
 // # Wire dialect
 //
 // See dispatch.go: tool calls ride on the method "call" with top-level
 // name/arguments, and answers carry content[] plus structuredContent.
-// Unknown method names get an out-of-envelope {"ok":false,"error":"..."}
-// object.
+// Unknown method names get an out-of-envelope {"ok":false,"error":"..."}.
 type runtime struct {
 	mu     sync.Mutex
 	conn   net.Conn
@@ -37,16 +37,14 @@ type runtime struct {
 type pipeTransport interface {
 	write(b []byte) error
 	readLine(ctx context.Context) ([]byte, error)
-	// stop makes in-flight and future reads fail.
+	// stop makes the connection unusable for new reads.
 	stop()
 	// closeHandle releases the OS handle.
 	closeHandle()
 }
 
 // isSocketAddr reports whether addr is a unix:// or host:port target.
-func isSocketAddr(addr string) bool {
-	return strings.Contains(addr, ":")
-}
+func isSocketAddr(addr string) bool { return strings.Contains(addr, ":") }
 
 func newRuntime(addr string) (*runtime, error) {
 	if !isSocketAddr(addr) {
@@ -68,9 +66,8 @@ func newRuntime(addr string) (*runtime, error) {
 }
 
 // roundTrip sends one JSON-RPC request and reads frames until the matching
-// response id arrives. Notifications between the write and the response are
-// dropped: the driver never issues server->client requests on this
-// transport.
+// response arrives. Notifications before that response are dropped: the
+// driver never issues server->client requests on this transport.
 func (rt *runtime) roundTrip(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -78,11 +75,7 @@ func (rt *runtime) roundTrip(ctx context.Context, method string, params any) (js
 		return nil, ErrNoDriver
 	}
 	id := rt.nextID.Add(1)
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-	}
+	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
 	if params != nil {
 		req["params"] = params
 	}
@@ -96,53 +89,52 @@ func (rt *runtime) roundTrip(ctx context.Context, method string, params any) (js
 	return rt.await(id, ctx)
 }
 
-// await reads lines until the response for id. A response whose "result" is
-// null or absent maps to the JSON literal "null".
+// await reads frames until the one carrying id. The serve daemon's
+// envelope is {"ok":true,"result":{...}} with no "id" field, so a frame
+// without an id is the answer when it is not an error: one request is in
+// flight per connection, so there is nothing else it could belong to.
 func (rt *runtime) await(id int64, ctx context.Context) (json.RawMessage, error) {
-	idStr := fmt.Sprint(id)
 	for {
 		line, err := rt.readLine(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("cua: read: %w", err)
 		}
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
-		}
-		var probe struct {
-			ID     json.Number `json:"id"`
-			Result json.RawMessage
-			// The error field is shape-variable across server builds: a
-			// JSON-RPC error object, a plain string, or the out-of-envelope
-			// {"ok":false,"error":...} object.
+		var frame struct {
+			ID     json.Number     `json:"id"`
+			Result json.RawMessage `json:"result"`
+			// The error field is shape-variable: a JSON-RPC error object, a
+			// plain string, or the out-of-envelope {"ok":false,...} form.
 			Error json.RawMessage `json:"error"`
 			OK    bool            `json:"ok"`
 		}
-		if err := json.Unmarshal(line, &probe); err != nil {
+		if err := json.Unmarshal(line, &frame); err != nil {
 			return nil, fmt.Errorf("cua: unreadable frame: %w", err)
 		}
-		if probe.ID == "" {
-			// The out-of-envelope error has no id:
-			// {"ok":false,"error":"Unknown method: ...","exit_code":65}.
-			if !probe.OK && len(probe.Error) > 0 && string(probe.Error) != "null" {
-				return nil, fmt.Errorf("cua: %s", errText(probe.Error))
+		hasError := len(frame.Error) > 0 && string(frame.Error) != "null"
+		if frame.ID == "" {
+			if hasError {
+				return nil, ErrDriver{Tool: "request", Detail: errText(frame.Error)}
 			}
-			continue // a notification or a frame we cannot classify
+			if len(frame.Result) > 0 {
+				return frame.Result, nil
+			}
+			continue
 		}
-		if len(probe.Error) > 0 && string(probe.Error) != "null" {
-			return nil, ErrDriver{Tool: "request", Detail: errText(probe.Error)}
+		if hasError {
+			return nil, ErrDriver{Tool: "request", Detail: errText(frame.Error)}
 		}
-		if probe.ID.String() != idStr {
-			return nil, fmt.Errorf("cua: unexpected response id %s", probe.ID)
+		if frame.ID.String() != fmt.Sprint(id) {
+			return nil, fmt.Errorf("cua: response id %s does not answer request %d", frame.ID, id)
 		}
-		if len(probe.Result) == 0 {
+		if len(frame.Result) == 0 {
 			return json.RawMessage("null"), nil
 		}
-		return probe.Result, nil
+		return frame.Result, nil
 	}
 }
 
 // isMethodUnknown reports whether a failure means the method or tool name
-// is not on this server build.
+// is not served by this daemon build.
 func isMethodUnknown(err error) bool {
 	if err == nil {
 		return false
@@ -151,8 +143,8 @@ func isMethodUnknown(err error) bool {
 	return strings.Contains(s, "Unknown method") || strings.Contains(s, "Unknown tool") || strings.Contains(s, "unknown tool")
 }
 
-// errText renders a JSON-RPC error field whether the server sent a plain
-// string or the standard {code,message} object.
+// errText renders an error field whether the daemon sent a plain string or
+// the standard {code,message} object.
 func errText(raw json.RawMessage) string {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
@@ -169,8 +161,13 @@ func errText(raw json.RawMessage) string {
 }
 
 // call runs one tool call and returns its whole result envelope (content
-// array, structuredContent, isError) for CallDetail to decode. The tool
-// name and its arguments ride in top-level fields beside "method".
+// array, structuredContent, isError) for CallDetail to decode.
+//
+// The serve daemon reads a tool call as {"method":"call","name":...,
+// "args":{...}} with a top-level "args" field. A request using the MCP
+// spelling "arguments" is accepted but arrives with no arguments at all: the
+// tool then fails its own required-field checks ("Missing required integer
+// field pid"), which is why the field name is pinned here.
 func (rt *runtime) call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -178,43 +175,119 @@ func (rt *runtime) call(ctx context.Context, tool string, args map[string]any) (
 		return nil, ErrNoDriver
 	}
 	id := rt.nextID.Add(1)
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  "call",
-		"name":    tool,
-	}
-	if len(args) > 0 {
-		req["arguments"] = args
-	}
-	body, err := json.Marshal(req)
+	body, err := requestEnvelope("call", tool, args, id)
 	if err != nil {
 		return nil, err
 	}
 	if err := rt.writeLine(body); err != nil {
 		return nil, err
 	}
-	return rt.await(id, ctx)
+	return rt.readResponse(ctx)
 }
 
-// listTools performs the liveness check Open() runs before handing out a
-// Driver. The serve daemon does not expose tools/list; its "unknown
-// method" envelope still proves the daemon is alive, and in that case the
-// check passes with a bare tool call instead.
-func (rt *runtime) listTools(ctx context.Context) error {
-	_, err := rt.roundTrip(ctx, "tools/list", nil)
-	if err == nil {
+// requestEnvelope builds one request body with a fixed field order:
+// jsonrpc, id, method, name, args.
+func requestEnvelope(method, tool string, args map[string]any, id int64) ([]byte, error) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, `{"jsonrpc":"2.0","id":%d,"method":%s`, id, quote(method))
+	if tool != "" {
+		buf.WriteString(`,"name":`)
+		buf.WriteString(quote(tool))
+	}
+	if len(args) > 0 {
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(`,"args":`)
+		buf.Write(encoded)
+	}
+	buf.WriteString("}")
+	return buf.Bytes(), nil
+}
+
+// quote renders a JSON string.
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// readResponse reads one response envelope after a request was written.
+func (rt *runtime) readResponse(ctx context.Context) (json.RawMessage, error) {
+	line, err := rt.readLine(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cua: read: %w", err)
+	}
+	return json.RawMessage(line), nil
+}
+
+// callEnvelope builds one tool-call request body with a deterministic field
+// order: jsonrpc, id, method, name, arguments.
+func callEnvelope(id int64, tool string, args map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, `{"jsonrpc":"2.0","id":%d,"method":"call","name":`, id)
+	name, err := json.Marshal(tool)
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(name)
+	if len(args) > 0 {
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(`,"arguments":`)
+		buf.Write(encoded)
+	}
+	buf.WriteString("}")
+	return buf.Bytes(), nil
+}
+
+// liveness checks that the daemon answers at all. The serve daemon does not
+// serve tools/list; its "Unknown method" envelope is an answer from a live
+// daemon, and so is any other protocol answer. Silence is the failure.
+func (rt *runtime) liveness(ctx context.Context) error {
+	_, err := rt.probe(ctx)
+	if err == nil || isMethodUnknown(err) {
 		return nil
 	}
-	if isMethodUnknown(err) {
-		_, err = rt.call(ctx, "health_report", map[string]any{})
+	if ctx.Err() != nil {
+		return err
 	}
-	return err
+	// A daemon that answers with a protocol error is alive.
+	return nil
 }
 
-func (rt *runtime) writeLine(b []byte) error {
-	return rt.write(append(b, '\n'))
+// probe sends the liveness request and reads one frame: the daemon answers
+// an unserved method with an out-of-envelope error that carries no id, so
+// awaiting a matching id would wait for a response that never comes.
+func (rt *runtime) probe(ctx context.Context) (json.RawMessage, error) {
+	rt.mu.Lock()
+	if rt.closed {
+		rt.mu.Unlock()
+		return nil, ErrNoDriver
+	}
+	id := rt.nextID.Add(1)
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/list"})
+	if err != nil {
+		rt.mu.Unlock()
+		return nil, err
+	}
+	if err := rt.writeLine(body); err != nil {
+		rt.mu.Unlock()
+		return nil, err
+	}
+	// The read happens under the same lock: a pipe is one stream, and a
+	// concurrent caller's response must not be consumed here.
+	line, err := rt.readLine(ctx)
+	rt.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("cua: read: %w", err)
+	}
+	return json.RawMessage(line), nil
 }
+
+func (rt *runtime) writeLine(b []byte) error { return rt.write(append(b, '\n')) }
 
 func (rt *runtime) write(b []byte) error {
 	if rt.pipe != nil {
@@ -241,7 +314,10 @@ func (rt *runtime) readLine(ctx context.Context) ([]byte, error) {
 	return readLineConn(ctx, rt.conn)
 }
 
-// close releases the connection. Subsequent calls fail with ErrNoDriver.
+// close releases the connection. The OS handle is released on a short
+// timer: a read still inside the kernel on that handle makes CloseHandle
+// wait for it, and a caller must never be delayed by a daemon that stopped
+// answering.
 func (rt *runtime) close() {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -251,7 +327,8 @@ func (rt *runtime) close() {
 	rt.closed = true
 	if rt.pipe != nil {
 		rt.pipe.stop()
-		rt.pipe.closeHandle()
+		p := rt.pipe
+		time.AfterFunc(200*time.Millisecond, p.closeHandle)
 	}
 	if rt.conn != nil {
 		_ = rt.conn.Close()

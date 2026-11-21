@@ -14,12 +14,11 @@ import (
 // # Windows named pipe transport
 //
 // `cua-driver serve --socket <name>` creates the pipe instance on demand,
-// so the client opens with OPEN_EXISTING. The handle is NOT overlapped:
-// an overlapped ReadFile on a synchronous pipe returns ERROR_INVALID_PARAMETER
-// or a bogus in-progress code, and every read here would fail. A read is
-// wrapped in a goroutine instead, whose result is selected against the
-// context; close() sets done and closes the handle, which unblocks the
-// abandoned read and lets the goroutine exit.
+// so the client opens with OPEN_EXISTING. The handle is not overlapped: a
+// synchronous ReadFile is the only form this daemon's pipe supports. Reads
+// run in a goroutine whose result is selected against the context, so a
+// caller can give up on a slow tool; close() sets done and closes the
+// handle, which unblocks the abandoned read and lets its goroutine exit.
 
 var (
 	modkernel32     = windows.NewLazySystemDLL("kernel32.dll")
@@ -29,7 +28,7 @@ var (
 
 // dialPipe opens the pipe instance named by addr.
 func dialPipe(addr string) (pipeTransport, error) {
-	target := pipePath(addr)
+	target := pipeTarget(addr)
 	name := windows.StringToUTF16(target)
 	ret, _, callErr := procCreateFileW.Call(
 		uintptr(unsafe.Pointer(&name[0])),
@@ -57,8 +56,7 @@ type pipeConn struct {
 func (p *pipeConn) write(b []byte) error {
 	for len(b) > 0 {
 		var n uint32
-		err := windows.WriteFile(p.h, b, &n, nil)
-		if err != nil {
+		if err := windows.WriteFile(p.h, b, &n, nil); err != nil {
 			return fmt.Errorf("cua: pipe write: %w", err)
 		}
 		if n == 0 {
@@ -69,49 +67,46 @@ func (p *pipeConn) write(b []byte) error {
 	return nil
 }
 
-// readLine returns the next newline-terminated line, bounded by ctx.
+// readLine returns the next newline-terminated line, bounded by ctx. Bytes
+// after the newline stay buffered for the next call.
 func (p *pipeConn) readLine(ctx context.Context) ([]byte, error) {
+	var acc []byte
 	for {
 		p.mu.Lock()
 		if p.done {
 			p.mu.Unlock()
 			return nil, ErrNoDriver
 		}
-		if i := indexByte(p.buf, '\n'); i >= 0 {
-			line := append([]byte(nil), p.buf[:i]...)
-			p.buf = append([]byte(nil), p.buf[i+1:]...)
+		if i := indexByte(acc, 10); i >= 0 {
+			line := append([]byte(nil), acc[:i]...)
+			p.buf = append(p.buf, acc[i+1:]...)
 			p.mu.Unlock()
 			return line, nil
 		}
 		p.mu.Unlock()
-		chunk, err := p.readOnce(ctx)
+		chunk, err := p.readChunk(ctx)
 		if err != nil {
 			return nil, err
 		}
-		p.mu.Lock()
-		p.buf = append(p.buf, chunk...)
-		over := len(p.buf) > 16<<20
-		p.mu.Unlock()
-		if over {
+		acc = append(acc, chunk...)
+		if len(acc) > 16<<20 {
 			return nil, fmt.Errorf("cua: response line over 16MiB")
 		}
 	}
 }
 
-// readOnce reads one chunk, or returns on ctx's deadline. The read itself
-// runs in a goroutine because a synchronous ReadFile cannot be cancelled;
-// the caller can give up, and close() later takes the handle from under it.
-func (p *pipeConn) readOnce(ctx context.Context) ([]byte, error) {
+// readChunk reads one chunk, or returns on ctx's deadline. The read runs
+// in its own goroutine because a synchronous ReadFile cannot be cancelled.
+func (p *pipeConn) readChunk(ctx context.Context) ([]byte, error) {
 	type outcome struct {
 		data []byte
 		err  error
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, 64*1024)
 		var n uint32
-		err := windows.ReadFile(p.h, buf, &n, nil)
-		if err != nil {
+		if err := windows.ReadFile(p.h, buf, &n, nil); err != nil {
 			ch <- outcome{err: fmt.Errorf("cua: pipe read: %w", err)}
 			return
 		}

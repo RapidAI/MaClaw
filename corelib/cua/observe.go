@@ -90,9 +90,11 @@ type Snapshot struct {
 // case-insensitive substring of a row's role, label, value, or id; "a|b"
 // matches either.
 func (d *Driver) Snapshot(ctx context.Context, pid, windowID int, query string, maxElements int) (Snapshot, error) {
+	// The driver decodes numbers as integers, so the ids go as ints, not
+	// as the pre-serialized any value of a caller's own type.
 	args := map[string]any{
-		"pid":         pid,
-		"window_id":   windowID,
+		"pid":         int64(pid),
+		"window_id":   int64(windowID),
 		"tree_format": "elements",
 		// The tree is the observation; a screenshot would be dropped here.
 		"include_screenshot": false,
@@ -382,8 +384,8 @@ func (d *Driver) Verify(ctx context.Context, pid, windowID int, expect []Expect,
 		wire = append(wire, m)
 	}
 	args := map[string]any{
-		"pid":            pid,
-		"window_id":      windowID,
+		"pid":            int64(pid),
+		"window_id":      int64(windowID),
 		"expect":         wire,
 		"stable_samples": max(1, stableSamples),
 		"timeout_ms":     timeoutMs,

@@ -50,30 +50,63 @@ func (d *Driver) CallDetail(ctx context.Context, tool string, args map[string]an
 	if err != nil {
 		return nil, "", err
 	}
-	var out struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		StructuredContent map[string]any `json:"structuredContent"`
-		IsError           bool           `json:"isError"`
+	content, structured, isError, parseErr := decodeToolResult(raw)
+	if parseErr != nil {
+		return nil, "", ErrDriver{Tool: tool, Detail: parseErr.Error()}
 	}
-	if json.Unmarshal(raw, &out) != nil {
-		// A build that returns the tool value directly.
-		var direct map[string]any
-		if json.Unmarshal(raw, &direct) == nil {
-			return direct, "", nil
-		}
-		return nil, "", ErrDriver{Tool: tool, Detail: "unreadable result"}
+	if len(content) > 0 {
+		text = content[0].Text
 	}
-	if len(out.Content) > 0 {
-		text = out.Content[0].Text
-	}
-	if out.IsError {
+	if isError {
 		if text == "" {
 			text = "the driver reported an error"
 		}
-		return out.StructuredContent, text, ErrDriver{Tool: tool, Detail: text}
+		return structured, text, ErrDriver{Tool: tool, Detail: text}
 	}
-	return out.StructuredContent, text, nil
+	return structured, text, nil
+}
+
+// contentBlock is one MCP content entry.
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// decodeToolResult reads a tool answer in either shape the daemon uses:
+// the MCP wrapper {"content":[...],"structuredContent":{...},"isError":...}
+// at the top level, or the same wrapper inside {"ok":true,"result":{...}}.
+// Answers without a wrapper are the tool value itself.
+func decodeToolResult(raw json.RawMessage) (content []contentBlock, structured map[string]any, isError bool, err error) {
+	var direct struct {
+		Content           []contentBlock `json:"content"`
+		StructuredContent map[string]any `json:"structuredContent"`
+		IsError           bool           `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		if len(direct.Content) > 0 || direct.StructuredContent != nil {
+			return direct.Content, direct.StructuredContent, direct.IsError, nil
+		}
+	}
+	var envelope struct {
+		OK     bool            `json:"ok"`
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			Content           []contentBlock `json:"content"`
+			StructuredContent map[string]any `json:"structuredContent"`
+			IsError           bool           `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil {
+		if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+			return nil, nil, false, fmt.Errorf("%s", errText(envelope.Error))
+		}
+		if len(envelope.Result.Content) > 0 || envelope.Result.StructuredContent != nil {
+			return envelope.Result.Content, envelope.Result.StructuredContent, envelope.Result.IsError, nil
+		}
+	}
+	var anyValue map[string]any
+	if json.Unmarshal(raw, &anyValue) == nil && len(anyValue) > 0 {
+		return nil, anyValue, false, nil
+	}
+	return nil, nil, false, fmt.Errorf("unreadable result")
 }

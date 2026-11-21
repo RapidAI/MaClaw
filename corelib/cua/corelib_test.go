@@ -10,23 +10,25 @@ import (
 	"time"
 )
 
-func TestPipePathForms(t *testing.T) {
-	full := `\\.\pipe\maclaw-cua` // UNC form a host puts in the variable
-	bare := `maclaw-cua`
-	short := `\pipe\maclaw-cua`
-	got := []string{pipePath(full), pipePath(bare), pipePath(short), pipePath(" " + bare + " ")}
-	for i, v := range got {
-		if !strings.Contains(v, "pipe") || strings.HasSuffix(v, "pipe") {
-			t.Fatalf("form %d = %q, not a pipe path", i, v)
+func TestPipeNameForms(t *testing.T) {
+	sep := string([]byte{92})
+	// The forms a host can configure, including the one whose leading
+	// doubled separator arrived as a single one.
+	for _, in := range []string{
+		"maclaw-cua",
+		sep + "pipe" + sep + "maclaw-cua",
+		sep + sep + "." + sep + "pipe" + sep + "maclaw-cua",
+		sep + "." + sep + "pipe" + sep + "maclaw-cua",
+		"  maclaw-cua	",
+	} {
+		if got := pipeName(in); got != "maclaw-cua" {
+			t.Fatalf("pipeName(%q) = %q, want maclaw-cua", in, got)
 		}
 	}
-	if got[0] != full {
-		t.Fatalf("full form rewritten: %q", got[0])
-	}
-	for i := 1; i < len(got); i++ {
-		if got[i] != got[0] {
-			t.Fatalf("form %d = %q, want %q", i, got[i], got[0])
-		}
+	// The dial target is that name inside the pipe namespace.
+	want := sep + sep + "." + sep + "pipe" + sep + "maclaw-cua"
+	if got := pipeTarget("maclaw-cua"); got != want {
+		t.Fatalf("pipeTarget = %q, want %q", got, want)
 	}
 }
 

@@ -55,7 +55,7 @@ func Open(ctx context.Context, addr string) (*Driver, error) {
 	d := &Driver{addr: addr, rt: rt}
 	probeCtx, cancel := context.WithDeadline(ctx, time.Now().Add(30*time.Second))
 	defer cancel()
-	if err := d.rt.listTools(probeCtx); err != nil {
+	if err := d.rt.liveness(probeCtx); err != nil {
 		rt.close()
 		return nil, err
 	}
