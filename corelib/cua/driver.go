@@ -1,4 +1,4 @@
-﻿// Package cua is the MaClaw bridge to the Cua Driver (trycua/cua):
+// Package cua is the MaClaw bridge to the Cua Driver (trycua/cua):
 // the desktop-automation daemon that serves window, input, accessibility
 // and verification operations over MCP.
 //
@@ -78,19 +78,25 @@ func (d *Driver) Health(ctx context.Context) (map[string]any, error) {
 	return d.Call(ctx, "health_report", map[string]any{})
 }
 
-// Call runs one driver tool by its bare name (click, verify_state, ...)
-// and returns the JSON of its result. A result that carries a content
-// array is unwrapped to its text field; the rest is returned as-is.
+// Call runs one driver tool by its bare name (click, verify_state, ...) and
+// returns its structured result, or its text answer parsed as JSON. A tool
+// with no structure and no JSON text returns {"text": <answer>}.
 func (d *Driver) Call(ctx context.Context, tool string, args map[string]any) (map[string]any, error) {
-	raw, err := d.rt.call(ctx, tool, args)
+	structured, text, err := d.CallDetail(ctx, tool, args)
 	if err != nil {
 		return nil, err
 	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
+	if len(structured) > 0 {
+		return structured, nil
 	}
-	return out, nil
+	if strings.TrimSpace(text) == "" {
+		return map[string]any{}, nil
+	}
+	var out map[string]any
+	if json.Unmarshal([]byte(text), &out) == nil {
+		return out, nil
+	}
+	return map[string]any{"text": text}, nil
 }
 
 // Close releases the connection. Subsequent calls fail with ErrNoDriver.

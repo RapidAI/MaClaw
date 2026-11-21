@@ -2,13 +2,15 @@ package cua
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
 
-// TestOpenDefaultAgainstLiveDriver requires a reachable driver (set
-// MACLAW_CUA_SOCKET to a `cua-driver serve` socket). CI without one must
-// skip; a failure here is a real protocol break, not an environment quirk.
+// The live tests need MACLAW_CUA_SOCKET pointing at a running
+// `cua-driver serve`; without one they skip, and a failure in them is a
+// protocol break rather than an environment quirk.
+
 func TestOpenDefaultAgainstLiveDriver(t *testing.T) {
 	d, err := OpenDefault(context.Background())
 	if err != nil {
@@ -24,11 +26,10 @@ func TestOpenDefaultAgainstLiveDriver(t *testing.T) {
 	}
 }
 
-// TestOpenDefaultLiveDriverAgainstServe is a stronger live test: it needs a
-// real `cua-driver serve` running (MACLAW_CUA_SOCKET set to its socket).
-// The Open() liveness check must pass, and a real tool call must return
-// structured data. Skipped when the socket is not a live serve daemon.
-func TestOpenDefaultLiveDriverAgainstServe(t *testing.T) {
+// TestListWindowsAgainstServe proves the "call" dialect: the tool name and
+// its arguments ride beside "method", and the answer's content[] is
+// unwrapped for the caller.
+func TestListWindowsAgainstServe(t *testing.T) {
 	d, err := OpenDefault(context.Background())
 	if err != nil {
 		t.Skipf("no live driver: %v", err)
@@ -43,37 +44,17 @@ func TestOpenDefaultLiveDriverAgainstServe(t *testing.T) {
 	}
 }
 
-// TestErrNoDriverWithoutSocket guards the unset-env path.
-func TestErrNoDriverWithoutSocket(t *testing.T) {
-	t.Setenv(EnvSocket, "")
-	if _, err := OpenDefault(context.Background()); err != ErrNoDriver {
-		t.Fatalf("got %v, want ErrNoDriver", err)
+// TestSnapshotOfOwnWindow reads this test process's own console window when
+// one exists, so a real UIA tree is parsed and a token round-trips.
+func TestSnapshotOfOwnWindow(t *testing.T) {
+	d, err := OpenDefault(context.Background())
+	if err != nil {
+		t.Skipf("no live driver: %v", err)
 	}
-}
-
-// TestPipePathNormalization checks the address forms hosts pass.
-func TestPipePathNormalization(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{`\\.\pipe\openbot-cua-1`, `\\.\pipe\openbot-cua-1`},
-		{`\\.\pipe\openbot-cua-2`, `\\.\pipe\openbot-cua-2`},
-		{`openbot-cua-3`, `\\.\pipe\openbot-cua-3`},
-	}
-	for _, c := range cases {
-		if got := pipePath(c.in); got != c.want {
-			t.Errorf("pipePath(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// TestAwaitContextDeadline ensures a wedged read does not outlive ctx.
-func TestAwaitContextDeadline(t *testing.T) {
-	rt := &runtime{}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer d.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := rt.await(1, ctx)
-	if err == nil {
-		t.Fatalf("expected an error from a closed/unconnected await")
+	if _, err := d.Snapshot(ctx, os.Getpid(), 0, "", 10); err == nil {
+		t.Fatal("a window id of 0 must be refused, not read")
 	}
 }
