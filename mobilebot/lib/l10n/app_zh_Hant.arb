@@ -525,5 +525,10 @@
   "updateDownloadFailed": "下載更新包失敗：{error}",
   "requestFailedShort": "請求失敗",
   "assistantAttachQuery": "請閱讀並總結這個附件。",
-  "chatMaterialFallbackPath": "~/素材/{bot}/{name}"
+    "homeEyebrow": "今天",
+  "homeHeroTitle": "讓 Bot 替你幹活",
+  "homeHeroBots": "{count} 個 Bot 在線待命",
+  "homeHeroRunning": "{count} 項任務進行中",
+  "homeSectionBots": "Bot",
+"chatMaterialFallbackPath": "~/素材/{bot}/{name}"
 }

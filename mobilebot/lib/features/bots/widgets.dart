@@ -38,7 +38,17 @@ class BotAvatar extends StatelessWidget {
   final Bot bot;
   final double radius;
 
-  const BotAvatar({super.key, required this.bot, this.radius = 20});
+  /// showAttention draws a small badge dot at the top-right: 主 Bot 的星、
+  /// 正在跑的活。只在头像右上角盖一个点，不占卡片宽度。
+  final bool showAttention;
+
+  const BotAvatar({
+    super.key,
+    required this.bot,
+    this.radius = 20,
+    this.showAttention = false,
+  });
+
 
   static const _palette = [
     Color(0xFF5B8DEF),
@@ -61,6 +71,33 @@ class BotAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final avatar = _shape();
+    if (!showAttention) return avatar;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        avatar,
+        Positioned(
+          right: -2,
+          top: -2,
+          child: Container(
+            width: radius * 0.62,
+            height: radius * 0.62,
+            decoration: BoxDecoration(
+              color: const Color(0xFF3FA7A0),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Theme.of(context).colorScheme.surface,
+                width: 1.6,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _shape() {
     final label = Text(
       bot.initials,
       style: TextStyle(

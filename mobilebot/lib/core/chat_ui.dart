@@ -38,22 +38,33 @@ class MessageBubble extends StatelessWidget {
     final background =
         color ?? (isUser ? scheme.primary : scheme.surfaceContainerHigh);
     final foreground = isUser ? scheme.onPrimary : scheme.onSurface;
+    // Assistant replies read as prose on the canvas (no card, no bubble), the
+    // way a mobile AI app presents an answer; only the person's own turn gets
+    // a filled bubble. A failed user bubble keeps its own tint and geometry.
+    final flat = !isUser && color == null;
     final bubble = Container(
       constraints: BoxConstraints(maxWidth: maxWidth),
       margin: margin,
-      padding:
-          padding ?? const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: flat
+          ? const EdgeInsets.fromLTRB(
+              2,
+              2,
+              2,
+              AppSpacing.md - 2,
+            )
+          : (padding ??
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
       decoration: BoxDecoration(
-        color: background,
+        color: flat ? null : background,
         borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(20),
+          topLeft: Radius.circular(isUser ? 20 : 8),
           topRight: const Radius.circular(20),
-          bottomLeft: Radius.circular(isUser ? 20 : 6),
-          bottomRight: Radius.circular(isUser ? 6 : 20),
+          bottomLeft: Radius.circular(isUser ? 20 : 8),
+          bottomRight: Radius.circular(isUser ? 6 : 8),
         ),
       ),
       child: DefaultTextStyle.merge(
-        style: TextStyle(color: foreground, height: 1.4),
+        style: TextStyle(color: foreground, height: 1.45),
         child: child,
       ),
     );
@@ -77,7 +88,7 @@ class MessageBubble extends StatelessWidget {
   }
 }
 
-/// Unified chat composer: pill input with optional attach/mic inside and
+/// Unified chat composer: rounded input field with attach/mic inside and
 /// supplement/stop around the filled send button. Every chat surface
 /// (bot chat, assistant, remote task, room chat) renders this so the typing
 /// experience is identical app-wide.
@@ -129,7 +140,7 @@ class ChatComposer extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -154,7 +165,10 @@ class ChatComposer extends StatelessWidget {
               child: Container(
                 decoration: BoxDecoration(
                   color: scheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(26),
+                  borderRadius: BorderRadius.circular(AppRadius.md + 6),
+                  border: Border.all(
+                    color: scheme.outlineVariant.withValues(alpha: 0.7),
+                  ),
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,

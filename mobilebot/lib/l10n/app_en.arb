@@ -970,7 +970,12 @@
   },
   "requestFailedShort": "Request failed",
   "assistantAttachQuery": "Please read and summarize this attachment.",
-  "chatMaterialFallbackPath": "~/material/{bot}/{name}",
+    "homeEyebrow": "TODAY",
+  "homeHeroTitle": "Put a bot to work",
+  "homeHeroBots": "{count} bots ready",
+  "homeHeroRunning": "{count} tasks running",
+  "homeSectionBots": "BOTS",
+"chatMaterialFallbackPath": "~/material/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {

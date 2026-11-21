@@ -6,12 +6,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'bot_models.dart';
+import 'bot_api.dart';
 import 'bots_controller.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import 'widgets.dart';
 
 /// Bot 列表页 — 对应桌面 GUI 的 bot 侧栏。
+/// 版式：品牌 header + 渐变主视觉 + 白色 Bot 卡片，不在顶栏重复标题。
 class BotsScreen extends ConsumerWidget {
   const BotsScreen({super.key});
 
@@ -20,12 +23,20 @@ class BotsScreen extends ConsumerWidget {
     final state = ref.watch(botsProvider);
     return Scaffold(
       appBar: AppBar(
-        title: Text(context.S.botsTitle),
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Text(context.S.tabBots),
+          ],
+        ),
         actions: [
           IconButton(
+            tooltip: context.S.botsRetry,
             icon: const Icon(Icons.refresh),
             onPressed: () => ref.read(botsProvider.notifier).refresh(),
           ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -84,13 +95,24 @@ class BotsScreen extends ConsumerWidget {
         ],
       );
     }
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-      itemCount: state.bots.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 104),
+      // header 占一行，卡片从第二行开始。
+      itemCount: state.bots.length + 1,
       itemBuilder: (context, index) {
-        final bot = state.bots[index];
-        return _BotCard(bot: bot, index: index);
+        if (index == 0) {
+          return _HomeHeader(botCount: state.bots.length);
+        }
+        final bot = state.bots[index - 1];
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            0,
+            AppSpacing.lg,
+            AppSpacing.sm + 2,
+          ),
+          child: _BotCard(bot: bot, index: index - 1),
+        );
       },
     );
   }
@@ -108,6 +130,85 @@ class BotsScreen extends ConsumerWidget {
   }
 }
 
+/// 列表顶部的主视觉：今天、正在跑的活儿、Bot 数量。工作状态接口不可用时
+/// 只用本地数据，不让首页卡在加载上。
+class _HomeHeader extends ConsumerWidget {
+  final int botCount;
+
+  const _HomeHeader({required this.botCount});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final S = context.S;
+    final running = ref.watch(_runningCountProvider);
+    final busy = running > 0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        GradientHero(
+          icon: busy ? Icons.bolt_rounded : Icons.wb_sunny_outlined,
+          eyebrow: S.homeEyebrow,
+          title: busy ? S.homeHeroRunning(running) : S.homeHeroBots(botCount),
+          hint: busy ? S.homeHeroBots(botCount) : null,
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg + AppSpacing.xs,
+            AppSpacing.lg,
+            AppSpacing.lg + AppSpacing.xs,
+            AppSpacing.sm - 2,
+          ),
+          child: Row(
+            children: [
+              Text(
+                S.homeSectionBots,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.6,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '$botCount',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurfaceVariant.withValues(alpha: 0.8),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 活动 run 数量 — 接口不可达时返回 0，不阻塞首页。
+final _runningCountProvider = Provider<int>((ref) {
+  final api = ref.watch(botApiProvider);
+  if (api == null) return 0;
+  var count = 0;
+  for (final bot in ref.watch(botsProvider).bots) {
+    final runs = ref.watch(_homeRunsProvider((api, bot.id))).value;
+    count += runs?.length ?? 0;
+  }
+  return count;
+});
+
+final _homeRunsProvider = FutureProvider.autoDispose
+    .family<List<ActiveRun>, (BotApi, String)>((ref, key) async {
+      try {
+        return await key.$1.activeRuns(key.$2);
+      } on Object {
+        return const <ActiveRun>[];
+      }
+    });
+
 class _BotCard extends ConsumerWidget {
   final Bot bot;
   final int index;
@@ -117,78 +218,88 @@ class _BotCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final meta = <Widget>[
+      if (bot.primary)
+        AppBadge(
+          label: context.S.botsPrimaryMark,
+          color: scheme.primary,
+          icon: Icons.star_rounded,
+        ),
+      AppBadge(
+        label: desktopModeMark(bot.desktopMode, context.S),
+        color: botHasComputer(bot.desktopMode)
+            ? scheme.primary
+            : scheme.onSurfaceVariant,
+        icon: botHasComputer(bot.desktopMode) ? Icons.computer_rounded : null,
+      ),
+    ];
     return Card(
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: () => context.push('/bot/${Uri.encodeComponent(bot.id)}'),
             child: Padding(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.lg,
+                AppSpacing.md + 2,
+                AppSpacing.md,
+                AppSpacing.md + 2,
+              ),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  BotAvatar(bot: bot, radius: 24),
-                  const SizedBox(width: 14),
+                  BotAvatar(
+                    bot: bot,
+                    radius: 25,
+                    // 主 Bot 有星点、有电脑的带电脑标识，与下方徽标一致。
+                    showAttention: bot.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.md + 2),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                bot.title,
-                                style: theme.textTheme.titleMedium,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (bot.primary)
-                              Padding(
-                                padding: const EdgeInsets.only(left: 6),
-                                child: AppBadge(
-                                  label: context.S.botsPrimaryMark,
-                                  color: theme.colorScheme.primary,
-                                  icon: Icons.star_rounded,
-                                ),
-                              ),
-                            Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: AppBadge(
-                                label: desktopModeMark(
-                                  bot.desktopMode,
-                                  context.S,
-                                ),
-                                color: botHasComputer(bot.desktopMode)
-                                    ? theme.colorScheme.primary
-                                    : theme.colorScheme.onSurfaceVariant,
-                                icon: botHasComputer(bot.desktopMode)
-                                    ? Icons.computer_rounded
-                                    : null,
-                              ),
-                            ),
-                          ],
+                        Text(
+                          bot.title,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         if (bot.description.isNotEmpty)
                           Padding(
-                            padding: const EdgeInsets.only(top: 2),
+                            padding: const EdgeInsets.only(top: 3),
                             child: Text(
                               bot.description,
                               style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.onSurfaceVariant,
+                                color: scheme.onSurfaceVariant,
+                                height: 1.35,
                               ),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
+                        if (meta.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: AppSpacing.sm),
+                            child: Wrap(spacing: 6, runSpacing: 4, children: meta),
+                          ),
                       ],
                     ),
                   ),
-                  Row(
+                  const SizedBox(width: AppSpacing.xs),
+                  // 电脑画面入口保留为卡片上的次级按钮；整张卡片进聊天。
+                  Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (botHasComputer(bot.desktopMode))
                         IconButton(
                           tooltip: context.S.botsDesktopTooltip,
                           visualDensity: VisualDensity.compact,
+                          iconSize: 21,
+                          color: scheme.onSurfaceVariant,
                           icon: const Icon(Icons.desktop_windows_outlined),
                           onPressed: () => context.push(
                             '/bot/${Uri.encodeComponent(bot.id)}/desktop',
@@ -196,7 +307,8 @@ class _BotCard extends ConsumerWidget {
                         ),
                       Icon(
                         Icons.chevron_right,
-                        color: theme.colorScheme.onSurfaceVariant,
+                        size: 20,
+                        color: scheme.onSurfaceVariant,
                       ),
                     ],
                   ),

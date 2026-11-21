@@ -970,7 +970,12 @@
   },
   "requestFailedShort": "请求失败",
   "assistantAttachQuery": "请阅读并总结这个附件。",
-  "chatMaterialFallbackPath": "~/素材/{bot}/{name}",
+    "homeEyebrow": "今天",
+  "homeHeroTitle": "让 Bot 替你干活",
+  "homeHeroBots": "{count} 个 Bot 在线待命",
+  "homeHeroRunning": "{count} 项任务进行中",
+  "homeSectionBots": "Bot",
+"chatMaterialFallbackPath": "~/素材/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {

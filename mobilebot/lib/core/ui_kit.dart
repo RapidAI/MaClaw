@@ -99,15 +99,23 @@ class SectionHeader extends StatelessWidget {
   final String title;
   final Widget? trailing;
 
-  const SectionHeader({super.key, required this.title, this.trailing});
+  /// dense 去掉顶部留白 — 给页面自己已经留过间距的场景用。
+  final bool dense;
+
+  const SectionHeader({
+    super.key,
+    required this.title,
+    this.trailing,
+    this.dense = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         AppSpacing.xs,
-        AppSpacing.lg + 4,
+        dense ? 2 : AppSpacing.lg + 4,
         AppSpacing.xs,
         AppSpacing.sm + 2,
       ),
@@ -197,7 +205,11 @@ class SkeletonList extends StatelessWidget {
 class BrandMark extends StatelessWidget {
   final double size;
 
-  const BrandMark({super.key, this.size = 76});
+  /// tile=true 用在顶栏这种已有圆角容器里的位置：只留渐变块，去掉向外
+  /// 溢的阴影，以免在 44px 高的导航栏里发灰。
+  final bool tile;
+
+  const BrandMark({super.key, this.size = 76, this.tile = false});
 
   @override
   Widget build(BuildContext context) {
@@ -213,18 +225,21 @@ class BrandMark extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [scheme.primary, deep],
         ),
-        boxShadow: [
-          BoxShadow(
-            color: scheme.primary.withValues(alpha: 0.35),
-            blurRadius: size * 0.35,
-            offset: Offset(0, size * 0.1),
-          ),
-        ],
+        boxShadow: tile
+            ? null
+            : [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.35),
+                  blurRadius: size * 0.35,
+                  offset: Offset(0, size * 0.1),
+                ),
+              ],
       ),
       child: Icon(
         Icons.smart_toy_outlined,
         size: size * 0.52,
-        color: scheme.onPrimary,
+        // On small tiles the tinted onPrimary washes out over the gradient.
+        color: tile ? Colors.white : scheme.onPrimary,
       ),
     );
   }
@@ -287,6 +302,113 @@ class EmptyState extends StatelessWidget {
         ),
       ),
     ).animate().fadeIn(duration: const Duration(milliseconds: 250));
+  }
+}
+
+/// The gradient hero used at the top of list screens: eyebrow line, a big
+/// line of copy, optional hint and a trailing action. Reads as the product
+/// speaking first, which is what makes the home tab feel like a workspace
+/// rather than a settings index.
+class GradientHero extends StatelessWidget {
+  final IconData icon;
+  final String eyebrow;
+  final String title;
+  final String? hint;
+  final Widget? trailing;
+
+  const GradientHero({
+    super.key,
+    required this.icon,
+    required this.eyebrow,
+    required this.title,
+    this.hint,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final deep = Color.lerp(scheme.primary, Colors.black, 0.32)!;
+    final mid = Color.lerp(scheme.primary, Colors.black, 0.08)!;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.sm,
+        AppSpacing.lg,
+        AppSpacing.xs,
+      ),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        AppSpacing.lg + 2,
+        AppSpacing.lg,
+        AppSpacing.lg + 2,
+      ),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(AppRadius.xl + 4),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [mid, deep],
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, size: 15, color: Colors.white70),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        eyebrow,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.2,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.sm + 2),
+                Text(
+                  title,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontSize: 22,
+                    height: 1.25,
+                    color: Colors.white,
+                  ),
+                ),
+                if (hint != null && hint!.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    hint!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.4,
+                      color: Colors.white.withValues(alpha: 0.82),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (trailing != null) ...[const SizedBox(width: AppSpacing.md), trailing!],
+        ],
+      ),
+    );
   }
 }
 

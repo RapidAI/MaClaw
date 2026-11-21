@@ -29,25 +29,39 @@ abstract final class AppRadius {
 class AppTheme {
   static const seedColor = Color(0xFF5B8DEF);
 
+  /// The mobile bot reads like a mobile AI workspace, not a settings app:
+  /// a warm off-white canvas, white sheets floating on it, and one deep
+  /// indigo for every action. Both lightness levels share the same hue
+  /// family so a screenshot of either is recognisably the same product.
+  static const canvasLight = Color(0xFFF6F7FB);
+  static const canvasDark = Color(0xFF0E1116);
+  static const sheetDark = Color(0xFF171B22);
+
   static ThemeData light() => _base(Brightness.light);
   static ThemeData dark() => _base(Brightness.dark);
 
   static ThemeData _base(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
     final scheme = ColorScheme.fromSeed(
       seedColor: seedColor,
       brightness: brightness,
+    ).copyWith(
+      primary: isDark ? const Color(0xFF9DB7F5) : const Color(0xFF2F5BD8),
+      onPrimary: isDark ? const Color(0xFF0C1630) : Colors.white,
+      surface: isDark ? canvasDark : canvasLight,
     );
-    final isDark = brightness == Brightness.dark;
-    // Light cards sit on the tinted background as near-white sheets; dark
-    // cards lift one container above the surface instead.
-    final cardColor = isDark
-        ? scheme.surfaceContainerLow
-        : scheme.surfaceContainerLowest;
+    // Light cards are white sheets on the tinted canvas; dark cards lift a
+    // step above the near-black canvas instead.
+    final cardColor = isDark ? sheetDark : Colors.white;
     final outline = scheme.outlineVariant;
+    // Borders are hairlines: the sheet's own contrast separates cards, so a
+    // heavy outline would only add noise.
+    final hairline = outline.withValues(alpha: isDark ? 0.5 : 0.9);
 
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      scaffoldBackgroundColor: isDark ? canvasDark : canvasLight,
       fontFamily: appFontFamily,
       visualDensity: VisualDensity.adaptivePlatformDensity,
       textTheme: _textTheme(scheme),
@@ -61,28 +75,29 @@ class AppTheme {
       ),
       appBarTheme: AppBarTheme(
         centerTitle: false,
-        backgroundColor: scheme.surface,
-        surfaceTintColor: scheme.surface,
+        // The canvas colour, not surface: a translucent surface tint would
+        // grey the header once content scrolls under it.
+        backgroundColor: isDark ? sheetDark : Colors.white,
+        surfaceTintColor: isDark ? sheetDark : Colors.white,
         scrolledUnderElevation: 0,
         elevation: 0,
+        titleSpacing: AppSpacing.lg,
         titleTextStyle: TextStyle(
-          fontSize: 17,
-          fontWeight: FontWeight.w600,
-          letterSpacing: -0.2,
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.4,
           color: scheme.onSurface,
           fontFamily: appFontFamily,
         ),
       ),
       cardTheme: CardThemeData(
         elevation: 0,
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(vertical: 5),
         clipBehavior: Clip.antiAlias,
         color: cardColor,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-          side: BorderSide(
-            color: outline.withValues(alpha: isDark ? 0.4 : 0.55),
-          ),
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          side: BorderSide(color: hairline),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -174,8 +189,25 @@ class AppTheme {
         ),
       ),
       dialogTheme: DialogThemeData(
+        backgroundColor: cardColor,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadius.xl),
+        ),
+      ),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: isDark ? sheetDark : Colors.white,
+      ),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: scheme.primary,
+        foregroundColor: scheme.onPrimary,
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+        ),
+        extendedTextStyle: const TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+          fontFamily: appFontFamily,
         ),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
@@ -216,24 +248,29 @@ class AppTheme {
           side: BorderSide(color: outline.withValues(alpha: 0.6)),
         ),
       ),
-      floatingActionButtonTheme: FloatingActionButtonThemeData(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.lg),
-        ),
-        extendedTextStyle: const TextStyle(
-          fontSize: 15,
-          fontWeight: FontWeight.w600,
-          fontFamily: appFontFamily,
-        ),
-      ),
       navigationBarTheme: NavigationBarThemeData(
-        height: 66,
-        backgroundColor: scheme.surface,
-        surfaceTintColor: scheme.surface,
-        indicatorShape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
-        ),
+        height: 68,
+        backgroundColor: isDark ? sheetDark : Colors.white,
+        surfaceTintColor: isDark ? sheetDark : Colors.white,
+        elevation: 0,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return TextStyle(
+            fontSize: 11,
+            height: 1.2,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            fontFamily: appFontFamily,
+          );
+        }),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return IconThemeData(
+            size: 23,
+            color: selected ? scheme.primary : scheme.onSurfaceVariant,
+          );
+        }),
       ),
       dividerTheme: DividerThemeData(
         color: outline.withValues(alpha: 0.5),

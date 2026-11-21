@@ -13,6 +13,7 @@ import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
 import '../../core/locale.dart';
 import '../../l10n/gen/app_localizations.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import '../bots/widgets.dart' show runStatusColor;
 
@@ -352,25 +353,23 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
             icon: const Icon(Icons.groups_outlined),
             onPressed: () => context.push('/rooms'),
           ),
+          const SizedBox(width: AppSpacing.xs),
         ],
       ),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<int>(
-                segments: [
-                  ButtonSegment(
-                    value: 0,
-                    label: Text(context.S.stSegmentTasks),
-                  ),
-                  ButtonSegment(value: 1, label: Text(context.S.stSegmentFeed)),
-                ],
-                selected: {_segment},
-                onSelectionChanged: (v) => setState(() => _segment = v.first),
-              ),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.xs,
+              AppSpacing.lg,
+              AppSpacing.sm,
+            ),
+            child: _PillSegments(
+              labels: [context.S.stSegmentTasks, context.S.stSegmentFeed],
+              icons: [Icons.task_alt_rounded, Icons.forum_outlined],
+              index: _segment,
+              onChanged: (i) => setState(() => _segment = i),
             ),
           ),
           Expanded(
@@ -398,6 +397,80 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
                   : _FeedBody(bots: bots),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 两段切换的药丸条：选中段填主色，未选中保持透明。比分段按钮更轻，
+/// 不抢列表标题的注意力。
+class _PillSegments extends StatelessWidget {
+  final List<String> labels;
+  final List<IconData> icons;
+  final int index;
+  final ValueChanged<int> onChanged;
+
+  const _PillSegments({
+    required this.labels,
+    required this.icons,
+    required this.index,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(AppRadius.md + 4),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < labels.length; i++)
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  if (i != index) onChanged(i);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: i == index ? scheme.primary : Colors.transparent,
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        icons[i],
+                        size: 16,
+                        color: i == index
+                            ? scheme.onPrimary
+                            : scheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        labels[i],
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: i == index
+                              ? scheme.onPrimary
+                              : scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -906,66 +979,167 @@ class _GlobalStatusBody extends ConsumerWidget {
           );
         }
         return ListView(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.sm,
+            AppSpacing.lg,
+            AppSpacing.xxl,
+          ),
           children: [
-            SectionHeader(title: context.S.stRunningCount(status.runs.length)),
+            SectionHeader(
+              title: context.S.stRunningCount(status.runs.length),
+              // SectionHeader 第一个参数自带顶部留白，页面本身已经留过。
+              dense: true,
+            ),
             for (final run in status.runs)
-              Card(
-                child: ListTile(
-                  leading: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: runStatusColor(run.status),
-                    ),
-                  ),
-                  title: Text(
-                    run.task.isNotEmpty ? run.task : run.runId,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${_botName(run.botId, S)} · ${run.step.isNotEmpty ? run.step : run.status}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
+                child: _RunCard(
+                  run: run,
+                  botName: _botName(run.botId, S),
                   onTap: () => context.push(
                     '/bot/${Uri.encodeComponent(run.botId)}/status',
                   ),
                 ),
               ),
-            const SizedBox(height: 20),
+            const SizedBox(height: AppSpacing.md),
             SectionHeader(
               title: context.S.stDeliveriesCount(status.deliveries.length),
             ),
             for (final delivery in status.deliveries)
-              Card(
-                child: ListTile(
-                  leading: Icon(
-                    Icons.mark_chat_unread_outlined,
-                    color: runStatusColor(delivery.status),
-                  ),
-                  title: Text(
-                    delivery.task.isNotEmpty ? delivery.task : delivery.runId,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${_botName(delivery.botId, S)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context.push(
-                    '/bot/${Uri.encodeComponent(delivery.botId)}',
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm + 2),
+                child: Card(
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.fromLTRB(14, 4, 8, 4),
+                    leading: Icon(
+                      Icons.mark_chat_unread_outlined,
+                      color: runStatusColor(delivery.status),
+                    ),
+                    title: Text(
+                      delivery.task.isNotEmpty ? delivery.task : delivery.runId,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    subtitle: Text(
+                      '${_botName(delivery.botId, S)} · ${delivery.reply.text.isNotEmpty ? delivery.reply.text : delivery.status}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    trailing: const Icon(Icons.chevron_right, size: 20),
+                    onTap: () => context.push(
+                      '/bot/${Uri.encodeComponent(delivery.botId)}',
+                    ),
                   ),
                 ),
               ),
           ],
         );
       },
+    );
+  }
+}
+
+/// 进行中的 run 卡片：左侧一条状态色竖线，任务名 + 当前步骤，右侧仍是
+/// 转圈。比 ListTile 更能一眼看出“在跑的是什么、跑到哪一步”。
+class _RunCard extends StatelessWidget {
+  final ActiveRun run;
+  final String botName;
+  final VoidCallback onTap;
+
+  const _RunCard({
+    required this.run,
+    required this.botName,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final color = runStatusColor(run.status);
+    return Card(
+      child: InkWell(
+        onTap: onTap,
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: 4, color: color.withValues(alpha: 0.75)),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.md + 2,
+                    AppSpacing.md,
+                    AppSpacing.sm,
+                    AppSpacing.md,
+                  ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.2,
+                          color: color,
+                        ),
+                      ),
+                      const SizedBox(width: AppSpacing.md),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              run.task.isNotEmpty ? run.task : run.runId,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              botName,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            if (run.step.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                run.step,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                            if (run.waitingForUser) ...[
+                              const SizedBox(height: 6),
+                              AppBadge(
+                                label: context.S.stWaitingForYou,
+                                color: scheme.tertiary,
+                                icon: Icons.touch_app_outlined,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right,
+                        size: 20,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

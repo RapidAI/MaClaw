@@ -61,7 +61,8 @@ void main() {
     await tester.pumpWidget(_app(api));
     await tester.pumpAndSettle();
 
-    expect(find.text('我的 Bot'), findsOneWidget);
+    // 顶栏现在只写 tab 名，主页标题交给渐变主视觉。
+    expect(find.text('Bot'), findsWidgets);
     expect(find.text('小助'), findsOneWidget);
     expect(find.text('帮我干活'), findsOneWidget);
     expect(find.text('主'), findsOneWidget);

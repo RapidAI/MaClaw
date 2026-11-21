@@ -970,7 +970,12 @@
   },
   "requestFailedShort": "Хүсэлт амжилтгүй",
   "assistantAttachQuery": "Энэ хавсралтыг уншаад товч тайлбарлаж өгөөч.",
-  "chatMaterialFallbackPath": "~/материал/{bot}/{name}",
+    "homeEyebrow": "ӨНӨӨДӨР",
+  "homeHeroTitle": "Bot-оор ажлаа хийлгэ",
+  "homeHeroBots": "{count} Bot бэлэн",
+  "homeHeroRunning": "{count} ажил гүйцэтгэж байна",
+  "homeSectionBots": "Bot",
+"chatMaterialFallbackPath": "~/материал/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {
