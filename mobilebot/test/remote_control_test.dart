@@ -980,7 +980,10 @@ void main() {
       await pumpFew(tester);
       expect(find.text('helloworld续', findRichText: true), findsOneWidget);
       expect(find.text('想想'), findsOneWidget);
-      expect(find.text('running · edit parser'), findsOneWidget);
+      // The legacy "Coding Agent: running T2 - edit parser" progress line is
+      // now its own banner row (phase word above the title) instead of one
+      // joined note line.
+      expect(find.text('edit parser'), findsOneWidget);
       expect(api.calls, contains('watch:g-view:/p/a'));
     });
 
@@ -1017,8 +1020,13 @@ void main() {
       );
       await pumpFew(tester);
       expect(find.text('终稿续', findRichText: true), findsOneWidget);
+      // The snapshot was already responded, so this round is closed: the
+      // thought folds to its header and the body shows on expand.
+      expect(find.text('想想'), findsNothing);
+      await tester.tap(find.byIcon(Icons.expand_more).first);
+      await pumpFew(tester);
       expect(find.text('想想'), findsOneWidget);
-      expect(find.text('running · edit parser'), findsOneWidget);
+      expect(find.text('edit parser'), findsOneWidget);
       expect(find.text('helloworld'), findsNothing);
     });
 

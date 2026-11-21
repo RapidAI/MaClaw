@@ -17,7 +17,9 @@ import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
 import '../../core/theme.dart';
 import '../../core/ui_kit.dart'
-    show EmptyState, linkifyMarkdownUrls, openExternalUrl;
+    show AppBadge, EmptyState, linkifyMarkdownUrls, openExternalUrl;
+import '../bots/widgets.dart' show runStatusColor;
+import 'activity_rows.dart';
 import 'remote_api.dart';
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
@@ -1066,52 +1068,20 @@ class _LiveRound extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final S = context.S;
-    final notes = <String>[];
-    final thinking = suppressThinking
-        ? ''
-        : [
-            for (final block in state.thinking)
-              if (block.text.trim().isNotEmpty) block.text,
-          ].join('\n\n');
     final body = shownBody;
-    final seen = <String>{};
-    void addNote(String line) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty ||
-          historyTexts.contains(trimmed) ||
-          !seen.add(trimmed)) {
-        return;
-      }
-      notes.add(line);
-    }
-
-    for (final row in state.timeline) {
-      final title = row.title.isNotEmpty ? row.title : row.text;
-      final line = row.phase.isNotEmpty ? '${row.phase} · $title' : title;
-      addNote(line);
-    }
-    for (final card in state.cards) {
-      if (card.expired) {
-        addNote(S.rtConfirmInvalid);
-      } else if (card.text.isNotEmpty) {
-        addNote(card.text);
-      } else if (card.kind == 'confirmation') {
-        addNote(S.rtConfirmRequired);
-      }
-    }
-    for (final note in state.notices) {
-      if (note.text.isNotEmpty) addNote(note.text);
-    }
-    if (state.trialStatus.isNotEmpty) addNote(state.trialStatus);
-    if (state.trialFailures > 0) {
-      addNote(S.rtFailures(state.trialFailures));
-    }
-    if (recovery.isNotEmpty) addNote(recovery);
-    if (thinking.isEmpty &&
-        notes.isEmpty &&
-        body.isEmpty &&
-        filePaths.isEmpty &&
-        !syncing) {
+    final folded = foldActivityRows(
+      state,
+      labels: ActivityRowLabels(
+        confirmInvalid: S.rtConfirmInvalid,
+        confirmRequired: S.rtConfirmRequired,
+        failures: S.rtFailures(state.trialFailures),
+      ),
+      suppressThinking: suppressThinking,
+      historyTexts: historyTexts,
+      recovery: recovery,
+    );
+    final rows = folded;
+    if (rows.isEmpty && body.isEmpty && filePaths.isEmpty && !syncing) {
       return const SizedBox.shrink();
     }
     return Padding(
@@ -1138,19 +1108,13 @@ class _LiveRound extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (thinking.isNotEmpty)
+                if (rows.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                    child: _ReasoningBlock(
-                      text: thinking,
-                      streaming: true,
-                      initiallyExpanded: true,
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: _ActivityTimeline(
+                      rows: rows,
+                      roundLive: !state.responded,
                     ),
-                  ),
-                for (final line in notes)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-                    child: _NoteLine(text: line),
                   ),
                 if (body.isNotEmpty)
                   MermaidMarkdown(
@@ -1338,19 +1302,386 @@ class _ArtifactStrip extends StatelessWidget {
   }
 }
 
+/// Live process list, laid out like the desktop process timeline: a
+/// collapsible summary line, then thought, tool, banner and note rows in
+/// arrival order. Open while the turn runs, foldable at any time.
+class _ActivityTimeline extends StatefulWidget {
+  final List<ActivityRow> rows;
+
+  /// The round has not responded yet — its newest thought stays open.
+  final bool roundLive;
+
+  const _ActivityTimeline({required this.rows, required this.roundLive});
+
+  @override
+  State<_ActivityTimeline> createState() => _ActivityTimelineState();
+}
+
+class _ActivityTimelineState extends State<_ActivityTimeline> {
+  bool? _open;
+
+  /// A new arrival re-opens a list the person had folded for the previous
+  /// rows — the desktop folds on the live→idle edge, not mid-turn.
+  int _seenRows = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    _seenRows = widget.rows.length;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final typed = [
+      for (final row in widget.rows)
+        if (!row.isSummary) row,
+    ];
+    final roundLive = widget.roundLive;
+    final summary = widget.rows.firstWhere(
+      (row) => row.isSummary,
+      orElse: () => const ActivityRow(kind: ActivityRowKind.summary, seq: -1),
+    );
+    if (typed.isEmpty) return const SizedBox.shrink();
+    if (_seenRows != widget.rows.length) {
+      _seenRows = widget.rows.length;
+      _open = true;
+    }
+    final open = _open ?? true;
+    final parts = <String>[];
+    if (summary.thinkingCount > 0) {
+      parts.add(context.S.rtActivityThoughts(summary.thinkingCount));
+    }
+    if (summary.toolCount > 0) {
+      parts.add(context.S.rtActivityTools(summary.toolCount));
+    }
+    if (summary.noteCount > 0) {
+      parts.add(context.S.rtActivityNotes(summary.noteCount));
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            key: const ValueKey('live-activity-summary'),
+            onTap: () => setState(() => _open = !open),
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.sm,
+                vertical: AppSpacing.sm,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.account_tree_outlined,
+                    size: 14,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: AppSpacing.xs + 2),
+                  Expanded(
+                    child: Text(
+                      parts.isEmpty
+                          ? context.S.rtActivityRunning
+                          : parts.join(' · '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    open ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (open)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.sm,
+                0,
+                AppSpacing.sm,
+                AppSpacing.sm,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Divider(
+                    height: 1,
+                    thickness: 0.5,
+                    color: scheme.outlineVariant.withValues(alpha: 0.7),
+                  ),
+                  const SizedBox(height: AppSpacing.xs + 2),
+                  for (final row in typed)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                      child: switch (row.kind) {
+                        ActivityRowKind.thinking => _ActivityThinkingRow(
+                            text: row.text,
+                            live: roundLive,
+                          ),
+                        ActivityRowKind.tool =>
+                          row.isNamedTool ? _ToolChip(row: row) : _Banner(row: row),
+                        ActivityRowKind.status => _Banner(row: row),
+                        ActivityRowKind.note => _NoteLine(
+                            text: row.text,
+                            asError: row.asError,
+                          ),
+                        ActivityRowKind.summary => const SizedBox.shrink(),
+                      },
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Desktop phase words (CODING_AGENT_PHASE_LABELS). An unknown token stays as
+/// the reducer sent it so nothing is silently renamed.
+String _phaseLabel(BuildContext context, String phase) {
+  switch (phase.trim().toLowerCase()) {
+    case '':
+      return '';
+    case 'starting':
+      return context.S.rtPhaseStarting;
+    case 'running':
+      return context.S.rtPhaseRunning;
+    case 'completed':
+      return context.S.rtPhaseCompleted;
+    case 'failed':
+      return context.S.rtPhaseFailed;
+    case 'retrying':
+      return context.S.rtPhaseRetrying;
+    case 'skipped':
+      return context.S.rtPhaseSkipped;
+    case 'result':
+      return context.S.rtPhaseResult;
+    case 'waiting_writer':
+      return context.S.rtPhaseWaitingWriter;
+    case 'verifying_ui':
+      return context.S.rtPhaseVerifyingUi;
+    case 'unknown':
+      return context.S.rtPhaseUnknown;
+    default:
+      return phase;
+  }
+}
+
+/// Icon for a tool kind, matching the desktop CodingAgentProcessIcon set.
+IconData _toolIcon(ToolKind kind) {
+  switch (kind) {
+    case ToolKind.run:
+      return Icons.terminal_rounded;
+    case ToolKind.read:
+      return Icons.description_outlined;
+    case ToolKind.write:
+      return Icons.note_add_outlined;
+    case ToolKind.edit:
+      return Icons.edit_outlined;
+    case ToolKind.find:
+      return Icons.folder_open_outlined;
+    case ToolKind.search:
+      return Icons.search_rounded;
+    case ToolKind.explore:
+      return Icons.travel_explore_rounded;
+    case ToolKind.todo:
+      return Icons.checklist_rounded;
+    case ToolKind.agent:
+      return Icons.smart_toy_outlined;
+    case ToolKind.other:
+      return Icons.build_outlined;
+  }
+}
+
+/// Status of one tool call, colored like the desktop outcome marks. Success
+/// reuses the run-status green so the same outcome has one color app-wide.
+({Color color, String label}) _toolStateTone(
+  BuildContext context,
+  ToolState state,
+  String phase,
+) {
+  final scheme = Theme.of(context).colorScheme;
+  switch (state) {
+    case ToolState.running:
+      return (color: scheme.primary, label: context.S.rtToolRunning);
+    case ToolState.done:
+      return (
+        color: runStatusColor('done'),
+        label: context.S.rtToolDone,
+      );
+    case ToolState.failed:
+      return (color: scheme.error, label: context.S.rtToolFailed);
+    case ToolState.unknown:
+      return (
+        color: scheme.onSurfaceVariant,
+        label: _phaseLabel(context, phase),
+      );
+  }
+}
+
+/// A tool call: kind icon, tool name in the code face, muted target, and a
+/// tinted state pill on the right — the mobile form of the desktop tool row.
+class _ToolChip extends StatelessWidget {
+  final ActivityRow row;
+
+  const _ToolChip({required this.row});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final tone = _toolStateTone(context, row.toolState, row.phase);
+    final codeStyle = TextStyle(
+      fontFamily: 'monospace',
+      fontFamilyFallback: const ['Menlo', 'Consolas', 'Roboto Mono'],
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: scheme.onSurface,
+      height: 1.3,
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(_toolIcon(row.toolKind), size: 14, color: tone.color),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                row.toolName,
+                style: codeStyle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (row.toolTarget.trim().isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(
+                    row.toolTarget.trim(),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (tone.label.isNotEmpty) ...[
+          const SizedBox(width: AppSpacing.xs + 2),
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: AppBadge(label: tone.label, color: tone.color),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Short left-rail banner: task-status changes and notes too small for a row
+/// of their own.
+class _Banner extends StatelessWidget {
+  final ActivityRow row;
+
+  const _Banner({required this.row});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final phase = _phaseLabel(context, row.phase);
+    final failed = row.phase.trim().toLowerCase() == 'failed';
+    final color = failed ? scheme.error : scheme.onSurfaceVariant;
+    final title = row.title.isNotEmpty ? row.title : row.text;
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (phase.isNotEmpty)
+            Text(
+              phase,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          Text(
+            title,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: failed ? scheme.error : scheme.onSurface,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One thinking block inside the timeline. The live round shows the thought
+/// body while it streams (the desktop keeps the newest thought open); a
+/// closed round folds it to the header line.
+class _ActivityThinkingRow extends StatelessWidget {
+  final String text;
+  final bool live;
+
+  const _ActivityThinkingRow({required this.text, this.live = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return _ReasoningBlock(
+      text: text,
+      streaming: live,
+      initiallyExpanded: live,
+    );
+  }
+}
+
 /// One live-note / reasoning line rendered as markdown — the bot's streaming
 /// text carries formatting (steps, code ticks, lists) and plain Text showed
 /// it raw. Compact spacing + optional muted/error tone.
 class _NoteLine extends StatelessWidget {
   final String text;
   final bool muted;
+  final bool asError;
 
-  const _NoteLine({required this.text, this.muted = false});
+  const _NoteLine({
+    required this.text,
+    this.muted = false,
+    this.asError = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final base = muted
+    final base = asError
+        ? theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.error,
+            height: 1.45,
+          )
+        : muted
         ? theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
             height: 1.5,
@@ -1756,7 +2087,7 @@ class _AssistantTurn extends StatelessWidget {
     return MessageBubble(
       role: ChatRole.assistant,
       maxWidth: MediaQuery.of(context).size.width * 0.84,
-      margin: const EdgeInsets.symmetric(vertical: AppSpacing.sm - 2),
+      margin: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
       leading: Container(
         width: 30,
         height: 30,
@@ -1826,25 +2157,27 @@ class _ReasoningBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Container(
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: .55),
+        color: scheme.surface,
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.7)),
         borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: ExpansionTile(
         dense: true,
         initiallyExpanded: initiallyExpanded,
-        tilePadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md - 2),
+        tilePadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
         childrenPadding: const EdgeInsets.fromLTRB(
-          AppSpacing.md - 2,
+          AppSpacing.md,
           0,
-          AppSpacing.md - 2,
-          AppSpacing.md - 2,
+          AppSpacing.md,
+          AppSpacing.sm,
         ),
         leading: Icon(
           Icons.psychology_outlined,
           size: 16,
-          color: theme.colorScheme.onSurfaceVariant,
+          color: scheme.onSurfaceVariant,
         ),
         title: Text(
           streaming ? context.S.rtThinkingStreaming : context.S.rtReasoning,
