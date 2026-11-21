@@ -302,6 +302,115 @@ class AuthApi {
     return (data['client_name'] ?? '').toString().trim();
   }
 
+  /// Relay flow step 1: creates a third-party session on the account's own
+  /// Hub (`hubUrl`). Returns the parsed Hub QR payload (type
+  /// maclaw_third_party_authorization) plus the session's poll_token —
+  /// authorize the payload via [authorizeThirdParty], then exchange
+  /// session_id + poll_token for the minted credential via
+  /// [fetchThirdPartyToken]. The Hub never learns it was reached through a
+  /// HubCenter relay.
+  Future<({ThirdPartyAuthQrPayload payload, String pollToken})>
+      createThirdPartyHubSession({
+    required String hubUrl,
+    String clientId = 'maclawbot-relay',
+    String clientName = '第三方客户端',
+  }) async {
+    final dio = hubDio(hubUrl);
+    late final Response<Map<String, dynamic>> response;
+    try {
+      response = await dio.post<Map<String, dynamic>>(
+        '/api/mobile/auth/third-party-qr-sessions',
+        data: {'client_id': clientId, 'name': clientName},
+        options: Options(
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
+      );
+    } on DioException catch (error) {
+      throw hubExceptionFrom(error);
+    }
+    final data = response.data ?? const <String, dynamic>{};
+    final qrPayload = (data['qr_payload'] ?? '').toString().trim();
+    final pollToken = (data['poll_token'] ?? '').toString().trim();
+    if (qrPayload.isEmpty || pollToken.isEmpty) {
+      throw HubApiException('SESSION_CREATE_FAILED', 'Hub 未返回授权会话');
+    }
+    return (
+      payload: parseThirdPartyAuthQrPayload(qrPayload),
+      pollToken: pollToken,
+    );
+  }
+
+  /// Relay flow step 3: fetches the minted viewer_token from the Hub session
+  /// created by [createThirdPartyHubSession]. Call after
+  /// [authorizeThirdParty]; the token is delivered exactly once.
+  Future<({String accessToken, String email})> fetchThirdPartyToken({
+    required String hubUrl,
+    required String sessionId,
+    required String pollToken,
+  }) async {
+    final dio = hubDio(hubUrl);
+    late final Response<Map<String, dynamic>> response;
+    try {
+      response = await dio.post<Map<String, dynamic>>(
+        '/api/mobile/auth/third-party-qr-sessions/token',
+        data: {'session_id': sessionId, 'poll_token': pollToken},
+        options: Options(
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
+      );
+    } on DioException catch (error) {
+      throw hubExceptionFrom(error);
+    }
+    final data = response.data ?? const <String, dynamic>{};
+    final status = (data['status'] ?? '').toString().trim();
+    final token = (data['access_token'] ?? '').toString().trim();
+    if (status != 'authorized' || token.isEmpty) {
+      throw HubApiException(
+          'TOKEN_NOT_READY', status.isEmpty ? '授权凭证未就绪' : status);
+    }
+    return (
+      accessToken: token,
+      email: (data['email'] ?? '').toString().trim(),
+    );
+  }
+
+  /// Relay flow step 4: hands {hub_url, access_token, email} to the
+  /// HubCenter mailbox so the polling desktop client can pick the credential
+  /// up (once). The phone's own viewer_token never leaves its Hub.
+  Future<void> deliverThirdPartyToken({
+    required String centerUrl,
+    required String sessionId,
+    required String hubUrl,
+    required String accessToken,
+    String email = '',
+  }) async {
+    final dio = hubCenterDio(baseUrl: centerUrl);
+    late final Response<Map<String, dynamic>> response;
+    try {
+      response = await dio.post<Map<String, dynamic>>(
+        '/api/third-party/sessions/deliver',
+        data: {
+          'session_id': sessionId,
+          'hub_url': normalizeHubUrl(hubUrl),
+          'access_token': accessToken,
+          if (email.isNotEmpty) 'email': email,
+        },
+        options: Options(
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
+      );
+    } on DioException catch (error) {
+      throw hubExceptionFrom(error);
+    }
+    final status = ((response.data?['status']) ?? '').toString().trim();
+    if (status != 'ok' && status != 'delivered') {
+      throw HubApiException('DELIVER_FAILED', '授权凭证回传失败');
+    }
+  }
+
   Future<({HubRoute hub, String hubCenterUrl})> _resolveIdentity({
     required AuthMethod method,
     required String identity,

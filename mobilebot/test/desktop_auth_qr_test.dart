@@ -103,5 +103,38 @@ void main() {
         throwsFormatException,
       );
     });
+
+    test('accepts a HubCenter relay QR with center_url and no hub_url', () {
+      final qr =
+          '{"v":2,"type":"$thirdPartyAuthQrType","session_id":"tpr_relay1",'
+          '"center_url":"https://hubs.mypapers.top",'
+          '"expires_at":"${DateTime.now().toUtc().add(const Duration(minutes: 5)).toIso8601String()}"}';
+      final payload = parseThirdPartyAuthQrPayload(qr);
+      expect(payload.sessionId, 'tpr_relay1');
+      expect(payload.hubUrl, isEmpty);
+      expect(payload.centerUrl, 'https://hubs.mypapers.top');
+      expect(payload.isRelay, isTrue);
+    });
+
+    test('legacy hub_url QR is not relay', () {
+      final payload = parseThirdPartyAuthQrPayload(
+        _payload(type: thirdPartyAuthQrType),
+      );
+      expect(payload.isRelay, isFalse);
+      expect(payload.hubUrl, 'https://hub.example.com');
+    });
+
+    test('rejects third-party QR with neither hub_url nor center_url', () {
+      final qr =
+          '{"v":2,"type":"$thirdPartyAuthQrType","session_id":"maqr_tp789"}';
+      expect(() => parseThirdPartyAuthQrPayload(qr), throwsFormatException);
+    });
+
+    test('rejects non-https center_url', () {
+      final qr =
+          '{"v":2,"type":"$thirdPartyAuthQrType","session_id":"tpr_relay2",'
+          '"center_url":"http://hubs.mypapers.top"}';
+      expect(() => parseThirdPartyAuthQrPayload(qr), throwsFormatException);
+    });
   });
 }

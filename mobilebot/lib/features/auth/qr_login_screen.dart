@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../core/hub_config.dart';
 import '../../core/locale.dart';
 import '../../core/providers.dart';
 import 'desktop_auth_qr.dart';
@@ -134,7 +135,59 @@ class _QrLoginScreenState extends ConsumerState<QrLoginScreen> {
       });
       return;
     }
-    final clientName = await ref.read(authApiProvider).authorizeThirdParty(
+    final api = ref.read(authApiProvider);
+    if (parsed.isRelay) {
+      // HubCenter-relay QR (no hub_url): authorize on THIS account's own Hub,
+      // then hand the minted credential back to the center for the waiting
+      // desktop client. The user never needs to know which Hub they are on.
+      final hubSession = await api.createThirdPartyHubSession(
+        hubUrl: active.hubUrl,
+      );
+      await api.authorizeThirdParty(
+        payload: hubSession.payload,
+        accountHubUrl: active.hubUrl,
+        accessToken: active.token,
+      );
+      // The Hub mints the token during authorize; a short retry absorbs any
+      // read-after-write gap.
+      ({String accessToken, String email})? credential;
+      var fetched = false;
+      Object? lastError;
+      for (var attempt = 0; attempt < 3 && !fetched; attempt++) {
+        try {
+          credential = await api.fetchThirdPartyToken(
+            hubUrl: active.hubUrl,
+            sessionId: hubSession.payload.sessionId,
+            pollToken: hubSession.pollToken,
+          );
+          fetched = true;
+        } on Object catch (error) {
+          lastError = error;
+        }
+      }
+      if (credential == null) {
+        throw lastError ??
+            const HubApiException('TOKEN_NOT_READY', '授权凭证未就绪，请重试');
+      }
+      await api.deliverThirdPartyToken(
+        centerUrl: parsed.centerUrl,
+        sessionId: parsed.sessionId,
+        hubUrl: active.hubUrl,
+        accessToken: credential.accessToken,
+        email: credential.email,
+      );
+      if (!mounted) return;
+      final name = hubSession.payload.clientName.isNotEmpty
+          ? hubSession.payload.clientName
+          : (parsed.clientName.isNotEmpty ? parsed.clientName : '第三方设备');
+      setState(() {
+        _submitting = false;
+        _messageIsSuccess = true;
+        _message = '已授权 $name 使用你的 MaClaw 官方服务，可以回到电脑端继续。';
+      });
+      return;
+    }
+    final clientName = await api.authorizeThirdParty(
           payload: parsed,
           accountHubUrl: active.hubUrl,
           accessToken: active.token,
