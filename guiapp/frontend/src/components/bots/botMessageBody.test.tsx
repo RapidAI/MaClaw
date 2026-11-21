@@ -312,6 +312,7 @@ describe('BotMessageBody', () => {
     });
 
     it('treats a heading, quote, rule, or table as structured on its own', () => {
+        expect(botMessageIsStructured('~~~\ncode\n~~~')).toBe(true);
         expect(botMessageIsStructured('## 标题')).toBe(true);
         expect(botMessageIsStructured('> 引用')).toBe(true);
         expect(botMessageIsStructured('---')).toBe(true);

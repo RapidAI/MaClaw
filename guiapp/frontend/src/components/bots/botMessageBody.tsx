@@ -31,6 +31,7 @@ function listKind(line: string): 'ol' | 'ul' | null {
 export function botMessageIsStructured(text: string): boolean {
     return botMessageHasChips(text)
         || text.includes('```')
+        || /(^|\n)[ \t]*~{3,}/.test(text)
         || /\[[^\]\n]+\]\([^)\n]+\)/.test(text)
         || /https?:\/\/\S+/.test(text)
         || /\*\*[^*\n]+\*\*/.test(text)
