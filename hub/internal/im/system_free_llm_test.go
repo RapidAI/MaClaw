@@ -3,8 +3,11 @@ package im
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,6 +121,147 @@ func TestDoSystemLLMUsesLocalProvider(t *testing.T) {
 	}
 	if gotPath == "" {
 		t.Fatal("upstream not called")
+	}
+}
+
+func TestCallStopsWhenContextCanceled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		// HTTP/1 does not always cancel the request context when the
+		// client gives up, so the test releases the handler itself.
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		srv.CloseClientConnections()
+		srv.Close()
+	}()
+
+	settings := memSettings{}
+	if err := SaveLLMProviderRegistry(context.Background(), settings, &LLMProviderRegistry{
+		Enabled: true,
+		Providers: []LLMProvider{{
+			ID: "local", APIURL: srv.URL + "/v1", APIKey: "k", Model: "m", WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &llmservice.Registry{
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: llmservice.SystemFreeServiceGroupID, AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"local"}}},
+		}},
+	}
+	if err := llmservice.SaveRegistry(context.Background(), settings, svc); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &SystemLLMResolver{System: settings}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := resolver.Call(ctx, []interface{}{
+			map[string]string{"role": "user", "content": "hi"},
+		}, 20*time.Second)
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("local system-free call did not reach the provider")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled system-free call kept running")
+	}
+}
+
+func TestDoSystemLLMDoesNotFallBackWhenCallerCancels(t *testing.T) {
+	var fallbackHits atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": "fallback"}}},
+		})
+	}))
+	defer fallback.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer func() {
+		close(release)
+		primary.CloseClientConnections()
+		primary.Close()
+	}()
+
+	settings := memSettings{}
+	if err := SaveLLMProviderRegistry(context.Background(), settings, &LLMProviderRegistry{
+		Enabled: true,
+		Providers: []LLMProvider{{
+			ID: "local", APIURL: primary.URL + "/v1", APIKey: "k", Model: "m", WireAPI: "chat",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &llmservice.Registry{
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID: llmservice.SystemFreeServiceGroupID, AccessPolicy: llmservice.AccessPolicyFree,
+			Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"local"}}},
+		}},
+	}
+	if err := llmservice.SaveRegistry(context.Background(), settings, svc); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := &SystemLLMResolver{System: settings}
+	cfg := &HubLLMConfig{Enabled: true, APIURL: fallback.URL + "/v1", APIKey: "k", Model: "m"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := DoSystemLLM(ctx, resolver, cfg, []interface{}{
+			map[string]string{"role": "user", "content": "hi"},
+		}, nil, 20*time.Second)
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("local system-free call did not reach the provider")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled system-free call kept running")
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("fallback calls = %d", fallbackHits.Load())
 	}
 }
 

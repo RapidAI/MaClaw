@@ -68,12 +68,12 @@ func (r *SystemLLMResolver) ResolveHubLLMConfig(ctx context.Context) *HubLLMConf
 				modelName = "auto"
 			}
 			return &HubLLMConfig{
-				Enabled:  true,
-				APIURL:   strings.TrimSpace(p.APIURL),
-				APIKey:   strings.TrimSpace(p.APIKey),
-				Model:    modelName,
-				Protocol: normalizeStoredProviderProtocol(p.Protocol),
-				WireAPI:  normalizeStoredProviderWireAPI(p.WireAPI),
+				Enabled:   true,
+				APIURL:    strings.TrimSpace(p.APIURL),
+				APIKey:    strings.TrimSpace(p.APIKey),
+				Model:     modelName,
+				Protocol:  normalizeStoredProviderProtocol(p.Protocol),
+				WireAPI:   normalizeStoredProviderWireAPI(p.WireAPI),
 				AgentType: normalizeStoredProviderAgentType(p.AgentType),
 			}
 		}
@@ -126,7 +126,10 @@ func (r *SystemLLMResolver) Call(ctx context.Context, messages []interface{}, ti
 	}
 	if cfg := r.ResolveHubLLMConfig(ctx); cfg != nil {
 		client := &http.Client{Timeout: timeout}
-		return agent.DoSimpleLLMRequest(cfg.ToMaclawLLMConfig(), messages, client, timeout)
+		// The official branch below already stops when the caller cancels.
+		// The local provider has to do the same, or a disconnected admin
+		// publish keeps the translation running for the whole timeout.
+		return agent.DoSimpleLLMRequestContext(ctx, cfg.ToMaclawLLMConfig(), messages, client, timeout)
 	}
 	if r.MaClawClient == nil || !r.systemFreeUsesMaClaw(ctx) {
 		return nil, fmt.Errorf("system-free LLM is not configured")
@@ -249,8 +252,9 @@ func extractOpenAIChatContent(body []byte) (string, error) {
 	return text, nil
 }
 
-// DoSystemLLM is a package-level helper used by IM components. When resolver is
-// nil it falls back to cfg + DoSimpleLLMRequest.
+// DoSystemLLM is a package-level helper used by IM components. When the
+// resolver has a system-free route it is used first. A canceled caller stops
+// there. Otherwise a direct cfg call is the fallback.
 func DoSystemLLM(ctx context.Context, resolver *SystemLLMResolver, cfg *HubLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*agent.LLMSimpleResponse, error) {
 	if resolver != nil {
 		// Prefer resolver when it has a real system-free route (local or maclaw).
@@ -258,6 +262,9 @@ func DoSystemLLM(ctx context.Context, resolver *SystemLLMResolver, cfg *HubLLMCo
 			resp, err := resolver.Call(ctx, messages, timeout)
 			if err == nil {
 				return resp, nil
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
 			log.Printf("[system-free-llm] Call failed: %v; trying direct cfg fallback", err)
 		}
@@ -271,7 +278,7 @@ func DoSystemLLM(ctx context.Context, resolver *SystemLLMResolver, cfg *HubLLMCo
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
-	return agent.DoSimpleLLMRequest(cfg.ToMaclawLLMConfig(), messages, client, timeout)
+	return agent.DoSimpleLLMRequestContext(ctx, cfg.ToMaclawLLMConfig(), messages, client, timeout)
 }
 
 // Package-level resolver wired by app bootstrap for IM server-side LLM.
