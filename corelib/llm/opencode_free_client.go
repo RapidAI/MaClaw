@@ -528,10 +528,11 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 			continue
 		}
 		// Tool results share the user role on this wire, but they are not
-		// user turns. Merging them into the adjacent user message would put
-		// a later host note inside the tool observation.
-		fromTool := strings.EqualFold(strings.TrimSpace(item.Role), "tool")
-		if n := len(messages); n > 1 && messages[n-1].Role == role && messages[n-1].fromTool == fromTool {
+		// user turns. Merging one into the adjacent user message puts a
+		// later host note inside the observation. Merging two observations
+		// hides which result failed. function is the legacy tool-result role.
+		fromTool := openCodeFreeToolObservation(item.Role)
+		if n := len(messages); n > 1 && !fromTool && !messages[n-1].fromTool && messages[n-1].Role == role {
 			messages[n-1].Content += "\n" + text
 			continue
 		}
@@ -589,6 +590,15 @@ type openCodeFreeToolCall struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	} `json:"function"`
+}
+
+func openCodeFreeToolObservation(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "tool", "function", "tool_result":
+		return true
+	default:
+		return false
+	}
 }
 
 func openCodeFreeConversation(role string, content json.RawMessage, calls []openCodeFreeToolCall) (string, string, bool) {
