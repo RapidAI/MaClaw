@@ -14,9 +14,10 @@ import (
 
 // Service implements the notification business logic layer.
 type Service struct {
-	store  *Store
-	wsHub  WSBroadcaster
-	imPush IMPusher
+	store      *Store
+	wsHub      WSBroadcaster
+	imPush     IMPusher
+	translator Translator
 }
 
 // NewService creates a new notification Service.
@@ -28,9 +29,41 @@ func NewService(store *Store, wsBroadcaster WSBroadcaster, imPusher IMPusher) *S
 	}
 }
 
+// SetTranslator installs the system-free translator used when an admin
+// publishes a notice on this Hub. Cascade notices already carry locales and
+// do not call it.
+func (s *Service) SetTranslator(tr Translator) {
+	if s == nil {
+		return
+	}
+	s.translator = tr
+}
+
+// localesForCreate translates an admin notice. A subsystem notice keeps a
+// single language. A request that already carries locales is stored as-is.
+func (s *Service) localesForCreate(ctx context.Context, req CreateRequest) (string, map[string]LocaleCopy) {
+	source := strings.TrimSpace(req.Source)
+	if source != "" && source != "hub" {
+		return "", nil
+	}
+	if len(req.Locales) > 0 {
+		return NormalizeNotificationLang(req.SourceLang), cloneLocales(req.Locales)
+	}
+	var tr Translator
+	if s != nil {
+		tr = s.translator
+	}
+	return fillNotificationLocales(ctx, req.SourceLang, req.TargetLangs, LocaleCopy{
+		Title:      strings.TrimSpace(req.Title),
+		Content:    strings.TrimSpace(req.Content),
+		ButtonText: strings.TrimSpace(req.ButtonText),
+	}, tr)
+}
+
 // validatePinnedFields validates the pinned-card extras and applies defaults:
-// an empty button label falls back to DefaultPinnedButtonText, the link must
-// be http(s) so BrowserOpenURL has a real target, and both stay within caps.
+// an empty button label falls back to the source language's "View details",
+// the link must be http(s) so BrowserOpenURL has a real target, and both stay
+// within caps.
 func validatePinnedFields(req *CreateRequest) error {
 	req.LinkURL = strings.TrimSpace(req.LinkURL)
 	if req.LinkURL != "" {
@@ -44,7 +77,7 @@ func validatePinnedFields(req *CreateRequest) error {
 	}
 	req.ButtonText = strings.TrimSpace(req.ButtonText)
 	if req.ButtonText == "" && (req.Pinned || req.PinnedForever) {
-		req.ButtonText = DefaultPinnedButtonText
+		req.ButtonText = DefaultPinnedButtonForLang(req.SourceLang)
 	}
 	if utf8.RuneCountInString(req.ButtonText) > 20 {
 		return fmt.Errorf("button_text exceeds 20 characters")
@@ -101,6 +134,7 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	}
 
 	now := time.Now().UTC()
+	sourceLang, locales := s.localesForCreate(ctx, req)
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		source = "hub"
@@ -119,6 +153,8 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 		PinnedForever: req.PinnedForever,
 		LinkURL:       req.LinkURL,
 		ButtonText:    req.ButtonText,
+		SourceLang:    sourceLang,
+		Locales:       locales,
 		Source:        source,
 		SourceID:      strings.TrimSpace(req.SourceID),
 		CreatedBy:     req.CreatedBy,
@@ -283,6 +319,8 @@ func clientNotificationFrom(n *Notification, isRead bool) ClientNotification {
 		PinnedForever: n.PinnedForever,
 		LinkURL:       n.LinkURL,
 		ButtonText:    n.ButtonText,
+		SourceLang:    n.SourceLang,
+		Locales:       n.Locales,
 		Source:        n.Source,
 		SourceID:      n.SourceID,
 	}
@@ -444,7 +482,10 @@ func (s *Service) CreateFromCascade(ctx context.Context, req CascadeRequest) err
 	now := time.Now().UTC()
 
 	if existing != nil {
-		// Update existing notification fields
+		// Same normalization as the insert path. A repeat push must not keep a
+		// raw language key or an over-long button that the first insert clamped.
+		incoming.SourceLang = NormalizeNotificationLang(incoming.SourceLang)
+		incoming.Locales = cloneLocales(incoming.Locales)
 		if err := s.store.UpdateFromCascade(ctx, existing.ID, incoming, now); err != nil {
 			return fmt.Errorf("update from cascade: %w", err)
 		}
@@ -466,6 +507,8 @@ func (s *Service) CreateFromCascade(ctx context.Context, req CascadeRequest) err
 		PinnedForever: incoming.PinnedForever,
 		LinkURL:       incoming.LinkURL,
 		ButtonText:    incoming.ButtonText,
+		SourceLang:    NormalizeNotificationLang(incoming.SourceLang),
+		Locales:       cloneLocales(incoming.Locales),
 		Source:        "hubcenter",
 		SourceID:      incoming.ID,
 		CreatedBy:     incoming.CreatedBy,

@@ -37,6 +37,8 @@ type createNotificationRequest struct {
 	PinnedForever bool     `json:"pinned_forever"`
 	LinkURL       string   `json:"link_url"`
 	ButtonText    string   `json:"button_text"`
+	SourceLang    string   `json:"source_lang"`
+	TargetLangs   []string `json:"target_langs"`
 	PublishAt     *string  `json:"publish_at,omitempty"`
 	ExpireAt      *string  `json:"expire_at,omitempty"`
 }
@@ -91,6 +93,8 @@ func (h *NotificationHandler) HandleCreateNotification(w http.ResponseWriter, r 
 		PinnedForever: req.PinnedForever,
 		LinkURL:       req.LinkURL,
 		ButtonText:    req.ButtonText,
+		SourceLang:    req.SourceLang,
+		TargetLangs:   req.TargetLangs,
 		CreatedBy:     createdBy,
 		PublishAt:     publishAt,
 		ExpireAt:      expireAt,

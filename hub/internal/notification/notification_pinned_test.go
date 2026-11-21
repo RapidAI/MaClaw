@@ -154,6 +154,44 @@ func TestValidatePinnedFields(t *testing.T) {
 	if err := validatePinnedFields(&req); err == nil {
 		t.Errorf("over-long button_text must be rejected")
 	}
+	// The default label follows the source language. An empty source stays
+	// Simplified Chinese, which the case above already checks.
+	req = CreateRequest{Pinned: true, SourceLang: LangEn}
+	if err := validatePinnedFields(&req); err != nil {
+		t.Fatalf("validate en: %v", err)
+	}
+	if req.ButtonText != "View details" {
+		t.Errorf("english default = %q", req.ButtonText)
+	}
+	req = CreateRequest{Pinned: true, SourceLang: "zh-TW"}
+	if err := validatePinnedFields(&req); err != nil {
+		t.Fatalf("validate hant: %v", err)
+	}
+	if req.ButtonText != "查看詳情" {
+		t.Errorf("traditional default = %q", req.ButtonText)
+	}
+	req = CreateRequest{Pinned: true, SourceLang: "mn-Cyrl"}
+	if err := validatePinnedFields(&req); err != nil {
+		t.Fatalf("validate mn: %v", err)
+	}
+	if req.ButtonText != "Дэлгэрэнгүй харах" {
+		t.Errorf("mongolian default = %q", req.ButtonText)
+	}
+	// An admin-written label is kept, and a notice that is not pinned stays empty.
+	req = CreateRequest{Pinned: true, SourceLang: LangEn, ButtonText: "Open"}
+	if err := validatePinnedFields(&req); err != nil {
+		t.Fatalf("validate custom: %v", err)
+	}
+	if req.ButtonText != "Open" {
+		t.Errorf("custom button = %q", req.ButtonText)
+	}
+	req = CreateRequest{SourceLang: LangEn}
+	if err := validatePinnedFields(&req); err != nil {
+		t.Fatalf("validate unpinned: %v", err)
+	}
+	if req.ButtonText != "" {
+		t.Errorf("unpinned button = %q", req.ButtonText)
+	}
 }
 
 func TestCascadePreservesPinnedFields(t *testing.T) {

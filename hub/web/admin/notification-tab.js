@@ -61,6 +61,13 @@
       notifFormLinkPlaceholder: 'https://... opened by the banner button',
       notifFormButtonText: 'Button label',
       notifFormButtonTextPlaceholder: 'View details',
+      notifFormSourceLang: 'Written in',
+      notifFormTranslateTargets: 'Also save in',
+      notifFormTranslateHint: 'Checked languages are translated from the original. The link is not translated.',
+      notifLangZhHans: 'Simplified Chinese',
+      notifLangZhHant: 'Traditional Chinese',
+      notifLangEn: 'English',
+      notifLangMn: 'Cyrillic Mongolian',
       notifBadgePinned: 'PINNED',
       notifFormPublishAt: 'Publish Time',
       notifFormPublishNow: 'Immediately',
@@ -137,6 +144,13 @@
       notifFormLinkPlaceholder: 'https://... \u7531\u6d6e\u7a97\u6309\u94ae\u6253\u5f00',
       notifFormButtonText: '\u6309\u94ae\u540d\u79f0',
       notifFormButtonTextPlaceholder: '\u67e5\u770b\u8be6\u60c5',
+      notifFormSourceLang: '\u539f\u6587\u8bed\u8a00',
+      notifFormTranslateTargets: '\u540c\u65f6\u4fdd\u5b58\u4e3a',
+      notifFormTranslateHint: '\u52fe\u9009\u7684\u8bed\u8a00\u4f1a\u6309\u539f\u6587\u7ffb\u8bd1\u4fdd\u5b58\u3002\u94fe\u63a5\u4e0d\u7ffb\u8bd1\u3002',
+      notifLangZhHans: '\u7b80\u4f53\u4e2d\u6587',
+      notifLangZhHant: '\u7e41\u4f53\u4e2d\u6587',
+      notifLangEn: '\u82f1\u6587',
+      notifLangMn: '\u897f\u91cc\u5c14\u8499\u53e4\u8bed',
       notifBadgePinned: '\u7f6e\u9876',
       notifFormPublishAt: '\u53d1\u5e03\u65f6\u95f4',
       notifFormPublishNow: '\u7acb\u5373\u53d1\u5e03',
@@ -360,6 +374,41 @@
     root.innerHTML = cards;
   }
 
+  function notifDefaultSourceLang() {
+    var lang = (typeof currentLang === 'string') ? currentLang : 'en';
+    if (lang === 'zh') return 'zh-Hans';
+    if (lang === 'mn') return 'mn';
+    return 'en';
+  }
+
+  var notifLangChoices = [
+    ['zh-Hans', 'notifLangZhHans'],
+    ['zh-Hant', 'notifLangZhHant'],
+    ['en', 'notifLangEn'],
+    ['mn', 'notifLangMn']
+  ];
+
+  function notifSourceLangOptions() {
+    var selected = notifDefaultSourceLang();
+    return notifLangChoices.map(function(opt) {
+      return '<option value="' + opt[0] + '"' + (opt[0] === selected ? ' selected' : '') + '>' + escapeHtml(tr(opt[1])) + '</option>';
+    }).join('');
+  }
+
+  function notifTargetLangChecks() {
+    return notifLangChoices.map(function(opt) {
+      return '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-bottom:0;text-transform:none;font-weight:normal;font-size:13px"><input type="checkbox" class="notif-target-lang" value="' + opt[0] + '" checked> ' + escapeHtml(tr(opt[1])) + '</label>';
+    }).join('');
+  }
+
+  function notifSelectedTargetLangs() {
+    var langs = [];
+    document.querySelectorAll('.notif-target-lang:checked').forEach(function(el) {
+      langs.push(el.value);
+    });
+    return langs;
+  }
+
   // --- Create View ---
   function renderCreateView() {
     const panel = getPanel();
@@ -377,6 +426,11 @@
       + '<div id="notifContentCharCount" class="item-meta" style="text-align:right;margin-top:4px">' + tr('notifFormContentChars', { count: '0' }) + '</div></div>'
       + '<div id="notifPreviewPane" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:180px;background:#fff;overflow:auto;font-size:13px;line-height:1.6">'
       + '<div class="item-meta">' + escapeHtml(tr('notifPreview')) + '</div></div></div></div>'
+      + '<div><label for="notifInputSourceLang">' + escapeHtml(tr('notifFormSourceLang')) + '</label>'
+      + '<select id="notifInputSourceLang">' + notifSourceLangOptions() + '</select>'
+      + '<div class="item-meta" style="margin-top:6px">' + escapeHtml(tr('notifFormTranslateTargets')) + '</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:12px">' + notifTargetLangChecks() + '</div>'
+      + '<div class="item-meta">' + escapeHtml(tr('notifFormTranslateHint')) + '</div></div>'
       // Category
       + '<div><label for="notifInputCategory">' + escapeHtml(tr('notifFormCategory')) + '</label>'
       + '<select id="notifInputCategory">'
@@ -673,6 +727,8 @@
       pinned_forever: pinnedForever,
       link_url: linkUrl,
       button_text: buttonText,
+      source_lang: (document.getElementById('notifInputSourceLang') || {}).value || notifDefaultSourceLang(),
+      target_langs: notifSelectedTargetLangs(),
       status: mode === 'publish' ? 'published' : 'draft'
     };
 

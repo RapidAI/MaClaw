@@ -18,10 +18,10 @@ type Store struct {
 // fields (scanNotificationRow expects exactly this order).
 const (
 	notificationColumns = `id, title, content, category, priority, audience_type, audience_ids, status, im_push, ` +
-		`pinned, pinned_forever, link_url, button_text, ` +
+		`pinned, pinned_forever, link_url, button_text, source_lang, locales_json, ` +
 		`source, source_id, created_by, publish_at, expire_at, created_at, updated_at`
 	notificationColumnsQualified = `n.id, n.title, n.content, n.category, n.priority, n.audience_type, n.audience_ids, n.status, n.im_push, ` +
-		`n.pinned, n.pinned_forever, n.link_url, n.button_text, ` +
+		`n.pinned, n.pinned_forever, n.link_url, n.button_text, n.source_lang, n.locales_json, ` +
 		`n.source, n.source_id, n.created_by, n.publish_at, n.expire_at, n.created_at, n.updated_at`
 )
 
@@ -48,6 +48,8 @@ func (s *Store) InitSchema(ctx context.Context) error {
 			pinned_forever  INTEGER NOT NULL DEFAULT 0,
 			link_url        TEXT NOT NULL DEFAULT '',
 			button_text     TEXT NOT NULL DEFAULT '',
+			source_lang     TEXT NOT NULL DEFAULT '',
+			locales_json    TEXT NOT NULL DEFAULT '',
 			source          TEXT NOT NULL DEFAULT 'hub',
 			source_id       TEXT NOT NULL DEFAULT '',
 			created_by      TEXT NOT NULL DEFAULT '',
@@ -79,6 +81,8 @@ func (s *Store) InitSchema(ctx context.Context) error {
 		`ALTER TABLE admin_notifications ADD COLUMN pinned_forever INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE admin_notifications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE admin_notifications ADD COLUMN button_text TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_notifications ADD COLUMN source_lang TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_notifications ADD COLUMN locales_json TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_notif_pinned ON admin_notifications(status, pinned, created_at)`,
 	} {
 		_, _ = s.db.ExecContext(ctx, stmt)
@@ -113,7 +117,7 @@ func (s *Store) Create(ctx context.Context, n *Notification) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO admin_notifications
 			(`+notificationColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.ID,
 		n.Title,
 		n.Content,
@@ -127,6 +131,8 @@ func (s *Store) Create(ctx context.Context, n *Notification) error {
 		pinnedForever,
 		n.LinkURL,
 		n.ButtonText,
+		n.SourceLang,
+		marshalLocales(n.Locales),
 		n.Source,
 		n.SourceID,
 		n.CreatedBy,
@@ -290,7 +296,7 @@ func (s *Store) UpdateFromCascade(ctx context.Context, id string, incoming *Noti
 		pinnedForever = 1
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE admin_notifications SET title=?, content=?, category=?, priority=?, audience_type=?, audience_ids=?, im_push=?, pinned=?, pinned_forever=?, link_url=?, button_text=?, expire_at=?, updated_at=? WHERE id=?`,
+		`UPDATE admin_notifications SET title=?, content=?, category=?, priority=?, audience_type=?, audience_ids=?, im_push=?, pinned=?, pinned_forever=?, link_url=?, button_text=?, source_lang=?, locales_json=?, expire_at=?, updated_at=? WHERE id=?`,
 		incoming.Title,
 		incoming.Content,
 		string(incoming.Category),
@@ -302,6 +308,8 @@ func (s *Store) UpdateFromCascade(ctx context.Context, id string, incoming *Noti
 		pinnedForever,
 		incoming.LinkURL,
 		incoming.ButtonText,
+		incoming.SourceLang,
+		marshalLocales(incoming.Locales),
 		formatNullableTime(incoming.ExpireAt),
 		now.Format(time.RFC3339),
 		id,
@@ -847,6 +855,7 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		imPush                           int
 		pinned, pinnedForever            int
 		linkURL, buttonText              string
+		sourceLang, localesJSON          string
 		publishAt, expireAt              sql.NullString
 		createdAt, updatedAt             string
 	)
@@ -854,6 +863,7 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		&n.ID, &n.Title, &n.Content,
 		&category, &priority, &audienceType, &audienceJSON,
 		&status, &imPush, &pinned, &pinnedForever, &linkURL, &buttonText,
+		&sourceLang, &localesJSON,
 		&source, &sourceID, &createdBy,
 		&publishAt, &expireAt, &createdAt, &updatedAt,
 	)
@@ -870,6 +880,8 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 	n.PinnedForever = pinnedForever != 0
 	n.LinkURL = linkURL
 	n.ButtonText = buttonText
+	n.SourceLang = sourceLang
+	n.Locales = unmarshalLocales(localesJSON)
 	n.Source = source
 	n.SourceID = sourceID
 	n.CreatedBy = createdBy

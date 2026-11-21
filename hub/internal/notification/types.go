@@ -110,21 +110,27 @@ type Notification struct {
 	// Pinned marks a 置顶消息 that the GUI shows as a floating card above the
 	// sidebar status row. PinnedForever marks the ONE permanent pin that stays
 	// leftmost in that card; a pinned message is implied.
-	Pinned        bool       `json:"pinned"`
-	PinnedForever bool       `json:"pinned_forever"`
-	LinkURL       string     `json:"link_url"`
-	ButtonText    string     `json:"button_text"`
-	Source        string     `json:"source"`
-	SourceID      string     `json:"source_id"`
-	CreatedBy     string     `json:"created_by"`
-	PublishAt     *time.Time `json:"publish_at,omitempty"`
-	ExpireAt      *time.Time `json:"expire_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	Pinned        bool   `json:"pinned"`
+	PinnedForever bool   `json:"pinned_forever"`
+	LinkURL       string `json:"link_url"`
+	ButtonText    string `json:"button_text"`
+	// SourceLang is the language the admin wrote. Locales holds that text plus
+	// each translated language. A cascade from HubCenter already carries both,
+	// and Hub stores them without translating again.
+	SourceLang string                `json:"source_lang,omitempty"`
+	Locales    map[string]LocaleCopy `json:"locales,omitempty"`
+	Source     string                `json:"source"`
+	SourceID   string                `json:"source_id"`
+	CreatedBy  string                `json:"created_by"`
+	PublishAt  *time.Time            `json:"publish_at,omitempty"`
+	ExpireAt   *time.Time            `json:"expire_at,omitempty"`
+	CreatedAt  time.Time             `json:"created_at"`
+	UpdatedAt  time.Time             `json:"updated_at"`
 }
 
-// DefaultPinnedButtonText is the label used when an admin publishes a pinned
-// message without naming its action button.
+// DefaultPinnedButtonText is the Simplified Chinese label used when an admin
+// publishes a pinned message without naming its action button. Other source
+// languages use DefaultPinnedButtonForLang.
 const DefaultPinnedButtonText = "查看详情"
 
 // CreateRequest is the input for creating a new notification.
@@ -137,14 +143,21 @@ type CreateRequest struct {
 	AudienceIDs  []string     `json:"audience_ids"`
 	IMPush       bool         `json:"im_push"`
 	// Pinned / PinnedForever / LinkURL / ButtonText carry the pinned-message
-	// card fields. ButtonText defaults to DefaultPinnedButtonText when pinned.
-	Pinned        bool       `json:"pinned"`
-	PinnedForever bool       `json:"pinned_forever"`
-	LinkURL       string     `json:"link_url"`
-	ButtonText    string     `json:"button_text"`
-	CreatedBy     string     `json:"created_by"`
-	PublishAt     *time.Time `json:"publish_at,omitempty"`
-	ExpireAt      *time.Time `json:"expire_at,omitempty"`
+	// card fields. An empty ButtonText on a pin becomes the source language's
+	// "View details" label.
+	Pinned        bool   `json:"pinned"`
+	PinnedForever bool   `json:"pinned_forever"`
+	LinkURL       string `json:"link_url"`
+	ButtonText    string `json:"button_text"`
+	// SourceLang is the language of Title and Content. TargetLangs are the
+	// languages to store; the default is all four desktop languages. Locales,
+	// when already filled, is stored as-is and is not translated again.
+	SourceLang  string                `json:"source_lang,omitempty"`
+	TargetLangs []string              `json:"target_langs,omitempty"`
+	Locales     map[string]LocaleCopy `json:"locales,omitempty"`
+	CreatedBy   string                `json:"created_by"`
+	PublishAt   *time.Time            `json:"publish_at,omitempty"`
+	ExpireAt    *time.Time            `json:"expire_at,omitempty"`
 	// Source and SourceID tag a notice raised by another Hub subsystem instead
 	// of by an admin. They default to "hub" and "" for admin notices.
 	Source   string `json:"source,omitempty"`
@@ -169,10 +182,12 @@ type ClientNotification struct {
 	CreatedAt string `json:"created_at"`
 	// Pinned-card fields. LinkURL/ButtonText drive the floating banner's
 	// action button; a pinned row keeps them even when already read.
-	Pinned        bool   `json:"pinned,omitempty"`
-	PinnedForever bool   `json:"pinned_forever,omitempty"`
-	LinkURL       string `json:"link_url,omitempty"`
-	ButtonText    string `json:"button_text,omitempty"`
+	Pinned        bool                  `json:"pinned,omitempty"`
+	PinnedForever bool                  `json:"pinned_forever,omitempty"`
+	LinkURL       string                `json:"link_url,omitempty"`
+	ButtonText    string                `json:"button_text,omitempty"`
+	SourceLang    string                `json:"source_lang,omitempty"`
+	Locales       map[string]LocaleCopy `json:"locales,omitempty"`
 	// Source and SourceID let a client recognize a notice raised by a Hub
 	// subsystem, such as a reading-group invitation, and act on it.
 	Source   string `json:"source,omitempty"`
