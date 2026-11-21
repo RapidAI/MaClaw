@@ -600,6 +600,23 @@ func desktopQueuedAck(content string) string {
 	return "收到「" + c + "」，先排着，忙完就接着做。"
 }
 
+// desktopStartedAck is the immediate reply for a message this turn runs now.
+// It never says 排着/忙完: the run has already started, so a queuing phrase
+// would describe something the person's own message is not doing. When the
+// turn then fails, the failure reply is the only other line and the two do
+// not contradict each other.
+func desktopStartedAck(content string) string {
+	trimmed := strings.TrimSpace(content)
+	c := clipDesktopRunes(trimmed, 24)
+	if c == "" {
+		return "收到，这就开始做。"
+	}
+	if c != trimmed {
+		c += "…"
+	}
+	return "收到「" + c + "」，这就开始做。"
+}
+
 func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, botID, content, phase, clientMessageID, continueSession string, admit bool, action string) (outAdmission BotAdmission, outErr error) {
 	// A password typed into the message is taken out here, before routing,
 	// intake (an LLM call that may write a schedule row), the turn queue, or
@@ -681,9 +698,18 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"content_len", strconv.Itoa(len(content)),
 		"srv", botlogHost(rec.BaseURL),
 	)
+	// A bot with no computer runs on the cloud srv. A node pin it kept from
+	// when it did have one must not route its turns (or its model config)
+	// at that node: the node may be offline, and the Bot-management model
+	// pin is written to the srv that actually runs the agent.
+	noDesktop := botNone(rec.Bots[index])
+	botNode := strings.TrimSpace(rec.Bots[index].NodeID)
+	if noDesktop {
+		botNode = ""
+	}
 	gate := rec
-	if id := strings.TrimSpace(rec.Bots[index].NodeID); id != "" {
-		if view, ok := nodeView(rec, id); ok {
+	if botNode != "" {
+		if view, ok := nodeView(rec, botNode); ok {
 			gate = view
 		}
 	}
@@ -698,21 +724,17 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	var fresh record
 	var token string
 	haveToken := false
-	// A bot with no computer never joins the busy-desktop queue below, and
-	// the routing and intake decisions are told the same so a rewritten
-	// instruction cannot order a desktop the bot does not have.
-	noDesktop := botNone(rec.Bots[index])
 	if !hubStartedTurn(clientMessageID) && desktopCanonicalContinue(botID, continueSession) == "" {
 		if sticky, replay := s.peekDesktopRouteState(tenantID, userID, botID, clientMessageID); !replay {
 			step := time.Now()
 			var routeErr error
-			if f, tk, err := s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID); err == nil {
+			if f, tk, err := s.ownerTokenOn(ctx, tenantID, userID, botNode); err == nil {
 				fresh, token, haveToken = f, tk, true
 				route, routeErr = s.routeDesktopMessage(ctx, tenantID, userID, &fresh, &token, instanceID, botID, content, sticky, noDesktop)
 			} else {
 				routeErr = err
 			}
-			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, routeErr); parked || offlineErr != nil {
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, routeErr); parked || offlineErr != nil {
 				traceBot(botID, "route_done", offlineErr, "via", route.Via, "dur_ms", traceMS(time.Since(step)))
 				if parked {
 					return admission, nil
@@ -740,7 +762,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			TenantID: tenantID, UserID: userID, DesktopUser: desktopUser, BotID: botID,
 			InstanceID: instanceID, Content: content, Phase: phase,
 			ClientMessageID: clientMessageID, ContinueSession: continueSession,
-			Action: action, Admit: admit, NoDesktop: noDesktop, NodeID: rec.Bots[index].NodeID,
+			Action: action, Admit: admit, NoDesktop: noDesktop, NodeID: botNode,
 			TokenRec: &fresh, Token: &token, HaveToken: haveToken,
 		})
 		if steerErr != nil {
@@ -767,9 +789,9 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// waits in the same queue as a busy desktop and starts when a later
 	// read is under the line.
 	if admit && !noDesktop && !hubStartedTurn(clientMessageID) {
-		pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, userID)
+		pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(ctx, botNode), tenantID, userID)
 		if nodeSessionMissing(memErr) {
-			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, memErr); parked || offlineErr != nil {
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, memErr); parked || offlineErr != nil {
 				if parked {
 					return admission, nil
 				}
@@ -870,10 +892,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step = time.Now()
 	var tokenErr error
 	if !haveToken {
-		fresh, token, tokenErr = s.ownerTokenOn(ctx, tenantID, userID, rec.Bots[index].NodeID)
+		fresh, token, tokenErr = s.ownerTokenOn(ctx, tenantID, userID, botNode)
 	}
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, tokenErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, tokenErr); stop {
 		return admission, stopErr
 	}
 	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
@@ -885,7 +907,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step = time.Now()
 	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID, rec.Bots[index])
 	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, metaErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, metaErr); stop {
 		return admission, stopErr
 	}
 	step = time.Now()
@@ -897,19 +919,30 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"metadata": metadata,
 	}, nil); err != nil {
 		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-		if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, err); stop {
+		if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, err); stop {
 			return admission, stopErr
 		}
 	} else {
 		traceBot(botID, "patch_instance", nil, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 	}
 	step = time.Now()
-	llmErr := s.ensureBotOwnerLLM(ctx, tenantID, fresh, userID)
+	// A bot with no computer runs on the cloud srv, so its model config has to
+	// land there. A node pin on the bot still routes the turn through that
+	// node's srv, and pushing this owner's config at an offline node would
+	// fail silently (or never run) and leave the cloud copy stale. The cloud
+	// record is the one that carries the Bot-management pin in that case.
+	llmRec := fresh
+	if noDesktop {
+		if public, loadErr := s.load(ctx, tenantID); loadErr == nil {
+			llmRec = public
+		}
+	}
+	llmErr := s.ensureBotOwnerLLM(ctx, tenantID, llmRec, userID)
 	traceBot(botID, "owner_llm", llmErr,
 		"group", botLLMServiceGroupID,
 		"dur_ms", traceMS(time.Since(step)),
 	)
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, llmErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, llmErr); stop {
 		return admission, stopErr
 	}
 	// MCP and skills are not required for the turn. A missed push is retried
@@ -995,7 +1028,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"dur_ms", traceMS(time.Since(step)),
 	)
 	if callErr != nil {
-		admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, rec.Bots[index].NodeID, clientMessageID, content, phase, continueSession, callErr)
+		admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, callErr)
 		if parked {
 			return admission, offlineErr
 		}
@@ -1035,10 +1068,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		via, title := routedFor(route, botID, claim.session)
 		// The intake's first sentence is the immediate reply. When the LLM
 		// timed out (the common slow case), name the person's own command so
-		// the admit still reads like an understanding of the task.
+		// the admit still reads like an understanding of the task. This turn
+		// is running, not waiting in a line, so the fallback says so.
 		ack := intakeAck
 		if strings.TrimSpace(ack) == "" {
-			ack = desktopQueuedAck(content)
+			ack = desktopStartedAck(content)
 		}
 		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: ack}, nil
 	}
@@ -1324,9 +1358,31 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 		reply.AskUserQuestion = strings.TrimSpace(meta["ask_user_question"])
 		reply.AskUserOptionsJSON = strings.TrimSpace(meta["ask_user_options_json"])
 	}
+	// A failed run with nothing on the sentence is not a quiet success: the
+	// chat would draw an empty assistant bubble (「已完成，无文字回复」) right
+	// after a failure line, which reads as a contradiction. A question or
+	// choices on this same reply already tell the person what happened, so
+	// only a failure with nothing else to show gets the line.
+	if body.CallErr != nil && reply.SendToUser == "" &&
+		reply.AskUserQuestion == "" && reply.AskUserSecretName == "" && reply.AskUserOptionsJSON == "" {
+		reply.SendToUser = desktopFailureLine(body.CallErr)
+	}
 	return reply
 }
 
+// desktopFailureLine is the one line a failed run shows when it produced no
+// sentence of its own. It keeps the upstream reason, clipped so a long
+// provider message does not fill the bubble.
+func desktopFailureLine(cause error) string {
+	reason := ""
+	if cause != nil {
+		reason = clipDesktopRunes(strings.TrimSpace(cause.Error()), 120)
+	}
+	if reason == "" {
+		return "这条没做成，中途出了点问题。你说一声我再试一次。"
+	}
+	return "这条没做成：" + reason + "。你说一声我再试一次。"
+}
 // desktopIdentityMetadata is this Hub user on the instance, plus any
 // metadata the instance already had. The desktop key is the Hub user.
 // Other fields stay so this bot remains the same instance.

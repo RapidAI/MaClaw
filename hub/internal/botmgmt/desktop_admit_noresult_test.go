@@ -185,7 +185,12 @@ func TestAdmittedFillerRunSettlesLikeAnEmptyBody(t *testing.T) {
 	if settleErr == nil || !strings.Contains(settleErr.Error(), "without a result") || !strings.Contains(settleErr.Error(), "failed") || strings.Contains(settleErr.Error(), "maclawsrv") {
 		t.Fatalf("filler run error=%v", settleErr)
 	}
-	if reply.Text != "" || reply.SendToUser != "" || strings.Contains(reply.Text, "无变化") {
+	if reply.Text != "" || strings.Contains(reply.Text, "无变化") {
 		t.Fatalf("filler stayed on the reply: %+v", reply)
+	}
+	// A failed run with nothing else to show still says what happened, so
+	// the chat does not draw 「已完成，无文字回复」 right after a failure.
+	if !strings.Contains(reply.SendToUser, "没做成") || strings.Contains(reply.SendToUser, "无变化") {
+		t.Fatalf("filler run sentence = %+v", reply)
 	}
 }
