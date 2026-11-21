@@ -209,7 +209,8 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile, carri
 		AssistantBinding:    msg.AssistantBinding,
 		// Same surface rule as the full-profile deps above: only turns whose
 		// reply lands in the desktop markdown pipeline can draw the fence.
-		DiagramRenderingSupported: replyRendersDiagrams(msg.UserID) && conversationWantsDiagram(msg.Text),
+		// Keywords strengthen the rule; they do not gate it.
+		DiagramRenderingSupported: replyRendersDiagrams(msg.UserID),
 	}))
 	if lookupContinuationProfile(profile) {
 		prompt += lookupContinuationToolPrompt(carried, primary)
@@ -384,8 +385,10 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			ManagedSemantic:         loopContextIsSemanticManaged(loopCtx),
 			ModelDiscovery:          loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && intent.ClassificationIsModelDiscovery(*loopCtx.Runtime.SemanticIntent),
 			// Only turns whose reply lands in the desktop markdown pipeline
-			// can draw a mermaid fence; see replyRendersDiagrams.
-			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx)) && conversationWantsDiagram(msg),
+			// can draw a mermaid fence; see replyRendersDiagrams. The model
+			// decides whether this turn needs a picture. Keywords strengthen
+			// that judgment; they are not the switch.
+			DiagramRenderingSupported: replyRendersDiagrams(diagramSurfaceOwnerID(h, loopCtx, promptUserID)),
 		},
 		MemoryStore:       h.currentMemoryStore(),
 		MemoryOwnerID:     promptUserID,
@@ -580,11 +583,10 @@ func imWorkflowDocDeliveryRule() string {
 // An empty owner means the surface could not be determined, so no diagrams:
 // guessing "desktop" here is what originally leaked the cue to scheduled tasks
 // and Lansenger groups.
-// conversationWantsDiagram is the on-demand half of the visualization cue.
-// A desktop markdown surface can draw a mermaid fence, but the conversation
-// agent only receives the drawing rule when this turn actually asks for a
-// flowchart. Plain-text channels never reach this check: replyRendersDiagrams
-// stays false for them, so the rule is not injected there.
+// conversationWantsDiagram reports an explicit diagram request. It strengthens
+// the drawing rule for surfaces that already render markdown; it is not the
+// switch that decides whether that rule is injected. Plain-text channels never
+// reach this check: replyRendersDiagrams stays false for them.
 func conversationWantsDiagram(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -624,9 +626,13 @@ func replyRendersDiagrams(promptUserID string) bool {
 // (runtime_context.go sets PolicyOwnerID / WorkflowOwnerID from msg.UserID),
 // so this only differs when that context is absent.
 //
-// Returns "" when no honest owner is available; replyRendersDiagrams then
-// treats the turn conservatively rather than assuming a desktop surface.
-func diagramSurfaceOwnerID(h *IMMessageHandler, loopCtx *LoopContext) string {
+// promptUserID is the same owner the rest of this prompt already resolved,
+// including the desktop fallback used for local tool sections. A desktop
+// markdown session must not lose the drawing rule just because the loop
+// context omitted PolicyOwnerID. Scheduled and group owners still lose:
+// replyRendersDiagrams rejects those ids even when they arrive through this
+// fallback. Returns "" only when neither source has an owner.
+func diagramSurfaceOwnerID(h *IMMessageHandler, loopCtx *LoopContext, promptUserID string) string {
 	if loopCtx != nil {
 		if ownerID := strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID); ownerID != "" {
 			return ownerID
