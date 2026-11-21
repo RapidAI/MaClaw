@@ -30,7 +30,11 @@ type runtime struct {
 	conn   net.Conn
 	pipe   pipeTransport
 	nextID atomic.Int64
-	closed bool
+	// closed is atomic so Close can retire the connection without waiting
+	// for the in-flight read to drop mu. That read holds mu for the whole
+	// frame, and the only way to unblock a synchronous pipe read is to
+	// close the handle from outside that lock.
+	closed atomic.Bool
 }
 
 // pipeTransport is one named-pipe instance.
@@ -71,7 +75,7 @@ func newRuntime(addr string) (*runtime, error) {
 func (rt *runtime) roundTrip(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.closed {
+	if rt.closed.Load() {
 		return nil, ErrNoDriver
 	}
 	id := rt.nextID.Add(1)
@@ -171,7 +175,7 @@ func errText(raw json.RawMessage) string {
 func (rt *runtime) call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.closed {
+	if rt.closed.Load() {
 		return nil, ErrNoDriver
 	}
 	id := rt.nextID.Add(1)
@@ -182,7 +186,7 @@ func (rt *runtime) call(ctx context.Context, tool string, args map[string]any) (
 	if err := rt.writeLine(body); err != nil {
 		return nil, err
 	}
-	return rt.readResponse(ctx)
+	return rt.readResponse(ctx, id)
 }
 
 // requestEnvelope builds one request body with a fixed field order:
@@ -212,13 +216,35 @@ func quote(s string) string {
 	return string(b)
 }
 
-// readResponse reads one response envelope after a request was written.
-func (rt *runtime) readResponse(ctx context.Context) (json.RawMessage, error) {
-	line, err := rt.readLine(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("cua: read: %w", err)
+// readResponse reads frames until the answer to id. A notification (a
+// method and no id, result, or error) is not that answer: returning it
+// would make CallDetail treat a progress frame as the tool result. An
+// id-less frame that carries a result or an error is the serve daemon's
+// envelope, which has no id field.
+func (rt *runtime) readResponse(ctx context.Context, id int64) (json.RawMessage, error) {
+	for {
+		line, err := rt.readLine(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cua: read: %w", err)
+		}
+		var frame struct {
+			ID     json.Number     `json:"id"`
+			Method string          `json:"method"`
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil {
+			return nil, fmt.Errorf("cua: unreadable frame: %w", err)
+		}
+		hasError := len(frame.Error) > 0 && string(frame.Error) != "null"
+		if frame.Method != "" && frame.ID == "" && !hasError && len(frame.Result) == 0 {
+			continue
+		}
+		if frame.ID != "" && frame.ID.String() != fmt.Sprint(id) {
+			return nil, fmt.Errorf("cua: response id %s does not answer request %d", frame.ID, id)
+		}
+		return json.RawMessage(append([]byte(nil), line...)), nil
 	}
-	return json.RawMessage(line), nil
 }
 
 // callEnvelope builds one tool-call request body with a deterministic field
@@ -245,16 +271,16 @@ func callEnvelope(id int64, tool string, args map[string]any) ([]byte, error) {
 
 // liveness checks that the daemon answers at all. The serve daemon does not
 // serve tools/list; its "Unknown method" envelope is an answer from a live
-// daemon, and so is any other protocol answer. Silence is the failure.
+// daemon. A read or write failure is not: treating it as success is how a
+// dead pipe used to pass Open.
 func (rt *runtime) liveness(ctx context.Context) error {
-	_, err := rt.probe(ctx)
-	if err == nil || isMethodUnknown(err) {
-		return nil
-	}
-	if ctx.Err() != nil {
+	raw, err := rt.probe(ctx)
+	if err != nil {
 		return err
 	}
-	// A daemon that answers with a protocol error is alive.
+	if !json.Valid(raw) {
+		return fmt.Errorf("cua: driver liveness answer is not a protocol frame")
+	}
 	return nil
 }
 
@@ -263,7 +289,7 @@ func (rt *runtime) liveness(ctx context.Context) error {
 // awaiting a matching id would wait for a response that never comes.
 func (rt *runtime) probe(ctx context.Context) (json.RawMessage, error) {
 	rt.mu.Lock()
-	if rt.closed {
+	if rt.closed.Load() {
 		rt.mu.Unlock()
 		return nil, ErrNoDriver
 	}
@@ -314,17 +340,14 @@ func (rt *runtime) readLine(ctx context.Context) ([]byte, error) {
 	return readLineConn(ctx, rt.conn)
 }
 
-// close releases the connection. The OS handle is released on a short
-// timer: a read still inside the kernel on that handle makes CloseHandle
-// wait for it, and a caller must never be delayed by a daemon that stopped
-// answering.
+// close releases the connection. It does not take mu: the in-flight read
+// holds that lock, and closing the handle is what unblocks that read. The
+// OS handle is released on a short timer so CloseHandle does not wait out
+// a ReadFile still inside the kernel.
 func (rt *runtime) close() {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.closed {
+	if !rt.closed.CompareAndSwap(false, true) {
 		return
 	}
-	rt.closed = true
 	if rt.pipe != nil {
 		rt.pipe.stop()
 		p := rt.pipe

@@ -3,6 +3,7 @@ package guiapp
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -58,6 +59,50 @@ func TestOlderLoopCleanupDoesNotClearReplacementLoopState(t *testing.T) {
 	newCleanup()
 	if got := h.getSessionLoopCtx(userID); got != nil {
 		t.Fatalf("active loop after replacement cleanup = %p, want nil", got)
+	}
+}
+
+func TestCancelWaitHoldsUntilPublicationClears(t *testing.T) {
+	const userID = "im:cancel-publish"
+	h := &IMMessageHandler{}
+	oldCtx := NewLoopContext("old", 1, nil)
+	oldCleanup := h.beginAgentLoopRuntime(oldCtx, userID, "old task", "desktop")
+	state := h.getSessionLoop(userID)
+
+	// DoneC is closed while the dying turn still owns the publication lock,
+	// which is the window CancelSessionForUser used to treat as "exited".
+	state.stateMu.Lock()
+	oldCtx.Done()
+
+	waitDone := make(chan struct{})
+	go func() {
+		h.waitPublishedLoopExit(oldCtx, userID)
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		state.stateMu.Unlock()
+		t.Fatal("cancel wait returned while the dying loop was still published")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	state.stateMu.Unlock()
+	oldCleanup()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel wait did not return after publication cleared")
+	}
+
+	newCtx := NewLoopContext("new", 1, nil)
+	newCleanup := h.beginAgentLoopRuntime(newCtx, userID, "new task", "desktop")
+	defer newCleanup()
+	oldCleanup()
+	if got := h.getSessionLoopCtx(userID); got != newCtx {
+		t.Fatalf("active loop after late old cleanup = %p, want replacement %p", got, newCtx)
+	}
+	if got := h.sessionLoopTaskText(userID); got != "new task" {
+		t.Fatalf("replacement task text = %q, want new task", got)
 	}
 }
 

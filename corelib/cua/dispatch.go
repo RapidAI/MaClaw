@@ -88,7 +88,7 @@ func decodeToolResult(raw json.RawMessage) (content []contentBlock, structured m
 		}
 	}
 	var envelope struct {
-		OK     bool            `json:"ok"`
+		OK     *bool           `json:"ok"`
 		Error  json.RawMessage `json:"error"`
 		Result struct {
 			Content           []contentBlock `json:"content"`
@@ -99,6 +99,9 @@ func decodeToolResult(raw json.RawMessage) (content []contentBlock, structured m
 	if err := json.Unmarshal(raw, &envelope); err == nil {
 		if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
 			return nil, nil, false, fmt.Errorf("%s", errText(envelope.Error))
+		}
+		if envelope.OK != nil && !*envelope.OK {
+			return nil, nil, false, fmt.Errorf("the driver reported an error")
 		}
 		if len(envelope.Result.Content) > 0 || envelope.Result.StructuredContent != nil {
 			return envelope.Result.Content, envelope.Result.StructuredContent, envelope.Result.IsError, nil

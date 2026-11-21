@@ -402,6 +402,52 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 		},
 	})
 
+	// --- computer_verify ---
+	// Deterministic assertions through the Cua Driver: no model turn is
+	// spent reading the screen back. Served by tools_computer_verify.go.
+	registry.Register(RegisteredTool{
+		Name:        "computer_verify",
+		Description: cuVerifyDescription,
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"computer", "gui", "desktop", "verify"},
+		Priority:    6,
+		Status:      RegToolAvailable,
+		Required:    []string{"pid", "window_id", "expect"},
+		InputSchema: map[string]interface{}{
+			"pid":            map[string]interface{}{"type": "integer", "description": "Target process id"},
+			"window_id":      map[string]interface{}{"type": "integer", "description": "Target window id"},
+			"expect":         map[string]interface{}{"type": "array", "description": "Checks: {window:{exists|bounds}}, {element:{selector:{role,label_contains}, enabled, selected, value_equals}}"},
+			"stable_samples": map[string]interface{}{"type": "integer", "description": "Consecutive agreeing samples (default 1)"},
+			"timeout":        map[string]interface{}{"type": "string", "description": "Poll budget, e.g. 2s (default 2s)"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleVerify(args)
+		},
+	})
+
+	// --- computer_wait_until ---
+	// A wait that costs no model turns: the driver polls, not the agent.
+	registry.Register(RegisteredTool{
+		Name:        "computer_wait_until",
+		Description: cuWaitUntilDescription,
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"computer", "gui", "desktop", "wait"},
+		Priority:    6,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"title":     map[string]interface{}{"type": "string", "description": "Window title substring to wait for"},
+			"app":       map[string]interface{}{"type": "string", "description": "App or process name instead of a title"},
+			"gone":      map[string]interface{}{"type": "boolean", "description": "Wait for the window to disappear"},
+			"on_screen": map[string]interface{}{"type": "boolean", "description": "Only count windows that are not minimized (default true)"},
+			"timeout":   map[string]interface{}{"type": "string", "description": "How long to wait, e.g. 20s (default 20s, max 120s)"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleWaitUntil(args)
+		},
+	})
+
 	// --- computer_focus ---
 	registry.Register(RegisteredTool{
 		Name: "computer_focus",
@@ -499,6 +545,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 		"computer_observe", "computer_click", "computer_type", "computer_key",
 		"computer_scroll", "computer_select", "computer_scroll_into_view",
 		"computer_drag", "computer_wait", "computer_focus", "computer_done",
+		"computer_verify", "computer_wait_until",
 		"computer_playbook", "computer_find",
 	} {
 		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{

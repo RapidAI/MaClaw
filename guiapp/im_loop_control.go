@@ -31,12 +31,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	}
 	// Wait for the loop goroutine to finish so the per-session mutex is released
 	// before the caller sends a new message.
-	select {
-	case <-ctx.DoneC:
-	case <-time.After(30 * time.Second):
-		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit — force-closing DoneC")
-		ctx.Done()
-	}
+	h.waitPublishedLoopExit(ctx, "")
 	return taskText, nil
 }
 
@@ -254,18 +249,7 @@ func (h *IMMessageHandler) cancelSessionForUserOne(userID string) (string, error
 		log.Printf("[CancelSessionForUser] cancelled in-flight pre-loop user=%s", userID)
 		return taskText, nil
 	}
-	select {
-	case <-ctx.DoneC:
-	case <-time.After(30 * time.Second):
-		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s — force-closing DoneC to unblock waiters", userID)
-		// Force-close DoneC so that hasActiveInterruptableLoop and other
-		// waiters stop considering this loop as active. The goroutine holding
-		// state.mu is stuck on a blocking syscall (e.g. memory Store.mu.RLock
-		// waiting for a long-running pipeline write lock) and cannot check
-		// IsCancelled. DoneC.close is idempotent — if the loop exits later,
-		// its defer ctx.Done() is a no-op.
-		ctx.Done()
-	}
+	h.waitPublishedLoopExit(ctx, userID)
 	return taskText, nil
 }
 
@@ -311,6 +295,75 @@ func (h *IMMessageHandler) requestCancelSessionForUserOneExcept(userID string, e
 		log.Printf("[RequestCancelSessionForUser] cancelled in-flight pre-loop user=%s", userID)
 	}
 	return taskText, nil
+}
+
+// waitPublishedLoopExit waits until ctx is both finished and no longer the
+// published session loop. DoneC alone is not that boundary: a cancel that
+// returns on DoneC used to admit the next turn before the dying cleanup
+// unpublished, and that cleanup then cleared the replacement.
+//
+// On timeout, DoneC is closed only while this ctx is still published, and
+// under the same lock as unpublish. A replacement that already published is
+// left alone. DoneC.close is idempotent if the loop exits later.
+func (h *IMMessageHandler) waitPublishedLoopExit(ctx *LoopContext, userID string) {
+	if ctx == nil {
+		return
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if h.publishedLoopExited(ctx, userID) {
+			return
+		}
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			break
+		}
+		if wait > 50*time.Millisecond {
+			wait = 50 * time.Millisecond
+		}
+		select {
+		case <-ctx.DoneC:
+		case <-time.After(wait):
+		}
+	}
+	if h.forceCloseStuckPublishedLoop(ctx, userID) {
+		log.Printf("[CancelSessionForUser] timed out waiting for loop to exit user=%s — force-closing DoneC to unblock waiters", userID)
+	}
+}
+
+func (h *IMMessageHandler) publishedLoopExited(ctx *LoopContext, userID string) bool {
+	if ctx == nil || !ctx.IsDone() {
+		return false
+	}
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return true
+	}
+	state := h.getSessionLoop(userID)
+	state.stateMu.RLock()
+	defer state.stateMu.RUnlock()
+	return state.loopCtx != ctx
+}
+
+func (h *IMMessageHandler) forceCloseStuckPublishedLoop(ctx *LoopContext, userID string) bool {
+	if ctx == nil {
+		return false
+	}
+	if h == nil || strings.TrimSpace(userID) == "" {
+		ctx.Done()
+		return true
+	}
+	state := h.getSessionLoop(userID)
+	state.stateMu.Lock()
+	defer state.stateMu.Unlock()
+	if state.loopCtx != ctx {
+		return false
+	}
+	state.loopCtx = nil
+	state.userText = ""
+	state.endedAt = time.Now()
+	h.clearNonGuidePendingInjection(userID)
+	ctx.Done()
+	return true
 }
 
 // loopContextForCancel resolves the LoopContext an explicit user cancel must
@@ -1336,7 +1389,9 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		ctx.Platform = platform
 		ctx.UserID = userID
 	}
-	// Write to per-session state (primary, race-free).
+	// Write to per-session state (primary, race-free). Publish and the
+	// cleanup that closes DoneC share this lock, so a cancel waiter that
+	// has observed DoneC cannot see this loop still published.
 	state := h.getSessionLoop(userID)
 	state.stateMu.Lock()
 	state.loopCtx = ctx
@@ -1373,19 +1428,24 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		// request before the old goroutine actually returns. In that case the
 		// old cleanup must never clear the replacement loop's context, task
 		// text, or newly arrived steering injection.
+		// Unpublish and close DoneC under the same lock. CancelSessionForUser
+		// returns as soon as DoneC closes and then lets the next turn publish.
+		// Closing DoneC first left a window where that replacement was stored,
+		// then this cleanup treated it as the current loop and nilled it.
+		// Waiters must not observe "exited" while loopCtx still points here.
 		state.stateMu.Lock()
 		isCurrentLoop := state.loopCtx == ctx
 		if isCurrentLoop {
 			state.loopCtx = nil
 			state.userText = ""
 			state.endedAt = time.Now()
-			// Keep cleanup inside the same publication lock. Otherwise a replacement
-			// loop can publish itself after loopCtx is cleared but before this call,
-			// and the old cleanup may delete the replacement's freshly accepted
-			// supplementary input. Guide entries happened to survive the filter, but
-			// ordinary live speech did not.
+			// Keep injection cleanup inside the same publication lock. Otherwise a
+			// replacement loop can publish itself after loopCtx is cleared but
+			// before this call, and the old cleanup may delete the replacement's
+			// freshly accepted supplementary input.
 			h.clearNonGuidePendingInjection(userID)
 		}
+		ctx.Done()
 		state.stateMu.Unlock()
 		// Clear legacy global fields only if they still point to THIS loop.
 		// Under concurrency another loop may have overwritten them — don't
@@ -1397,7 +1457,6 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 			h.lastUserID = ""
 		}
 		h.globalLoopMu.Unlock()
-		ctx.Done()
 		if isCurrentLoop && h.app != nil {
 			h.app.noteRunWindowSessionSettled(userID)
 		}

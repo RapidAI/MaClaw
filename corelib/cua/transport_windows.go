@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -46,10 +47,9 @@ func dialPipe(addr string) (pipeTransport, error) {
 
 // pipeConn is one pipe instance, read one line at a time.
 type pipeConn struct {
-	h    windows.Handle
-	mu   sync.Mutex
-	buf  []byte
-	done bool
+	h     windows.Handle
+	lines lineBuffer
+	close sync.Once
 }
 
 // write sends b in whole chunks.
@@ -68,29 +68,30 @@ func (p *pipeConn) write(b []byte) error {
 }
 
 // readLine returns the next newline-terminated line, bounded by ctx. Bytes
-// after the newline stay buffered for the next call.
+// after the newline stay in lines so the next call is not shifted.
 func (p *pipeConn) readLine(ctx context.Context) ([]byte, error) {
-	var acc []byte
 	for {
-		p.mu.Lock()
-		if p.done {
-			p.mu.Unlock()
-			return nil, ErrNoDriver
-		}
-		if i := indexByte(acc, 10); i >= 0 {
-			line := append([]byte(nil), acc[:i]...)
-			p.buf = append(p.buf, acc[i+1:]...)
-			p.mu.Unlock()
-			return line, nil
-		}
-		p.mu.Unlock()
-		chunk, err := p.readChunk(ctx)
+		line, ok, err := p.lines.takeLine()
 		if err != nil {
 			return nil, err
 		}
-		acc = append(acc, chunk...)
-		if len(acc) > 16<<20 {
-			return nil, fmt.Errorf("cua: response line over 16MiB")
+		if ok {
+			return line, nil
+		}
+		chunk, err := p.readChunk(ctx)
+		if len(chunk) > 0 {
+			if appendErr := p.lines.append(chunk); appendErr != nil {
+				return nil, appendErr
+			}
+		}
+		if err != nil {
+			// A synchronous ReadFile cannot be cancelled. Leaving it running
+			// and reading again would overlap two ReadFile calls on one
+			// handle, and any bytes it later returns would be the answer to
+			// a request the caller already abandoned.
+			p.stop()
+			time.AfterFunc(200*time.Millisecond, p.closeHandle)
+			return nil, err
 		}
 	}
 }
@@ -124,14 +125,14 @@ func (p *pipeConn) readChunk(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// stop makes in-flight and future reads fail.
+// stop makes in-flight and future reads fail and drops a partial frame.
 func (p *pipeConn) stop() {
-	p.mu.Lock()
-	p.done = true
-	p.mu.Unlock()
+	p.lines.stop()
 }
 
-// closeHandle releases the OS handle.
+// closeHandle releases the OS handle. Once: cancel and Close can both ask.
 func (p *pipeConn) closeHandle() {
-	procCloseHandle.Call(uintptr(p.h))
+	p.close.Do(func() {
+		procCloseHandle.Call(uintptr(p.h))
+	})
 }

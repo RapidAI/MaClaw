@@ -229,11 +229,6 @@ func desktopStringArg(m map[string]any, keys ...string) string {
 	return ""
 }
 
-func desktopBoolArg(m map[string]any, key string) bool {
-	v, _ := m[key].(bool)
-	return v
-}
-
 // desktopSecondsArg reads a duration argument in seconds, as a JSON number
 // or a Go duration string, clamped to (0, max].
 func desktopSecondsArg(m map[string]any, key string, def, max time.Duration) time.Duration {

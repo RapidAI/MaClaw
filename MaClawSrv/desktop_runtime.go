@@ -46,9 +46,9 @@ const desktopSessionOwner = "maclawsrv-desktop"
 // The desktop tool's action vocabulary is one list. Plan and execute advertise
 // that same list. The plan allow-list is only the phase gate: a mutating call
 // stays in the schema and returns the next-step sentence.
-var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
+var desktopExecuteActions = []string{"batch", "rich_fill", "speculate", "navigate", "probe", "click", "type", "press", "task_run", "script", "upload", "publish", "skill_list", "skill_run", "cap_list", "cap_skill", "cap_mcp", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "open_screen", "job_status", "job_list", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "verify_state", "wait_until", "request_takeover", "notify_main", "report", "say", "check_inbox", "delegate", "list_assignments", "accept_result", "return_result", "shop_readback", "shop_compare_offers", "proxy_mode", "recover", "goal_check", "finish"}
 
-var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "cap_list", "cap_skill", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
+var desktopPlanActions = []string{"probe", "screenshot", "speculate", "app_list", "file_read", "file_list", "skill_list", "cap_list", "cap_skill", "app_probe", "window_list", "screen_info", "clipboard_get", "wait", "verify_state", "wait_until", "notify_main", "report", "check_inbox", "list_assignments", "shop_readback", "shop_compare_offers", "proxy_mode", "job_status", "job_list", "recover", "goal_check", "finish"}
 
 func desktopActionAllowed(action string) bool {
 	for _, allowed := range desktopExecuteActions {
@@ -133,7 +133,7 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, cap_list, cap_skill, cap_mcp, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
+				"action":             map[string]any{"type": "string", "description": "probe, speculate (safe precheck only: check_login/check_posted/prepare_draft/snapshot_page; stays quiet when nothing useful; never publish/pay/delete), script, upload, skill_list, skill_run, cap_list, cap_skill, cap_mcp, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, open_screen (start this bot's visible screen only when the task needs a browser, screenshot, window, or clicks; never for ssh, training, compile, or shell-only work), computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, verify_state (assert a window exists, is gone, sits at a frame, or a named control is enabled/selected/holds a value; no model turn), wait_until (block until a window appears or disappears; no model turn while it waits), request_takeover, notify_main, check_inbox, delegate, shop_readback (read-only cart/orders/tracking summary of the current shopping page), or shop_compare_offers (rank offers[] by price+shipping), or proxy_mode (read-only: this desktop's network mode). Posting to a site: prepare the title, body and pictures with bash in this run's own scratch folder ($TMPDIR when set, else /tmp), open the editor, then call action=publish (it uploads, fills, submits and reads back); a publish task follows a fixed plan and refuses steps outside its phase", "enum": desktopExecuteActions},
 				"kind":               map[string]any{"type": "string", "description": "notify_main: done, blocked, progress, question, artifact, info, or reply.", "enum": []string{"done", "blocked", "progress", "question", "artifact", "info", "reply"}},
 				"message":            map[string]any{"type": "string", "description": "notify_main: one or two sentences for the main bot."},
 				"target":             map[string]any{"type": "string", "description": "notify_main: empty (the main bot) or another bot's name or id. delegate: the teammate bot's name or id. A partial name or number works (\"5\" or \"5号\" finds \"Bot 5\", \"写作\" finds \"写作助手\"); if several bots fit, or none, the error lists the names: ask the person which one."},
@@ -1113,6 +1113,14 @@ func operateDesktopBody(ctx context.Context, scope agentruntime.Scope, args map[
 			text = strings.TrimSpace(text + "\n" + note)
 		}
 		return text, nil
+	}
+	if action == "verify_state" || action == "wait_until" {
+		// Deterministic checks and event waits run on the Cua Driver and
+		// never touch this desktop's input.
+		if action == "verify_state" {
+			return operateDesktopVerifyState(ctx, scope, args)
+		}
+		return operateDesktopWaitUntil(ctx, scope, args)
 	}
 	if desktopCtlAction(action) {
 		return operateDesktopCtl(ctx, scope, endpoint.Display, action, args)
