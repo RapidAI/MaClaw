@@ -241,6 +241,9 @@ func (rt *runtime) readResponse(ctx context.Context, id int64) (json.RawMessage,
 			continue
 		}
 		if frame.ID != "" && frame.ID.String() != fmt.Sprint(id) {
+			// The stream is no longer aligned with this request. Retire it
+			// so the next call cannot treat the leftover frame as its own.
+			rt.close()
 			return nil, fmt.Errorf("cua: response id %s does not answer request %d", frame.ID, id)
 		}
 		return json.RawMessage(append([]byte(nil), line...)), nil

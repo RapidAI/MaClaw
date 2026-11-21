@@ -115,7 +115,8 @@ func (p *pipeConn) readChunk(ctx context.Context) ([]byte, error) {
 			ch <- outcome{err: ErrNoDriver}
 			return
 		}
-		ch <- outcome{data: buf[:n]}
+		// Copy before the goroutine returns: the buffer is on this stack.
+		ch <- outcome{data: append([]byte(nil), buf[:n]...)}
 	}()
 	select {
 	case res := <-ch:
