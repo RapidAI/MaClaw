@@ -416,6 +416,15 @@ func classifyDanger(call DangerCall) (label string, always, listed, readonly boo
 	switch {
 	case action == "install":
 		return "install", true, true, false
+	case action == "mcp":
+		label := strings.TrimSpace(command)
+		if i := strings.IndexByte(label, '\n'); i >= 0 {
+			label = strings.TrimSpace(label[:i])
+		}
+		if label == "" {
+			label = "MCP"
+		}
+		return label, true, true, false
 	case action == "release":
 		return "发版", true, true, false
 	case action == "pr":

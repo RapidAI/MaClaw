@@ -26,6 +26,8 @@ const (
 	maxArgRunes   = 1000
 	maxEnv        = 40
 	maxEnvRunes   = 4000
+	maxBotIDs     = 32
+	maxReadTools  = 40
 )
 
 // Server is one MCP server the bots may call.
@@ -44,6 +46,14 @@ type Server struct {
 	Args       []string          `json:"args,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
 	Disabled   bool              `json:"disabled,omitempty"`
+	// Bots limits the server to these hub bot ids or runtime instance ids.
+	// Empty means every bot of this owner. A non-empty list is the only
+	// authorization; a discovered tool cannot add itself.
+	Bots []string `json:"bots,omitempty"`
+	// ReadTools are tool names the owner marked safe to call without a
+	// fresh confirmation. Names that send, publish, pay, or delete still
+	// wait. MCP readOnlyHint is not read and is not an entry in this list.
+	ReadTools []string `json:"read_tools,omitempty"`
 }
 
 // Skill is one instruction the bots can read with action=cap_skill.
@@ -80,6 +90,8 @@ type ServerView struct {
 	Args      []string `json:"args,omitempty"`
 	Disabled  bool     `json:"disabled,omitempty"`
 	SecretSet bool     `json:"secret_set,omitempty"`
+	Bots      []string `json:"bots,omitempty"`
+	ReadTools []string `json:"read_tools,omitempty"`
 }
 
 // SkillView is one skill without its body.
@@ -131,6 +143,7 @@ func ViewOf(doc Document) View {
 			ID: s.ID, Name: s.Name, Transport: s.Transport, URL: s.URL,
 			Command: s.Command, Args: append([]string(nil), s.Args...),
 			Disabled: s.Disabled, SecretSet: secretSet(s),
+			Bots: append([]string(nil), s.Bots...), ReadTools: append([]string(nil), s.ReadTools...),
 		})
 	}
 	for _, s := range doc.Skills {
@@ -364,7 +377,170 @@ func cleanServer(s Server) (Server, error) {
 	default:
 		return Server{}, fmt.Errorf("MCP %s transport must be http or stdio", s.Name)
 	}
+	bots, err := cleanIDList(s.Bots)
+	if err != nil {
+		return Server{}, fmt.Errorf("MCP %s: %w", s.Name, err)
+	}
+	reads, err := cleanToolNames(s.ReadTools)
+	if err != nil {
+		return Server{}, fmt.Errorf("MCP %s: %w", s.Name, err)
+	}
+	s.Bots, s.ReadTools = bots, reads
 	return s, nil
+}
+
+// Allows reports whether this server is turned on for the bot. instanceID
+// is the runtime instance. botID is the hub bot id from the turn. An empty
+// Bots list is every bot of the owner. Either id matching an entry is enough.
+func (s Server) Allows(instanceID, botID string) bool {
+	if len(s.Bots) == 0 {
+		return true
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	botID = strings.TrimSpace(botID)
+	for _, id := range s.Bots {
+		if id != "" && (id == instanceID || id == botID) {
+			return true
+		}
+	}
+	return false
+}
+
+// ToolNeedsApproval is false only for a name the owner listed in ReadTools
+// that is not a send, publish, pay, or delete. Anything else, including a
+// tool the server annotated as read-only, waits for one confirmation.
+func ToolNeedsApproval(name string, readTools []string) bool {
+	if effectTool(name) {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	for _, allowed := range readTools {
+		if strings.TrimSpace(allowed) == name {
+			return false
+		}
+	}
+	return true
+}
+
+func effectTool(name string) bool {
+	for _, word := range []string{"发布", "支付", "付款", "删除", "发送", "转账", "转发"} {
+		if strings.Contains(name, word) {
+			return true
+		}
+	}
+	parts := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	for _, part := range parts {
+		switch part {
+		case "send", "publish", "post", "pay", "charge", "delete", "drop", "email", "transfer", "mail":
+			return true
+		}
+	}
+	return false
+}
+
+// ConfigStamp changes when the destination, command, secret, or the bot
+// and read-tool scope changes. It is a hash. The secret is not recoverable
+// from it.
+func ConfigStamp(s Server) string {
+	return hashJSON(map[string]any{
+		"id": s.ID, "transport": s.Transport, "url": s.URL,
+		"command": s.Command, "args": s.Args,
+		"headers": s.Headers, "secret": s.AuthSecret, "env": s.Env,
+		"disabled": s.Disabled, "bots": s.Bots, "read": s.ReadTools,
+	})
+}
+
+// BindingStamp binds one call: the server config, the tool, its schema, and
+// the arguments. A config or schema change is a different stamp, so an older
+// confirmation does not apply.
+func BindingStamp(s Server, tool string, schema map[string]any, args map[string]any) (string, error) {
+	schemaRaw, err := json.Marshal(schema)
+	if err != nil {
+		return "", err
+	}
+	argsRaw, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	sum := hashJSON(map[string]any{
+		"config": ConfigStamp(s),
+		"tool":   strings.TrimSpace(tool),
+		"schema": string(schemaRaw),
+		"args":   string(argsRaw),
+	})
+	if sum == "" {
+		return "", fmt.Errorf("mcp approval stamp failed")
+	}
+	return sum, nil
+}
+
+func hashJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func cleanIDList(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if len(in) > maxBotIDs {
+		return nil, fmt.Errorf("too many bots")
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, id := range in {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !idPattern(id) {
+			return nil, fmt.Errorf("bot id %s is invalid", id)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func cleanToolNames(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	if len(in) > maxReadTools {
+		return nil, fmt.Errorf("too many read tools")
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, name := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if utf8.RuneCountInString(name) > maxNameRunes || strings.ContainsAny(name, " \r\n\t") {
+			return nil, fmt.Errorf("read tool %s is invalid", name)
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func cleanEnv(in map[string]string) (map[string]string, error) {

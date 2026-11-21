@@ -257,14 +257,26 @@ write({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [{"name": "ping", 
 func TestDesktopCapMCPHTTPAndStdio(t *testing.T) {
 	var auth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := string(body)
 		auth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"pong"}]}}`)
+		switch {
+		case strings.Contains(text, `"initialize"`):
+			w.Header().Set("Mcp-Session-Id", "sess-http")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
+		case strings.Contains(text, "notifications/initialized"):
+			w.WriteHeader(http.StatusAccepted)
+		case strings.Contains(text, "tools/list"):
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"ping","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}}}]}}`)
+		default:
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"pong"}]}}`)
+		}
 	}))
 	defer srv.Close()
 	doc := botcapability.Document{MCP: []botcapability.Server{
-		{ID: "search", Name: "Search", Transport: "http", URL: srv.URL, AuthSecret: "sekret"},
-		{ID: "files", Name: "Files", Transport: "stdio", Command: "npx"},
+		{ID: "search", Name: "Search", Transport: "http", URL: srv.URL, AuthSecret: "sekret", ReadTools: []string{"ping"}},
+		{ID: "files", Name: "Files", Transport: "stdio", Command: "npx", ReadTools: []string{"list"}},
 	}}
 	scope := agentruntime.Scope{TenantID: "t", UserID: "alice", InstanceID: "bot"}
 	out, err := operateDesktop(capabilityCtx(t, doc, "execute"), scope, map[string]any{
@@ -279,8 +291,14 @@ func TestDesktopCapMCPHTTPAndStdio(t *testing.T) {
 
 	prev := desktopMCPStdio
 	desktopMCPStdio = func(ctx context.Context, scope agentruntime.Scope, server botcapability.Server, method string, params any) (json.RawMessage, error) {
-		if server.Command != "npx" || method != "tools/call" {
+		if server.Command != "npx" {
 			t.Fatalf("stdio %s %s", server.Command, method)
+		}
+		if method == "tools/list" {
+			return json.RawMessage(`{"tools":[{"name":"list","inputSchema":{"type":"object","properties":{}}}]}`), nil
+		}
+		if method != "tools/call" {
+			t.Fatalf("stdio method %s", method)
 		}
 		return json.RawMessage(`{"content":[{"type":"text","text":"local-pong"}]}`), nil
 	}
