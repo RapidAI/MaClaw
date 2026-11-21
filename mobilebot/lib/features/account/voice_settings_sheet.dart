@@ -8,6 +8,8 @@ import '../../core/locale.dart';
 import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart';
 import '../../core/voice_assets.dart';
 import '../../core/voice_engine.dart';
 
@@ -167,17 +169,36 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
     final theme = Theme.of(context);
     final busy = _progress >= 0 && _progress < 1;
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        0,
+        AppSpacing.lg,
+        AppSpacing.xxl,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(context.S.voiceTitle, style: theme.textTheme.titleMedium),
-          const SizedBox(height: 16),
-
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.xs,
+              AppSpacing.sm,
+              AppSpacing.xs,
+              0,
+            ),
+            child: Text(
+              context.S.voiceTitle,
+              style: theme.textTheme.titleMedium,
+            ),
+          ),
           if (supportsVoiceOutput) ...[
-            Text(context.S.vsTts, style: theme.textTheme.labelLarge),
-            const SizedBox(height: 6),
+            SectionHeader(title: context.S.vsTts, dense: true),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             SegmentedButton<TtsEngine>(
               segments: [
                 ButtonSegment(
@@ -198,7 +219,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                       setState(() => _ttsEngine = v.first);
                     },
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             if (!NativeVoice.supported)
               _engineMissingNote(theme)
             else if (!_ttsReady)
@@ -209,14 +230,11 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
               )
             else if (NativeVoice.supported) ...[
               Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
-              const SizedBox(height: 4),
+              const SizedBox(height: AppSpacing.xs),
               DropdownButtonFormField<String>(
                 initialValue: _voice,
                 isDense: true,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
+                decoration: const InputDecoration(isDense: true),
                 items: [
                   for (final id in VoiceAssets.voiceIds)
                     DropdownMenuItem(
@@ -233,13 +251,20 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                       },
               ),
             ],
+                  ],
+                ),
+              ),
+            ),
           ],
-          if (supportsVoiceOutput && supportsVoiceInput)
-            const SizedBox(height: 20),
 
           if (supportsVoiceInput) ...[
-            Text(context.S.vsAsr, style: theme.textTheme.labelLarge),
-            const SizedBox(height: 6),
+            SectionHeader(title: context.S.vsAsr),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             SegmentedButton<AsrEngine>(
               segments: [
                 ButtonSegment(
@@ -260,7 +285,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                       setState(() => _asrEngine = v.first);
                     },
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: AppSpacing.sm),
             if (!NativeVoice.supported)
               // This build has no libmaclaw_voice.so: a download could never
               // fix it, so stop pointing the person at one (papers
@@ -280,27 +305,50 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
-          ],
-
-          if (_progress >= 0 && _progress < 1) ...[
-            const SizedBox(height: 16),
-            LinearProgressIndicator(value: _progress > 0 ? _progress : null),
-            const SizedBox(height: 4),
-            Text(_stage, style: theme.textTheme.bodySmall),
-          ],
-          if (_error.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                _error,
-                style: TextStyle(color: theme.colorScheme.error),
+                  ],
+                ),
               ),
             ),
-          const SizedBox(height: 8),
-          Text(
-            context.S.vsLocalNote,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
+          ],
+          if (_progress >= 0 && _progress < 1)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    LinearProgressIndicator(
+                      value: _progress > 0 ? _progress : null,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(_stage, style: theme.textTheme.bodySmall),
+                  ],
+                ),
+              ),
+            ),
+          if (_error.isNotEmpty)
+            Card(
+              color: theme.colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Text(
+                  _error,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.lg),
+              child: Text(
+                context.S.vsLocalNote,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
             ),
           ),
         ],

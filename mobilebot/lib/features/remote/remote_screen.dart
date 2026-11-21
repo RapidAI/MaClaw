@@ -1030,19 +1030,34 @@ class _SpaceGroupState extends State<_SpaceGroup> {
                   _RunningBadge(spaceKey: space.key, count: space.runningCount),
                 ],
                 const SizedBox(width: AppSpacing.sm - 2),
-                // 窄屏（360dp）下蒙古语 "N даалгавар" 或长数字会挤压标题：
-                // Flexible + ellipsis 让计数在空间不足时缩略而不是溢出；
-                // 缩略后用 Semantics 向读屏报完整计数，语义不丢。
+                // 数量芯片对齐状态页的 AppBadge：浅色底、11px 加粗。
+                // 窄屏蒙古语 "N даалгавар" 仍走 Flexible + ellipsis，避免挤掉标题；
+                // 缩略后用 Semantics 向读屏报完整计数。
                 Flexible(
                   child: Semantics(
                     label: context.S.rcSpaceTaskCount(space.tasks.length),
-                    child: Text(
-                      context.S.rcSpaceTaskCount(space.tasks.length),
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.onSurfaceVariant.withValues(
+                          alpha: 0.12,
+                        ),
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
+                      ),
+                      child: Text(
+                        context.S.rcSpaceTaskCount(space.tasks.length),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ).copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
                 ),

@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_update.dart';
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 
 /// 检查更新 bottom sheet — Android only (iOS has no sideload channel; the
 /// caller hides the entry there). Mirrors the desktop update dialog: check →
@@ -164,10 +165,10 @@ class _UpdateSheetState extends State<_UpdateSheet> {
     final theme = Theme.of(context);
     return Padding(
       padding: EdgeInsets.only(
-        left: 24,
-        right: 24,
-        top: 8,
-        bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
+        left: AppSpacing.xxl,
+        right: AppSpacing.xxl,
+        top: AppSpacing.sm,
+        bottom: AppSpacing.xxl + MediaQuery.of(context).viewInsets.bottom,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -178,7 +179,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
             textAlign: TextAlign.center,
             style: theme.textTheme.titleLarge,
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: AppSpacing.xs),
           Text(
             _currentVersion.isEmpty
                 ? 'MaClawGo'
@@ -188,10 +189,10 @@ class _UpdateSheetState extends State<_UpdateSheet> {
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: AppSpacing.xl),
           switch (_phase) {
             _Phase.checking => const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
+              padding: EdgeInsets.symmetric(vertical: AppSpacing.xxl),
               child: Center(child: CircularProgressIndicator()),
             ),
             _Phase.upToDate => Column(
@@ -201,7 +202,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                   size: 40,
                   color: theme.colorScheme.primary,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.sm),
                 Text(_detail, style: theme.textTheme.bodyMedium),
               ],
             ),
@@ -212,18 +213,22 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                   context.S.updNewVersion(_update!.version),
                   style: theme.textTheme.titleMedium,
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: AppSpacing.sm),
                 Text(
                   context.S.updInstallHint(updateAssetName),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: AppSpacing.lg),
                 FilledButton.icon(
                   onPressed: _download,
                   icon: const Icon(Icons.download),
                   label: Text(context.S.updDownloadInstall),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: theme.colorScheme.primary,
+                    foregroundColor: theme.colorScheme.onPrimary,
+                  ),
                 ),
                 TextButton(
                   onPressed: () => launchUrl(Uri.parse(_update!.releaseUrl)),
@@ -234,8 +239,12 @@ class _UpdateSheetState extends State<_UpdateSheet> {
             _Phase.downloading => Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                LinearProgressIndicator(value: _progress),
-                const SizedBox(height: 8),
+                LinearProgressIndicator(
+                  value: _progress,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: AppSpacing.sm),
                 Text(
                   context.S.updDownloading(
                     (100 * _progress).toStringAsFixed(0),
@@ -252,10 +261,10 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                   size: 40,
                   color: theme.colorScheme.primary,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.sm),
                 Text(context.S.updOpeningInstaller),
                 if (_detail.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.sm),
                   Text(
                     _detail,
                     textAlign: TextAlign.center,
@@ -272,13 +281,13 @@ class _UpdateSheetState extends State<_UpdateSheet> {
                   size: 40,
                   color: theme.colorScheme.error,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.sm),
                 Text(
                   _detail.isEmpty ? context.S.updCheckFailed : _detail,
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium,
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppSpacing.md),
                 FilledButton.tonal(
                   onPressed: _check,
                   child: Text(context.S.retry),
@@ -292,7 +301,7 @@ class _UpdateSheetState extends State<_UpdateSheet> {
               ],
             ),
           },
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
         ],
       ),
     );

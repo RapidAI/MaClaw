@@ -210,10 +210,13 @@ class AppTheme {
           fontFamily: appFontFamily,
         ),
       ),
-      bottomSheetTheme: const BottomSheetThemeData(
+      bottomSheetTheme: BottomSheetThemeData(
         showDragHandle: true,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        backgroundColor: isDark ? sheetDark : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        dragHandleColor: scheme.onSurfaceVariant.withValues(alpha: 0.4),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.xl)),
         ),
       ),
       snackBarTheme: SnackBarThemeData(

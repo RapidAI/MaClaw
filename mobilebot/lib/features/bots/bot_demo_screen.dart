@@ -9,9 +9,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
-import '../../core/platform.dart';
-import 'bot_models.dart';
 import '../../core/locale.dart';
+import '../../core/platform.dart';
+import '../../core/theme.dart';
+import '../../core/ui_kit.dart';
+import 'bot_models.dart';
 import 'bots_controller.dart';
 
 /// 演示录制 — 桌面 GUI 演示功能（demo/start|narrate|stop|distill）的手机版：
@@ -242,16 +244,40 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: Text(context.S.demoTitle(widget.bot.title))),
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
+            Expanded(
+              child: Text(
+                context.S.demoTitle(widget.bot.title),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.xxl,
+        ),
         children: [
           if (_error.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                _error,
-                style: TextStyle(color: theme.colorScheme.error),
+            Card(
+              color: theme.colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Text(
+                  _error,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
               ),
             ),
           switch (_phase) {
@@ -269,28 +295,52 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(
-          Icons.smart_display_outlined,
-          size: 56,
-          color: theme.colorScheme.primary,
-        ),
-        const SizedBox(height: 12),
-        Text(
-          context.S.demoIntro(widget.bot.title),
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                  ),
+                  child: Icon(
+                    Icons.smart_display_outlined,
+                    size: 21,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Text(
+                    context.S.demoIntro(widget.bot.title),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        const SizedBox(height: 20),
-        TextField(
-          controller: _titleCtrl,
-          decoration: InputDecoration(
-            labelText: context.S.demoTitleLabel,
-            hintText: context.S.demoTitleHint,
-            border: OutlineInputBorder(),
+        SectionHeader(title: context.S.demoTitleLabel, dense: true),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: TextField(
+              controller: _titleCtrl,
+              decoration: InputDecoration(
+                labelText: context.S.demoTitleLabel,
+                hintText: context.S.demoTitleHint,
+              ),
+            ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.lg),
         FilledButton.icon(
           onPressed: _busy ? null : _start,
           icon: const Icon(Icons.fiber_manual_record, size: 16),
@@ -304,87 +354,104 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.fiber_manual_record,
-                color: theme.colorScheme.error,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  context.S.demoRecording(widget.bot.title),
-                  style: TextStyle(color: theme.colorScheme.onErrorContainer),
-                ),
-              ),
-              TextButton(
-                onPressed: () => context.push(
-                  '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
-                ),
-                child: Text(context.S.demoWatch),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        Text(context.S.demoNarration, style: theme.textTheme.titleSmall),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _narrateCtrl,
-                decoration: InputDecoration(
-                  hintText: context.S.demoNarrationHint,
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
+        Card(
+          color: theme.colorScheme.errorContainer,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.sm,
+              AppSpacing.sm,
+              AppSpacing.sm,
             ),
-            if (_asrAvailable && supportsVoiceInput)
-              IconButton(
-                tooltip: _micRecording
-                    ? context.S.demoStopRecord
-                    : context.S.demoVoiceNarration,
-                icon: Icon(
-                  _micRecording ? Icons.stop : Icons.mic,
-                  color: _micRecording ? theme.colorScheme.error : null,
+            child: Row(
+              children: [
+                Icon(
+                  Icons.fiber_manual_record,
+                  color: theme.colorScheme.error,
+                  size: 18,
                 ),
-                onPressed: _busy ? null : _toggleMic,
-              ),
-            IconButton.filled(
-              onPressed: _busy ? null : _narrateText,
-              icon: const Icon(Icons.add_comment, size: 18),
-            ),
-          ],
-        ),
-        if (_narrations.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          for (final n in _narrations)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    Icons.subdirectory_arrow_right,
-                    size: 14,
-                    color: theme.colorScheme.onSurfaceVariant,
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    context.S.demoRecording(widget.bot.title),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onErrorContainer,
+                    ),
                   ),
-                  const SizedBox(width: 6),
-                  Expanded(child: Text(n, style: theme.textTheme.bodySmall)),
-                ],
-              ),
+                ),
+                TextButton(
+                  onPressed: () => context.push(
+                    '/bot/${Uri.encodeComponent(widget.bot.id)}/desktop',
+                  ),
+                  child: Text(context.S.demoWatch),
+                ),
+              ],
             ),
-        ],
-        const SizedBox(height: 20),
+          ),
+        ),
+        SectionHeader(title: context.S.demoNarration, dense: true),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _narrateCtrl,
+                        decoration: InputDecoration(
+                          hintText: context.S.demoNarrationHint,
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    if (_asrAvailable && supportsVoiceInput)
+                      IconButton(
+                        tooltip: _micRecording
+                            ? context.S.demoStopRecord
+                            : context.S.demoVoiceNarration,
+                        icon: Icon(
+                          _micRecording ? Icons.stop : Icons.mic,
+                          color: _micRecording
+                              ? theme.colorScheme.error
+                              : null,
+                        ),
+                        onPressed: _busy ? null : _toggleMic,
+                      ),
+                    IconButton.filled(
+                      onPressed: _busy ? null : _narrateText,
+                      icon: const Icon(Icons.add_comment, size: 18),
+                    ),
+                  ],
+                ),
+                if (_narrations.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  for (final n in _narrations)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.subdirectory_arrow_right,
+                            size: 14,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          Expanded(
+                            child: Text(n, style: theme.textTheme.bodySmall),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
         FilledButton.tonalIcon(
           onPressed: _busy ? null : _stop,
           icon: const Icon(Icons.stop),
@@ -398,15 +465,14 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          context.S.demoDone(_events.length),
-          style: theme.textTheme.titleSmall,
+        SectionHeader(
+          title: context.S.demoDone(_events.length),
+          dense: true,
         ),
-        const SizedBox(height: 8),
         for (final e in _events)
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(AppSpacing.lg),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -415,7 +481,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                     size: 18,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: AppSpacing.md),
                   Expanded(
                     child: Text(
                       _eventLabel(e),
@@ -424,24 +490,28 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                   ),
                   if (syncText(e['ref']).isNotEmpty)
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
                       child: _shot(syncText(e['ref'])),
                     ),
                 ],
               ),
             ),
           ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _notesCtrl,
-          decoration: InputDecoration(
-            labelText: context.S.demoExtraLabel,
-            hintText: context.S.demoExtraHint,
-            border: OutlineInputBorder(),
+        SectionHeader(title: context.S.demoExtraLabel, dense: true),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: TextField(
+              controller: _notesCtrl,
+              decoration: InputDecoration(
+                labelText: context.S.demoExtraLabel,
+                hintText: context.S.demoExtraHint,
+              ),
+              maxLines: 3,
+            ),
           ),
-          maxLines: 3,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.lg),
         FilledButton.icon(
           onPressed: _busy || _timeline.isEmpty ? null : _distill,
           icon: const Icon(Icons.auto_fix_high),
@@ -458,17 +528,39 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.task_alt, size: 56, color: theme.colorScheme.primary),
-        const SizedBox(height: 12),
-        Text(
-          context.S.demoSkillReady,
-          style: theme.textTheme.titleMedium,
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 12),
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                  ),
+                  child: Icon(
+                    Icons.task_alt,
+                    size: 21,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Text(
+                    context.S.demoSkillReady,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -476,12 +568,12 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
                   Text(name, style: theme.textTheme.titleSmall),
                 if (goal.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: AppSpacing.xs),
                     child: Text(goal, style: theme.textTheme.bodySmall),
                   ),
                 if (steps.isNotEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.only(top: AppSpacing.sm),
                     child: Text(
                       context.S.demoStepCount(steps.length),
                       style: theme.textTheme.bodySmall?.copyWith(
@@ -493,7 +585,7 @@ class _BotDemoScreenState extends ConsumerState<BotDemoScreen> {
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppSpacing.lg),
         FilledButton.tonal(
           onPressed: () => setState(() {
             _phase = _DemoPhase.idle;

@@ -35,7 +35,7 @@ import 'bots_controller.dart';
 import 'send_trace.dart';
 import '../../core/theme.dart';
 import '../../core/ui_kit.dart'
-    show LinkifiedText, linkifyMarkdownUrls, openExternalUrl;
+    show BrandMark, LinkifiedText, linkifyMarkdownUrls, openExternalUrl;
 import 'widgets.dart';
 
 /// One bot's workspace — the mobile version of the desktop GUI's
@@ -1306,8 +1306,8 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            BotAvatar(bot: widget.bot, radius: 17),
-            const SizedBox(width: 10),
+            const BrandMark(size: 26, tile: true),
+            const SizedBox(width: AppSpacing.sm + 2),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
