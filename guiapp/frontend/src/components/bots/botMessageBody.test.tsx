@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BotMessageBody, botMessageIsStructured } from './botMessageBody';
 
@@ -63,6 +63,50 @@ describe('BotMessageBody', () => {
         const pre = view.container.querySelector('pre');
         expect(pre?.textContent).toBe('app_list');
         expect(view.container.textContent).not.toContain('```');
+    });
+
+    it('renders a closed mermaid fence with the diagram component', async () => {
+        const text = [
+            '这个系统分三层：',
+            '',
+            '```mermaid',
+            'flowchart TD',
+            '  A["采集层"] --> B["存储层"]',
+            '```',
+            '',
+            '关键路径在采集到存储。',
+        ].join('\n');
+        const view = render(<BotMessageBody text={text} />);
+        await waitFor(() => {
+            const settled = screen.queryByTestId('assistant-mermaid-diagram') || screen.queryByTestId('assistant-mermaid-fallback');
+            expect(settled).toBeTruthy();
+        }, { timeout: 8000 });
+        const source = view.container.querySelector('[data-testid="assistant-mermaid-fallback"] pre')?.textContent
+            || view.container.querySelector('[data-testid="assistant-mermaid-source"]')?.textContent
+            || '';
+        expect(source).toContain('flowchart TD');
+        expect(source).toContain('A["采集层"]');
+        expect(view.container.textContent).toContain('这个系统分三层');
+        expect(view.container.textContent).toContain('关键路径在采集到存储');
+        expect(view.container.querySelector('.desktop-bot-chat__pre')).toBeNull();
+    });
+
+    it('keeps a non-mermaid fence and an unclosed mermaid fence as source', () => {
+        const mixed = [
+            '```ts',
+            'const n = 1;',
+            '```',
+            '',
+            '```mermaid',
+            'flowchart TD',
+            '  A -->',
+        ].join('\n');
+        const view = render(<BotMessageBody text={mixed} />);
+        expect(screen.queryByTestId('assistant-mermaid-diagram')).toBeNull();
+        expect(screen.queryByTestId('assistant-mermaid-fallback')).toBeNull();
+        expect(view.container.querySelector('pre')?.textContent).toBe('const n = 1;');
+        expect(view.container.textContent).toContain('```mermaid');
+        expect(view.container.textContent).toContain('A -->');
     });
 
     it('keeps the reply after an unclosed fence', () => {

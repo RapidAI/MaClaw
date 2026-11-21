@@ -1,4 +1,6 @@
 import { createContext, memo, useContext, type MouseEvent, type ReactNode } from 'react';
+import { AssistantMermaidDiagram, isMermaidCodeFence } from '../ai/AssistantMermaidDiagram';
+import { lightTheme } from '../ai/aiAssistantPanelTheme';
 import { parseMarkdownTableCells } from '../ai/aiAssistantMarkdownTable';
 
 // Bot replies often arrive as raw Markdown. The transcript stores that text
@@ -7,7 +9,7 @@ import { parseMarkdownTableCells } from '../ai/aiAssistantMarkdownTable';
 type Block =
     | { kind: 'p'; text: string; heading: boolean }
     | { kind: 'h'; level: number; text: string }
-    | { kind: 'pre'; text: string }
+    | { kind: 'pre'; text: string; lang: string }
     | { kind: 'quote'; blocks: Block[] }
     | { kind: 'rule' }
     | { kind: 'table'; header: string[]; rows: string[][] }
@@ -371,9 +373,14 @@ function sameListMarker(line: string, ordered: boolean): boolean {
     return ordered ? kind === 'ol' : kind === 'ul';
 }
 
+function fenceInfo(line: string): string {
+    return line.trimStart().slice(3).trim().split(/\s+/, 1)[0] || '';
+}
+
 // An opening fence with no closer must not swallow the rest of the reply.
-function takeFence(lines: string[], index: number): { text: string; next: number } | null {
+function takeFence(lines: string[], index: number): { text: string; lang: string; next: number } | null {
     if (!lines[index].trimStart().startsWith('```')) return null;
+    const lang = fenceInfo(lines[index]);
     const body: string[] = [];
     let cursor = index + 1;
     while (cursor < lines.length && !lines[cursor].trimStart().startsWith('```')) {
@@ -381,7 +388,7 @@ function takeFence(lines: string[], index: number): { text: string; next: number
         cursor += 1;
     }
     if (cursor >= lines.length) return null;
-    return { text: body.join('\n'), next: cursor + 1 };
+    return { text: body.join('\n'), lang, next: cursor + 1 };
 }
 
 function nextContent(lines: string[], index: number): number {
@@ -502,7 +509,7 @@ function parseBlocks(src: string): Block[] {
         const fence = takeFence(lines, index);
         if (line.trimStart().startsWith('```') && fence) {
             flushParagraph(paragraph, blocks);
-            blocks.push({ kind: 'pre', text: fence.text });
+            blocks.push({ kind: 'pre', text: fence.text, lang: fence.lang });
             index = fence.next;
             continue;
         }
@@ -551,6 +558,9 @@ function renderBlocks(blocks: Block[], keyPrefix: string): ReactNode[] {
     return blocks.map((block, index) => {
         const key = `${keyPrefix}-${index}`;
         if (block.kind === 'pre') {
+            if (isMermaidCodeFence(block.lang)) {
+                return <AssistantMermaidDiagram key={key} code={block.text} theme={lightTheme} />;
+            }
             return <pre key={key} className="desktop-bot-chat__pre"><code>{block.text}</code></pre>;
         }
         if (block.kind === 'h') {
