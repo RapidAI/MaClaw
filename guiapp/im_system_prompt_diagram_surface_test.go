@@ -50,9 +50,14 @@ func TestDiagramSurfaceOwnerIDPrefersLoopOwner(t *testing.T) {
 		// No context at all must yield empty, so the caller can treat the turn
 		// conservatively instead of assuming a desktop surface.
 		{name: "unknown owner stays empty", loopCtx: nil, want: ""},
+		{name: "desktop platform uses checked fallback", loopCtx: &LoopContext{Platform: desktopPlatform}, want: desktopUserID},
 	}
 	for _, tc := range cases {
-		if got := diagramSurfaceOwnerID(&IMMessageHandler{}, tc.loopCtx); got != tc.want {
+		fallback := ""
+		if tc.loopCtx != nil && tc.loopCtx.Platform == desktopPlatform {
+			fallback = desktopUserID
+		}
+		if got := diagramSurfaceOwnerID(&IMMessageHandler{}, tc.loopCtx, fallback); got != tc.want {
 			t.Fatalf("%s: owner = %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -105,16 +110,30 @@ func TestBuildIMEntrySystemPrompt_DiagramCueFollowsReplySurface(t *testing.T) {
 }
 
 
-func TestBuildIMEntrySystemPrompt_DiagramCueStaysOffUntilAsked(t *testing.T) {
+func TestBuildIMEntrySystemPrompt_DiagramCueFollowsSurfaceWithoutKeyword(t *testing.T) {
 	h := &IMMessageHandler{}
 	prompt := h.buildIMEntrySystemPrompt(IMUserMessage{
 		UserID:   desktopUserID,
 		Platform: desktopPlatform,
 		Text:     "解释一下这个系统的架构",
 	}, nil, &LoopContext{
-		Runtime: RuntimeContext{PolicyOwnerID: desktopUserID, WorkflowOwnerID: desktopUserID},
+		UserID:   desktopUserID,
+		Platform: desktopPlatform,
+		Runtime:  RuntimeContext{PolicyOwnerID: desktopUserID, WorkflowOwnerID: desktopUserID},
 	}, false, "", "", "", "")
-	if strings.Contains(prompt, "讲解配图") || strings.Contains(prompt, "```mermaid") {
-		t.Fatal("desktop conversation must not carry the drawing rule until the user asks for a diagram")
+	if !strings.Contains(prompt, "讲解配图") || !strings.Contains(prompt, "```mermaid") {
+		t.Fatal("desktop markdown conversation must carry the drawing rule without a diagram keyword")
+	}
+}
+
+func TestBuildIMEntrySystemPrompt_DiagramCueSurvivesMissingLoopOwner(t *testing.T) {
+	h := &IMMessageHandler{}
+	prompt := h.buildIMEntrySystemPrompt(IMUserMessage{
+		UserID:   desktopUserID,
+		Platform: desktopPlatform,
+		Text:     "解释一下这个系统的架构",
+	}, nil, &LoopContext{UserID: desktopUserID, Platform: desktopPlatform}, false, "", "", "", "")
+	if !strings.Contains(prompt, "讲解配图") {
+		t.Fatal("desktop session with no loop owner must still carry the drawing rule")
 	}
 }
