@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'l10n_test_helper.dart';
@@ -10,6 +11,7 @@ import 'package:mobilebot/features/bots/bot_chat_controller.dart';
 import 'package:mobilebot/features/bots/bot_chat_screen.dart';
 import 'package:mobilebot/features/bots/bot_models.dart';
 import 'package:mobilebot/features/bots/bots_controller.dart';
+import 'package:mobilebot/features/bots/send_trace.dart';
 import 'package:mobilebot/core/hub_config.dart';
 
 final _account = Account(
@@ -44,6 +46,7 @@ class _FakeApi extends BotApi {
   BotPhase? lastPhase;
   Object? sendError;
   int sendCalls = 0;
+  final sentIds = <String>[];
 
   @override
   Future<SendResult> sendMessage(
@@ -57,6 +60,7 @@ class _FakeApi extends BotApi {
     lastSent = content;
     lastPhase = phase;
     sendCalls++;
+    sentIds.add(clientMessageId ?? '');
     if (sendError != null) throw sendError!;
     return SendResult.settled(const BotReply(text: '好的'));
   }
@@ -176,20 +180,69 @@ void main() {
     expect(find.text('发不出去'), findsOneWidget);
     expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
-    expect(api.sendCalls, 1);
+    // Confirmed miss: one automatic retry, same client id, still one bubble.
+    expect(api.sendCalls, 2);
+    expect(api.sentIds, hasLength(2));
+    expect(api.sentIds[0], api.sentIds[1]);
 
     await tester.enterText(find.byType(TextField), '再发一条');
     await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
     await tester.pumpAndSettle();
 
     expect(find.text('再发一条'), findsOneWidget);
-    expect(api.sendCalls, 2);
+    expect(api.sendCalls, 4);
+    expect(api.sentIds[2], api.sentIds[3]);
+    expect(api.sentIds[0], isNot(api.sentIds[2]));
     expect(api.lastSent, '再发一条');
     expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
 
     await tester.tap(find.byTooltip('知道了'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('channel-down')), findsNothing);
+  });
+
+  testWidgets('copy diagnosis reads the ring before the async toast', (
+    tester,
+  ) async {
+    SendTrace.instance.clear();
+    addTearDown(SendTrace.instance.clear);
+    Map<Object?, Object?>? copied;
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    await tester.pumpWidget(_app(api));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '复制诊断');
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pumpAndSettle();
+
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = Map<Object?, Object?>.from(call.arguments as Map);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    final id = api.sentIds.first;
+    await tester.tap(find.byKey(ValueKey('copy-send-trace-$id')));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(copied?['text'], isA<String>());
+    final text = copied!['text'] as String;
+    expect(text, contains('retry'));
+    expect(text, contains('id=$id'));
+    expect(text, contains('reached=false'));
+    expect(RegExp(r'bot=b1 reached( |$)').hasMatch(text), isFalse);
+    expect(find.text('发送诊断已复制，可粘贴发给支持人员'), findsOneWidget);
   });
 
   testWidgets('a 5xx send shows the mapped reason and the channel bar', (
@@ -208,14 +261,17 @@ void main() {
     await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
     await tester.pumpAndSettle();
 
-    expect(find.text('无法连接服务器，请检查网络'), findsAtLeast(2));
+    expect(find.text('发送超时，可能已送达，请勿重复发送'), findsAtLeast(2));
     expect(find.byKey(const ValueKey('channel-down')), findsOneWidget);
     expect(find.text('发送中…'), findsNothing);
     expect(find.text('发送失败'), findsOneWidget);
+    // A gateway answer was seen, so the client must not post it again.
+    expect(api.sendCalls, 1);
 
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
     expect(api.sendCalls, 2);
+    expect(api.sentIds[0], isNot(api.sentIds[1]));
     expect(api.lastSent, '网关挂了');
   });
 

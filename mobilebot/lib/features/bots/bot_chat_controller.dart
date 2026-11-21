@@ -10,6 +10,7 @@ import '../../core/providers.dart';
 import 'bot_api.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import 'send_trace.dart';
 
 class ChatState {
   final String botId;
@@ -33,6 +34,10 @@ class ChatState {
   /// A later send is never blocked by this flag.
   final String channelError;
 
+  /// In-memory send diagnosis the person can copy. Local only — not the
+  /// journal, and not an adb log. Empty until a send is attempted.
+  final String sendTrace;
+
   const ChatState({
     required this.botId,
     this.messages = const [],
@@ -43,6 +48,7 @@ class ChatState {
     this.activity = '',
     this.continueThread = '',
     this.channelError = '',
+    this.sendTrace = '',
   });
 
   ChatState copyWith({
@@ -54,6 +60,7 @@ class ChatState {
     String? activity,
     String? continueThread,
     String? channelError,
+    String? sendTrace,
   }) => ChatState(
     botId: botId,
     messages: messages ?? this.messages,
@@ -64,6 +71,7 @@ class ChatState {
     activity: activity ?? this.activity,
     continueThread: continueThread ?? this.continueThread,
     channelError: channelError ?? this.channelError,
+    sendTrace: sendTrace ?? this.sendTrace,
   );
 }
 
@@ -78,6 +86,10 @@ class _OutboundSend {
   final String? continueSession;
   final Completer<bool> done;
   final DateTime enqueuedAt;
+
+  /// One automatic retry is allowed, and only after a failure that confirms
+  /// the request never reached Hub. The second post reuses [messageId].
+  bool retried = false;
 
   _OutboundSend({
     required this.messageId,
@@ -665,6 +677,7 @@ class BotChatController extends Notifier<ChatState> {
       done: Completer<bool>(),
     );
     _outbound.add(job);
+    _traceSend('enqueued', messageId: job.messageId, detail: 'chars=${text.length}');
     _armSendWatch(job.messageId);
     if (!_sendBusy) unawaited(_drainOutbound());
     return job.done.future;
@@ -688,6 +701,9 @@ class BotChatController extends Notifier<ChatState> {
         } on Object {
           ok = false;
         }
+        // A confirmed miss is posted again with the same id. Leave the
+        // future open until that single retry settles.
+        if (job.retried && _outbound.contains(job)) continue;
         if (!job.done.isCompleted) job.done.complete(ok);
       }
     } finally {
@@ -709,10 +725,16 @@ class BotChatController extends Notifier<ChatState> {
     _postingId = job.messageId;
     _postingJob = job;
     state = state.copyWith(sending: true);
+    _traceSend('posting', messageId: job.messageId);
     _armSendWatch(job.messageId);
     final api = _apiOrNull;
     if (api == null) {
       _sendWatch?.cancel();
+      _traceSend(
+        'no_client',
+        messageId: job.messageId,
+        detail: 'client_missing',
+      );
       _markFailed(
         job.messageId,
         sharedL10n.netConnectionError,
@@ -736,8 +758,22 @@ class BotChatController extends Notifier<ChatState> {
       // The watch already gave this bubble a failed ending. A late admit
       // must not flip it back to "sent" and hide the timeout.
       if (state.messages.any((m) => m.id == job.messageId && m.failed)) {
+        _traceSend(
+          'late_admit',
+          messageId: job.messageId,
+          detail: 'already_failed',
+          reachedServer: true,
+        );
         return false;
       }
+      _traceSend(
+        result.queued
+            ? 'queued'
+            : (result.isAdmitted ? 'admitted' : 'settled'),
+        messageId: job.messageId,
+        detail: result.isAdmitted ? 'run=${result.run?.runId ?? ''}' : '',
+        reachedServer: true,
+      );
       if (state.continueThread.isNotEmpty || state.channelError.isNotEmpty) {
         state = state.copyWith(continueThread: '', channelError: '');
       }
@@ -796,13 +832,42 @@ class BotChatController extends Notifier<ChatState> {
       if (_disposed) return false;
       _sendWatch?.cancel();
       if (state.messages.any((m) => m.id == job.messageId && m.failed)) {
+        _traceSend(
+          'late_error',
+          messageId: job.messageId,
+          detail: _traceError(error),
+        );
+        return false;
+      }
+      // Retry once only when the request is confirmed not to have left.
+      // A timeout or any other uncertain failure may already be on the
+      // server, so it is not posted again.
+      if (!job.retried && sendConfirmedUnsent(error)) {
+        job.retried = true;
+        _traceSend(
+          'retry',
+          messageId: job.messageId,
+          detail: _traceError(error),
+        );
+        _outbound.insert(0, job);
+        _armSendWatch(job.messageId);
         return false;
       }
       noteAuthFailure(ref, error);
+      final uncertain = sendOutcomeUncertain(error);
+      _traceSend(
+        'post_failed',
+        messageId: job.messageId,
+        detail: '${_traceError(error)}${uncertain ? ' maybe_delivered' : ''}',
+        reachedServer: !sendNeverReachedServer(error),
+      );
       _markFailed(
         job.messageId,
-        failureMessage(error),
+        uncertain ? sharedL10n.chatSendMaybeDelivered : failureMessage(error),
         channelDown: sendNeverReachedServer(error),
+        // A burst must not die with the first miss. Each queued line is
+        // still posted with its own id, and only a confirmed miss retries.
+        dropQueued: false,
       );
       return false;
     } finally {
@@ -870,7 +935,22 @@ class BotChatController extends Notifier<ChatState> {
       _armNextSendWatch();
       return;
     }
-    _markFailed(expired, sharedL10n.netTimeout, channelDown: true);
+    final posted = expired == _postingId;
+    _traceSend(
+      'watch_expired',
+      messageId: expired,
+      detail: posted ? 'maybe_delivered' : 'not_posted',
+      reachedServer: posted,
+    );
+    // The on-wire clock can fire after Hub already accepted the POST.
+    // Do not resend, and do not call that an offline channel.
+    _markFailed(
+      expired,
+      posted ? sharedL10n.chatSendMaybeDelivered : sharedL10n.netTimeout,
+      channelDown: !posted,
+      // Only this bubble aged out. Lines still waiting keep their own post.
+      dropQueued: false,
+    );
   }
 
   void _armNextSendWatch() {
@@ -1099,11 +1179,18 @@ class BotChatController extends Notifier<ChatState> {
 
   void _failQueuedSends(String error) {
     if (_outbound.isEmpty) return;
-    final ids = {for (final job in _outbound) job.messageId};
-    for (final job in _outbound) {
+    // A confirmed miss is already queued for its one retry. Failing it here
+    // would drop that retry and complete its future early.
+    final doomed = [
+      for (final job in _outbound)
+        if (!job.retried) job,
+    ];
+    if (doomed.isEmpty) return;
+    final ids = {for (final job in doomed) job.messageId};
+    for (final job in doomed) {
       if (!job.done.isCompleted) job.done.complete(false);
     }
-    _outbound.clear();
+    _outbound.removeWhere(doomed.contains);
     final messages = [
       for (final m in state.messages)
         ids.contains(m.id) && !m.failed
@@ -1113,7 +1200,12 @@ class BotChatController extends Notifier<ChatState> {
     state = state.copyWith(messages: messages, sending: false);
   }
 
-  void _markFailed(String messageId, String error, {bool channelDown = false}) {
+  void _markFailed(
+    String messageId,
+    String error, {
+    bool channelDown = false,
+    bool dropQueued = true,
+  }) {
     final messages = [
       for (final m in state.messages)
         m.id == messageId
@@ -1133,7 +1225,7 @@ class BotChatController extends Notifier<ChatState> {
     // The wire never accepted this turn. Sibling bubbles still saying
     // "sending…" never left either — fail them with the same channel state
     // instead of leaving a silent queue behind one failed bubble.
-    if (channelDown) _failQueuedSends(error);
+    if (channelDown && dropQueued) _failQueuedSends(error);
   }
 
   void _settleError(String error) {
@@ -1293,6 +1385,40 @@ class BotChatController extends Notifier<ChatState> {
     if (state.error.isNotEmpty) {
       state = state.copyWith(error: '');
     }
+  }
+
+  /// Copyable local diagnosis for one send, or the whole recent buffer when
+  /// [messageId] is empty. Does not read adb or disk.
+  String sendTraceText({String messageId = ''}) =>
+      SendTrace.instance.text(messageId: messageId);
+
+  void _traceSend(
+    String stage, {
+    required String messageId,
+    String detail = '',
+    bool reachedServer = false,
+  }) {
+    SendTrace.instance.note(
+      stage: stage,
+      messageId: messageId,
+      botId: state.botId,
+      detail: detail,
+      reachedServer: reachedServer,
+    );
+    if (_disposed) return;
+    final text = SendTrace.instance.text(messageId: messageId);
+    if (text.isEmpty || text == state.sendTrace) return;
+    state = state.copyWith(sendTrace: text);
+  }
+
+  String _traceError(Object error) {
+    if (error is HubApiException) {
+      final status = error.statusCode == null ? '' : ' status=${error.statusCode}';
+      final code = error.code.trim().isEmpty ? 'unknown' : error.code.trim();
+      return 'code=$code$status reached=${!sendNeverReachedServer(error)}';
+    }
+    final type = error.runtimeType.toString();
+    return 'type=$type reached=${!sendNeverReachedServer(error)}';
   }
 
   /// Dismiss the composer channel line without blocking the next send.

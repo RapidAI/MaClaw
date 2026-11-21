@@ -12,6 +12,7 @@ import 'package:mobilebot/features/bots/bot_models.dart';
 import 'package:mobilebot/core/hub_config.dart';
 import 'package:mobilebot/features/bots/bots_controller.dart';
 import 'package:mobilebot/features/bots/message_order.dart';
+import 'package:mobilebot/features/bots/send_trace.dart';
 
 final _account = Account(
   key: 'test@example.com',
@@ -36,6 +37,8 @@ class _FakeApi extends BotApi {
   String? lastContinueSession;
   String? lastAskRun;
   String? lastSent;
+  int sendCalls = 0;
+  final sentIds = <String>[];
   Completer<void>? sendGate;
 
   @override
@@ -68,6 +71,8 @@ class _FakeApi extends BotApi {
     lastContinueSession = continueSession;
     lastAskRun = askRun;
     lastSent = content;
+    sendCalls++;
+    sentIds.add(clientMessageId ?? '');
     if (sendGate != null) await sendGate!.future;
     if (sendError != null) throw sendError!;
     return sendResult ?? SendResult.settled(const BotReply(text: '好的，收到'));
@@ -777,11 +782,18 @@ void main() {
     );
     expect(
       userFacingSendFailure(code: 'HTTP_502', statusCode: 502),
-      '无法连接服务器，请检查网络',
+      '发送超时，可能已送达，请勿重复发送',
     );
     expect(
       userFacingSendFailure(code: 'HTTP_500', statusCode: 500),
-      '服务器异常，请稍后重试',
+      '发送超时，可能已送达，请勿重复发送',
+    );
+    expect(sendConfirmedUnsent(StateError('SocketException: failed')), isTrue);
+    expect(
+      sendConfirmedUnsent(
+        const HubApiException('HTTP_503', 'bad gateway', statusCode: 503),
+      ),
+      isFalse,
     );
     expect(
       userFacingSendFailure(code: 'DESKTOP_ASLEEP', message: 'asleep'),
@@ -804,8 +816,20 @@ void main() {
       sendNeverReachedServer(
         const HubApiException('HTTP_504', 'gateway', statusCode: 504),
       ),
+      isFalse,
+    );
+    expect(
+      sendOutcomeUncertain(
+        const HubApiException('HTTP_504', 'gateway', statusCode: 504),
+      ),
       isTrue,
     );
+    expect(
+      userFacingSendFailure(code: 'HTTP_504', statusCode: 504),
+      '发送超时，可能已送达，请勿重复发送',
+    );
+    expect(sendNeverReachedServer(StateError('connection timed out')), isFalse);
+    expect(sendOutcomeUncertain(StateError('connection timed out')), isTrue);
     expect(
       sendNeverReachedServer(
         const HubApiException('UNKNOWN', 'no answer'),
@@ -854,6 +878,36 @@ void main() {
     expect(state.channelError, isEmpty);
   });
 
+  test('a confirmed miss retries once with the same client message id', () async {
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('自动重试');
+    final state = container.read(botChatProvider);
+    expect(api.sendCalls, 2);
+    expect(api.sentIds, hasLength(2));
+    expect(api.sentIds[0], api.sentIds[1]);
+    expect(api.sentIds[0], state.messages.single.id);
+    expect(state.messages.single.failed, isTrue);
+    expect(state.channelError, isNotEmpty);
+  });
+
+  test('a timeout is not resent and says it may already be delivered', () async {
+    final api = _FakeApi()..sendError = StateError('connection timed out');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('别重发');
+    final state = container.read(botChatProvider);
+    expect(api.sendCalls, 1);
+    expect(state.messages.single.failed, isTrue);
+    expect(state.messages.single.failureReason, '发送超时，可能已送达，请勿重复发送');
+    expect(state.channelError, isEmpty);
+  });
+
 
   test('a second send while the first is on the wire is not dropped', () async {
     final gate = Completer<void>();
@@ -889,7 +943,7 @@ void main() {
   });
 
 
-  test('a channel failure fails the whole unsent round, then the next send still goes', () async {
+  test('a channel miss retries each queued send once, then the next send still goes', () async {
     final gate = Completer<void>();
     final api = _FakeApi()
       ..sendGate = gate
@@ -913,7 +967,11 @@ void main() {
     expect(state.messages.where((m) => m.pending), isEmpty);
     expect(state.channelError, isNotEmpty);
     expect(state.sending, isFalse);
-    expect(api.lastSent, '第一条');
+    expect(api.lastSent, '第二条');
+    expect(api.sendCalls, 4);
+    expect(api.sentIds[0], api.sentIds[1]);
+    expect(api.sentIds[2], api.sentIds[3]);
+    expect(api.sentIds[0], isNot(api.sentIds[2]));
 
     // A down channel must not swallow a later attempt.
     final third = notifier.send('第三条');
@@ -926,9 +984,126 @@ void main() {
     ]);
     expect(state.messages.every((m) => m.failed), isTrue);
     expect(api.lastSent, '第三条');
+    expect(api.sendCalls, 6);
     expect(state.channelError, isNotEmpty);
   });
 
+  test('ten quick misses each retry once with their own id', () async {
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    final pending = [for (var i = 0; i < 10; i++) notifier.send('连发$i')];
+    final results = await Future.wait(pending);
+    expect(results, everyElement(isFalse));
+
+    final state = container.read(botChatProvider);
+    final users = state.messages.where((m) => m.isUser).toList();
+    expect(users, hasLength(10));
+    expect(users.every((m) => m.failed && !m.pending), isTrue);
+    expect(api.sendCalls, 20);
+    final ids = users.map((m) => m.id).toList();
+    expect(ids.toSet(), hasLength(10));
+    for (final id in ids) {
+      expect(api.sentIds.where((sent) => sent == id), hasLength(2));
+    }
+  });
+
+  test('a timeout does not drop the rest of the burst or retry them', () async {
+    final api = _FakeApi()..sendError = StateError('connection timed out');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    final pending = [for (var i = 0; i < 3; i++) notifier.send('超时$i')];
+    final results = await Future.wait(pending);
+    expect(results, everyElement(isFalse));
+
+    final state = container.read(botChatProvider);
+    final users = state.messages.where((m) => m.isUser).toList();
+    expect(users, hasLength(3));
+    expect(users.every((m) => m.failed && !m.pending), isTrue);
+    expect(
+      users.every((m) => m.failureReason == '发送超时，可能已送达，请勿重复发送'),
+      isTrue,
+    );
+    expect(state.channelError, isEmpty);
+    expect(api.sendCalls, 3);
+    expect(api.sentIds.toSet(), hasLength(3));
+    expect(api.sentIds, users.map((m) => m.id));
+  });
+
+  test('a reset is uncertain, so it is not retried and siblings still post once', () async {
+    final api = _FakeApi()..sendError = StateError('Connection reset by peer');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    final notifier = container.read(botChatProvider.notifier);
+    final pending = [
+      notifier.send('已写出'),
+      notifier.send('下一条'),
+    ];
+    final results = await Future.wait(pending);
+    expect(results, everyElement(isFalse));
+
+    final state = container.read(botChatProvider);
+    final users = state.messages.where((m) => m.isUser).toList();
+    expect(users, hasLength(2));
+    expect(
+      users.every((m) => m.failureReason == '发送超时，可能已送达，请勿重复发送'),
+      isTrue,
+    );
+    expect(state.channelError, isEmpty);
+    expect(api.sendCalls, 2);
+    expect(api.sentIds, users.map((m) => m.id));
+    expect(sendConfirmedUnsent(StateError('Connection reset by peer')), isFalse);
+    expect(sendOutcomeUncertain(StateError('Connection reset by peer')), isTrue);
+  });
+
+  test('the in-memory send ring keeps a retry and drops oldest lines', () async {
+    SendTrace.instance.clear();
+    addTearDown(SendTrace.instance.clear);
+    final api = _FakeApi()..sendError = StateError('SocketException: offline');
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(() => !container.read(botChatProvider).loadingHistory);
+
+    await container.read(botChatProvider.notifier).send('诊断');
+    final state = container.read(botChatProvider);
+    final id = state.messages.single.id;
+    final own = SendTrace.instance.text(messageId: id);
+    expect(own, contains('enqueued'));
+    expect(own, contains('retry'));
+    expect(own, contains('post_failed'));
+    expect(own, contains('id=$id'));
+    expect(own, contains('reached=false'));
+    expect(RegExp(r'bot=b1 reached( |$)').hasMatch(own), isFalse);
+    expect(state.sendTrace, own);
+    expect(
+      container.read(botChatProvider.notifier).sendTraceText(messageId: id),
+      own,
+    );
+
+    SendTrace.instance.clear();
+    final at = DateTime.utc(2026, 11, 22);
+    for (var i = 0; i < SendTrace.maxEvents + 5; i++) {
+      SendTrace.instance.note(
+        stage: 'pad',
+        messageId: 'other-$i',
+        at: at.add(Duration(seconds: i)),
+      );
+    }
+    expect(SendTrace.instance.events, hasLength(SendTrace.maxEvents));
+    expect(SendTrace.instance.text(messageId: id), isEmpty);
+    final kept = SendTrace.instance.text().split('\n');
+    expect(kept.first, contains('id=other-5 '));
+    expect(kept.any((line) => line.contains('id=other-4 ')), isFalse);
+    expect(kept.last, contains('id=other-${SendTrace.maxEvents + 4} '));
+  });
 
   test('a business rejection does not clear an existing channel notice', () async {
     final api = _FakeApi()..sendError = StateError('SocketException: offline');
@@ -998,7 +1173,9 @@ void main() {
     expect(bubble.failed, isTrue);
     expect(bubble.failureReason, isNotEmpty);
     expect(state.sending, isFalse);
-    expect(state.channelError, bubble.failureReason);
+    expect(bubble.failureReason, '发送超时，可能已送达，请勿重复发送');
+    expect(state.channelError, isEmpty);
+    expect(api.sendCalls, 1);
 
     // A late success must not rewrite the failed ending.
     api.sendGate!.complete();

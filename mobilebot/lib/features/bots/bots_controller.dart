@@ -178,10 +178,13 @@ String failureMessage(Object error) {
   return userFacingSendFailure(message: error.toString());
 }
 
-/// True when the send never reached Hub: network, connect timeout, 5xx,
-/// or a failure before the request left. A Hub business rejection (4xx
-/// other than a gateway) is a message problem, not a down channel.
+/// True when the send never reached Hub: network, a gateway 5xx, or a
+/// failure before the request left. A timeout or other uncertain failure
+/// may already have been accepted, so it is not "never reached". A Hub
+/// business rejection (4xx other than a gateway) is a message problem,
+/// not a down channel.
 bool sendNeverReachedServer(Object error) {
+  if (sendOutcomeUncertain(error)) return false;
   if (error is HubApiException) {
     return _sendNeverReached(
       code: error.code,
@@ -189,9 +192,87 @@ bool sendNeverReachedServer(Object error) {
       statusCode: error.statusCode,
     );
   }
-  // Anything that is not a Hub answer never left the client: network,
-  // timeout, or a failure before the request was written.
+  // Anything that is not a Hub answer and not a timeout never left the
+  // client: network, or a failure before the request was written.
   return true;
+}
+
+/// True only when the request is confirmed not to have left the device.
+/// An HTTP answer, including 5xx, means some server saw it. A reset or
+/// timeout may also have been written. Neither is safe to auto-retry.
+bool sendConfirmedUnsent(Object error) {
+  if (sendOutcomeUncertain(error)) return false;
+  if (error is HubApiException) {
+    if (error.statusCode != null) return false;
+    return _confirmedUnsent(code: error.code, message: error.message);
+  }
+  return _confirmedUnsent(message: error.toString());
+}
+
+bool _confirmedUnsent({String code = '', String message = ''}) {
+  final rawCode = code.trim().toUpperCase();
+  if (rawCode.startsWith('HTTP_')) {
+    final status = int.tryParse(rawCode.substring(5));
+    if (status != null) return false;
+  }
+  return _hasAny('$code $message'.toLowerCase(), const [
+    'socketexception',
+    'clientexception',
+    'connection errored',
+    'connection error',
+    'connection refused',
+    'failed host lookup',
+    'network is unreachable',
+    '无法连接',
+    '無法連接',
+    '网络错误',
+    '網絡錯誤',
+    'network error',
+    'offline',
+  ]);
+}
+
+/// True when the request may already have reached Hub. Retrying it would
+/// risk a second turn, so the bubble must say it may already be delivered.
+bool sendOutcomeUncertain(Object error) {
+  if (error is HubApiException) {
+    return _sendOutcomeUncertain(
+      code: error.code,
+      message: error.message,
+      statusCode: error.statusCode,
+    );
+  }
+  return _sendOutcomeUncertain(message: error.toString());
+}
+
+bool _sendOutcomeUncertain({
+  String code = '',
+  String message = '',
+  int? statusCode,
+}) {
+  if (statusCode == 408) return true;
+  final rawCode = code.trim().toUpperCase();
+  if (rawCode == 'HTTP_408' || rawCode == 'HTTP_504') return true;
+  if (_looksLikeTimeout('$code $message')) return true;
+  return _hasAny('$code $message'.toLowerCase(), const [
+    'connection reset',
+    'connection abort',
+    'broken pipe',
+  ]);
+}
+
+bool _looksLikeTimeout(String blob) {
+  return _hasAny(blob.toLowerCase(), const [
+    'connection timed out',
+    'timed out',
+    'timeout',
+    'time out',
+    'deadline exceeded',
+    '没有在时限内',
+    '超时',
+    '逾时',
+    '逾時',
+  ]);
 }
 
 bool _sendNeverReached({
@@ -203,7 +284,6 @@ bool _sendNeverReached({
   final rawCode = code.trim().toUpperCase();
   if (rawCode == 'HTTP_502' ||
       rawCode == 'HTTP_503' ||
-      rawCode == 'HTTP_504' ||
       rawCode == 'UNKNOWN' ||
       rawCode == 'HTTP_NULL') {
     return true;
@@ -221,18 +301,9 @@ bool _sendNeverReached({
     'connection error',
     'connection refused',
     'connection reset',
-    'connection timed out',
     'failed host lookup',
     'network is unreachable',
     'software caused connection abort',
-    'timed out',
-    'timeout',
-    'time out',
-    'deadline exceeded',
-    '没有在时限内',
-    '超时',
-    '逾时',
-    '逾時',
     '无法连接',
     '無法連接',
     '网络错误',
@@ -270,16 +341,21 @@ String _mappedSendFailure(String code, String message, int? statusCode) {
   final blob = '$code $message'.toLowerCase();
   final s = sharedL10n;
   if (_hasAny(blob, const [
-    '没有在时限内',
-    'timed out',
-    'timeout',
-    'time out',
-    '超时',
-    '逾时',
-    '逾時',
-    'deadline exceeded',
+    '等待回复超时',
+    '等待回覆超時',
+    'timed out waiting for the reply',
   ])) {
     return s.chatReplyTimedOut;
+  }
+  if (_looksLikeTimeout(blob) ||
+      code == 'HTTP_408' ||
+      code == 'HTTP_500' ||
+      code == 'HTTP_502' ||
+      code == 'HTTP_503' ||
+      code == 'HTTP_504' ||
+      statusCode == 408 ||
+      (statusCode != null && statusCode >= 500)) {
+    return s.chatSendMaybeDelivered;
   }
   if (_hasAny(blob, const [
     'llm_service_credits_exhausted',
@@ -305,10 +381,8 @@ String _mappedSendFailure(String code, String message, int? statusCode) {
       ]) ||
       code == 'HTTP_502' ||
       code == 'HTTP_503' ||
-      code == 'HTTP_504' ||
       statusCode == 502 ||
-      statusCode == 503 ||
-      statusCode == 504) {
+      statusCode == 503) {
     return s.netConnectionError;
   }
   return switch (code) {

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'dart:math' as math;
@@ -16,6 +17,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../components/mermaid/mermaid.dart';
 import '../../core/asr_fallback.dart';
+import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
@@ -30,6 +32,7 @@ import 'package:go_router/go_router.dart';
 import 'bot_chat_controller.dart';
 import 'bot_models.dart';
 import 'bots_controller.dart';
+import 'send_trace.dart';
 import '../../core/theme.dart';
 import '../../core/ui_kit.dart'
     show LinkifiedText, linkifyMarkdownUrls, openExternalUrl;
@@ -778,7 +781,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   }
 
   /// 本地模型缺失时后台拉起下载（GitHub → Hub 镜像），用户不用进设置页。
+  /// 但本地引擎是安装包里的原生库，不是可下载的资源：这次安装包没有它时，
+  /// 再下载也永远「就绪」不了，别让用户一直等一句下载中的提示。
   void _ensureLocalVoiceModels() {
+    if (!NativeVoice.supported) return;
     final hub = ref.read(sessionProvider).active?.hubUrl;
     unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
   }
@@ -1058,6 +1064,21 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         .where((m) => m.failed && m.isUser);
     if (failed.isEmpty) return;
     ref.read(botChatProvider.notifier).retry(failed.last);
+  }
+
+  Future<void> _copySendTrace(String fallback) async {
+    final copied = context.S.chatSendTraceCopied;
+    final chat = ref.read(botChatProvider);
+    final failed = chat.messages.where((m) => m.failed && m.isUser);
+    final messageId = failed.isEmpty ? '' : failed.last.id;
+    final fromBuffer = SendTrace.instance.text(messageId: messageId);
+    final text = fromBuffer.isNotEmpty
+        ? fromBuffer
+        : (fallback.isNotEmpty ? fallback : chat.sendTrace);
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    _toast(copied);
   }
 
   void _toast(String msg) {
@@ -1389,6 +1410,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
               onDismiss: () =>
                   ref.read(botChatProvider.notifier).dismissChannelError(),
               onRetry: _retryLatestFailed,
+              onCopyTrace: () => _copySendTrace(state.sendTrace),
             ),
           if (state.continueThread.isNotEmpty)
             Material(
@@ -1753,11 +1775,13 @@ class _ChannelDownBar extends StatelessWidget {
   final String message;
   final VoidCallback onDismiss;
   final VoidCallback onRetry;
+  final VoidCallback onCopyTrace;
 
   const _ChannelDownBar({
     required this.message,
     required this.onDismiss,
     required this.onRetry,
+    required this.onCopyTrace,
   });
 
   @override
@@ -1789,6 +1813,17 @@ class _ChannelDownBar extends StatelessWidget {
                 foregroundColor: scheme.onErrorContainer,
               ),
               child: Text(context.S.retry),
+            ),
+            IconButton(
+              key: const ValueKey('copy-send-trace'),
+              onPressed: onCopyTrace,
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                Icons.content_copy,
+                size: 18,
+                color: scheme.onErrorContainer,
+              ),
+              tooltip: context.S.chatCopySendTrace,
             ),
             IconButton(
               onPressed: onDismiss,
@@ -1847,6 +1882,30 @@ class _FailedSendLine extends ConsumerWidget {
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           child: Text(context.S.chatResend, style: const TextStyle(fontSize: 11)),
+        ),
+        TextButton(
+          key: ValueKey('copy-send-trace-${message.id}'),
+          onPressed: () async {
+            final copiedLabel = context.S.chatSendTraceCopied;
+            final text = SendTrace.instance.text(messageId: message.id);
+            final fallback = ref.read(botChatProvider).sendTrace;
+            final copied = text.isNotEmpty ? text : fallback;
+            if (copied.isEmpty) return;
+            await Clipboard.setData(ClipboardData(text: copied));
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(copiedLabel)),
+            );
+          },
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: Text(
+            context.S.chatCopySendTrace,
+            style: const TextStyle(fontSize: 11),
+          ),
         ),
       ],
     );
