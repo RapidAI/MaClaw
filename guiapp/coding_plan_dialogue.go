@@ -458,7 +458,7 @@ func (h *IMMessageHandler) codingPlanSelfReviewConfigured(userID string) bool {
 	if h == nil {
 		return false
 	}
-	cfg := h.codingLightweightConfigForSession(userID)
+	cfg := h.codingPlanLLMConfigForSession(userID)
 	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
@@ -585,7 +585,7 @@ func (h *IMMessageHandler) callCodingPlanSelfReview(userID, goal, projectPath st
 	if h == nil || len(tasks) == 0 {
 		return ""
 	}
-	cfg := h.codingLightweightConfigForSession(userID)
+	cfg := h.codingPlanLLMConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}
@@ -1972,7 +1972,7 @@ func (h *IMMessageHandler) callCodingPlanRevisionModel(userID, brief, latest, pr
 	if h == nil {
 		return ""
 	}
-	cfg := h.codingLightweightConfigForSession(userID)
+	cfg := h.codingPlanLLMConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}

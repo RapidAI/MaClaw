@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,20 @@ var (
 	// errMCPRunStalled is a confirmed lack of host-visible progress. It is
 	// not a user stop and not an unconfirmed host-wait ending.
 	errMCPRunStalled = errors.New("这一轮没有进展")
+	// mcpPromptPanicDetail is the recorded failure when the prompt goroutine
+	// dies. The run can no longer continue, and leaving it running would reject
+	// every later command.
+	mcpPromptPanicDetail = "这一轮无法继续"
+	// mcpProgrammingPromptFunc replaces the desktop prompt in tests. Production
+	// leaves it nil. The value is captured before the round starts. A test
+	// path does not load conversation history or the assistant UI database.
+	mcpProgrammingPromptFunc func(a *App, ctx context.Context, req AIAssistantSendRequest, cb AIAssistantExternalCallbacks) (*IMAgentResponse, error)
+	// mcpProviderResolveFunc replaces catalog lookup for send_command in tests.
+	// Production leaves it nil and uses the same resolver as create_task.
+	mcpProviderResolveFunc func(provider, model string) (string, string, error)
+	// mcpMaterializeModelFunc replaces provider materialization in tests.
+	// Production leaves it nil and loads the configured provider.
+	mcpMaterializeModelFunc func(a *App, provider, model string) (corelib.MaclawLLMConfig, bool)
 )
 
 // mcpTaskView is the JSON text returned by create, get, stop, and list.
@@ -158,8 +173,9 @@ type mcpRunRecord struct {
 	// A bare __heartbeat__ is not activity. The session watchdog reads
 	// this stamp. It is not a per-request LLM deadline.
 	progressAt time.Time
-	// hostWaitEnded is set only by this process's own wait budget, and only
-	// while the run is still waiting. It is not a confirmed execution timeout.
+	// hostWaitEnded marks a running record this process can no longer keep,
+	// such as one reloaded after restart. A live run is not cancelled because
+	// time passed, and this flag is not a confirmed execution timeout.
 	hostWaitEnded bool
 	// stalled is set only when the session watchdog confirms that this round
 	// produced no host-visible activity for mcpRunStallWindow. A user stop
@@ -535,6 +551,12 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 	}
 	registryPath := normalizeProjectSessionPath(projectPath)
 	opts := mcpCallOptsFrom(ctx)
+	// A scope or critical command continues the live round. A model change
+	// would start a different round, so it is rejected before the confirmation
+	// id is consumed and before a request id is claimed.
+	if mcpCommandChangesModel(opts) && mcpCommandContinuesLiveRound(command) {
+		return mcpTaskView{}, errors.New("续跑当前轮不能同时改模型")
+	}
 	if opts.HasExpected || opts.DryRun {
 		a.mcpLoadDurable()
 		current, known := a.mcpViewFromRegistry(registryPath)
@@ -542,6 +564,18 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 			return mcpTaskView{}, err
 		}
 		if opts.DryRun {
+			// A running round rejects a model change before the catalog is
+			// read. An unknown provider must still say the task is running.
+			if mcpCommandChangesModel(opts) && known && current.Status == mcpStatusRunning {
+				return mcpTaskView{}, errMCPTaskRunning
+			}
+			if mcpCommandChangesModel(opts) {
+				name, chosen, err := a.mcpResolveCommandSelection(opts.Provider, opts.Model)
+				if err != nil {
+					return mcpTaskView{}, err
+				}
+				current = mcpStampCommandModel(current, name, chosen)
+			}
 			return a.mcpDryRunView(registryPath, current, known)
 		}
 	}
@@ -618,6 +652,13 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 		accept(view.ProjectPath)
 		a.mcpNoteRequestRun(view.ProjectPath, view.RunID)
 		return a.mcpReturnTask(view), nil
+	}
+	if mcpCommandChangesModel(opts) {
+		name, chosen, err := a.mcpResolveCommandSelection(opts.Provider, opts.Model)
+		if err != nil {
+			return mcpTaskView{}, err
+		}
+		view = mcpStampCommandModel(view, name, chosen)
 	}
 	return a.mcpStartPrompt(ctx, view, command, wait, false, func(path string) {
 		accept(path)
@@ -813,8 +854,16 @@ func (a *App) mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView,
 	if a == nil {
 		return mcpTaskView{}, errors.New("没有找到这个任务")
 	}
-	path, err := a.remoteControlKnownTask(projectPath)
 	registryPath := normalizeProjectSessionPath(projectPath)
+	opts := mcpCallOptsFrom(ctx)
+	if opts.HasExpected {
+		a.mcpLoadDurable()
+		current, known := a.mcpViewFromRegistry(registryPath)
+		if err := mcpRejectStaleVersion(registryPath, current, known, opts); err != nil {
+			return mcpTaskView{}, err
+		}
+	}
+	path, err := a.remoteControlKnownTask(projectPath)
 	_, inRegistry := a.mcpViewFromRegistry(registryPath)
 	if err != nil && !inRegistry {
 		return mcpTaskView{}, err
@@ -907,6 +956,44 @@ func (a *App) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
 	return out, nil
 }
 
+func mcpCommandChangesModel(opts mcpCallOpts) bool {
+	return strings.TrimSpace(opts.Provider) != "" || strings.TrimSpace(opts.Model) != ""
+}
+
+func mcpCommandContinuesLiveRound(command string) bool {
+	switch mcpCommandHead(command) {
+	case "__scope_approval__", "__resolve_critical_confirm__":
+		return true
+	default:
+		return false
+	}
+}
+
+func mcpStampCommandModel(view mcpTaskView, provider, model string) mcpTaskView {
+	view.Provider = provider
+	view.Model = model
+	view.ProviderRequested = provider
+	view.ModelRequested = model
+	view.ProviderEffective = provider
+	view.ModelEffective = model
+	return view
+}
+
+func (a *App) mcpResolveCommandSelection(provider, model string) (string, string, error) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" && model == "" {
+		return "", "", nil
+	}
+	if provider == "" {
+		return "", "", errors.New("指定模型时必须同时指定服务商")
+	}
+	if mcpProviderResolveFunc != nil {
+		return mcpProviderResolveFunc(provider, model)
+	}
+	return a.mcpResolveSelection(provider, model)
+}
+
 func (a *App) mcpResolveSelection(provider, model string) (string, string, error) {
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
@@ -915,6 +1002,13 @@ func (a *App) mcpResolveSelection(provider, model string) (string, string, error
 	}
 	data := a.GetMaclawLLMProviders()
 	return mcpResolveProviderModel(data.Providers, data.Current, provider, model)
+}
+
+// mcpRunContext is the lifetime of one MCP prompt. It ends when the prompt
+// returns, the user stops it, or a newer command replaces it. It has no
+// deadline: wall-clock time does not decide whether the task can finish.
+func mcpRunContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
 }
 
 func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt string, wait, startNew bool, bind func(path string)) (mcpTaskView, error) {
@@ -947,7 +1041,11 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		cancel()
 	})
 	stopStallWatch := watch.stop
-	mark := a.mcpConversationMark(path)
+	promptFn := mcpProgrammingPromptFunc
+	mark := mcpConversationMark{}
+	if promptFn == nil {
+		mark = a.mcpConversationMark(path)
+	}
 	reqProvider := strings.TrimSpace(view.ProviderRequested)
 	reqModel := strings.TrimSpace(view.ModelRequested)
 	if reqProvider == "" && reqModel == "" {
@@ -996,64 +1094,80 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		cancel:            cancel,
 		progressAt:        time.Now(),
 	}
-	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
-	if err != nil {
-		stopStallWatch()
-		cancel()
-		return mcpTaskView{}, err
-	}
-	if prevCancel != nil {
-		prevCancel()
-	}
-	if dismiss {
-		a.mcpDismissPendingConfirmation(path)
-	}
-	if bind != nil {
-		bind(path)
-	}
-	a.mcpNoteRequestRun(path, rec.RunID)
-	// Drop the claim once the run is stored. Waiting for the prompt used to
-	// keep it, so the next command was rejected after this run had already
-	// finished and the waiter was only packaging the result.
-	a.mcpReleaseTurn(path, token)
-	a.mirrorMCPUser(prompt, requestID, userID, path, view.Name, view.Mode)
-	bound := mcpBindActionCommand(prompt)
+		prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
+		if err != nil {
+			stopStallWatch()
+			cancel()
+			return mcpTaskView{}, err
+		}
+		if prevCancel != nil {
+			prevCancel()
+		}
+		if dismiss {
+			a.mcpDismissPendingConfirmation(path)
+		}
+		if bind != nil {
+			bind(path)
+		}
+		a.mcpNoteRequestRun(path, rec.RunID)
+		// Drop the claim once the run is stored. Waiting for the prompt used to
+		// keep it, so the next command was rejected after this run had already
+		// finished and the waiter was only packaging the result.
+		a.mcpReleaseTurn(path, token)
+		if promptFn == nil {
+			a.mirrorMCPUser(prompt, requestID, userID, path, view.Name, view.Mode)
+		}
+		bound := mcpBindActionCommand(prompt)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer stopStallWatch()
-		defer cancel()
-		resp, err := a.RunAIAssistantProgrammingPrompt(runCtx, AIAssistantSendRequest{
-			Text:                        bound.Text,
-			ProjectPath:                 path,
-			RequestID:                   requestID,
-			Lang:                        a.CurrentLanguage,
-			StartNewTask:                startNew || bound.StartNewTask,
-			UIAction:                    bound.UIAction,
-			ResumeSlotID:                bound.ResumeSlotID,
-			DismissSlotID:               bound.DismissSlotID,
-			ResumeSessionID:             bound.ResumeSessionID,
-			DismissRecoverableSessionID: bound.DismissRecoverableSessionID,
-			PromptProfile:               assistantHostMCP,
-			TaskMode:                    view.Mode,
-			HostRawText:                 mcpStartUsesRawText(startNew, view.Mode, prompt, bound.Bound),
-		}, AIAssistantExternalCallbacks{
-			OnToken: func(delta string) {
-				a.mirrorMCPToken(requestID, userID, delta)
-				if stored := mcpStoredRunDelta(delta); stored != "" {
-					a.mcpAppendRunText(path, requestID, stored)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer stopStallWatch()
+			defer cancel()
+			// Recover before cancel and close, so a waiter reads the failed record.
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					a.mcpFinishPromptPanic(path, requestID, recovered)
 				}
-			},
-			OnProgress: func(text string) {
-				a.mirrorMCPProgress(requestID, userID, text)
-				a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
-			},
-			OnToolEvent: func(ev ACPToolEvent) {
-				a.mcpRecordToolEvent(path, requestID, ev)
-			},
-		})
-		stopStallWatch()
+			}()
+			var resp *IMAgentResponse
+			var err error
+			req := AIAssistantSendRequest{
+				Text:                        bound.Text,
+				ProjectPath:                 path,
+				RequestID:                   requestID,
+				Lang:                        a.CurrentLanguage,
+				StartNewTask:                startNew || bound.StartNewTask,
+				UIAction:                    bound.UIAction,
+				ResumeSlotID:                bound.ResumeSlotID,
+				DismissSlotID:               bound.DismissSlotID,
+				ResumeSessionID:             bound.ResumeSessionID,
+				DismissRecoverableSessionID: bound.DismissRecoverableSessionID,
+				PromptProfile:               assistantHostMCP,
+				TaskMode:                    view.Mode,
+				HostRawText:                 mcpStartUsesRawText(startNew, view.Mode, prompt, bound.Bound),
+			}
+			cb := AIAssistantExternalCallbacks{
+				OnToken: func(delta string) {
+					a.mirrorMCPToken(requestID, userID, delta)
+					if stored := mcpStoredRunDelta(delta); stored != "" {
+						a.mcpAppendRunText(path, requestID, stored)
+					}
+				},
+				OnProgress: func(text string) {
+					a.mirrorMCPProgress(requestID, userID, text)
+					a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
+				},
+				OnToolEvent: func(ev ACPToolEvent) {
+					a.mcpRecordToolEvent(path, requestID, ev)
+				},
+			}
+			if promptFn != nil {
+				resp, err = promptFn(a, runCtx, req, cb)
+			} else {
+				resp, err = a.RunAIAssistantProgrammingPrompt(runCtx, req, cb)
+			}
+			stopStallWatch()
 		cause := runCtx.Err()
 		if cause != nil && a.mcpRunStalled(path, requestID) {
 			cause = errMCPRunStalled
@@ -1071,7 +1185,12 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		}
 		// Seal against the saved transcript, not resp.Text. The registry copy
 		// can grow a workspace-file suffix after history is already stored.
-		a.mcpSealConversation(path, requestID, a.mcpConversationMark(path))
+		// A test prompt does not open the conversation store.
+		seal := mark
+		if promptFn == nil {
+			seal = a.mcpConversationMark(path)
+		}
+		a.mcpSealConversation(path, requestID, seal)
 		a.mcpFinishRunCause(path, requestID, status, finalText, errText, keepText, kind, commands, steps, cause)
 	}()
 
@@ -1115,13 +1234,28 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		select {
 		case <-done:
 		case <-parent.Done():
-			return a.mcpReturnTask(view), nil
+			// The caller stopped waiting. The prompt keeps its own context.
+			return a.mcpPromptResult(path, requestID, view.RunID, view), nil
 		}
 	}
-	if finished, ok := a.mcpViewFromRegistry(path); ok && finished.RequestID == requestID {
-		return a.mcpReturnTask(finished), nil
+	return a.mcpPromptResult(path, requestID, view.RunID, view), nil
+}
+
+// mcpPromptResult is this start's record after the prompt goroutine finishes,
+// or after the caller stops waiting. The receipt captured at start still says
+// running. A replacement archives this round and leaves the next run in the
+// registry, so the receipt would claim the replaced round is still running.
+func (a *App) mcpPromptResult(path, requestID, runID string, receipt mcpTaskView) mcpTaskView {
+	if a == nil {
+		return receipt
 	}
-	return a.mcpReturnTask(view), nil
+	if finished, ok := a.mcpViewFromRegistry(path); ok && finished.RequestID == requestID {
+		return a.mcpReturnTask(finished)
+	}
+	if archived, ok := a.mcpViewForRun(path, runID); ok && archived.RequestID == requestID {
+		return a.mcpReturnTask(archived)
+	}
+	return a.mcpReturnTask(receipt)
 }
 
 // mcpRunStillWaiting is an MCP turn the client can still stop. A
@@ -1407,15 +1541,32 @@ func mcpParseCriticalConfirmCommand(text string) (id string, confirmed, ok bool)
 	}
 }
 
-func mcpScopeApprovalMatches(taskPath, workspace, approvalPath string) bool {
+func mcpScopeApprovalMatches(taskPath, workspace, approvalPath string, dirs ...string) bool {
 	approvalPath = normalizeProjectSessionPath(approvalPath)
 	if approvalPath == "" {
 		return false
 	}
 	taskPath = normalizeProjectSessionPath(taskPath)
-	workspace = normalizeProjectSessionPath(workspace)
-	return (taskPath != "" && strings.EqualFold(taskPath, approvalPath)) ||
-		(workspace != "" && strings.EqualFold(workspace, approvalPath))
+	if taskPath != "" && strings.EqualFold(taskPath, approvalPath) {
+		return true
+	}
+	candidates := make([]string, 0, 1+len(dirs))
+	candidates = append(candidates, workspace)
+	candidates = append(candidates, dirs...)
+	for _, dir := range candidates {
+		dir = normalizeProjectSessionPath(dir)
+		if dir != "" && strings.EqualFold(dir, approvalPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpScopeApprovalMatchesTask matches the task path and every directory the
+// record already carries. A path that exists only on a projected desktop
+// snapshot is not one of these, so send_command does not treat it as a match.
+func mcpScopeApprovalMatchesTask(view mcpTaskView, approvalPath string) bool {
+	return mcpScopeApprovalMatches(view.ProjectPath, view.workspace, approvalPath, view.WorkingDir, view.WorkDirRequested, view.WorkingDirEffective)
 }
 
 func (a *App) mcpTaskForGate(projectPath string, reg mcpTaskView, inRegistry bool) (mcpTaskView, error) {
@@ -1468,7 +1619,7 @@ func (a *App) mcpValidateScopeCommand(projectPath string, reg mcpTaskView, inReg
 	if !found {
 		return errors.New("确认已过期或已处理")
 	}
-	if !mcpScopeApprovalMatches(view.ProjectPath, view.workspace, pending.ProjectPath) {
+	if !mcpScopeApprovalMatchesTask(view, pending.ProjectPath) {
 		return errors.New("这条授权确认不属于这个任务")
 	}
 	if !mcpScopeDecisionAllowed(pending.Kind, decision) {
@@ -1613,7 +1764,7 @@ type mcpRunningGateOverlay struct {
 func (a *App) mcpCollectRunningGates(view mcpTaskView) mcpRunningGateOverlay {
 	var overlay mcpRunningGateOverlay
 	for _, item := range new(App).ListPendingScopeApprovals() {
-		if !mcpScopeApprovalMatches(view.ProjectPath, view.workspace, item.ProjectPath) {
+		if !mcpScopeApprovalMatchesTask(view, item.ProjectPath) {
 			continue
 		}
 		line := strings.TrimSpace(item.Message)
@@ -2396,6 +2547,8 @@ func (a *App) mcpCancelRun(path string) {
 		rec.EndDetail = ""
 		rec.ConfirmationID = ""
 		rec.confirmFingerprint = ""
+		rec.ConfirmationKind = ""
+		rec.Commands = nil
 		rec.Stop = mcpStopFor(mcpStatusCancelled, "", rec.Steps, context.Canceled, now)
 		mcpTouchLocked(rec)
 		cancel = rec.cancel
@@ -2619,8 +2772,19 @@ func (a *App) mcpRunStalled(path, requestID string) bool {
 	return rec != nil && rec.RequestID == requestID && rec.stalled
 }
 
-// mcpNoteHostWaitEnded records that this process stopped waiting. A run that
-// is no longer waiting, or a different request, is left alone so a user stop
+// mcpFinishPromptPanic records that this prompt can no longer continue.
+// A user stop or a replacement that already left running is left alone.
+func (a *App) mcpFinishPromptPanic(path, requestID string, recovered any) {
+	if a == nil || recovered == nil {
+		return
+	}
+	log.Printf("[mcp-host] prompt panic path=%q request_id=%q panic=%v\n%s", path, requestID, recovered, debug.Stack())
+	a.mcpFinishRunCause(path, requestID, mcpStatusFailed, "", mcpPromptPanicDetail, false, "", nil, nil, nil)
+}
+
+// mcpNoteHostWaitEnded records that this process can no longer keep the run.
+// A live prompt does not call it: elapsed time is not a stop. A run that is
+// no longer waiting, or a different request, is left alone so a user stop
 // that already landed stays a user stop.
 func (a *App) mcpNoteHostWaitEnded(path, requestID string) {
 	if a == nil {
@@ -2910,15 +3074,60 @@ func (a *App) mcpPinnedLLMConfig(userID string) (corelib.MaclawLLMConfig, bool) 
 	a.mcpPinsMu.Lock()
 	pin, ok := a.mcpPins[userID]
 	a.mcpPinsMu.Unlock()
-	if !ok || strings.TrimSpace(pin.ProviderName) == "" || strings.TrimSpace(pin.Model) == "" {
+	if !ok {
 		return corelib.MaclawLLMConfig{}, false
 	}
-	cfg, err := a.MaterializeProviderByName(pin.ProviderName)
+	return a.mcpMaterializeNamedModel(pin.ProviderName, pin.Model)
+}
+
+// mcpLiveRunModel is the provider and model stored on the current round.
+// A half-filled pair is not a selection. The caller must not hold mcpRunsMu.
+func (a *App) mcpLiveRunModel(userID string) (string, string, bool) {
+	path := projectPathFromSessionOwnerID(userID)
+	if a == nil || path == "" {
+		return "", "", false
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil {
+		return "", "", false
+	}
+	provider := strings.TrimSpace(firstNonEmpty(rec.ProviderEffective, rec.Provider))
+	model := strings.TrimSpace(firstNonEmpty(rec.ModelEffective, rec.Model))
+	if provider == "" || model == "" {
+		return "", "", false
+	}
+	return provider, model, true
+}
+
+// mcpLoopModelConfig is the model a user-visible turn runs. send_command
+// writes the new pair onto the round and does not update the create-time pin,
+// so the live round wins. A complete pair that cannot be materialized does
+// not fall through to the pin: that would keep running the model the caller
+// just replaced. The pin remains the fallback only when the round has no pair.
+func (a *App) mcpLoopModelConfig(userID string) (corelib.MaclawLLMConfig, bool) {
+	if provider, model, ok := a.mcpLiveRunModel(userID); ok {
+		return a.mcpMaterializeNamedModel(provider, model)
+	}
+	return a.mcpPinnedLLMConfig(userID)
+}
+
+func (a *App) mcpMaterializeNamedModel(provider, model string) (corelib.MaclawLLMConfig, bool) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if a == nil || provider == "" || model == "" {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	if mcpMaterializeModelFunc != nil {
+		return mcpMaterializeModelFunc(a, provider, model)
+	}
+	cfg, err := a.MaterializeProviderByName(provider)
 	if err != nil {
-		log.Printf("[mcp-host] pin materialize failed user=%q provider=%q: %v", userID, pin.ProviderName, err)
+		log.Printf("[mcp-host] model materialize failed provider=%q: %v", provider, err)
 		return corelib.MaclawLLMConfig{}, false
 	}
-	cfg.Model = pin.Model
+	cfg.Model = model
 	if strings.TrimSpace(cfg.Model) == "" {
 		return corelib.MaclawLLMConfig{}, false
 	}

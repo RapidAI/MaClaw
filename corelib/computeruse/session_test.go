@@ -84,12 +84,15 @@ func TestPolicy_TargetApps(t *testing.T) {
 
 func TestPlaybookBeforePerceptionNamesBothResults(t *testing.T) {
 	p := PlaybookBeforePerception()
-	for _, want := range []string{"screenshot", "ref=eN", "computer_find", "computer_done", "search box"} {
+	for _, want := range []string{"screenshot", "ref=eN", "computer_find", "computer_done", "search box", "foreground-window crop", "refresh failed", "screen_index=-1"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("playbook missing %q: %s", want, p)
 		}
 	}
 	if strings.Contains(p, "Screenshots are NOT sent") || strings.Contains(p, "computer_use") {
+		t.Fatal(p)
+	}
+	if strings.Contains(p, "After every click, type, key, scroll, focus, select, or drag, call computer_observe again") {
 		t.Fatal(p)
 	}
 }
@@ -107,6 +110,12 @@ func TestPlaybookVisionUsesScreenshotClicks(t *testing.T) {
 	}
 	if strings.Contains(p, "text-only") {
 		t.Fatal("vision playbook should not claim text-only")
+	}
+	if strings.Contains(p, "call computer_observe again so you see the new screen") {
+		t.Fatal(p)
+	}
+	if !strings.Contains(p, "foreground-window crop") || !strings.Contains(p, "screen_index=-1") {
+		t.Fatal(p)
 	}
 }
 

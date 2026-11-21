@@ -39,6 +39,19 @@ func withGroundState(t *testing.T, cfg corelib.MaclawLLMConfig, ok bool, img str
 	})
 }
 
+func TestGroundTargetWithoutImageAsksToObserve(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("grounder was called without a current screenshot")
+		http.Error(w, "unused", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	withGroundState(t, corelib.MaclawLLMConfig{URL: srv.URL, Model: "ui-grounder", Protocol: "openai"}, true, "")
+	_, _, note := cuGroundTarget("Send")
+	if !strings.Contains(note, "computer_observe") {
+		t.Fatalf("note=%q", note)
+	}
+}
+
 func TestCuGroundTargetWithoutGrounderAsksForCoordinates(t *testing.T) {
 	withGroundState(t, corelib.MaclawLLMConfig{}, false, groundTestPNG(t, 4, 4))
 	if _, _, note := cuGroundTarget("OK"); !strings.Contains(note, "x,y") {

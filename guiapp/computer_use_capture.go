@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
@@ -11,6 +12,61 @@ import (
 )
 
 const computerUseCropMargin = 8
+
+// computerUseStitchPixelBudget is the largest virtual desktop computer_observe
+// will stitch. The same threshold already warned after a capture; a stitch
+// past it is refused before the screenshot so clicks stay on one window.
+const computerUseStitchPixelBudget int64 = 8_000_000
+
+// refuseStitchedCapture reports that screen_index=-1 would stitch more pixels
+// than computer_observe can click reliably. A non-negative screen index is a
+// single monitor and is never refused. A zero or unknown size is not refused.
+func refuseStitchedCapture(screenIdx int, stitchPx int64) bool {
+	return screenIdx < 0 && stitchPx > computerUseStitchPixelBudget
+}
+
+// computerUseVirtualStitchSize is the bounding box of every attached display,
+// which is the image NativeScreenshotVirtual would return.
+func computerUseVirtualStitchSize() (w, h int, px int64, ok bool) {
+	displays, err := remote.EnumDisplays()
+	if err != nil || len(displays) == 0 {
+		return 0, 0, 0, false
+	}
+	minX, minY := 0, 0
+	maxX, maxY := 0, 0
+	seen := false
+	for _, d := range displays {
+		if d.Width <= 0 || d.Height <= 0 {
+			continue
+		}
+		if !seen {
+			minX, minY = d.X, d.Y
+			maxX, maxY = d.X+d.Width, d.Y+d.Height
+			seen = true
+			continue
+		}
+		if d.X < minX {
+			minX = d.X
+		}
+		if d.Y < minY {
+			minY = d.Y
+		}
+		if right := d.X + d.Width; right > maxX {
+			maxX = right
+		}
+		if bottom := d.Y + d.Height; bottom > maxY {
+			maxY = bottom
+		}
+	}
+	if !seen {
+		return 0, 0, 0, false
+	}
+	w, h = maxX-minX, maxY-minY
+	if w <= 0 || h <= 0 {
+		return 0, 0, 0, false
+	}
+	return w, h, int64(w) * int64(h), true
+}
 
 type computerUseCapture struct {
 	PNG    string
@@ -125,6 +181,48 @@ func captureDesktopScreenshotNative(screenIndex int) (string, error) {
 	return remote.NativeScreenshot()
 }
 
+type computerUseSettleShot struct {
+	png  string
+	meta computeruse.ScreenMeta
+}
+
+var (
+	computerUseSettleMu sync.Mutex
+	computerUseSettle   computerUseSettleShot
+)
+
+func storeComputerUseSettle(png string, meta computeruse.ScreenMeta) {
+	computerUseSettleMu.Lock()
+	computerUseSettle = computerUseSettleShot{png: png, meta: meta}
+	computerUseSettleMu.Unlock()
+}
+
+func clearComputerUseSettle() {
+	computerUseSettleMu.Lock()
+	computerUseSettle = computerUseSettleShot{}
+	computerUseSettleMu.Unlock()
+}
+
+// takeComputerUseSettle returns the post-action shot only when it is the
+// window just operated. Either way the shot is dropped, so a later action
+// cannot reuse it. An empty crop title is not a window match: WindowTitlesMatch
+// treats an empty title as unknown and would otherwise accept every window.
+func takeComputerUseSettle(window string) (computerUseSettleShot, bool) {
+	computerUseSettleMu.Lock()
+	shot := computerUseSettle
+	computerUseSettle = computerUseSettleShot{}
+	computerUseSettleMu.Unlock()
+	title := strings.TrimSpace(shot.meta.CropTitle)
+	window = strings.TrimSpace(window)
+	if shot.png == "" || title == "" || window == "" {
+		return computerUseSettleShot{}, false
+	}
+	if !computeruse.WindowTitlesMatch(title, window) {
+		return computerUseSettleShot{}, false
+	}
+	return shot, true
+}
+
 func captureSettleScreenshot() (string, error) {
 	last := cuSession().LastObserve()
 	if last != nil && last.Meta.Width > 0 && last.Meta.Height > 0 {
@@ -133,13 +231,63 @@ func captureSettleScreenshot() (string, error) {
 		w, h := x2-x1, y2-y1
 		if w > 0 && h > 0 && runtime.GOOS == "windows" {
 			if png, err := remote.NativeScreenshotRect(x1, y1, w, h); err == nil && png != "" && !remote.IsBlankImage(png) {
+				storeComputerUseSettle(png, last.Meta)
 				return png, nil
 			}
 		}
+		clearComputerUseSettle()
 		idx := last.Meta.ScreenIndex
 		return captureDesktopScreenshot(idx)
 	}
+	clearComputerUseSettle()
 	return captureDesktopScreenshot(0)
+}
+
+// computerUseDisplayList is the attached-monitor list a monitor fallback
+// shows instead of claiming the image is the foreground window.
+func computerUseDisplayList() string {
+	displays, err := remote.EnumDisplays()
+	if err != nil || len(displays) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	n := 0
+	for i, d := range displays {
+		if d.Width <= 0 || d.Height <= 0 {
+			continue
+		}
+		if n > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "screen_index=%d %dx%d", i, d.Width, d.Height)
+		n++
+	}
+	return b.String()
+}
+
+// computerUseStitchRefusalNote describes a refused virtual-desktop stitch.
+// A later crop that has a window title is that window. A capture that fell
+// back to a monitor says which screen was actually taken.
+func computerUseStitchRefusalNote(w, h int, captured bool, cap computerUseCapture) string {
+	if !captured {
+		return fmt.Sprintf("capture: refused screen_index=-1 (%dx%d). The screenshot failed after that refusal. Pass window=<app title>.\n", w, h)
+	}
+	if title := strings.TrimSpace(cap.Meta.CropTitle); title != "" {
+		return fmt.Sprintf("capture: refused screen_index=-1 (%dx%d). This result is the foreground window %q. Pass window=<app title> to observe a specific app.\n", w, h, title)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "capture: refused screen_index=-1 (%dx%d). The window crop failed. This result is a full monitor, not the foreground window. Captured screen_index=%d", w, h, cap.Meta.ScreenIndex)
+	if cap.Width > 0 && cap.Height > 0 {
+		fmt.Fprintf(&b, " (%dx%d)", cap.Width, cap.Height)
+	}
+	b.WriteByte('.')
+	if list := computerUseDisplayList(); list != "" {
+		b.WriteString(" Displays: ")
+		b.WriteString(list)
+		b.WriteByte('.')
+	}
+	b.WriteString(" Pass window=<app title>.\n")
+	return b.String()
 }
 
 func cuRequireSameWindow(sess *computeruse.Session) string {
@@ -155,5 +303,7 @@ func cuRequireSameWindow(sess *computeruse.Session) string {
 		return ""
 	}
 	sess.InvalidateRefs()
-	return fmt.Sprintf("foreground window changed (observed %q, now %q); call computer_observe again", last.Meta.CropTitle, fg)
+	line := computerUseRememberExperience(computeruse.ExperienceAppID(fg), computeruse.NoteWindowChanged, false)
+	msg := fmt.Sprintf("foreground window changed (observed %q, now %q); call computer_observe again", last.Meta.CropTitle, fg)
+	return computerUseAppendExperience(msg, line)
 }

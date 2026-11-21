@@ -204,6 +204,21 @@ func (m *Manager[T]) Peek() (model T, ok bool) {
 	return m.model, m.loaded
 }
 
+// Touch restarts the idle-unload timer when a model is already loaded.
+// It does not load a model. A call is a no-op when the model is unloaded
+// or an Acquire is still in use (that done() schedules the timer).
+func (m *Manager[T]) Touch() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.loaded || m.active > 0 {
+		return
+	}
+	m.scheduleUnload()
+}
+
 // SetUnloadDelay changes the idle timeout. Takes effect on the next done() call.
 func (m *Manager[T]) SetUnloadDelay(d time.Duration) {
 	m.mu.Lock()

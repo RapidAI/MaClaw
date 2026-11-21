@@ -17,6 +17,8 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 		globalComputerUse.taskStates = nil
 		globalComputerUse.horizonClaimOnly = nil
 		globalComputerUse.mu.Unlock()
+		computerUseCropLabelRead = nil
+		cuCancelLabelPrefetch()
 	})
 	globalComputerUse.mu.Lock()
 	globalComputerUse.session = nil
@@ -26,6 +28,8 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 	globalComputerUse.taskStates = nil
 	globalComputerUse.horizonClaimOnly = nil
 	globalComputerUse.mu.Unlock()
+	computerUseCropLabelRead = nil
+	cuCancelLabelPrefetch()
 }
 
 func TestComputerUseSessionPerOwner(t *testing.T) {

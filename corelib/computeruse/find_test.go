@@ -158,3 +158,33 @@ func TestFindMatches_SkipsZeroBBoxOCRLines(t *testing.T) {
 		t.Fatalf("center = %d,%d, want 140,112", matches[0].CenterX, matches[0].CenterY)
 	}
 }
+
+func TestOCRClickElementsSkipsUnclickableLines(t *testing.T) {
+	long := strings.Repeat("段", 81)
+	wide := strings.Repeat("名", 41)
+	lines := []taskengine.OCRResult{
+		{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}},
+		{Text: long, BBox: [4]int{1, 1, 20, 10}},
+		{Text: "  ", BBox: [4]int{1, 1, 10, 10}},
+		{Text: "龙军", BBox: [4]int{10, 10, 40, 20}, Confidence: 0.8},
+		{Text: wide, BBox: [4]int{0, 40, 30, 12}},
+	}
+	if got := OCRClickElements(lines, 2); len(got) != 2 {
+		t.Fatalf("limit 2 kept %d", len(got))
+	} else if got[0].Name != "龙军" || got[0].Source != "ocr" || !got[0].Interactable || got[1].Name != strings.Repeat("名", 40)+"…" {
+		t.Fatalf("elements %+v", got)
+	}
+	if OCRClickElements([]taskengine.OCRResult{{Text: "立即支付"}}, 24) != nil {
+		t.Fatal("a zero box became a click ref")
+	}
+	many := make([]taskengine.OCRResult, 30)
+	for i := range many {
+		many[i] = taskengine.OCRResult{Text: "行", BBox: [4]int{0, i, 10, 10}}
+	}
+	if got := OCRClickElements(many, 0); len(got) != 24 {
+		t.Fatalf("default limit kept %d", len(got))
+	}
+	if OCRLinesUsable([]taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}}}) {
+		t.Fatal("a zero box counted as a label")
+	}
+}

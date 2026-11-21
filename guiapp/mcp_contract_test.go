@@ -12,6 +12,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	cllm "github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func TestInboundMCPDurableRestartDoesNotRerun(t *testing.T) {
@@ -1772,4 +1776,467 @@ func mcpResultText(t *testing.T, result any) (string, bool) {
 	}
 	text, _ := content[0]["text"].(string)
 	return text, isError
+}
+
+func TestInboundMCPFailedRoundShowsStoredConfirmationID(t *testing.T) {
+	app := &App{}
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusFailed, RequestID: "mcp-fail",
+		RunID: "run-fail", StatusVersion: 3, ConfirmationID: "mcf_keep", Text: "失败了",
+		Steps: []mcpStepView{{ID: "T5", Status: mcpStepFailed, Error: "空响应", Retryable: true}},
+	})
+	visible, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || visible.ConfirmationID != "mcf_keep" || visible.StatusVersion != 3 {
+		t.Fatalf("failed round %+v err=%v", visible, err)
+	}
+	stored, ok := app.mcpViewFromRegistry("p")
+	if !ok || stored.ConfirmationID != "mcf_keep" || stored.StatusVersion != 3 {
+		t.Fatalf("read wrote the record %+v", stored)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "plain", Status: mcpStatusFailed, RequestID: "mcp-plain",
+		RunID: "run-plain", StatusVersion: 1, ConfirmationID: "not-mcf",
+	})
+	hidden, err := app.mcpGetTask(context.Background(), "plain", "")
+	if err != nil || hidden.ConfirmationID != "" || hidden.StatusVersion != 1 {
+		t.Fatalf("non-mcf id leaked %+v err=%v", hidden, err)
+	}
+	plain, ok := app.mcpViewFromRegistry("plain")
+	if !ok || plain.ConfirmationID != "not-mcf" {
+		t.Fatalf("non-mcf record changed %+v", plain)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "bare", Status: mcpStatusFailed, RequestID: "mcp-bare",
+		RunID: "run-bare", StatusVersion: 1, Text: "没有编号",
+	})
+	bare, err := app.mcpGetTask(context.Background(), "bare", "")
+	if err != nil || bare.ConfirmationID != "" {
+		t.Fatalf("minted an id %+v err=%v", bare, err)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "hold", Status: mcpStatusIdle, RunID: "run-hold",
+		StatusVersion: 2, ConfirmationID: "mcf_hold",
+	})
+	holder, err := app.mcpGetTask(context.Background(), "hold", "")
+	if err != nil || holder.ConfirmationID != "" || holder.StatusVersion != 2 {
+		t.Fatalf("idle holder published the id %+v err=%v", holder, err)
+	}
+	held, ok := app.mcpViewFromRegistry("hold")
+	if !ok || held.ConfirmationID != "mcf_hold" || held.StatusVersion != 2 {
+		t.Fatalf("holder record changed %+v", held)
+	}
+}
+
+func TestInboundMCPRunningScopeOutcomePointsAtText(t *testing.T) {
+	bare := mcpCommandOutcome(mcpTaskView{Status: mcpStatusRunning, ConfirmationKind: "critical"})
+	if !strings.Contains(bare, "授权说明在 text") || !strings.Contains(bare, "还在运行") {
+		t.Fatalf("bare outcome %q", bare)
+	}
+	app := &App{}
+	const secret = "仓库外的秘密说明不要抄进outcome"
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-live",
+		RunID: "run-live", StatusVersion: 4, ConfirmationKind: "scope",
+		ConfirmationID: "mcf_scope", Text: secret,
+		Commands: []string{"__scope_approval__ ab allow_dir"},
+	})
+	view, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || view.Status != mcpStatusRunning || !strings.Contains(view.Outcome, "授权说明在 text") || !strings.Contains(view.Outcome, "还在运行") || !strings.Contains(view.Outcome, "run-live") || strings.Contains(view.Outcome, secret) {
+		t.Fatalf("outcome %q err=%v", view.Outcome, err)
+	}
+	if _, err := app.mcpSendCommand(context.Background(), "p", "/plan approve", "", "", false); err == nil || !strings.Contains(err.Error(), "还在运行") {
+		t.Fatalf("plan approve while running: %v", err)
+	}
+}
+
+func TestInboundMCPScopeMatchUsesRecordWorkDir(t *testing.T) {
+	if !mcpScopeApprovalMatchesTask(mcpTaskView{ProjectPath: "p", workspace: `D:\repo`}, `D:\repo`) {
+		t.Fatal("workspace stopped matching")
+	}
+	if !mcpScopeApprovalMatchesTask(mcpTaskView{ProjectPath: "p", WorkDirRequested: `D:\req`}, `D:\req`) {
+		t.Fatal("requested work dir did not match")
+	}
+	if mcpScopeApprovalMatchesTask(mcpTaskView{ProjectPath: "p"}, `D:\only-on-the-desktop-snapshot`) {
+		t.Fatal("a path that is not on the record matched")
+	}
+}
+
+func TestInboundMCPSendCommandCanSwitchModel(t *testing.T) {
+	prevPrompt := mcpProgrammingPromptFunc
+	prevResolve := mcpProviderResolveFunc
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		mcpProgrammingPromptFunc = prevPrompt
+		mcpProviderResolveFunc = prevResolve
+	})
+	mcpProgrammingPromptFunc = func(a *App, ctx context.Context, req AIAssistantSendRequest, cb AIAssistantExternalCallbacks) (*IMAgentResponse, error) {
+		<-release
+		return nil, errors.New("测试不启动助手")
+	}
+	resolved := false
+	mcpProviderResolveFunc = func(provider, model string) (string, string, error) {
+		resolved = true
+		if provider != "Next" || model != "next-model" {
+			return "", "", errors.New("没有找到可用的服务商")
+		}
+		return "Next", "next-model", nil
+	}
+
+	app := &App{memoryStore: &memory.Store{}}
+	app.effectiveBaseDir.Store(t.TempDir())
+	app.remoteInfraReady.Store(true)
+	app.interactionInfraOnce.Do(func() {})
+	app.mcpRememberPin("p", "OldPin", "old-pin-model")
+	work := t.TempDir()
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Name: "任务", Mode: "chat", Status: mcpStatusCompleted,
+		RequestID: "mcp-old", RunID: "run-old", StatusVersion: 2,
+		Provider: "Old", Model: "old-model",
+		ProviderRequested: "Old", ModelRequested: "old-model",
+		ProviderEffective: "Old", ModelEffective: "old-model",
+		Workspace: work,
+	})
+
+	modelOnly := mcpContextWithOpts(context.Background(), mcpCallOpts{DryRun: true, Model: "next-model"})
+	if _, err := app.mcpSendCommand(modelOnly, "p", "继续", "", "req-model-only", false); err == nil || !strings.Contains(err.Error(), "指定模型时必须同时指定服务商") || resolved {
+		t.Fatalf("model only %v resolved=%v", err, resolved)
+	}
+	unknown := mcpContextWithOpts(context.Background(), mcpCallOpts{DryRun: true, Provider: "Missing", Model: "nope"})
+	if _, err := app.mcpSendCommand(unknown, "p", "继续", "", "req-unknown", false); err == nil || !strings.Contains(err.Error(), "没有找到可用的服务商") {
+		t.Fatalf("unknown %v", err)
+	}
+	dry := mcpContextWithOpts(context.Background(), mcpCallOpts{DryRun: true, Provider: "Next", Model: "next-model"})
+	preview, err := app.mcpSendCommand(dry, "p", "继续", "", "req-dry-model", false)
+	if err != nil || !preview.DryRun || preview.Status == mcpStatusRunning || preview.Provider != "Next" || preview.Model != "next-model" || preview.ProviderEffective != "Next" || preview.ModelEffective != "next-model" {
+		t.Fatalf("preview %+v err=%v", preview, err)
+	}
+	if state, err := app.mcpGetRequest(context.Background(), "req-dry-model"); err != nil || state.Accepted {
+		t.Fatalf("dry consumed %+v %v", state, err)
+	}
+	stored, err := app.mcpGetTask(context.Background(), "p", "run-old")
+	if err != nil || stored.RunID != "run-old" || stored.Provider != "Old" || stored.Model != "old-model" || stored.Status != mcpStatusCompleted {
+		t.Fatalf("dry saved %+v err=%v", stored, err)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "q", Name: "运行", Mode: "chat", Status: mcpStatusRunning,
+		RequestID: "mcp-q", RunID: "run-q", StatusVersion: 3,
+		ConfirmationID: "mcf_q", ConfirmationKind: "scope",
+		Commands: []string{"__scope_approval__ ab allow_dir"},
+		Provider: "Old", Model: "old-model",
+	})
+	resolved = false
+	running := mcpContextWithOpts(context.Background(), mcpCallOpts{Provider: "Next", Model: "next-model"})
+	if _, err := app.mcpSendCommand(running, "q", "继续", "", "req-running", false); err == nil || !strings.Contains(err.Error(), "还在运行") || resolved {
+		t.Fatalf("running %v resolved=%v", err, resolved)
+	}
+	dryRunning := mcpContextWithOpts(context.Background(), mcpCallOpts{DryRun: true, Provider: "Missing", Model: "nope"})
+	if _, err := app.mcpSendCommand(dryRunning, "q", "继续", "", "req-dry-running", false); err == nil || !strings.Contains(err.Error(), "还在运行") || resolved {
+		t.Fatalf("dry running %v resolved=%v", err, resolved)
+	}
+	live := mcpContextWithOpts(context.Background(), mcpCallOpts{Provider: "Next", Model: "next-model"})
+	if _, err := app.mcpSendCommand(live, "q", "__scope_approval__ ab allow_dir", "mcf_q", "req-live", false); err == nil || !strings.Contains(err.Error(), "续跑当前轮不能同时改模型") || resolved {
+		t.Fatalf("live model %v resolved=%v", err, resolved)
+	}
+	gated, ok := app.mcpViewFromRegistry("q")
+	if !ok || gated.ConfirmationID != "mcf_q" || gated.Status != mcpStatusRunning || gated.Provider != "Old" {
+		t.Fatalf("live gate consumed %+v", gated)
+	}
+	pin, ok := app.mcpPinNames("p")
+	if !ok || pin.ProviderName != "OldPin" || pin.Model != "old-pin-model" {
+		t.Fatalf("pin changed %+v ok=%v", pin, ok)
+	}
+
+	resolved = false
+	switched := mcpContextWithOpts(context.Background(), mcpCallOpts{Provider: "Next", Model: "next-model"})
+	next, err := app.mcpSendCommand(switched, "p", "换个模型继续", "", "req-switch", false)
+	if err != nil || next.RunID == "" || next.RunID == "run-old" || next.Provider != "Next" || next.Model != "next-model" || next.ProviderEffective != "Next" || next.ModelEffective != "next-model" || next.ProviderRequested != "Next" || next.ModelRequested != "next-model" {
+		t.Fatalf("switch %+v err=%v", next, err)
+	}
+	if !resolved {
+		t.Fatal("switch did not resolve the pair")
+	}
+	liveNow, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || liveNow.RunID != next.RunID || liveNow.Provider != "Next" || liveNow.ModelEffective != "next-model" || liveNow.ProviderRequested != "Next" {
+		t.Fatalf("new round %+v err=%v", liveNow, err)
+	}
+	previous, err := app.mcpGetTask(context.Background(), "p", "run-old")
+	if err != nil || previous.RunID != "run-old" || previous.Provider != "Old" || previous.Model != "old-model" || previous.ProviderEffective != "Old" {
+		t.Fatalf("previous round changed %+v err=%v", previous, err)
+	}
+	pin, ok = app.mcpPinNames("p")
+	if !ok || pin.ProviderName != "OldPin" || pin.Model != "old-pin-model" {
+		t.Fatalf("switch rewrote the pin %+v ok=%v", pin, ok)
+	}
+
+	parsed := mcpCallOptsFromArgs("send_command", map[string]any{"provider": "Next", "model": "next-model"})
+	if parsed.Provider != "Next" || parsed.Model != "next-model" {
+		t.Fatalf("send opts %+v", parsed)
+	}
+	ignored := mcpCallOptsFromArgs("stop_task", map[string]any{"provider": "Next", "expected_status_version": float64(4)})
+	if ignored.Provider != "" || !ignored.HasExpected || ignored.ExpectedVersion != 4 {
+		t.Fatalf("stop opts %+v", ignored)
+	}
+	for _, def := range mcpToolDefinitions() {
+		desc, _ := def["description"].(string)
+		switch def["name"] {
+		case "create_task":
+			if strings.Contains(desc, "共用同一套能力") || !strings.Contains(desc, "不提供 ACP 或远控操作") {
+				t.Fatalf("create_task schema %s", desc)
+			}
+		case "get_task":
+			if !strings.Contains(desc, "授权说明在 text") || !strings.Contains(desc, "以 send_command 当时的 commands 为准") {
+				t.Fatalf("get_task schema %s", desc)
+			}
+		case "list_tasks":
+			if !strings.Contains(desc, "{tasks}") || !strings.Contains(desc, "50") {
+				t.Fatalf("list_tasks schema %s", desc)
+			}
+		case "stop_task":
+			if !strings.Contains(desc, "user_stop") || !strings.Contains(desc, "cancel_task") || !strings.Contains(desc, "expected_status_version") {
+				t.Fatalf("stop_task schema %s", desc)
+			}
+		case "send_command":
+			if !strings.Contains(desc, "续跑当前轮不能同时改模型") {
+				t.Fatalf("send_command schema %s", desc)
+			}
+		}
+	}
+}
+
+func TestInboundMCPSendCommandModelIsWhatTheLoopRuns(t *testing.T) {
+	prev := mcpMaterializeModelFunc
+	t.Cleanup(func() { mcpMaterializeModelFunc = prev })
+	mcpMaterializeModelFunc = func(_ *App, provider, model string) (corelib.MaclawLLMConfig, bool) {
+		if provider == "Missing" {
+			return corelib.MaclawLLMConfig{}, false
+		}
+		return corelib.MaclawLLMConfig{ProviderName: provider, Model: model}, true
+	}
+	app := &App{}
+	app.mcpRememberPin("p", "OldPin", "old-pin-model")
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-next",
+		Provider: "Next", Model: "next-model",
+		ProviderEffective: "Next", ModelEffective: "next-model",
+	})
+	handler := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID("p")
+	cfg := handler.resolveAgentLoopLLMConfig(&LoopContext{UserID: owner, Kind: LoopKindChat})
+	if cfg.ProviderName != "Next" || cfg.Model != "next-model" || cfg.Profile == "" || cfg.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("loop config %+v", cfg)
+	}
+	t.Setenv(cllm.CostRouteEnvKey, "on")
+	app.ohModules.cachedAuxLLM = corelib.AuxiliaryLLMConfig{URL: "https://aux.example", Key: "ak", Model: "aux-flash"}
+	routed, decision := handler.applyTurnModelRoute(cfg, "实现登录接口", &LoopContext{UserID: owner, Kind: LoopKindChat}, nil)
+	if routed.Model != "next-model" || routed.ProviderName != "Next" || decision.CostRouteApplied || !strings.Contains(decision.Reason, "caller model kept") {
+		t.Fatalf("caller model routed away cfg=%+v decision=%+v", routed, decision)
+	}
+	pin, ok := app.mcpPinNames("p")
+	if !ok || pin.ProviderName != "OldPin" || pin.Model != "old-pin-model" {
+		t.Fatalf("pin changed %+v ok=%v", pin, ok)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-half",
+		Provider: "Next",
+	})
+	half := handler.resolveAgentLoopLLMConfig(&LoopContext{UserID: owner, Kind: LoopKindChat})
+	if half.ProviderName != "OldPin" || half.Model != "old-pin-model" {
+		t.Fatalf("half pair mixed %+v", half)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-missing",
+		Provider: "Missing", Model: "gone",
+		ProviderEffective: "Missing", ModelEffective: "gone",
+	})
+	if _, ok := app.mcpLoopModelConfig(owner); ok {
+		t.Fatal("unusable run pair fell through to the pin")
+	}
+}
+
+func TestInboundMCPCallerModelSurvivesRetryAndEscalation(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	caller := corelib.MaclawLLMConfig{
+		URL: "https://caller.example/v1", Key: "k", Model: "next-model",
+		ProviderName: "Next", ProviderID: "next",
+		Profile: maclawLLMRoleForeground, RouteSource: mcpCallerModelRoute,
+	}
+	handler := &IMMessageHandler{app: app}
+	cb := &sharedAgentLoopCallbacks{
+		handler:  handler,
+		userText: "实现登录接口",
+		loopCtx:  &LoopContext{Kind: LoopKindChat},
+		roleBase: caller,
+		llmCfg:   caller,
+	}
+	if _, ok := cb.RefreshLLMSelection(caller); ok {
+		t.Fatal("retry replaced the caller model")
+	}
+	app.ohModules.modelRouter = cllm.NewModelRouter(map[string]cllm.ModelRoute{
+		string(cllm.TaskReasoning): {Model: "reason-model", URL: "https://reason.example/v1", Provider: "Reason"},
+	})
+	cb.route = modelRouteDecision{Task: string(cllm.TaskFast), Source: "primary", Model: caller.Model}
+	cb.toolCalls = 1
+	cb.maybeEscalateAfterTools()
+	if cb.escalated || cb.llmCfg.Model != "next-model" || cb.llmCfg.URL != caller.URL || cb.llmCfg.ProviderName != "Next" {
+		t.Fatalf("escalation replaced the caller model escalated=%v cfg=%+v", cb.escalated, cb.llmCfg)
+	}
+}
+
+func TestInboundMCPCallerModelSurvivesCodingRoute(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       roleTestProviders(),
+		MaclawLLMCurrentProvider: "Local",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.disableBackgroundEmbeddingForTest = true
+	t.Cleanup(func() {
+		app.stopMemoryPipelineSchedule("test-cleanup")
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	})
+	app.ohModules.modelRouter = cllm.NewModelRouter(map[string]cllm.ModelRoute{
+		string(cllm.TaskReasoning): {Model: "reason-model", URL: "https://reason.example/v1", Provider: "Reason"},
+		string(cllm.TaskVision):    {Model: "vision-route", URL: "https://vision.example/v1", Provider: "Vision"},
+	})
+	handler := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID("p")
+	desktop := handler.codingLLMConfigForSession(owner)
+	if desktop.Model != "assistant-model" || desktop.RouteSource == mcpCallerModelRoute {
+		t.Fatalf("desktop coding %+v", desktop)
+	}
+	if plan := handler.codingPlanLLMConfigForSession(owner); plan.Model != "assistant-model" || plan.RouteSource == mcpCallerModelRoute {
+		t.Fatalf("desktop plan %+v", plan)
+	}
+	plain := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: handler, cfg: desktop}}
+	routed, decision, ok := plain.RouteTurn("实现登录接口")
+	if !ok || routed.Model != "reason-model" || decision.Source != "route" {
+		t.Fatalf("desktop coding route %+v %+v ok=%v", routed, decision, ok)
+	}
+
+	app.mcpRememberPin("p", "Local", "pin-model")
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-next",
+		Provider: "Local", Model: "next-model",
+		ProviderEffective: "Local", ModelEffective: "next-model",
+	})
+	caller := handler.codingLLMConfigForSession(owner)
+	if caller.Model != "next-model" || caller.ProviderName != "Local" || caller.Profile != maclawLLMProfileCoding || caller.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("coding config %+v", caller)
+	}
+	kept := handler.applyCodingRoutePreference(owner, caller, true)
+	if kept.Model != "next-model" || kept.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("preference %+v", kept)
+	}
+	seen := handler.routeLLMConfigForCodingVision(caller)
+	if seen.Model != "next-model" || seen.URL != caller.URL {
+		t.Fatalf("vision %+v", seen)
+	}
+	local := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: handler, cfg: caller}}
+	got, decision, ok := local.RouteTurn("实现登录接口")
+	if !ok || got.Model != "next-model" || got.URL != caller.URL || !strings.Contains(decision.Reason, "caller model kept") {
+		t.Fatalf("local coding route %+v %+v ok=%v", got, decision, ok)
+	}
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{handler: handler, cfg: caller}}
+	got, decision, ok = remote.RouteTurn("实现登录接口")
+	if !ok || got.Model != "next-model" || got.URL != caller.URL || !strings.Contains(decision.Reason, "caller model kept") {
+		t.Fatalf("remote coding route %+v %+v ok=%v", got, decision, ok)
+	}
+	if plan := handler.codingPlanLLMConfigForSession(owner); plan.Model != "next-model" || plan.ProviderName != "Local" || plan.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("plan config %+v", plan)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-reason",
+		Provider: "Local", Model: "deepseek-reasoner",
+		ProviderEffective: "Local", ModelEffective: "deepseek-reasoner",
+	})
+	reasoned := handler.codingPlanLLMConfigForSession(owner)
+	if reasoned.Model != "deepseek-reasoner" || reasoned.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("plan name-map %+v", reasoned)
+	}
+	mapped := handler.codingLightweightConfigForSession(owner)
+	if mapped.Model != "deepseek-chat" {
+		t.Fatalf("classifier name-map %+v", mapped)
+	}
+	app.ohModules.modelRouter = cllm.NewModelRouter(map[string]cllm.ModelRoute{
+		string(cllm.TaskReasoning): {Model: "reason-model", URL: "https://reason.example/v1", Provider: "Reason"},
+		string(cllm.TaskVision):    {Model: "vision-route", URL: "https://vision.example/v1", Provider: "Vision"},
+		string(cllm.TaskFast):      {Model: "fast-model", URL: "https://fast.example/v1", Provider: "Fast"},
+	})
+	if light := handler.codingLightweightConfigForSession(owner); light.Model != "fast-model" {
+		t.Fatalf("classifier fast route %+v", light)
+	}
+	if planned := handler.codingPlanLLMConfigForSession(owner); planned.Model != "deepseek-reasoner" || planned.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("fast route replaced the plan model %+v", planned)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-half",
+		Provider: "Local",
+	})
+	half := handler.codingLLMConfigForSession(owner)
+	if half.Model != "pin-model" || half.RouteSource != mcpCallerModelRoute {
+		t.Fatalf("half pair mixed %+v", half)
+	}
+}
+
+func TestInboundMCPStopTaskComparesStatusVersion(t *testing.T) {
+	app := &App{memoryStore: &memory.Store{}}
+	app.effectiveBaseDir.Store(t.TempDir())
+	app.remoteInfraReady.Store(true)
+	app.interactionInfraOnce.Do(func() {})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "p", Status: mcpStatusRunning, RequestID: "mcp-1",
+		RunID: "run-1", StatusVersion: 4, ConfirmationID: "mcf_stop",
+		ConfirmationKind: "plan",
+		Commands:         []string{"/plan approve", "/plan skip", "/plan reject"},
+	})
+	stale := mcpContextWithOpts(context.Background(), mcpCallOpts{HasExpected: true, ExpectedVersion: 3})
+	if _, err := app.mcpStopTask(stale, "p"); err == nil || !mcpCodeIs(err, mcpCodeStatusConflict) || !strings.Contains(err.Error(), "状态版本已经变化") {
+		t.Fatalf("stale %v", err)
+	}
+	kept, ok := app.mcpViewFromRegistry("p")
+	if !ok || kept.Status != mcpStatusRunning || kept.StatusVersion != 4 || kept.ConfirmationID != "mcf_stop" || !containsAll(kept.Commands, "/plan approve") {
+		t.Fatalf("stale mutated %+v", kept)
+	}
+	absent := mcpContextWithOpts(context.Background(), mcpCallOpts{HasExpected: true, ExpectedVersion: 0})
+	if _, err := app.mcpStopTask(absent, "nobody"); err == nil || !mcpCodeIs(err, mcpCodeStatusConflict) {
+		t.Fatalf("missing %v", err)
+	}
+	match := mcpContextWithOpts(context.Background(), mcpCallOpts{HasExpected: true, ExpectedVersion: 4})
+	stopped, err := app.mcpStopTask(match, "p")
+	if err != nil || stopped.Status != mcpStatusCancelled || stopped.Stop == nil || stopped.Stop.Class != mcpStopUser {
+		t.Fatalf("stop %+v err=%v", stopped, err)
+	}
+	if stopped.ConfirmationID != "" || containsAll(stopped.Commands, "/plan approve") {
+		t.Fatalf("approval card stayed %+v", stopped)
+	}
+	after, ok := app.mcpViewFromRegistry("p")
+	if !ok || after.Status != mcpStatusCancelled || after.Stop == nil || after.Stop.Class != mcpStopUser || after.ConfirmationID != "" {
+		t.Fatalf("registry %+v", after)
+	}
 }

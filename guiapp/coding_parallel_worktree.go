@@ -1246,3 +1246,322 @@ func codingParallelGitText(dir string, args ...string) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// codingSpawnCheckoutSnap is the deferred checkout before a worker runs.
+// git stash create records tracked content without moving HEAD or the
+// worktree. Untracked files are not in that commit, so their bytes are kept
+// beside it. Rollback restores only the paths the worker changed.
+type codingSpawnCheckoutSnap struct {
+	dir       string
+	gitRoot   string
+	sha       string
+	untracked map[string]codingSpawnUntrackedFile
+}
+
+type codingSpawnUntrackedFile struct {
+	body   []byte
+	link   string
+	linked bool
+}
+
+type codingSpawnUntrackedDelta struct {
+	path   string
+	before codingSpawnUntrackedFile
+	had    bool
+}
+
+func codingSpawnSnapshotCheckout(dir string) (*codingSpawnCheckoutSnap, error) {
+	root, err := codingParallelGitText(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, err
+	}
+	root = filepath.Clean(root)
+	sha, err := codingParallelGitText(root, "stash", "create")
+	if err != nil {
+		return nil, err
+	}
+	if sha == "" {
+		sha, err = codingParallelGitText(root, "rev-parse", "HEAD")
+		if err != nil {
+			return nil, err
+		}
+	}
+	untracked, err := codingSpawnReadUntracked(root)
+	if err != nil {
+		return nil, err
+	}
+	return &codingSpawnCheckoutSnap{dir: root, gitRoot: root, sha: sha, untracked: untracked}, nil
+}
+
+// codingSpawnProjectPaths rewrites repo-relative git names into the worker's
+// project directory. A file outside that directory is not in the declared
+// write-set, even when its repo-relative name matches a declared basename.
+func codingSpawnProjectPaths(gitRoot, project string, changed []string) ([]string, error) {
+	gitRoot = filepath.Clean(gitRoot)
+	project = filepath.Clean(project)
+	if project == "" || project == "." {
+		project = gitRoot
+	}
+	out := make([]string, 0, len(changed))
+	for _, rel := range changed {
+		rel = filepath.ToSlash(strings.TrimSpace(rel))
+		if rel == "" {
+			continue
+		}
+		abs := filepath.Join(gitRoot, filepath.FromSlash(rel))
+		projRel, err := filepath.Rel(project, abs)
+		if err != nil {
+			return nil, err
+		}
+		projRel = filepath.ToSlash(projRel)
+		if projRel == ".." || strings.HasPrefix(projRel, "../") {
+			return nil, fmt.Errorf("worktree changed undeclared path %q", rel)
+		}
+		out = append(out, projRel)
+	}
+	return out, nil
+}
+
+func codingSpawnSafeRel(rel string) (string, error) {
+	cleaned, ok := codingParallelRelPath(rel)
+	if !ok {
+		return "", fmt.Errorf("checkout path %q escapes the repository", rel)
+	}
+	return cleaned, nil
+}
+
+func codingSpawnReadUntracked(root string) (map[string]codingSpawnUntrackedFile, error) {
+	raw, err := codingParallelGit(root, "ls-files", "-z", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]codingSpawnUntrackedFile{}
+	for _, part := range bytes.Split(raw, []byte{0}) {
+		rawRel := strings.TrimSpace(filepath.ToSlash(string(part)))
+		if rawRel == "" {
+			continue
+		}
+		rel, relErr := codingSpawnSafeRel(rawRel)
+		if relErr != nil {
+			return nil, relErr
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		// Parents must be real directories. The final entry may be a symlink;
+		// that link is recorded and is not followed.
+		parent := filepath.Dir(path)
+		if filepath.Clean(parent) != filepath.Clean(root) && !codingParallelWithinRoot(root, parent) {
+			return nil, fmt.Errorf("untracked path %s escapes the checkout", rel)
+		}
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				continue
+			}
+			return nil, statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, linkErr := os.Readlink(path)
+			if linkErr != nil {
+				return nil, linkErr
+			}
+			out[rel] = codingSpawnUntrackedFile{link: target, linked: true}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("untracked path %s is not a regular file", rel)
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		out[rel] = codingSpawnUntrackedFile{body: body}
+	}
+	return out, nil
+}
+
+func (s *codingSpawnCheckoutSnap) trackedChanges() ([]codingParallelChange, error) {
+	if s == nil {
+		return nil, fmt.Errorf("missing checkout snapshot")
+	}
+	raw, err := codingParallelGit(s.dir, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", s.sha)
+	if err != nil {
+		return nil, err
+	}
+	changes := parseCodingParallelNameStatus(raw)
+	for i, change := range changes {
+		rel, relErr := codingSpawnSafeRel(change.path)
+		if relErr != nil {
+			return nil, relErr
+		}
+		changes[i].path = rel
+	}
+	return changes, nil
+}
+
+func (s *codingSpawnCheckoutSnap) untrackedDeltas() ([]codingSpawnUntrackedDelta, error) {
+	if s == nil {
+		return nil, fmt.Errorf("missing checkout snapshot")
+	}
+	now, err := codingSpawnReadUntracked(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	var deltas []codingSpawnUntrackedDelta
+	seen := map[string]bool{}
+	for path, before := range s.untracked {
+		seen[path] = true
+		after, has := now[path]
+		if has && codingSpawnUntrackedSame(before, after) {
+			continue
+		}
+		deltas = append(deltas, codingSpawnUntrackedDelta{path: path, before: before, had: true})
+	}
+	for path := range now {
+		if seen[path] {
+			continue
+		}
+		deltas = append(deltas, codingSpawnUntrackedDelta{path: path})
+	}
+	return deltas, nil
+}
+
+func codingSpawnUntrackedSame(left, right codingSpawnUntrackedFile) bool {
+	if left.linked || right.linked {
+		return left.linked && right.linked && left.link == right.link
+	}
+	return bytes.Equal(left.body, right.body)
+}
+
+func (s *codingSpawnCheckoutSnap) changedPaths() ([]string, error) {
+	tracked, err := s.trackedChanges()
+	if err != nil {
+		return nil, err
+	}
+	deltas, err := s.untrackedDeltas()
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(tracked)+len(deltas))
+	for _, change := range tracked {
+		if change.path != "" {
+			paths = append(paths, change.path)
+		}
+	}
+	for _, delta := range deltas {
+		if delta.path != "" {
+			paths = append(paths, delta.path)
+		}
+	}
+	return paths, nil
+}
+
+func (s *codingSpawnCheckoutSnap) rollback() error {
+	if s == nil {
+		return fmt.Errorf("missing checkout snapshot")
+	}
+	tracked, trackErr := s.trackedChanges()
+	deltas, deltaErr := s.untrackedDeltas()
+	var errs []error
+	if trackErr != nil {
+		errs = append(errs, trackErr)
+	}
+	if deltaErr != nil {
+		errs = append(errs, deltaErr)
+	}
+	for _, change := range tracked {
+		if err := s.restoreTracked(change); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, delta := range deltas {
+		if err := s.restoreUntracked(delta); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *codingSpawnCheckoutSnap) restoreTracked(change codingParallelChange) error {
+	rel, err := codingSpawnSafeRel(change.path)
+	if err != nil {
+		return err
+	}
+	exists, err := codingSpawnBlobInCommit(s.dir, s.sha, rel)
+	if err != nil {
+		return err
+	}
+	if exists {
+		_, err = codingParallelGit(s.dir, "checkout", s.sha, "--", rel)
+		return err
+	}
+	return codingSpawnRemovePath(s.dir, rel)
+}
+
+func codingSpawnBlobInCommit(dir, sha, rel string) (bool, error) {
+	_, err := codingParallelGit(dir, "rev-parse", "--verify", "--quiet", sha+":"+rel)
+	if err == nil {
+		return true, nil
+	}
+	if codingParallelGitMissing(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func codingSpawnContainPath(root, path string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to touch %s outside the checkout", path)
+	}
+	parent := filepath.Dir(path)
+	if parent != root && !codingParallelWithinRoot(root, parent) {
+		return fmt.Errorf("refusing to touch %s outside the checkout", path)
+	}
+	return nil
+}
+
+func codingSpawnRemovePath(root, rel string) error {
+	if _, err := codingParallelGit(root, "rm", "-f", "--ignore-unmatch", "--", rel); err != nil {
+		return err
+	}
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := codingSpawnContainPath(root, path); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *codingSpawnCheckoutSnap) restoreUntracked(delta codingSpawnUntrackedDelta) error {
+	rel, err := codingSpawnSafeRel(delta.path)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.dir, filepath.FromSlash(rel))
+	if err := codingSpawnContainPath(s.dir, path); err != nil {
+		return err
+	}
+	if !delta.had {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if delta.before.linked {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return os.Symlink(delta.before.link, path)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, delta.before.body, 0o644)
+}

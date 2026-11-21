@@ -117,6 +117,7 @@ func markComputerUseSessionActive() {
 	globalComputerUse.mu.Unlock()
 	// Tray only needs a refresh when entering Active from inactive.
 	notifyComputerUseTrayIf(!was)
+	cuKeepPerceptionWarm()
 }
 
 // clearComputerUseSessionActive ends sticky CU injection (done / stop / reset /
@@ -127,6 +128,7 @@ func clearComputerUseSessionActive() {
 	globalComputerUse.mu.Unlock()
 	notifyComputerUseTrayIf(changed)
 	hideComputerUseWindowHalo()
+	resetComputerUseExperienceTrace()
 }
 
 // computerUseActivationInput is the pure input to the CU gate (testable without UIC).
@@ -623,6 +625,12 @@ func computerUsePlaybookSectionFor(active bool, owner string) string {
 	if extra := computerUseContractPlaybookExtra(owner); extra != "" {
 		b.WriteString(extra)
 		b.WriteString("\n")
+	}
+	if notes := computerUseExperiencePrompt(owner); notes != "" {
+		b.WriteString(notes)
+		if notes[len(notes)-1] != '\n' {
+			b.WriteByte('\n')
+		}
 	}
 	return b.String()
 }

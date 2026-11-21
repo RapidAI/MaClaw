@@ -54,6 +54,16 @@ func setPendingComputerUseModelImage(pngB64 string) {
 	globalComputerUse.mu.Unlock()
 }
 
+// clearComputerUseModelImages drops both the image about to be attached and
+// the one a later target click would ground on. A full-monitor fallback is
+// not a picture of the window just operated, so neither image stays current.
+func clearComputerUseModelImages() {
+	globalComputerUse.mu.Lock()
+	globalComputerUse.pendingModelImage = ""
+	globalComputerUse.lastModelImage = ""
+	globalComputerUse.mu.Unlock()
+}
+
 func takePendingComputerUseModelImage() (string, bool) {
 	globalComputerUse.mu.Lock()
 	defer globalComputerUse.mu.Unlock()

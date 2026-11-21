@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
-import { PinnedMessageBanner } from "./PinnedMessageBanner";
+import { PINNED_BANNER_SLIDE_MS, PinnedMessageBanner } from "./PinnedMessageBanner";
 import type { PinnedMessage } from "../ai/usePinnedNotifications";
 
 const { browserOpenURL } = vi.hoisted(() => ({
@@ -34,6 +34,11 @@ function anchor(): React.RefObject<HTMLDivElement | null> {
 describe("PinnedMessageBanner", () => {
   beforeEach(() => {
     browserOpenURL.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("shows the message with the default CTA label when button_text is empty", () => {
@@ -70,7 +75,7 @@ describe("PinnedMessageBanner", () => {
     expect(screen.queryByText("立即使用")).toBeNull();
   });
 
-  it("pages through the slides with the arrows and the dots, permanent first", () => {
+  it("pages through the slides with the dots, permanent first", () => {
     const messages = [
       pin({ id: "p-perm", title: "永久置顶", pinned_forever: true }),
       pin({ id: "p-1", title: "第一条" }),
@@ -79,19 +84,15 @@ describe("PinnedMessageBanner", () => {
     const { container } = render(
       <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
     );
-    // The permanent pin is the leftmost (first) slide.
+    // The permanent pin is the leftmost (first) slide. Dots are the only pager.
     expect(screen.getByText("永久置顶")).toBeTruthy();
-    const prev = screen.getByLabelText("上一条置顶消息") as HTMLButtonElement;
-    const next = screen.getByLabelText("下一条置顶消息") as HTMLButtonElement;
-    expect(prev.disabled).toBe(true);
-    fireEvent.click(next);
-    expect(screen.getByText("第一条")).toBeTruthy();
-    // The dots jump directly to a slide.
+    expect(container.querySelector(".mc-pinned-banner__arrow")).toBeNull();
     const dots = Array.from(container.querySelectorAll(".mc-pinned-banner__dot")) as HTMLButtonElement[];
     expect(dots).toHaveLength(3);
+    fireEvent.click(dots[1]);
+    expect(screen.getByText("第一条")).toBeTruthy();
     fireEvent.click(dots[2]);
     expect(screen.getByText("第二条")).toBeTruthy();
-    expect(next.disabled).toBe(true);
   });
 
   it("close button dismisses every visible message via onDismiss", () => {
@@ -108,6 +109,269 @@ describe("PinnedMessageBanner", () => {
     const close = screen.getByLabelText(/关闭置顶消息/);
     fireEvent.click(close);
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("advances left to right every 10 seconds and wraps to the first slide", () => {
+    const messages = [
+      pin({ id: "p-perm", title: "永久置顶", pinned_forever: true }),
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    expect(screen.getByText("永久置顶")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("永久置顶")).toBeTruthy();
+  });
+
+  it("pauses the rotation while the pointer is over the card and starts a fresh 10 seconds after it leaves", () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    const { container } = render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    const banner = container.querySelector(".mc-pinned-banner");
+    expect(banner).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    fireEvent.mouseEnter(banner!);
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS * 3);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    fireEvent.mouseLeave(banner!);
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+  });
+
+  it("holds the current slide while the account popover hides the card, then shows it for a fresh 10 seconds", async () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    const ref = createRef<HTMLDivElement>();
+    const { container } = render(
+      <div className="sidebar-system-status">
+        <div className="mc-workbench-status-popover" data-open="false" />
+        <div ref={ref} />
+        <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={ref} onDismiss={() => {}} />
+      </div>,
+    );
+    const popover = container.querySelector(".mc-workbench-status-popover");
+    expect(popover).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    await act(async () => {
+      popover!.setAttribute("data-open", "true");
+    });
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS * 3);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    await act(async () => {
+      popover!.setAttribute("data-open", "false");
+    });
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+  });
+
+  it("resumes a fresh 10 seconds when the pointer leaves the window", () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    const { container } = render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    const banner = container.querySelector(".mc-pinned-banner");
+    expect(banner).toBeTruthy();
+    fireEvent.mouseEnter(banner!);
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS * 3);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    fireEvent.mouseLeave(document.documentElement);
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+  });
+
+  it("does not resume while the pointer is still over the card if a document mouseout has no target", () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    const { container } = render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    const banner = container.querySelector(".mc-pinned-banner");
+    expect(banner).toBeTruthy();
+    fireEvent.mouseEnter(banner!);
+    fireEvent.mouseOut(document, { relatedTarget: null });
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS * 3);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+  });
+
+  it("stays on the slide being read when a new pin is inserted ahead of it", () => {
+    const initial = [
+      pin({ id: "a", title: "正在看" }),
+      pin({ id: "b", title: "下一条" }),
+    ];
+    const { rerender } = render(
+      <PinnedMessageBanner messages={initial} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    expect(screen.getByText("正在看")).toBeTruthy();
+    rerender(
+      <PinnedMessageBanner
+        messages={[pin({ id: "x", title: "新插入" }), ...initial]}
+        lang="zh-Hans"
+        anchorRef={anchor()}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(screen.getByText("正在看")).toBeTruthy();
+    expect(screen.queryByText("新插入")).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("下一条")).toBeTruthy();
+  });
+
+  it("keeps the remaining time when the same slides arrive in a new array", () => {
+    const initial = [
+      pin({ id: "a", title: "正在看" }),
+      pin({ id: "b", title: "下一条" }),
+    ];
+    const { rerender } = render(
+      <PinnedMessageBanner messages={initial} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS - 1000);
+    });
+    rerender(
+      <PinnedMessageBanner
+        messages={initial.map((message) => ({ ...message }))}
+        lang="zh-Hans"
+        anchorRef={anchor()}
+        onDismiss={() => {}}
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(999);
+    });
+    expect(screen.getByText("正在看")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.getByText("下一条")).toBeTruthy();
+  });
+
+  it("falls back to the first slide when the current one disappears", () => {
+    const initial = [
+      pin({ id: "a", title: "第一条" }),
+      pin({ id: "b", title: "正在看" }),
+      pin({ id: "c", title: "下一条" }),
+    ];
+    const { rerender } = render(
+      <PinnedMessageBanner messages={initial} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("正在看")).toBeTruthy();
+    rerender(
+      <PinnedMessageBanner
+        messages={[initial[0], initial[2]]}
+        lang="zh-Hans"
+        anchorRef={anchor()}
+        onDismiss={() => {}}
+      />,
+    );
+    expect(screen.getByText("第一条")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("下一条")).toBeTruthy();
+  });
+
+  it("holds the slide while a control on the card has focus", () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    fireEvent.focus(screen.getByText("查看详情"));
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS * 3);
+    });
+    expect(screen.getByText("第一条")).toBeTruthy();
+    fireEvent.blur(screen.getByText("查看详情"));
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
+  });
+
+  it("does not keep the clock stopped after a pointer click once the pointer leaves", () => {
+    const messages = [
+      pin({ id: "p-1", title: "第一条" }),
+      pin({ id: "p-2", title: "第二条" }),
+    ];
+    const { container } = render(
+      <PinnedMessageBanner messages={messages} lang="zh-Hans" anchorRef={anchor()} onDismiss={() => {}} />,
+    );
+    const banner = container.querySelector(".mc-pinned-banner");
+    const dot = container.querySelector(".mc-pinned-banner__dot");
+    expect(banner).toBeTruthy();
+    expect(dot).toBeTruthy();
+    fireEvent.pointerDown(dot!);
+    fireEvent.focus(dot!);
+    fireEvent.pointerUp(dot!);
+    fireEvent.mouseLeave(banner!);
+    act(() => {
+      vi.advanceTimersByTime(PINNED_BANNER_SLIDE_MS);
+    });
+    expect(screen.getByText("第二条")).toBeTruthy();
   });
 
   it("renders nothing without visible messages", () => {

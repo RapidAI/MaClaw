@@ -296,9 +296,10 @@ func RenderTextObserve(res *ObserveResult, maxElements int) string {
 		fmt.Fprintf(&b, "adapter=%s %s\n", hint.Kind, hint.Advice)
 	}
 	b.WriteString("hint: Use computer_click with ref=eN (or computer_type/key/scroll/select). ")
-	b.WriteString("Do NOT invent pixel coordinates. Re-observe after every action. ")
+	b.WriteString("Do NOT invent pixel coordinates. ")
+	b.WriteString("A successful action already includes a fresh foreground-window crop of the window just operated. Call computer_observe only to switch windows, or when the result says the refresh failed. ")
 	b.WriteString("You may be a text-only model — screenshots are NOT included in this result. ")
-	b.WriteString("Default observe crops to the focused window; pass screen_index=-1 for all monitors, or screen_index=N for a full monitor.\n")
+	b.WriteString("Default observe crops to the focused window. Pass window=<app title> for one app. Do not pass screen_index=-1; a stitch over 8 megapixels is refused.\n")
 	return b.String()
 }
 
@@ -345,7 +346,7 @@ func RenderVisionObserve(res *ObserveResult) string {
 	}
 	b.WriteString("screenshot: attached in the following message. Look at the image.\n")
 	b.WriteString("hint: Click with computer_click x,y in screenshot pixel space, or ref=eN for a drawn mark. ")
-	b.WriteString("Then re-observe.\n")
+	b.WriteString("A successful action already includes the next screenshot. Call computer_observe only to switch windows, or when the result says the refresh failed.\n")
 	return b.String()
 }
 

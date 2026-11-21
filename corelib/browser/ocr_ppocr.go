@@ -104,6 +104,7 @@ func (p *NativeOCRProvider) Warm() error {
 		return fmt.Errorf("OCR provider nil")
 	}
 	if p.managerLoaded() {
+		p.Touch()
 		return nil
 	}
 	if !p.IsAvailable() {
@@ -161,6 +162,20 @@ func (p *NativeOCRProvider) ocrManager() *ocr.Manager {
 		p.manager = ocr.NewManager(p.detPath, p.recPath)
 	}
 	return p.manager
+}
+
+// Touch restarts the idle-unload timer when models are already loaded.
+// It does not create a manager or load models.
+func (p *NativeOCRProvider) Touch() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	mgr := p.manager
+	p.mu.Unlock()
+	if mgr != nil {
+		mgr.Touch()
+	}
 }
 
 func (p *NativeOCRProvider) managerLoaded() bool {

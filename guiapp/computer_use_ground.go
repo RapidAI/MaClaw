@@ -34,15 +34,15 @@ func cuHasArg(args map[string]interface{}, key string) bool {
 // note means grounding was not possible and tells the model how to continue
 // on its own.
 func cuGroundTarget(target string) (int, int, string) {
-	cfg, ok := computerUseGrounderFn()
-	if !ok {
-		return 0, 0, "target needs a grounding model, and none is set; pass x,y from the screenshot or ref=eN from computer_observe"
-	}
 	globalComputerUse.mu.Lock()
 	img := globalComputerUse.lastModelImage
 	globalComputerUse.mu.Unlock()
 	if img == "" {
 		return 0, 0, "no screenshot to ground target on yet; call computer_observe first, then click by target, x,y or ref"
+	}
+	cfg, ok := computerUseGrounderFn()
+	if !ok {
+		return 0, 0, "target needs a grounding model, and none is set; pass x,y from the screenshot or ref=eN from computer_observe"
 	}
 	raw, err := base64.StdEncoding.DecodeString(img)
 	if err != nil {

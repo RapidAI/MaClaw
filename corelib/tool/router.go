@@ -1715,7 +1715,9 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			r.applyToolHeadCondKeep(condKeep, routeToolHeadVector(uicResult, opts))
 		}
 
-		if !opts.SkipUnifiedClassifier && r.intentClassifier != nil {
+		// PreferEmbeddingOnly is L2 only. The legacy intent classifier is
+		// another LLM and must not run before every tool step.
+		if !opts.SkipUnifiedClassifier && !opts.PreferEmbeddingOnly && r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)
 			cachedICResult = &result
 			skillInstallEligible = intentClassifierSkillInstallEligible(result)

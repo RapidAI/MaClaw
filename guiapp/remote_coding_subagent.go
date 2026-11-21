@@ -2329,6 +2329,10 @@ func (c *remoteCodingCallbacks) RouteTurn(userText string) (corelib.MaclawLLMCon
 		c.agent.cfg = cfg
 		return cfg, decision, true
 	}
+	if cfg.RouteSource == mcpCallerModelRoute {
+		decision.Reason = "remote coding subagent; caller model kept"
+		return cfg, decision, true
+	}
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return cfg, decision, true
 	}

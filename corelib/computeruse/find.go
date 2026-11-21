@@ -2,6 +2,8 @@ package computeruse
 
 import (
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
 
 // FindMatches searches the last observation for query, case-insensitively and
@@ -89,6 +91,49 @@ func coveredByAnyElement(elements []MarkedElement, x, y int) bool {
 		}
 	}
 	return false
+}
+
+// OCRLinesUsable reports that at least one line has text and a positive box.
+// A line with no box cannot be hit-tested, so it must not mark labels current.
+func OCRLinesUsable(lines []taskengine.OCRResult) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line.Text) != "" && line.BBox[2] > 0 && line.BBox[3] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// OCRClickElements turns boxed OCR lines into clickable controls for a
+// lightweight text refresh. A line longer than 80 runes is a paragraph, and a
+// line with no box would click the origin, so both are left out. limit caps
+// the list; non-positive limit means 24.
+func OCRClickElements(lines []taskengine.OCRResult, limit int) []taskengine.UIElement {
+	if limit <= 0 {
+		limit = 24
+	}
+	out := make([]taskengine.UIElement, 0, limit)
+	for _, line := range lines {
+		if len(out) >= limit {
+			break
+		}
+		text := strings.TrimSpace(line.Text)
+		if text == "" || line.BBox[2] <= 0 || line.BBox[3] <= 0 || len([]rune(text)) > 80 {
+			continue
+		}
+		out = append(out, taskengine.UIElement{
+			Type:         "text",
+			Name:         truncateRunes(text, 40),
+			BBox:         line.BBox,
+			Confidence:   line.Confidence,
+			Source:       "ocr",
+			Interactable: true,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // truncateRunes caps s at max runes, appending an ellipsis when truncated.

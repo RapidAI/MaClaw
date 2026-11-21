@@ -49,6 +49,15 @@ func (m *Manager) Loaded() bool {
 	return m.mm.Loaded()
 }
 
+// Touch restarts the idle-unload timer when models are already loaded.
+// It does not load models.
+func (m *Manager) Touch() {
+	if m == nil || m.mm == nil {
+		return
+	}
+	m.mm.Touch()
+}
+
 // Recognize loads models on demand, runs OCR, schedules idle unload.
 func (m *Manager) Recognize(img image.Image) ([]Result, error) {
 	e, done, err := m.mm.Acquire()

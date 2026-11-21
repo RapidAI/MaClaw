@@ -57,7 +57,7 @@ func adapterAdvice(kind AdapterKind) AdapterHint {
 	case AdapterBrowser:
 		return AdapterHint{Kind: AdapterBrowser, Advice: "Browser window: prefer browser_* tools. Computer Use is for native chrome only (download bar, OS dialogs)."}
 	case AdapterIM:
-		return AdapterHint{Kind: AdapterIM, Advice: "IM window: use the search box first (computer_find 搜索/Search), type the name, re-observe. Do not scroll a long contact list blindly."}
+		return AdapterHint{Kind: AdapterIM, Advice: "IM window: computer_focus, use the search box, computer_type the name, then computer_find. The action result includes a crop of the window just operated. Do not scroll a long contact list."}
 	case AdapterEditor:
 		return AdapterHint{Kind: AdapterEditor, Advice: "Editor window: type into the document via computer_type after focusing the text area; use computer_key for shortcuts."}
 	default:

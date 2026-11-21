@@ -1,0 +1,942 @@
+package guiapp
+
+import (
+	"bytes"
+	"encoding/base64"
+	"errors"
+	"image"
+	"image/png"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/accessibility"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/taskengine"
+)
+
+func TestRefuseStitchedCapture(t *testing.T) {
+	if !refuseStitchedCapture(-1, 8_000_001) {
+		t.Fatal("over-budget stitch should be refused")
+	}
+	if refuseStitchedCapture(-1, computerUseStitchPixelBudget) {
+		t.Fatal("a stitch at the budget should be kept")
+	}
+	if refuseStitchedCapture(0, 20_000_000) {
+		t.Fatal("a single monitor is not a stitch")
+	}
+	if refuseStitchedCapture(-1, 0) {
+		t.Fatal("an unknown size should not refuse")
+	}
+}
+
+func TestFinishActionAppendsRefresh(t *testing.T) {
+	prev := computerUseAfterActionRefresh
+	computerUseAfterActionRefresh = func(prefix, window string) string {
+		if window != "" {
+			t.Fatalf("window %q", window)
+		}
+		return prefix + "\nforeground crop"
+	}
+	t.Cleanup(func() { computerUseAfterActionRefresh = prev })
+	got := cuFinishAction("clicked e1 via a11y")
+	if got != "clicked e1 via a11y\nforeground crop" {
+		t.Fatalf("got %q", got)
+	}
+	computerUseAfterActionRefresh = func(prefix, window string) string {
+		return prefix + "|" + window
+	}
+	if got := cuFinishAction("focused", "蓝信"); got != "focused|蓝信" {
+		t.Fatalf("window not forwarded: %q", got)
+	}
+	computerUseAfterActionRefresh = nil
+	if got := cuFinishAction("pressed enter"); got != "pressed enter" {
+		t.Fatalf("nil refresh got %q", got)
+	}
+}
+
+func TestComputerUseExperienceReachesTheNextPlaybook(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	dir := t.TempDir()
+	prev := computerUseExperienceDirForTest
+	computerUseExperienceDirForTest = dir
+	t.Cleanup(func() {
+		computerUseExperienceDirForTest = prev
+		computeruse.SetExperienceDir("")
+	})
+	beginComputerUseTask("sk-exp", "req-exp", "向蓝信中的龙军用户问好", nil)
+	setComputerUseOwner("sk-exp")
+	section := computerUsePlaybookSectionFor(true, "sk-exp")
+	if !strings.Contains(section, "lanxin") || !strings.Contains(section, "search box") || !strings.Contains(section, "hint:") {
+		t.Fatalf("playbook missing the lanxin hint: %s", section)
+	}
+	if strings.Contains(section, "龙军") || strings.Contains(section, "lessons from earlier") {
+		t.Fatal(section)
+	}
+	line := computerUseRememberExperience("lanxin", computeruse.NoteSearchFind, true)
+	if !strings.Contains(line, "worked:") {
+		t.Fatalf("record did not return the sentence: %q", line)
+	}
+	again := computerUsePlaybookSectionFor(true, "sk-exp")
+	if !strings.Contains(again, "worked:") || !strings.Contains(again, "computer_find") {
+		t.Fatalf("learned note did not come back: %s", again)
+	}
+	if computerUseRememberExperience("", computeruse.NoteFindMissed, false) != "" {
+		t.Fatal("an empty window stored a find miss on desktop")
+	}
+}
+
+func TestComputerUseBeginKeepsTheOriginalGoal(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	ctx := &LoopContext{
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: "向蓝信中的龙军用户问好",
+		Runtime: RuntimeContext{
+			RequestID:    "chat-task-1-1",
+			Conversation: RuntimeConversationRef{SessionKey: "sk-route"},
+		},
+	}
+	maybeBeginComputerUseTask(ctx, "u1", "[系统续轮] 继续完成同一任务")
+	st := computerUseTaskStateFor("sk-route")
+	if st == nil || st.Goal != "向蓝信中的龙军用户问好" {
+		t.Fatalf("goal %+v", st)
+	}
+	if strings.Contains(st.Goal, "续轮") {
+		t.Fatal(st.Goal)
+	}
+}
+
+func TestLightweightRefreshUsesTheOperatedWindow(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	globalComputerUse.mu.Lock()
+	prevOCR := globalComputerUse.ocr
+	globalComputerUse.ocr = nil
+	globalComputerUse.turnVisionKnown = true
+	globalComputerUse.turnVision = false
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.ocr = prevOCR
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.mu.Unlock()
+	})
+	seedComputerUseObserve(t, "alpha", "Btn")
+	if !cuSession().RefsValid() {
+		t.Fatal("seed observe should leave refs valid")
+	}
+	prev := computerUseRefreshCapture
+	var gotWindow string
+	computerUseRefreshCapture = func(window string) (computerUseCapture, error) {
+		gotWindow = window
+		return computerUseCapture{
+			PNG:    "crop",
+			Meta:   computeruse.ScreenMeta{CropTitle: "蓝信", Width: 800, Height: 600, ScreenIndex: 0, ScaleFactor: 1},
+			Width:  800,
+			Height: 600,
+		}, nil
+	}
+	t.Cleanup(func() { computerUseRefreshCapture = prev })
+	text := cuRefreshForeground("clicked e1", "蓝信")
+	if gotWindow != "蓝信" {
+		t.Fatalf("window %q", gotWindow)
+	}
+	if !strings.Contains(text, `crop of "蓝信"`) || !strings.Contains(text, "window just operated") {
+		t.Fatalf("refresh text: %s", text)
+	}
+	if strings.Contains(text, "not the foreground window") || strings.Contains(text, "elements (") {
+		t.Fatalf("refresh looked like a full observe: %s", text)
+	}
+	if cuSession().RefsValid() || cuSession().LabelsCurrent() {
+		t.Fatal("a crop without OCR must not keep the previous refs or pay labels")
+	}
+	if name := cuSession().ElementNameAtScreen(10, 10); name != "" {
+		t.Fatalf("stale element %q", name)
+	}
+	miss := cuDescribeRefresh("clicked", computerUseCapture{
+		Meta:   computeruse.ScreenMeta{ScreenIndex: 0, Width: 2560, Height: 1440},
+		Width:  2560,
+		Height: 1440,
+		PNG:    "monitor",
+	})
+	if strings.Contains(miss, "foreground window") && !strings.Contains(miss, "not the foreground window") {
+		t.Fatalf("monitor fallback claimed the foreground: %s", miss)
+	}
+	if !strings.Contains(miss, "not the foreground window") || !strings.Contains(miss, "screen_index=0") || !strings.Contains(miss, "2560x1440") {
+		t.Fatalf("monitor fallback: %s", miss)
+	}
+}
+
+func TestStitchRefusalNamesTheCapturedScreen(t *testing.T) {
+	cropped := computerUseStitchRefusalNote(6576, 2160, true, computerUseCapture{
+		Meta: computeruse.ScreenMeta{CropTitle: "蓝信"},
+	})
+	if !strings.Contains(cropped, "foreground window") || !strings.Contains(cropped, "蓝信") {
+		t.Fatal(cropped)
+	}
+	if strings.Contains(cropped, "not the foreground window") {
+		t.Fatal(cropped)
+	}
+	fallback := computerUseStitchRefusalNote(6576, 2160, true, computerUseCapture{
+		Meta:   computeruse.ScreenMeta{ScreenIndex: 0},
+		Width:  2560,
+		Height: 1440,
+	})
+	if strings.Contains(fallback, "This result is the foreground window") {
+		t.Fatal(fallback)
+	}
+	if !strings.Contains(fallback, "not the foreground window") || !strings.Contains(fallback, "screen_index=0") || !strings.Contains(fallback, "2560x1440") {
+		t.Fatal(fallback)
+	}
+}
+
+func tinyComputerUsePNG(t *testing.T, w, h int) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestSettleShotRebuildsClickGeometry(t *testing.T) {
+	clearComputerUseSettle()
+	t.Cleanup(clearComputerUseSettle)
+	storeComputerUseSettle(tinyComputerUsePNG(t, 100, 50), computeruse.ScreenMeta{
+		CropTitle: "蓝信", Width: 200, Height: 100, ScaleFactor: 2,
+		OriginX: 100, OriginY: 50, ScreenIndex: 1,
+	})
+	cap, err := captureComputerUseRefresh("蓝信")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.Width != 100 || cap.Height != 50 || cap.Meta.Width != 100 || cap.Meta.Height != 50 {
+		t.Fatalf("size %+v %dx%d", cap.Meta, cap.Width, cap.Height)
+	}
+	if cap.Meta.ScaleFactor != 1 || cap.Meta.OriginX != 100 || cap.Meta.OriginY != 50 || cap.Meta.CropTitle != "蓝信" || cap.Meta.ScreenIndex != 1 {
+		t.Fatalf("meta %+v", cap.Meta)
+	}
+	sx, sy := computeruse.MapCaptureToScreen(cap.Meta, 50, 25)
+	if sx != 150 || sy != 75 {
+		t.Fatalf("click maps to %d,%d", sx, sy)
+	}
+}
+
+func TestSettleShotMatchesOnlyTheOperatedWindow(t *testing.T) {
+	clearComputerUseSettle()
+	t.Cleanup(clearComputerUseSettle)
+	storeComputerUseSettle("png-lanxin", computeruse.ScreenMeta{CropTitle: "蓝信", Width: 20, Height: 20})
+	if _, ok := takeComputerUseSettle("记事本"); ok {
+		t.Fatal("a different window reused the settle shot")
+	}
+	storeComputerUseSettle("png-empty", computeruse.ScreenMeta{Width: 20, Height: 20})
+	if _, ok := takeComputerUseSettle("蓝信"); ok {
+		t.Fatal("an empty crop title matched a window")
+	}
+	storeComputerUseSettle("png-lanxin", computeruse.ScreenMeta{CropTitle: "蓝信", Width: 20, Height: 20, ScaleFactor: 1})
+	cap, err := captureComputerUseRefresh("蓝信")
+	if err != nil || cap.PNG != "png-lanxin" || cap.Meta.CropTitle != "蓝信" {
+		t.Fatalf("cap %+v err %v", cap, err)
+	}
+	if _, ok := takeComputerUseSettle("蓝信"); ok {
+		t.Fatal("settle shot was reused twice")
+	}
+}
+
+func TestVisionSearchLessonNeedsFocusTypeAndFewObserves(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	dir := t.TempDir()
+	prevDir := computerUseExperienceDirForTest
+	computerUseExperienceDirForTest = dir
+	t.Cleanup(func() {
+		computerUseExperienceDirForTest = prevDir
+		computeruse.SetExperienceDir("")
+		globalComputerUse.mu.Lock()
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.mu.Unlock()
+		resetComputerUseExperienceTrace()
+	})
+	setComputerUseTurnVision(true)
+	resetComputerUseExperienceTrace()
+	if computerUseRememberVisionSearch("蓝信") != "" {
+		t.Fatal("type without focus was stored")
+	}
+	computerUseTraceFocus()
+	computerUseTraceType()
+	line := computerUseRememberVisionSearch("蓝信")
+	if !strings.Contains(line, "worked:") || !strings.Contains(line, "search box") {
+		t.Fatalf("vision search line: %q", line)
+	}
+	resetComputerUseExperienceTrace()
+	computerUseTraceFocus()
+	computerUseTraceType()
+	for i := 0; i < computeruse.ExperienceSuccessObserveMax+1; i++ {
+		computerUseTraceObserve()
+	}
+	if computerUseRememberVisionSearch("蓝信") != "" {
+		t.Fatal("a long observe round stored a success")
+	}
+	resetComputerUseExperienceTrace()
+	computerUseTraceFocus()
+	line = computerUseRememberFind("蓝信", "", true)
+	if !strings.Contains(line, "experience:") || !strings.Contains(line, "on-screen text") {
+		t.Fatalf("find hit: %q", line)
+	}
+	if strings.Contains(line, "search box") {
+		t.Fatalf("find without a prior type stored the search path: %q", line)
+	}
+	miss := computerUseRememberFind("完全未知的窗口", "", false)
+	if miss != "" {
+		t.Fatalf("unknown window miss: %q", miss)
+	}
+}
+
+type labelOCR struct {
+	calls int
+	lines []taskengine.OCRResult
+}
+
+func (o *labelOCR) Recognize(string) ([]taskengine.OCRResult, error) {
+	o.calls++
+	return o.lines, nil
+}
+
+func (o *labelOCR) IsAvailable() bool { return true }
+
+func installLabelOCR(t *testing.T, ocr taskengine.OCRProvider, sidecar *browser.NativeOCRProvider) {
+	t.Helper()
+	globalComputerUse.mu.Lock()
+	prevOCR, prevSide := globalComputerUse.ocr, globalComputerUse.ocrSidecar
+	globalComputerUse.ocr = ocr
+	globalComputerUse.ocrSidecar = sidecar
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.ocr, globalComputerUse.ocrSidecar = prevOCR, prevSide
+		globalComputerUse.mu.Unlock()
+	})
+}
+
+func computerUseTestForeground(t *testing.T) string {
+	t.Helper()
+	title := strings.TrimSpace(accessibility.ForegroundWindowTitle())
+	if title == "" {
+		t.Fatal("need a foreground window title to bind the crop")
+	}
+	return title
+}
+
+func observeCount(sess *computeruse.Session) int {
+	n := 0
+	for _, a := range sess.Audit() {
+		if a.Action == "observe" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestRefreshPayLabelsBlockEnterUntilOCR(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	resetComputerUseExperienceTrace()
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}}}}
+	installLabelOCR(t, ocr, nil)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if _, _, observes := computerUseTraceSnapshot(); observes != 0 {
+		t.Fatalf("label OCR counted as computer_observe: %d", observes)
+	}
+	if in.keys != 0 || ocr.calls != 1 || !strings.Contains(msg, "支付") {
+		t.Fatalf("keys=%d calls=%d msg=%s", in.keys, ocr.calls, msg)
+	}
+	if sess.RefsValid() || observeCount(sess) != 1 {
+		t.Fatalf("refs=%v observes=%d", sess.RefsValid(), observeCount(sess))
+	}
+}
+
+func TestRefreshPayLabelsRefuseEnterWhenOCRIsEmpty(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, "crop")
+	ocr := &labelOCR{}
+	installLabelOCR(t, ocr, nil)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.keys != 0 || ocr.calls != 1 || !strings.Contains(msg, "call computer_observe again") {
+		t.Fatalf("keys=%d calls=%d msg=%s", in.keys, ocr.calls, msg)
+	}
+}
+
+func TestRefreshPayLabelsDoNotColdLoadOCR(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, "crop")
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{0, 0, 40, 20}}}}
+	sidecar := browser.NewNativeOCRProvider("", "", nil)
+	if sidecar.Ready() {
+		t.Fatal("an unloaded OCR provider reported ready")
+	}
+	installLabelOCR(t, ocr, sidecar)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if ocr.calls != 0 || in.keys != 0 || !strings.Contains(msg, "call computer_observe again") {
+		t.Fatalf("keys=%d calls=%d msg=%s", in.keys, ocr.calls, msg)
+	}
+}
+
+func TestSearchEnterStillSendsAfterLabelOCR(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	click := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 1 {
+		t.Fatalf("search click %d %s", in.clicks, click)
+	}
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{60, 0, 40, 20}}}}
+	installLabelOCR(t, ocr, nil)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	labels := strings.Join(sess.KeySurfaceLabels(fg), "\n")
+	if in.keys != 1 || strings.Contains(msg, "blocked") || !strings.Contains(labels, "立即支付") {
+		t.Fatalf("keys=%d msg=%s labels=%s", in.keys, msg, labels)
+	}
+}
+
+func TestPixelClickReadsOCRLabelsAfterRefresh(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	resetComputerUseExperienceTrace()
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}}}}
+	installLabelOCR(t, ocr, nil)
+	msg := cuHandleClick(map[string]interface{}{"x": 30, "y": 20})
+	if _, _, observes := computerUseTraceSnapshot(); observes != 0 {
+		t.Fatalf("label OCR counted as computer_observe: %d", observes)
+	}
+	if in.clicks != 0 || ocr.calls != 1 || !strings.Contains(msg, "支付") || sess.RefsValid() {
+		t.Fatalf("clicks=%d calls=%d refs=%v msg=%s", in.clicks, ocr.calls, sess.RefsValid(), msg)
+	}
+}
+
+type localLabelOCR struct {
+	ready bool
+	calls int
+	lines []browser.OCRResult
+	err   error
+}
+
+func (o *localLabelOCR) Ready() bool { return o.ready }
+
+func (o *localLabelOCR) Recognize(string) ([]browser.OCRResult, error) {
+	o.calls++
+	if o.err != nil {
+		return nil, o.err
+	}
+	return o.lines, nil
+}
+
+type unavailableLabelOCR struct {
+	calls int
+}
+
+func (o *unavailableLabelOCR) Recognize(string) ([]taskengine.OCRResult, error) {
+	o.calls++
+	return []taskengine.OCRResult{{Text: "should-not", BBox: [4]int{1, 1, 4, 4}}}, nil
+}
+
+func (o *unavailableLabelOCR) IsAvailable() bool { return false }
+
+func TestReadLoadedCropLabelsUsesTheLocalEngine(t *testing.T) {
+	local := &localLabelOCR{ready: true, lines: []browser.OCRResult{{Text: "搜索", BBox: [4]int{1, 2, 3, 4}}}}
+	fallback := &labelOCR{lines: []taskengine.OCRResult{{Text: "should-not", BBox: [4]int{1, 1, 4, 4}}}}
+	res, ok := readLoadedCropLabels(local, fallback, "png")
+	if !ok || local.calls != 1 || fallback.calls != 0 || len(res) != 1 || res[0].Text != "搜索" {
+		t.Fatalf("ok=%v local=%d fallback=%d res=%v", ok, local.calls, fallback.calls, res)
+	}
+	local.ready = false
+	local.calls = 0
+	if _, ok := readLoadedCropLabels(local, fallback, "png"); ok || local.calls != 0 || fallback.calls != 0 {
+		t.Fatalf("unready local fell through: calls local=%d fallback=%d", local.calls, fallback.calls)
+	}
+	local.ready = true
+	local.err = errors.New("boom")
+	if _, ok := readLoadedCropLabels(local, fallback, "png"); ok || fallback.calls != 0 {
+		t.Fatal("a local error used the vision wrapper")
+	}
+	local.err = nil
+	local.lines = []browser.OCRResult{{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}}}
+	local.calls = 0
+	if _, ok := readLoadedCropLabels(local, fallback, "png"); ok || local.calls != 1 || fallback.calls != 0 {
+		t.Fatalf("zero-box local ok=%v calls=%d fallback=%d", ok, local.calls, fallback.calls)
+	}
+	res, ok = readLoadedCropLabels(nil, fallback, "png")
+	if !ok || fallback.calls != 1 || res[0].Text != "should-not" {
+		t.Fatalf("nil local ok=%v calls=%d res=%v", ok, fallback.calls, res)
+	}
+	off := &unavailableLabelOCR{}
+	if _, ok := readLoadedCropLabels(nil, off, "png"); ok || off.calls != 0 {
+		t.Fatal("an unavailable fallback ran")
+	}
+}
+
+func TestPixelClickRefusesWhenOCRUnloaded(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	installLabelOCR(t, nil, nil)
+	msg := cuHandleClick(map[string]interface{}{"x": 30, "y": 20})
+	if in.clicks != 0 || !strings.Contains(msg, "call computer_observe again") || sess.LabelsCurrent() {
+		t.Fatalf("clicks=%d current=%v msg=%s", in.clicks, sess.LabelsCurrent(), msg)
+	}
+	pay := cuHandleClick(map[string]interface{}{"x": 30, "y": 20, "target": "立即支付"})
+	if in.clicks != 0 || !strings.Contains(pay, "支付") || strings.Contains(pay, "control labels are from before") {
+		t.Fatalf("explicit pay click=%d msg=%s", in.clicks, pay)
+	}
+}
+
+func TestRefreshPayLabelsRefuseEnterWhenOCRHasNoBox(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, "crop")
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}}}}
+	installLabelOCR(t, ocr, nil)
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.keys != 0 || ocr.calls != 1 || sess.LabelsCurrent() || !strings.Contains(msg, "call computer_observe again") {
+		t.Fatalf("keys=%d calls=%d current=%v msg=%s", in.keys, ocr.calls, sess.LabelsCurrent(), msg)
+	}
+}
+
+func TestRefreshFailureDropsPayLabels(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	prevHook := computerUseAfterActionRefresh
+	prevCap := computerUseRefreshCapture
+	computerUseAfterActionRefresh = cuRefreshForeground
+	computerUseRefreshCapture = func(string) (computerUseCapture, error) {
+		return computerUseCapture{}, errors.New("capture failed")
+	}
+	dir := t.TempDir()
+	prevDir := computerUseExperienceDirForTest
+	computerUseExperienceDirForTest = dir
+	globalComputerUse.mu.Lock()
+	prevPending := globalComputerUse.pendingModelImage
+	prevLast := globalComputerUse.lastModelImage
+	globalComputerUse.pendingModelImage = "old-pending"
+	globalComputerUse.lastModelImage = "old-vision"
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		computerUseAfterActionRefresh = prevHook
+		computerUseRefreshCapture = prevCap
+		computerUseExperienceDirForTest = prevDir
+		computeruse.SetExperienceDir("")
+		globalComputerUse.mu.Lock()
+		globalComputerUse.pendingModelImage = prevPending
+		globalComputerUse.lastModelImage = prevLast
+		globalComputerUse.mu.Unlock()
+	})
+	text := cuFinishAction("clicked e1")
+	globalComputerUse.mu.Lock()
+	pending := globalComputerUse.pendingModelImage
+	last := globalComputerUse.lastModelImage
+	globalComputerUse.mu.Unlock()
+	if pending != "" || last != "" {
+		t.Fatalf("failed refresh kept images pending=%q last=%q", pending, last)
+	}
+	if !strings.Contains(text, "refresh failed") || sess.LabelsCurrent() || sess.RefsValid() {
+		t.Fatalf("current=%v refs=%v text=%s", sess.LabelsCurrent(), sess.RefsValid(), text)
+	}
+	msg := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.keys != 0 || !strings.Contains(msg, "call computer_observe again") {
+		t.Fatalf("keys=%d msg=%s", in.keys, msg)
+	}
+}
+
+func TestTextRefreshListsOCRRefs(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	globalComputerUse.mu.Lock()
+	prevPending := globalComputerUse.pendingModelImage
+	prevLast := globalComputerUse.lastModelImage
+	globalComputerUse.turnVisionKnown = true
+	globalComputerUse.turnVision = false
+	globalComputerUse.pendingModelImage = "old-pending"
+	globalComputerUse.lastModelImage = "old-vision"
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.pendingModelImage = prevPending
+		globalComputerUse.lastModelImage = prevLast
+		globalComputerUse.mu.Unlock()
+	})
+	ocr := &labelOCR{lines: []taskengine.OCRResult{
+		{Text: "龙军", BBox: [4]int{10, 10, 40, 20}},
+		{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}},
+	}}
+	installLabelOCR(t, ocr, nil)
+	seedComputerUseObserve(t, "", "页面")
+	prev := computerUseRefreshCapture
+	computerUseRefreshCapture = func(string) (computerUseCapture, error) {
+		return computerUseCapture{
+			PNG:    "crop",
+			Meta:   computeruse.ScreenMeta{CropTitle: "蓝信", Width: 80, Height: 40, ScaleFactor: 1},
+			Width:  80,
+			Height: 40,
+		}, nil
+	}
+	t.Cleanup(func() { computerUseRefreshCapture = prev })
+	resetComputerUseExperienceTrace()
+	text := cuRefreshForeground("clicked", "蓝信")
+	globalComputerUse.mu.Lock()
+	pending := globalComputerUse.pendingModelImage
+	last := globalComputerUse.lastModelImage
+	globalComputerUse.mu.Unlock()
+	if pending != "" || last != "" {
+		t.Fatalf("text refresh kept images pending=%q last=%q", pending, last)
+	}
+	if _, _, observes := computerUseTraceSnapshot(); observes != 0 {
+		t.Fatalf("text refresh counted as computer_observe: %d", observes)
+	}
+	if !strings.Contains(text, "ocr_refs=1") || !strings.Contains(text, `"龙军"`) || strings.Contains(text, "elements (") {
+		t.Fatalf("refresh text: %s", text)
+	}
+	if !cuSession().RefsValid() || !cuSession().LabelsCurrent() {
+		t.Fatal("boxed OCR did not publish refs")
+	}
+	ocr.lines = []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{0, 0, 0, 0}}}
+	again := cuRefreshForeground("clicked", "蓝信")
+	if cuSession().RefsValid() || cuSession().LabelsCurrent() || !strings.Contains(again, "OCR returned no text") || strings.Contains(again, "elements (") {
+		t.Fatalf("zero-box refresh refs=%v current=%v text=%s", cuSession().RefsValid(), cuSession().LabelsCurrent(), again)
+	}
+}
+
+func TestMonitorFallbackIsNotAClickTarget(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	setComputerUseTurnVision(true)
+	globalComputerUse.mu.Lock()
+	prevPending := globalComputerUse.pendingModelImage
+	prevLast := globalComputerUse.lastModelImage
+	globalComputerUse.pendingModelImage = "stale-image"
+	globalComputerUse.lastModelImage = "stale-image"
+	globalComputerUse.mu.Unlock()
+	groundCalls := 0
+	prevGround := computerUseGrounderFn
+	computerUseGrounderFn = func() (corelib.MaclawLLMConfig, bool) {
+		groundCalls++
+		return corelib.MaclawLLMConfig{}, false
+	}
+	t.Cleanup(func() {
+		computerUseGrounderFn = prevGround
+		globalComputerUse.mu.Lock()
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.pendingModelImage = prevPending
+		globalComputerUse.lastModelImage = prevLast
+		globalComputerUse.mu.Unlock()
+	})
+	text := cuDescribeRefresh("clicked", computerUseCapture{
+		PNG:    "monitor",
+		Meta:   computeruse.ScreenMeta{ScreenIndex: 0, Width: 2560, Height: 1440},
+		Width:  2560,
+		Height: 1440,
+	})
+	if !strings.Contains(text, "not the foreground window") || !strings.Contains(text, "call computer_observe again") || strings.Contains(text, "click x,y") || strings.Contains(text, "screenshot: attached") {
+		t.Fatalf("monitor refresh: %s", text)
+	}
+	globalComputerUse.mu.Lock()
+	pending := globalComputerUse.pendingModelImage
+	last := globalComputerUse.lastModelImage
+	globalComputerUse.mu.Unlock()
+	if pending != "" || last != "" || sess.LabelsCurrent() {
+		t.Fatalf("pending=%q last=%q current=%v", pending, last, sess.LabelsCurrent())
+	}
+	msg := cuHandleClick(map[string]interface{}{"x": 30, "y": 20})
+	if in.clicks != 0 || !strings.Contains(msg, "call computer_observe again") {
+		t.Fatalf("clicks=%d msg=%s", in.clicks, msg)
+	}
+	named := cuHandleClick(map[string]interface{}{"target": "发送"})
+	if groundCalls != 0 || in.clicks != 0 || !strings.Contains(named, "call computer_observe again") {
+		t.Fatalf("ground=%d clicks=%d msg=%s", groundCalls, in.clicks, named)
+	}
+}
+
+func TestUnlabeledCropRefusesScrollAndDrag(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	text := cuDescribeRefresh("clicked", computerUseCapture{
+		PNG:    "monitor",
+		Meta:   computeruse.ScreenMeta{ScreenIndex: 0, Width: 2560, Height: 1440},
+		Width:  2560,
+		Height: 1440,
+	})
+	if sess.LabelsCurrent() || !strings.Contains(text, "scroll, or drag") {
+		t.Fatalf("monitor refresh current=%v text=%s", sess.LabelsCurrent(), text)
+	}
+	scroll := cuHandleScroll(map[string]interface{}{"x": 30, "y": 20, "delta_y": 3})
+	drag := cuHandleDrag(map[string]interface{}{"from_x": 10, "from_y": 10, "to_x": 80, "to_y": 40})
+	if in.scrolls != 0 || in.drags != 0 {
+		t.Fatalf("scrolls=%d drags=%d scroll=%s drag=%s", in.scrolls, in.drags, scroll, drag)
+	}
+	if !strings.Contains(scroll, "call computer_observe again") || !strings.Contains(drag, "call computer_observe again") {
+		t.Fatalf("scroll=%s drag=%s", scroll, drag)
+	}
+	sess.SetAllowPixelClick(false)
+	center := cuHandleScroll(map[string]interface{}{})
+	if in.scrolls != 0 || !strings.Contains(center, "call computer_observe again") {
+		t.Fatalf("center scrolls=%d msg=%s", in.scrolls, center)
+	}
+}
+
+func TestScrollOnCurrentCropDoesNotWaitForLabels(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	reads := 0
+	computerUseCropLabelRead = func(string) ([]taskengine.OCRResult, bool) {
+		reads++
+		return []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}}}, true
+	}
+	center := cuHandleScroll(map[string]interface{}{})
+	if in.scrolls != 1 || reads != 0 || strings.Contains(center, "call computer_observe again") {
+		t.Fatalf("center scrolls=%d reads=%d msg=%s", in.scrolls, reads, center)
+	}
+	sess.SetAllowPixelClick(true)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	again := cuHandleScroll(map[string]interface{}{"x": 30, "y": 20, "delta_y": -2})
+	if in.scrolls != 2 || reads != 0 || strings.Contains(again, "call computer_observe again") || sess.LabelsCurrent() {
+		t.Fatalf("restorable scrolls=%d reads=%d current=%v msg=%s", in.scrolls, reads, sess.LabelsCurrent(), again)
+	}
+}
+
+func TestDragPayEndpointHandsOff(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "立即支付", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	ocr := &labelOCR{lines: []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}}}}
+	installLabelOCR(t, ocr, nil)
+	pay := cuHandleDrag(map[string]interface{}{"from_x": 30, "from_y": 20, "to_x": 180, "to_y": 80})
+	if in.drags != 0 || ocr.calls != 0 || !strings.Contains(pay, "支付") || strings.Contains(pay, "control labels are from before") {
+		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, pay)
+	}
+	ref := cuHandleDrag(map[string]interface{}{"from_ref": "e0", "to_ref": "e1"})
+	if in.drags != 0 || ocr.calls != 0 || !strings.Contains(ref, "支付") {
+		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, ref)
+	}
+	safe := cuHandleDrag(map[string]interface{}{"from_x": 180, "from_y": 80, "to_x": 190, "to_y": 90})
+	if in.drags != 1 || ocr.calls != 0 || strings.Contains(safe, "blocked") {
+		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, safe)
+	}
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	after := cuHandleDrag(map[string]interface{}{"from_x": 30, "from_y": 20, "to_x": 180, "to_y": 80})
+	if in.drags != 1 || ocr.calls != 1 || !strings.Contains(after, "支付") {
+		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, after)
+	}
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	ocr.lines = []taskengine.OCRResult{{Text: "龙军", BBox: [4]int{10, 10, 20, 10}}}
+	moved := cuHandleDrag(map[string]interface{}{"from_x": 180, "from_y": 80, "to_x": 190, "to_y": 90})
+	if in.drags != 2 || ocr.calls != 2 || strings.Contains(moved, "blocked") || strings.Contains(moved, "control labels are from before") {
+		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, moved)
+	}
+}
+
+func TestSelectPayRefDoesNotClick(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "立即支付", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "龙军", BBox: [4]int{60, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	pay := cuHandleSelect(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 0 || !strings.Contains(pay, "支付") || strings.Contains(pay, "selected") {
+		t.Fatalf("clicks=%d msg=%s", in.clicks, pay)
+	}
+	ok := cuHandleSelect(map[string]interface{}{"ref": "e1"})
+	if in.clicks != 1 || strings.Contains(ok, "blocked") {
+		t.Fatalf("clicks=%d msg=%s", in.clicks, ok)
+	}
+}
+
+func TestPointerActionsHonorElementWindow(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "确认", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "列表", BBox: [4]int{60, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = "User Account Control"
+	last.Elements[1].Window = fg
+	in := installCountingComputerUse(t, sess)
+	scroll := cuHandleScroll(map[string]interface{}{"ref": "e0"})
+	drag := cuHandleDrag(map[string]interface{}{"from_ref": "e1", "to_ref": "e0"})
+	sel := cuHandleSelect(map[string]interface{}{"ref": "e0"})
+	if in.scrolls != 0 || in.drags != 0 || in.clicks != 0 {
+		t.Fatalf("scrolls=%d drags=%d clicks=%d", in.scrolls, in.drags, in.clicks)
+	}
+	for _, msg := range []string{scroll, drag, sel} {
+		if !strings.Contains(msg, "security") {
+			t.Fatalf("msg=%s", msg)
+		}
+	}
+	ok := cuHandleScroll(map[string]interface{}{"ref": "e1"})
+	if in.scrolls != 1 || strings.Contains(ok, "blocked") {
+		t.Fatalf("scrolls=%d msg=%s", in.scrolls, ok)
+	}
+}
+
+func TestPayTargetHandsOffBeforeGrounding(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	sess.ApplyRefreshCapture(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, "crop")
+	groundCalls := 0
+	prevGround := computerUseGrounderFn
+	computerUseGrounderFn = func() (corelib.MaclawLLMConfig, bool) {
+		groundCalls++
+		return corelib.MaclawLLMConfig{}, false
+	}
+	t.Cleanup(func() { computerUseGrounderFn = prevGround })
+	msg := cuHandleClick(map[string]interface{}{"target": "立即支付"})
+	if groundCalls != 0 || in.clicks != 0 || !strings.Contains(msg, "支付") || strings.Contains(msg, "control labels are from before") {
+		t.Fatalf("ground=%d clicks=%d msg=%s", groundCalls, in.clicks, msg)
+	}
+}
+
+func TestVisionRefreshOverlapsLabelOCR(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.SetAllowPixelClick(true)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 200, 100}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	setComputerUseTurnVision(true)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	var calls int
+	var callsMu sync.Mutex
+	cropPNG := tinyComputerUsePNG(t, 200, 100)
+	computerUseCropLabelRead = func(png string) ([]taskengine.OCRResult, bool) {
+		if png != cropPNG {
+			return nil, false
+		}
+		callsMu.Lock()
+		calls++
+		n := calls
+		callsMu.Unlock()
+		once.Do(func() { close(started) })
+		<-release
+		if n != 1 {
+			return nil, false
+		}
+		return []taskengine.OCRResult{{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}}}, true
+	}
+	prevCap := computerUseRefreshCapture
+	computerUseRefreshCapture = func(string) (computerUseCapture, error) {
+		return computerUseCapture{
+			PNG:    cropPNG,
+			Meta:   computeruse.ScreenMeta{CropTitle: fg, Width: 200, Height: 100, ScaleFactor: 1},
+			Width:  200,
+			Height: 100,
+		}, nil
+	}
+	t.Cleanup(func() {
+		computerUseRefreshCapture = prevCap
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		computerUseCropLabelRead = nil
+		globalComputerUse.mu.Lock()
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.pendingModelImage = ""
+		globalComputerUse.mu.Unlock()
+	})
+	text := cuRefreshForeground("clicked", fg)
+	if !strings.Contains(text, "window just operated") {
+		t.Fatalf("refresh: %s", text)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("label read did not start during the refresh")
+	}
+	callsMu.Lock()
+	got := calls
+	callsMu.Unlock()
+	if got != 1 {
+		t.Fatalf("reads during refresh: %d", got)
+	}
+	close(release)
+	msg := cuHandleClick(map[string]interface{}{"x": 30, "y": 20})
+	callsMu.Lock()
+	got = calls
+	callsMu.Unlock()
+	if got != 1 || in.clicks != 0 || !strings.Contains(msg, "支付") {
+		t.Fatalf("reads=%d clicks=%d msg=%s", got, in.clicks, msg)
+	}
+}

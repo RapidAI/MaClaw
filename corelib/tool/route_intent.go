@@ -33,8 +33,9 @@ type RouteOptions struct {
 	// first-response path: an unavailable or inconclusive embedder falls back to
 	// an already-cached full classification for the same message (a pure cache
 	// read), and otherwise keeps conditional tools filtered instead of delaying
-	// the main agent with L3. Explicit execution gates retain their own
-	// stronger classification policy.
+	// the main agent with L3. The legacy IntentClassifier LLM is skipped on
+	// this path as well. Explicit execution gates retain their own stronger
+	// classification policy.
 	PreferEmbeddingOnly bool
 	// PreResolved carries the current turn's already-computed UIC
 	// classification (e.g. RuntimeContext.SemanticIntent). A usable

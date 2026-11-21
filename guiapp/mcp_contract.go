@@ -100,6 +100,10 @@ type mcpCallOpts struct {
 	ExcludeDirs     []string
 	HasExpectedSHA  bool
 	ExpectedSHA     string
+	// Provider and Model are optional send_command arguments. Empty means
+	// the next round keeps the pair already stored on the task.
+	Provider string
+	Model    string
 }
 
 func mcpContextWithOpts(ctx context.Context, opts mcpCallOpts) context.Context {
@@ -140,10 +144,12 @@ func mcpCommandOutcome(view mcpTaskView) string {
 	switch view.Status {
 	case mcpStatusRunning:
 		if view.ConfirmationKind == "scope" || view.ConfirmationKind == "critical" {
+			// The gate reason stays in text. outcome only points at it.
+			const where = "授权说明在 text。"
 			if id == "" {
-				return "这一轮还在运行，先处理 commands 里的确认，再决定下一条命令。"
+				return "这一轮还在运行，先处理 commands 里的确认，再决定下一条命令。" + where
 			}
-			return "这一轮还在运行，先处理 commands 里的确认。会话标识是 " + id + "。"
+			return "这一轮还在运行，先处理 commands 里的确认。会话标识是 " + id + "。" + where
 		}
 		if id == "" {
 			return "命令已受理，这一轮还没结束。结束后用 get_task 查询这一轮，再决定下一条命令。"

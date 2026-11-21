@@ -540,7 +540,13 @@ func (a *App) mcpPendingPlanStamp(projectPath string) string {
 
 func (a *App) mcpEnsureConfirmationID(view mcpTaskView) mcpTaskView {
 	if strings.TrimSpace(view.ConfirmationKind) == "" && len(view.Commands) == 0 {
-		view.ConfirmationID = ""
+		// retry_steps reads the id stored on a real round. A read must hand
+		// that id back, and must not mint one or clear a record that has none.
+		// An idle session holder is not a retry credential.
+		id := strings.TrimSpace(view.ConfirmationID)
+		if mcpUnsealedSessionHolder(view) || !strings.HasPrefix(id, mcpConfirmIDPrefix) {
+			view.ConfirmationID = ""
+		}
 		return view
 	}
 	fp := mcpConfirmationFingerprint(view.ConfirmationKind, view.Commands)

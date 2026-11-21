@@ -31950,20 +31950,39 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-pinned-banner__dots {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 0;
   min-width: 0;
 }
 .mc-pinned-banner__dot {
-  width: 7px;
-  height: 7px;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  /* Overlap the hit boxes so the visible marks stay 5px apart. */
+  margin: 0 -3px;
   padding: 0;
   border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.mc-pinned-banner__dot:focus-visible {
+  outline: 2px solid var(--mc-accent, #2e75cb);
+  outline-offset: 1px;
+}
+.mc-pinned-banner__dot::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--theme-border-strong, #c3cfdd);
-  cursor: pointer;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
   transition: background .15s ease, width .15s ease;
 }
-.mc-pinned-banner__dot.is-active {
+.mc-pinned-banner__dot.is-active::after {
   width: 16px;
   border-radius: 4px;
   background: var(--mc-accent, #2e75cb);
@@ -31973,23 +31992,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-}
-.mc-pinned-banner__arrow {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid var(--theme-border, #dce6f2);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--theme-text-secondary, #5a6a7e);
-  cursor: pointer;
-}
-.mc-pinned-banner__arrow:disabled {
-  opacity: .4;
-  cursor: default;
 }
 .mc-pinned-banner__cta {
   padding: 5px 14px;

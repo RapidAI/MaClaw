@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -2542,16 +2543,25 @@ func TestInboundMCPRetryStepsKeepsRequestAndConfirmation(t *testing.T) {
 		ProjectPath:    "p",
 		Status:         mcpStatusFailed,
 		ConfirmationID: "mcf_keep",
+		StatusVersion:  3,
 		Steps: []mcpStepView{
 			{ID: "T4", Status: mcpStepPassed},
 			{ID: "T5", Status: mcpStepFailed, Error: "空响应", Retryable: true},
 		},
 	})
+	visible, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil || visible.ConfirmationID != "mcf_keep" || visible.StatusVersion != 3 {
+		t.Fatalf("get_task hid the retry id %+v err=%v", visible, err)
+	}
+	kept, ok := app.mcpViewFromRegistry("p")
+	if !ok || kept.ConfirmationID != "mcf_keep" || kept.StatusVersion != 3 {
+		t.Fatalf("get_task wrote the record %+v", kept)
+	}
 	_, err = app.mcpRetrySteps(context.Background(), "p", []string{"T4"}, "mcf_keep", "", false)
 	if err == nil || !strings.Contains(err.Error(), "已经通过") {
 		t.Fatalf("passed step: %v", err)
 	}
-	kept, ok := app.mcpViewFromRegistry("p")
+	kept, ok = app.mcpViewFromRegistry("p")
 	if !ok || kept.ConfirmationID != "mcf_keep" {
 		t.Fatalf("passed burned confirmation %+v", kept)
 	}
@@ -3540,6 +3550,396 @@ func TestInboundMCPStopAndGateExplainTheBlock(t *testing.T) {
 	}
 	if len(waitSteps) != 2 || waitSteps[0].Status != mcpStepWaiting || waitSteps[1].Status != mcpStepSkipped || waitSteps[1].BlockReason != "等待子任务审阅" || len(waitSteps[1].BlockedBy) != 1 || waitSteps[1].BlockedBy[0] != "T5" {
 		t.Fatalf("steps %+v", waitSteps)
+	}
+}
+
+func TestMCPRunContextHasNoDeadline(t *testing.T) {
+	ctx, cancel := mcpRunContext()
+	defer cancel()
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("mcp run context has a deadline")
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("mcp run context ended before anyone stopped it")
+	default:
+	}
+}
+
+// mcpBlockPrompt installs a prompt that waits until release or until its
+// context is cancelled. The returned channel receives that context once.
+func mcpBlockPrompt(t *testing.T, release <-chan struct{}) <-chan context.Context {
+	t.Helper()
+	prev := mcpProgrammingPromptFunc
+	t.Cleanup(func() { mcpProgrammingPromptFunc = prev })
+	started := make(chan context.Context, 1)
+	mcpProgrammingPromptFunc = func(_ *App, ctx context.Context, _ AIAssistantSendRequest, _ AIAssistantExternalCallbacks) (*IMAgentResponse, error) {
+		started <- ctx
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return started
+}
+
+// TestMCPLivePromptIsNotEndedByTime is the regression for the old host-wait
+// timer. That timer called cancel on a context that itself had no deadline,
+// so a Deadline check does not catch it. Thirty-one minutes of a live prompt
+// must still be running, and a normal return must complete the task.
+func TestMCPLivePromptIsNotEndedByTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app := &App{}
+		release := make(chan struct{})
+		var stopOnce sync.Once
+		stop := func() { stopOnce.Do(func() { close(release) }) }
+		defer func() {
+			stop()
+			synctest.Wait()
+		}()
+		started := mcpBlockPrompt(t, release)
+		view, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+			ProjectPath: "p", Name: "n", Mode: "chat",
+		}, "继续做", false, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		var runCtx context.Context
+		select {
+		case runCtx = <-started:
+		default:
+			t.Fatal("prompt did not start")
+		}
+		if _, ok := runCtx.Deadline(); ok {
+			t.Fatal("run context has a deadline")
+		}
+		time.Sleep(31 * time.Minute)
+		synctest.Wait()
+		if err := runCtx.Err(); err != nil {
+			t.Fatalf("elapsed time ended the run: %v", err)
+		}
+		if app.mcpHostWaitEnded(view.ProjectPath, view.RequestID) {
+			t.Fatal("a live run was marked host-wait ended")
+		}
+		got, ok := app.mcpViewFromRegistry(view.ProjectPath)
+		if !ok || got.Status != mcpStatusRunning || got.RequestID != view.RequestID || got.Stop != nil {
+			t.Fatalf("while the prompt is still going: %+v ok=%v", got, ok)
+		}
+		stop()
+		synctest.Wait()
+		finished, ok := app.mcpViewFromRegistry(view.ProjectPath)
+		if !ok || finished.Status != mcpStatusCompleted || finished.RequestID != view.RequestID || finished.Stop != nil {
+			t.Fatalf("after the prompt returned: %+v ok=%v", finished, ok)
+		}
+	})
+}
+
+func TestMCPUserStopCancelsALivePrompt(t *testing.T) {
+	app := &App{}
+	release := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(release) }) }
+	defer stop()
+	started := mcpBlockPrompt(t, release)
+	returned := make(chan mcpTaskView, 1)
+	failed := make(chan error, 1)
+	go func() {
+		view, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+			ProjectPath: "p", Name: "n", Mode: "chat",
+		}, "继续做", true, false, nil)
+		if err != nil {
+			failed <- err
+			return
+		}
+		returned <- view
+	}()
+	var runCtx context.Context
+	select {
+	case runCtx = <-started:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not start")
+	}
+	app.mcpCancelRun("p")
+	if !errors.Is(runCtx.Err(), context.Canceled) {
+		t.Fatalf("user stop cause: %v", runCtx.Err())
+	}
+	select {
+	case view := <-returned:
+		if view.Status != mcpStatusCancelled || view.RequestID == "" || view.Stop == nil || view.Stop.Class != mcpStopUser || view.Stop.Reason != "用户停止" {
+			t.Fatalf("stopped view: %+v stop=%+v", view, view.Stop)
+		}
+		if app.mcpHostWaitEnded(view.ProjectPath, view.RequestID) {
+			t.Fatal("user stop was recorded as host wait")
+		}
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("user stop did not finish the prompt")
+	}
+}
+
+// The caller's context is only how long that caller waits. Cancelling it
+// before the prompt starts, or while wait=true is blocked, leaves the run
+// going until the prompt returns.
+func TestMCPCallerCancelDoesNotEndTheRun(t *testing.T) {
+	app := &App{}
+	release := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(release) }) }
+	defer stop()
+	started := mcpBlockPrompt(t, release)
+
+	parent, parentCancel := context.WithCancel(context.Background())
+	parentCancel()
+	view, err := app.mcpStartPrompt(parent, mcpTaskView{
+		ProjectPath: "p", Name: "n", Mode: "chat",
+	}, "继续做", false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runCtx context.Context
+	select {
+	case runCtx = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not start")
+	}
+	if runCtx.Err() != nil {
+		t.Fatalf("cancelled caller ended the run: %v", runCtx.Err())
+	}
+	if _, hasDeadline := runCtx.Deadline(); hasDeadline || view.Status != mcpStatusRunning || view.RequestID == "" || view.Stop != nil {
+		t.Fatalf("receipt: %+v stop=%+v deadline=%v", view, view.Stop, hasDeadline)
+	}
+	if app.mcpHostWaitEnded(view.ProjectPath, view.RequestID) {
+		t.Fatal("caller cancel was recorded as host wait")
+	}
+
+	waitParent, waitCancel := context.WithCancel(context.Background())
+	returned := make(chan mcpTaskView, 1)
+	failed := make(chan error, 1)
+	go func() {
+		waited, waitErr := app.mcpStartPrompt(waitParent, mcpTaskView{
+			ProjectPath: "q", Name: "n", Mode: "chat",
+		}, "继续做", true, false, nil)
+		if waitErr != nil {
+			failed <- waitErr
+			return
+		}
+		returned <- waited
+	}()
+	var waitedCtx context.Context
+	select {
+	case waitedCtx = <-started:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("waited prompt did not start")
+	}
+	waitCancel()
+	var waited mcpTaskView
+	select {
+	case waited = <-returned:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("caller cancel did not return")
+	}
+	if waitedCtx.Err() != nil || waited.Status != mcpStatusRunning || waited.RequestID == "" || waited.Stop != nil {
+		t.Fatalf("wait return: %+v stop=%+v ctx=%v", waited, waited.Stop, waitedCtx.Err())
+	}
+	live, ok := app.mcpViewFromRegistry(waited.ProjectPath)
+	if !ok || live.Status != mcpStatusRunning || live.RequestID != waited.RequestID || live.Stop != nil {
+		t.Fatalf("while the caller is gone: %+v ok=%v", live, ok)
+	}
+	if app.mcpHostWaitEnded(waited.ProjectPath, waited.RequestID) {
+		t.Fatal("caller cancel was recorded as host wait")
+	}
+
+	stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for _, item := range []mcpTaskView{view, waited} {
+		for {
+			got, found := app.mcpViewFromRegistry(item.ProjectPath)
+			if found && got.RequestID == item.RequestID && got.Status == mcpStatusCompleted && got.Stop == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("after the prompt returned: %+v ok=%v", got, found)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+func TestMCPPromptPanicEndsTheRun(t *testing.T) {
+	prev := mcpProgrammingPromptFunc
+	t.Cleanup(func() { mcpProgrammingPromptFunc = prev })
+	mcpProgrammingPromptFunc = func(*App, context.Context, AIAssistantSendRequest, AIAssistantExternalCallbacks) (*IMAgentResponse, error) {
+		panic("boom")
+	}
+	app := &App{}
+	view, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+		ProjectPath: "p", Name: "n", Mode: "chat",
+	}, "继续做", true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != mcpStatusFailed || view.RequestID == "" || view.Error != mcpPromptPanicDetail || view.Stop == nil || view.Stop.Class != mcpStopProgram || view.Stop.Source != "program" || view.Stop.Reason != mcpPromptPanicDetail {
+		t.Fatalf("panic view: %+v stop=%+v", view, view.Stop)
+	}
+	if app.mcpHostWaitEnded(view.ProjectPath, view.RequestID) {
+		t.Fatal("panic was recorded as host wait")
+	}
+	token, err := app.mcpAcquireTurn(view.ProjectPath, false)
+	if err != nil || token == 0 {
+		t.Fatalf("later command still blocked: %v", err)
+	}
+	app.mcpReleaseTurn(view.ProjectPath, token)
+}
+
+// A newer command is the other legitimate end of a live prompt. It cancels
+// that prompt's context and keeps the old round as a user stop. Elapsed time
+// is not involved, and the replacement itself keeps running.
+func TestMCPReplacementCancelsThePreviousPrompt(t *testing.T) {
+	app := &App{}
+	release := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(release) }) }
+	defer stop()
+	started := mcpBlockPrompt(t, release)
+	first, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+		ProjectPath: "p", Name: "n", Mode: "chat",
+	}, "第一轮", false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstCtx context.Context
+	select {
+	case firstCtx = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first prompt did not start")
+	}
+	returned := make(chan mcpTaskView, 1)
+	failed := make(chan error, 1)
+	go func() {
+		view, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+			ProjectPath: "p", Name: "n", Mode: "chat",
+		}, "第二轮", true, true, nil)
+		if err != nil {
+			failed <- err
+			return
+		}
+		returned <- view
+	}()
+	var secondCtx context.Context
+	select {
+	case secondCtx = <-started:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement prompt did not start")
+	}
+	if !errors.Is(firstCtx.Err(), context.Canceled) {
+		t.Fatalf("replacement cause: %v", firstCtx.Err())
+	}
+	if _, ok := secondCtx.Deadline(); ok || secondCtx.Err() != nil {
+		t.Fatalf("replacement run context: %v", secondCtx.Err())
+	}
+	old, ok := app.mcpViewForRun(first.ProjectPath, first.RunID)
+	if !ok || old.Status != mcpStatusCancelled || old.RequestID != first.RequestID || old.Stop == nil || old.Stop.Class != mcpStopUser || old.Stop.Reason != "用户停止" {
+		t.Fatalf("replaced round: %+v stop=%+v ok=%v", old, old.Stop, ok)
+	}
+	if app.mcpHostWaitEnded(first.ProjectPath, first.RequestID) {
+		t.Fatal("replacement was recorded as host wait")
+	}
+	live, ok := app.mcpViewFromRegistry(first.ProjectPath)
+	if !ok || live.Status != mcpStatusRunning || live.RequestID == first.RequestID || live.RequestID == "" || live.Stop != nil {
+		t.Fatalf("live replacement: %+v ok=%v", live, ok)
+	}
+	stop()
+	select {
+	case view := <-returned:
+		if view.Status != mcpStatusCompleted || view.RequestID != live.RequestID || view.Stop != nil {
+			t.Fatalf("replacement finished: %+v stop=%+v", view, view.Stop)
+		}
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement prompt did not finish")
+	}
+}
+
+// wait=true must return the round it started. After a replacement the live
+// registry is the next run, and the start receipt still says running.
+func TestMCPWaitReturnsTheReplacedRound(t *testing.T) {
+	app := &App{}
+	release := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(release) }) }
+	defer stop()
+	started := mcpBlockPrompt(t, release)
+	returned := make(chan mcpTaskView, 1)
+	failed := make(chan error, 1)
+	go func() {
+		view, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+			ProjectPath: "p", Name: "n", Mode: "chat",
+		}, "第一轮", true, false, nil)
+		if err != nil {
+			failed <- err
+			return
+		}
+		returned <- view
+	}()
+	select {
+	case <-started:
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("first prompt did not start")
+	}
+	second, err := app.mcpStartPrompt(context.Background(), mcpTaskView{
+		ProjectPath: "p", Name: "n", Mode: "chat",
+	}, "第二轮", false, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement prompt did not start")
+	}
+	select {
+	case view := <-returned:
+		if view.Status != mcpStatusCancelled || view.RequestID == "" || view.RequestID == second.RequestID || view.Stop == nil || view.Stop.Class != mcpStopUser || view.Stop.Reason != "用户停止" {
+			t.Fatalf("replaced wait: %+v stop=%+v", view, view.Stop)
+		}
+		if app.mcpHostWaitEnded(view.ProjectPath, view.RequestID) {
+			t.Fatal("replacement was recorded as host wait")
+		}
+	case err := <-failed:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("replaced wait did not return")
+	}
+	live, ok := app.mcpViewFromRegistry("p")
+	if !ok || live.Status != mcpStatusRunning || live.RequestID != second.RequestID {
+		t.Fatalf("live replacement: %+v ok=%v", live, ok)
+	}
+	stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, found := app.mcpViewFromRegistry("p")
+		if found && got.RequestID == second.RequestID && got.Status == mcpStatusCompleted && got.Stop == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement did not finish: %+v ok=%v", got, found)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

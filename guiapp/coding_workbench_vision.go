@@ -69,6 +69,9 @@ func (h *IMMessageHandler) applyCodingRoutePreference(userID string, cfg corelib
 	if h == nil {
 		return cfg
 	}
+	if cfg.RouteSource == mcpCallerModelRoute {
+		return cfg
+	}
 	pref := h.getStickyCodingRoutePref(userID)
 	switch pref {
 	case codingRoutePrefPrimary:
@@ -95,6 +98,9 @@ func (h *IMMessageHandler) applyCodingRoutePreference(userID string, cfg corelib
 // has a vision (or multimodal) route; otherwise returns cfg unchanged.
 func (h *IMMessageHandler) routeLLMConfigForCodingVision(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	if h == nil {
+		return cfg
+	}
+	if cfg.RouteSource == mcpCallerModelRoute {
 		return cfg
 	}
 	// Try explicit vision task routes first.

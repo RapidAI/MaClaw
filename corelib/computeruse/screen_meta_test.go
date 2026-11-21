@@ -22,6 +22,30 @@ func TestApplyDisplayGeometryAndMapping(t *testing.T) {
 	}
 }
 
+func TestRefreshGeometryFromImage(t *testing.T) {
+	meta := ScreenMeta{
+		Width: 200, Height: 100, ScaleFactor: 2,
+		OriginX: 100, OriginY: 50,
+		CropTitle: "蓝信", ScreenIndex: 1,
+		VisionWidth: 80, VisionHeight: 40,
+	}
+	same := RefreshGeometryFromImage(meta, 200, 100)
+	if same.VisionWidth != 80 || same.ScaleFactor != 2 || same.OriginX != 100 {
+		t.Fatalf("matching size changed meta: %+v", same)
+	}
+	out := RefreshGeometryFromImage(meta, 100, 50)
+	if out.Width != 100 || out.Height != 50 || out.OriginX != 100 || out.OriginY != 50 {
+		t.Fatalf("geometry %+v", out)
+	}
+	if out.ScaleFactor != 1 || out.VisionWidth != 0 || out.CropTitle != "蓝信" || out.ScreenIndex != 1 {
+		t.Fatalf("rebuilt %+v", out)
+	}
+	sx, sy := MapCaptureToScreen(out, 50, 25)
+	if sx != 150 || sy != 75 {
+		t.Fatalf("click maps to %d,%d", sx, sy)
+	}
+}
+
 func TestApplyDisplayGeometryRetinaScale(t *testing.T) {
 	var meta ScreenMeta
 	ApplyDisplayGeometry(&meta, 0, 0, 1440, 900, 2880, 1800)

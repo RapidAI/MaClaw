@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
@@ -227,7 +228,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 		Description: "Observe the desktop for Computer Use. " +
 			"If the chat model supports vision, a screenshot is attached — look at the image and click x,y. " +
 			"If the model is text-only, local OmniParser (YOLO) + OCR + accessibility return eN element refs (no image). " +
-			"Defaults to a crop of the focused window (or window= title). Pass screen_index=0 for the primary monitor, or screen_index=-1 for all monitors stitched.",
+			"Defaults to a crop of the focused window (or window= title). Pass window=<app title> to observe one app. Pass screen_index=0 for the primary monitor. Do not pass screen_index=-1 on a large desktop: a stitch over 8 megapixels is refused and the foreground window is captured instead.",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "observe", "omniparser"},
 		Priority: 8,
@@ -236,7 +237,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring; omitted crops the foreground window"},
 			"screen_index": map[string]interface{}{
 				"type":        "integer",
-				"description": "When set, capture that monitor instead of the focused window: 0=primary, 1=second, …; -1=all monitors stitched (slow, OCR may degrade on huge desktops)",
+				"description": "When set, capture that monitor instead of the focused window: 0=primary, 1=second, …. -1 stitches all monitors and is refused when the virtual desktop is larger than 8 megapixels.",
 			},
 		},
 		Source: "builtin:computer_use",
@@ -273,7 +274,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	registry.Register(RegisteredTool{
 		Name: "computer_type",
 		Description: "Type text into the desktop. Optional ref=eN clicks that element first. " +
-			"Re-observe after typing.",
+			"A successful type already includes a fresh foreground-window crop.",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "type"},
 		Priority: 8,
@@ -505,6 +506,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 			if computerUseLLMSupportsVision() {
 				mode = computeruse.ObserveVisionAssist
 			}
+			cuKeepPerceptionWarm()
 			return computeruse.PlaybookFor(mode)
 		},
 	})
@@ -639,8 +641,13 @@ func cuHandleFind(args map[string]interface{}) string {
 	}
 	matches := computeruse.FindMatches(obs, query, limit)
 	if len(matches) == 0 {
-		return fmt.Sprintf("computer_find: no match for %q. Suggestions: pass window=... to include accessibility elements; "+
+		title := ""
+		if obs != nil {
+			title = obs.Meta.CropTitle
+		}
+		msg := fmt.Sprintf("computer_find: no match for %q. Suggestions: pass window=... to include accessibility elements; "+
 			"use the app's own search box; or computer_scroll and find again.", query)
+		return msg + computerUseRememberFind(title, windowHint, false)
 	}
 	// Assign refs to synthesized (unmarked) OCR matches.
 	var synth []computeruse.MarkedElement
@@ -658,7 +665,11 @@ func cuHandleFind(args map[string]interface{}) string {
 		for _, m := range matches {
 			fmt.Fprintf(&b, "  %q center=%d,%d src=%s\n", m.Name, m.CenterX, m.CenterY, m.Source)
 		}
-		return b.String()
+		title := ""
+		if obs != nil {
+			title = obs.Meta.CropTitle
+		}
+		return b.String() + computerUseRememberFind(title, windowHint, true)
 	}
 	var b strings.Builder
 	if tookObserve {
@@ -679,7 +690,11 @@ func cuHandleFind(args map[string]interface{}) string {
 		}
 		fmt.Fprintf(&b, "  %s [%s] %q center=%d,%d src=%s\n", ref, m.Type, name, m.CenterX, m.CenterY, m.Source)
 	}
-	return b.String()
+	title := ""
+	if obs != nil {
+		title = obs.Meta.CropTitle
+	}
+	return b.String() + computerUseRememberFind(title, windowHint, true)
 }
 
 // computerUseObserveResult is the structured outcome of a desktop observe.
@@ -715,6 +730,20 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR, cropFocused b
 // computerUseObserveCaption is the observe implementation. Diagnostics/E2E
 // pass caption=false so unlabeled-box HTTP does not inflate self-check time.
 func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool) computerUseObserveResult {
+	stitchLine := ""
+	refusedStitch := false
+	refusedW, refusedH := 0, 0
+	if screenIdx < 0 {
+		if w, h, px, ok := computerUseVirtualStitchSize(); ok && refuseStitchedCapture(screenIdx, px) {
+			log.Printf("[computer-use] refused screen_index=-1 stitch %dx%d (%d px); capturing the foreground window", w, h, px)
+			stitchLine = computerUseRememberExperience("", computeruse.NoteStitchRefused, false)
+			refusedStitch = true
+			refusedW, refusedH = w, h
+			screenIdx = 0
+			cropFocused = true
+		}
+	}
+	cuKeepPerceptionWarm()
 	rt := globalComputerUse
 	out := computerUseObserveResult{
 		TimingMs: map[string]int64{},
@@ -730,7 +759,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 		out.Guidance = guide
 		out.Action = action
 		out.TotalMs = time.Since(totalStart).Milliseconds()
-		out.Message = fmt.Sprintf("computer_observe failed: screenshot: %v\nGuidance: %s", err, guide)
+		out.Message = computerUseAppendExperience(computerUseStitchNote(refusedStitch, refusedW, refusedH, false, computerUseCapture{})+fmt.Sprintf("computer_observe failed: screenshot: %v\nGuidance: %s", err, guide), stitchLine)
 		recordComputerUseError("screenshot", err.Error(), guide, action)
 		payload := map[string]interface{}{
 			"at":        time.Now().Format(time.RFC3339),
@@ -769,7 +798,9 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	sess := cuSession()
 	sess.ApplyPerceptionMode(vision)
 	if !vision {
-		setPendingComputerUseModelImage("")
+		// This crop is not sent as an image. Drop the previous vision
+		// picture so a later target click cannot place points on it.
+		clearComputerUseModelImages()
 	}
 
 	rt.mu.Lock()
@@ -875,7 +906,8 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	clearComputerUseError()
 
 	out.OK = true
-	out.Message = appendOCRFailureHint(obs.TextForModel, out.OCRFailed, out.OCRError, screenIdx, out.Width, out.Height)
+	computerUseTraceObserve()
+	out.Message = computerUseAppendExperience(computerUseStitchNote(refusedStitch, refusedW, refusedH, true, cap)+appendOCRFailureHint(obs.TextForModel, out.OCRFailed, out.OCRError, screenIdx, out.Width, out.Height), stitchLine)
 	out.ElementCount = len(obs.Elements)
 	out.WindowCount = len(obs.Windows)
 	out.YOLOCount = yoloN
@@ -1001,10 +1033,396 @@ func emitComputerUseActionUI(action, detail string, ok bool, errMsg string) {
 	})
 }
 
+// computerUseAfterActionRefresh appends a crop of the window just operated.
+// Tests replace it. The default skips the real desktop while the test binary
+// is running so handoff tests stay fast. The window argument is the action's
+// own title when the action named one.
+var computerUseAfterActionRefresh = func(prefix, window string) string {
+	if testing.Testing() {
+		return prefix
+	}
+	return cuRefreshForeground(prefix, window)
+}
+
+// computerUseRefreshCapture takes the post-action crop. Tests replace it so
+// a unit test never screenshots the desktop.
+var computerUseRefreshCapture = captureComputerUseRefresh
+
+func cuFinishAction(prefix string, window ...string) string {
+	hint := ""
+	if len(window) > 0 {
+		hint = window[0]
+	}
+	refresh := computerUseAfterActionRefresh
+	if refresh == nil {
+		return prefix
+	}
+	return refresh(prefix, hint)
+}
+
+func computerUseStitchNote(refused bool, w, h int, captured bool, cap computerUseCapture) string {
+	if !refused {
+		return ""
+	}
+	return computerUseStitchRefusalNote(w, h, captured, cap)
+}
+
+// cuOperatedWindow is the window this action addressed: an explicit title,
+// otherwise the foreground window, otherwise the last observe crop.
+func cuOperatedWindow(explicit string) string {
+	if title := strings.TrimSpace(explicit); title != "" {
+		return title
+	}
+	if title := strings.TrimSpace(accessibility.ForegroundWindowTitle()); title != "" {
+		return title
+	}
+	if last := cuSession().LastObserve(); last != nil {
+		return strings.TrimSpace(last.Meta.CropTitle)
+	}
+	return ""
+}
+
+// captureComputerUseRefresh reuses the settle shot when it is already the
+// operated window. Otherwise it captures that window once. It does not run
+// YOLO, accessibility, or a full computer_observe.
+func captureComputerUseRefresh(window string) (computerUseCapture, error) {
+	if shot, ok := takeComputerUseSettle(window); ok {
+		meta := shot.meta
+		w, h := meta.Width, meta.Height
+		if iw, ih, ok := decodeImageSizeB64(shot.png); ok && iw > 0 && ih > 0 {
+			meta = computeruse.RefreshGeometryFromImage(meta, iw, ih)
+			w, h = iw, ih
+		}
+		return computerUseCapture{PNG: shot.png, Meta: meta, Width: w, Height: h}, nil
+	}
+	return captureComputerUseScreen(0, window, true)
+}
+
+// cuRefreshForeground captures the window just operated and describes that
+// crop. A monitor fallback names the screen that was actually captured.
+func cuRefreshForeground(prefix, windowHint string) string {
+	window := cuOperatedWindow(windowHint)
+	cap, err := computerUseRefreshCapture(window)
+	if err != nil || strings.TrimSpace(cap.PNG) == "" {
+		cuSession().InvalidateLabels()
+		cuCancelLabelPrefetch()
+		// The previous picture is not the screen we failed to capture.
+		clearComputerUseModelImages()
+		line := computerUseRememberExperience(computeruse.ExperienceAppID(window), computeruse.NoteRefreshFailed, false)
+		return computerUseAppendExperience(prefix+"\nrefresh failed; call computer_observe again", line)
+	}
+	if cap.Width <= 0 || cap.Height <= 0 {
+		if w, h, ok := decodeImageSizeB64(cap.PNG); ok {
+			cap.Width, cap.Height = w, h
+		}
+	}
+	if cap.Meta.Width <= 0 {
+		cap.Meta.Width = cap.Width
+	}
+	if cap.Meta.Height <= 0 {
+		cap.Meta.Height = cap.Height
+	}
+	noteComputerUseNamedWindow(window)
+	return cuDescribeRefresh(prefix, cap)
+}
+
+func cuDescribeRefresh(prefix string, cap computerUseCapture) string {
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteByte('\n')
+	title := strings.TrimSpace(cap.Meta.CropTitle)
+	if title == "" {
+		fmt.Fprintf(&b, "refresh: window crop failed. This image is a full monitor, not the foreground window. Captured screen_index=%d", cap.Meta.ScreenIndex)
+		if cap.Width > 0 && cap.Height > 0 {
+			fmt.Fprintf(&b, " (%dx%d)", cap.Width, cap.Height)
+		}
+		b.WriteByte('.')
+		if list := computerUseDisplayList(); list != "" {
+			b.WriteString(" Displays: ")
+			b.WriteString(list)
+			b.WriteByte('.')
+		}
+		b.WriteString(" Pass window=<app title> and call computer_observe again before the next click, scroll, or drag.\n")
+		cuSession().InvalidateLabels()
+		cuCancelLabelPrefetch()
+		clearComputerUseModelImages()
+		return b.String()
+	} else {
+		fmt.Fprintf(&b, "refresh: crop of %q", title)
+		if cap.Width > 0 && cap.Height > 0 {
+			fmt.Fprintf(&b, " (%dx%d)", cap.Width, cap.Height)
+		}
+		b.WriteString(". This is the window just operated.\n")
+	}
+	if computerUseLLMSupportsVision() {
+		modelPNG, vw, vh := prepareVisionScreenshot(cap.PNG)
+		meta := cap.Meta
+		if meta.ScaleFactor <= 0 {
+			meta.ScaleFactor = 1
+		}
+		meta.VisionWidth, meta.VisionHeight = vw, vh
+		cuSession().ApplyRefreshCapture(meta, cap.PNG)
+		// Read labels while the model looks at this crop. The next pixel
+		// click or Enter reuses the result instead of starting another OCR.
+		cuPrefetchCropLabels(cap.PNG)
+		setPendingComputerUseModelImage(modelPNG)
+		if vw > 0 && vh > 0 {
+			fmt.Fprintf(&b, "image=%dx%d (click x,y in this image; mapped to screen)\n", vw, vh)
+		}
+		b.WriteString("screenshot: attached in the following message. Look at the image.\n")
+		return b.String()
+	}
+	// Text mode does not send this crop. The previous vision picture
+	// belongs to another image, so a target click must not use it.
+	clearComputerUseModelImages()
+	rt := globalComputerUse
+	rt.mu.Lock()
+	ocr := rt.ocr
+	rt.mu.Unlock()
+	if ocr == nil {
+		cuSession().ApplyRefreshCapture(cap.Meta, cap.PNG)
+		b.WriteString("No new element list on this crop. Call computer_observe for refs.\n")
+		return b.String()
+	}
+	res, err := ocr.Recognize(cap.PNG)
+	if err != nil || !computeruse.OCRLinesUsable(res) {
+		cuSession().ApplyRefreshCapture(cap.Meta, cap.PNG)
+		b.WriteString("refresh: OCR returned no text. Call computer_observe for refs.\n")
+		return b.String()
+	}
+	els := computeruse.OCRClickElements(res, 24)
+	obs := cuSession().CommitObserve(cap.Meta, nil, els, res, cap.PNG)
+	if obs != nil {
+		fmt.Fprintf(&b, "ocr_refs=%d\n", len(obs.Elements))
+		shown := len(obs.Elements)
+		if shown > 24 {
+			shown = 24
+		}
+		for i := 0; i < shown; i++ {
+			el := obs.Elements[i]
+			fmt.Fprintf(&b, "  %s %q\n", el.Ref, el.Name)
+		}
+		if obs.OCRExcerpt != "" {
+			b.WriteString("ocr_excerpt: ")
+			b.WriteString(obs.OCRExcerpt)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// cuKeepPerceptionWarm restarts the idle-unload timer for models that are
+// already loaded. It does not load YOLO or OCR. A vision turn skips both,
+// and an idle unload between warmup and the first observe would otherwise
+// drop them five minutes after warmup.
+func cuKeepPerceptionWarm() {
+	rt := globalComputerUse
+	rt.mu.Lock()
+	yolo := rt.yolo
+	ocr := rt.ocrSidecar
+	rt.mu.Unlock()
+	if yolo != nil && yolo.Loaded() {
+		_ = yolo.Warm()
+	}
+	if ocr != nil {
+		ocr.Touch()
+	}
+}
+
+// computerUseLocalOCR is the already-loaded PP-OCR engine. Label checks must
+// not call the vision-LLM OCR wrapper: that sends the crop through another
+// chat completion, and that model is allowed to return boxes of 0,0,0,0.
+type computerUseLocalOCR interface {
+	Ready() bool
+	Recognize(pngBase64 string) ([]browser.OCRResult, error)
+}
+
+// readLoadedCropLabels reads a crop with the local engine when it is already
+// in memory. A nil local engine uses fallback, which tests install. A local
+// engine that is not loaded does not fall through to the vision wrapper and
+// does not cold-load.
+func readLoadedCropLabels(local computerUseLocalOCR, fallback taskengine.OCRProvider, png string) ([]taskengine.OCRResult, bool) {
+	if local != nil {
+		if !local.Ready() {
+			return nil, false
+		}
+		got, err := local.Recognize(png)
+		if err != nil || len(got) == 0 {
+			return nil, false
+		}
+		raw := make([]taskengine.OCRResult, len(got))
+		for i, r := range got {
+			raw[i] = taskengine.OCRResult{Text: r.Text, Confidence: r.Confidence, BBox: r.BBox}
+		}
+		return boxedOCRLines(raw)
+	}
+	if fallback == nil || !fallback.IsAvailable() {
+		return nil, false
+	}
+	res, err := fallback.Recognize(png)
+	if err != nil || len(res) == 0 {
+		return nil, false
+	}
+	return boxedOCRLines(res)
+}
+
+// boxedOCRLines keeps lines that can be hit-tested. A zero box must not count
+// as a restored label: Enter would then see an empty surface and go through.
+func boxedOCRLines(lines []taskengine.OCRResult) ([]taskengine.OCRResult, bool) {
+	out := make([]taskengine.OCRResult, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line.Text) == "" || line.BBox[2] <= 0 || line.BBox[3] <= 0 {
+			continue
+		}
+		out = append(out, line)
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// computerUseCropLabelRead overrides the crop label read in tests.
+// Production leaves it nil.
+var computerUseCropLabelRead func(png string) ([]taskengine.OCRResult, bool)
+
+// cropLabelPrefetch is a local OCR of the vision refresh crop. It runs while
+// the model reads that image, so the next pixel click or Enter does not start
+// a second read. A newer refresh or a failed capture bumps gen and drops it.
+type cropLabelPrefetch struct {
+	mu    sync.Mutex
+	gen   uint64
+	png   string
+	ready chan struct{}
+	lines []taskengine.OCRResult
+	ran   bool
+}
+
+var cropLabels cropLabelPrefetch
+
+func cuCancelLabelPrefetch() {
+	cropLabels.mu.Lock()
+	cropLabels.gen++
+	cropLabels.png = ""
+	cropLabels.lines = nil
+	cropLabels.ran = false
+	cropLabels.ready = nil
+	cropLabels.mu.Unlock()
+}
+
+func cuPrefetchCropLabels(png string) {
+	png = strings.TrimSpace(png)
+	if png == "" {
+		cuCancelLabelPrefetch()
+		return
+	}
+	ch := make(chan struct{})
+	cropLabels.mu.Lock()
+	cropLabels.gen++
+	gen := cropLabels.gen
+	cropLabels.png = png
+	cropLabels.lines = nil
+	cropLabels.ran = false
+	cropLabels.ready = ch
+	cropLabels.mu.Unlock()
+	// Capture the test hook now. Clearing it while this read runs must not
+	// fall through to the vision wrapper.
+	read := computerUseCropLabelRead
+	go func() {
+		defer close(ch)
+		var lines []taskengine.OCRResult
+		var ok bool
+		if read != nil {
+			lines, ok = read(png)
+		} else {
+			lines, ok = cuReadCropLabels(png)
+		}
+		cropLabels.mu.Lock()
+		if cropLabels.gen == gen {
+			if ok {
+				cropLabels.lines = lines
+			}
+			cropLabels.ran = true
+			cropLabels.ready = nil
+		}
+		cropLabels.mu.Unlock()
+	}()
+}
+
+// cuConsumePrefetch waits for the read started for this exact crop.
+// covered is false when no read was started for png, so the caller reads it.
+func cuConsumePrefetch(png string) (lines []taskengine.OCRResult, covered bool) {
+	cropLabels.mu.Lock()
+	if cropLabels.png != png {
+		cropLabels.mu.Unlock()
+		return nil, false
+	}
+	gen := cropLabels.gen
+	ch := cropLabels.ready
+	if ch == nil {
+		lines, covered = cropLabels.lines, cropLabels.ran
+		cropLabels.mu.Unlock()
+		return lines, covered
+	}
+	cropLabels.mu.Unlock()
+	<-ch
+	cropLabels.mu.Lock()
+	defer cropLabels.mu.Unlock()
+	if cropLabels.gen != gen || cropLabels.png != png {
+		return nil, false
+	}
+	return cropLabels.lines, cropLabels.ran
+}
+
+func cuReadCropLabels(png string) ([]taskengine.OCRResult, bool) {
+	if computerUseCropLabelRead != nil {
+		return computerUseCropLabelRead(png)
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	ocr := rt.ocr
+	var local computerUseLocalOCR
+	if rt.ocrSidecar != nil {
+		local = rt.ocrSidecar
+	}
+	rt.mu.Unlock()
+	return readLoadedCropLabels(local, ocr, png)
+}
+
+// cuEnsureCurrentLabels reads the stored crop once when pay labels are stale.
+// It uses the loaded local OCR engine, not the vision-LLM wrapper. A monitor
+// fallback is not read. A vision refresh may already have started the read.
+// This does not count as computer_observe.
+func cuEnsureCurrentLabels(sess *computeruse.Session) {
+	if sess == nil || sess.LabelsCurrent() {
+		return
+	}
+	png, ok := sess.StaleCropScreenshot()
+	if !ok {
+		return
+	}
+	if lines, covered := cuConsumePrefetch(png); covered {
+		if len(lines) > 0 {
+			sess.AdoptOCRLabels(lines)
+		}
+		return
+	}
+	res, ok := cuReadCropLabels(png)
+	if !ok {
+		return
+	}
+	sess.AdoptOCRLabels(res)
+}
+
 // cuPostActionSettle waits for the UI to settle after an action.
 // Windows and macOS poll a short visual idle wait (native capture is cheap).
 // Linux sleeps briefly — X11 screenshots are too slow to poll after every click.
 func cuPostActionSettle() {
+	// The refresh hook is already skipped under test. Settle must not capture
+	// the desktop either.
+	if testing.Testing() {
+		return
+	}
 	time.Sleep(80 * time.Millisecond)
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		return
@@ -1049,8 +1467,9 @@ func cuHandleFocus(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	noteComputerUseNamedWindow(window)
 	emitComputerUseActionUI("focus", detail, true, "")
+	computerUseTraceFocus()
 	cuPostActionSettle()
-	return fmt.Sprintf("focused window matching %q — call computer_observe again", window)
+	return cuFinishAction(fmt.Sprintf("focused window matching %q", window), window)
 }
 
 func flattenA11y(dst *[]taskengine.UIElement, nodes []accessibility.Element, depth, maxDepth int, meta computeruse.ScreenMeta) {
@@ -1277,6 +1696,15 @@ func cuHandleClick(args map[string]interface{}) string {
 	if count > 2 {
 		count = 2
 	}
+	target := strings.TrimSpace(guiStrArg(args, "target", ""))
+	// An explicit pay name needs no point. Hand off before grounding or a
+	// label read, including when this crop's labels are already stale.
+	if refusal := browser.DesktopPayClickRefusal(target); refusal != "" {
+		detail := fmt.Sprintf("target=%q", target)
+		sess.RecordAction("click", detail, false, "checkout", false)
+		emitComputerUseActionUI("click", detail, false, "checkout")
+		return "computer_click blocked: " + cuPersonHandoff("checkout", target, refusal)
+	}
 	var x, y int
 	var detail string
 	var policyTitle string
@@ -1295,9 +1723,15 @@ func cuHandleClick(args map[string]interface{}) string {
 		if !sess.AllowPixelClick() {
 			return "computer_click: pixel x,y disabled for text-primary mode; call computer_observe and pass ref=eN"
 		}
+		// The stored crop cannot be labeled again (monitor fallback or a
+		// failed capture). Refuse before a grounding model places the target
+		// on the previous screenshot.
+		if cuStalePointerGeometry(sess) {
+			return cuStaleLabelRefusal(sess, "computer_click", "click")
+		}
 		x = guiIntArg(args, "x", 0)
 		y = guiIntArg(args, "y", 0)
-		if target := strings.TrimSpace(guiStrArg(args, "target", "")); target != "" && !cuHasArg(args, "x") && !cuHasArg(args, "y") {
+		if target != "" && !cuHasArg(args, "x") && !cuHasArg(args, "y") {
 			gx, gy, note := cuGroundTarget(target)
 			if note != "" {
 				return "computer_click: " + note
@@ -1311,20 +1745,40 @@ func cuHandleClick(args map[string]interface{}) string {
 	if policyTitle == "" {
 		policyTitle = cuPolicyWindowTitle(x, y)
 	}
-	payNames := make([]string, 0, 3)
+	// The ref's own name is checked before the label read. The target
+	// argument was already refused above, before grounding.
+	payNames := make([]string, 0, 2)
 	if mark != nil && strings.TrimSpace(mark.Name) != "" {
 		payNames = append(payNames, mark.Name)
 	}
-	if target := strings.TrimSpace(guiStrArg(args, "target", "")); target != "" {
+	if target != "" {
 		payNames = append(payNames, target)
 	}
+	for _, payName := range payNames {
+		refusal := browser.DesktopPayClickRefusal(payName)
+		if refusal == "" {
+			continue
+		}
+		sess.RecordAction("click", detail, false, "checkout", false)
+		emitComputerUseActionUI("click", detail, false, "checkout")
+		return "computer_click blocked: " + cuPersonHandoff("checkout", payName, refusal)
+	}
+	if ref == "" {
+		cuEnsureCurrentLabels(sess)
+	}
+	// The previous screen's boxes were dropped. A pixel click with no new
+	// labels cannot see a pay button that appeared after the last action.
+	if ref == "" && !sess.LabelsCurrent() {
+		return cuStaleLabelRefusal(sess, "computer_click", "click")
+	}
+	hits := make([]string, 0, 2)
 	if hit := sess.ElementNameAtScreen(x, y); hit != "" {
-		payNames = append(payNames, hit)
+		hits = append(hits, hit)
 	}
 	if hit := sess.OCRTextAtScreen(x, y); hit != "" {
-		payNames = append(payNames, hit)
+		hits = append(hits, hit)
 	}
-	for _, payName := range payNames {
+	for _, payName := range hits {
 		refusal := browser.DesktopPayClickRefusal(payName)
 		if refusal == "" {
 			continue
@@ -1372,7 +1826,7 @@ func cuHandleClick(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("click", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("clicked %s via %s — call computer_observe again (refs are now stale)", detail, strategy)
+	return cuFinishAction(fmt.Sprintf("clicked %s via %s", detail, strategy))
 }
 
 func cuHandleType(args map[string]interface{}) string {
@@ -1490,8 +1944,13 @@ func cuHandleType(args map[string]interface{}) string {
 	}
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("type", detail+" via "+strategy, true, "")
+	computerUseTraceType()
 	cuPostActionSettle()
-	return fmt.Sprintf("typed %s via %s — call computer_observe again", detail, strategy)
+	msg := cuFinishAction(fmt.Sprintf("typed %s via %s", detail, strategy))
+	if computerUseLLMSupportsVision() {
+		msg = computerUseAppendExperience(msg, computerUseRememberVisionSearch(cuOperatedWindow("")))
+	}
+	return msg
 }
 
 func cuHandleKey(args map[string]interface{}) string {
@@ -1540,6 +1999,16 @@ func cuHandleKey(args map[string]interface{}) string {
 			emitComputerUseActionUI("key", "stale-document", false, "stale-document")
 			return fmt.Sprintf("computer_key: foreground document changed (observed %q, now %q); call computer_observe again", crop, foreground)
 		}
+		focused, kind := sess.ActuatedForKey(foreground, fgID)
+		if reason, title, refusal := browser.DesktopPayKeyRefusal(detail, focused, kind, nil); refusal != "" {
+			sess.RecordAction("key", reason, false, reason, false)
+			emitComputerUseActionUI("key", reason, false, reason)
+			return "computer_key blocked: " + cuPersonHandoff(reason, title, refusal)
+		}
+		cuEnsureCurrentLabels(sess)
+		if !sess.LabelsCurrent() {
+			return cuStaleLabelRefusal(sess, "computer_key", "key")
+		}
 	}
 	focused, kind := sess.ActuatedForKey(foreground, fgID)
 	if reason, title, refusal := browser.DesktopPayKeyRefusal(detail, focused, kind, sess.KeySurfaceLabelsFor(foreground, fgID)); refusal != "" {
@@ -1560,7 +2029,7 @@ func cuHandleKey(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("key", detail, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("pressed %s — call computer_observe again", detail)
+	return cuFinishAction(fmt.Sprintf("pressed %s", detail))
 }
 
 func splitKeyCombo(raw string) []string {
@@ -1598,43 +2067,53 @@ func cuHandleScroll(args map[string]interface{}) string {
 		dy = 3
 	}
 	ref := guiStrArg(args, "ref", "")
-	var x, y int
+	var end cuDragEnd
 	if ref != "" {
-		cx, cy, _, err := sess.ResolveClickRef(ref)
+		cx, cy, el, err := sess.ResolveClickRef(ref)
 		if err != nil {
 			return fmt.Sprintf("computer_scroll: %v", err)
 		}
-		x, y = cx, cy
+		end = cuDragEnd{x: cx, y: cy, mark: el}
+	} else if cuStalePointerGeometry(sess) {
+		// Pixel scroll and the text-mode center both map through the stored
+		// crop. A monitor fallback keeps the previous geometry and drops the
+		// picture, so the wheel would land on the wrong screen.
+		return cuStaleLabelRefusal(sess, "computer_scroll", "scroll")
 	} else if sess.AllowPixelClick() {
-		x = guiIntArg(args, "x", 0)
-		y = guiIntArg(args, "y", 0)
+		x := guiIntArg(args, "x", 0)
+		y := guiIntArg(args, "y", 0)
 		x, y = sess.MapVisionClick(x, y)
 		x, y = sess.MapCaptureClick(x, y)
+		end = cuDragEnd{x: x, y: y, pixel: true}
 	} else {
 		// Default to screen center of last observe meta if available.
 		if last := sess.LastObserve(); last != nil && last.Meta.Width > 0 {
-			x = last.Meta.Width / 2
-			y = last.Meta.Height / 2
+			x := last.Meta.Width / 2
+			y := last.Meta.Height / 2
 			x, y = sess.MapCaptureClick(x, y)
+			end = cuDragEnd{x: x, y: y}
 		} else {
 			return "computer_scroll: provide ref=eN from computer_observe (or enable pixel click)"
 		}
 	}
-	detail := fmt.Sprintf("at (%d,%d) delta=%d,%d", x, y, dx, dy)
+	detail := fmt.Sprintf("at (%d,%d) delta=%d,%d", end.x, end.y, dx, dy)
+	if msg := cuPointerWindowRefusal(sess, "computer_scroll", "scroll", end); msg != "" {
+		return msg
+	}
 	if err := sess.BeginAction("scroll", detail); err != nil {
 		return fmt.Sprintf("computer_scroll: %v", err)
 	}
-	if err := input.Scroll(x, y, dx, dy); err != nil {
+	if err := input.Scroll(end.x, end.y, dx, dy); err != nil {
 		sess.RecordAction("scroll", detail, false, err.Error(), false)
 		emitComputerUseActionUI("scroll", detail, false, err.Error())
 		return fmt.Sprintf("computer_scroll failed: %v", err)
 	}
 	sess.RecordAction("scroll", detail, true, "", true)
-	noteComputerUsePointWindow(x, y)
+	noteComputerUsePointWindow(end.x, end.y)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("scroll", detail, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("scrolled %s — call computer_observe again", detail)
+	return cuFinishAction(fmt.Sprintf("scrolled %s", detail))
 }
 
 func cuHandleSelect(args map[string]interface{}) string {
@@ -1654,8 +2133,24 @@ func cuHandleSelect(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_select: %v", err)
 	}
 	detail := fmt.Sprintf("ref=%s name=%q", mark.Ref, mark.Name)
-	if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
-		return fmt.Sprintf("computer_select blocked: %v", err)
+	// Select activates the ref, and the pixel fallback is a click. A pay
+	// control must not be invoked by either path.
+	if refusal := browser.DesktopPayClickRefusal(mark.Name); refusal != "" {
+		sess.RecordAction("select", detail, false, "checkout", false)
+		emitComputerUseActionUI("select", detail, false, "checkout")
+		return "computer_select blocked: " + cuPersonHandoff("checkout", mark.Name, refusal)
+	}
+	for _, hit := range []string{sess.ElementNameAtScreen(x, y), sess.OCRTextAtScreen(x, y)} {
+		refusal := browser.DesktopPayClickRefusal(hit)
+		if refusal == "" {
+			continue
+		}
+		sess.RecordAction("select", detail, false, "checkout", false)
+		emitComputerUseActionUI("select", detail, false, "checkout")
+		return "computer_select blocked: " + cuPersonHandoff("checkout", hit, refusal)
+	}
+	if msg := cuPointerWindowRefusal(sess, "computer_select", "select", cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
+		return msg
 	}
 	if err := sess.BeginAction("select", detail); err != nil {
 		return fmt.Sprintf("computer_select: %v", err)
@@ -1682,7 +2177,7 @@ func cuHandleSelect(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("select", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("selected %s via %s — call computer_observe again", detail, strategy)
+	return cuFinishAction(fmt.Sprintf("selected %s via %s", detail, strategy))
 }
 
 func cuHandleScrollIntoView(args map[string]interface{}) string {
@@ -1718,7 +2213,7 @@ func cuHandleScrollIntoView(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("scroll_into_view", detail, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("scrolled %s into view — call computer_observe again", detail)
+	return cuFinishAction(fmt.Sprintf("scrolled %s into view", detail))
 }
 
 func cuHandleDrag(args map[string]interface{}) string {
@@ -1736,46 +2231,150 @@ func cuHandleDrag(args map[string]interface{}) string {
 	if msg := cuRequireSameWindow(sess); msg != "" {
 		return "computer_drag: " + msg
 	}
-	fromX, fromY, err := cuResolveDragPoint(sess, args, "from_ref", "from_x", "from_y")
+	// A pixel end is mapped through the stored crop. That crop is not the
+	// screen a failed capture just described.
+	if (guiStrArg(args, "from_ref", "") == "" || guiStrArg(args, "to_ref", "") == "") && cuStalePointerGeometry(sess) {
+		return cuStaleLabelRefusal(sess, "computer_drag", "drag")
+	}
+	from, err := cuResolveDragPoint(sess, args, "from_ref", "from_x", "from_y")
 	if err != nil {
 		return "computer_drag: " + err.Error()
 	}
-	toX, toY, err := cuResolveDragPoint(sess, args, "to_ref", "to_x", "to_y")
+	to, err := cuResolveDragPoint(sess, args, "to_ref", "to_x", "to_y")
 	if err != nil {
 		return "computer_drag: " + err.Error()
 	}
-	detail := fmt.Sprintf("(%d,%d)->(%d,%d)", fromX, fromY, toX, toY)
-	if err := sess.CheckClickPolicy(fromX, fromY, cuPolicyWindowTitle(fromX, fromY)); err != nil {
-		return fmt.Sprintf("computer_drag blocked: %v", err)
+	if msg := cuDragPayRefusal(sess, from, to); msg != "" {
+		return msg
 	}
+	if msg := cuPointerWindowRefusal(sess, "computer_drag", "drag", from, to); msg != "" {
+		return msg
+	}
+	detail := fmt.Sprintf("(%d,%d)->(%d,%d)", from.x, from.y, to.x, to.y)
 	if err := sess.BeginAction("drag", detail); err != nil {
 		return fmt.Sprintf("computer_drag: %v", err)
 	}
-	if err := input.DragDrop(fromX, fromY, toX, toY); err != nil {
+	if err := input.DragDrop(from.x, from.y, to.x, to.y); err != nil {
 		sess.RecordAction("drag", detail, false, err.Error(), false)
 		return fmt.Sprintf("computer_drag failed: %v", err)
 	}
 	sess.RecordAction("drag", detail, true, "", true)
-	noteComputerUsePointWindow(fromX, fromY)
+	noteComputerUsePointWindow(from.x, from.y)
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("drag", detail, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("dragged %s — call computer_observe again", detail)
+	return cuFinishAction(fmt.Sprintf("dragged %s", detail))
 }
 
-func cuResolveDragPoint(sess *computeruse.Session, args map[string]interface{}, refKey, xKey, yKey string) (int, int, error) {
+// cuDragEnd is one end of a drag. pixel is false when the point came from a ref.
+type cuDragEnd struct {
+	x, y  int
+	mark  *computeruse.MarkedElement
+	pixel bool
+}
+
+// cuStalePointerGeometry reports that the stored screen is not a crop we can
+// still label. A click, scroll, or drag mapped through it would use the
+// previous window, or a full monitor the caption already said is not the
+// foreground window. A titled crop still on file is current enough to map;
+// the caller may read its labels.
+func cuStalePointerGeometry(sess *computeruse.Session) bool {
+	if sess == nil || sess.LabelsCurrent() {
+		return false
+	}
+	_, ok := sess.StaleCropScreenshot()
+	return !ok
+}
+
+// cuPointerWindowRefusal applies the click window policy at every point the
+// pointer will use. The element's observe-time window wins over the live
+// window under the point, so a control already attributed to a security
+// surface is not pressed or scrolled after that window is covered.
+func cuPointerWindowRefusal(sess *computeruse.Session, tool, action string, ends ...cuDragEnd) string {
+	for _, end := range ends {
+		title := ""
+		if end.mark != nil {
+			title = strings.TrimSpace(end.mark.Window)
+		}
+		if title == "" {
+			title = cuPolicyWindowTitle(end.x, end.y)
+		}
+		if err := sess.CheckClickPolicy(end.x, end.y, title); err != nil {
+			detail := fmt.Sprintf("(%d,%d)", end.x, end.y)
+			sess.RecordAction(action, detail, false, err.Error(), false)
+			emitComputerUseActionUI(action, detail, false, err.Error())
+			return fmt.Sprintf("%s blocked: %v", tool, err)
+		}
+	}
+	return ""
+}
+
+func cuStaleLabelRefusal(sess *computeruse.Session, tool, action string) string {
+	sess.RecordAction(action, "stale-labels", false, "stale-labels", false)
+	emitComputerUseActionUI(action, "stale-labels", false, "stale-labels")
+	return tool + ": control labels are from before the last action; call computer_observe again"
+}
+
+// cuDragPayRefusal applies the click pay gate to both ends. A pixel drag
+// whose crop can still be labeled reads that crop first, the same way a
+// pixel click does. A ref name is checked even when the point is not read.
+func cuDragPayRefusal(sess *computeruse.Session, ends ...cuDragEnd) string {
+	pixel := false
+	for _, end := range ends {
+		if end.pixel {
+			pixel = true
+			break
+		}
+	}
+	if pixel && !sess.LabelsCurrent() {
+		cuEnsureCurrentLabels(sess)
+		if !sess.LabelsCurrent() {
+			return cuStaleLabelRefusal(sess, "computer_drag", "drag")
+		}
+	}
+	for _, end := range ends {
+		names := make([]string, 0, 3)
+		if end.mark != nil {
+			if name := strings.TrimSpace(end.mark.Name); name != "" {
+				names = append(names, name)
+			}
+		}
+		if hit := sess.ElementNameAtScreen(end.x, end.y); hit != "" {
+			names = append(names, hit)
+		}
+		if hit := sess.OCRTextAtScreen(end.x, end.y); hit != "" {
+			names = append(names, hit)
+		}
+		for _, name := range names {
+			refusal := browser.DesktopPayClickRefusal(name)
+			if refusal == "" {
+				continue
+			}
+			detail := fmt.Sprintf("(%d,%d)", end.x, end.y)
+			sess.RecordAction("drag", detail, false, "checkout", false)
+			emitComputerUseActionUI("drag", detail, false, "checkout")
+			return "computer_drag blocked: " + cuPersonHandoff("checkout", name, refusal)
+		}
+	}
+	return ""
+}
+
+func cuResolveDragPoint(sess *computeruse.Session, args map[string]interface{}, refKey, xKey, yKey string) (cuDragEnd, error) {
 	if ref := guiStrArg(args, refKey, ""); ref != "" {
-		x, y, _, err := sess.ResolveClickRef(ref)
-		return x, y, err
+		x, y, el, err := sess.ResolveClickRef(ref)
+		if err != nil {
+			return cuDragEnd{}, err
+		}
+		return cuDragEnd{x: x, y: y, mark: el}, nil
 	}
 	if !sess.AllowPixelClick() {
-		return 0, 0, fmt.Errorf("provide %s (or enable pixel click for %s/%s)", refKey, xKey, yKey)
+		return cuDragEnd{}, fmt.Errorf("provide %s (or enable pixel click for %s/%s)", refKey, xKey, yKey)
 	}
 	x := guiIntArg(args, xKey, 0)
 	y := guiIntArg(args, yKey, 0)
 	x, y = sess.MapVisionClick(x, y)
 	x, y = sess.MapCaptureClick(x, y)
-	return x, y, nil
+	return cuDragEnd{x: x, y: y, pixel: true}, nil
 }
 
 func cuHandleWait(args map[string]interface{}) string {
@@ -1790,12 +2389,12 @@ func cuHandleWait(args map[string]interface{}) string {
 	if stable {
 		timeoutMs := guiIntArg(args, "timeout_ms", 3000)
 		obs := guiautomation.NewGUIStateObserver(nil, nil, func() (string, error) {
-			return captureDesktopScreenshot(-1)
+			return captureSettleScreenshot()
 		}, nil)
 		if err := obs.WaitForStable(time.Duration(timeoutMs) * time.Millisecond); err != nil {
 			return fmt.Sprintf("computer_wait stable: %v", err)
 		}
-		return fmt.Sprintf("computer_wait: UI considered stable (timeout %dms)", timeoutMs)
+		return cuFinishAction(fmt.Sprintf("computer_wait: UI considered stable (timeout %dms)", timeoutMs))
 	}
 	if ms < 0 {
 		ms = 0
@@ -1804,7 +2403,7 @@ func cuHandleWait(args map[string]interface{}) string {
 		ms = 30000
 	}
 	time.Sleep(time.Duration(ms) * time.Millisecond)
-	return fmt.Sprintf("computer_wait: slept %dms", ms)
+	return cuFinishAction(fmt.Sprintf("computer_wait: slept %dms", ms))
 }
 
 func decodeImageSizeB64(b64 string) (w, h int, ok bool) {

@@ -133,7 +133,10 @@ func (h *IMMessageHandler) escalateRoleConfig(roleBase, active corelib.MaclawLLM
 	if strings.TrimSpace(base.Model) == "" && strings.TrimSpace(base.URL) == "" {
 		base = active
 	}
-	if maclawLLMRoleSkipsLocalRoute(base.Profile) {
+	// A model the MCP caller chose stays for the whole round. Tool use must
+	// not replace it with the reasoning route, and a Hub hint must not move
+	// the upstream model either.
+	if maclawLLMRoleSkipsLocalRoute(base.Profile) || base.RouteSource == mcpCallerModelRoute {
 		return active
 	}
 	if isHubManagedTurnConfig(h, base) {
@@ -174,6 +177,11 @@ func llmRoleEscalationChanged(before, after corelib.MaclawLLMConfig) bool {
 // profiles may be independent and callers may be executing a long-lived task
 // that intentionally retains its start-time selection.
 func (h *IMMessageHandler) routeCodingLLMConfig(task cllm.TaskType, primary corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	// A model the MCP caller chose stays on that pair. The reasoning route
+	// must not replace it after the workbench takes the turn.
+	if primary.RouteSource == mcpCallerModelRoute {
+		return primary
+	}
 	return h.routeLLMConfigFromBase(task, primary)
 }
 
@@ -334,18 +342,27 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 	// and 「图片」 with no image attached).
 	classified = keepDocumentReadOnChat(classified, hints)
 	cost := cllm.DecideCostRoute(classified.Task, hints, classified.Reason)
-	// Background and computer-use already picked their role model. Desktop
-	// cost routing must not replace it. Hub auto still receives workload hints.
-	if maclawLLMRoleSkipsLocalRoute(primary.Profile) {
+	// Background, computer-use, and a model the MCP caller chose already
+	// picked their model. Desktop cost routing must not replace it. Hub auto
+	// still receives workload hints.
+	callerKept := primary.RouteSource == mcpCallerModelRoute
+	if maclawLLMRoleSkipsLocalRoute(primary.Profile) || callerKept {
 		decision.Task = string(classified.Task)
 		decision.Reason = classified.Reason + "; role model kept"
+		if callerKept && !maclawLLMRoleSkipsLocalRoute(primary.Profile) {
+			decision.Reason = classified.Reason + "; caller model kept"
+		}
 		decision.CostTier = string(cost.Tier)
 		decision.CostRouteMode = string(cost.Mode)
 		decision.CostRouteApplied = false
 		decision.ThinkingPolicy = string(cost.Thinking)
 		if cllm.CostRouteSurfaces(cost.Mode) {
-			log.Printf("[cost-route] mode=%s tier=%s task=%s model=%s applied=false reason=role:%s",
-				cost.Mode, cost.Tier, classified.Task, primary.Model, primary.Profile)
+			kept := "role"
+			if callerKept && !maclawLLMRoleSkipsLocalRoute(primary.Profile) {
+				kept = "caller"
+			}
+			log.Printf("[cost-route] mode=%s tier=%s task=%s model=%s applied=false reason=%s:%s",
+				cost.Mode, cost.Tier, classified.Task, primary.Model, kept, primary.Profile)
 		}
 		if h.app != nil {
 			h.app.recordLastModelRoute(decision)

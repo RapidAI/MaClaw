@@ -1139,6 +1139,30 @@ func TestRouter_PreferEmbeddingOnlySkipsTreeLLM(t *testing.T) {
 	}
 }
 
+func TestRouter_PreferEmbeddingOnlySkipsIntentClassifierLLM(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	var llmCalls atomic.Int32
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) {
+		llmCalls.Add(1)
+		return "chat", nil
+	})
+	router.SetIntentClassifier(ic)
+
+	tools := append(makeCoreSSHRouteTools(20), makeToolDef("browser", "browser automation"))
+	msg := "Please look at the desktop window and say hello to the contact in the chat application."
+	router.RouteWithOptions(msg, tools, RouteOptions{PreferEmbeddingOnly: true})
+	if got := llmCalls.Load(); got != 0 {
+		t.Fatalf("embedding-only route must not call the intent classifier LLM, got %d", got)
+	}
+	router.Route(msg+" again", tools)
+	if got := llmCalls.Load(); got == 0 {
+		t.Fatal("default Route should still call the intent classifier LLM")
+	}
+}
+
 func TestRouter_SSHIntentSuppressesFallbackTooling(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)

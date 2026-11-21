@@ -3436,7 +3436,7 @@ func (h *IMMessageHandler) planCodingWorkbenchTasks(
 	if h == nil {
 		return "", nil
 	}
-	cfg := h.codingLightweightConfigForSession(userID)
+	cfg := h.codingPlanLLMConfigForSession(userID)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return "", nil
 	}

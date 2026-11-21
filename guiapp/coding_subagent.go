@@ -1476,6 +1476,10 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 		c.subagent.cfg = cfg
 		return cfg, decision, true
 	}
+	if cfg.RouteSource == mcpCallerModelRoute {
+		decision.Reason = "coding subagent; caller model kept"
+		return cfg, decision, true
+	}
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return cfg, decision, true
 	}
@@ -19085,7 +19089,6 @@ func codingTaskDiagramText(task *TaskItem) string {
 	}
 	return strings.Join([]string{task.Title, task.Description, strings.Join(task.AcceptanceCriteria, "\n")}, "\n")
 }
-
 
 // codingBulletItemText clips one continuity bullet. File lists and project
 // instructions keep the recovery marker: it means the rest is on disk.

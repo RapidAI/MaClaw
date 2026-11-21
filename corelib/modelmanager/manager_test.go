@@ -142,6 +142,41 @@ func TestAutoUnload_ResetByAcquire(t *testing.T) {
 	}
 }
 
+func TestTouchResetsIdleTimer(t *testing.T) {
+	var loadCount int32
+	mgr := New(Config[*fakeModel]{
+		Name: "test",
+		Load: func() (*fakeModel, error) {
+			atomic.AddInt32(&loadCount, 1)
+			return &fakeModel{}, nil
+		},
+		UnloadDelay: 200 * time.Millisecond,
+	})
+	var nilMgr *Manager[*fakeModel]
+	nilMgr.Touch()
+	mgr.Touch()
+	if mgr.Loaded() || atomic.LoadInt32(&loadCount) != 0 {
+		t.Fatal("Touch must not load an idle manager")
+	}
+
+	_, done, err := mgr.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done()
+
+	time.Sleep(100 * time.Millisecond)
+	mgr.Touch()
+	time.Sleep(150 * time.Millisecond)
+	if !mgr.Loaded() {
+		t.Fatal("should still be loaded — Touch reset the idle timer")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if mgr.Loaded() {
+		t.Fatal("should be unloaded after the reset idle timeout")
+	}
+}
+
 func TestManualUnload(t *testing.T) {
 	var closeCount int32
 	mgr := New(Config[*fakeModel]{

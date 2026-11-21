@@ -47,6 +47,27 @@ func MapScreenToCapture(meta ScreenMeta, x, y int) (int, int) {
 	return int(float64(x-meta.OriginX)*scale + 0.5), int(float64(y-meta.OriginY)*scale + 0.5)
 }
 
+// RefreshGeometryFromImage rebuilds meta when a reused screenshot's pixel
+// size is not the size meta was built for. Settle capture grabs the logical
+// screen rectangle, so a DPI scale other than 1 makes the PNG smaller or
+// larger than the previous observe. The logical rectangle stays the origin
+// and size; the PNG's pixels become the image grid. A matching size keeps
+// meta, including a vision resize already stored on it.
+func RefreshGeometryFromImage(meta ScreenMeta, imageW, imageH int) ScreenMeta {
+	if imageW <= 0 || imageH <= 0 || (imageW == meta.Width && imageH == meta.Height) {
+		return meta
+	}
+	x1, y1 := MapCaptureToScreen(meta, 0, 0)
+	x2, y2 := MapCaptureToScreen(meta, meta.Width, meta.Height)
+	lw, lh := x2-x1, y2-y1
+	if lw <= 0 || lh <= 0 {
+		lw, lh = imageW, imageH
+	}
+	out := ScreenMeta{ScreenIndex: meta.ScreenIndex, CropTitle: meta.CropTitle}
+	ApplyDisplayGeometry(&out, x1, y1, lw, lh, imageW, imageH)
+	return out
+}
+
 // ScaleSize maps a screen-space size into capture pixels.
 func ScaleSize(meta ScreenMeta, w, h int) (int, int) {
 	scale := meta.ScaleFactor

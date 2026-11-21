@@ -187,6 +187,13 @@ func (h *IMMessageHandler) codingLLMConfigForSession(userID string) corelib.Macl
 	if h.app == nil || (h.standaloneConfig != nil && h.standaloneConfig.LLMConfigFunc != nil) {
 		return cfg
 	}
+	// /plan approve and the workbench run this config, not the chat loop.
+	// The live MCP round wins; the coding assignment is only the fallback.
+	if caller, ok := h.app.mcpLoopModelConfig(userID); ok && strings.TrimSpace(caller.Model) != "" {
+		caller.Profile = maclawLLMProfileCoding
+		caller.RouteSource = mcpCallerModelRoute
+		return caller
+	}
 	pinned, ok := h.app.taskBoundLLMConfig(projectPathFromSessionOwnerID(userID), maclawLLMProfileCoding)
 	if !ok {
 		return cfg
@@ -208,7 +215,7 @@ func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
 
 // getCodingLightweightLLMConfig is the lightweight companion of the coding
 // assignment. A task turn uses codingLightweightConfigForSession so the same
-// pin covers planning and classification.
+// pin covers classification. Plan text uses codingPlanLLMConfigForSession.
 func (h *IMMessageHandler) getCodingLightweightLLMConfig() corelib.MaclawLLMConfig {
 	return h.codingLightweightConfigForSession("")
 }
@@ -221,6 +228,24 @@ func (h *IMMessageHandler) codingLightweightConfigForSession(userID string) core
 		return corelib.MaclawLLMConfig{}
 	}
 	base := h.codingLLMConfigForSession(userID)
+	cfg := h.getLightweightLLMConfigFromBase(base)
+	if strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != "" {
+		return cfg
+	}
+	return base
+}
+
+// codingPlanLLMConfigForSession is the model that writes, revises, or reviews
+// a coding plan. The MCP caller pair stays in place. Classification and the
+// one-line restatement still use the short-call model.
+func (h *IMMessageHandler) codingPlanLLMConfigForSession(userID string) corelib.MaclawLLMConfig {
+	if h == nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	base := h.codingLLMConfigForSession(userID)
+	if base.RouteSource == mcpCallerModelRoute && strings.TrimSpace(base.Model) != "" {
+		return base
+	}
 	cfg := h.getLightweightLLMConfigFromBase(base)
 	if strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != "" {
 		return cfg

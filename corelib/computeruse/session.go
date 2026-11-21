@@ -24,9 +24,15 @@ type Session struct {
 	windowIDResolver func(x, y int) uint64
 
 	// Last observation (ref table valid until next action or new observe).
-	last        *ObserveResult
-	refsValid   bool
-	screenshotN int
+	last      *ObserveResult
+	refsValid bool
+	// labelsCurrent is false after a lightweight refresh until OCR or a
+	// full observe replaces the boxes. Pay checks ignore the old boxes.
+	labelsCurrent bool
+	// cropWindowID is the cropped window from the last full observe.
+	// A refresh drops elements, and the stale-document check still needs it.
+	cropWindowID uint64
+	screenshotN  int
 	// actuated is the control the agent last clicked or typed into.
 	// Observe does not clear it: a later screenshot does not move the caret.
 	// actuatedWindow is the window that received that click. A key goes to the
@@ -261,6 +267,15 @@ func (s *Session) CommitObserve(
 	}
 	s.last = res
 	s.refsValid = true
+	s.labelsCurrent = true
+	// OCR lines alone have no window id. Keep the id from the last full
+	// observe so a later title change is still stale. A shot that does name
+	// windows replaces it, including a mixed shot that names none.
+	if id := cropWindowID(marks, strings.TrimSpace(meta.CropTitle)); id != 0 {
+		s.cropWindowID = id
+	} else if marksHaveWindowID(marks) {
+		s.cropWindowID = 0
+	}
 	s.screenshotN++
 	s.audit = append(s.audit, ActionRecord{
 		At:     time.Now(),
@@ -269,6 +284,105 @@ func (s *Session) CommitObserve(
 		OK:     true,
 	})
 	return res
+}
+
+// ApplyRefreshCapture stores the geometry of a lightweight post-action crop
+// so a later vision click maps into that image. It drops the previous
+// element and OCR boxes: those coordinates belong to the previous image.
+// screenshotB64 is that crop, kept for a later label read. Refs are stale,
+// and this does not count as computer_observe. The cropped window id from
+// the last full observe is kept so a title change is still stale.
+func (s *Session) ApplyRefreshCapture(meta ScreenMeta, screenshotB64 string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if meta.ScaleFactor <= 0 {
+		meta.ScaleFactor = 1
+	}
+	if s.last == nil {
+		s.last = &ObserveResult{Mode: s.cfg.Mode, ObservedAt: time.Now()}
+	}
+	s.last.Meta = meta
+	s.last.ObservedAt = time.Now()
+	s.last.ScreenshotB64 = screenshotB64
+	s.last.Elements = nil
+	s.last.OCRLines = nil
+	s.last.OCRExcerpt = ""
+	s.refsValid = false
+	s.labelsCurrent = false
+}
+
+// LabelsCurrent reports that element and OCR boxes describe the current crop.
+func (s *Session) LabelsCurrent() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.labelsCurrent && s.last != nil
+}
+
+// StaleCropScreenshot is the lightweight crop whose labels are not current.
+// A monitor fallback has no crop title and is not read here.
+func (s *Session) StaleCropScreenshot() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.labelsCurrent || s.last == nil {
+		return "", false
+	}
+	if strings.TrimSpace(s.last.Meta.CropTitle) == "" || s.last.ScreenshotB64 == "" {
+		return "", false
+	}
+	return s.last.ScreenshotB64, true
+}
+
+// AdoptOCRLabels replaces pay and secret labels with lines from the current
+// crop. It does not publish click refs, does not record an observe, and does
+// not change click geometry. An empty crop title is a monitor fallback.
+func (s *Session) AdoptOCRLabels(ocr []taskengine.OCRResult) bool {
+	if s == nil || len(ocr) == 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil || strings.TrimSpace(s.last.Meta.CropTitle) == "" {
+		return false
+	}
+	copied := append([]taskengine.OCRResult(nil), ocr...)
+	// A line with no box cannot be hit-tested. Treating it as current would
+	// let Enter through on an empty label list.
+	if !OCRLinesUsable(copied) {
+		return false
+	}
+	s.last.OCRLines = copied
+	s.last.OCRExcerpt = FormatOCRExcerpt(copied, s.cfg.OCRMaxChars)
+	s.last.Elements = nil
+	s.labelsCurrent = true
+	return true
+}
+
+// InvalidateLabels drops pay and secret labels after a refresh that did not
+// produce a new crop. The previous boxes describe the screen before the action.
+func (s *Session) InvalidateLabels() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.labelsCurrent = false
+	s.refsValid = false
+	if s.last == nil {
+		return
+	}
+	s.last.Elements = nil
+	s.last.OCRLines = nil
+	s.last.OCRExcerpt = ""
+	s.last.ScreenshotB64 = ""
 }
 
 // ReplaceLastElements swaps SoM marks on the last observe and refreshes
@@ -358,7 +472,7 @@ func (s *Session) ElementNameAtScreen(x, y int) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.last == nil {
+	if s.last == nil || !s.labelsCurrent {
 		return ""
 	}
 	cx, cy := MapScreenToCapture(s.last.Meta, x, y)
@@ -395,7 +509,7 @@ func (s *Session) OCRTextAtScreen(x, y int) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.last == nil {
+	if s.last == nil || !s.labelsCurrent {
 		return ""
 	}
 	cx, cy := MapScreenToCapture(s.last.Meta, x, y)
@@ -546,7 +660,11 @@ func (s *Session) ObserveDocumentStale(foreground string, windowID uint64) (crop
 	}
 	// The crop's own window, not every window that happened to be in the shot.
 	// Another window's controls can sit in the margin; those keys stay usable.
-	if windowID == 0 || windowID != cropWindowID(s.last.Elements, crop) {
+	id := cropWindowID(s.last.Elements, crop)
+	if id == 0 {
+		id = s.cropWindowID
+	}
+	if windowID == 0 || windowID != id {
 		return crop, false
 	}
 	return crop, true
@@ -570,7 +688,7 @@ func (s *Session) KeySurfaceLabelsFor(foreground string, windowID uint64) []stri
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.last == nil {
+	if s.last == nil || !s.labelsCurrent {
 		return nil
 	}
 	fg := strings.TrimSpace(foreground)
@@ -665,6 +783,15 @@ func cropWindowID(elements []MarkedElement, crop string) uint64 {
 		return only
 	}
 	return 0
+}
+
+func marksHaveWindowID(elements []MarkedElement) bool {
+	for i := range elements {
+		if elements[i].WindowID != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func elementsIncludeWindowID(elements []MarkedElement, windowID uint64) bool {
@@ -825,10 +952,10 @@ func PlaybookVision() string {
 func PlaybookBeforePerception() string {
 	return `Computer Use:
 - Call computer_observe first. If that result attaches a screenshot, look at the image and computer_click with x,y in that image's pixels, or with ref=eN. If there is no image, the result lists eN refs; computer_click those refs and do not invent pixel coordinates.
-- Pass window (an app title substring) to computer_observe or computer_focus to bring one app forward. If omitted, the foreground window is used.
+- Pass window (an app title substring) to computer_observe or computer_focus to bring one app forward. If omitted, the foreground window is used. Do not pass screen_index=-1. A stitch larger than 8 megapixels is refused and the foreground window is captured instead.
 - To find a person, button, or text, call computer_find query=... It searches labels and OCR and returns clickable eN refs.
-- In an IM app or a long list, use that app's search box: focus the window, click the search field, computer_type the name, then computer_find the result. Otherwise computer_scroll and call computer_observe again.
-- After every click, type, key, scroll, focus, select, or drag, call computer_observe again. Refs go stale.
+- In an IM app or a long list, use that app's search box: focus the window, click the search field, computer_type the name, then computer_find the result. Otherwise computer_scroll. The scroll result includes a fresh foreground-window crop.
+- A successful click, type, key, scroll, focus, select, drag, or wait already includes a fresh foreground-window crop of the window just operated, and a screenshot when this model can see images. Use that result. Call computer_observe only to switch windows, or when the result says the refresh failed.
 - Use computer_key for shortcuts such as enter, ctrl+c, and alt+tab. Use computer_select for a list or tab item, and computer_scroll_into_view before clicking something off screen.
 - Web pages use the browser tools. Office documents use office_read. Computer Use is for native desktop windows.
 - Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
@@ -842,9 +969,10 @@ func PlaybookFor(mode ObserveMode) string {
 		return `Computer Use (vision):
 - The current model supports images. computer_observe attaches a screenshot with numbered SoM marks (a11y boxes). Look at the image.
 - Click with computer_click x=<image_x> y=<image_y> in the attached screenshot's pixel space, or ref=eN for a drawn mark.
-- After every click/type/key/scroll/focus/select/drag, call computer_observe again so you see the new screen.
+- A successful click, type, key, scroll, focus, select, drag, or wait already includes a fresh foreground-window crop of the window just operated and a new screenshot. Use that image. Call computer_observe only to switch windows, or when the result says the refresh failed.
+- Do not pass screen_index=-1. A stitch larger than 8 megapixels is refused. Pass window=<app title> to observe one app.
 - Use computer_focus with a window title substring before interacting with a specific app.
-- To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name, re-observe).
+- To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name). The type result includes the next screenshot.
 - Prefer computer_key for shortcuts (enter, ctrl+c, alt+tab). Use computer_select for list/tab items and computer_scroll_into_view before clicking off-screen chrome.
 - Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
 - Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.
@@ -855,11 +983,12 @@ func PlaybookFor(mode ObserveMode) string {
 - Always call computer_observe first. It returns windows, eN elements (from local OmniParser/OCR/a11y), and ocr_excerpt.
 - Pass the window parameter (app title substring) to computer_observe to focus a specific app's accessibility tree. If omitted, the foreground window is enumerated automatically.
 - To locate a specific person, button, or text, call computer_find query=... first. It searches element labels AND raw OCR text, and returns clickable eN refs even for text that no element covers.
-- To reach a person/chat in an IM or any long list: prefer the app's own search box (focus window → find/click the search field → computer_type the name → computer_find the result). Otherwise computer_scroll and re-observe/re-find to page through the list.
+- To reach a person/chat in an IM or any long list: prefer the app's own search box (focus window → find/click the search field → computer_type the name → computer_find the result). Otherwise computer_scroll. The result includes a fresh foreground-window crop; computer_find on that result.
 - Use computer_focus with a window title substring before interacting with a specific app.
 - Click with computer_click ref=eN. Use computer_select for list/tab items and computer_scroll_into_view to reveal off-screen chrome. computer_drag moves from_ref to to_ref.
 - Do NOT invent pixel coordinates unless explicitly allowed.
-- After every click/type/key/scroll/focus, call computer_observe again (refs become stale).
+- A successful click, type, key, scroll, focus, select, drag, or wait already includes a fresh foreground-window crop of the window just operated. Use that crop. Call computer_observe only to switch windows, or when the result says the refresh failed.
+- Do not pass screen_index=-1. A stitch larger than 8 megapixels is refused. Pass window=<app title> to observe one app.
 - Prefer computer_key / computer_scroll for navigation when labels are missing.
 - If elements are empty, report that local detection failed; do not guess clicks.
 - Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.

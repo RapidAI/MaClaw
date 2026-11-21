@@ -2637,6 +2637,11 @@ func (c *sharedAgentLoopCallbacks) RefreshLLMSelection(current corelib.MaclawLLM
 	if strings.TrimSpace(c.roleBase.Model) == "" || strings.TrimSpace(c.roleBase.URL) == "" {
 		return corelib.MaclawLLMConfig{}, false
 	}
+	// The MCP caller chose this pair for the round. A later change to the
+	// desktop role is a different selection and must not replace it on retry.
+	if c.roleBase.RouteSource == mcpCallerModelRoute {
+		return corelib.MaclawLLMConfig{}, false
+	}
 	// A failed reread must not fall through to the assistant profile. That
 	// fallback is a different model for a background or computer-use turn,
 	// and the retry would treat the failure as a person switching models.

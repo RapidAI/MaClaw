@@ -334,7 +334,7 @@ func mcpToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "create_task",
-			"description": "在这台电脑上创建会话、本机编程或远程编程任务，并可选地立刻开始。这台 GUI 是会话服务，创建、停止和查看与远控、ACP 共用同一套能力。mode 省略且带了本机工作目录时按编程任务处理；显式 chat 保持会话。mode 省略但带了 ssh_host、ssh_user、ssh_password、ssh_port 或 remote_work_dir 时按远程编程处理。显式 chat 或 coding_dev 不能再带这些 SSH 字段。mode 为 remote_coding_dev 时创建远程编程任务，连接成功后这一轮交给远程编程 agent。provider 和 model 可选，指定 model 时必须同时指定 provider。wait 默认 false，true 会等到这轮结束。编程计划或其它确认会以 needs_confirmation 结束，并用 commands 告诉调用方怎么继续。",
+			"description": "在这台电脑上创建会话、本机编程或远程编程任务，并可选地立刻开始。创建、停止和查看用的是这台电脑上的任务。这条接口不提供 ACP 或远控操作。mode 省略且带了本机工作目录时按编程任务处理；显式 chat 保持会话。mode 省略但带了 ssh_host、ssh_user、ssh_password、ssh_port 或 remote_work_dir 时按远程编程处理。显式 chat 或 coding_dev 不能再带这些 SSH 字段。mode 为 remote_coding_dev 时创建远程编程任务，连接成功后这一轮交给远程编程 agent。provider 和 model 可选，指定 model 时必须同时指定 provider。wait 默认 false，true 会等到这轮结束。编程计划或其它确认会以 needs_confirmation 结束，并用 commands 告诉调用方怎么继续。",
 			"inputSchema": object(map[string]any{
 				"name":              str("任务名称。为空时从 prompt 取第一行。"),
 				"prompt":            str("要执行的内容。为空则只创建任务，不开始。"),
@@ -352,24 +352,25 @@ func mcpToolDefinitions() []map[string]any {
 				"wait":              map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
 			}, nil),
 		},
-		{
-			"name":        "get_task",
-			"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、run_id、current_run_id、task_id、status_version、started_at、finished_at、end_reason、end_detail。task_id 等于 project_path。current_run_id 是当前轮，传入的 run_id 是正在查看的那一轮命令。run_id 是这一轮的会话标识，后来的命令不会盖住它。outcome 是给调用方决策的短说明：running 时要等这一轮结束再查，needs_confirmation 时先看 outcome、commands 和 confirmation_id。没有找到任务时 code 是 task_not_found。已知任务没有这一轮时 code 是 run_not_found，消息是「没有这一轮执行」，不会退回当前轮。记录过了保留期时 code 是 task_expired。working_dir 是实际工作目录，另外有 working_dir_requested、working_dir_effective、tool_root、session_path。status_version 随这一轮的状态变化增加。stop 给出 class、source、reason、at、step_id 和 deadline，class 可以是 user_stop、timeout、program_error、dependency_failure、waiting_review、no_progress 或 unconfirmed。deadline 只在已证实超时或已证实无进展时有值。这一轮还在产出 token、进展或工具事件时不会因为固定墙钟被取消；单次模型请求仍按自己的超时失败，不占用整轮预算。无进展时 status 是 failed，class 是 no_progress，reason 是「这一轮没有进展」，这不是用户停止。用户停止仍是 user_stop。主机自己的等待结束时 class 是 unconfirmed，reason 是「主机等待已结束，尚未证实为超时」，这不是已证实的执行超时。steps 列出每一步的 id、status、error、retryable，未执行的步骤还有 blocked_by 和 block_reason。等待子任务审阅时步骤和任务的 status 都是 waiting_review，不是 failed，也不是 completed。必要步骤没通过时 status 不会是 completed。正文仍是待确认计划时 status 是 needs_confirmation，不是 completed。无法识别的状态是 blocked_unknown，原始值在 status_raw。child_task_id 是第一个内部任务，children 列出全部；已接受的子任务 status 是 admitted，不是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled、waiting_review 或 needs_confirmation。无进展失败的 end_reason 是 failed。进程重启后加载到的 running 记录没有仍在执行的模型调用，按无进展失败，不是 cancelled，也不是 user_stop，也不会挡住下一条命令。needs_confirmation 表示这轮已经停下来等确认。running 时如果带了 confirmation_kind 和 commands，表示这轮还在跑，但卡在授权或安全确认上。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。",
-			"inputSchema": object(map[string]any{
-				"project_path": str("create_task 返回的 project_path。"),
-				"run_id":       str("只查询这一轮。省略时返回当前轮。别名 runId。"),
-			}, []string{"project_path"}),
-		},
+			{
+				"name":        "get_task",
+				"description": "查看一个任务的状态和结果。返回 provider、model、working_dir、round、run_id、current_run_id、task_id、status_version、started_at、finished_at、end_reason、end_detail。task_id 等于 project_path。current_run_id 是当前轮，传入的 run_id 是正在查看的那一轮命令。run_id 是这一轮的会话标识，后来的命令不会盖住它。outcome 是给调用方决策的短说明：running 时要等这一轮结束再查，needs_confirmation 时先看 outcome、commands 和 confirmation_id。没有找到任务时 code 是 task_not_found。已知任务没有这一轮时 code 是 run_not_found，消息是「没有这一轮执行」，不会退回当前轮。记录过了保留期时 code 是 task_expired。working_dir 是实际工作目录，另外有 working_dir_requested、working_dir_effective、tool_root、session_path。status_version 随这一轮的状态变化增加。stop 给出 class、source、reason、at、step_id 和 deadline，class 可以是 user_stop、timeout、program_error、dependency_failure、waiting_review、no_progress 或 unconfirmed。deadline 只在已证实超时或已证实无进展时有值。这一轮还在产出 token、进展或工具事件时不会因为固定墙钟被取消；单次模型请求仍按自己的超时失败，不占用整轮预算。无进展时 status 是 failed，class 是 no_progress，reason 是「这一轮没有进展」，这不是用户停止。用户停止仍是 user_stop。主机自己的等待结束时 class 是 unconfirmed，reason 是「主机等待已结束，尚未证实为超时」，这不是已证实的执行超时。steps 列出每一步的 id、status、error、retryable，未执行的步骤还有 blocked_by 和 block_reason。等待子任务审阅时步骤和任务的 status 都是 waiting_review，不是 failed，也不是 completed。必要步骤没通过时 status 不会是 completed。正文仍是待确认计划时 status 是 needs_confirmation，不是 completed。无法识别的状态是 blocked_unknown，原始值在 status_raw。child_task_id 是第一个内部任务，children 列出全部；已接受的子任务 status 是 admitted，不是 completed。checks 是浏览器截图和断言，带当时的文件哈希；文件变了之后 stale 为 true。远程编程任务还会返回 ssh_host、ssh_user、ssh_port、remote_work_dir，不含密码。end_reason 在结束后是 completed、failed、cancelled、waiting_review 或 needs_confirmation。无进展失败的 end_reason 是 failed。进程重启后加载到的 running 记录没有仍在执行的模型调用，按无进展失败，不是 cancelled，也不是 user_stop，也不会挡住下一条命令。needs_confirmation 表示这轮已经停下来等确认。running 且 confirmation_kind 是 scope 或 critical 时，outcome 仍说明先处理 commands 里的确认，并写明授权说明在 text。有确认时还会给出 confirmation_id。commands 里的每一条都可以原样交给 send_command，决定类命令必须带上这个 confirmation_id。授权路径若只等于工作目录，以 send_command 当时的 commands 为准。",
+				"inputSchema": object(map[string]any{
+					"project_path": str("create_task 返回的 project_path。"),
+					"run_id":       str("只查询这一轮。省略时返回当前轮。别名 runId。"),
+				}, []string{"project_path"}),
+			},
 		{
 			"name":        "stop_task",
-			"description": "停止一个正在运行的任务。空闲任务视为已经停止。",
+			"description": "停止当前这一轮。结果是 cancelled，stop.class 为 user_stop。待确认卡被撤下，批准命令不再出现。空闲任务视为已经停止。不按归档的 run_id 停历史轮。cancel_task 是同一操作的别名，不在工具列表里单独出现。可选 expected_status_version：与当前 status_version 不一致时 code 是 status_version_conflict，消息是「状态版本已经变化，这次没有执行」，不停止，也不取消确认。省略时不比较。",
 			"inputSchema": object(map[string]any{
-				"project_path": str("要停止的任务。"),
+				"project_path":            str("要停止的任务。"),
+				"expected_status_version": map[string]any{"type": "integer", "description": "调用方看到的 status_version。省略时不比较。0 也是一个版本，只要字段出现就会比较。别名 expectedStatusVersion。"},
 			}, []string{"project_path"}),
 		},
 		{
 			"name":        "send_command",
-			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。返回这一轮的 run_id 和 status_version。新一轮的 steps 只属于这一轮，上一轮用 get_task 的 run_id 查询。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。返回已接受不代表执行完成。wait 默认 false。可选 expected_status_version：与当前 status_version 不一致时 code 是 status_version_conflict，消息是「状态版本已经变化，这次没有执行」，不启动、不改状态，也不占用 client_request_id。可选 dry_run：只预检版本和同一工作目录上的其他任务，有未提交改动时注明「既有改动、来源未证实」，不启动执行。用户停止之后仍可以显式发送；自动恢复不会进行。每个命令是单独一轮，返回的 run_id 是这一轮的会话标识。status 为 running 时结果还没出来，outcome 会写明这一点，text 不带上一轮的回答。结束后用 get_task 传入这个 run_id，或用 get_request 查询；status、outcome、commands、confirmation_id 都属于这一轮。看到终态后再发下一条命令。",
+			"description": "向一个已有任务发送任意命令或后续内容。斜杠命令、确认按钮和自由回答都原样进入该任务。返回这一轮的 run_id 和 status_version。新一轮的 steps 只属于这一轮，上一轮用 get_task 的 run_id 查询。编程计划用 /plan approve、/plan skip、/plan reject。确认卡、未完成项、会话恢复、授权和安全确认用该任务 commands 里的原文，并且必须带上这次 get_task 返回的 confirmation_id。编号不匹配或已经用过会拒绝，也不会沿用上一轮确认。普通命令在任务 running 时会拒绝；commands 里的授权和安全确认可以在 running 时发送，当前这轮会继续。可以带 client_request_id，同一个编号不会把指令再执行一次。返回已接受不代表执行完成。wait 默认 false。可选 expected_status_version：与当前 status_version 不一致时 code 是 status_version_conflict，消息是「状态版本已经变化，这次没有执行」，不启动、不改状态，也不占用 client_request_id。可选 dry_run：只预检版本和同一工作目录上的其他任务，有未提交改动时注明「既有改动、来源未证实」，不启动执行。用户停止之后仍可以显式发送；自动恢复不会进行。每个命令是单独一轮，返回的 run_id 是这一轮的会话标识。status 为 running 时结果还没出来，outcome 会写明这一点，text 不带上一轮的回答。结束后用 get_task 传入这个 run_id，或用 get_request 查询；status、outcome、commands、confirmation_id 都属于这一轮。看到终态后再发下一条命令。可选 provider 和 model，规则与 create_task 相同：指定 model 时必须同时指定 provider。只写入这次新开的一轮，上一轮保持原样。任务还在 running 时，这两个参数和命令一起拒绝。授权或安全确认这种续跑当前轮的命令若带了模型参数，会拒绝并说明续跑当前轮不能同时改模型，确认编号不消耗。dry_run 会在预检里写将要使用的服务商和模型，不保存、不启动。",
 			"inputSchema": object(map[string]any{
 				"project_path":            str("任务的 project_path。"),
 				"command":                 str("要发回的原文。别名 text、prompt、message。"),
@@ -378,13 +379,15 @@ func mcpToolDefinitions() []map[string]any {
 				"wait":                    map[string]any{"type": "boolean", "description": "为 true 时阻塞到本轮结束。默认 false。"},
 				"expected_status_version": map[string]any{"type": "integer", "description": "调用方看到的 status_version。省略时不比较。0 也是一个版本，只要字段出现就会比较。别名 expectedStatusVersion。"},
 				"dry_run":                 map[string]any{"type": "boolean", "description": "为 true 时只预检，不启动。别名 dryRun。"},
+				"provider":                str("下一轮使用的服务商 id 或名称。省略时沿用这一轮已经记下的服务商。指定 model 时必填。"),
+				"model":                   str("该服务商下的模型 id。省略时沿用这一轮已经记下的模型。"),
 			}, []string{"project_path", "command"}),
 		},
-		{
-			"name":        "list_tasks",
-			"description": "列出这台电脑上最近的任务，并带上 MCP 正在跟踪的状态。每条任务包含和服务详情一样的 provider、model、working_dir、round 和结束信息。可见状态与 get_task 相同：running、completed、failed、cancelled、needs_confirmation、waiting_review、idle、blocked_unknown。还在推进的轮次保持 running，不会因为固定墙钟变成 cancelled。无进展失败是 failed，stop.class 是 no_progress。进程重启后加载到的 running 记录也是这个失败，不是 cancelled。用户停止是 cancelled，stop.class 是 user_stop。",
-			"inputSchema": object(map[string]any{}, nil),
-		},
+			{
+				"name":        "list_tasks",
+				"description": "列出这台电脑上最近的任务，并带上 MCP 正在跟踪的状态。回包是 {tasks}。任务列表最多 50 条，MCP 登记里多出来的路径再附在后面。每条任务包含和服务详情一样的 provider、model、working_dir、round 和结束信息。可见状态与 get_task 相同：running、completed、failed、cancelled、needs_confirmation、waiting_review、idle、blocked_unknown。还在推进的轮次保持 running，不会因为固定墙钟变成 cancelled。无进展失败是 failed，stop.class 是 no_progress。进程重启后加载到的 running 记录也是这个失败，不是 cancelled。用户停止是 cancelled，stop.class 是 user_stop。",
+				"inputSchema": object(map[string]any{}, nil),
+			},
 		{
 			"name":        "read_log",
 			"description": "按游标读取任务进展、工具调用和错误。cursor 传上一次的 next_cursor，第一次传 0。不传 run_id 时序号跨轮次继续增加。传入 run_id 时只返回这一轮，并带上 run_id 和 status_version。如果中间丢过记录，gap 为 true。没有事件时 events 为空数组，empty 为 true，next_cursor 保持这次传入的 cursor。没有找到任务时 code 是 task_not_found。已知任务没有这一轮时 code 是 run_not_found，消息是「没有这一轮执行」，不会退回当前轮。记录过了保留期时 code 是 task_expired。不会返回整段拼接文本。密钥会打码。",
@@ -782,6 +785,13 @@ func mcpCallOptsFromArgs(name string, args map[string]any) mcpCallOpts {
 		if sum, ok := mcpLookupOptionalString(args, "expected_sha256", "expectedSha256"); ok {
 			opts.HasExpectedSHA = true
 			opts.ExpectedSHA = sum
+		}
+	case "send_command":
+		if provider, ok := mcpLookupOptionalString(args, "provider"); ok {
+			opts.Provider = provider
+		}
+		if model, ok := mcpLookupOptionalString(args, "model"); ok {
+			opts.Model = model
 		}
 	}
 	return opts

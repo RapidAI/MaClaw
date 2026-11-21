@@ -65,6 +65,7 @@ func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 		Goal:       strings.TrimSpace(goal),
 		Acceptance: normalizeComputerUseAcceptance(acceptance),
 	}
+	resetComputerUseExperienceTrace()
 	globalComputerUse.mu.Lock()
 	if globalComputerUse.taskStates == nil {
 		globalComputerUse.taskStates = make(map[string]*computerUseTaskState)
@@ -113,7 +114,11 @@ func maybeBeginComputerUseTask(loopCtx *LoopContext, fallbackUserID, goal string
 		}
 	}
 	setComputerUseOwner(owner)
-	beginComputerUseTask(owner, req, goal, nil)
+	stored := strings.TrimSpace(goal)
+	if rt := strings.TrimSpace(loopCtx.ComputerUseRoutingText); rt != "" {
+		stored = rt
+	}
+	beginComputerUseTask(owner, req, stored, nil)
 	loopCtx.ComputerUseBegun = true
 }
 
@@ -294,7 +299,7 @@ func computerUseContractPlaybookExtra(owner string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Host acceptance (do not call computer_done until every line is visible in the latest computer_observe result):\n")
+	b.WriteString("Host acceptance (do not call computer_done until every line is visible in the latest screen refresh, from computer_observe or from the observe attached to the last action):\n")
 	for _, item := range st.Acceptance {
 		b.WriteString("- ")
 		b.WriteString(item)

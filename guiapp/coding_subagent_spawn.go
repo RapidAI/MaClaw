@@ -479,6 +479,37 @@ func codingSpawnLocalPathsEqual(left, right string) bool {
 	return filepath.Clean(absLeft) == filepath.Clean(absRight)
 }
 
+// codingSpawnRunNestedAgent is the worker body. Tests replace it so a
+// deferred-checkout spawn can be exercised without a model call. Nil runs
+// the real nested agent. The default is not an initializer: that reference
+// cycles back through the spawn tool.
+var codingSpawnRunNestedAgent func(parent *CodingSubAgent, spec codingSpawnSpec, parentCB *codingSubAgentCallbacks, onProgress func(string)) *CodingSubAgentResult
+
+func codingSpawnInvokeNestedAgent(parent *CodingSubAgent, spec codingSpawnSpec, parentCB *codingSubAgentCallbacks, onProgress func(string)) *CodingSubAgentResult {
+	if codingSpawnRunNestedAgent != nil {
+		return codingSpawnRunNestedAgent(parent, spec, parentCB, onProgress)
+	}
+	return parent.runNestedCodingAgent(spec, parentCB, onProgress)
+}
+
+// codingSpawnSharedCheckout reports that this parent is already the private
+// checkout of a deferred parallel turn. A second worktree cannot be created
+// inside that directory.
+func codingSpawnSharedCheckout(parentProject string) bool {
+	turn := codingParallelTurnForExec(parentProject)
+	return turn != nil && turn.deferred && turn.wt != nil
+}
+
+// codingSpawnIsolateAllowed rejects a worker whose isolate is the parent's
+// own directory, except when that directory is the deferred checkout. The
+// turn merge is what lands those bytes on the user's tree.
+func codingSpawnIsolateAllowed(parentProject, isolate string) bool {
+	if !codingSpawnLocalPathsEqual(isolate, parentProject) {
+		return true
+	}
+	return codingSpawnSharedCheckout(parentProject)
+}
+
 func isolatedWorkerShouldKeepWorktree(wt *codingWorkbenchWorktree, res *CodingSubAgentResult) bool {
 	if res != nil && (len(res.FilesModified) > 0 || len(res.FilesCreated) > 0) {
 		return true
@@ -607,12 +638,20 @@ func (c *codingSubAgentCallbacks) executeIsolatedWorkerSpawn(specs []codingSpawn
 	if err != nil {
 		return codingToolExecutionResult{Text: "spawn_coding_agent: " + err.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	if allCodingSpawnWorkers(specs) && canParallelizeIsolatedWriteSets(sets) {
+	// Two workers can share a private worktree only when each has its own
+	// checkout. A deferred turn has one checkout, so those workers take the
+	// sequential path and the snapshot fence below.
+	sharedCheckout := codingSpawnSharedCheckout(parent.projectPath)
+	if !sharedCheckout && allCodingSpawnWorkers(specs) && canParallelizeIsolatedWriteSets(sets) {
 		return c.executeParallelIsolatedWorkerSpawn(specs)
 	}
 
 	progress, childProgress := newCodingSpawnProgress(parent.onProgress)
-	progress(fmt.Sprintf("spawn_coding_agent: launching %d nested agent(s) (sequential isolated worker)", len(specs)))
+	launch := "sequential isolated worker"
+	if sharedCheckout {
+		launch = "sequential shared checkout"
+	}
+	progress(fmt.Sprintf("spawn_coding_agent: launching %d nested agent(s) (%s)", len(specs), launch))
 	var body strings.Builder
 	passed := 0
 	for i, spec := range specs {
@@ -649,6 +688,9 @@ func (c *codingSubAgentCallbacks) executeParallelIsolatedWorkerSpawn(specs []cod
 		return codingToolExecutionResult{Text: "coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
 	}
 	parent := c.subagent
+	if codingSpawnSharedCheckout(parent.projectPath) {
+		return c.executeIsolatedWorkerSpawn(specs)
+	}
 	progress, childProgress := newCodingSpawnProgress(parent.onProgress)
 
 	type workerItem struct {
@@ -766,6 +808,9 @@ func (c *codingSubAgentCallbacks) runIsolatedOrInspectionSpawn(spec codingSpawnS
 	if spec.Role != codingRoleWorker {
 		return parent.runNestedCodingAgent(spec, c, onProgress), "", nil
 	}
+	if codingSpawnSharedCheckout(parent.projectPath) {
+		return c.runSharedCheckoutWorker(spec, onProgress)
+	}
 	wt, err := createCodingWorkbenchWorktree(parent.projectPath, index+1, "spawn-worker")
 	if err != nil {
 		return nil, "", fmt.Errorf("create isolated worktree: %w", err)
@@ -804,6 +849,63 @@ func (c *codingSubAgentCallbacks) runIsolatedOrInspectionSpawn(spec codingSpawnS
 		mergeNote = "worktree produced no mergeable file changes"
 	}
 	return result, mergeNote, nil
+}
+
+// runSharedCheckoutWorker edits the deferred turn's checkout in place.
+// mergeBack cannot land onto that dirty tree, and a nested worktree is
+// refused. The turn's own merge writes the user's directory. Every path the
+// worker touches is rolled back when the run fails or leaves the declared set.
+func (c *codingSubAgentCallbacks) runSharedCheckoutWorker(spec codingSpawnSpec, onProgress func(string)) (*CodingSubAgentResult, string, error) {
+	parent := c.subagent
+	spec.projectPath = parent.projectPath
+	snap, err := codingSpawnSnapshotCheckout(spec.projectPath)
+	if err != nil {
+		return &CodingSubAgentResult{Status: TaskExecFailed}, "", fmt.Errorf("snapshot shared checkout: %w", err)
+	}
+	log.Printf("[coding-subagent-spawn] shared checkout worker project=%s", spec.projectPath)
+	result := codingSpawnInvokeNestedAgent(parent, spec, c, onProgress)
+	if result == nil {
+		if rbErr := snap.rollback(); rbErr != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed}, "", fmt.Errorf("nested coding agent returned nil; rollback: %w", rbErr)
+		}
+		return &CodingSubAgentResult{Status: TaskExecFailed}, "", fmt.Errorf("nested coding agent returned nil")
+	}
+	changed, diffErr := snap.changedPaths()
+	if diffErr != nil {
+		rbErr := snap.rollback()
+		if rbErr != nil {
+			diffErr = fmt.Errorf("%w; rollback: %v", diffErr, rbErr)
+		}
+		return result, "", fmt.Errorf("shared checkout diff: %w", diffErr)
+	}
+	if result.Status != TaskExecPassed {
+		if rbErr := snap.rollback(); rbErr != nil {
+			result.Error = attachSpawnChildError(result.Error, rbErr.Error())
+		}
+		return result, "", nil
+	}
+	// The worker is pointed at the project directory. That may be a
+	// subdirectory of the checkout, so git's repo-relative names have to be
+	// expressed from there before they are compared with the declared list.
+	scoped, scopeErr := codingSpawnProjectPaths(snap.gitRoot, spec.projectPath, changed)
+	if scopeErr != nil {
+		if rbErr := snap.rollback(); rbErr != nil {
+			return result, "", fmt.Errorf("%w; rollback: %v", scopeErr, rbErr)
+		}
+		return result, "", scopeErr
+	}
+	if err := validateCodingWorkbenchChangedFiles(spec.projectPath, scoped, spec.Files); err != nil {
+		if rbErr := snap.rollback(); rbErr != nil {
+			return result, "", fmt.Errorf("%w; rollback: %v", err, rbErr)
+		}
+		return result, "", err
+	}
+	c.mergeSpawnedFileAudit(result.FilesModified, result.FilesCreated)
+	note := "edits kept on the shared checkout"
+	if len(changed) == 0 {
+		note = "shared checkout had no worker file changes"
+	}
+	return result, note, nil
 }
 
 func (c *codingSubAgentCallbacks) executeSpawnCodingAgent(args map[string]interface{}) codingToolExecutionResult {
@@ -1095,7 +1197,7 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 		if err != nil {
 			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
 		}
-		if codingSpawnLocalPathsEqual(isolate, parent.projectPath) {
+		if !codingSpawnIsolateAllowed(parent.projectPath, isolate) {
 			return &CodingSubAgentResult{Status: TaskExecFailed, Error: "worker isolate must not be the primary project"}
 		}
 		projectPath = isolate

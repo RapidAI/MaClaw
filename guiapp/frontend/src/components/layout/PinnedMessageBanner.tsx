@@ -5,13 +5,24 @@ import { localizeText } from "../../i18n";
 import { pickNotificationText } from "../../i18n/notificationLocale";
 import type { PinnedMessage } from "../ai/usePinnedNotifications";
 
+/** How long one pinned slide stays up before the next one to its right. */
+export const PINNED_BANNER_SLIDE_MS = 10_000;
+
 /**
  * PinnedMessageBanner — the 置顶消息 floating card above the sidebar status
  * row (the account / bell line). Shows up to four slides: the permanent pin
- * leftmost, then the latest three regular pinned messages, navigable with the
- * arrows and the dots. The close button appears on hover and hides every
- * visible message for the current session only — the next app launch shows
- * the banner again.
+ * leftmost, then the latest three regular pinned messages. With more than one
+ * slide the card advances left to right every 10 seconds and wraps. The clock
+ * follows the message id, recorded on the same render that shows the slide,
+ * so a pin inserted ahead of it does not replace the one on screen. A list
+ * refresh that keeps the same ids does not restart the remaining time. The
+ * clock runs only while the card is on screen: hovering it, keyboard-focusing
+ * a control on it, or opening the account popover (which hides this card)
+ * holds the current slide. A pointer click does not. Leaving the card, or
+ * the pointer leaving the window, starts a fresh 10 seconds. The dots still
+ * jump by hand. The close button appears on hover and hides every visible
+ * message for the current session only — the next app launch shows the
+ * banner again.
  *
  * Fixed positioning is required because the sidebar scroll wrapper clips
  * absolute overlays (same reason the status and devices popovers are fixed).
@@ -31,13 +42,86 @@ export function PinnedMessageBanner({
     /** Hides every visible message until the app restarts. */
     onDismiss: () => void;
 }) {
-    const [index, setIndex] = useState(0);
+    const [activeId, setActiveId] = useState<string | null>(null);
+    const [hovered, setHovered] = useState(false);
+    const [focused, setFocused] = useState(false);
+    // The account popover hides this card with visibility. Time spent hidden
+    // is not part of the 10 seconds the reader actually sees.
+    const [covered, setCovered] = useState(false);
     const [pos, setPos] = useState<{ left: number; bottom: number; width: number } | null>(null);
     const rafRef = useRef<number | null>(null);
+    const cardRef = useRef<HTMLDivElement | null>(null);
+    // A click focuses a dot or the button. That pointer focus must not keep
+    // the clock stopped after the pointer leaves; keyboard focus still does.
+    const pointerFocusRef = useRef(false);
+    // The clock reads the latest list without treating a new array of the
+    // same ids as a reason to restart the remaining 10 seconds.
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
 
-    // The slides can shrink between renders; keep the index inside the range.
-    const safeIndex = Math.min(index, Math.max(0, messages.length - 1));
+    // An unrecorded slide is index 0. A pin published ahead of it would then
+    // replace the message on screen. Adopt that id during this render, before
+    // the clock effect, and adopt the first slide again when the current id
+    // has left the list.
+    const recorded = activeId != null && messages.some((message) => message.id === activeId);
+    const shownId = recorded ? activeId : (messages[0]?.id ?? null);
+    if (shownId !== activeId) setActiveId(shownId);
+
+    const matched = shownId == null ? -1 : messages.findIndex((message) => message.id === shownId);
+    const safeIndex = matched >= 0 ? matched : 0;
     const current = messages[safeIndex];
+    const rotationHeld = hovered || focused || covered;
+    const messageIds = messages.map((message) => message.id).join('\0');
+
+    useEffect(() => {
+        const list = messagesRef.current;
+        if (list.length <= 1 || rotationHeld) return;
+        const from = list.findIndex((message) => message.id === activeId);
+        const start = from >= 0 ? from : 0;
+        const next = list[(start + 1) % list.length];
+        if (!next) return;
+        const timer = window.setTimeout(() => setActiveId(next.id), PINNED_BANNER_SLIDE_MS);
+        return () => window.clearTimeout(timer);
+    }, [rotationHeld, activeId, messageIds]);
+
+    useEffect(() => {
+        const el = cardRef.current;
+        if (!el) return;
+        const scope = el.closest('.sidebar-system-status');
+        if (!scope) return;
+        const sync = () => {
+            const open = scope.querySelector(".mc-workbench-status-popover[data-open='true']") != null;
+            setCovered(open);
+            // The card can reappear under a pointer that never re-entered it
+            // (the popover took pointer-events away). :hover still matches.
+            if (!open && el.matches(':hover')) setHovered(true);
+        };
+        sync();
+        const obs = new MutationObserver(sync);
+        obs.observe(scope, { attributes: true, subtree: true, attributeFilter: ['data-open'] });
+        return () => obs.disconnect();
+    }, [messages.length]);
+
+    useEffect(() => {
+        const clearPointerFocus = () => { pointerFocusRef.current = false; };
+        window.addEventListener('pointerup', clearPointerFocus);
+        window.addEventListener('pointercancel', clearPointerFocus);
+        return () => {
+            window.removeEventListener('pointerup', clearPointerFocus);
+            window.removeEventListener('pointercancel', clearPointerFocus);
+        };
+    }, []);
+
+    useEffect(() => {
+        // mouseleave on the card can miss a pointer that exits the window.
+        // Listening on the document for a bubbling mouseout is wrong too: that
+        // event can report no relatedTarget while the pointer is still inside
+        // the card. The listener stays up for the life of the card so a window
+        // exit in the same turn as entering is not missed.
+        const onLeaveWindow = () => setHovered(false);
+        document.documentElement.addEventListener('mouseleave', onLeaveWindow);
+        return () => document.documentElement.removeEventListener('mouseleave', onLeaveWindow);
+    }, []);
 
     const updatePosition = useCallback(() => {
         const anchor = anchorRef.current;
@@ -82,11 +166,6 @@ export function PinnedMessageBanner({
         };
     }, [messages.length, scheduleReposition]);
 
-    useEffect(() => {
-        // Clamp when the slide list shrinks (a revoke removes a row).
-        if (index >= messages.length) setIndex(Math.max(0, messages.length - 1));
-    }, [messages.length, index]);
-
     const openLink = useCallback(() => {
         if (!current?.link_url) return;
         try {
@@ -112,19 +191,34 @@ export function PinnedMessageBanner({
     };
 
     const text = pickNotificationText(lang, current);
-    const prevLabel = localizeText(lang, 'Previous pinned message', '上一条置顶消息', '上一條置頂消息');
-    const nextLabel = localizeText(lang, 'Next pinned message', '下一条置顶消息', '下一條置頂消息');
     const closeLabel = localizeText(lang, 'Close pinned messages (shown again next launch)', '关闭置顶消息（下次启动仍会显示）', '關閉置頂消息（下次啟動仍會顯示）');
     const buttonLabel = text.button_text || localizeText(lang, 'View details', '查看详情', '查看詳情');
 
     return (
         <div
+            ref={cardRef}
             className="mc-pinned-banner"
             data-testid="pinned-message-banner"
             data-open={pos ? 'true' : 'false'}
             // The positioning style rides inside windowNoDragRegionProps so the
             // card is never a window-drag region (and styles stay merged).
             {...windowNoDragRegionProps(posStyle)}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onPointerDown={() => { pointerFocusRef.current = true; }}
+            onFocus={() => {
+                if (pointerFocusRef.current) {
+                    pointerFocusRef.current = false;
+                    setFocused(false);
+                    return;
+                }
+                setFocused(true);
+            }}
+            onBlur={(event) => {
+                const next = event.relatedTarget;
+                if (next instanceof Node && event.currentTarget.contains(next)) return;
+                setFocused(false);
+            }}
         >
             <button
                 type="button"
@@ -156,39 +250,11 @@ export function PinnedMessageBanner({
                             aria-selected={i === safeIndex}
                             aria-label={pickNotificationText(lang, message).title || String(i + 1)}
                             className={`mc-pinned-banner__dot${i === safeIndex ? ' is-active' : ''}`}
-                            onClick={() => setIndex(i)}
+                            onClick={() => setActiveId(message.id)}
                         />
                     ))}
                 </div>
                 <div className="mc-pinned-banner__nav">
-                    {messages.length > 1 ? (
-                        <>
-                            <button
-                                type="button"
-                                className="mc-pinned-banner__arrow"
-                                aria-label={prevLabel}
-                                title={prevLabel}
-                                disabled={safeIndex === 0}
-                                onClick={() => setIndex(Math.max(0, safeIndex - 1))}
-                            >
-                                <svg width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M9 2L4 7l5 5" />
-                                </svg>
-                            </button>
-                            <button
-                                type="button"
-                                className="mc-pinned-banner__arrow"
-                                aria-label={nextLabel}
-                                title={nextLabel}
-                                disabled={safeIndex === messages.length - 1}
-                                onClick={() => setIndex(Math.min(messages.length - 1, safeIndex + 1))}
-                            >
-                                <svg width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="M5 2l5 5-5 5" />
-                                </svg>
-                            </button>
-                        </>
-                    ) : null}
                     {current.link_url ? (
                         <button type="button" className="mc-pinned-banner__cta" onClick={openLink}>
                             {buttonLabel}

@@ -11,18 +11,26 @@ import (
 )
 
 type countingInput struct {
-	clicks int
-	types  int
-	keys   int
+	clicks  int
+	types   int
+	keys    int
+	scrolls int
+	drags   int
 }
 
-func (c *countingInput) Click(x, y int) error                      { c.clicks++; return nil }
-func (c *countingInput) RightClick(x, y int) error                 { c.clicks++; return nil }
-func (c *countingInput) DoubleClick(x, y int) error                { c.clicks++; return nil }
-func (c *countingInput) Type(text string) error                    { c.types++; return nil }
-func (c *countingInput) KeyCombo(keys ...string) error             { c.keys++; return nil }
-func (c *countingInput) Scroll(x, y, deltaX, deltaY int) error     { return nil }
-func (c *countingInput) DragDrop(fromX, fromY, toX, toY int) error { return nil }
+func (c *countingInput) Click(x, y int) error          { c.clicks++; return nil }
+func (c *countingInput) RightClick(x, y int) error     { c.clicks++; return nil }
+func (c *countingInput) DoubleClick(x, y int) error    { c.clicks++; return nil }
+func (c *countingInput) Type(text string) error        { c.types++; return nil }
+func (c *countingInput) KeyCombo(keys ...string) error { c.keys++; return nil }
+func (c *countingInput) Scroll(x, y, deltaX, deltaY int) error {
+	c.scrolls++
+	return nil
+}
+func (c *countingInput) DragDrop(fromX, fromY, toX, toY int) error {
+	c.drags++
+	return nil
+}
 
 func installCountingComputerUse(t *testing.T, sess *computeruse.Session) *countingInput {
 	t.Helper()

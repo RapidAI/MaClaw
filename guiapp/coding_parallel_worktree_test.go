@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1342,4 +1343,322 @@ func TestCodingParallelPreviewOutsideRepoDoesNotWidenRoot(t *testing.T) {
 			t.Fatalf("sibling path %q", path)
 		}
 	}
+}
+
+func newDeferredParallelCheckout(t *testing.T) (string, *codingParallelTurn) {
+	t.Helper()
+	primary := initParallelRepo(t)
+	wt, err := createCodingWorkbenchWorktree(primary, 1, "parallel-turn")
+	if err != nil || wt == nil || strings.TrimSpace(wt.ProjectPath) == "" {
+		t.Fatalf("create checkout: %v", err)
+	}
+	if !strings.Contains(filepath.ToSlash(wt.ProjectPath), "maclaw-coding-worktrees") {
+		wt.cleanup(false)
+		t.Fatalf("checkout %s is not under maclaw-coding-worktrees", wt.ProjectPath)
+	}
+	turn := &codingParallelTurn{
+		primary:  primary,
+		execDir:  wt.ProjectPath,
+		wt:       wt,
+		deferred: true,
+	}
+	codingParallelRememberExec(turn)
+	t.Cleanup(func() {
+		codingParallelForgetExec(turn)
+		wt.cleanup(false)
+	})
+	return primary, turn
+}
+
+func deferredSpawnCallbacks(projectPath string) *codingSubAgentCallbacks {
+	return &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		fullEnvironment: true,
+		projectPath:     projectPath,
+	}}
+}
+
+func withCodingSpawnNestedStub(t *testing.T, fn func(*CodingSubAgent, codingSpawnSpec, *codingSubAgentCallbacks, func(string)) *CodingSubAgentResult) {
+	t.Helper()
+	prev := codingSpawnRunNestedAgent
+	codingSpawnRunNestedAgent = fn
+	t.Cleanup(func() { codingSpawnRunNestedAgent = prev })
+}
+
+func writeSpawnFile(dir, name, body string) error {
+	path := filepath.Join(dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+func parallelFileAbsent(t *testing.T, dir, name string) {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name)))
+	if !os.IsNotExist(err) {
+		t.Fatalf("%s still present: %v", name, err)
+	}
+}
+
+func TestCodingParallelSpawnIsolateMatchesDeferredCheckout(t *testing.T) {
+	primary, turn := newDeferredParallelCheckout(t)
+	if codingSpawnIsolateAllowed(primary, primary) {
+		t.Fatal("the user's directory must not accept a worker isolate")
+	}
+	if !codingSpawnIsolateAllowed(primary, filepath.Join(primary, "other")) {
+		t.Fatal("a distinct isolate stays allowed")
+	}
+	if !codingSpawnIsolateAllowed(turn.execDir, turn.execDir) {
+		t.Fatal("deferred checkout must allow a worker to edit that checkout")
+	}
+}
+
+func TestCodingParallelSpawnWorkerStaysOnDeferredCheckout(t *testing.T) {
+	primary, turn := newDeferredParallelCheckout(t)
+	writeParallelFile(t, turn.execDir, "README", "parent\n")
+	var got string
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, spec codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		got = spec.projectPath
+		if err := writeSpawnFile(spec.projectPath, "note.go", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(turn.execDir).executeSpawnCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "add note",
+		"files": []interface{}{"note.go"},
+	})
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("spawn = %#v", res)
+	}
+	if !codingSpawnLocalPathsEqual(got, turn.execDir) {
+		t.Fatalf("worker path = %q checkout = %q", got, turn.execDir)
+	}
+	if !strings.Contains(res.Text, "edits kept on the shared checkout") || strings.Contains(res.Text, "refusing nested") {
+		t.Fatalf("text = %s", res.Text)
+	}
+	if readParallelFile(t, turn.execDir, "note.go") != "worker\n" {
+		t.Fatal("declared edit was not left on the checkout")
+	}
+	if readParallelFile(t, turn.execDir, "README") != "parent\n" {
+		t.Fatal("parent edit on the checkout was overwritten")
+	}
+	if readParallelFile(t, primary, "README") != "base\n" {
+		t.Fatal("primary README changed")
+	}
+	parallelFileAbsent(t, primary, "note.go")
+}
+
+func TestCodingParallelSpawnUndeclaredEditRollsBack(t *testing.T) {
+	primary, turn := newDeferredParallelCheckout(t)
+	writeParallelFile(t, turn.execDir, "README", "parent\n")
+	writeParallelFile(t, turn.execDir, "keep.go", "keep\n")
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, spec codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		if err := writeSpawnFile(spec.projectPath, "note.go", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		if err := writeSpawnFile(spec.projectPath, "extra.go", "nope\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		if err := writeSpawnFile(spec.projectPath, "README", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(turn.execDir).executeSpawnCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "add note",
+		"files": []interface{}{"note.go"},
+	})
+	if res.Outcome != codingToolOutcomeFailed || !strings.Contains(res.Text, "undeclared") {
+		t.Fatalf("spawn = %#v", res)
+	}
+	if readParallelFile(t, turn.execDir, "README") != "parent\n" {
+		t.Fatal("tracked parent edit was not restored")
+	}
+	if readParallelFile(t, turn.execDir, "keep.go") != "keep\n" {
+		t.Fatal("untouched untracked file was rolled back")
+	}
+	parallelFileAbsent(t, turn.execDir, "note.go")
+	parallelFileAbsent(t, turn.execDir, "extra.go")
+	if readParallelFile(t, primary, "README") != "base\n" {
+		t.Fatal("primary README changed")
+	}
+	parallelFileAbsent(t, primary, "note.go")
+	parallelFileAbsent(t, primary, "extra.go")
+}
+
+func TestCodingParallelSpawnWithoutTurnRefusesNestedWorktree(t *testing.T) {
+	skipWithoutGit(t)
+	repo := filepath.Join(t.TempDir(), "maclaw-coding-worktrees", "child")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init")
+	mustGit(t, repo, "config", "user.email", "test@example.com")
+	mustGit(t, repo, "config", "user.name", "test")
+	writeParallelFile(t, repo, "README", "base\n")
+	mustGit(t, repo, "add", "README")
+	mustGit(t, repo, "commit", "-m", "init")
+	calls := 0
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, _ codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		calls++
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(repo).executeSpawnCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "add note",
+		"files": []interface{}{"note.go"},
+	})
+	if calls != 0 || res.Outcome != codingToolOutcomeFailed || !strings.Contains(res.Text, "refusing nested") {
+		t.Fatalf("calls=%d spawn=%#v", calls, res)
+	}
+}
+
+func TestCodingParallelSpawnWorkersSerializeOnDeferredCheckout(t *testing.T) {
+	primary, turn := newDeferredParallelCheckout(t)
+	var mu sync.Mutex
+	var active, maxActive int
+	var paths []string
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, spec codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		paths = append(paths, spec.projectPath)
+		mu.Unlock()
+		time.Sleep(40 * time.Millisecond)
+		for _, name := range spec.Files {
+			if err := writeSpawnFile(spec.projectPath, name, "worker\n"); err != nil {
+				return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+			}
+		}
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(turn.execDir).executeSpawnCodingAgent(map[string]interface{}{
+		"agents": []interface{}{
+			map[string]interface{}{"role": "worker", "task": "add note", "files": []interface{}{"note.go"}},
+			map[string]interface{}{"role": "worker", "task": "add other", "files": []interface{}{"other.go"}},
+		},
+	})
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("spawn = %#v", res)
+	}
+	if maxActive != 1 || len(paths) != 2 {
+		t.Fatalf("maxActive=%d paths=%v", maxActive, paths)
+	}
+	for _, path := range paths {
+		if !codingSpawnLocalPathsEqual(path, turn.execDir) {
+			t.Fatalf("worker path = %q checkout = %q", path, turn.execDir)
+		}
+	}
+	if !strings.Contains(res.Text, "mode=sequential") || strings.Contains(res.Text, "mode=parallel") || strings.Contains(res.Text, "refusing nested") {
+		t.Fatalf("text = %s", res.Text)
+	}
+	if readParallelFile(t, turn.execDir, "note.go") != "worker\n" || readParallelFile(t, turn.execDir, "other.go") != "worker\n" {
+		t.Fatal("serialized workers did not both leave their declared file")
+	}
+	parallelFileAbsent(t, primary, "note.go")
+	parallelFileAbsent(t, primary, "other.go")
+}
+
+func newDeferredSubdirCheckout(t *testing.T) (string, *codingParallelTurn) {
+	t.Helper()
+	primary := initParallelRepo(t)
+	writeParallelFile(t, primary, "pkg/keep.go", "package keep\n")
+	mustGit(t, primary, "add", "pkg/keep.go")
+	mustGit(t, primary, "commit", "-m", "pkg")
+	wt, err := createCodingWorkbenchWorktree(filepath.Join(primary, "pkg"), 1, "parallel-turn")
+	if err != nil || wt == nil || strings.TrimSpace(wt.ProjectPath) == "" {
+		t.Fatalf("create checkout: %v", err)
+	}
+	if codingSpawnLocalPathsEqual(wt.Path, wt.ProjectPath) {
+		wt.cleanup(false)
+		t.Fatal("subdirectory project was given the worktree root")
+	}
+	turn := &codingParallelTurn{
+		primary:  filepath.Join(primary, "pkg"),
+		execDir:  wt.ProjectPath,
+		wt:       wt,
+		deferred: true,
+	}
+	codingParallelRememberExec(turn)
+	t.Cleanup(func() {
+		codingParallelForgetExec(turn)
+		wt.cleanup(false)
+	})
+	return primary, turn
+}
+
+func TestCodingParallelSpawnSubdirDeclaredFileStays(t *testing.T) {
+	primary, turn := newDeferredSubdirCheckout(t)
+	writeParallelFile(t, turn.execDir, "keep.go", "parent\n")
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, spec codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		if !codingSpawnLocalPathsEqual(spec.projectPath, turn.execDir) {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: "worker left the subdirectory checkout"}
+		}
+		if err := writeSpawnFile(spec.projectPath, "note.go", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(turn.execDir).executeSpawnCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "add note",
+		"files": []interface{}{"note.go"},
+	})
+	if res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("spawn = %#v", res)
+	}
+	if readParallelFile(t, turn.execDir, "note.go") != "worker\n" {
+		t.Fatal("declared subdirectory edit was rolled back")
+	}
+	if readParallelFile(t, turn.execDir, "keep.go") != "parent\n" {
+		t.Fatal("parent edit in the subdirectory was overwritten")
+	}
+	if readParallelFile(t, primary, "pkg/keep.go") != "package keep\n" {
+		t.Fatal("primary subdirectory file changed")
+	}
+	parallelFileAbsent(t, primary, "pkg/note.go")
+}
+
+func TestCodingParallelSpawnOutsideSubdirRollsBack(t *testing.T) {
+	primary, turn := newDeferredSubdirCheckout(t)
+	writeParallelFile(t, turn.execDir, "keep.go", "parent\n")
+	withCodingSpawnNestedStub(t, func(_ *CodingSubAgent, spec codingSpawnSpec, _ *codingSubAgentCallbacks, _ func(string)) *CodingSubAgentResult {
+		if err := writeSpawnFile(spec.projectPath, "note.go", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		if err := writeSpawnFile(spec.projectPath, "keep.go", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		if err := writeSpawnFile(filepath.Dir(spec.projectPath), "README", "worker\n"); err != nil {
+			return &CodingSubAgentResult{Status: TaskExecFailed, Error: err.Error()}
+		}
+		return &CodingSubAgentResult{Status: TaskExecPassed}
+	})
+	res := deferredSpawnCallbacks(turn.execDir).executeSpawnCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "add note",
+		"files": []interface{}{"note.go"},
+	})
+	if res.Outcome != codingToolOutcomeFailed || !strings.Contains(res.Text, "undeclared") {
+		t.Fatalf("spawn = %#v", res)
+	}
+	parallelFileAbsent(t, turn.execDir, "note.go")
+	if readParallelFile(t, turn.execDir, "keep.go") != "parent\n" {
+		t.Fatal("subdirectory parent edit was not restored")
+	}
+	if readParallelFile(t, filepath.Dir(turn.execDir), "README") != "base\n" {
+		t.Fatal("checkout root file was not restored")
+	}
+	if readParallelFile(t, primary, "README") != "base\n" || readParallelFile(t, primary, "pkg/keep.go") != "package keep\n" {
+		t.Fatal("primary gained worker bytes")
+	}
+	parallelFileAbsent(t, primary, "pkg/note.go")
 }

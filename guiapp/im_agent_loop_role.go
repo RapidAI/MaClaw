@@ -46,8 +46,12 @@ func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.M
 	// chat task whose model role is background.
 	role := agentLoopLLMRole(h, ctx)
 	if mcpPinnedModelAllowed(role, ctx) && ctx != nil && h != nil && h.app != nil {
-		if cfg, ok := h.app.mcpPinnedLLMConfig(ctx.UserID); ok && strings.TrimSpace(cfg.Model) != "" {
+		// The live run is the model send_command just wrote. The create-time
+		// pin is only the fallback when that run has no complete pair.
+		// RouteSource tells the later cost route to keep this pair.
+		if cfg, ok := h.app.mcpLoopModelConfig(ctx.UserID); ok && strings.TrimSpace(cfg.Model) != "" {
 			cfg.Profile = role
+			cfg.RouteSource = mcpCallerModelRoute
 			return cfg
 		}
 	}
@@ -73,6 +77,10 @@ func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.M
 	}
 	return cfg
 }
+
+// mcpCallerModelRoute marks a config the MCP client chose for this task.
+// Desktop cost routing must not replace that pair with another model.
+const mcpCallerModelRoute = "mcp-caller"
 
 // mcpPinnedModelAllowed reports whether this loop should use the model the
 // MCP client chose for the task. Computer use needs its own vision model, and
