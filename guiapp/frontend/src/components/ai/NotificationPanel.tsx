@@ -4,6 +4,7 @@ import { companionHostTransferToken, isCompanionGroupDigestNotice } from "./Assi
 import { NotificationDetail } from "./NotificationDetail";
 import type { AdminNotification as SharedNotification } from "./useNotifications";
 import { localizeText } from "../../i18n";
+import { pickNotificationText } from "../../i18n/notificationLocale";
 import { tailText } from "../../i18n/mnTail"
 
 export type NotificationCategory =
@@ -166,10 +167,11 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
             : notification.priority === "important"
               ? localizeText(lang, "Important", "重要", "重要")
               : "";
-    const titleText = (notification.title || "").trim();
+    const text = pickNotificationText(lang, notification);
+    const titleText = (text.title || "").trim();
     const contentPreview = notification.groupInviteId
-        ? String(notification.content || "").replace(/\s+/g, " ").trim()
-        : stripMarkdownPreview(notification.content || "");
+        ? String(text.content || "").replace(/\s+/g, " ").trim()
+        : stripMarkdownPreview(text.content || "");
     const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
     const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
     const needsDecision = Boolean(notification.groupInviteId) || Boolean(companionHostTransferToken(notification)) || isCompanionGroupDigestNotice(notification) || notification.source === "remote_control_invite" || notification.source === "remote_control_notice";
@@ -207,7 +209,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
             </div>
 
             <span className="notification-item-title">
-                {notification.title}
+                {titleText}
             </span>
 
             {hasDistinctPreview && (

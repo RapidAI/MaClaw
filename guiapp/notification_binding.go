@@ -40,6 +40,11 @@ type ClientNotification struct {
 	// than an admin, such as a reading-group invitation.
 	Source   string `json:"source,omitempty"`
 	SourceID string `json:"source_id,omitempty"`
+	// SourceLang is the language the admin wrote. Locales holds that text
+	// plus the translations. The panel picks the current UI language at
+	// render time, so a language switch does not need another pull.
+	SourceLang string                            `json:"source_lang,omitempty"`
+	Locales    map[string]NotificationLocaleCopy `json:"locales,omitempty"`
 }
 
 // NotificationPushPayload is the payload for WebSocket notification.push envelope.
@@ -60,21 +65,32 @@ type PushNotificationDTO struct {
 	CreatedAt string `json:"created_at"`
 	// Pinned marks a 置顶消息: the GUI shows it as a floating banner card
 	// above the sidebar status row, so the push must refresh that banner.
-	Pinned   bool   `json:"pinned,omitempty"`
-	Source   string `json:"source,omitempty"`
-	SourceID string `json:"source_id,omitempty"`
+	Pinned     bool                              `json:"pinned,omitempty"`
+	Source     string                            `json:"source,omitempty"`
+	SourceID   string                            `json:"source_id,omitempty"`
+	SourceLang string                            `json:"source_lang,omitempty"`
+	Locales    map[string]NotificationLocaleCopy `json:"locales,omitempty"`
 }
 
 // PinnedNotification is one 置顶消息 returned to the frontend banner. The Hub
 // orders the list permanent-pin first, then the latest three regular pins.
 type PinnedNotification struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Content       string `json:"content"`
-	LinkURL       string `json:"link_url"`
-	ButtonText    string `json:"button_text"`
-	PinnedForever bool   `json:"pinned_forever"`
-	CreatedAt     string `json:"created_at"`
+	ID            string                            `json:"id"`
+	Title         string                            `json:"title"`
+	Content       string                            `json:"content"`
+	LinkURL       string                            `json:"link_url"`
+	ButtonText    string                            `json:"button_text"`
+	PinnedForever bool                              `json:"pinned_forever"`
+	CreatedAt     string                            `json:"created_at"`
+	SourceLang    string                            `json:"source_lang,omitempty"`
+	Locales       map[string]NotificationLocaleCopy `json:"locales,omitempty"`
+}
+
+// NotificationLocaleCopy is one language of a notice. The link is not translated.
+type NotificationLocaleCopy struct {
+	Title      string `json:"title"`
+	Content    string `json:"content"`
+	ButtonText string `json:"button_text,omitempty"`
 }
 
 // pinnedHubResponse is the GET /api/v1/notifications/pinned payload.
@@ -122,11 +138,23 @@ func pinnedListsEqual(left, right []PinnedNotification) bool {
 		return false
 	}
 	for i := range left {
-		if left[i] != right[i] {
+		if !pinnedNotificationEqual(left[i], right[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func pinnedNotificationEqual(left, right PinnedNotification) bool {
+	return left.ID == right.ID &&
+		left.Title == right.Title &&
+		left.Content == right.Content &&
+		left.LinkURL == right.LinkURL &&
+		left.ButtonText == right.ButtonText &&
+		left.PinnedForever == right.PinnedForever &&
+		left.CreatedAt == right.CreatedAt &&
+		left.SourceLang == right.SourceLang &&
+		localeMapsEqual(left.Locales, right.Locales)
 }
 
 // GetPinnedNotifications returns the cached pinned-message list for the
@@ -225,15 +253,17 @@ func (nc *notificationCache) Add(n *PushNotificationDTO) {
 		return
 	}
 	cn := ClientNotification{
-		ID:        n.ID,
-		Title:     n.Title,
-		Content:   n.Content,
-		Category:  n.Category,
-		Priority:  n.Priority,
-		IsRead:    false,
-		CreatedAt: n.CreatedAt,
-		Source:    n.Source,
-		SourceID:  n.SourceID,
+		ID:         n.ID,
+		Title:      n.Title,
+		Content:    n.Content,
+		Category:   n.Category,
+		Priority:   n.Priority,
+		IsRead:     false,
+		CreatedAt:  n.CreatedAt,
+		Source:     n.Source,
+		SourceID:   n.SourceID,
+		SourceLang: n.SourceLang,
+		Locales:    cloneNotificationLocales(n.Locales),
 	}
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
@@ -602,7 +632,12 @@ func copyNotifications(items []ClientNotification) []ClientNotification {
 	if len(items) == 0 {
 		return []ClientNotification{}
 	}
-	return append([]ClientNotification(nil), items...)
+	out := make([]ClientNotification, len(items))
+	for i, item := range items {
+		item.Locales = cloneNotificationLocales(item.Locales)
+		out[i] = item
+	}
+	return out
 }
 
 func cappedNotificationList(items []ClientNotification) []ClientNotification {
@@ -620,7 +655,45 @@ func notificationListsEqual(left, right []ClientNotification) bool {
 		return false
 	}
 	for i := range left {
-		if left[i] != right[i] {
+		if !clientNotificationEqual(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func clientNotificationEqual(left, right ClientNotification) bool {
+	return left.ID == right.ID &&
+		left.Title == right.Title &&
+		left.Content == right.Content &&
+		left.Category == right.Category &&
+		left.Priority == right.Priority &&
+		left.IsRead == right.IsRead &&
+		left.CreatedAt == right.CreatedAt &&
+		left.Source == right.Source &&
+		left.SourceID == right.SourceID &&
+		left.SourceLang == right.SourceLang &&
+		localeMapsEqual(left.Locales, right.Locales)
+}
+
+func cloneNotificationLocales(in map[string]NotificationLocaleCopy) map[string]NotificationLocaleCopy {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]NotificationLocaleCopy, len(in))
+	for lang, copy := range in {
+		out[lang] = copy
+	}
+	return out
+}
+
+func localeMapsEqual(left, right map[string]NotificationLocaleCopy) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for lang, copy := range left {
+		other, ok := right[lang]
+		if !ok || copy != other {
 			return false
 		}
 	}

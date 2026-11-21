@@ -1,5 +1,6 @@
 import { IconRecord } from "./WorkbenchIcons";
 import { localizeText } from "./aiAssistantI18n";
+import { pickNotificationText } from "../../i18n/notificationLocale";
 import { stripMarkdownPreview } from "./NotificationPanel";
 import type { AdminNotification } from "./useNotifications";
 
@@ -19,6 +20,7 @@ export function NotificationUrgentToast({
     onDismiss: () => void;
     onOpen: () => void;
 }) {
+    const text = pickNotificationText(lang, notification);
     return (
         <div
             data-testid="notification-urgent-toast"
@@ -45,9 +47,9 @@ export function NotificationUrgentToast({
                 onClick={onOpen}
                 className="notification-toast__open"
             >
-                <span className="notification-toast__title">{notification.title}</span>
+                <span className="notification-toast__title">{text.title}</span>
                 <span className="notification-toast__preview">
-                    {stripMarkdownPreview(notification.content)}
+                    {stripMarkdownPreview(text.content)}
                 </span>
                 <span className="notification-toast__cta">
                     {localizeText(lang, "View full notice", "查看全文", "查看全文")}

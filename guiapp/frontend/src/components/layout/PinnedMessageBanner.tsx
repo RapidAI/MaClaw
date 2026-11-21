@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { windowNoDragRegionProps } from "../../utils/windowDrag";
 import { localizeText } from "../../i18n";
+import { pickNotificationText } from "../../i18n/notificationLocale";
 import type { PinnedMessage } from "../ai/usePinnedNotifications";
 
 /**
@@ -110,10 +111,11 @@ export function PinnedMessageBanner({
         pointerEvents: 'none',
     };
 
+    const text = pickNotificationText(lang, current);
     const prevLabel = localizeText(lang, 'Previous pinned message', '上一条置顶消息', '上一條置頂消息');
     const nextLabel = localizeText(lang, 'Next pinned message', '下一条置顶消息', '下一條置頂消息');
     const closeLabel = localizeText(lang, 'Close pinned messages (shown again next launch)', '关闭置顶消息（下次启动仍会显示）', '關閉置頂消息（下次啟動仍會顯示）');
-    const buttonLabel = current.button_text || localizeText(lang, 'View details', '查看详情', '查看詳情');
+    const buttonLabel = text.button_text || localizeText(lang, 'View details', '查看详情', '查看詳情');
 
     return (
         <div
@@ -138,10 +140,10 @@ export function PinnedMessageBanner({
             <div className="mc-pinned-banner__body">
                 <div className="mc-pinned-banner__title">
                     {current.pinned_forever ? <span className="mc-pinned-banner__forever" aria-hidden="true" /> : null}
-                    <span className="mc-pinned-banner__title-text">{current.title}</span>
+                    <span className="mc-pinned-banner__title-text">{text.title}</span>
                 </div>
-                {current.content ? (
-                    <div className="mc-pinned-banner__content">{current.content}</div>
+                {text.content ? (
+                    <div className="mc-pinned-banner__content">{text.content}</div>
                 ) : null}
             </div>
             <div className="mc-pinned-banner__footer">
@@ -152,7 +154,7 @@ export function PinnedMessageBanner({
                             type="button"
                             role="tab"
                             aria-selected={i === safeIndex}
-                            aria-label={message.title || String(i + 1)}
+                            aria-label={pickNotificationText(lang, message).title || String(i + 1)}
                             className={`mc-pinned-banner__dot${i === safeIndex ? ' is-active' : ''}`}
                             onClick={() => setIndex(i)}
                         />

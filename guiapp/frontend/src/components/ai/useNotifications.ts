@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { normalizeNotificationLocales, type NotificationLocaleCopy } from "../../i18n/notificationLocale";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +28,9 @@ export interface AdminNotification {
   source?: string;
   /** Identifier of the raising record within that subsystem. */
   source_id?: string;
+  /** Language the admin wrote. Display picks locales for the current UI language. */
+  source_lang?: string;
+  locales?: Record<string, NotificationLocaleCopy | undefined>;
 }
 
 interface NotificationState {
@@ -130,6 +134,8 @@ function normalizeNotification(raw: unknown): AdminNotification | null {
     created_at: asString(record.created_at) || asString(record.CreatedAt),
     source: asString(record.source) || asString(record.Source) || undefined,
     source_id: asString(record.source_id) || asString(record.SourceID) || undefined,
+    source_lang: asString(record.source_lang) || asString(record.SourceLang) || undefined,
+    locales: normalizeNotificationLocales(record.locales ?? record.Locales),
   };
 }
 

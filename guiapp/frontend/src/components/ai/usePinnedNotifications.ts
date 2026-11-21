@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn } from "../../../wailsjs/runtime";
+import { normalizeNotificationLocales, type NotificationLocaleCopy } from "../../i18n/notificationLocale";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +18,8 @@ export interface PinnedMessage {
   button_text: string;
   pinned_forever: boolean;
   created_at: string;
+  source_lang?: string;
+  locales?: Record<string, NotificationLocaleCopy | undefined>;
 }
 
 function asString(value: unknown): string {
@@ -36,6 +39,8 @@ function normalizePinnedMessage(raw: unknown): PinnedMessage | null {
     button_text: asString(record.button_text) || asString(record.ButtonText),
     pinned_forever: Boolean(record.pinned_forever ?? record.PinnedForever),
     created_at: asString(record.created_at) || asString(record.CreatedAt),
+    source_lang: asString(record.source_lang) || asString(record.SourceLang) || undefined,
+    locales: normalizeNotificationLocales(record.locales ?? record.Locales),
   };
 }
 

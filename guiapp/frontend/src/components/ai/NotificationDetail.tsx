@@ -5,6 +5,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
 import { companionHostTransferToken, companionShareToken, isCompanionGroupDigestNotice } from "./AssistantTitleBarNotifications.companionShare";
 import { localizeText } from "../../i18n";
+import { pickNotificationText } from "../../i18n/notificationLocale";
 import { tailText } from "../../i18n/mnTail"
 
 // ---------------------------------------------------------------------------
@@ -89,8 +90,9 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   const isGroupDigest = isCompanionGroupDigestNotice(notification);
 
   const formattedDate = formatDate(notification.created_at, lang);
-  const titleText = (notification.title || "").trim();
-  const bodyText = (notification.content || "").trim();
+  const text = pickNotificationText(lang, notification);
+  const titleText = (text.title || "").trim();
+  const bodyText = (text.content || "").trim();
   const hasDistinctBody = Boolean(bodyText) && bodyText !== titleText;
 
   return (
@@ -125,7 +127,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
       <div className="ndet-content">
         {/* Title */}
         <h3 className="ndet-title">
-          {notification.title}
+          {titleText}
         </h3>
 
         {/* Meta row: category + date + priority */}
@@ -163,7 +165,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
               remarkPlugins={[remarkGfm]}
               components={markdownComponents}
             >
-              {notification.content}
+              {bodyText}
             </ReactMarkdown>
           </div>
         ) : !bodyText ? (
