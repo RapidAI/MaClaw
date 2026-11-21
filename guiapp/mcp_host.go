@@ -483,7 +483,9 @@ func writeMCPAPIKey(key string) error {
 
 func mcpAPIKeyAcceptable(key string) bool {
 	key = strings.TrimSpace(key)
-	return strings.HasPrefix(key, mcpAPIKeyPrefix) && len(key) >= 20
+	// A manually switched-in key is kept as the user set it; the mck_ prefix
+	// only applies to keys this app generates.
+	return len(key) >= 8
 }
 
 func writeMCPHostEndpoint(port int) error {
