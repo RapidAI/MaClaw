@@ -108,30 +108,81 @@ func TestOpenCodeFreeDeveloperTurnIsNotUserTurn(t *testing.T) {
 			{"type": "function", "function": map[string]string{"name": "chat_task_request_input"}},
 		},
 		"messages": []map[string]any{
-			{"role": "user", "content": "扫描论文"},
 			{"role": "developer", "content": "只报告标点，不要改文件"},
+			{"role": "user", "content": "扫描论文"},
+			{"role": "developer", "content": "第二段指令"},
 		},
 	}
 	body := openCodeFreeMergeBody(t, caller)
-	var sawTask, sawDeveloper bool
+	var sawTask bool
+	for _, msg := range openCodeFreeMergeMessages(t, body) {
+		if strings.Contains(msg, "只报告标点") || strings.Contains(msg, "第二段指令") {
+			t.Fatalf("developer instruction reached the wire: %s", msg)
+		}
+		if strings.HasPrefix(msg, "扫描论文") {
+			sawTask = true
+			if strings.Count(msg, "<system-reminder>") != 1 {
+				t.Fatalf("task turn = %s", msg)
+			}
+		}
+	}
+	if !sawTask {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestOpenCodeFreeDeveloperOnlyBodyIsEmpty(t *testing.T) {
+	caller := map[string]any{
+		"model": "hy4-flash-free",
+		"tools": []map[string]any{
+			{"type": "function", "function": map[string]string{"name": "chat_task_request_input"}},
+		},
+		"messages": []map[string]any{
+			{"role": "developer", "content": "只报告标点，不要改文件"},
+			{"role": "system", "content": "你是助手"},
+		},
+	}
+	raw, err := json.Marshal(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openCodeFreeClientBody(raw); err == nil || !strings.Contains(err.Error(), "empty conversation") {
+		t.Fatalf("developer-only body err = %v", err)
+	}
+}
+
+func TestOpenCodeFreeHumanTurnReceivesHostNote(t *testing.T) {
+	caller := map[string]any{
+		"model": "hy4-flash-free",
+		"tools": []map[string]any{
+			{"type": "function", "function": map[string]string{"name": "chat_task_request_input"}},
+		},
+		"messages": []map[string]any{
+			{"role": "human", "content": "扫描论文"},
+			{"role": "critic", "content": "不要改文件"},
+		},
+	}
+	body := openCodeFreeMergeBody(t, caller)
+	var sawTask, sawCritic bool
 	for _, msg := range openCodeFreeMergeMessages(t, body) {
 		switch {
 		case strings.HasPrefix(msg, "扫描论文"):
 			sawTask = true
-			if strings.Count(msg, "<system-reminder>") != 1 || strings.Contains(msg, "只报告标点") {
-				t.Fatalf("task turn = %s", msg)
+			if strings.Count(msg, "<system-reminder>") != 1 || strings.Contains(msg, "不要改文件") {
+				t.Fatalf("human turn = %s", msg)
 			}
-		case strings.Contains(msg, "只报告标点"):
-			sawDeveloper = true
+		case strings.Contains(msg, "不要改文件"):
+			sawCritic = true
 			if strings.Contains(msg, "<system-reminder>") || strings.Contains(msg, "扫描论文") {
-				t.Fatalf("developer turn = %s", msg)
+				t.Fatalf("other role = %s", msg)
 			}
 		}
 	}
-	if !sawTask || !sawDeveloper {
+	if !sawTask || !sawCritic {
 		t.Fatalf("body = %s", body)
 	}
 }
+
 
 func openCodeFreeMergeBody(t *testing.T, caller map[string]any) []byte {
 	t.Helper()

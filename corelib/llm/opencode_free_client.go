@@ -528,26 +528,27 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		if !keep {
 			continue
 		}
-		// Tool results share the user role on this wire, but they are not
-		// user turns. Merging one into the adjacent user message puts a
-		// later host note inside the observation. Merging two observations
-		// hides which result failed. function is the legacy tool-result role.
-		// developer maps to user too, and is not a user turn either.
-		userTurn := openCodeFreeUserTurn(item.Role)
-		fromTool := openCodeFreeToolObservation(item.Role)
-		if n := len(messages); n > 1 && userTurn && messages[n-1].userTurn && messages[n-1].Role == role {
+		// The wire only has system, user, and assistant. A host note belongs
+		// on a real user turn, so the kind is decided before the role is
+		// flattened. Two user turns still merge. A tool observation, a
+		// developer instruction, or any other non-user role does not, or
+		// the note lands inside that text and a later turn cannot tell the
+		// results apart.
+		kind := openCodeFreeRoleKind(item.Role)
+		if n := len(messages); n > 1 && kind == openCodeFreeKindUser && messages[n-1].userTurn && messages[n-1].Role == role {
 			messages[n-1].Content += "\n" + text
 			continue
 		}
-		messages = append(messages, message{Role: role, Content: text, fromTool: fromTool, userTurn: userTurn})
+		messages = append(messages, message{Role: role, Content: text, fromTool: kind == openCodeFreeKindTool, userTurn: kind == openCodeFreeKindUser})
 	}
 	if len(messages) == 1 {
 		return nil, fmt.Errorf("opencode free client: empty conversation")
 	}
 	// The fingerprint is the official system prompt plus the 12 tools. Host
 	// tools stay off that list. The note rides on the latest real user turn
-	// of this body only. A tool observation flattened to the user role is
-	// not that turn, and a tail that already ends with the note is not extended.
+	// of this body only. A flattened tool observation is not that turn, and
+	// a developer instruction never reaches this list. A tail that already
+	// ends with the note is not extended.
 	if note := openCodeFreeCallerHostNote(caller); note != "" {
 		noteAt := -1
 		for i := len(messages) - 1; i >= 1; i-- {
@@ -559,7 +560,9 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 		if noteAt >= 0 {
 			messages[noteAt].Content = joinOpenCodeFreeHostNote(messages[noteAt].Content, note)
 		} else {
-			messages = append(messages, message{Role: "user", Content: note})
+			// The body still has a non-user turn, such as a tool observation.
+			// The note stays its own user message instead of joining that text.
+			messages = append(messages, message{Role: "user", Content: note, userTurn: true})
 		}
 	}
 	payload := struct {
@@ -595,21 +598,36 @@ type openCodeFreeToolCall struct {
 	} `json:"function"`
 }
 
-func openCodeFreeUserTurn(role string) bool {
-	return strings.EqualFold(strings.TrimSpace(role), "user")
-}
+const (
+	openCodeFreeKindDrop = iota
+	openCodeFreeKindUser
+	openCodeFreeKindAssistant
+	openCodeFreeKindTool
+	openCodeFreeKindOther
+)
 
-func openCodeFreeToolObservation(role string) bool {
+// openCodeFreeRoleKind classifies the caller role before the wire flattens
+// everything except assistant onto user. system and developer are instructions,
+// not turns. tool, function, and tool_result are observations. human is the
+// Anthropic user role. Anything else stays its own message so a host note
+// cannot treat it as the latest user turn.
+func openCodeFreeRoleKind(role string) int {
 	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "system", "developer":
+		return openCodeFreeKindDrop
+	case "user", "human":
+		return openCodeFreeKindUser
+	case "assistant":
+		return openCodeFreeKindAssistant
 	case "tool", "function", "tool_result":
-		return true
+		return openCodeFreeKindTool
 	default:
-		return false
+		return openCodeFreeKindOther
 	}
 }
 
 func openCodeFreeConversation(role string, content json.RawMessage, calls []openCodeFreeToolCall) (string, string, bool) {
-	if strings.EqualFold(strings.TrimSpace(role), "system") {
+	if openCodeFreeRoleKind(role) == openCodeFreeKindDrop {
 		return "", "", false
 	}
 	text := openCodeFreeMessageText(content)
