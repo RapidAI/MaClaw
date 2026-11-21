@@ -547,8 +547,8 @@ func openCodeFreeClientBody(caller []byte) ([]byte, error) {
 	// The fingerprint is the official system prompt plus the 12 tools. Host
 	// tools stay off that list. The note rides on the latest real user turn
 	// of this body only. A flattened tool observation is not that turn, and
-	// a developer instruction never reaches this list. A tail that already
-	// ends with the note is not extended.
+	// a developer instruction stays in the body but is not that turn. A tail
+	// that already ends with the note is not extended.
 	if note := openCodeFreeCallerHostNote(caller); note != "" {
 		noteAt := -1
 		for i := len(messages) - 1; i >= 1; i-- {
@@ -607,14 +607,17 @@ const (
 )
 
 // openCodeFreeRoleKind classifies the caller role before the wire flattens
-// everything except assistant onto user. system and developer are instructions,
-// not turns. tool, function, and tool_result are observations. human is the
-// Anthropic user role. Anything else stays its own message so a host note
-// cannot treat it as the latest user turn.
+// everything except assistant onto user. Only the caller's own system prompt
+// is dropped; the fingerprint system prompt replaces it. developer is an
+// instruction, not a user turn, so its text stays on the wire and does not
+// receive the host note. tool, function, and tool_result are observations.
+// human is the Anthropic user role. Anything else stays its own message.
 func openCodeFreeRoleKind(role string) int {
 	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "", "system", "developer":
+	case "system":
 		return openCodeFreeKindDrop
+	case "developer":
+		return openCodeFreeKindOther
 	case "user", "human":
 		return openCodeFreeKindUser
 	case "assistant":
