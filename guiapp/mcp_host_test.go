@@ -3596,6 +3596,85 @@ func TestInboundMCPHostWaitIsNotAConfirmedTimeout(t *testing.T) {
 	}
 }
 
+func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
+	if mcpRunStallWindow < corelib.MaxAgentTimeoutSec*time.Second {
+		t.Fatalf("stall window %s must outlast one model request (%ds)", mcpRunStallWindow, corelib.MaxAgentTimeoutSec)
+	}
+	app := &App{}
+	started := time.Now().Add(-mcpRunStallWindow - time.Minute)
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "moving", Status: mcpStatusRunning, RequestID: "mcp-move", RunID: "run-move",
+		StartedAt: started, progressAt: started,
+		Steps: []mcpStepView{{ID: "T1", Status: "running"}},
+	})
+	app.mcpAppendRunText("moving", "mcp-move", "still writing")
+	if !app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-mcpRunStallWindow)) {
+		t.Fatal("a token must keep the round inside the stall window")
+	}
+	quietSince := time.Now().Add(-mcpRunStallWindow - time.Second)
+	app.mcpRunsMu.Lock()
+	app.mcpRuns["moving"].progressAt = quietSince
+	app.mcpRunsMu.Unlock()
+	if app.mcpRunMadeProgress("moving", "mcp-move", time.Now().Add(-mcpRunStallWindow)) {
+		t.Fatal("a quiet round must not look like progress")
+	}
+	app.mcpNoteRunStalled("moving", "mcp-other")
+	if app.mcpRunStalled("moving", "mcp-move") {
+		t.Fatal("another request marked this run stalled")
+	}
+	app.mcpCancelRun("moving")
+	app.mcpNoteRunStalled("moving", "mcp-move")
+	if app.mcpRunStalled("moving", "mcp-move") {
+		t.Fatal("a user stop must not become a stall")
+	}
+	stopped, ok := app.mcpViewFromRegistry("moving")
+	if !ok || stopped.Status != mcpStatusCancelled || stopped.Stop == nil || stopped.Stop.Class != mcpStopUser {
+		t.Fatalf("user stop %+v", stopped.Stop)
+	}
+
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "quiet", Status: mcpStatusRunning, RequestID: "mcp-quiet", RunID: "run-quiet",
+		StartedAt: quietSince, progressAt: quietSince,
+		Steps:     []mcpStepView{{ID: "T1", Status: "running"}},
+	})
+	app.mcpNoteRunStalled("quiet", "mcp-quiet")
+	status, _, errText, _, steps := mcpRunOutcomeCause(nil, errMCPRunStalled, nil)
+	app.mcpFinishRunCause("quiet", "mcp-quiet", status, "", errText, false, "", nil, steps, errMCPRunStalled)
+	failed, ok := app.mcpViewFromRegistry("quiet")
+	if !ok || failed.Status != mcpStatusFailed || failed.EndReason != mcpStatusFailed || failed.Stop == nil || failed.Stop.Class != mcpStopNoProgress || failed.Stop.Source != "no_progress" || failed.Stop.Reason != errMCPRunStalled.Error() || failed.Stop.Deadline == "" || failed.Stop.Class == mcpStopUser || failed.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("stall %+v stop=%+v", failed, failed.Stop)
+	}
+	if mcpAutoResumeAllowed(failed) == false {
+		t.Fatal("a no-progress failure must stay explicitly resumable")
+	}
+
+	fresh := mcpSettleLoadedRun(&mcpRunRecord{
+		ProjectPath: "fresh", Status: mcpStatusRunning, RequestID: "mcp-fresh", RunID: "run-fresh",
+		StartedAt: time.Now().Add(-time.Minute), progressAt: time.Now().Add(-time.Minute),
+	})
+	if fresh.Status != mcpStatusRunning || fresh.Stop != nil {
+		t.Fatalf("recent loaded run %+v", fresh)
+	}
+	aged := mcpSettleLoadedRun(&mcpRunRecord{
+		ProjectPath: "aged", Status: mcpStatusRunning, RequestID: "mcp-aged", RunID: "run-aged",
+		StartedAt: time.Now().Add(-2 * mcpRunStallWindow),
+	})
+	if aged.Status != mcpStatusFailed || aged.Stop == nil || aged.Stop.Class != mcpStopNoProgress || aged.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("aged loaded run status=%s stop=%+v", aged.Status, aged.Stop)
+	}
+	legacy := mcpSettleLoadedRun(&mcpRunRecord{
+		ProjectPath: "legacy", Status: mcpStatusRunning, RequestID: "mcp-legacy", RunID: "run-legacy",
+		StartedAt: time.Now().Add(-time.Minute),
+	})
+	if legacy.Status != mcpStatusRunning || legacy.progressAt.IsZero() {
+		t.Fatalf("legacy loaded run %+v", legacy)
+	}
+	done := mcpSettleLoadedRun(&mcpRunRecord{ProjectPath: "done", Status: mcpStatusCompleted, RequestID: "mcp-done"})
+	if done.Status != mcpStatusCompleted {
+		t.Fatalf("finished loaded run %+v", done)
+	}
+}
+
 func TestInboundMCPCancelledSkipIsNotComplete(t *testing.T) {
 	cancelled := []codingWorkbenchStepStatus{
 		{Index: 1, Title: "画面", Status: codingStepPassed, Summary: "画面已接上"},

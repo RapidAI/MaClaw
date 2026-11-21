@@ -21,6 +21,10 @@ const (
 	mcpStopDependency  = "dependency_failure"
 	mcpStopReview      = "waiting_review"
 	mcpStopUnconfirmed = "unconfirmed"
+	// mcpStopNoProgress is a confirmed stall: the round produced no
+	// host-visible activity for mcpRunStallWindow. It is not a user stop
+	// and not an unconfirmed host-wait ending.
+	mcpStopNoProgress = "no_progress"
 
 	mcpRunArchiveLimit   = 8
 	mcpChildPendingLimit = 64
@@ -219,6 +223,12 @@ func mcpStopFor(status, errText string, steps []mcpStepView, cause error, at tim
 	}
 	stop := &mcpStopView{At: mcpFormatTime(at), Reason: strings.TrimSpace(errText)}
 	switch {
+	case errors.Is(cause, errMCPRunStalled):
+		stop.Class = mcpStopNoProgress
+		stop.Source = "no_progress"
+		stop.StepID = mcpOpenStepID(steps)
+		stop.Reason = errMCPRunStalled.Error()
+		stop.Deadline = mcpFormatTime(at)
 	case errors.Is(cause, errMCPHostWaitEnded):
 		stop.Class = mcpStopUnconfirmed
 		stop.Source = "host_wait"
@@ -757,6 +767,7 @@ func mcpCloneRun(rec *mcpRunRecord) *mcpRunRecord {
 	}
 	clone := *rec
 	clone.cancel = nil
+	clone.progressAt = rec.progressAt
 	clone.Commands = append([]string(nil), rec.Commands...)
 	clone.logs = append([]mcpLogEvent(nil), rec.logs...)
 	clone.Steps = mcpCloneSteps(rec.Steps)

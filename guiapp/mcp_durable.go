@@ -62,6 +62,7 @@ type mcpRunSnapshot struct {
 	ModelEffective     string         `json:"model_effective,omitempty"`
 	WorkDirRequested   string         `json:"working_dir_requested,omitempty"`
 	SessionPath        string         `json:"session_path,omitempty"`
+	ProgressAt         time.Time      `json:"progress_at,omitempty"`
 }
 
 type mcpDurableBundle struct {
@@ -274,14 +275,37 @@ func mcpSettleLoadedRun(rec *mcpRunRecord) *mcpRunRecord {
 	if rec == nil || rec.Status != mcpStatusRunning {
 		return rec
 	}
+	// A loaded snapshot has no live cancel func. That does not mean the
+	// round was cancelled. Keep it running while its last host-visible
+	// activity is still inside the stall window, including a snapshot that
+	// predates the progress clock. A quiet round fails as no progress.
+	// It is not a user stop and not an unconfirmed host-wait ending.
 	now := time.Now()
-	rec.Status = mcpStatusCancelled
+	// A snapshot written before the progress clock has no activity stamp.
+	// StartedAt is that round's last known host-visible moment. A zero
+	// stamp with no start is not evidence the round is still advancing.
+	last := rec.progressAt
+	if last.IsZero() {
+		last = rec.StartedAt
+	}
+	if !last.IsZero() && !last.Before(now.Add(-mcpRunStallWindow)) {
+		if rec.progressAt.IsZero() {
+			rec.progressAt = last
+		}
+		rec.cancel = nil
+		rec.hostWaitEnded = false
+		rec.stalled = false
+		return rec
+	}
+	rec.Status = mcpStatusFailed
 	rec.FinishedAt = now
-	rec.EndReason = mcpStatusCancelled
-	rec.Error = errMCPHostWaitEnded.Error()
-	rec.Stop = mcpStopFor(mcpStatusCancelled, rec.Error, rec.Steps, errMCPHostWaitEnded, now)
+	rec.EndReason = mcpStatusFailed
+	rec.EndDetail = errMCPRunStalled.Error()
+	rec.Error = errMCPRunStalled.Error()
+	rec.Stop = mcpStopFor(mcpStatusFailed, rec.Error, rec.Steps, errMCPRunStalled, now)
 	rec.cancel = nil
-	rec.hostWaitEnded = true
+	rec.hostWaitEnded = false
+	rec.stalled = true
 	return rec
 }
 
@@ -723,6 +747,7 @@ func mcpSnapshotFromRun(rec *mcpRunRecord) *mcpRunSnapshot {
 		ModelEffective:     clone.ModelEffective,
 		WorkDirRequested:   clone.WorkDirRequested,
 		SessionPath:        clone.SessionPath,
+		ProgressAt:         clone.progressAt,
 	}
 }
 
@@ -774,6 +799,7 @@ func mcpRunFromSnapshot(snap *mcpRunSnapshot) *mcpRunRecord {
 		ModelEffective:     snap.ModelEffective,
 		WorkDirRequested:   snap.WorkDirRequested,
 		SessionPath:        snap.SessionPath,
+		progressAt:         snap.ProgressAt,
 	}
 }
 

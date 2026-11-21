@@ -21,7 +21,12 @@ const (
 	mcpStatusCancelled         = "cancelled"
 	mcpStatusIdle              = "idle"
 	mcpStatusNeedsConfirmation = "needs_confirmation"
-	mcpRunTimeout              = 30 * time.Minute
+	// mcpRunStallWindow is how long a round may sit with no token, progress,
+	// tool event, or other host-visible activity before the session watchdog
+	// fails it. It is not a wall clock on the round, and it is not the
+	// per-request LLM deadline (DefaultLLMTimeoutSec / MaxAgentTimeoutSec).
+	// A round that keeps producing activity is never cancelled by this window.
+	mcpRunStallWindow = 30 * time.Minute
 	mcpConfirmKindPlan         = "plan"
 	mcpConfirmKindPlanReview   = "plan_review"
 	mcpConfirmKindPlanDialogue = "plan_dialogue"
@@ -33,6 +38,9 @@ const (
 var (
 	errMCPTaskRunning   = errors.New("任务还在运行，先停止或等这轮结束再发命令")
 	errMCPHostWaitEnded = errors.New("主机等待已结束，尚未证实为超时")
+	// errMCPRunStalled is a confirmed lack of host-visible progress. It is
+	// not a user stop and not an unconfirmed host-wait ending.
+	errMCPRunStalled = errors.New("这一轮没有进展")
 )
 
 // mcpTaskView is the JSON text returned by create, get, stop, and list.
@@ -144,9 +152,17 @@ type mcpRunRecord struct {
 	WorkDirRequested   string
 	SessionPath        string
 	cancel             context.CancelFunc
+	// progressAt is the last host-visible activity on this round: a token,
+	// a progress line, a tool event, or the moment the round started.
+	// The session watchdog reads it. It is not a per-request LLM deadline.
+	progressAt time.Time
 	// hostWaitEnded is set only by this process's own wait budget, and only
 	// while the run is still waiting. It is not a confirmed execution timeout.
 	hostWaitEnded bool
+	// stalled is set only when the session watchdog confirms that this round
+	// produced no host-visible activity for mcpRunStallWindow. A user stop
+	// does not set it.
+	stalled bool
 }
 
 type mcpModelPin struct {
@@ -917,13 +933,22 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 	}
 	defer a.mcpReleaseTurn(path, token)
 	requestID := "mcp-" + randomHexID(8)
-	// The budget cancels the call. It does not stamp DeadlineExceeded, so a
-	// later stop is not reported as a confirmed timeout.
+	// The session context has no wall-clock deadline. A single model request
+	// still dies on its own timeout (DefaultLLMTimeoutSec, at most
+	// MaxAgentTimeoutSec). A live command still uses MaxLongRunTimeoutSec.
+	// This watchdog only ends the round when host-visible activity stops.
 	runCtx, cancel := context.WithCancel(context.Background())
-	timer := time.AfterFunc(mcpRunTimeout, func() {
-		a.mcpNoteHostWaitEnded(path, requestID)
+	var timer *time.Timer
+	var watch func()
+	watch = func() {
+		if a.mcpRunMadeProgress(path, requestID, time.Now().Add(-mcpRunStallWindow)) {
+			timer.Reset(mcpRunStallWindow)
+			return
+		}
+		a.mcpNoteRunStalled(path, requestID)
 		cancel()
-	})
+	}
+	timer = time.AfterFunc(mcpRunStallWindow, watch)
 	mark := a.mcpConversationMark(path)
 	reqProvider := strings.TrimSpace(view.ProviderRequested)
 	reqModel := strings.TrimSpace(view.ModelRequested)
@@ -971,6 +996,7 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		historyCount:      mark.count,
 		historySeal:       mark.text,
 		cancel:            cancel,
+		progressAt:        time.Now(),
 	}
 	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
 	if err != nil {
@@ -1033,7 +1059,9 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		})
 		timer.Stop()
 		cause := runCtx.Err()
-		if cause != nil && a.mcpHostWaitEnded(path, requestID) {
+		if cause != nil && a.mcpRunStalled(path, requestID) {
+			cause = errMCPRunStalled
+		} else if cause != nil && a.mcpHostWaitEnded(path, requestID) {
 			cause = errMCPHostWaitEnded
 		}
 		status, finalText, errText, keepText, steps := mcpRunOutcomeCause(err, cause, resp)
@@ -2276,6 +2304,10 @@ func mcpRunOutcomeCause(runErr, cause error, resp *IMAgentResponse) (status, tex
 	status = mcpStatusCompleted
 	keepText = true
 	switch {
+	case errors.Is(cause, errMCPRunStalled):
+		// A quiet round failed because nothing arrived. That is not a cancel.
+		status = mcpStatusFailed
+		errText = errMCPRunStalled.Error()
 	case errors.Is(cause, errMCPHostWaitEnded):
 		status = mcpStatusCancelled
 	case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled):
@@ -2385,6 +2417,87 @@ func (a *App) mcpCancelRun(path string) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// mcpNoteRunProgress records host-visible activity on a round that is still
+// running. The session watchdog reads progressAt and keeps the round alive
+// while activity arrives. A user stop, or a different request, is left alone.
+func (a *App) mcpNoteRunProgress(path, requestID string) {
+	if a == nil {
+		return
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return
+	}
+	rec.progressAt = time.Now()
+}
+
+// mcpRunMadeProgress reports whether this round has host-visible activity at
+// or after since. A missing stamp is treated as progress: an older record
+// must not be failed just because it predates the stall clock.
+func (a *App) mcpRunMadeProgress(path, requestID string, since time.Time) bool {
+	if a == nil {
+		return false
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return false
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return false
+	}
+	if rec.progressAt.IsZero() {
+		return true
+	}
+	return !rec.progressAt.Before(since)
+}
+
+// mcpNoteRunStalled records a confirmed lack of host-visible progress. A run
+// that is no longer waiting, or a different request, is left alone so a user
+// stop that already landed stays a user stop.
+func (a *App) mcpNoteRunStalled(path, requestID string) {
+	if a == nil {
+		return
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	if rec == nil || rec.RequestID != requestID || rec.Status != mcpStatusRunning {
+		return
+	}
+	rec.stalled = true
+}
+
+func (a *App) mcpRunStalled(path, requestID string) bool {
+	if a == nil {
+		return false
+	}
+	path = normalizeProjectSessionPath(path)
+	requestID = strings.TrimSpace(requestID)
+	if path == "" || requestID == "" {
+		return false
+	}
+	a.mcpRunsMu.Lock()
+	defer a.mcpRunsMu.Unlock()
+	rec := a.mcpRuns[path]
+	return rec != nil && rec.RequestID == requestID && rec.stalled
 }
 
 // mcpNoteHostWaitEnded records that this process stopped waiting. A run that
@@ -2514,6 +2627,7 @@ func (a *App) mcpAppendRunText(path, requestID, delta string) {
 		return
 	}
 	rec.Text += delta
+	rec.progressAt = time.Now()
 	mcpTouchLocked(rec)
 }
 

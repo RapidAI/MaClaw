@@ -395,17 +395,35 @@ func TestInboundMCPStatusVersionDoesNotGoBackwards(t *testing.T) {
 func TestInboundMCPLoadedRunningIsHostWait(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{mcpStateDir: dir}
-	app.mcpStoreRun(&mcpRunRecord{ProjectPath: "live", Status: mcpStatusRunning, RequestID: "mcp-1", RunID: "run-live"})
+	app.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "live", Status: mcpStatusRunning, RequestID: "mcp-1", RunID: "run-live",
+		StartedAt: time.Now(), progressAt: time.Now(),
+	})
 	again := &App{mcpStateDir: dir}
 	view, err := again.mcpGetTask(context.Background(), "live", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Status != mcpStatusCancelled || view.Stop == nil || view.Stop.Class != mcpStopUnconfirmed || view.Stop.Source != "host_wait" || view.Stop.Deadline != "" {
-		t.Fatalf("loaded stop %+v", view.Stop)
+	if view.Status != mcpStatusRunning || view.Stop != nil {
+		t.Fatalf("a round still inside the stall window must stay running, got %+v stop=%+v", view, view.Stop)
 	}
 	if !mcpAutoResumeAllowed(view) {
-		t.Fatal("host wait must stay resumable")
+		t.Fatal("a live loaded run must stay resumable")
+	}
+
+	quietDir := t.TempDir()
+	quiet := &App{mcpStateDir: quietDir}
+	quiet.mcpStoreRun(&mcpRunRecord{
+		ProjectPath: "stale", Status: mcpStatusRunning, RequestID: "mcp-stale", RunID: "run-stale",
+		StartedAt: time.Now().Add(-2 * mcpRunStallWindow), progressAt: time.Now().Add(-2 * mcpRunStallWindow),
+	})
+	reloaded := &App{mcpStateDir: quietDir}
+	stale, err := reloaded.mcpGetTask(context.Background(), "stale", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.Status != mcpStatusFailed || stale.EndReason != mcpStatusFailed || stale.Stop == nil || stale.Stop.Class != mcpStopNoProgress || stale.Stop.Source != "no_progress" || stale.Stop.Reason != errMCPRunStalled.Error() || stale.Stop.Class == mcpStopUser || stale.Stop.Class == mcpStopUnconfirmed {
+		t.Fatalf("quiet loaded stop %+v status=%s", stale.Stop, stale.Status)
 	}
 }
 

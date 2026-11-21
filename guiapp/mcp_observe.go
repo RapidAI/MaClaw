@@ -829,6 +829,7 @@ func mcpPushLogLocked(rec *mcpRunRecord, ev mcpLogEvent) {
 	if len(rec.logs) > mcpLogLimit {
 		rec.logs = append([]mcpLogEvent(nil), rec.logs[len(rec.logs)-mcpLogLimit:]...)
 	}
+	rec.progressAt = time.Now()
 	mcpTouchLocked(rec)
 }
 
