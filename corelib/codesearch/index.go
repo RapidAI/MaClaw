@@ -124,8 +124,16 @@ var (
 	dirtyGateMu sync.Mutex
 	// noteRead reads a noted file. Tests replace it to simulate a share
 	// violation; a failed read must not consume the note.
-	noteReadMu  sync.Mutex
-	noteRead    = os.ReadFile
+	noteReadMu sync.Mutex
+	noteRead   = os.ReadFile
+	// dirRead lists a directory while applying a gitignore change. Tests
+	// replace it so a failed walk does not count as a finished one.
+	dirReadMu sync.Mutex
+	dirRead   = os.ReadDir
+	// dirStat stats a corpus directory during reconcile. A permission or
+	// timeout error must not be treated as a deleted tree.
+	dirStatMu   sync.Mutex
+	dirStat     = os.Stat
 	reconcileOn sync.Once
 	// testIndexBuilds counts BM25 rebuilds so a test can see a deleted file
 	// stop invalidating the corpus.
@@ -177,6 +185,10 @@ type fileSnap struct {
 	// gone keeps a deletion visible to the next search. Without it, a consumed
 	// dirty note has no readAt to compare and every later search rebuilds.
 	gone bool
+	// byteSkip means the file's own bytes are why it is out of the index:
+	// empty, larger than maxFileBytes, or NUL. An ignore or delete tombstone
+	// leaves this false so the same bytes return when the rule or the file does.
+	byteSkip bool
 }
 
 type chunk struct {
@@ -478,8 +490,14 @@ func buildCorpus(root, sub string, scoped bool) *corpus {
 	}
 	now := time.Now()
 	for _, file := range files {
+		if file.unread {
+			// Zero readAt stays older than the note taken during the walk,
+			// so the build's own applyDirty still tries the read once.
+			c.meta[file.rel] = fileSnap{gone: true}
+			continue
+		}
 		if file.skip {
-			c.meta[file.rel] = fileSnap{size: file.size, mod: file.mod, readAt: now, gone: true}
+			c.meta[file.rel] = fileSnap{size: file.size, mod: file.mod, readAt: now, gone: true, byteSkip: true}
 			continue
 		}
 		c.meta[file.rel] = fileSnap{size: file.size, mod: file.mod, readAt: now}
@@ -845,7 +863,7 @@ func catchNote(n dirtyNote, rules []rule, snaps *snapIndex) noteEdit {
 			edit.touched = true
 		}
 		if !found || !snap.gone || snap.readAt.Before(n.noted) {
-			edit.snap = goneSnap(n.abs, info, stamp)
+			edit.snap = goneSnap(n.abs, info, stamp, bytesNotIndexed(info, indexable))
 			edit.touched = true
 			snaps.store(storeRel, edit.snap)
 		}
@@ -853,13 +871,34 @@ func catchNote(n dirtyNote, rules []rule, snaps *snapIndex) noteEdit {
 	}
 	body, err := readNoted(n.abs)
 	if err != nil {
-		// The bytes are still the previous generation. Consuming the note
-		// would drop those chunks, and noteChanged would not come back:
-		// a later rewrite does not change the directory mtime.
-		return noteEdit{rel: n.rel, storeRel: storeRel, retry: true}
+		if found && !snap.gone {
+			// The bytes are still the previous generation. Consuming the note
+			// would drop those chunks, and noteChanged would not come back:
+			// a later rewrite does not change the directory mtime.
+			return noteEdit{rel: n.rel, storeRel: storeRel, retry: true}
+		}
+		if found && unreadPlaceholder(snap) {
+			// Already published. Consuming the note keeps a search from
+			// staying in catch-up. noteChanged retries while a regular file
+			// is there, because this identity is zero.
+			return noteEdit{rel: n.rel, storeRel: storeRel}
+		}
+		// Never indexed, or the previous tombstone was an ignore or a skip
+		// we are now trying to read. A real size would match later and the
+		// file would stay out after this note is gone. readAt stays zero so
+		// a later note is not treated as already reflected: the publish
+		// stamp can be newer than that note on a coarse clock.
+		edit := noteEdit{
+			rel:      n.rel,
+			storeRel: storeRel,
+			touched:  true,
+			snap:     fileSnap{gone: true},
+		}
+		snaps.store(storeRel, edit.snap)
+		return edit
 	}
 	if hasNUL(body) {
-		edit := noteEdit{rel: n.rel, storeRel: storeRel, touched: true, snap: goneSnap(n.abs, info, stamp)}
+		edit := noteEdit{rel: n.rel, storeRel: storeRel, touched: true, snap: goneSnap(n.abs, info, stamp, true)}
 		if found && !snap.gone {
 			edit.drop = true
 		}
@@ -953,8 +992,9 @@ func readNoted(abs string) ([]byte, error) {
 
 // goneSnap remembers the file that was skipped. noteChanged uses the size
 // and mtime to notice when those bytes change; the directory mtime does not.
-func goneSnap(abs string, info os.FileInfo, stamp time.Time) fileSnap {
-	snap := fileSnap{readAt: stamp, gone: true}
+// byteSkip is set only when the bytes themselves cannot be indexed.
+func goneSnap(abs string, info os.FileInfo, stamp time.Time, byteSkip bool) fileSnap {
+	snap := fileSnap{readAt: stamp, gone: true, byteSkip: byteSkip}
 	if info != nil && info.Mode().IsRegular() {
 		snap.size = info.Size()
 		snap.mod = info.ModTime()
@@ -967,6 +1007,27 @@ func goneSnap(abs string, info os.FileInfo, stamp time.Time) fileSnap {
 	snap.size = st.Size()
 	snap.mod = st.ModTime()
 	return snap
+}
+
+// bytesNotIndexed reports a file whose size keeps it out of the index.
+// An ignored file of ordinary size is not one of these: the same bytes
+// must come back when the rule stops matching.
+func bytesNotIndexed(info os.FileInfo, indexable bool) bool {
+	if indexable || info == nil {
+		return false
+	}
+	return info.Size() == 0 || info.Size() > maxFileBytes
+}
+
+func byteSkipUnchanged(snap fileSnap, size int64, mod time.Time) bool {
+	return snap.byteSkip && snap.size == size && snap.mod.Equal(mod)
+}
+
+// unreadPlaceholder is a listed file whose bytes were never read. The zero
+// identity matches a delete tombstone; noteChanged tells them apart by
+// whether a regular file is still there.
+func unreadPlaceholder(snap fileSnap) bool {
+	return snap.gone && !snap.byteSkip && snap.size == 0 && snap.mod.IsZero()
 }
 
 func copyMeta(in map[string]fileSnap) map[string]fileSnap {
@@ -1486,7 +1547,7 @@ func syncCorpusTree(c *corpus) bool {
 	}
 	// Check the root before any child. Map order could otherwise treat a
 	// deleted project as a missing subdirectory and drop the index.
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := statDir(root)
 	if err != nil || !rootInfo.IsDir() {
 		return false
 	}
@@ -1499,11 +1560,21 @@ func syncCorpusTree(c *corpus) bool {
 		if rel != "" {
 			abs = filepath.Join(root, filepath.FromSlash(rel))
 		}
-		info, err := os.Stat(abs)
+		info, err := statDir(abs)
 		if rel == "" && (err != nil || !info.IsDir()) {
 			return false
 		}
-		if err != nil || !info.IsDir() {
+		// Permission, a timeout, or a disconnected volume is not deletion.
+		// Dropping the tree would keep the old size and mtime on the
+		// tombstone, the parent mtime would not change, and the file would
+		// never be read again.
+		if err != nil {
+			if os.IsNotExist(err) {
+				missing = append(missing, rel)
+			}
+			continue
+		}
+		if !info.IsDir() {
 			missing = append(missing, rel)
 			continue
 		}
@@ -1521,6 +1592,18 @@ func syncCorpusTree(c *corpus) bool {
 		}
 	}
 	for _, rel := range topmostDirs(missing) {
+		abs := root
+		if rel != "" {
+			abs = filepath.Join(root, filepath.FromSlash(rel))
+		}
+		info, err := statDir(abs)
+		if err == nil && info.IsDir() {
+			// The first stat raced with a create. The indexed tree stays.
+			continue
+		}
+		if err != nil && !os.IsNotExist(err) {
+			continue
+		}
 		dropCorpusTree(c, rel)
 	}
 	for _, rel := range giChanged {
@@ -1585,8 +1668,7 @@ func syncCorpusTree(c *corpus) bool {
 				if !snap.gone {
 					continue
 				}
-				// Already skipped, and the bytes are unchanged.
-				if snap.size == info.Size() && snap.mod.Equal(info.ModTime()) {
+				if byteSkipUnchanged(snap, info.Size(), info.ModTime()) {
 					continue
 				}
 			}
@@ -1833,42 +1915,66 @@ func reloadGitignore(c *corpus, dirAbs, rel string, seen map[string]time.Time) {
 	info, statErr := os.Stat(giPath)
 	var parsed []rule
 	if statErr == nil {
-		if data, err := os.ReadFile(giPath); err == nil {
-			parsed = parseGitignore(rel, string(data))
+		data, err := readNoted(giPath)
+		if err != nil {
+			// A failed read is not an empty gitignore. Leave the rules and
+			// the stamp so the next reconcile tries the same file again.
+			return
 		}
+		parsed = parseGitignore(rel, string(data))
 	}
 	c.mu.Lock()
+	pending := false
+	if prev, ok := c.gitignores[rel]; ok && prev.IsZero() {
+		pending = true
+	}
 	same := sameRules(rulesAt(c.rules, rel), parsed)
+	if same && !pending {
+		if c.gitignores == nil {
+			c.gitignores = map[string]time.Time{}
+		}
+		if statErr != nil {
+			delete(c.gitignores, rel)
+		} else {
+			c.gitignores[rel] = info.ModTime()
+		}
+		c.mu.Unlock()
+		return
+	}
 	if !same {
 		c.rules = replaceRulesAtBase(c.rules, rel, parsed)
 		c.gen++
-	}
-	if c.gitignores == nil {
-		c.gitignores = map[string]time.Time{}
-	}
-	if statErr != nil {
-		delete(c.gitignores, rel)
-	} else {
-		c.gitignores[rel] = info.ModTime()
-	}
-	if same {
-		c.mu.Unlock()
-		return
 	}
 	rules := append([]rule(nil), c.rules...)
 	meta := copyMeta(c.meta)
 	root := c.root
 	sub := c.sub
 	c.mu.Unlock()
-	noteIgnoreChanges(c, root, dirAbs, rel, sub, rules, meta, seen)
+	// The stamp stays zero until the walk finishes. Rules can already match
+	// on the retry, and that retry still has to note the files.
+	walked := noteIgnoreChanges(c, root, dirAbs, rel, sub, rules, meta, seen)
+	c.mu.Lock()
+	if c.gitignores == nil {
+		c.gitignores = map[string]time.Time{}
+	}
+	if statErr != nil && walked {
+		delete(c.gitignores, rel)
+	} else if walked {
+		c.gitignores[rel] = info.ModTime()
+	} else {
+		c.gitignores[rel] = time.Time{}
+	}
+	c.mu.Unlock()
 }
 
-func noteIgnoreChanges(c *corpus, root, dirAbs, rel, sub string, rules []rule, meta map[string]fileSnap, seen map[string]time.Time) {
+func noteIgnoreChanges(c *corpus, root, dirAbs, rel, sub string, rules []rule, meta map[string]fileSnap, seen map[string]time.Time) bool {
 	known := indexSnaps(meta)
+	done := true
 	var walk func(abs, relPath string)
 	walk = func(abs, relPath string) {
-		entries, err := os.ReadDir(abs)
+		entries, err := readDir(abs)
 		if err != nil {
+			done = false
 			return
 		}
 		for _, entry := range entries {
@@ -1878,6 +1984,7 @@ func noteIgnoreChanges(c *corpus, root, dirAbs, rel, sub string, rules []rule, m
 			}
 			info, err := entry.Info()
 			if err != nil {
+				done = false
 				continue
 			}
 			mode := info.Mode()
@@ -1926,13 +2033,34 @@ func noteIgnoreChanges(c *corpus, root, dirAbs, rel, sub string, rules []rule, m
 			if live {
 				continue
 			}
-			if ok && snap.size == info.Size() && snap.mod.Equal(info.ModTime()) {
+			if ok && byteSkipUnchanged(snap, info.Size(), info.ModTime()) {
 				continue
 			}
 			NoteDirty(filepath.Join(root, filepath.FromSlash(child)))
 		}
 	}
 	walk(dirAbs, rel)
+	return done
+}
+
+func statDir(name string) (os.FileInfo, error) {
+	dirStatMu.Lock()
+	fn := dirStat
+	dirStatMu.Unlock()
+	if fn == nil {
+		fn = os.Stat
+	}
+	return fn(name)
+}
+
+func readDir(name string) ([]os.DirEntry, error) {
+	dirReadMu.Lock()
+	fn := dirRead
+	dirReadMu.Unlock()
+	if fn == nil {
+		fn = os.ReadDir
+	}
+	return fn(name)
 }
 
 func noteLiveUnder(root, sub string, known *snapIndex, dirRel string) {

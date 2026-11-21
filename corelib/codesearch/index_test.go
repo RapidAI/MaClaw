@@ -1358,6 +1358,96 @@ func TestReconcileDeletedDirectoryDropsItsSymbols(t *testing.T) {
 	}
 }
 
+func TestDirectoryStatErrorKeepsTheTree(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, filepath.Join(dir, "pkg", "gone.go"), "package pkg\n\nfunc goneSymbol() {}\n")
+	first := Search(Request{Root: dir, Query: "gone symbol", Wait: 5 * time.Second})
+	if len(first.Hits) == 0 || first.Hits[0].Symbol != "goneSymbol" {
+		t.Fatalf("before stat error %+v", first)
+	}
+	before := testIndexBuilds.Load()
+	c := corpusFor(t, dir)
+	c.mu.Lock()
+	gen := c.gen
+	_, stamped := c.dirs["pkg"]
+	c.mu.Unlock()
+	if !stamped {
+		t.Fatal("pkg was not stamped at build")
+	}
+	var pkgStats int
+	setDirStatForTest(t, func(name string) (os.FileInfo, error) {
+		if strings.EqualFold(filepath.Base(name), "pkg") {
+			pkgStats++
+			if pkgStats == 1 {
+				return nil, os.ErrNotExist
+			}
+		}
+		return os.Stat(name)
+	})
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("raced stat rebuilt the corpus: %d -> %d", before, got)
+	}
+	raced := Search(Request{Root: dir, Query: "gone symbol", Wait: time.Second})
+	if len(raced.Hits) == 0 || raced.Hits[0].Symbol != "goneSymbol" {
+		t.Fatalf("raced stat dropped the tree: %+v", raced)
+	}
+	c.mu.Lock()
+	if c.gen != gen {
+		t.Fatalf("raced stat republished the corpus: %d -> %d", gen, c.gen)
+	}
+	c.mu.Unlock()
+	pkgStats = 0
+	dirStatMu.Lock()
+	dirStat = func(name string) (os.FileInfo, error) {
+		if strings.EqualFold(filepath.Base(name), "pkg") {
+			return nil, os.ErrPermission
+		}
+		return os.Stat(name)
+	}
+	dirStatMu.Unlock()
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("stat error rebuilt the corpus: %d -> %d", before, got)
+	}
+	keptTree := Search(Request{Root: dir, Query: "gone symbol", Wait: time.Second})
+	if len(keptTree.Hits) == 0 || keptTree.Hits[0].Symbol != "goneSymbol" {
+		t.Fatalf("stat error dropped the tree: %+v", keptTree)
+	}
+	c.mu.Lock()
+	later := c.gen
+	_, stamped = c.dirs["pkg"]
+	c.mu.Unlock()
+	if later != gen {
+		t.Fatalf("stat error republished the corpus: %d -> %d", gen, later)
+	}
+	if !stamped {
+		t.Fatal("stat error cleared the directory stamp")
+	}
+	dirStatMu.Lock()
+	dirStat = os.Stat
+	dirStatMu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	if err := os.RemoveAll(filepath.Join(dir, "pkg")); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("deleted directory rebuilt the corpus: %d -> %d", before, got)
+	}
+	missed := Search(Request{Root: dir, Query: "gone symbol", Wait: time.Second})
+	for _, hit := range missed.Hits {
+		if hit.Symbol == "goneSymbol" {
+			t.Fatalf("deleted directory still indexed: %+v", missed.Hits)
+		}
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+}
+
 func TestReconcileGitignoreDropsANewlyIgnoredFile(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
@@ -1396,6 +1486,383 @@ func TestReconcileGitignoreDropsANewlyIgnoredFile(t *testing.T) {
 	c.mu.Unlock()
 	if later != gen {
 		t.Fatalf("ignored file was noted again: %d -> %d", gen, later)
+	}
+}
+
+func TestReconcileUnignoreRestoresAnIndexedFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, filepath.Join(dir, "secret.go"), "package p\n\nfunc secretSymbol() {}\n")
+	first := Search(Request{Root: dir, Query: "secret symbol", Wait: 5 * time.Second})
+	if len(first.Hits) == 0 || first.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("before ignore %+v", first)
+	}
+	before := testIndexBuilds.Load()
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, filepath.Join(dir, ".gitignore"), "secret.go\n")
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("ignore rebuilt the corpus: %d -> %d", before, got)
+	}
+	missed := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range missed.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("ignored file still indexed: %+v", missed.Hits)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, filepath.Join(dir, ".gitignore"), "other.go\n")
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("un-ignore rebuilt the corpus: %d -> %d", before, got)
+	}
+	found := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	if len(found.Hits) == 0 || found.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("un-ignored file = %+v", found)
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("search after un-ignore rebuilt the corpus: %d -> %d", before, got)
+	}
+}
+
+func TestGitignoreUnreadableAtBuildIsAppliedLater(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, filepath.Join(dir, "secret.go"), "package p\n\nfunc secretSymbol() {}\n")
+	writeFile(t, filepath.Join(dir, ".gitignore"), "secret.go\n")
+	setNoteReadForTest(t, func(path string) ([]byte, error) {
+		if strings.HasSuffix(strings.ToLower(path), ".gitignore") {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	})
+	first := Search(Request{Root: dir, Query: "secret symbol", Wait: 5 * time.Second})
+	if len(first.Hits) == 0 || first.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("unreadable gitignore still hid the file: %+v", first)
+	}
+	before := testIndexBuilds.Load()
+	noteReadMu.Lock()
+	noteRead = os.ReadFile
+	noteReadMu.Unlock()
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("late gitignore read rebuilt the corpus: %d -> %d", before, got)
+	}
+	missed := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range missed.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("gitignore was not applied after the read recovered: %+v", missed.Hits)
+		}
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+	c := corpusFor(t, dir)
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+	reconcileOnce()
+	c.mu.Lock()
+	later := c.gen
+	c.mu.Unlock()
+	if later != gen {
+		t.Fatalf("recovered gitignore was read again: %d -> %d", gen, later)
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("second reconcile rebuilt the corpus: %d -> %d", before, got)
+	}
+}
+
+func TestUnreadableDirectoryAtBuildIsScannedLater(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	setDirReadForTest(t, func(string) ([]os.DirEntry, error) {
+		return nil, os.ErrPermission
+	})
+	first := Search(Request{Root: dir, Query: "kept visible", Wait: 5 * time.Second})
+	for _, hit := range first.Hits {
+		if hit.Symbol == "keptVisible" {
+			t.Fatalf("unreadable directory was indexed: %+v", first.Hits)
+		}
+	}
+	before := testIndexBuilds.Load()
+	dirReadMu.Lock()
+	dirRead = os.ReadDir
+	dirReadMu.Unlock()
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("directory retry rebuilt the corpus: %d -> %d", before, got)
+	}
+	found := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(found.Hits) == 0 || found.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("directory retry = %+v", found)
+	}
+	c := corpusFor(t, dir)
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+	reconcileOnce()
+	c.mu.Lock()
+	later := c.gen
+	c.mu.Unlock()
+	if later != gen {
+		t.Fatalf("scanned directory was listed again: %d -> %d", gen, later)
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("second reconcile rebuilt the corpus: %d -> %d", before, got)
+	}
+}
+
+func TestUnreadableFileAtBuildIsIndexedLater(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.go")
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, secret, "package p\n\nfunc secretSymbol() {}\n")
+	setNoteReadForTest(t, func(path string) ([]byte, error) {
+		if strings.EqualFold(filepath.Base(path), "secret.go") {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	})
+	first := Search(Request{Root: dir, Query: "secret symbol", Wait: 5 * time.Second})
+	for _, hit := range first.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("unread file was indexed: %+v", first.Hits)
+		}
+	}
+	if first.Hint == catchingUpHint {
+		t.Fatalf("unread file pinned the search: %+v", first)
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+	if kept.Hint == catchingUpHint {
+		t.Fatalf("unread file still pinned the search: %+v", kept)
+	}
+	c := corpusFor(t, dir)
+	c.mu.Lock()
+	snap, ok := c.meta["secret.go"]
+	c.mu.Unlock()
+	if !ok || !unreadPlaceholder(snap) {
+		t.Fatalf("unread snap = %+v ok=%v", snap, ok)
+	}
+	before := testIndexBuilds.Load()
+	forgetDirtyNote(t, secret)
+	noteReadMu.Lock()
+	noteRead = os.ReadFile
+	noteReadMu.Unlock()
+	missed := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range missed.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("pruned note indexed the file without reconcile: %+v", missed.Hits)
+		}
+	}
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("recovered read rebuilt the corpus: %d -> %d", before, got)
+	}
+	found := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	if len(found.Hits) == 0 || found.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("recovered read = %+v", found)
+	}
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+	reconcileOnce()
+	c.mu.Lock()
+	later := c.gen
+	c.mu.Unlock()
+	if later != gen {
+		t.Fatalf("indexed file was noted again: %d -> %d", gen, later)
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("second reconcile rebuilt the corpus: %d -> %d", before, got)
+	}
+}
+
+func TestUnreadableNewFileIsIndexedLater(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	first := Search(Request{Root: dir, Query: "kept visible", Wait: 5 * time.Second})
+	if len(first.Hits) == 0 || first.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("before new file %+v", first)
+	}
+	before := testIndexBuilds.Load()
+	secret := filepath.Join(dir, "secret.go")
+	setNoteReadForTest(t, func(path string) ([]byte, error) {
+		if strings.EqualFold(filepath.Base(path), "secret.go") {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	})
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, secret, "package p\n\nfunc secretSymbol() {}\n")
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("failed first read rebuilt the corpus: %d -> %d", before, got)
+	}
+	blocked := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range blocked.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("unread new file was indexed: %+v", blocked.Hits)
+		}
+	}
+	if blocked.Hint == catchingUpHint {
+		t.Fatalf("unread new file pinned the search: %+v", blocked)
+	}
+	c := corpusFor(t, dir)
+	c.mu.Lock()
+	snap, ok := c.meta["secret.go"]
+	c.mu.Unlock()
+	if !ok || !unreadPlaceholder(snap) {
+		t.Fatalf("unread snap = %+v ok=%v", snap, ok)
+	}
+	forgetDirtyNote(t, secret)
+	noteReadMu.Lock()
+	noteRead = os.ReadFile
+	noteReadMu.Unlock()
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("recovered new file rebuilt the corpus: %d -> %d", before, got)
+	}
+	found := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	if len(found.Hits) == 0 || found.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("recovered new file = %+v", found)
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+	c.mu.Lock()
+	gen := c.gen
+	c.mu.Unlock()
+	reconcileOnce()
+	c.mu.Lock()
+	later := c.gen
+	c.mu.Unlock()
+	if later != gen {
+		t.Fatalf("indexed file was noted again: %d -> %d", gen, later)
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("second reconcile rebuilt the corpus: %d -> %d", before, got)
+	}
+}
+
+func TestGitignoreWalkRetryNotesTheIgnoredFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, filepath.Join(dir, "secret.go"), "package p\n\nfunc secretSymbol() {}\n")
+	first := Search(Request{Root: dir, Query: "secret symbol", Wait: 5 * time.Second})
+	if len(first.Hits) == 0 || first.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("before gitignore %+v", first)
+	}
+	before := testIndexBuilds.Load()
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, filepath.Join(dir, ".gitignore"), "secret.go\n")
+	setDirReadForTest(t, func(string) ([]os.DirEntry, error) {
+		return nil, os.ErrPermission
+	})
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("failed ignore walk rebuilt the corpus: %d -> %d", before, got)
+	}
+	still := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	if len(still.Hits) == 0 || still.Hits[0].Symbol != "secretSymbol" {
+		t.Fatalf("unread directory dropped the file: %+v", still)
+	}
+	dirReadMu.Lock()
+	dirRead = os.ReadDir
+	dirReadMu.Unlock()
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("retried ignore walk rebuilt the corpus: %d -> %d", before, got)
+	}
+	missed := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range missed.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("retried walk left the ignored file indexed: %+v", missed.Hits)
+		}
+	}
+	kept := Search(Request{Root: dir, Query: "kept visible", Wait: time.Second})
+	if len(kept.Hits) == 0 || kept.Hits[0].Symbol != "keptVisible" {
+		t.Fatalf("kept = %+v", kept)
+	}
+}
+
+func setDirStatForTest(t *testing.T, fn func(string) (os.FileInfo, error)) {
+	t.Helper()
+	dirStatMu.Lock()
+	prev := dirStat
+	dirStat = fn
+	dirStatMu.Unlock()
+	t.Cleanup(func() {
+		dirStatMu.Lock()
+		dirStat = prev
+		dirStatMu.Unlock()
+	})
+}
+
+func setDirReadForTest(t *testing.T, fn func(string) ([]os.DirEntry, error)) {
+	t.Helper()
+	dirReadMu.Lock()
+	prev := dirRead
+	dirRead = fn
+	dirReadMu.Unlock()
+	t.Cleanup(func() {
+		dirReadMu.Lock()
+		dirRead = prev
+		dirReadMu.Unlock()
+	})
+}
+
+func TestGitignoreReadErrorKeepsTheRules(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "keep.go"), "package p\n\nfunc keptVisible() {}\n")
+	writeFile(t, filepath.Join(dir, "secret.go"), "package p\n\nfunc secretSymbol() {}\n")
+	writeFile(t, filepath.Join(dir, ".gitignore"), "secret.go\n")
+	first := Search(Request{Root: dir, Query: "secret symbol", Wait: 5 * time.Second})
+	for _, hit := range first.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("ignored at build: %+v", first.Hits)
+		}
+	}
+	before := testIndexBuilds.Load()
+	time.Sleep(50 * time.Millisecond)
+	writeFile(t, filepath.Join(dir, ".gitignore"), "secret.go\n")
+	setNoteReadForTest(t, func(path string) ([]byte, error) {
+		if strings.HasSuffix(strings.ToLower(path), ".gitignore") {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	})
+	reconcileOnce()
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("gitignore read error rebuilt the corpus: %d -> %d", before, got)
+	}
+	leaked := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range leaked.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("gitignore read error cleared the rule: %+v", leaked.Hits)
+		}
+	}
+	noteReadMu.Lock()
+	noteRead = os.ReadFile
+	noteReadMu.Unlock()
+	reconcileOnce()
+	stillHidden := Search(Request{Root: dir, Query: "secret symbol", Wait: time.Second})
+	for _, hit := range stillHidden.Hits {
+		if hit.Symbol == "secretSymbol" {
+			t.Fatalf("rule lost after the read recovered: %+v", stillHidden.Hits)
+		}
+	}
+	if got := testIndexBuilds.Load(); got != before {
+		t.Fatalf("recovered gitignore read rebuilt the corpus: %d -> %d", before, got)
 	}
 }
 
@@ -1668,6 +2135,17 @@ func setNoteReadForTest(t *testing.T, fn func(string) ([]byte, error)) {
 		noteRead = prev
 		noteReadMu.Unlock()
 	})
+}
+
+func forgetDirtyNote(t *testing.T, path string) {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeMu.Lock()
+	delete(dirtyNotes, noteKey(filepath.Clean(abs)))
+	storeMu.Unlock()
 }
 
 func corpusFor(t *testing.T, dir string) *corpus {

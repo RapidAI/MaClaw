@@ -212,6 +212,10 @@ type walkedFile struct {
 	// mtime stay on the corpus so a later edit can bring it back. A content
 	// write does not change the parent directory mtime.
 	skip bool
+	// unread is a source file whose bytes could not be read. The corpus
+	// stores a zero-identity gone snap, not the real size: a matching
+	// identity would look finished after the dirty note is gone.
+	unread bool
 }
 
 func collectFiles(root, only string, limit int) (files []walkedFile, rules []rule, dirs map[string]time.Time, gitignores map[string]time.Time, truncated bool) {
@@ -223,21 +227,32 @@ func collectFiles(root, only string, limit int) (files []walkedFile, rules []rul
 	indexed := 0
 	var walk func(dir, rel string, inherited []rule)
 	walk = func(dir, rel string, inherited []rule) {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			dirs[rel] = info.ModTime()
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return
 		}
+		dirs[rel] = info.ModTime()
 		if truncated {
 			return
 		}
-		entries, err := os.ReadDir(dir)
+		entries, err := readDir(dir)
 		if err != nil {
+			// A real mtime would look scanned. Zero keeps the next
+			// reconcile from treating this directory as finished.
+			dirs[rel] = time.Time{}
 			return
 		}
 		local := append([]rule{}, inherited...)
 		giPath := filepath.Join(dir, ".gitignore")
 		if info, err := os.Stat(giPath); err == nil && info.Mode().IsRegular() {
-			gitignores[rel] = info.ModTime()
-			if data, err := os.ReadFile(giPath); err == nil {
+			data, err := readNoted(giPath)
+			if err != nil {
+				// Zero stamp stays unequal to the file mtime, so reconcile
+				// reads it again. Recording the real mtime would treat the
+				// missed rules as current.
+				gitignores[rel] = time.Time{}
+			} else {
+				gitignores[rel] = info.ModTime()
 				parsed := parseGitignore(rel, string(data))
 				local = append(local, parsed...)
 				rules = append(rules, parsed...)
@@ -297,8 +312,11 @@ func collectFiles(root, only string, limit int) (files []walkedFile, rules []rul
 				truncated = true
 				return
 			}
-			body, err := os.ReadFile(filepath.Join(dir, name))
+			body, err := readNoted(filepath.Join(dir, name))
 			if err != nil {
+				// The directory stamp is already the real mtime. Without a
+				// snap, pruning this note leaves the file invisible.
+				files = append(files, walkedFile{rel: child, unread: true})
 				NoteDirty(filepath.Join(dir, name))
 				continue
 			}
