@@ -41,6 +41,8 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 			pinned_forever  INTEGER NOT NULL DEFAULT 0,
 			link_url        TEXT NOT NULL DEFAULT '',
 			button_text     TEXT NOT NULL DEFAULT '',
+			source_lang     TEXT NOT NULL DEFAULT '',
+			locales_json    TEXT NOT NULL DEFAULT '',
 			created_by      TEXT NOT NULL DEFAULT '',
 			publish_at      TEXT,
 			expire_at       TEXT,
@@ -71,6 +73,8 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 		`ALTER TABLE hc_notifications ADD COLUMN pinned_forever INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE hc_notifications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE hc_notifications ADD COLUMN button_text TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hc_notifications ADD COLUMN source_lang TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE hc_notifications ADD COLUMN locales_json TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = s.db.ExecContext(ctx, stmt)
 	}
@@ -81,7 +85,7 @@ func (s *SQLiteStore) InitSchema(ctx context.Context) error {
 // fields (scanNotificationRow expects exactly this order).
 const (
 	hcNotificationColumns = `id, title, content, category, priority, audience_type, audience_ids, status, im_push, ` +
-		`pinned, pinned_forever, link_url, button_text, ` +
+		`pinned, pinned_forever, link_url, button_text, source_lang, locales_json, ` +
 		`created_by, publish_at, expire_at, created_at, updated_at`
 )
 
@@ -94,7 +98,7 @@ func (s *SQLiteStore) Create(ctx context.Context, n *Notification) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		args...,
 	)
 	return err
@@ -110,7 +114,7 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO hc_notifications (`+hcNotificationColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			title = excluded.title,
 			content = excluded.content,
@@ -124,6 +128,8 @@ func (s *SQLiteStore) Upsert(ctx context.Context, n *Notification) error {
 			pinned_forever = excluded.pinned_forever,
 			link_url = excluded.link_url,
 			button_text = excluded.button_text,
+			source_lang = excluded.source_lang,
+			locales_json = excluded.locales_json,
 			created_by = excluded.created_by,
 			publish_at = excluded.publish_at,
 			expire_at = excluded.expire_at,
@@ -290,6 +296,7 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		imPush                           int
 		pinned, pinnedForever            int
 		linkURL, buttonText              string
+		sourceLang, localesJSON          string
 		publishAt, expireAt              sql.NullString
 		createdAt, updatedAt             string
 	)
@@ -297,6 +304,7 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 		&n.ID, &n.Title, &n.Content,
 		&category, &priority, &audienceType, &audienceJSON,
 		&status, &imPush, &pinned, &pinnedForever, &linkURL, &buttonText,
+		&sourceLang, &localesJSON,
 		&createdBy,
 		&publishAt, &expireAt, &createdAt, &updatedAt,
 	)
@@ -312,6 +320,8 @@ func scanNotificationRow(scan rowScanner) (*Notification, error) {
 	n.PinnedForever = pinnedForever != 0
 	n.LinkURL = linkURL
 	n.ButtonText = buttonText
+	n.SourceLang = sourceLang
+	n.Locales = unmarshalLocales(localesJSON)
 	n.CreatedBy = createdBy
 	n.CreatedAt = mustParseTime(createdAt)
 	n.UpdatedAt = mustParseTime(updatedAt)
@@ -402,6 +412,7 @@ func notificationSQLArgs(n *Notification) ([]interface{}, error) {
 		string(n.Category), string(n.Priority), string(n.AudienceType),
 		string(audienceJSON), string(n.Status), imPush,
 		pinned, pinnedForever, n.LinkURL, n.ButtonText,
+		n.SourceLang, marshalLocales(n.Locales),
 		n.CreatedBy,
 		formatNullableTime(n.PublishAt), formatNullableTime(n.ExpireAt),
 		n.CreatedAt.UTC().Format(time.RFC3339), n.UpdatedAt.UTC().Format(time.RFC3339),

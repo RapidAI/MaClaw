@@ -23,10 +23,11 @@ type HubResolver interface {
 
 // Service implements HubCenter notification business logic.
 type Service struct {
-	store    Store
-	cascade  *CascadeService
-	resolver HubResolver
-	sync     SyncRecorder
+	store      Store
+	cascade    *CascadeService
+	resolver   HubResolver
+	sync       SyncRecorder
+	translator Translator
 }
 
 // SyncRecorder records notification state changes for HubCenter HA.
@@ -51,6 +52,30 @@ func (s *Service) SetSyncRecorder(recorder SyncRecorder) {
 	s.sync = recorder
 }
 
+// SetTranslator installs the model-service translator used when an admin
+// publishes a notice. The translated locales cascade to Hubs with the notice.
+func (s *Service) SetTranslator(tr Translator) {
+	if s == nil {
+		return
+	}
+	s.translator = tr
+}
+
+func (s *Service) localesForCreate(ctx context.Context, req CreateRequest) (string, map[string]LocaleCopy) {
+	if len(req.Locales) > 0 {
+		return NormalizeNotificationLang(req.SourceLang), cloneLocales(req.Locales)
+	}
+	var tr Translator
+	if s != nil {
+		tr = s.translator
+	}
+	return fillNotificationLocales(ctx, req.SourceLang, req.TargetLangs, LocaleCopy{
+		Title:      strings.TrimSpace(req.Title),
+		Content:    strings.TrimSpace(req.Content),
+		ButtonText: strings.TrimSpace(req.ButtonText),
+	}, tr)
+}
+
 // Validation errors.
 var (
 	ErrTitleRequired       = errors.New("title is required")
@@ -72,8 +97,8 @@ var (
 )
 
 // validatePinnedFields validates the pinned-card extras and applies defaults:
-// an empty button label falls back to DefaultPinnedButtonText, the link must
-// be http(s) so clients can open it, and both stay within caps.
+// an empty button label falls back to the source language's "View details",
+// the link must be http(s) so clients can open it, and both stay within caps.
 func validatePinnedFields(req *CreateRequest) error {
 	req.LinkURL = strings.TrimSpace(req.LinkURL)
 	if req.LinkURL != "" {
@@ -87,7 +112,7 @@ func validatePinnedFields(req *CreateRequest) error {
 	}
 	req.ButtonText = strings.TrimSpace(req.ButtonText)
 	if req.ButtonText == "" && (req.Pinned || req.PinnedForever) {
-		req.ButtonText = DefaultPinnedButtonText
+		req.ButtonText = DefaultPinnedButtonForLang(req.SourceLang)
 	}
 	if len([]rune(req.ButtonText)) > 20 {
 		return ErrButtonTextTooLong
@@ -111,6 +136,7 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 	}
 
 	now := time.Now().UTC()
+	sourceLang, locales := s.localesForCreate(ctx, req)
 	notif := &Notification{
 		ID:            uuid.New().String(),
 		Title:         strings.TrimSpace(req.Title),
@@ -125,6 +151,8 @@ func (s *Service) CreateNotification(ctx context.Context, req CreateRequest) (*N
 		PinnedForever: req.PinnedForever,
 		LinkURL:       req.LinkURL,
 		ButtonText:    req.ButtonText,
+		SourceLang:    sourceLang,
+		Locales:       locales,
 		CreatedBy:     req.CreatedBy,
 		PublishAt:     req.PublishAt,
 		ExpireAt:      req.ExpireAt,

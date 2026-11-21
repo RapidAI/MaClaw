@@ -864,6 +864,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	var haSvc *ha.Service
 	var userUsageRepo store.HubUserUsageRepository
 	var notifService *notification.Service
+	var llmSvc *llmservice.Service
 	for _, svc := range optionalSvcs {
 		switch v := svc.(type) {
 		case *ha.Service:
@@ -874,7 +875,14 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 			userUsageRepo = v
 		case *notification.Service:
 			notifService = v
+		case *llmservice.Service:
+			if llmSvc == nil {
+				llmSvc = v
+			}
 		}
+	}
+	if notifService != nil && llmSvc != nil {
+		notifService.SetTranslator(newServiceGroupTranslator(systemSettings, llmSvc))
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("MaClaw-hubcenter"))
@@ -956,6 +964,9 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))
+	mux.HandleFunc("POST /api/third-party/sessions", ThirdPartyRelaySessionHandler())
+	mux.HandleFunc("POST /api/third-party/sessions/deliver", ThirdPartyRelayDeliverHandler())
+	mux.HandleFunc("POST /api/third-party/sessions/token", ThirdPartyRelayTokenHandler())
 	mux.HandleFunc("GET /api/client/quality", ClientQualityHandler(haSvc))
 	mux.HandleFunc("GET /api/client/endpoints", ClientEndpointsHandler(haSvc))
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))
@@ -1025,7 +1036,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/skillhub/import-url", RequireAdmin(adminService, skillHandlers.AdminImportFromURL))
 	// Gossip - anonymous gossip board
 	gossipWriteRL := newGossipRateLimiter(10, 10*time.Minute) // 10 writes per 10 min per key
-	mux.HandleFunc("POST /api/gossip/publish", gossipRateLimitMiddleware(gossipWriteRL, GossipPublishHandler(gossipRepo, gossipCache, systemSettings)))
+	mux.HandleFunc("POST /api/gossip/publish", gossipRateLimitMiddleware(gossipWriteRL, GossipPublishHandler(gossipRepo, gossipCache, systemSettings, llmSvc)))
 	mux.HandleFunc("GET /api/gossip/browse", GossipBrowseHandler(gossipRepo))
 	mux.HandleFunc("POST /api/gossip/comment", gossipRateLimitMiddleware(gossipWriteRL, GossipCommentHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("POST /api/gossip/rate", gossipRateLimitMiddleware(gossipWriteRL, GossipRateHandler(gossipRepo, gossipCache)))
@@ -1042,8 +1053,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// Gossip moderation (LLM)
 	mux.HandleFunc("POST /api/admin/gossip/flag", RequireAdmin(adminService, AdminFlagGossipHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("GET /api/admin/moderation/config", RequireAdmin(adminService, GetModerationConfigHandler(systemSettings)))
-	mux.HandleFunc("POST /api/admin/moderation/config", RequireAdmin(adminService, UpdateModerationConfigHandler(systemSettings)))
-	mux.HandleFunc("POST /api/admin/moderation/test", RequireAdmin(adminService, TestModerationHandler(systemSettings)))
+	mux.HandleFunc("POST /api/admin/moderation/config", RequireAdmin(adminService, UpdateModerationConfigHandler(systemSettings, llmSvc)))
+	mux.HandleFunc("POST /api/admin/moderation/test", RequireAdmin(adminService, TestModerationHandler(systemSettings, llmSvc)))
 	registerSharedStaticAssets(mux, "./web")
 	registerHomeStaticRoutes(mux, "./web/home", "/")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")

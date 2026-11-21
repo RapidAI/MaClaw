@@ -51,6 +51,13 @@ Object.assign(I18N_EN, {
   notifFormLinkPlaceholder: 'https://... opened by the banner button',
   notifFormButtonText: 'Button label',
   notifFormButtonTextPlaceholder: 'View details',
+  notifFormSourceLang: 'Written in',
+  notifFormTranslateTargets: 'Also save in',
+  notifFormTranslateHint: 'Checked languages are translated from the original. The link is not translated.',
+  notifLangZhHans: 'Simplified Chinese',
+  notifLangZhHant: 'Traditional Chinese',
+  notifLangEn: 'English',
+  notifLangMn: 'Cyrillic Mongolian',
   notifBadgePinned: 'PINNED',
   notifFormPublishNow: 'Publish Now',
   notifFormSaveDraft: 'Save Draft',
@@ -139,6 +146,13 @@ Object.assign(I18N_ZH, {
   notifFormLinkPlaceholder: 'https://... 由浮窗按钮打开',
   notifFormButtonText: '按钮名称',
   notifFormButtonTextPlaceholder: '查看详情',
+  notifFormSourceLang: '原文语言',
+  notifFormTranslateTargets: '同时保存为',
+  notifFormTranslateHint: '勾选的语言会按原文翻译保存。链接不翻译。',
+  notifLangZhHans: '简体中文',
+  notifLangZhHant: '繁体中文',
+  notifLangEn: '英文',
+  notifLangMn: '西里尔蒙古语',
   notifBadgePinned: '置顶',
   notifFormPublishNow: '立即发布',
   notifFormSaveDraft: '保存草稿',
@@ -473,6 +487,39 @@ function notifCascadeTableHtml(results) {
     + '<tbody>' + rows + '</tbody></table></div>';
 }
 
+function notifDefaultSourceLang() {
+  var lang = (typeof currentLang === 'string') ? currentLang : 'en';
+  if (lang === 'zh') return 'zh-Hans';
+  if (lang === 'mn') return 'mn';
+  return 'en';
+}
+
+var notifLangChoices = [
+  ['zh-Hans', 'notifLangZhHans'],
+  ['zh-Hant', 'notifLangZhHant'],
+  ['en', 'notifLangEn'],
+  ['mn', 'notifLangMn']
+];
+
+function notifSourceLangOptions() {
+  var selected = notifDefaultSourceLang();
+  return notifLangChoices.map(function(opt) {
+    return '<option value="' + opt[0] + '"' + (opt[0] === selected ? ' selected' : '') + '>' + escapeHtml(tr(opt[1])) + '</option>';
+  }).join('');
+}
+
+function notifTargetLangChecks() {
+  return notifLangChoices.map(function(opt) {
+    return '<label class="inline-label"><input type="checkbox" class="notif-target-lang auto-check" value="' + opt[0] + '" checked> ' + escapeHtml(tr(opt[1])) + '</label>';
+  }).join('');
+}
+
+function notifSelectedTargetLangs() {
+  var langs = [];
+  document.querySelectorAll('.notif-target-lang:checked').forEach(function(el) { langs.push(el.value); });
+  return langs;
+}
+
 // --- Create view ---
 function renderNotifCreate() {
   notifViewMode = 'create';
@@ -485,6 +532,11 @@ function renderNotifCreate() {
     + '<input id="notifTitleInput" maxlength="100" placeholder="' + tr('notifFormTitlePlaceholder') + '"></div>'
     + '<div><label for="notifContentInput">' + tr('notifFormContent') + '</label>'
     + '<textarea id="notifContentInput" maxlength="2000" rows="6" placeholder="' + tr('notifFormContentPlaceholder') + '"></textarea></div>'
+    + '<div><label for="notifSourceLang">' + tr('notifFormSourceLang') + '</label>'
+    + '<select id="notifSourceLang">' + notifSourceLangOptions() + '</select>'
+    + '<div class="item-meta section-gap-sm">' + tr('notifFormTranslateTargets') + '</div>'
+    + '<div class="notif-lang-checks">' + notifTargetLangChecks() + '</div>'
+    + '<div class="hint">' + tr('notifFormTranslateHint') + '</div></div>'
     + '<div class="grid3">'
     + '<div><label for="notifCategorySelect">' + tr('notifFormCategory') + '</label>'
     + '<select id="notifCategorySelect">'
@@ -703,7 +755,9 @@ function notifSubmit(status) {
     pinned: pinned,
     pinned_forever: pinnedForever,
     link_url: linkUrl,
-    button_text: buttonText
+    button_text: buttonText,
+    source_lang: (document.getElementById('notifSourceLang') || {}).value || notifDefaultSourceLang(),
+    target_langs: notifSelectedTargetLangs()
   };
   if (publishAt) body.publish_at = new Date(publishAt).toISOString();
   if (expireAt) body.expire_at = new Date(expireAt).toISOString();

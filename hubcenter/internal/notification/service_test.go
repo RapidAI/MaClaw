@@ -258,6 +258,24 @@ func TestCreateNotificationPinnedDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("javascript link error = %v, want %v", err, ErrLinkURLInvalid)
 	}
 
+	// An English source keeps the English default, including the stored locale.
+	en, err := svc.CreateNotification(ctx, CreateRequest{
+		Title:        "Hello",
+		Content:      "Body",
+		Category:     CategorySystemAnnouncement,
+		AudienceType: AudienceAll,
+		Status:       StatusPublished,
+		Pinned:       true,
+		SourceLang:   LangEn,
+		LinkURL:      "https://example.com/en",
+	})
+	if err != nil {
+		t.Fatalf("english pinned create: %v", err)
+	}
+	if en.SourceLang != LangEn || en.ButtonText != "View details" || en.Locales[LangEn].ButtonText != "View details" {
+		t.Fatalf("english pinned = lang %q button %q locale %#v", en.SourceLang, en.ButtonText, en.Locales)
+	}
+
 	// An over-long button label is rejected.
 	if _, err := svc.CreateNotification(ctx, CreateRequest{
 		Title:        "long button",

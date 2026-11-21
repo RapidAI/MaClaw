@@ -1,9 +1,8 @@
 package httpapi
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -19,6 +18,17 @@ func TestGossipLowValueModerationFlagsAndHidesTestContent(t *testing.T) {
 	}, env.token)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("save moderation config: %d %s", resp.Code, resp.Body.String())
+	}
+	resp = doJSONRequest(t, env.handler, http.MethodGet, "/api/admin/moderation/config", nil, env.token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("load moderation config: %d %s", resp.Code, resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), "api_key") {
+		t.Fatalf("moderation config must not return an api key: %s", resp.Body.String())
+	}
+	loaded := decodeJSON(t, resp.Body.Bytes())
+	if _, ok := loaded["service_group_id"]; !ok {
+		t.Fatalf("moderation config missing service_group_id: %v", loaded)
 	}
 
 	resp = doJSONRequest(t, env.handler, http.MethodPost, "/api/admin/moderation/test", map[string]any{
@@ -84,39 +94,19 @@ func TestLowValueContentRule(t *testing.T) {
 }
 
 func TestModerationUsesLLMBeforeLowValueFallback(t *testing.T) {
-	var called bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var systemPrompt, userPrompt string
+	called := false
+	flagged := moderateContent(t.Context(), &LLMModerationConfig{Enabled: true}, "test", func(_ context.Context, system, user string) (string, error) {
 		called = true
-		var req struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if len(req.Messages) != 2 {
-			t.Fatalf("expected system and user messages, got %#v", req.Messages)
-		}
-		if req.Messages[0].Content == "" || !strings.Contains(req.Messages[1].Content, "test") {
-			t.Fatalf("expected prompt to include content under review, got %#v", req.Messages)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"choices": []map[string]any{{
-				"message": map[string]any{"content": "PASS"},
-			}},
-		})
-	}))
-	defer server.Close()
-
-	flagged := moderateContent(t.Context(), &LLMModerationConfig{
-		Enabled:   true,
-		URL:       server.URL,
-		APIKey:    "test-key",
-		ModelName: "test-model",
-	}, "test")
+		systemPrompt = system
+		userPrompt = user
+		return "PASS", nil
+	})
 	if !called {
 		t.Fatal("expected moderation to call LLM before applying low-value fallback")
+	}
+	if systemPrompt == "" || !strings.Contains(userPrompt, "test") {
+		t.Fatalf("expected prompt to include content under review, got system=%q user=%q", systemPrompt, userPrompt)
 	}
 	if !flagged {
 		t.Fatal("expected low-value fallback to flag test after LLM PASS")
@@ -126,26 +116,10 @@ func TestModerationUsesLLMBeforeLowValueFallback(t *testing.T) {
 func TestModerationLimitsLLMPromptContent(t *testing.T) {
 	longContent := strings.Repeat("x", llmModerationPromptContentRuneLimit+512)
 	var prompt string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if len(req.Messages) != 2 {
-			t.Fatalf("expected system and user messages, got %#v", req.Messages)
-		}
-		prompt = req.Messages[1].Content
-		writeJSON(w, http.StatusOK, map[string]any{
-			"choices": []map[string]any{{"message": map[string]any{"content": "PASS"}}},
-		})
-	}))
-	defer server.Close()
-
-	_ = moderateContent(t.Context(), &LLMModerationConfig{Enabled: true, URL: server.URL, APIKey: "test-key", ModelName: "test-model"}, longContent)
+	_ = moderateContent(t.Context(), &LLMModerationConfig{Enabled: true}, longContent, func(_ context.Context, _, user string) (string, error) {
+		prompt = user
+		return "PASS", nil
+	})
 	if !strings.Contains(prompt, "...[truncated]") {
 		t.Fatalf("expected truncated marker in prompt")
 	}

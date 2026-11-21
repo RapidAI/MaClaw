@@ -100,19 +100,22 @@ type Notification struct {
 	// status row. PinnedForever marks the ONE permanent pin that stays
 	// leftmost in that card; a pinned message is implied. All four fields
 	// cascade to Hubs verbatim through the JSON payload.
-	Pinned        bool       `json:"pinned"`
-	PinnedForever bool       `json:"pinned_forever"`
-	LinkURL       string     `json:"link_url"`
-	ButtonText    string     `json:"button_text"`
-	CreatedBy     string     `json:"created_by"`
-	PublishAt     *time.Time `json:"publish_at,omitempty"`
-	ExpireAt      *time.Time `json:"expire_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	Pinned        bool                  `json:"pinned"`
+	PinnedForever bool                  `json:"pinned_forever"`
+	LinkURL       string                `json:"link_url"`
+	ButtonText    string                `json:"button_text"`
+	SourceLang    string                `json:"source_lang,omitempty"`
+	Locales       map[string]LocaleCopy `json:"locales,omitempty"`
+	CreatedBy     string                `json:"created_by"`
+	PublishAt     *time.Time            `json:"publish_at,omitempty"`
+	ExpireAt      *time.Time            `json:"expire_at,omitempty"`
+	CreatedAt     time.Time             `json:"created_at"`
+	UpdatedAt     time.Time             `json:"updated_at"`
 }
 
-// DefaultPinnedButtonText is the label used when an admin publishes a pinned
-// message without naming its action button.
+// DefaultPinnedButtonText is the Simplified Chinese label used when an admin
+// publishes a pinned message without naming its action button. Other source
+// languages use DefaultPinnedButtonForLang.
 const DefaultPinnedButtonText = "查看详情"
 
 // CreateRequest is the input for creating a HubCenter notification.
@@ -125,15 +128,18 @@ type CreateRequest struct {
 	AudienceIDs  []string     `json:"audience_ids"`
 	Status       Status       `json:"status"`
 	IMPush       bool         `json:"im_push"`
-	// Pinned-card fields. ButtonText defaults to DefaultPinnedButtonText when
-	// pinned and left empty.
-	Pinned        bool       `json:"pinned"`
-	PinnedForever bool       `json:"pinned_forever"`
-	LinkURL       string     `json:"link_url"`
-	ButtonText    string     `json:"button_text"`
-	CreatedBy     string     `json:"created_by"`
-	PublishAt     *time.Time `json:"publish_at,omitempty"`
-	ExpireAt      *time.Time `json:"expire_at,omitempty"`
+	// Pinned-card fields. An empty ButtonText on a pin becomes the source
+	// language's "View details" label.
+	Pinned        bool                  `json:"pinned"`
+	PinnedForever bool                  `json:"pinned_forever"`
+	LinkURL       string                `json:"link_url"`
+	ButtonText    string                `json:"button_text"`
+	SourceLang    string                `json:"source_lang,omitempty"`
+	TargetLangs   []string              `json:"target_langs,omitempty"`
+	Locales       map[string]LocaleCopy `json:"locales,omitempty"`
+	CreatedBy     string                `json:"created_by"`
+	PublishAt     *time.Time            `json:"publish_at,omitempty"`
+	ExpireAt      *time.Time            `json:"expire_at,omitempty"`
 }
 
 // ListFilter defines the filtering criteria for listing notifications.

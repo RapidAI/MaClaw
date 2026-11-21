@@ -419,7 +419,11 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		app.goBackground(ha.NewSyncer(haSvc, time.Duration(cfg.HA.SyncIntervalSeconds)*time.Second, cfg.HA.PullBatchSize).Run)
 	}
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage, notifSvcCenter)
+	var llmSvc *llmservice.Service
+	if llmModule != nil {
+		llmSvc = llmModule.Service
+	}
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.FailureLogs, gossipRepo, gossipCache, smHandlers, systemSettings, st.News, haConfigSvc, haSvc, st.HubUserUsage, notifSvcCenter, llmSvc)
 
 	app.Store = st
 	app.AdminService = adminService

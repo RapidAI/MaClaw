@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -36,7 +37,7 @@ func generateID() string {
 	return fmt.Sprintf("%d-%s", time.Now().UnixMilli(), hex.EncodeToString(b))
 }
 
-func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache, settings store.SystemSettingsRepository) http.HandlerFunc {
+func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache, settings store.SystemSettingsRepository, llm *llmservice.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req gossipPublishRequest
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
@@ -67,7 +68,7 @@ func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache, set
 		if settings != nil {
 			cfg, _ := LoadModerationConfig(r.Context(), settings)
 			if cfg != nil && cfg.Enabled {
-				flagged = moderateContent(r.Context(), cfg, content)
+				flagged = moderateContent(r.Context(), cfg, content, moderationCompleter(r.Context(), settings, llm))
 			}
 		}
 
