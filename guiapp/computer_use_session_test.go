@@ -18,6 +18,7 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 		globalComputerUse.horizonClaimOnly = nil
 		globalComputerUse.mu.Unlock()
 		computerUseCropLabelRead = nil
+		computerUsePolicyWindowHook = nil
 		cuCancelLabelPrefetch()
 	})
 	globalComputerUse.mu.Lock()
@@ -29,6 +30,7 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 	globalComputerUse.horizonClaimOnly = nil
 	globalComputerUse.mu.Unlock()
 	computerUseCropLabelRead = nil
+	computerUsePolicyWindowHook = nil
 	cuCancelLabelPrefetch()
 }
 

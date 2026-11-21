@@ -11,42 +11,48 @@ import (
 	"time"
 )
 
-// GUI embed keeps the managed browser off the desktop. The MaClaw preview
-// shows the page and the person takes over there. connect_user still attaches
-// to a browser the person already started; this flag only changes launches
-// that this process owns.
+// GUI embed mirrors the managed browser in the assistant preview. The process
+// stays a normal window. connect_user still attaches to a browser the person
+// already started; this flag only changes launches that this process owns.
 var guiEmbedEnabled atomic.Bool
 
-// EnableGUIEmbed turns on windowless launch for managed profiles. The GUI
-// calls it once at startup. Tests and the TUI leave it off, so they keep
-// today's visible browser.
+// EnableGUIEmbed marks that the assistant preview is mirroring the managed
+// browser. The GUI calls it once at startup. Tests and the TUI leave it off.
+// The browser process stays a normal window either way. Headless Chrome is a
+// different browser to page scripts, and sites that score that environment
+// refuse the session after a login that itself succeeded.
 func EnableGUIEmbed(on bool) {
 	guiEmbedEnabled.Store(on)
 }
 
-// GUIEmbedEnabled reports whether managed launches must stay off-screen.
+// GUIEmbedEnabled reports whether the assistant preview is active.
 func GUIEmbedEnabled() bool {
 	return guiEmbedEnabled.Load()
 }
 
 // managedLaunchArgs is the Chrome/Edge command line for a managed profile.
-// With GUI embed on, the process is headless so no window pops; the preview
-// paints a live view of the same page.
+// The process is headed. A headless process sets navigator.webdriver, has no
+// window chrome, an empty plugin list, and a software GL renderer; risk
+// checks treat that as automation and reject the signed request. The preview
+// paints screenshots of this window. It is not a reason to switch the process
+// to headless. AutomationControlled stays off so the webdriver bit remains
+// the normal false. No page script is injected to lie about it.
 func managedLaunchArgs(port int, userDataDir string) []string {
+	// Only the loopback origin this process dials may attach. A wildcard lets
+	// a page script open its own debugger socket to the same port.
+	origins := fmt.Sprintf("http://127.0.0.1:%d,http://localhost:%d", port, port)
 	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
+		"--remote-allow-origins=" + origins,
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--disable-blink-features=AutomationControlled",
 		"--user-data-dir=" + userDataDir,
 	}
 	if GUIEmbedEnabled() {
-		args = append(args,
-			"--headless=new",
-			"--window-size=1280,800",
-			"--hide-scrollbars",
-			"--force-device-scale-factor=1",
-			"--remote-allow-origins=*",
-		)
+		// Outer window size. Clicks use the CSS viewport from layout metrics,
+		// so the OS scale factor is left alone.
+		args = append(args, "--window-size=1280,800")
 	}
 	return args
 }

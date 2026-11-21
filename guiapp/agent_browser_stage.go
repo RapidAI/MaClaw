@@ -80,9 +80,11 @@ func (a *App) installAgentBrowserStage() {
 	liveAgentBrowser.mu.Lock()
 	liveAgentBrowser.app = a
 	liveAgentBrowser.mu.Unlock()
+	// The preview mirrors a normal Chrome window. Headless is not used: page
+	// scripts can tell that process from a user's browser.
 	browser.EnableGUIEmbed(true)
 	browser.SetBrowserStageNotifier(liveAgentBrowser.note)
-	log.Printf("[browser] preview stage on; managed browser launches stay inside the assistant preview")
+	log.Printf("[browser] preview stage on; managed browser is a normal window mirrored in the assistant preview")
 }
 
 func (st *agentBrowserStage) note(n browser.BrowserStageNotice) {

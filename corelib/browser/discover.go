@@ -194,13 +194,28 @@ func DiscoverOrLaunchPersistentCtx(ctx context.Context) (string, error) {
 		return "", err
 	}
 	profileDir := persistentProfileDir()
-	if addr, ok := discoverCDPAddrFromManagedProcess(profileDir); ok {
+	// One process snapshot. A second CIM query on every browser start is
+	// wasted, and the headless decision must use the same lines as the reuse.
+	lines := managedBrowserCommandLines(profileDir)
+	// A managed Chrome left running from before this process was headed must
+	// not be reused. Attaching keeps the headless fingerprint, and the profile
+	// cookies survive a restart of that process. DevToolsActivePort from that
+	// process is stale and must not be dialed.
+	retiredHeadless := false
+	if commandLinesRunHeadless(lines) {
+		if err := retireHeadlessManagedBrowser(ctx, profileDir); err != nil {
+			return "", err
+		}
+		retiredHeadless = true
+	} else if addr, ok := cdpAddrFromCommandLines(lines); ok {
 		if _, err := DiscoverTargetsContext(ctx, addr); err == nil {
 			log.Printf("[browser] reused managed browser from process command line: %s", addr)
 			return addr, nil
 		}
 	}
-	if addr, ok := readCDPAddrFromUserDataDir(profileDir); ok {
+	if retiredHeadless {
+		os.Remove(filepath.Join(profileDir, "DevToolsActivePort"))
+	} else if addr, ok := readCDPAddrFromUserDataDir(profileDir); ok {
 		if _, err := DiscoverTargetsContext(ctx, addr); err == nil {
 			log.Printf("[browser] reused managed browser from DevToolsActivePort: %s", addr)
 			return addr, nil
@@ -211,7 +226,7 @@ func DiscoverOrLaunchPersistentCtx(ctx context.Context) (string, error) {
 	// unreachable. Starting a second Chrome against the same profile causes process
 	// churn and unstable sessions. Recovery must reconnect to the existing
 	// profile process or ask the user to close it manually.
-	if browserProcessExistsForDir(profileDir) {
+	if !retiredHeadless && browserProcessExistsForDir(profileDir) {
 		if addr, ok := waitForPersistentCDPCtx(ctx, profileDir, 10*time.Second); ok {
 			return addr, nil
 		}
@@ -516,6 +531,9 @@ func managedBrowserKey(userDataDir string) string {
 
 // killManagedBrowserForDir kills the browser process that we started for a profile.
 // Returns true if a matching managed process was found and killed.
+// The stored PID is often the Windows launcher. Chrome's real browser and its
+// children are other processes with the same profile, so the directory sweep
+// always runs. Returning after the launcher kill left a headless browser up.
 func killManagedBrowserForDir(userDataDir string) bool {
 	managedBrowserMu.Lock()
 	key := managedBrowserKey(userDataDir)
@@ -524,14 +542,20 @@ func killManagedBrowserForDir(userDataDir string) bool {
 		delete(managedBrowserProcs, key)
 	}
 	managedBrowserMu.Unlock()
+	killedTracked := false
 	if proc != nil {
 		log.Printf("[browser] 终止托管浏览器进程 (PID %d)...", proc.Pid)
 		_ = proc.Kill()
-		// Give the OS a moment to release resources.
+		killedTracked = true
+	}
+	if killManagedBrowserProcessesByDir(userDataDir) {
+		return true
+	}
+	if killedTracked {
 		time.Sleep(1 * time.Second)
 		return true
 	}
-	return killManagedBrowserProcessesByDir(userDataDir)
+	return false
 }
 
 func killManagedBrowserProcessesByDir(userDataDir string) bool {
@@ -860,32 +884,11 @@ func readCDPAddrFromUserDataDir(userDataDir string) (string, bool) {
 }
 
 func discoverCDPAddrFromManagedProcess(userDataDir string) (string, bool) {
-	if strings.TrimSpace(userDataDir) == "" {
-		return "", false
-	}
-	if runtime.GOOS != "windows" {
-		for _, line := range browserProcessCommandLinesUnix(userDataDir) {
-			port, ok := remoteDebuggingPortFromCommandLine(line)
-			if !ok || !probePort(port) {
-				continue
-			}
-			return fmt.Sprintf("http://127.0.0.1:%d", port), true
-		}
-		return "", false
-	}
-	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
-	ps := fmt.Sprintf(`$needle = '%s'; Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf('--remote-debugging-port', [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { $_.CommandLine }`, needle)
-	psExe, err := coretool.ResolveWindowsPowerShell()
-	if err != nil {
-		return "", false
-	}
-	cmd := exec.Command(psExe, "-NoProfile", "-Command", ps)
-	coretool.HideCommandWindow(cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
+	return cdpAddrFromCommandLines(managedBrowserCommandLines(userDataDir))
+}
+
+func cdpAddrFromCommandLines(lines []string) (string, bool) {
+	for _, line := range lines {
 		port, ok := remoteDebuggingPortFromCommandLine(line)
 		if !ok || !probePort(port) {
 			continue
@@ -893,6 +896,127 @@ func discoverCDPAddrFromManagedProcess(userDataDir string) (string, bool) {
 		return fmt.Sprintf("http://127.0.0.1:%d", port), true
 	}
 	return "", false
+}
+
+// commandLineIsHeadless reports a Chrome/Edge command line that started the
+// headless browser. That process is not reusable for agent browsing.
+// The switch must be its own flag. A profile path that merely contains the
+// word headless is a normal window.
+func commandLineIsHeadless(commandLine string) bool {
+	lower := strings.ToLower(commandLine)
+	idx := strings.Index(lower, "--headless")
+	if idx < 0 {
+		return false
+	}
+	end := idx + len("--headless")
+	if end >= len(lower) {
+		return true
+	}
+	switch lower[end] {
+	case '=', ' ', '\t', '"', '\'':
+		return true
+	default:
+		return false
+	}
+}
+
+func commandLinesRunHeadless(lines []string) bool {
+	for _, line := range lines {
+		if commandLineIsHeadless(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// retireHeadlessManagedBrowser closes a managed browser that is still the
+// headless process. The next launch opens a normal window on the same profile.
+// The caller has already seen --headless on the command line.
+func retireHeadlessManagedBrowser(ctx context.Context, userDataDir string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	log.Printf("[browser] managed browser is headless; restarting as a normal window")
+	if !killManagedBrowserForDir(userDataDir) && browserProcessExistsForDir(userDataDir) {
+		return fmt.Errorf("managed browser is headless and could not be closed")
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		if !browserProcessExistsForDir(userDataDir) {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if browserProcessExistsForDir(userDataDir) {
+		return fmt.Errorf("managed browser is still headless after close")
+	}
+	return nil
+}
+
+func managedBrowserCommandLines(userDataDir string) []string {
+	if strings.TrimSpace(userDataDir) == "" {
+		return nil
+	}
+	if runtime.GOOS != "windows" {
+		var lines []string
+		for _, line := range browserProcessCommandLinesUnix(userDataDir) {
+			if _, ok := remoteDebuggingPortFromCommandLine(line); ok {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+	ps := managedBrowserCommandLineScript(userDataDir)
+	psExe, err := coretool.ResolveWindowsPowerShell()
+	if err != nil {
+		return nil
+	}
+	cmd := exec.Command(psExe, "-NoProfile", "-Command", ps)
+	coretool.HideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	return parseManagedCommandLineOutput(string(out))
+}
+
+// managedBrowserCommandLineScript prints one unwrapped record per process.
+// PowerShell's default formatter folds a Chrome command line at the console
+// width. A fold in the middle of --headless hides the switch, and the caller
+// then reuses the headless browser.
+func managedBrowserCommandLineScript(userDataDir string) string {
+	needle := strings.ReplaceAll(filepath.Clean(userDataDir), "'", "''")
+	return fmt.Sprintf(`$needle = '%s'; Get-CimInstance Win32_Process -Filter "name='chrome.exe' OR name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf('--remote-debugging-port', [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { [Console]::Out.WriteLine('MACLAW_CMDLINE ' + ($_.CommandLine -replace "[\r\n]", ' ')) }`, needle)
+}
+
+// parseManagedCommandLineOutput keeps MACLAW_CMDLINE records and drops
+// formatter or CLIXML noise around them.
+func parseManagedCommandLineOutput(out string) []string {
+	const prefix = "MACLAW_CMDLINE "
+	var lines []string
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		cmd := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if cmd != "" {
+			lines = append(lines, cmd)
+		}
+	}
+	return lines
 }
 
 func remoteDebuggingPortFromCommandLine(commandLine string) (int, bool) {

@@ -67,6 +67,58 @@ func TestSummarizeStderrCompactsWhitespace(t *testing.T) {
 	}
 }
 
+func TestCommandLineIsHeadless(t *testing.T) {
+	if !commandLineIsHeadless(`chrome.exe --headless=new --remote-debugging-port=9222`) {
+		t.Fatal("new headless command line was treated as a normal window")
+	}
+	if !commandLineIsHeadless(`chrome.exe --headless --disable-gpu`) {
+		t.Fatal("old headless command line was treated as a normal window")
+	}
+	if commandLineIsHeadless(`chrome.exe --remote-debugging-port=9222 --disable-blink-features=AutomationControlled`) {
+		t.Fatal("headed command line was treated as headless")
+	}
+	if commandLineIsHeadless(`chrome.exe --user-data-dir=D:\headless-profile --remote-debugging-port=9222`) {
+		t.Fatal("a profile path containing headless was treated as the headless switch")
+	}
+	if !commandLinesRunHeadless([]string{"chrome.exe --window-size=1280,800", "chrome.exe --headless=new"}) {
+		t.Fatal("a headless process among several was ignored")
+	}
+	if commandLinesRunHeadless(nil) || commandLinesRunHeadless([]string{"chrome.exe --remote-debugging-port=9222"}) {
+		t.Fatal("headed processes were marked headless")
+	}
+}
+
+func TestParseManagedCommandLineOutput(t *testing.T) {
+	out := "#< CLIXML\r\nMACLAW_CMDLINE chrome.exe --remote-debugging-port=9222 --headless=new --user-data-dir=C:\\p\r\n<Objs></Objs>\r\nMACLAW_CMDLINE chrome.exe --remote-debugging-port=9333 --disable-blink-features=AutomationControlled\r\n"
+	lines := parseManagedCommandLineOutput(out)
+	if len(lines) != 2 {
+		t.Fatalf("lines=%q", lines)
+	}
+	if !commandLineIsHeadless(lines[0]) || commandLineIsHeadless(lines[1]) {
+		t.Fatalf("classification %#v", lines)
+	}
+	port, ok := remoteDebuggingPortFromCommandLine(lines[0])
+	if !ok || port != 9222 {
+		t.Fatalf("port=%d ok=%v", port, ok)
+	}
+	if len(parseManagedCommandLineOutput("")) != 0 {
+		t.Fatal("empty output produced a command line")
+	}
+}
+
+func TestManagedBrowserCommandLineScriptDoesNotWrap(t *testing.T) {
+	ps := managedBrowserCommandLineScript(`C:\Users\ma139\.maclaw\browser-profile`)
+	if !strings.Contains(ps, "[Console]::Out.WriteLine") || !strings.Contains(ps, "MACLAW_CMDLINE ") {
+		t.Fatalf("script must write one raw record: %s", ps)
+	}
+	if strings.Contains(ps, "Format-Table") || strings.Contains(ps, "Out-String") {
+		t.Fatalf("script folds long command lines: %s", ps)
+	}
+	if !strings.Contains(ps, `.maclaw`) || strings.Contains(ps, "Stop-Process") {
+		t.Fatalf("script = %s", ps)
+	}
+}
+
 func TestRemoteDebuggingPortFromCommandLine(t *testing.T) {
 	cmd := `"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=3717 --user-data-dir="C:\Users\ma139\.maclaw\browser-profile"`
 	port, ok := remoteDebuggingPortFromCommandLine(cmd)

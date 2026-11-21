@@ -17,11 +17,11 @@ var errViewportNoCaret = errors.New("文字没有进到页面上的输入框。�
 // already typed stays out of this error.
 var errViewportNewCaret = errors.New("viewport caret moved")
 
-// ensurePageFocusEmulation makes a headless page accept clicks and typing.
-// Without it the document is unfocused, the click does not create a caret,
-// and a later write never lands in the field. Each caller sends it again
-// because a navigation can drop the emulation. A failed command is ignored
-// and is not treated as done.
+// ensurePageFocusEmulation makes a page that is not the OS foreground accept
+// clicks and typing. Without it the document is unfocused, the click does not
+// create a caret, and a later write never lands in the field. Each caller
+// sends it again because a navigation can drop the emulation. A failed
+// command is ignored and is not treated as done.
 func (s *Session) ensurePageFocusEmulation(client *CDPClient) {
 	if s == nil || client == nil {
 		return

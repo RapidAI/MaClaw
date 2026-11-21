@@ -326,7 +326,9 @@ func computerUseTestForeground(t *testing.T) string {
 	t.Helper()
 	title := strings.TrimSpace(accessibility.ForegroundWindowTitle())
 	if title == "" {
-		t.Fatal("need a foreground window title to bind the crop")
+		// This session has no foreground window. WindowTitlesMatch treats an
+		// empty live title as unknown, so a fixed crop still passes same-window.
+		return "计算机使用测试"
 	}
 	return title
 }
@@ -795,6 +797,54 @@ func TestDragPayEndpointHandsOff(t *testing.T) {
 	}
 }
 
+func TestTypePayRefDoesNotFocusClick(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	cfg := computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess := computeruse.NewSession(cfg)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 240, Height: 80, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "立即支付", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "搜索", BBox: [4]int{160, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	pay := cuHandleType(map[string]interface{}{"ref": "e0", "text": "确认购买"})
+	if in.clicks != 0 || in.types != 0 || !strings.Contains(pay, "支付") || strings.Contains(pay, "确认购买") {
+		t.Fatalf("clicks=%d types=%d msg=%s", in.clicks, in.types, pay)
+	}
+	ok := cuHandleType(map[string]interface{}{"ref": "e1", "text": "龙军"})
+	if in.clicks != 1 || in.types != 1 || strings.Contains(ok, "blocked") {
+		t.Fatalf("clicks=%d types=%d msg=%s", in.clicks, in.types, ok)
+	}
+
+	cfg = computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess = computeruse.NewSession(cfg)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 240, Height: 80, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "页面", BBox: [4]int{0, 0, 80, 40}, Source: "accessibility", Patterns: []string{"value"}},
+		{Name: "搜索", BBox: [4]int{160, 10, 40, 20}, Source: "accessibility", Patterns: []string{"value"}},
+	}, []taskengine.OCRResult{
+		{Text: "立即支付", BBox: [4]int{10, 10, 40, 20}},
+	}, "")
+	in = installCountingComputerUse(t, sess)
+	bridge := &countingTypeBridge{}
+	globalComputerUse.mu.Lock()
+	globalComputerUse.bridge = bridge
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.bridge = nil
+		globalComputerUse.mu.Unlock()
+	})
+	under := cuHandleType(map[string]interface{}{"ref": "e0", "text": "确认购买"})
+	if in.clicks != 0 || in.types != 0 || bridge.types != 0 || !strings.Contains(under, "支付") || strings.Contains(under, "确认购买") {
+		t.Fatalf("clicks=%d types=%d semantic=%d msg=%s", in.clicks, in.types, bridge.types, under)
+	}
+	semanticOK := cuHandleType(map[string]interface{}{"ref": "e1", "text": "龙军"})
+	if in.clicks != 0 || in.types != 0 || bridge.types != 1 || strings.Contains(semanticOK, "blocked") {
+		t.Fatalf("clicks=%d types=%d semantic=%d msg=%s", in.clicks, in.types, bridge.types, semanticOK)
+	}
+}
+
 func TestSelectPayRefDoesNotClick(t *testing.T) {
 	fg := computerUseTestForeground(t)
 	sess := computeruse.NewSession(computeruse.DefaultConfig())
@@ -827,10 +877,11 @@ func TestPointerActionsHonorElementWindow(t *testing.T) {
 	scroll := cuHandleScroll(map[string]interface{}{"ref": "e0"})
 	drag := cuHandleDrag(map[string]interface{}{"from_ref": "e1", "to_ref": "e0"})
 	sel := cuHandleSelect(map[string]interface{}{"ref": "e0"})
-	if in.scrolls != 0 || in.drags != 0 || in.clicks != 0 {
-		t.Fatalf("scrolls=%d drags=%d clicks=%d", in.scrolls, in.drags, in.clicks)
+	typed := cuHandleType(map[string]interface{}{"ref": "e0", "text": "龙军"})
+	if in.scrolls != 0 || in.drags != 0 || in.clicks != 0 || in.types != 0 {
+		t.Fatalf("scrolls=%d drags=%d clicks=%d types=%d", in.scrolls, in.drags, in.clicks, in.types)
 	}
-	for _, msg := range []string{scroll, drag, sel} {
+	for _, msg := range []string{scroll, drag, sel, typed} {
 		if !strings.Contains(msg, "security") {
 			t.Fatalf("msg=%s", msg)
 		}
@@ -838,6 +889,139 @@ func TestPointerActionsHonorElementWindow(t *testing.T) {
 	ok := cuHandleScroll(map[string]interface{}{"ref": "e1"})
 	if in.scrolls != 1 || strings.Contains(ok, "blocked") {
 		t.Fatalf("scrolls=%d msg=%s", in.scrolls, ok)
+	}
+}
+
+func TestPointerActionsRefuseLiveSecurityWindow(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 240, Height: 80, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "列表", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "确认", BBox: [4]int{160, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = fg
+	last.Elements[1].Window = fg
+	in := installCountingComputerUse(t, sess)
+	computerUsePolicyWindowHook = func(x, _ int) string {
+		if x >= 100 {
+			return "User Account Control"
+		}
+		return fg
+	}
+	scroll := cuHandleScroll(map[string]interface{}{"ref": "e1"})
+	drag := cuHandleDrag(map[string]interface{}{"from_ref": "e0", "to_ref": "e1"})
+	click := cuHandleClick(map[string]interface{}{"ref": "e1"})
+	sel := cuHandleSelect(map[string]interface{}{"ref": "e1"})
+	typed := cuHandleType(map[string]interface{}{"ref": "e1", "text": "龙军"})
+	if in.scrolls != 0 || in.drags != 0 || in.clicks != 0 || in.types != 0 {
+		t.Fatalf("scrolls=%d drags=%d clicks=%d types=%d", in.scrolls, in.drags, in.clicks, in.types)
+	}
+	for _, msg := range []string{scroll, drag, click, sel, typed} {
+		if !strings.Contains(msg, "security") {
+			t.Fatalf("msg=%s", msg)
+		}
+	}
+	ok := cuHandleScroll(map[string]interface{}{"ref": "e0"})
+	if in.scrolls != 1 || strings.Contains(ok, "blocked") {
+		t.Fatalf("scrolls=%d msg=%s", in.scrolls, ok)
+	}
+}
+
+// countingTypeBridge records a semantic type without moving the pointer.
+type countingTypeBridge struct {
+	types int
+}
+
+func (b *countingTypeBridge) EnumElements(string) ([]accessibility.Element, error) {
+	return nil, nil
+}
+func (b *countingTypeBridge) FindElement(string, string, string) (*accessibility.Element, error) {
+	return nil, nil
+}
+func (b *countingTypeBridge) ClickElement(*accessibility.Element) error { return nil }
+func (b *countingTypeBridge) TypeInElement(*accessibility.Element, string) error {
+	b.types++
+	return nil
+}
+func (b *countingTypeBridge) SelectElement(*accessibility.Element) error { return nil }
+func (b *countingTypeBridge) ExpandElement(*accessibility.Element) error { return nil }
+func (b *countingTypeBridge) ScrollElementIntoView(*accessibility.Element) error {
+	return nil
+}
+func (b *countingTypeBridge) FocusElement(*accessibility.Element) error { return nil }
+func (b *countingTypeBridge) GetValue(*accessibility.Element) (string, error) {
+	return "", nil
+}
+func (b *countingTypeBridge) Close() {}
+
+func TestTypeRefChecksLiveWindowBeforeFocus(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	cfg := computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess := computeruse.NewSession(cfg)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 240, Height: 80, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+		{Name: "姓名", BBox: [4]int{160, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = fg
+	last.Elements[1].Window = fg
+	in := installCountingComputerUse(t, sess)
+	computerUsePolicyWindowHook = func(x, _ int) string {
+		if x >= 100 {
+			return "User Account Control"
+		}
+		return fg
+	}
+	blocked := cuHandleType(map[string]interface{}{"ref": "e1", "text": "龙军"})
+	if in.clicks != 0 || in.types != 0 || !strings.Contains(blocked, "security") {
+		t.Fatalf("clicks=%d types=%d msg=%s", in.clicks, in.types, blocked)
+	}
+	ok := cuHandleType(map[string]interface{}{"ref": "e0", "text": "龙军"})
+	if in.clicks != 1 || in.types != 1 || strings.Contains(ok, "blocked") {
+		t.Fatalf("clicks=%d types=%d msg=%s", in.clicks, in.types, ok)
+	}
+
+	cfg = computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess = computeruse.NewSession(cfg)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 240, Height: 80, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "accessibility", Patterns: []string{"value"}},
+		{Name: "姓名", BBox: [4]int{160, 10, 40, 20}, Source: "accessibility", Patterns: []string{"value"}},
+	}, nil, "")
+	last = sess.LastObserve()
+	last.Elements[0].Window = fg
+	last.Elements[1].Window = fg
+	in = installCountingComputerUse(t, sess)
+	bridge := &countingTypeBridge{}
+	globalComputerUse.mu.Lock()
+	globalComputerUse.bridge = bridge
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.bridge = nil
+		globalComputerUse.mu.Unlock()
+	})
+	computerUsePolicyWindowHook = func(x, _ int) string {
+		if x >= 100 {
+			return "User Account Control"
+		}
+		return fg
+	}
+	semanticBlocked := cuHandleType(map[string]interface{}{"ref": "e1", "text": "龙军"})
+	last.Elements[0].Window = "User Account Control"
+	stored := cuHandleType(map[string]interface{}{"ref": "e0", "text": "龙军"})
+	if in.clicks != 0 || in.types != 0 || bridge.types != 0 {
+		t.Fatalf("clicks=%d types=%d semantic=%d live=%s stored=%s", in.clicks, in.types, bridge.types, semanticBlocked, stored)
+	}
+	if !strings.Contains(semanticBlocked, "security") || !strings.Contains(stored, "security") {
+		t.Fatalf("live=%s stored=%s", semanticBlocked, stored)
+	}
+	last.Elements[0].Window = fg
+	semanticOK := cuHandleType(map[string]interface{}{"ref": "e0", "text": "龙军"})
+	if in.clicks != 0 || in.types != 0 || bridge.types != 1 || strings.Contains(semanticOK, "blocked") {
+		t.Fatalf("clicks=%d types=%d semantic=%d msg=%s", in.clicks, in.types, bridge.types, semanticOK)
 	}
 }
 

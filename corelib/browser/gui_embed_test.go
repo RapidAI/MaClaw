@@ -12,17 +12,61 @@ func TestManagedLaunchArgsHeadlessOnlyWhenGUIEmbed(t *testing.T) {
 	t.Cleanup(func() { EnableGUIEmbed(false) })
 	EnableGUIEmbed(false)
 	plain := strings.Join(managedLaunchArgs(9223, `C:\profile`), " ")
-	if strings.Contains(plain, "headless") {
-		t.Fatalf("default launch must stay headed: %s", plain)
-	}
+	assertHeadedManagedLaunch(t, plain)
 	if !strings.Contains(plain, "--remote-debugging-port=9223") || !strings.Contains(plain, `--user-data-dir=C:\profile`) {
 		t.Fatalf("launch args lost the debug port or profile: %s", plain)
 	}
 	EnableGUIEmbed(true)
 	embedded := strings.Join(managedLaunchArgs(9223, `C:\profile`), " ")
-	for _, want := range []string{"--headless=new", "--window-size=1280,800", "--force-device-scale-factor=1", "--remote-debugging-port=9223"} {
+	assertHeadedManagedLaunch(t, embedded)
+	for _, want := range []string{"--window-size=1280,800", "--remote-debugging-port=9223"} {
 		if !strings.Contains(embedded, want) {
 			t.Fatalf("embed launch missing %s in %s", want, embedded)
+		}
+	}
+	if strings.Contains(embedded, "force-device-scale-factor") {
+		t.Fatalf("embed launch must keep the OS scale: %s", embedded)
+	}
+}
+
+func assertHeadedManagedLaunch(t *testing.T, args string) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(args), "headless") {
+		t.Fatalf("managed launch must stay headed: %s", args)
+	}
+	if strings.Contains(args, "--enable-automation") {
+		t.Fatalf("managed launch must not set the automation switch: %s", args)
+	}
+	if strings.Contains(args, "--hide-scrollbars") {
+		t.Fatalf("managed launch must keep normal scrollbars: %s", args)
+	}
+	if !strings.Contains(args, "--disable-blink-features=AutomationControlled") {
+		t.Fatalf("managed launch must leave navigator.webdriver false: %s", args)
+	}
+	if strings.Contains(args, "--remote-allow-origins=*") {
+		t.Fatalf("debugger port must not accept every origin: %s", args)
+	}
+	if !strings.Contains(args, "--remote-allow-origins=http://127.0.0.1:9223,http://localhost:9223") {
+		t.Fatalf("debugger port must allow only the loopback dial origin: %s", args)
+	}
+}
+
+func TestPageDrivingOmitsRuntimeEnable(t *testing.T) {
+	for _, method := range append(append([]string{}, pageDrivingMethods()...), frameDrivingMethods()...) {
+		if method == "Runtime.enable" || strings.Contains(method, "Runtime.enable") {
+			t.Fatalf("driving domain subscribes the page to the debugger: %s", method)
+		}
+	}
+	joined := strings.Join(pageDrivingMethods(), " ")
+	frames := strings.Join(frameDrivingMethods(), " ")
+	for _, want := range []string{"Page.enable", "Network.enable"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("page driving lost %s in %s", want, joined)
+		}
+	}
+	for _, banned := range []string{"Runtime.enable", "Log.enable"} {
+		if strings.Contains(joined, banned) || strings.Contains(frames, banned) {
+			t.Fatalf("driving domain %s is a console side channel", banned)
 		}
 	}
 }

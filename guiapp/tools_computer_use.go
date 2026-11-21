@@ -565,9 +565,16 @@ func cuGuardDisabled(tool string) string {
 	return fmt.Sprintf("%s: Computer Use is disabled (computer_use_enabled=false). Enable it in Settings → Computer Use first.", tool)
 }
 
+// computerUsePolicyWindowHook overrides the live window under a point in tests.
+// Production leaves it nil.
+var computerUsePolicyWindowHook func(x, y int) string
+
 // cuPolicyWindowTitle resolves the window a click at (x,y) will actually land
 // in, falling back to the foreground window title (what type/key target).
 func cuPolicyWindowTitle(x, y int) string {
+	if computerUsePolicyWindowHook != nil {
+		return computerUsePolicyWindowHook(x, y)
+	}
 	if t := accessibility.WindowTitleAtPoint(x, y); t != "" {
 		return t
 	}
@@ -1788,10 +1795,9 @@ func cuHandleClick(args map[string]interface{}) string {
 		return "computer_click blocked: " + cuPersonHandoff("checkout", payName, refusal)
 	}
 	// Policy before BeginAction: a blocked click must not consume step budget.
-	if err := sess.CheckClickPolicy(x, y, policyTitle); err != nil {
-		sess.RecordAction("click", detail, false, err.Error(), false)
-		emitComputerUseActionUI("click", detail, false, err.Error())
-		return fmt.Sprintf("computer_click blocked: %v", err)
+	// The stored window and the live window under the point are both checked.
+	if msg := cuPointerWindowRefusal(sess, "computer_click", "click", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
+		return msg
 	}
 	if err := sess.BeginAction("click", detail); err != nil {
 		emitComputerUseActionUI("click", detail, false, err.Error())
@@ -1879,6 +1885,28 @@ func cuHandleType(args map[string]interface{}) string {
 			emitComputerUseActionUI("type", detail, false, "secret")
 			return "computer_type blocked: " + cuPersonHandoff("secret", el.Name, refusal)
 		}
+		// The focus click is a click, and a semantic type actuates the same
+		// control. A pay control must not be invoked by either path.
+		if refusal := browser.DesktopPayClickRefusal(el.Name); refusal != "" {
+			sess.RecordAction("type", detail, false, "checkout", false)
+			emitComputerUseActionUI("type", detail, false, "checkout")
+			return "computer_type blocked: " + cuPersonHandoff("checkout", el.Name, refusal)
+		}
+		for _, hit := range []string{sess.ElementNameAtScreen(x, y), sess.OCRTextAtScreen(x, y)} {
+			refusal := browser.DesktopPayClickRefusal(hit)
+			if refusal == "" {
+				continue
+			}
+			sess.RecordAction("type", detail, false, "checkout", false)
+			emitComputerUseActionUI("type", detail, false, "checkout")
+			return "computer_type blocked: " + cuPersonHandoff("checkout", hit, refusal)
+		}
+		// The focus click and a semantic type both use this point. A stored
+		// window must not hide the live window, and the check is before
+		// BeginAction so a block does not spend a step.
+		if msg := cuPointerWindowRefusal(sess, "computer_type", "type", detail, cuDragEnd{x: x, y: y, mark: el}); msg != "" {
+			return msg
+		}
 	} else {
 		// Untargeted typing goes to the caret. The last control the agent
 		// clicked is that caret when the window title is not itself a dialog.
@@ -1903,17 +1931,6 @@ func cuHandleType(args map[string]interface{}) string {
 	strategy := "pixel"
 	if typeEl != nil {
 		x, y, el := typeX, typeY, typeEl
-		// Gate the focus click itself: the element may live in a blocked window
-		// that is not the current foreground.
-		focusTitle := el.Window
-		if focusTitle == "" {
-			focusTitle = cuPolicyWindowTitle(x, y)
-		}
-		if err := sess.CheckClickPolicy(x, y, focusTitle); err != nil {
-			sess.RecordAction("type", detail, false, err.Error(), false)
-			emitComputerUseActionUI("type", detail, false, err.Error())
-			return fmt.Sprintf("computer_type blocked: %v", err)
-		}
 		if cuTrySemanticType(el, x, y, text) {
 			strategy = "a11y"
 		} else {
@@ -1922,7 +1939,7 @@ func cuHandleType(args map[string]interface{}) string {
 				return fmt.Sprintf("computer_type focus click failed: %v", err)
 			}
 			time.Sleep(80 * time.Millisecond)
-			// Re-check: the focus click may have foregrounded a blocked window.
+			// The click can foreground a blocked window that was not under the point before.
 			if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
 				sess.RecordAction("type", detail, false, err.Error(), false)
 				emitComputerUseActionUI("type", detail, false, err.Error())
@@ -2097,7 +2114,7 @@ func cuHandleScroll(args map[string]interface{}) string {
 		}
 	}
 	detail := fmt.Sprintf("at (%d,%d) delta=%d,%d", end.x, end.y, dx, dy)
-	if msg := cuPointerWindowRefusal(sess, "computer_scroll", "scroll", end); msg != "" {
+	if msg := cuPointerWindowRefusal(sess, "computer_scroll", "scroll", detail, end); msg != "" {
 		return msg
 	}
 	if err := sess.BeginAction("scroll", detail); err != nil {
@@ -2149,7 +2166,7 @@ func cuHandleSelect(args map[string]interface{}) string {
 		emitComputerUseActionUI("select", detail, false, "checkout")
 		return "computer_select blocked: " + cuPersonHandoff("checkout", hit, refusal)
 	}
-	if msg := cuPointerWindowRefusal(sess, "computer_select", "select", cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
+	if msg := cuPointerWindowRefusal(sess, "computer_select", "select", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
 		return msg
 	}
 	if err := sess.BeginAction("select", detail); err != nil {
@@ -2197,6 +2214,9 @@ func cuHandleScrollIntoView(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_scroll_into_view: %v", err)
 	}
 	detail := fmt.Sprintf("ref=%s name=%q", mark.Ref, mark.Name)
+	if msg := cuPointerWindowRefusal(sess, "computer_scroll_into_view", "scroll_into_view", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
+		return msg
+	}
 	if err := sess.BeginAction("scroll_into_view", detail); err != nil {
 		return fmt.Sprintf("computer_scroll_into_view: %v", err)
 	}
@@ -2244,13 +2264,13 @@ func cuHandleDrag(args map[string]interface{}) string {
 	if err != nil {
 		return "computer_drag: " + err.Error()
 	}
+	detail := fmt.Sprintf("(%d,%d)->(%d,%d)", from.x, from.y, to.x, to.y)
 	if msg := cuDragPayRefusal(sess, from, to); msg != "" {
 		return msg
 	}
-	if msg := cuPointerWindowRefusal(sess, "computer_drag", "drag", from, to); msg != "" {
+	if msg := cuPointerWindowRefusal(sess, "computer_drag", "drag", detail, from, to); msg != "" {
 		return msg
 	}
-	detail := fmt.Sprintf("(%d,%d)->(%d,%d)", from.x, from.y, to.x, to.y)
 	if err := sess.BeginAction("drag", detail); err != nil {
 		return fmt.Sprintf("computer_drag: %v", err)
 	}
@@ -2286,24 +2306,48 @@ func cuStalePointerGeometry(sess *computeruse.Session) bool {
 	return !ok
 }
 
-// cuPointerWindowRefusal applies the click window policy at every point the
-// pointer will use. The element's observe-time window wins over the live
-// window under the point, so a control already attributed to a security
-// surface is not pressed or scrolled after that window is covered.
-func cuPointerWindowRefusal(sess *computeruse.Session, tool, action string, ends ...cuDragEnd) string {
-	for _, end := range ends {
-		title := ""
-		if end.mark != nil {
-			title = strings.TrimSpace(end.mark.Window)
-		}
+// cuPointerWindowTitles are the windows a pointer action can hit. The
+// observe-time window and the live window under the point are both included.
+// A safe stored title must not hide a security surface the pointer will land
+// on, and a live title must not hide a control already attributed to one.
+func cuPointerWindowTitles(end cuDragEnd) []string {
+	seen := map[string]struct{}{}
+	var titles []string
+	add := func(title string) {
+		title = strings.TrimSpace(title)
 		if title == "" {
-			title = cuPolicyWindowTitle(end.x, end.y)
+			return
 		}
-		if err := sess.CheckClickPolicy(end.x, end.y, title); err != nil {
-			detail := fmt.Sprintf("(%d,%d)", end.x, end.y)
-			sess.RecordAction(action, detail, false, err.Error(), false)
-			emitComputerUseActionUI(action, detail, false, err.Error())
-			return fmt.Sprintf("%s blocked: %v", tool, err)
+		key := strings.ToLower(title)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		titles = append(titles, title)
+	}
+	if end.mark != nil {
+		add(end.mark.Window)
+	}
+	add(cuPolicyWindowTitle(end.x, end.y))
+	if len(titles) == 0 {
+		return []string{""}
+	}
+	return titles
+}
+
+// cuPointerWindowRefusal applies the click window policy at every point the
+// pointer will use. Either window being blocked refuses the action.
+func cuPointerWindowRefusal(sess *computeruse.Session, tool, action, detail string, ends ...cuDragEnd) string {
+	for _, end := range ends {
+		for _, title := range cuPointerWindowTitles(end) {
+			if err := sess.CheckClickPolicy(end.x, end.y, title); err != nil {
+				if strings.TrimSpace(detail) == "" {
+					detail = fmt.Sprintf("(%d,%d)", end.x, end.y)
+				}
+				sess.RecordAction(action, detail, false, err.Error(), false)
+				emitComputerUseActionUI(action, detail, false, err.Error())
+				return fmt.Sprintf("%s blocked: %v", tool, err)
+			}
 		}
 	}
 	return ""

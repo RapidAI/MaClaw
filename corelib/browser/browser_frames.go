@@ -57,9 +57,15 @@ func enableAttachedSession(client *CDPClient, sessionID string, waiting bool) {
 	if waiting {
 		_, _ = client.SendOn(sessionID, "Runtime.runIfWaitingForDebugger", nil, 3*time.Second)
 	}
-	_, _ = client.SendOn(sessionID, "Runtime.enable", nil, 3*time.Second)
-	_, _ = client.SendOn(sessionID, "Page.enable", nil, 3*time.Second)
-	_, _ = client.SendOn(sessionID, "Accessibility.enable", nil, 3*time.Second)
+	// Same rule as enablePageDriving: do not subscribe this frame to console
+	// serialization. A child frame runs the site's own checks.
+	for _, method := range frameDrivingMethods() {
+		_, _ = client.SendOn(sessionID, method, nil, 3*time.Second)
+	}
+}
+
+func frameDrivingMethods() []string {
+	return []string{"Page.enable", "Accessibility.enable"}
 }
 
 func (s *Session) noteDialog(message, dialogType, url string) {

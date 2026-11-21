@@ -235,30 +235,10 @@ func connectToAddr(addr string) (*Session, error) {
 		return nil, fmt.Errorf("CDP WebSocket connection failed: %w", err)
 	}
 
-	// Enable Page and Runtime domains.
-	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
+	if err := enablePageDriving(client); err != nil {
 		client.Close()
-		return nil, fmt.Errorf("CDP Page.enable failed: %w", err)
+		return nil, err
 	}
-	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("CDP Runtime.enable failed: %w", err)
-	}
-	if _, err := client.Send("Network.enable", nil, 5*time.Second); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("CDP Network.enable failed: %w", err)
-	}
-	if _, err := client.Send("Log.enable", nil, 5*time.Second); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("CDP Log.enable failed: %w", err)
-	}
-	_, _ = client.Send("Accessibility.enable", nil, 5*time.Second)
-	_, _ = client.Send("Target.setAutoAttach", map[string]interface{}{
-		"autoAttach":             true,
-		"waitForDebuggerOnStart": false,
-		"flatten":                true,
-	}, 5*time.Second)
-	_, _ = client.Send("Target.setDiscoverTargets", map[string]interface{}{"discover": true}, 5*time.Second)
 
 	return &Session{
 		client:        client,
@@ -2228,28 +2208,55 @@ func connectPageTarget(addr, from, targetID string) (*CDPClient, error) {
 		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		return nil, fmt.Errorf("switch page CDP connection failed: %w", err)
 	}
-	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
+	// The logged-in page is a new connection. Without the driving domains, a
+	// verification window opened from that page never reaches the desktop session.
+	if err := enablePageDriving(client); err != nil {
+		log.Printf("[browser] switch page driving domains failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
 		client.Close()
-		return nil, fmt.Errorf("switch page Page.enable failed: %w", err)
+		return nil, fmt.Errorf("switch page %w", err)
 	}
-	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", redactUserInfo(addr), from, targetID, err)
-		client.Close()
-		return nil, fmt.Errorf("switch page Runtime.enable failed: %w", err)
+	return client, nil
+}
+
+// pageDrivingMethods are the CDP domains a page session turns on.
+// Runtime.enable is not among them. Enabling Runtime subscribes Chrome to
+// console-argument serialization. A page detects that by defining a getter on
+// Error.stack and calling console.debug: the getter runs only while the
+// debugger is subscribed. Sites that sell things score this as automation and
+// reject the next signed request. Runtime.evaluate does not need the
+// subscription. Log.enable is also omitted: nothing reads Log.entryAdded, and
+// formatting a console argument is the same side channel.
+func pageDrivingMethods() []string {
+	return []string{"Page.enable", "Network.enable", "Accessibility.enable"}
+}
+
+// optionalPageDrivingMethod is enabled when the browser supports it and is
+// not required to drive the page.
+func optionalPageDrivingMethod(method string) bool {
+	return method == "Accessibility.enable"
+}
+
+func enablePageDriving(client *CDPClient) error {
+	if client == nil {
+		return fmt.Errorf("CDP client is nil")
 	}
-	// The logged-in page is a new connection. Without these, a verification
-	// window opened from that page never reaches the desktop session.
-	_, _ = client.Send("Network.enable", nil, 5*time.Second)
-	_, _ = client.Send("Log.enable", nil, 5*time.Second)
-	_, _ = client.Send("Accessibility.enable", nil, 5*time.Second)
+	for _, method := range pageDrivingMethods() {
+		if _, err := client.Send(method, nil, 5*time.Second); err != nil {
+			if optionalPageDrivingMethod(method) {
+				continue
+			}
+			return fmt.Errorf("CDP %s failed: %w", method, err)
+		}
+	}
+	// waitForDebuggerOnStart stays false. Pausing new targets is itself a
+	// visible delay, and Runtime.enable is not sent on the attached session.
 	_, _ = client.Send("Target.setAutoAttach", map[string]interface{}{
 		"autoAttach":             true,
 		"waitForDebuggerOnStart": false,
 		"flatten":                true,
 	}, 5*time.Second)
 	_, _ = client.Send("Target.setDiscoverTargets", map[string]interface{}{"discover": true}, 5*time.Second)
-	return client, nil
+	return nil
 }
 
 func (s *Session) lastNetworkLines() []string {
