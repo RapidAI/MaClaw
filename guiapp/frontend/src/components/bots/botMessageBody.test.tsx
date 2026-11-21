@@ -91,6 +91,49 @@ describe('BotMessageBody', () => {
         expect(view.container.querySelector('.desktop-bot-chat__pre')).toBeNull();
     });
 
+    it('renders a tilde fence and a mermaid fence nested in a list item', async () => {
+        const text = [
+            '1. 架构',
+            '   ~~~mermaid',
+            '   flowchart TD',
+            '     A --> B',
+            '   ~~~',
+            '2. 下一步',
+        ].join('\n');
+        const view = render(<BotMessageBody text={text} />);
+        await waitFor(() => {
+            expect(screen.queryByTestId('assistant-mermaid-diagram') || screen.queryByTestId('assistant-mermaid-fallback')).toBeTruthy();
+        }, { timeout: 8000 });
+        expect(view.container.querySelectorAll('ol > li').length).toBe(2);
+        expect(view.container.textContent).toContain('下一步');
+        expect(view.container.textContent).not.toContain('~~~');
+    });
+
+    it('does not close a longer mermaid fence at an inner triple backtick or a tagged closer', async () => {
+        const text = [
+            '````mermaid',
+            'flowchart TD',
+            '```',
+            '```mermaid',
+            '  A["采集层"] --> B',
+            '``` end',
+            '````',
+            '',
+            '后面仍是正文。',
+        ].join('\n');
+        const view = render(<BotMessageBody text={text} />);
+        await waitFor(() => {
+            expect(screen.queryByTestId('assistant-mermaid-diagram') || screen.queryByTestId('assistant-mermaid-fallback')).toBeTruthy();
+        }, { timeout: 8000 });
+        const source = view.container.querySelector('[data-testid="assistant-mermaid-fallback"] pre')?.textContent
+            || view.container.querySelector('[data-testid="assistant-mermaid-source"]')?.textContent
+            || '';
+        expect(source).toContain('```');
+        expect(source).toContain('A["采集层"]');
+        expect(view.container.textContent).toContain('后面仍是正文');
+        expect(view.container.textContent).not.toContain('````');
+    });
+
     it('keeps a non-mermaid fence and an unclosed mermaid fence as source', () => {
         const mixed = [
             '```ts',

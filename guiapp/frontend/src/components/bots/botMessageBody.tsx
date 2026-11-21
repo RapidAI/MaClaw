@@ -373,22 +373,36 @@ function sameListMarker(line: string, ordered: boolean): boolean {
     return ordered ? kind === 'ol' : kind === 'ul';
 }
 
-function fenceInfo(line: string): string {
-    return line.trimStart().slice(3).trim().split(/\s+/, 1)[0] || '';
+type FenceOpen = { marker: string; lang: string };
+
+// CommonMark: three or more of the same fence character. A closer must match
+// that character, be at least as long, and carry no info string. A shorter run,
+// the other character, or a tagged line stays inside the body.
+function fenceOpen(line: string): FenceOpen | null {
+    const match = /^(?:`{3,}|~{3,})/.exec(line.trimStart());
+    if (!match) return null;
+    const marker = match[0];
+    return { marker, lang: line.trimStart().slice(marker.length).trim().split(/\s+/, 1)[0] || '' };
+}
+
+function fenceCloses(line: string, opener: string): boolean {
+    const match = /^(?:`{3,}|~{3,})/.exec(line.trimStart());
+    if (!match || match[0][0] !== opener[0] || match[0].length < opener.length) return false;
+    return line.trimStart().slice(match[0].length).trim() === '';
 }
 
 // An opening fence with no closer must not swallow the rest of the reply.
 function takeFence(lines: string[], index: number): { text: string; lang: string; next: number } | null {
-    if (!lines[index].trimStart().startsWith('```')) return null;
-    const lang = fenceInfo(lines[index]);
+    const open = fenceOpen(lines[index]);
+    if (!open) return null;
     const body: string[] = [];
     let cursor = index + 1;
-    while (cursor < lines.length && !lines[cursor].trimStart().startsWith('```')) {
+    while (cursor < lines.length && !fenceCloses(lines[cursor], open.marker)) {
         body.push(lines[cursor]);
         cursor += 1;
     }
     if (cursor >= lines.length) return null;
-    return { text: body.join('\n'), lang, next: cursor + 1 };
+    return { text: body.join('\n'), lang: open.lang, next: cursor + 1 };
 }
 
 function nextContent(lines: string[], index: number): number {
@@ -507,7 +521,7 @@ function parseBlocks(src: string): Block[] {
             continue;
         }
         const fence = takeFence(lines, index);
-        if (line.trimStart().startsWith('```') && fence) {
+        if (fence) {
             flushParagraph(paragraph, blocks);
             blocks.push({ kind: 'pre', text: fence.text, lang: fence.lang });
             index = fence.next;
