@@ -155,6 +155,12 @@ func mcpSkipIsRetryable(errText string) bool {
 
 const mcpReviewHandoffErrorText = "子任务结果待审阅"
 
+// mcpReviewContinueHint is the sentence a child-review handoff carries so the
+// caller knows the pause is resumable. The round is not running while it waits,
+// so any follow-up command is accepted and reruns the parked step with the
+// child result already in the transcript.
+const mcpReviewContinueHint = "审阅子任务结果后用 send_command 发下一条指令继续（例如「采纳子任务结论，继续后续步骤」），任务会从这一步往下走。"
+
 // mcpApprovalWaitErrorText is the checklist sentence for a scope approval
 // that has not been granted. It is a pause, not a child-review handoff:
 // 继续 reruns the step after the decision, and the completion gate must

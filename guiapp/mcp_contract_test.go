@@ -2243,3 +2243,55 @@ func TestInboundMCPStopTaskComparesStatusVersion(t *testing.T) {
 		t.Fatalf("registry %+v", after)
 	}
 }
+
+// A child-review handoff ends the round without a confirmation card. The
+// caller must still learn that the pause is resumable; an outcome that only
+// says "子任务结果待审阅" leaves it polling a task that never moves on its own.
+func TestMCPReviewHandoffExplainsHowToContinue(t *testing.T) {
+	const runID = "run-review"
+	app := &App{mcpRuns: map[string]*mcpRunRecord{
+		"p": {ProjectPath: "p", Status: mcpStatusWaitingReview, RunID: runID, StatusVersion: 4,
+			Error: mcpReviewHandoffErrorText, Text: mcpReviewHandoffErrorText},
+	}}
+	view, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil {
+		t.Fatalf("get_task: %v", err)
+	}
+	if view.Status != mcpStatusWaitingReview {
+		t.Fatalf("status %q", view.Status)
+	}
+	if !strings.Contains(view.Text, mcpReviewContinueHint) {
+		t.Fatalf("review text lacks the continue hint: %q", view.Text)
+	}
+	if !strings.Contains(view.Outcome, mcpReviewContinueHint) {
+		t.Fatalf("outcome does not say how to continue: %q", view.Outcome)
+	}
+	if !strings.Contains(view.Outcome, runID) {
+		t.Fatalf("outcome dropped the session id: %q", view.Outcome)
+	}
+
+	// The hint is stated once; polling the same task keeps it stable.
+	again, err := app.mcpGetTask(context.Background(), "p", "")
+	if err != nil {
+		t.Fatalf("get_task again: %v", err)
+	}
+	if strings.Count(again.Text, mcpReviewContinueHint) != 1 {
+		t.Fatalf("hint repeated: %q", again.Text)
+	}
+
+	// A round that is not waiting for review keeps no hint.
+	plain := app.mcpReturnTask(mcpTaskView{ProjectPath: "p", Status: mcpStatusCompleted, RunID: runID, Text: "已完成"})
+	if strings.Contains(plain.Text, mcpReviewContinueHint) || strings.Contains(plain.Outcome, mcpReviewContinueHint) {
+		t.Fatalf("completed round took the review hint: text=%q outcome=%q", plain.Text, plain.Outcome)
+	}
+
+	// Direct outcome path, without a task view from the registry.
+	direct := mcpCommandOutcome(mcpTaskView{Status: mcpStatusWaitingReview, RunID: runID, Text: mcpReviewHandoffErrorText})
+	if !strings.Contains(direct, mcpReviewContinueHint) || !strings.Contains(direct, runID) {
+		t.Fatalf("command outcome lacks the continue hint: %q", direct)
+	}
+	repeated := mcpCommandOutcome(mcpTaskView{Status: mcpStatusWaitingReview, RunID: runID, Text: mcpReviewHandoffErrorText + "\n\n" + mcpReviewContinueHint})
+	if strings.Count(repeated, mcpReviewContinueHint) != 1 {
+		t.Fatalf("command outcome repeated the hint: %q", repeated)
+	}
+}

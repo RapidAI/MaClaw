@@ -392,9 +392,26 @@ func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
 			if strings.TrimSpace(view.EndDetail) == "" && view.Stop != nil {
 				view.EndDetail = view.Stop.Reason
 			}
+			view = mcpOfferReviewContinuation(view)
 		}
 	}
 	return a.mcpPublishTaskView(view)
+}
+
+// mcpOfferReviewContinuation tells the caller how a child-review handoff is
+// resumed. The handoff ends the round without a confirmation card, so nothing
+// in commands explains the pause; a caller that reads only outcome keeps
+// polling a task that will never move on its own. The round is not running at
+// that point, so a plain follow-up command is accepted and reruns the parked
+// step with the child result as its input.
+func mcpOfferReviewContinuation(view mcpTaskView) mcpTaskView {
+	if strings.Contains(view.Text, mcpReviewContinueHint) {
+		return view
+	}
+	if hint := mcpConfirmationHint("review"); hint != "" && !strings.Contains(view.Text, hint) {
+		view.Text = strings.TrimSpace(view.Text + "\n\n" + hint)
+	}
+	return view
 }
 
 func (a *App) mcpLiveRunID(path string) string {

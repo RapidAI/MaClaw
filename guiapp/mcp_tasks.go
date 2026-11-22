@@ -2012,6 +2012,8 @@ func mcpConfirmationHint(kind string) string {
 		return mcpPlanDialogueHint
 	case "recovery":
 		return "编程恢复待确认，确认前不会沿用上一次执行。用 send_command 原样发送 commands 中的一条。"
+	case "review":
+		return mcpReviewContinueHint
 	case "ask":
 		return "需要你的回答。用 send_command 把回答原文发回这个任务。"
 	case "desktop":

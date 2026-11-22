@@ -176,6 +176,17 @@ func mcpCommandOutcome(view mcpTaskView) string {
 		if lead == "" {
 			lead = "子任务结果待审阅。"
 		}
+		// A review handoff ends the round without a confirmation card, so the
+		// caller has no command to send and nothing tells it the task is
+		// parked. Without this line it keeps polling a task that will not move.
+		// The hint also lives in text for the desktop, so it can already be
+		// inside lead; only the session line above it is added here.
+		if id != "" && !strings.Contains(lead, "会话标识是 "+id) {
+			lead = "会话标识是 " + id + "。\n" + lead
+		}
+		if !strings.Contains(lead, mcpReviewContinueHint) {
+			lead = strings.TrimSpace(lead + "\n" + mcpReviewContinueHint)
+		}
 		return lead
 	case mcpStatusFailed:
 		lead := strings.TrimSpace(view.Error)
