@@ -778,7 +778,7 @@ func TestInboundMCPCapabilitiesLeaveProbeNull(t *testing.T) {
 
 func TestInboundMCPProtocolOptionalArgs(t *testing.T) {
 	capture := &mcpOptCapture{}
-	handler := &mcpHTTP{api: capture, token: func() string { return "t" }}
+	handler := &mcpHTTP{api: capture, tokens: func() []string { return []string{"t"} }}
 	_, rpcErr := handler.callTool(context.Background(), json.RawMessage(`{"name":"send_command","arguments":{"project_path":"p","command":"继续","expected_status_version":0,"dry_run":true}}`))
 	if rpcErr != nil {
 		t.Fatal(rpcErr.Message)
@@ -809,7 +809,7 @@ func TestInboundMCPProtocolOptionalArgs(t *testing.T) {
 	if !opts.HasExpectedSHA || opts.ExpectedSHA != "abc" {
 		t.Fatalf("read opts %+v", opts)
 	}
-	errAPI := &mcpHTTP{api: &mcpErrAPI{}, token: func() string { return "t" }}
+	errAPI := &mcpHTTP{api: &mcpErrAPI{}, tokens: func() []string { return []string{"t"} }}
 	result, rpcErr := errAPI.callTool(context.Background(), json.RawMessage(`{"name":"get_task","arguments":{"project_path":"p","run_id":"run-x"}}`))
 	if rpcErr != nil {
 		t.Fatal(rpcErr.Message)

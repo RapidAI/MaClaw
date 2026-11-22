@@ -35,13 +35,14 @@ const (
 type mcpHost struct {
 	app *App
 
-	mu       sync.Mutex
-	listener net.Listener
-	server   *http.Server
-	token    string
-	port     int
-	lan      bool
-	lastErr  string
+	mu        sync.Mutex
+	listener  net.Listener
+	server    *http.Server
+	token     string
+	prevToken string
+	port      int
+	lan       bool
+	lastErr   string
 }
 
 type mcpHostEndpoint struct {
@@ -140,7 +141,7 @@ func (h *mcpHost) Start(preferredPort int, lan bool) error {
 	h.lan = lan
 	h.lastErr = ""
 	h.server = &http.Server{
-		Handler:           newMCPHTTPLAN(h.tokenValue, h.app, h.lanValue),
+		Handler:           newMCPHTTPTokens(h.tokenValues, h.app, h.lanValue),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	srv := h.server
@@ -183,20 +184,33 @@ func (h *mcpHost) Stop() {
 	}
 }
 
-func (h *mcpHost) tokenValue() string {
+// tokenValues returns the keys currently accepted by the MCP listener: the
+// live token plus the previous one kept across a rotation so in-flight
+// clients holding the old key are not cut off. Order is current, previous.
+func (h *mcpHost) tokenValues() []string {
 	if h == nil {
-		return ""
+		return nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.token
+	out := make([]string, 0, 2)
+	if h.token != "" {
+		out = append(out, h.token)
+	}
+	if h.prevToken != "" && h.prevToken != h.token {
+		out = append(out, h.prevToken)
+	}
+	return out
 }
 
+// setToken installs a freshly generated key. The outgoing token moves to
+// prevToken so requests signed with it keep working until the next rotation.
 func (h *mcpHost) setToken(token string) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
+	h.prevToken = h.token
 	h.token = token
 	h.mu.Unlock()
 }
@@ -460,16 +474,6 @@ func readMCPAPIKey() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(raw)), nil
-}
-
-// readMCPAPIKeyOrEmpty returns the stored key without an error, so callers
-// that only need the value (e.g. token fallback) can ignore a missing file.
-func readMCPAPIKeyOrEmpty() string {
-	key, err := readMCPAPIKey()
-	if err != nil {
-		return ""
-	}
-	return key
 }
 
 func rotateMCPAPIKey() (string, error) {

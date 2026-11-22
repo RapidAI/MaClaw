@@ -995,6 +995,68 @@ func TestInboundMCPAPIKeyReusedUntilRotate(t *testing.T) {
 	}
 }
 
+func TestInboundMCPHostTokenValuesRotate(t *testing.T) {
+	h := &mcpHost{}
+	h.setToken("mck_first")
+	if got := h.tokenValues(); len(got) != 1 || got[0] != "mck_first" {
+		t.Fatalf("initial tokens %v", got)
+	}
+	h.setToken("mck_second")
+	got := h.tokenValues()
+	if len(got) != 2 || got[0] != "mck_second" || got[1] != "mck_first" {
+		t.Fatalf("after first rotate %v", got)
+	}
+	// A second rotation drops the oldest key: only current + previous remain.
+	h.setToken("mck_third")
+	got = h.tokenValues()
+	if len(got) != 2 || got[0] != "mck_third" || got[1] != "mck_second" {
+		t.Fatalf("after second rotate %v", got)
+	}
+	for _, stale := range got {
+		if stale == "mck_first" {
+			t.Fatalf("oldest key must be dropped %v", got)
+		}
+	}
+}
+
+func TestInboundMCPTokenMatchesAcceptedSet(t *testing.T) {
+	api := &fakeMCPTasks{}
+	handler := newMCPHTTPTokens(func() []string { return []string{"mck_new", "mck_old"} }, api, nil)
+	post := func(token string) int {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.RemoteAddr = "127.0.0.1:51003"
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post("mck_new"); code != http.StatusOK {
+		t.Fatalf("current key %d", code)
+	}
+	if code := post("mck_old"); code != http.StatusOK {
+		t.Fatalf("previous key %d", code)
+	}
+	if code := post("mck_unknown"); code != http.StatusUnauthorized {
+		t.Fatalf("unknown key %d", code)
+	}
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Fatalf("empty key %d", code)
+	}
+	// A key that only exists on disk but was never registered must not
+	// authenticate: the listener no longer treats the key file as a
+	// credential source.
+	dir := t.TempDir()
+	prev := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(dir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
+	if err := writeMCPAPIKey("mck_disk_only"); err != nil {
+		t.Fatal(err)
+	}
+	if code := post("mck_disk_only"); code != http.StatusUnauthorized {
+		t.Fatalf("disk-only key must be rejected %d", code)
+	}
+}
+
 func TestInboundMCPStatusHidesAccessUntilRunning(t *testing.T) {
 	off := mcpStatusPayload(false, true, false, "127.0.0.1:1", 1, "mck_secret", "MaClaw.exe", "")
 	if _, ok := off["apiKey"]; ok || off["enabled"] != false {
@@ -1408,8 +1470,11 @@ func TestInboundMCPStdioProxySkipsNotifications(t *testing.T) {
 	t.Cleanup(func() { corelib.SetMaclawBaseDir(prev) })
 
 	const stdioKey = "mck_stdio_proxy_key_01"
+	const rotatedKey = "mck_stdio_proxy_key_02"
 	api := &fakeMCPTasks{}
-	srv := httptest.NewServer(newMCPHTTP(func() string { return stdioKey }, api))
+	// Post-rotation state: the listener accepts the new disk key plus the
+	// previous in-memory key, matching mcpHost.tokenValues after setToken.
+	srv := httptest.NewServer(newMCPHTTPTokens(func() []string { return []string{rotatedKey, stdioKey} }, api, nil))
 	t.Cleanup(srv.Close)
 	if err := writeMCPAPIKey(stdioKey); err != nil {
 		t.Fatal(err)
@@ -1433,14 +1498,23 @@ func TestInboundMCPStdioProxySkipsNotifications(t *testing.T) {
 		t.Fatalf("stdout %q", out.String())
 	}
 
-	// After rotating the disk key, the old in-memory key still works
-	// (tokenMatches accepts both the live token and the disk key).
-	if err := writeMCPAPIKey("mck_stdio_proxy_key_02"); err != nil {
+	// After the disk key rotates, the proxy picks up the new key and the
+	// listener still accepts the previous key for clients that cached it.
+	if err := writeMCPAPIKey(rotatedKey); err != nil {
 		t.Fatal(err)
 	}
 	var rotated strings.Builder
 	if code := runMCPStdioProxy(strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n"), &rotated); code != 0 || !strings.Contains(rotated.String(), `"id":2`) {
-		t.Fatalf("old key after rotation must still be accepted, code %d %s", code, rotated.String())
+		t.Fatalf("new key after rotation must be accepted, code %d %s", code, rotated.String())
+	}
+	// A client still presenting the previous key is not cut off.
+	oldReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"ping"}`))
+	oldReq.RemoteAddr = "127.0.0.1:51002"
+	oldReq.Header.Set("Authorization", "Bearer "+stdioKey)
+	oldRec := httptest.NewRecorder()
+	srv.Config.Handler.ServeHTTP(oldRec, oldReq)
+	if oldRec.Code != http.StatusOK {
+		t.Fatalf("previous key after rotation status %d", oldRec.Code)
 	}
 
 	var missing strings.Builder

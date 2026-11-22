@@ -57,13 +57,13 @@ type mcpCreateArgs struct {
 	ArgError string
 }
 
-// mcpHTTP carries the live in-memory token plus a fallback reader for the
-// key file, so a just-rotated key stays valid until the user generates a
-// new one.
+// mcpHTTP carries the accepted bearer tokens plus the task API. tokens()
+// returns every key currently valid — the live token and the previous one
+// kept across a rotation — so a just-rotated key's predecessor stays usable
+// until the next generation without re-reading the key file per request.
 type mcpHTTP struct {
-	token       func() string
-	tokenFile   func() string
-	api         mcpTaskAPI
+	tokens func() []string
+	api    mcpTaskAPI
 	// lanAllowed reports the wildcard-bind opt-in state; nil means loopback
 	// only. LAN clients still need the Bearer key.
 	lanAllowed func() bool
@@ -77,22 +77,29 @@ func newMCPHTTPLAN(token func() string, api mcpTaskAPI, lanAllowed func() bool) 
 	if token == nil {
 		token = func() string { return "" }
 	}
-	return &mcpHTTP{token: token, tokenFile: readMCPAPIKeyOrEmpty, api: api, lanAllowed: lanAllowed}
+	return newMCPHTTPTokens(func() []string { return []string{token()} }, api, lanAllowed)
 }
 
-// tokenMatches reports whether req is the live in-memory token or the key
-// stored on disk. The disk key is the "old" key: after a rotation it stays
-// usable until the user generates the next one.
+// newMCPHTTPTokens builds the handler from a multi-token source. The host
+// passes mcpHost.tokenValues so both the current and previous keys work.
+func newMCPHTTPTokens(tokens func() []string, api mcpTaskAPI, lanAllowed func() bool) http.Handler {
+	if tokens == nil {
+		tokens = func() []string { return nil }
+	}
+	return &mcpHTTP{tokens: tokens, api: api, lanAllowed: lanAllowed}
+}
+
+// tokenMatches reports whether req equals any currently accepted token. The
+// previous key stays valid after a rotation until the next one is generated.
 func (h *mcpHTTP) tokenMatches(req string) bool {
 	req = strings.TrimSpace(req)
 	if req == "" {
 		return false
 	}
-	if secureTokenEqual(req, h.token()) {
-		return true
-	}
-	if h.tokenFile != nil {
-		return secureTokenEqual(req, h.tokenFile())
+	for _, token := range h.tokens() {
+		if secureTokenEqual(req, token) {
+			return true
+		}
 	}
 	return false
 }
