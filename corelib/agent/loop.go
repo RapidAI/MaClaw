@@ -2916,6 +2916,31 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 
+		// An output-truncated turn that produced no content, no reasoning, and
+		// no tool calls is not an "empty reply": the model burned its max_tokens
+		// budget before it could write anything. Counting it as a consecutive
+		// empty response burns the empty-response budget and hard-exits the run
+		// after a few hits (BR-20261122-BA3620A60AA8 "被取消化"). Route it through
+		// the same truncation recovery a cut tool call takes so the model is told
+		// to continue with a smaller reply instead of the task being terminated.
+		if len(choice.TruncatedToolNames) == 0 &&
+			isOutputTruncationFinish(choice.FinishReason) &&
+			strings.TrimSpace(content) == "" &&
+			len(choice.Message.ToolCalls) == 0 {
+			disposeSurface(ToolSurfaceResponseAbandoned)
+			log.Printf("[agent-loop] output truncated before any content (iteration=%d finish_reason=%q); prompting continuation", iteration, choice.FinishReason)
+			recoveryPrompt := "[system] Your previous reply was cut off by the output length limit before any content was written. Do not restart or repeat the same long output. Continue from where you stopped with a shorter reply, or emit the next tool call only."
+			if goal := strings.TrimSpace(userText); goal != "" {
+				recoveryPrompt += "\nOriginal user goal: " + truncateRunesPrefix(goal, 200)
+			}
+			conversation = append(conversation, map[string]interface{}{
+				"role":    "user",
+				"content": recoveryPrompt,
+			})
+			historyDelta = append(historyDelta, HostUserEntry(recoveryPrompt))
+			continue
+		}
+
 		if len(choice.TruncatedToolNames) > 0 {
 			disposeSurface(ToolSurfaceResponseAbandoned)
 			truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
@@ -6794,6 +6819,21 @@ func truncateRunesPrefix(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+// isOutputTruncationFinish reports a finish_reason that means the provider cut
+// the generation off at the token budget. "length" is the OpenAI-compatible
+// value; "max_tokens" is emitted by Anthropic-style adapters. A turn that
+// finished this way with no content/reasoning/tool calls never produced a
+// reply — it is not an empty response and must not burn the empty-response
+// budget that terminates the run.
+func isOutputTruncationFinish(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "max_tokens":
+		return true
+	default:
+		return false
+	}
 }
 
 // appendLoopDisplayReasoning preserves every provider-supplied, display-safe

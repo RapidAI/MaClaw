@@ -6238,6 +6238,118 @@ func TestRunLoop_TruncatedToolCallInjectsRecoveryWithoutExecuting(t *testing.T) 
 	}
 }
 
+// TestRunLoop_OutputTruncatedEmptyIsNotHardExit reproduces
+// BR-20261122-BA3620A60AA8: a finish_reason="length" turn that wrote no
+// content, no reasoning, and no tool call was classified as an "empty reply"
+// and counted toward maxConsecutiveEmpty. Five such turns hard-exited the run
+// ("任务将被终止" / 被取消). A fully-empty truncated turn is a truncation, not
+// an empty reply: it must get the continue-with-a-smaller-reply recovery, not
+// the empty-response budget.
+func TestRunLoop_OutputTruncatedEmptyIsNotHardExit(t *testing.T) {
+	var requestCount atomic.Int64
+	var sawRecoveryPrompt atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requestCount.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Return 5 consecutive output-truncated empty turns — enough to have
+		// tripped the old maxConsecutiveEmpty=5 hard exit. After the fix each
+		// turn gets a truncation recovery prompt, not an empty-response count.
+		if n <= 5 {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			// The injected user message must be the truncation-continue prompt,
+			// not the "empty reply" warning that counts toward termination.
+			for _, msg := range req.Messages {
+				if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "cut off by the output length limit") {
+					sawRecoveryPrompt.Store(true)
+				}
+			}
+			return
+		}
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"recovered after truncation"},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   10,
+		sysPrompt: "You are a coding agent.",
+	}
+
+	result := RunLoop(cb, "do the task", nil, server.Client())
+	if result.Error != "" || result.Text != "recovered after truncation" {
+		t.Fatalf("RunLoop result = %+v, want recovered without error", result)
+	}
+	if result.HardExit {
+		t.Fatalf("run hard-exited on output-truncated empty turns")
+	}
+	if !sawRecoveryPrompt.Load() {
+		t.Fatalf("truncated-empty turn did not receive truncation recovery prompt")
+	}
+}
+
+// TestRunLoop_OutputTruncatedEmptyFinishReasons drives the same
+// truncated-before-any-content recovery through every finish_reason
+// isOutputTruncationFinish accepts. Providers emit different vocabularies for
+// the same "hit the token budget" event — OpenAI-compatible "length" and
+// Anthropic-style "max_tokens" — and both must take the truncation recovery,
+// not the empty-response path. A regression that recognizes only one spelling
+// would reintroduce the BR-20261122-BA3620A60AA8 hard exit for the other.
+func TestRunLoop_OutputTruncatedEmptyFinishReasons(t *testing.T) {
+	for _, finish := range []string{"length", "max_tokens"} {
+		finish := finish
+		t.Run(finish, func(t *testing.T) {
+			var requestCount atomic.Int64
+			var sawRecoveryPrompt atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := requestCount.Add(1)
+				var req struct {
+					Messages []map[string]interface{} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if n <= 5 {
+					fmt.Fprintf(w, `data: {"choices":[{"delta":{},"finish_reason":%q}]}`+"\n\n", finish)
+					fmt.Fprint(w, "data: [DONE]\n\n")
+					for _, msg := range req.Messages {
+						if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "cut off by the output length limit") {
+							sawRecoveryPrompt.Store(true)
+						}
+					}
+					return
+				}
+				fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"recovered"},"finish_reason":null}]}`+"\n\n")
+				fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			cb := &mockCallbacks{
+				config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:   10,
+				sysPrompt: "You are a coding agent.",
+			}
+			result := RunLoop(cb, "do the task", nil, server.Client())
+			if result.Error != "" || result.Text != "recovered" || result.HardExit {
+				t.Fatalf("finish=%q RunLoop result = %+v, want recovered without error or hard exit", finish, result)
+			}
+			if !sawRecoveryPrompt.Load() {
+				t.Fatalf("finish=%q truncated-empty turn did not receive truncation recovery prompt", finish)
+			}
+		})
+	}
+}
+
 func TestRunLoop_EmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
