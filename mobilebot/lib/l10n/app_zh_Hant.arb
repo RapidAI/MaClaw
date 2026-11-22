@@ -293,6 +293,7 @@
   "rtLoadingEarlier": "正在載入更早的對話",
   "rtEarlierFailed": "更早的對話沒有載入",
   "rtComposerHint": "給這臺機器的任務發消息…",
+  "rtAttachNoComputer": "這個任務不在一台能接收附件的 Bot 電腦上",
   "rtAttachTooltip": "給這個任務加入圖片或檔案",
   "rtAttachUploading": "附件還在上傳，稍等再傳送",
   "rtAttachUploadingName": "上傳 {name} {percent}%",

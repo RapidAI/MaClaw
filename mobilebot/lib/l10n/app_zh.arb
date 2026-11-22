@@ -542,6 +542,7 @@
   "rtLoadingEarlier": "正在加载更早的对话",
   "rtEarlierFailed": "更早的对话没有载入",
   "rtComposerHint": "给这台机器的任务发消息…",
+  "rtAttachNoComputer": "这个任务不在一台能接收附件的 Bot 电脑上",
   "rtAttachTooltip": "给这个任务添加图片或文件",
   "rtAttachUploading": "附件还在上传，稍等再发送",
   "rtAttachUploadingName": "上传 {name} {percent}%",

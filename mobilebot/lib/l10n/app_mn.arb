@@ -542,6 +542,7 @@
   "rtLoadingEarlier": "Өмнөх яриаг ачаалж байна",
   "rtEarlierFailed": "Өмнөх яриа ачаалагдсангүй",
   "rtComposerHint": "Энэ компьютерийн даалгаварт мессеж бичих…",
+  "rtAttachNoComputer": "Энэ даалгавар хавсралт хүлээж авах боломжтой Bot компьютер дээр байхгүй",
   "rtAttachTooltip": "Даалгаварт зураг эсвэл файл нэмэх",
   "rtAttachUploading": "Хавсралт ачаалж байна, дууссаны дараа илгээнэ үү",
   "rtAttachUploadingName": "{name} ачаалж байна {percent}%",

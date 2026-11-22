@@ -201,16 +201,24 @@ class RemoteControlApi {
   ///
   /// The phone cannot write to that machine's disk and the op channel carries
   /// JSON only, so this route takes the bytes. The Hub asks the controlled
-  /// desktop (op `attach_begin`) to resolve [projectPath] to its task
-  /// directory, then writes `attachments/<upload id>-<name>` there. The last
-  /// answer carries that absolute `path`, which the next message quotes so the
-  /// task agent can read the file and the reply can be downloaded back.
+  /// desktop to resolve [projectPath] to the task directory inside its bot's
+  /// computer (op `attach_begin`), then places
+  /// `attachments/<upload id>-<name>` there. The last answer carries that
+  /// path, which the next message quotes so the task agent reads the file by
+  /// absolute path.
+  ///
+  /// [target] is what `get_task` answered: an empty `taskDir`, or a task that
+  /// no bot computer owns, is refused before a byte is sent.
   Future<RemoteStagedFile> uploadAttachment(
     String grantId,
     String projectPath,
+    RemoteAttachmentTarget target,
     RemoteOutgoingFile file, {
     void Function(int sent, int total)? onProgress,
   }) async {
+    if (!target.canAttach) {
+      return const RemoteStagedFile(error: 'no-desktop');
+    }
     if (file.size <= 0 || file.size > remoteAttachmentMaxBytes) {
       return const RemoteStagedFile(error: 'too-large');
     }

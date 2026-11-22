@@ -81,6 +81,26 @@ void main() {
       );
     });
 
+    test('attachment target needs a task dir and a bot', () {
+      const none = RemoteAttachmentTarget();
+      expect(none.canAttach, isFalse);
+      const hostOnly = RemoteAttachmentTarget(taskDir: 'C:/Users/x/tasks/t');
+      expect(hostOnly.canAttach, isFalse);
+      const ok = RemoteAttachmentTarget(
+        taskDir: '/home/desktop/.maclaw/data/tasks/t',
+        botId: 'bot_1',
+      );
+      expect(ok.canAttach, isTrue);
+      final parsed = RemoteAttachmentTarget.fromJson({
+        'task_dir': ' /home/desktop/.maclaw/data/tasks/t ',
+        'bot_id': 'bot_1',
+        'node_id': 'n1',
+      });
+      expect(parsed.canAttach, isTrue);
+      expect(parsed.taskDir, '/home/desktop/.maclaw/data/tasks/t');
+      expect(parsed.nodeId, 'n1');
+    });
+
     test('an outgoing file starts unstaged', () {
       final file = RemoteOutgoingFile(
         name: 'a.png',

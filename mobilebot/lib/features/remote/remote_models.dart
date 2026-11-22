@@ -5,6 +5,7 @@ library;
 
 import '../../core/json_safe.dart';
 import '../../l10n/gen/app_localizations.dart';
+import 'remote_attachments.dart';
 
 /// One desktop registered to the signed-in account.
 class RcMachine {
@@ -342,11 +343,15 @@ class RemoteTaskDetail {
   /// is the whole history the phone has.
   final int messageTotal;
 
+  /// Where this task accepts attachments; empty when it does not.
+  final RemoteAttachmentTarget attach;
+
   const RemoteTaskDetail({
     required this.task,
     this.messages = const [],
     this.artifacts = const [],
     this.messageTotal = 0,
+    this.attach = const RemoteAttachmentTarget(),
   });
 
   factory RemoteTaskDetail.fromJson(Map<String, dynamic> json) {
@@ -364,6 +369,7 @@ class RemoteTaskDetail {
         for (final item in syncList(json['artifacts']))
           if (item is Map) RemoteArtifact.fromJson(item),
       ],
+      attach: RemoteAttachmentTarget.fromJson(json['attach']),
       messageTotal: json.containsKey('message_total')
           ? syncInt(json['message_total'])
           : messages.length,

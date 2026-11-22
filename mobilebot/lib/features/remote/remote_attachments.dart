@@ -98,3 +98,30 @@ String remoteAttachmentUploadId(int microseconds, String name) {
   final hash = name.codeUnits.fold<int>(7, (acc, c) => (acc * 31 + c) & 0xFFFFFF);
   return 'rc$stamp${hash.toRadixString(36)}';
 }
+
+/// Where the controlled machine says a file may go for one task
+/// (`get_task.attach`). Empty [taskDir], or a task no bot computer owns, means
+/// the phone must not offer an attachment at all.
+class RemoteAttachmentTarget {
+  const RemoteAttachmentTarget({
+    this.taskDir = '',
+    this.botId = '',
+    this.nodeId = '',
+  });
+
+  final String taskDir;
+  final String botId;
+  final String nodeId;
+
+  bool get canAttach => taskDir.trim().isNotEmpty && botId.trim().isNotEmpty;
+
+  factory RemoteAttachmentTarget.fromJson(Object? raw) {
+    if (raw is! Map) return const RemoteAttachmentTarget();
+    String text(Object? value) => value == null ? '' : '$value'.trim();
+    return RemoteAttachmentTarget(
+      taskDir: text(raw['task_dir']),
+      botId: text(raw['bot_id']),
+      nodeId: text(raw['node_id']),
+    );
+  }
+}

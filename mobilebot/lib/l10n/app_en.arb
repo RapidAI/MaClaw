@@ -542,6 +542,7 @@
   "rtLoadingEarlier": "Loading earlier messages",
   "rtEarlierFailed": "Earlier messages did not load",
   "rtComposerHint": "Message the tasks on this machine…",
+  "rtAttachNoComputer": "This task is not on a bot computer that can take attachments",
   "rtAttachTooltip": "Add a picture or file to this task",
   "rtAttachUploading": "The attachment is still uploading — send it once it finishes",
   "rtAttachUploadingName": "Uploading {name} {percent}%",

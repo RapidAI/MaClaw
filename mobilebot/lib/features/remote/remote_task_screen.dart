@@ -623,6 +623,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       _toast(context.S.rtAttachDesktopUnknown);
       return;
     }
+    final target = _detail?.attach;
+    if (target == null || !target.canAttach) {
+      _toast(context.S.rtAttachNoComputer);
+      return;
+    }
     final gen = _fileGen;
     setState(() {
       file.uploading = true;
@@ -633,6 +638,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       () => api.uploadAttachment(
         widget.grant.id,
         widget.taskPath,
+        target,
         file,
         onProgress: (sent, total) {
           if (!mounted || gen != _fileGen) return;
