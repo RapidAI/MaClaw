@@ -123,6 +123,9 @@ type BrowserPageFlags struct {
 	// BlockingNotice: visible lines saying the account may not act yet
 	// ("…才能发布"), read in every same-origin frame.
 	BlockingNotice string `json:"blocking_notice,omitempty"`
+	// FrequencyNotice: short visible lines that are the site's own
+	// frequent-access refusal. A mention inside a paragraph is not one.
+	FrequencyNotice string `json:"frequency_notice,omitempty"`
 }
 
 // ExpectSpec is an optional post-condition for navigate/click/type/select.
@@ -161,6 +164,10 @@ type BrowserObservation struct {
 	PageState map[string]interface{} `json:"page_state,omitempty"`
 	Display   string                 `json:"display"`
 	Data      map[string]interface{} `json:"data"`
+	// frequencyHold is the refusal sentence for the action that just read
+	// the page. The action result is what the model sees; the observe
+	// display is not that result.
+	frequencyHold string `json:"-"`
 }
 
 // BrowserActionResult is the structured result of a browser action.
@@ -279,6 +286,14 @@ type BrowserAgentSession struct {
 
 	// peekFlags overrides the CDP flag peek in tests.
 	peekFlags func() (BrowserPageFlags, error)
+
+	// frequencyPathAt is the document (host+path) a site refused for frequent
+	// access. frequencyHostAt is the site root, so a later empty list shell
+	// on the same site can be the same refusal. The stamp is the first time
+	// that refusal was read. A later look does not extend it, and a reload
+	// of a recorded path is not sent.
+	frequencyPathAt map[string]time.Time
+	frequencyHostAt map[string]time.Time
 
 	// fastBatch skips per-step settle and full observe for task_run.
 	fastBatch        bool

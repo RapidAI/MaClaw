@@ -78,6 +78,7 @@ func (s *Session) clickPoint(x, y float64) error {
 	if client == nil {
 		return fmt.Errorf("browser session not connected")
 	}
+	emulatePageFocus(client, "")
 	_, _ = client.Send("Input.dispatchMouseEvent", map[string]interface{}{"type": "mouseMoved", "x": x, "y": y}, DefaultCmdTimeout)
 	if _, err := client.Send("Input.dispatchMouseEvent", map[string]interface{}{"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}, DefaultCmdTimeout); err != nil {
 		return fmt.Errorf("mousePressed: %w", err)

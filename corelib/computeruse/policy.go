@@ -159,6 +159,11 @@ func (p *Policy) AllowPixelClick() bool {
 	return p.allowPixelClick
 }
 
+// TitleBlocked reports an OS security surface that must not be automated.
+func TitleBlocked(title string) bool {
+	return titleBlocked(title)
+}
+
 func titleBlocked(title string) bool {
 	t := strings.ToLower(strings.TrimSpace(title))
 	if t == "" {

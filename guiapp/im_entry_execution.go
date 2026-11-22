@@ -558,6 +558,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	shareDiscussion := fileCompanionShareDiscussionUserID(msg.UserID)
 	if !shareDiscussion && loopCtx != nil && loopCtx.OfferChatTaskDispatch {
 		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
+		if note := desktopMessageHelperOwnsNote(loopCtx); note != "" {
+			systemPrompt += note
+		}
 	}
 	if !shareDiscussion && loopCtx != nil && strings.TrimSpace(loopCtx.ChatTaskID) != "" {
 		if loopCtx.ComputerHelper {

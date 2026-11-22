@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,10 +29,12 @@ type netTracker struct {
 	reading int
 	// fetched: last XHR/fetch of any method (an editor polls an upload's
 	// processing state with reads after the write finished).
-	fetched time.Time
-	starts  []time.Time
-	log     []netWrite // every write and its answer, in order
-	cancel  func()
+	fetched  time.Time
+	starts   []time.Time
+	log      []netWrite // every write and its answer, in order
+	cancel   func()
+	done     chan struct{}
+	stopOnce sync.Once
 	// d reads a write's answer body; json marks writes answered with JSON.
 	d    PublishDriver
 	json map[string]bool
@@ -106,6 +109,9 @@ var netWriteMethods = map[string]bool{"POST": true, "PUT": true, "PATCH": true, 
 
 // startNetTracker enables the Network domain and starts following events;
 // nil when the driver cannot stream events (callers fall back to the DOM).
+// The page session does not leave Network enabled: that subscription
+// delivers a same-origin frame's message before the frame's load event.
+// stop turns the domain off again.
 func startNetTracker(d PublishDriver) *netTracker {
 	src, ok := d.(PublishEventSource)
 	if !ok {
@@ -115,8 +121,9 @@ func startNetTracker(d PublishDriver) *netTracker {
 		return nil
 	}
 	ch, cancel := src.Subscribe()
-	t := &netTracker{open: map[string]string{}, last: time.Now(), cancel: cancel, d: d, json: map[string]bool{}}
+	t := &netTracker{open: map[string]string{}, last: time.Now(), cancel: cancel, done: make(chan struct{}), d: d, json: map[string]bool{}}
 	go func() {
+		defer close(t.done)
 		for ev := range ch {
 			t.on(ev)
 		}
@@ -124,10 +131,50 @@ func startNetTracker(d PublishDriver) *netTracker {
 	return t
 }
 
+// stop ends the subscription and turns Network off. The domain stays on
+// until in-flight response bodies have been read: disabling underneath
+// getResponseBody drops the body, and a failed disable leaves the
+// subscription the page can measure. One retry covers a transient failure.
 func (t *netTracker) stop() {
-	if t != nil && t.cancel != nil {
-		t.cancel()
+	if t == nil {
+		return
 	}
+	t.stopOnce.Do(func() {
+		if t.cancel != nil {
+			t.cancel()
+		}
+		if t.done != nil {
+			select {
+			case <-t.done:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			t.mu.Lock()
+			n := t.reading
+			t.mu.Unlock()
+			if n == 0 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.disableNetwork()
+	})
+}
+
+func (t *netTracker) disableNetwork() {
+	if t == nil || t.d == nil {
+		return
+	}
+	var err error
+	for i := 0; i < 2; i++ {
+		_, err = t.d.Send("Network.disable", map[string]interface{}{})
+		if err == nil {
+			return
+		}
+	}
+	log.Printf("[browser] Network.disable failed: %v", err)
 }
 
 func (t *netTracker) on(ev CDPEvent) {
@@ -189,10 +236,12 @@ func (t *netTracker) on(ev CDPEvent) {
 				delete(t.json, p.RequestID)
 				t.reading++
 				go func(id, what string) {
+					defer func() {
+						t.mu.Lock()
+						t.reading--
+						t.mu.Unlock()
+					}()
 					t.readAnswer(id, what)
-					t.mu.Lock()
-					t.reading--
-					t.mu.Unlock()
 				}(p.RequestID, what)
 			}
 		}

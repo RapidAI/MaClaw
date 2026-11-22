@@ -268,7 +268,8 @@ const browserObserveScript = `(function () {
   function isHidden(el) {
     if (!el) return true;
     if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return true;
-    const style = (el.ownerDocument && el.ownerDocument.defaultView) ? el.ownerDocument.defaultView.getComputedStyle(el) : null;
+    let style = null;
+    try { style = getComputedStyle(el); } catch (e) { return true; }
     if (style && (style.display === 'none' || style.visibility === 'hidden')) return true;
     return false;
   }
@@ -305,8 +306,15 @@ const browserObserveScript = `(function () {
       }
       const candidates = selectorCandidatesFor(el);
       const selector = candidates.length > 0 ? candidates[0] : '';
-      const vw = (root.defaultView || window);
-      const inViewport = rect.bottom > 0 && rect.right > 0 && rect.top < (vw.innerHeight || 0) && rect.left < (vw.innerWidth || 0);
+      let boxW = 0;
+      let boxH = 0;
+      try {
+        const docEl = root.documentElement || (root.ownerDocument && root.ownerDocument.documentElement);
+        if (docEl) { boxW = docEl.clientWidth || 0; boxH = docEl.clientHeight || 0; }
+      } catch (e) {}
+      if (!(boxW > 0)) boxW = innerWidth || 0;
+      if (!(boxH > 0)) boxH = innerHeight || 0;
+      const inViewport = rect.bottom > 0 && rect.right > 0 && rect.top < boxH && rect.left < boxW;
       refs.push({
         ref: '@e' + idxHolder.n++,
         frame_id: frameId,
@@ -342,22 +350,12 @@ const browserObserveScript = `(function () {
         if (child) {
           collectFromRoot(child, frameId, refs, seen, idxHolder);
           collectFrames(child, frameId);
-          if (child.defaultView && !child.defaultView.__maclawMut) {
-            child.defaultView.__maclawMut = { n: 0 };
-            try { new MutationObserver(function () { child.defaultView.__maclawMut.n++; }).observe(child, { subtree: true, childList: true, attributes: true, characterData: false }); } catch (e) {}
-          }
         }
       } catch (e) {}
     });
   }
   collectFrames(document, 'main');
 ` + browserPageFlagsCollectJS + `
-  if (!window.__maclawMut) {
-    window.__maclawMut = { n: 0 };
-    try {
-      new MutationObserver(function () { window.__maclawMut.n++; }).observe(document, { subtree: true, childList: true, attributes: true, characterData: false });
-    } catch (e) {}
-  }
   const excerptSource = __maclawProbe ? mainDocumentText() : fullText;
   return JSON.stringify({
     url: location.href,
@@ -466,7 +464,7 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 	if probe {
 		script = browserProbeScript
 	}
-	result, err := sess.Eval(script)
+	result, err := sess.evalIsolated(script, false, DefaultCmdTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -560,6 +558,10 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 	}
 	s.addSnapshot(snapshot)
 	display := formatObserveDisplay(snapshot)
+	extra := s.noteFrequencyRefusalLocked(snapshot)
+	if extra != "" {
+		display += "\n" + extra
+	}
 	data := observeDataFromSnapshot(snapshot)
 	if excerpt := lastExpectExcerpt(s.lastExpect); excerpt != nil {
 		data["last_expect"] = excerpt
@@ -571,8 +573,9 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 			"title":       snapshot.Title,
 			"ready_state": snapshot.ReadyState,
 		},
-		Display: display,
-		Data:    data,
+		Display:       display,
+		Data:          data,
+		frequencyHold: extra,
 	}
 	s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "observe", Summary: display, CreatedAt: now}, browserAgentConsoleLimit)
 	s.activityLog = appendCapped(s.activityLog, display, browserAgentConsoleLimit)

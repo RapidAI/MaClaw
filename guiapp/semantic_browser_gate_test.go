@@ -176,6 +176,62 @@ func TestTrustedBrowserBlockedClickKeepsTheCardInstruction(t *testing.T) {
 	}
 }
 
+func TestTrustedBrowserPreviewHandBackContinuesTheTurn(t *testing.T) {
+	text, err := finishTrustedBrowserAction("type", nil, browser.ErrPreviewHandBack)
+	if err != nil {
+		t.Fatalf("hand-back err = %v", err)
+	}
+	for _, want := range []string{"没有发出", "浏览器会话还在", "这一轮继续", "先 probe"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("hand-back missing %q: %s", want, text)
+		}
+	}
+	for _, banned := range []string{"断开", "无法", "[system rejected]", "trusted_browser_action_refused"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("hand-back reads as a disconnect: %s", text)
+		}
+	}
+	qr, err := finishTrustedBrowserAction("click", &browser.BrowserActionResult{
+		Status:  "blocked",
+		Detail:  "login_qr",
+		Display: "用户已在预览中完成扫码。先 probe，再继续。不要在对话里索要密码或验证码。",
+	}, nil)
+	if err != nil || !strings.Contains(qr, "浏览器会话还在") || !strings.Contains(qr, "先 probe") || strings.Contains(qr, "trusted_browser_action_refused") {
+		t.Fatalf("qr hand-back = %q err=%v", qr, err)
+	}
+	_, err = finishTrustedBrowserAction("click", &browser.BrowserActionResult{
+		Status:  "blocked",
+		Detail:  "captcha_widget",
+		Display: "用户取消了预览里的这一步。不要重试刚才的点击，也不要索要密码或验证码。",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "trusted_browser_action_refused") {
+		t.Fatalf("cancel = %v", err)
+	}
+	_, err = finishTrustedBrowserAction("click", nil, fmt.Errorf("browser target is gone"))
+	if err == nil || !strings.Contains(err.Error(), "trusted_browser_session_disconnected") {
+		t.Fatalf("gone session = %v", err)
+	}
+}
+
+func TestTrustedBrowserObservationFrequencyStopHidesTheNextClick(t *testing.T) {
+	text := trustedBrowserObservationText(&browser.BrowserObservation{
+		Display: "probed page 购物车 (https://cart.jd.com/cart_index), interactive elements: 2\n站点因访问频繁拒绝了这次请求。页眉和页脚不是页面内容。不要刷新这个地址，也不要隔一段时间再试。把这一步停下来告诉用户。",
+		Snapshot: browser.BrowserSnapshot{
+			Refs: []browser.BrowserElementRef{
+				{Ref: "@e1", Role: "button", Name: "刷新看看"},
+				{Ref: "@e2", Role: "link", Name: "去结算"},
+			},
+			PageTextExcerpt: "购物车跑丢了 去购物刷新看看 购物车(0)",
+		},
+	})
+	if !strings.Contains(text, "把这一步停下来告诉用户") || !strings.Contains(text, "购物车(0)") {
+		t.Fatalf("observation dropped the refusal: %s", text)
+	}
+	if strings.Contains(text, "@e1") || strings.Contains(text, "@e2") || strings.Contains(text, "probe again") || strings.Contains(text, "先 probe") {
+		t.Fatalf("observation offered the next click: %s", text)
+	}
+}
+
 func TestTrustedBrowserObservationNamesRefsAndHidesTheSecret(t *testing.T) {
 	text := trustedBrowserObservationText(&browser.BrowserObservation{
 		Display: "probed page 登录",
@@ -300,6 +356,23 @@ func TestTrustedBrowserPageExcerptKeepsTheArticlePrefix(t *testing.T) {
 	got := trustedBrowserPageExcerpt(body)
 	if !strings.HasPrefix(got, "商品详情") || strings.Contains(got, "页脚版权") || !strings.Contains(got, "正") {
 		t.Fatalf("excerpt = %s", got)
+	}
+}
+
+func TestTrustedBrowserFrequencyStopDoesNotSayToContinue(t *testing.T) {
+	text, err := finishTrustedBrowserAction("navigate", &browser.BrowserActionResult{
+		Status:  "unchanged",
+		Display: "站点因访问频繁拒绝了这个地址，这次没有重新打开。不要刷新同一地址，也不要隔一段时间再试。把这一步停下来告诉用户。",
+	}, nil)
+	if err != nil || strings.Contains(text, "再继续") || strings.Contains(text, "先 probe") || !strings.Contains(text, "没有重新打开") {
+		t.Fatalf("frequency hold = %q err=%v", text, err)
+	}
+	opened, err := finishTrustedBrowserAction("navigate", &browser.BrowserActionResult{
+		Status:  "ok",
+		Display: "navigated to https://search.example/Search\n站点因访问频繁拒绝了这次请求。页眉和页脚不是页面内容。不要刷新这个地址，也不要隔一段时间再试。把这一步停下来告诉用户。",
+	}, nil)
+	if err != nil || strings.Contains(opened, "再继续") || strings.Contains(opened, "先 probe") || !strings.Contains(opened, "navigated to") {
+		t.Fatalf("first refusal = %q err=%v", opened, err)
 	}
 }
 

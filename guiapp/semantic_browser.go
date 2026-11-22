@@ -463,6 +463,13 @@ func semanticBrowserFieldInt(args map[string]interface{}, key string) int {
 }
 
 func finishTrustedBrowserAction(action string, result *browser.BrowserActionResult, err error) (string, error) {
+	// A hand-back is the person finishing their step. The click or type that
+	// was waiting was not sent, and the CDP session is still up. Reporting
+	// that as a refusal retires browser for the rest of the turn, and the
+	// model then says it cannot keep operating in this same turn.
+	if browser.IsPreviewHandBack(err) {
+		return trustedBrowserHandBackContinuation("", true), nil
+	}
 	if err != nil {
 		if lost := trustedBrowserLostSessionError(action, err); lost != nil {
 			return "", lost
@@ -471,6 +478,9 @@ func finishTrustedBrowserAction(action string, result *browser.BrowserActionResu
 	}
 	if result == nil {
 		return "", fmt.Errorf("trusted_browser_empty")
+	}
+	if display, ok := trustedBrowserHandBackDisplay(result); ok {
+		return trustedBrowserHandBackContinuation(display, true), nil
 	}
 	// A refusal decided before the request leaves has no effect to be
 	// uncertain about. The display is the instruction (confirm_order,
@@ -490,6 +500,11 @@ func finishTrustedBrowserAction(action string, result *browser.BrowserActionResu
 	if text == "" {
 		return "", fmt.Errorf("trusted_browser_empty")
 	}
+	// The frequency hold already says to stop this step and tell the person.
+	// "Probe and continue" would send the model back at the same document.
+	if browser.FrequencyRefusalStops(text) {
+		return text, nil
+	}
 	if !trustedBrowserResultAlreadyProbes(text) {
 		text += "\n先 probe，再继续。"
 	}
@@ -498,6 +513,44 @@ func finishTrustedBrowserAction(action string, result *browser.BrowserActionResu
 
 func trustedBrowserResultAlreadyProbes(text string) bool {
 	return strings.Contains(text, "先 probe") || strings.Contains(text, `action="probe"`) || strings.Contains(text, "action=probe")
+}
+
+// trustedBrowserHandBackDisplay is a captcha or QR hand-back. The status
+// stays blocked so the click is not described as performed. A policy or pay
+// block has a different detail, and a cancel or timeout does not say to probe.
+func trustedBrowserHandBackDisplay(result *browser.BrowserActionResult) (string, bool) {
+	if result == nil || strings.TrimSpace(result.Status) != "blocked" {
+		return "", false
+	}
+	switch strings.TrimSpace(result.Detail) {
+	case "captcha_widget", "login_qr":
+	default:
+		return "", false
+	}
+	display := strings.TrimSpace(result.Display)
+	if !strings.Contains(display, "先 probe") {
+		return "", false
+	}
+	return display, true
+}
+
+// trustedBrowserHandBackContinuation is the model-facing hand-back. It is a
+// normal tool result, so the browser call stays listed for this turn.
+func trustedBrowserHandBackContinuation(display string, actionNotSent bool) string {
+	display = strings.TrimSpace(display)
+	if display == "" {
+		return "用户已交还预览。刚才这一步没有发出。浏览器会话还在，这一轮继续。先 probe，再继续。不要在对话里索要密码或验证码。"
+	}
+	if actionNotSent && !strings.Contains(display, "没有发出") {
+		display += "刚才这一步没有发出。"
+	}
+	if !strings.Contains(display, "浏览器会话还在") {
+		display += "浏览器会话还在，这一轮继续。"
+	}
+	if !trustedBrowserResultAlreadyProbes(display) {
+		display += "\n先 probe，再继续。"
+	}
+	return display
 }
 
 func finishTrustedBrowserObservation(action string, obs *browser.BrowserObservation, err error) (string, error) {
@@ -526,7 +579,18 @@ func trustedBrowserObservationText(obs *browser.BrowserObservation) string {
 		return ""
 	}
 	var b strings.Builder
-	if display := strings.TrimSpace(obs.Display); display != "" {
+	display := strings.TrimSpace(obs.Display)
+	// The refusal is the result. Refs after it are the next clicks, and
+	// "probe again" is the retry the sentence just forbade.
+	if browser.FrequencyRefusalStops(display) {
+		b.WriteString(display)
+		if excerpt := trustedBrowserPageExcerpt(obs.Snapshot.PageTextExcerpt); excerpt != "" {
+			b.WriteString("\npage_text:\n")
+			b.WriteString(excerpt)
+		}
+		return b.String()
+	}
+	if display != "" {
 		b.WriteString(display)
 	}
 	if lines := trustedBrowserRefLines(obs.Snapshot.Refs); lines != "" {

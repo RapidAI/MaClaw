@@ -417,7 +417,7 @@ func (s *Session) observeAttachedFramesWith(startIdx int, script string) []Brows
 		if strings.TrimSpace(script) == "" {
 			script = browserObserveScript
 		}
-		raw, err := s.EvalOn(frame.TargetID, script)
+		raw, err := s.evalIsolatedOn(frame.SessionID, script, false, DefaultCmdTimeout)
 		if err != nil || strings.TrimSpace(raw) == "" {
 			continue
 		}
@@ -672,6 +672,7 @@ func (s *Session) TypeInFrame(frameID, selector, text, contentFormat string, app
 	sessionID := s.frameSessionID(frameID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	emulatePageFocus(s.client, sessionID)
 	prep := focusEditableJSIn(selector, frameScope{})
 	if !appendText {
 		prep = prepareEditableJSIn(selector, frameScope{})
@@ -700,9 +701,10 @@ func (s *Session) HoverInFrame(frameID, selector string) error {
 		if sessionID := s.frameSessionID(frameID); sessionID != "" {
 			s.mu.Lock()
 			defer s.mu.Unlock()
+			emulatePageFocus(s.client, sessionID)
 			coord, err := s.evalCoordsLockedOn(sessionID, selector, frameScope{})
 			if err != nil {
-				return s.jsHoverOnSessionLocked(sessionID, selector)
+				return err
 			}
 			if _, err = s.client.SendOn(sessionID, "Input.dispatchMouseEvent", map[string]interface{}{
 				"type": "mouseMoved", "x": coord.X, "y": coord.Y,
@@ -718,9 +720,10 @@ func (s *Session) HoverInFrame(frameID, selector string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	emulatePageFocus(s.client, "")
 	coord, err := s.evalCoordsLockedIn(selector, scope)
 	if err != nil {
-		return s.jsHoverLockedIn(selector, scope)
+		return err
 	}
 	if _, err = s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type": "mouseMoved", "x": coord.X, "y": coord.Y,
@@ -970,6 +973,7 @@ func (s *Session) PressInFrame(frameID, key string) error {
 	if frameID != "" && frameID != "main" {
 		sessionID = s.frameSessionID(frameID)
 	}
+	emulatePageFocus(s.client, sessionID)
 	send := func(typ string) error {
 		params := map[string]interface{}{
 			"type":                  typ,
@@ -1078,24 +1082,10 @@ func (s *Session) evalCoordsLockedOn(sessionID, selector string, scope frameScop
 			return JSON.stringify({x: x, y: y, tag: el.tagName, vis: document.visibilityState});
 		})()
 	`, pierceFindJS, scopedLocatedCall(selector, scope))
-	var (
-		result json.RawMessage
-		err    error
-	)
-	params := map[string]interface{}{
-		"expression":    js,
-		"returnByValue": true,
-		"awaitPromise":  true,
-	}
-	if sessionID == "" {
-		result, err = s.client.Send("Runtime.evaluate", params, DefaultCmdTimeout)
-	} else {
-		result, err = s.client.SendOn(sessionID, "Runtime.evaluate", params, DefaultCmdTimeout)
-	}
+	str, err := s.evalIsolatedClient(s.client, sessionID, js, true, DefaultCmdTimeout)
 	if err != nil {
 		return nil, err
 	}
-	str := extractStringValue(result)
 	var coord clickCoordResult
 	if err := json.Unmarshal([]byte(str), &coord); err != nil {
 		return nil, fmt.Errorf("parse coordinates: %w", err)

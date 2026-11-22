@@ -89,10 +89,10 @@ type LoopContext struct {
 	// repoMaintCapHit is set when a GitHub repo-maint turn has used its three
 	// extra iteration waves. The host treats that as a failed maintenance job.
 	repoMaintCapHit bool
-	UserID     string       // owning user/session ID (e.g. "desktop-user", "desktop-user:{path}")
-	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
-	StartedAt  time.Time    // when this loop was spawned
-	Runtime    RuntimeContext
+	UserID          string    // owning user/session ID (e.g. "desktop-user", "desktop-user:{path}")
+	Lang            string    // user language ("zh", "en"); used by i18n.T for progress messages
+	StartedAt       time.Time // when this loop was spawned
+	Runtime         RuntimeContext
 	// Host is the request-level capability surface supplied through Runtime.Execute.
 	// When nil, the loop uses the process GUI host (desktop capture/open).
 	Host agentruntime.HostCapabilities
@@ -199,6 +199,9 @@ type LoopContext struct {
 	ComputerHelperGoal       string
 	ComputerHelperLimits     string
 	ComputerHelperSuccess    string
+	// DesktopMessageHelperOwns is set on the chat loop that dispatched a
+	// desktop IM send. That loop must not deliver the same message itself.
+	DesktopMessageHelperOwns bool
 	// ComputerUseGateSettled is true after the first gateComputerUse for this
 	// LoopContext. Prompt rebuilds and tool refresh must not re-run UIC.
 	ComputerUseGateSettled bool
@@ -1470,7 +1473,6 @@ func (c *LoopContext) noteSurfaceGrantContract(contract surfaceGrantContract) {
 	c.grantSurfaceContract = contract
 	c.mu.Unlock()
 }
-
 
 func (c *LoopContext) discoveredConditionalToolNames() []string {
 	if c == nil {

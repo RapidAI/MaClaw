@@ -27,6 +27,181 @@ func TestManagedLaunchArgsHeadlessOnlyWhenGUIEmbed(t *testing.T) {
 	if strings.Contains(embedded, "force-device-scale-factor") {
 		t.Fatalf("embed launch must keep the OS scale: %s", embedded)
 	}
+	if strings.Contains(embedded, nativeOcclusionFeature) || strings.Contains(embedded, "--window-position=") {
+		t.Fatalf("a profile this process does not own must stay on the desktop: %s", embedded)
+	}
+	owned := strings.Join(managedLaunchArgs(9223, persistentProfileDir()), " ")
+	assertHeadedManagedLaunch(t, owned)
+	if !strings.Contains(owned, "--window-size=1280,800") || !strings.Contains(owned, "--disable-features="+nativeOcclusionFeature) || !strings.Contains(owned, "--window-position=") {
+		t.Fatalf("owned preview launch must park off-screen without going headless: %s", owned)
+	}
+	if managedWindowShouldPark(`C:\profile`) {
+		t.Fatal("foreign profile must not be parked")
+	}
+	if !managedWindowShouldPark(persistentProfileDir()) || !managedWindowShouldPark(debugProfileDir()) {
+		t.Fatal("owned profiles must be parked while the preview is on")
+	}
+}
+
+func TestCommandLineDisablesNativeOcclusion(t *testing.T) {
+	if !commandLineDisablesNativeOcclusion(`chrome.exe --disable-features=CalculateNativeWinOcclusion --user-data-dir=C:\p`) {
+		t.Fatal("single feature")
+	}
+	if !commandLineDisablesNativeOcclusion(`chrome.exe --disable-features=Foo,CalculateNativeWinOcclusion,Bar`) {
+		t.Fatal("feature list")
+	}
+	if commandLineDisablesNativeOcclusion(`chrome.exe --user-data-dir=C:\CalculateNativeWinOcclusion --remote-debugging-port=9222`) {
+		t.Fatal("profile path is not the switch")
+	}
+	if commandLineDisablesNativeOcclusion(`chrome.exe --disable-features=CalculateNativeWinOcclusionExtra`) {
+		t.Fatal("prefix of the feature name")
+	}
+	if commandLinesDisableNativeOcclusion(nil) {
+		t.Fatal("no process is not proof")
+	}
+	lines := []string{
+		`chrome.exe --disable-features=CalculateNativeWinOcclusion`,
+		`chrome.exe --window-size=1280,800`,
+	}
+	if commandLinesDisableNativeOcclusion(lines) {
+		t.Fatal("one process without the switch must keep the relaunch")
+	}
+}
+
+func TestCommandLineHasProfile(t *testing.T) {
+	dir := `C:\Users\ma139\.maclaw\browser-profile`
+	if !commandLineHasProfile(`chrome.exe --user-data-dir=`+dir+` --remote-debugging-port=1`, dir) {
+		t.Fatal("exact profile")
+	}
+	if !commandLineHasProfile(`chrome.exe --user-data-dir="`+dir+`"`, dir) {
+		t.Fatal("quoted profile")
+	}
+	if commandLineHasProfile(`chrome.exe --user-data-dir=`+dir+`-extra`, dir) {
+		t.Fatal("longer directory shares only a prefix")
+	}
+}
+
+func TestParkedOriginClearsVirtualScreen(t *testing.T) {
+	const vx, vy, vw, vh = -1368, 0, 3288, 1080
+	for _, width := range []int{200, 1280, 3840, 9000} {
+		x := parkedWindowLeft(vx, width)
+		if rectIntersectsVirtualScreen(x, vy, x+width, vy+800, vx, vy, vw, vh) {
+			t.Fatalf("width %d at %d still meets the virtual screen", width, x)
+		}
+	}
+	x, y := parkedOriginForScreen(vx, vy)
+	if rectIntersectsVirtualScreen(x, y, x+1280, y+800, vx, vy, vw, vh) {
+		t.Fatalf("launch position still meets the virtual screen at %d,%d", x, y)
+	}
+	if !rectIntersectsVirtualScreen(10, 10, 1290, 810, vx, vy, vw, vh) {
+		t.Fatal("on-screen window must still count")
+	}
+	if rectIntersectsVirtualScreen(10, 10, 10, 810, vx, vy, vw, vh) {
+		t.Fatal("zero-area rectangle")
+	}
+}
+
+func TestParkRestoreTarget(t *testing.T) {
+	if got := parkRestoreTarget(5, 9, 7, 3, true); got != 9 {
+		t.Fatalf("remembered window %d", got)
+	}
+	if got := parkRestoreTarget(5, 0, 7, 3, true); got != 7 {
+		t.Fatalf("window behind %d", got)
+	}
+	if got := parkRestoreTarget(5, 5, 7, 3, true); got != 7 {
+		t.Fatalf("remembered is the browser %d", got)
+	}
+	if got := parkRestoreTarget(5, 0, 0, 3, true); got != 3 {
+		t.Fatalf("own window %d", got)
+	}
+	if got := parkRestoreTarget(5, 0, 5, 3, true); got != 3 {
+		t.Fatalf("window behind is the browser %d", got)
+	}
+	if got := parkRestoreTarget(5, 9, 7, 3, false); got != 0 {
+		t.Fatalf("foreign foreground %d", got)
+	}
+	if got := parkRestoreTarget(0, 9, 7, 3, true); got != 0 {
+		t.Fatalf("no foreground %d", got)
+	}
+}
+
+func TestParkFocusCandidateSkipsToolWindows(t *testing.T) {
+	if !parkFocusCandidate(0, true, false, true, false) {
+		t.Fatal("ordinary window")
+	}
+	if parkFocusCandidate(0x80, true, false, true, false) {
+		t.Fatal("tool window")
+	}
+	if parkFocusCandidate(0x08000000, true, false, true, false) {
+		t.Fatal("no-activate window")
+	}
+	if parkFocusCandidate(0, true, true, true, false) {
+		t.Fatal("our browser")
+	}
+	if parkFocusCandidate(0, true, false, true, true) {
+		t.Fatal("minimized window")
+	}
+	if parkFocusCandidate(0, false, false, true, false) || parkFocusCandidate(0, true, false, false, false) {
+		t.Fatal("hidden or empty window")
+	}
+}
+
+func TestShownParkWidthUsesTheSizeThatWillBeShown(t *testing.T) {
+	if got := shownParkWidth(160, 9000, true); got != 9000 {
+		t.Fatalf("minimized window must use its restored width, got %d", got)
+	}
+	if got := shownParkWidth(3288, 1280, true); got != 1280 {
+		t.Fatalf("maximized window must use its restored width, got %d", got)
+	}
+	if got := shownParkWidth(160, 100, true); got != 1280 {
+		t.Fatalf("missing restored width, got %d", got)
+	}
+	if got := shownParkWidth(1920, 0, false); got != 1920 {
+		t.Fatalf("shown width, got %d", got)
+	}
+	if got := shownParkWidth(0, 1280, false); got != 1280 {
+		t.Fatalf("unknown shown width, got %d", got)
+	}
+	const vx = -1368
+	wide := shownParkWidth(160, 9000, true)
+	x := parkedWindowLeft(vx, wide)
+	if rectIntersectsVirtualScreen(x, 0, x+wide, 800, vx, 0, 3288, 1080) {
+		t.Fatalf("restored %d-wide window at %d still meets the virtual screen", wide, x)
+	}
+}
+
+func TestParkPollWaits(t *testing.T) {
+	if parkPollWait(0, true, true) != time.Second {
+		t.Fatal("no watched profile must not snapshot")
+	}
+	if parkPollWait(1, true, false) != 15*time.Millisecond {
+		t.Fatal("fresh window")
+	}
+	if parkPollWait(1, false, true) != 15*time.Millisecond {
+		t.Fatal("window still on a monitor")
+	}
+	if parkPollWait(1, false, false) != 400*time.Millisecond {
+		t.Fatal("parked window")
+	}
+	if parkPIDCacheAge(false, false) != 2*time.Second {
+		t.Fatal("idle process scan")
+	}
+	if parkPIDCacheAge(true, false) != 80*time.Millisecond {
+		t.Fatal("fresh process scan")
+	}
+	if parkPIDCacheAge(false, true) != 80*time.Millisecond {
+		t.Fatal("busy process scan")
+	}
+	if parkWatchExpired(time.Time{}, time.Now()) {
+		t.Fatal("the first miss only starts the timer")
+	}
+	start := time.Now()
+	if parkWatchExpired(start, start.Add(29*time.Second)) {
+		t.Fatal("a slow startup is still inside the timer")
+	}
+	if !parkWatchExpired(start, start.Add(parkProcessGoneAfter)) {
+		t.Fatal("a process gone for the full interval must drop")
+	}
 }
 
 func assertHeadedManagedLaunch(t *testing.T, args string) {
@@ -59,14 +234,12 @@ func TestPageDrivingOmitsRuntimeEnable(t *testing.T) {
 	}
 	joined := strings.Join(pageDrivingMethods(), " ")
 	frames := strings.Join(frameDrivingMethods(), " ")
-	for _, want := range []string{"Page.enable", "Network.enable"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("page driving lost %s in %s", want, joined)
-		}
+	if !strings.Contains(joined, "Page.enable") {
+		t.Fatalf("page driving lost Page.enable in %s", joined)
 	}
-	for _, banned := range []string{"Runtime.enable", "Log.enable"} {
+	for _, banned := range []string{"Runtime.enable", "Log.enable", "Network.enable"} {
 		if strings.Contains(joined, banned) || strings.Contains(frames, banned) {
-			t.Fatalf("driving domain %s is a console side channel", banned)
+			t.Fatalf("driving domain %s is visible to the page: %s", banned, joined+" "+frames)
 		}
 	}
 }
@@ -186,6 +359,19 @@ func TestDismissHandsBackOnlyTheHoldItSaw(t *testing.T) {
 	}
 	if held, _ := UserHoldsBrowser(); held {
 		t.Fatal("plain dismiss left the hold up")
+	}
+}
+
+func TestIsPreviewHandBack(t *testing.T) {
+	if !IsPreviewHandBack(errUserReleased) || !IsPreviewHandBack(ErrPreviewHandBack) {
+		t.Fatal("hand-back")
+	}
+	wrapped := errors.Join(ErrPreviewHandBack, errors.New("after"))
+	if !IsPreviewHandBack(wrapped) {
+		t.Fatal("wrapped hand-back")
+	}
+	if IsPreviewHandBack(errUserCancelled) || IsPreviewHandBack(errUserHoldTimeout) || IsPreviewHandBack(errUserHoldStopped) || IsPreviewHandBack(nil) {
+		t.Fatal("cancel, timeout, stop, and nil are not hand-backs")
 	}
 }
 

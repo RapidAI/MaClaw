@@ -96,7 +96,7 @@ func (s *BrowserAgentSession) pageURL() (string, error) {
 	if s == nil || s.session == nil {
 		return "", nil
 	}
-	raw, err := s.session.Eval("location.href")
+	raw, err := s.session.evalIsolated("location.href", false, DefaultCmdTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +114,7 @@ func (s *BrowserAgentSession) pageSignal() (pageSignal, error) {
 	if s == nil || s.session == nil {
 		return pageSignal{}, nil
 	}
-	raw, err := s.session.Eval(`(function(){var main=document.querySelector("main, [role='main']");var h=main?main.querySelector("h1, h2"):document.querySelector("h1, h2");var heading="";try{heading=h?String(h.textContent||"").replace(/\s+/g," ").trim().slice(0,120):""}catch(e){}return JSON.stringify({url:location.href,ready:document.readyState,title:document.title||"",mark:heading})})()`)
+	raw, err := s.session.evalIsolated(`(function(){var main=document.querySelector("main, [role='main']");var h=main?main.querySelector("h1, h2"):document.querySelector("h1, h2");var heading="";try{heading=h?String(h.textContent||"").replace(/\s+/g," ").trim().slice(0,120):""}catch(e){}return JSON.stringify({url:location.href,ready:document.readyState,title:document.title||"",mark:heading})})()`, false, DefaultCmdTimeout)
 	if err != nil {
 		return pageSignal{}, err
 	}

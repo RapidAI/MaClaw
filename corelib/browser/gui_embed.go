@@ -12,15 +12,16 @@ import (
 )
 
 // GUI embed mirrors the managed browser in the assistant preview. The process
-// stays a normal window. connect_user still attaches to a browser the person
-// already started; this flag only changes launches that this process owns.
+// stays headed. connect_user still attaches to a browser the person already
+// started; this flag only changes launches that this process owns.
 var guiEmbedEnabled atomic.Bool
 
 // EnableGUIEmbed marks that the assistant preview is mirroring the managed
 // browser. The GUI calls it once at startup. Tests and the TUI leave it off.
-// The browser process stays a normal window either way. Headless Chrome is a
-// different browser to page scripts, and sites that score that environment
-// refuse the session after a login that itself succeeded.
+// The browser process stays headed either way. Headless Chrome is a different
+// browser to page scripts, and sites that score that environment refuse the
+// session after a login that itself succeeded. The preview paints screenshots,
+// so the headed window is moved off the desktop instead of being shown there.
 func EnableGUIEmbed(on bool) {
 	guiEmbedEnabled.Store(on)
 }
@@ -29,6 +30,16 @@ func EnableGUIEmbed(on bool) {
 func GUIEmbedEnabled() bool {
 	return guiEmbedEnabled.Load()
 }
+
+// nativeOcclusionFeature is the Windows tracker that marks a headed window
+// hidden once its rectangle leaves every monitor. The page then reports
+// visibilityState hidden, and a later click calls Page.bringToFront.
+const nativeOcclusionFeature = "CalculateNativeWinOcclusion"
+
+// managedParkGap is the space kept between the parked window's right edge
+// and the virtual screen. The window's own width is subtracted as well, so a
+// window wider than any fixed margin still clears every monitor.
+const managedParkGap = 64
 
 // managedLaunchArgs is the Chrome/Edge command line for a managed profile.
 // The process is headed. A headless process sets navigator.webdriver, has no
@@ -53,8 +64,95 @@ func managedLaunchArgs(port int, userDataDir string) []string {
 		// Outer window size. Clicks use the CSS viewport from layout metrics,
 		// so the OS scale factor is left alone.
 		args = append(args, "--window-size=1280,800")
+		if managedWindowShouldPark(userDataDir) {
+			// Chrome clamps this back onto a monitor at startup. The park loop
+			// moves the HWND after that. The feature flag is what keeps the
+			// page visible once the HWND is off the virtual screen.
+			x, y := parkedWindowPosition()
+			args = append(args,
+				fmt.Sprintf("--window-position=%d,%d", x, y),
+				"--disable-features="+nativeOcclusionFeature,
+			)
+		}
 	}
 	return args
+}
+
+// managedWindowShouldPark is the headed Chrome this process owns while the
+// preview is on. The person's daily profile is not moved.
+func managedWindowShouldPark(userDataDir string) bool {
+	if !GUIEmbedEnabled() || strings.TrimSpace(userDataDir) == "" {
+		return false
+	}
+	key := managedBrowserKey(userDataDir)
+	return key == managedBrowserKey(persistentProfileDir()) || key == managedBrowserKey(debugProfileDir())
+}
+
+// parkedWindowLeft is the left edge that puts a window of the given width
+// fully to the left of the virtual screen. virtualX is that screen's origin.
+func parkedWindowLeft(virtualX, width int) int {
+	if width < 1 {
+		width = 1280
+	}
+	return virtualX - width - managedParkGap
+}
+
+// parkedOriginForScreen is the launch position for the 1280-wide outer
+// window. Chrome clamps it back onto a monitor; the park loop then uses the
+// real window width.
+func parkedOriginForScreen(virtualX, virtualY int) (int, int) {
+	return parkedWindowLeft(virtualX, 1280), virtualY
+}
+
+// rectIntersectsVirtualScreen reports whether a window rectangle meets any
+// monitor. A zero-area rectangle does not.
+func rectIntersectsVirtualScreen(left, top, right, bottom, virtualX, virtualY, virtualW, virtualH int) bool {
+	if right <= left || bottom <= top || virtualW <= 0 || virtualH <= 0 {
+		return false
+	}
+	return left < virtualX+virtualW && right > virtualX && top < virtualY+virtualH && bottom > virtualY
+}
+
+// commandLineDisablesNativeOcclusion reports a Chrome command line that
+// turned the Windows occlusion tracker off. The feature has to be its own
+// disable-features token. A profile path that merely contains the name is
+// not that switch.
+func commandLineDisablesNativeOcclusion(commandLine string) bool {
+	lower := strings.ToLower(commandLine)
+	want := strings.ToLower(nativeOcclusionFeature)
+	const key = "--disable-features="
+	rest := lower
+	for {
+		i := strings.Index(rest, key)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(key):]
+		val := rest
+		if end := strings.IndexAny(val, " \t\"'"); end >= 0 {
+			val = val[:end]
+		}
+		for _, part := range strings.Split(val, ",") {
+			if part == want {
+				return true
+			}
+		}
+	}
+}
+
+// commandLinesDisableNativeOcclusion is true only when every process line
+// has the switch. One process without it still marks an off-screen window
+// hidden, so the caller relaunches instead of parking that process.
+func commandLinesDisableNativeOcclusion(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		if !commandLineDisablesNativeOcclusion(line) {
+			return false
+		}
+	}
+	return true
 }
 
 // BrowserStageNotice tells the GUI to open the in-app page view.
@@ -117,8 +215,19 @@ var (
 	errUserHoldStopped = errors.New("浏览器会话已结束，接管等待取消")
 	errUserHoldTimeout = errors.New("用户仍在接管浏览器预览，这一步已停下")
 	errUserReleased    = errors.New("用户刚在预览窗交还浏览器。页面可能已变化，先 probe 再重试这一步")
+	// ErrPreviewHandBack is that same hand-back. The browser process and the
+	// CDP session are still connected. The action that was waiting was not
+	// sent. Callers report it as a continuation: probe, then keep going in
+	// this turn. A cancel, a timeout, and a stopped session are other errors.
+	ErrPreviewHandBack = errUserReleased
 	errUserCancelled   = errors.New("用户取消了预览里的这一步。不要重试刚才的点击，也不要索要密码或验证码。")
 )
+
+// IsPreviewHandBack reports a preview hand-back. The session is still
+// connected. Cancel, timeout, and a stopped session are not hand-backs.
+func IsPreviewHandBack(err error) bool {
+	return errors.Is(err, ErrPreviewHandBack)
+}
 
 // userHoldWaitCap bounds how long a tool call waits while the person holds
 // the preview. Tests shrink it.

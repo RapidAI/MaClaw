@@ -55,6 +55,17 @@ type Session struct {
 	pendingDialog *jsDialogState
 	visionOnce    bool
 
+	// mutWorld is the isolated execution context that counts DOM mutations.
+	// The counter lives on that world's own global. The page window never
+	// receives the property, and the observer is not constructed in the
+	// page's JavaScript realm.
+	mutWorldMu     sync.Mutex
+	mutWorldClient *CDPClient
+	mutWorldID     int
+	// frameWorlds is an isolated context per attached frame session.
+	// A child session must not reuse the main frame's context id.
+	frameWorlds map[string]int
+
 	// tabBot and tabRun name who opened tabs in this browser. Empty means
 	// the tabs are not tracked.
 	tabBot string
@@ -310,16 +321,22 @@ func (s *Session) Navigate(url string) (string, error) {
 		return "", fmt.Errorf("browser session not connected")
 	}
 
+	// A navigation drops focus emulation. The signed request is sent while the
+	// new document is still loading, so focus is restored as soon as navigate
+	// is accepted and again after load.
+	emulatePageFocus(client, "")
 	result, err := client.Send("Page.navigate", map[string]interface{}{
 		"url": url,
 	}, NavTimeout)
 	if err != nil {
 		return "", err
 	}
+	emulatePageFocus(client, "")
 
 	// Wait for load without holding s.mu so other session ops are not blocked
 	// for the full navigation timeout.
-	readyState := waitForLoadOn(client, NavTimeout, 5*time.Second)
+	readyState := s.waitForLoadOn(client, NavTimeout, 5*time.Second)
+	emulatePageFocus(client, "")
 	if readyState != "complete" {
 		// SPA pages often reach "interactive" long before first render.
 		// Give the page a short, non-fatal structural-stability window so
@@ -370,20 +387,7 @@ func (s *Session) currentHref() (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("browser session not connected")
 	}
-	s.mu.Lock()
-	client := s.client
-	s.mu.Unlock()
-	if client == nil {
-		return "", fmt.Errorf("browser session not connected")
-	}
-	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    "location.href",
-		"returnByValue": true,
-	}, 2*time.Second)
-	if err != nil {
-		return "", err
-	}
-	return extractStringValue(result), nil
+	return s.evalIsolated("location.href", false, 2*time.Second)
 }
 
 // blocksLeavingLoggedInDocument is true when a navigation would leave the
@@ -633,6 +637,7 @@ func (s *Session) typeContentLocked(selector, text, contentFormat string, append
 }
 
 func (s *Session) typeContentLockedIn(selector string, scope frameScope, text, contentFormat string, appendText bool) error {
+	emulatePageFocus(s.client, "")
 	if appendText {
 		if err := s.focusEditableLockedIn(selector, scope); err != nil {
 			return err
@@ -655,6 +660,7 @@ func (s *Session) TypeActive(text string) error {
 func (s *Session) TypeActiveContent(text, contentFormat string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	emulatePageFocus(s.client, "")
 
 	if err := s.prepareActiveEditableLocked(); err != nil {
 		return err
@@ -1647,14 +1653,12 @@ func (s *Session) WaitForSelectorInFrame(frameID, selector string, timeoutSec in
 // pageVisibilityLocked returns document.visibilityState ("visible",
 // "hidden", ...) or "" when the probe fails.
 func (s *Session) pageVisibilityLocked() string {
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    "document.visibilityState",
-		"returnByValue": true,
-	}, 5*time.Second)
+	// Scroll already holds s.mu. The read stays off the page world.
+	raw, err := s.evalIsolatedClient(s.client, "", "document.visibilityState", false, 5*time.Second)
 	if err != nil {
 		return ""
 	}
-	return extractStringValue(result)
+	return raw
 }
 
 // Scroll scrolls the page by the given delta (pixels). Positive = down.
@@ -1898,6 +1902,8 @@ func (s *Session) clickAtLockedIn(selector string, scope frameScope) error {
 }
 
 func (s *Session) clickAtLockedOn(sessionID, selector string, scope frameScope) error {
+	// The caller holds s.mu. Focus is per action: a navigation drops it.
+	emulatePageFocus(s.client, sessionID)
 	send := func(method string, params map[string]interface{}) (json.RawMessage, error) {
 		if sessionID == "" {
 			return s.client.Send(method, params, DefaultCmdTimeout)
@@ -1951,15 +1957,10 @@ func (s *Session) clickAtLockedOn(sessionID, selector string, scope frameScope) 
 	`, pierceFindJS, scopedLocatedCall(selector, scope))
 
 	evalCoords := func() (*clickCoordResult, error) {
-		result, err := send("Runtime.evaluate", map[string]interface{}{
-			"expression":    js,
-			"returnByValue": true,
-			"awaitPromise":  true,
-		})
+		str, err := s.evalIsolatedClient(s.client, sessionID, js, true, DefaultCmdTimeout)
 		if err != nil {
 			return nil, err
 		}
-		str := extractStringValue(result)
 		var coord clickCoordResult
 		if err := json.Unmarshal([]byte(str), &coord); err != nil {
 			return nil, fmt.Errorf("parse coordinates: %w", err)
@@ -2078,7 +2079,7 @@ func (s *Session) Back() error {
 	}
 	// Accept "interactive" immediately (tolerance 0) — Back() keeps the old
 	// behaviour; the longer SPA-tolerant wait only pays off on Navigate.
-	waitForLoadOn(client, NavTimeout, 0)
+	s.waitForLoadOn(client, NavTimeout, 0)
 	return nil
 }
 
@@ -2101,15 +2102,10 @@ func (s *Session) Info() (*PageInfo, error) {
 		return nil, fmt.Errorf("browser session not connected")
 	}
 
-	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    `JSON.stringify({title: document.title, url: location.href, ready_state: document.readyState})`,
-		"returnByValue": true,
-	}, DefaultCmdTimeout)
+	str, err := s.evalIsolatedClient(client, "", `JSON.stringify({title: document.title, url: location.href, ready_state: document.readyState})`, false, DefaultCmdTimeout)
 	if err != nil {
 		return nil, err
 	}
-
-	str := extractStringValue(result)
 	var info PageInfo
 	if err := json.Unmarshal([]byte(str), &info); err != nil {
 		return nil, fmt.Errorf("parse info: %w", err)
@@ -2220,14 +2216,20 @@ func connectPageTarget(addr, from, targetID string) (*CDPClient, error) {
 
 // pageDrivingMethods are the CDP domains a page session turns on.
 // Runtime.enable is not among them. Enabling Runtime subscribes Chrome to
-// console-argument serialization. A page detects that by defining a getter on
-// Error.stack and calling console.debug: the getter runs only while the
-// debugger is subscribed. Sites that sell things score this as automation and
-// reject the next signed request. Runtime.evaluate does not need the
-// subscription. Log.enable is also omitted: nothing reads Log.entryAdded, and
-// formatting a console argument is the same side channel.
+// console-argument serialization. A page detects that by installing
+// Error.prepareStackTrace and calling console.debug: the hook runs only
+// while that subscription is on. Sites that sell things score this as
+// automation and reject the next signed request. Runtime.evaluate does not
+// need the subscription. Log.enable is also omitted: nothing reads
+// Log.entryAdded, and formatting a console argument is the same side channel.
+// Network.enable is omitted for the same reason. While it is on, a
+// same-origin frame's message is delivered before that frame's load event,
+// and the page can read that order. In-flight request counts are not worth
+// the subscription. Stability watches readyState and DOM mutations counted
+// in an isolated world, not on the page window. A publish run turns Network
+// on for itself and turns it off when the run ends.
 func pageDrivingMethods() []string {
-	return []string{"Page.enable", "Network.enable", "Accessibility.enable"}
+	return []string{"Page.enable", "Accessibility.enable"}
 }
 
 // optionalPageDrivingMethod is enabled when the browser supports it and is
@@ -2256,6 +2258,8 @@ func enablePageDriving(client *CDPClient) error {
 		"flatten":                true,
 	}, 5*time.Second)
 	_, _ = client.Send("Target.setDiscoverTargets", map[string]interface{}{"discover": true}, 5*time.Second)
+	// The page can score document.hasFocus before the first click.
+	emulatePageFocus(client, "")
 	return nil
 }
 
@@ -2401,23 +2405,20 @@ func (s *Session) waitForLoad(timeout, interactiveTolerance time.Duration) strin
 	s.mu.Lock()
 	client := s.client
 	s.mu.Unlock()
-	return waitForLoadOn(client, timeout, interactiveTolerance)
+	return s.waitForLoadOn(client, timeout, interactiveTolerance)
 }
 
-func waitForLoadOn(client *CDPClient, timeout, interactiveTolerance time.Duration) string {
-	if client == nil {
+func (s *Session) waitForLoadOn(client *CDPClient, timeout, interactiveTolerance time.Duration) string {
+	if s == nil || client == nil {
 		return ""
 	}
 	deadline := time.Now().Add(timeout)
 	interactiveSince := time.Time{}
 	last := ""
 	for time.Now().Before(deadline) {
-		result, err := client.Send("Runtime.evaluate", map[string]interface{}{
-			"expression":    "document.readyState",
-			"returnByValue": true,
-		}, 3*time.Second)
+		state, err := s.evalIsolatedClient(client, "", "document.readyState", false, 3*time.Second)
 		if err == nil {
-			last = extractStringValue(result)
+			last = state
 			switch last {
 			case "complete":
 				return last
@@ -2462,10 +2463,7 @@ func (s *Session) waitForStableOn(client *CDPClient, timeout, quiet time.Duratio
 	lastMut := -1
 	consecutiveErrors := 0
 	for time.Now().Before(deadline) {
-		result, err := client.Send("Runtime.evaluate", map[string]interface{}{
-			"expression":    stabilityProbeJS,
-			"returnByValue": true,
-		}, 2*time.Second)
+		sig, err := s.evalStabilityProbe(client)
 		if err != nil {
 			consecutiveErrors++
 			// If CDP is consistently failing, bail early instead of polling
@@ -2477,9 +2475,12 @@ func (s *Session) waitForStableOn(client *CDPClient, timeout, quiet time.Duratio
 			continue
 		}
 		consecutiveErrors = 0
-		sig := extractStringValue(result)
 		ready, url, _, mut := parseStabilitySignature(sig)
 		isReady := ready == "complete" || ready == "interactive"
+		// inflight stays 0 while Network is not subscribed. That subscription
+		// reorders a frame's message ahead of its load event, so stability
+		// does not turn it on. DOM mutations still cover a response that
+		// changes the page. The count is read from an isolated world.
 		structurallyStable := isReady &&
 			ready == lastReady &&
 			url == lastURL &&
@@ -2506,22 +2507,27 @@ func (s *Session) waitForStableOn(client *CDPClient, timeout, quiet time.Duratio
 	return fmt.Errorf("page not stable within %v (ready=%s)", timeout, lastReady)
 }
 
+// stabilityProbeJS counts DOM mutations for the quiet check. It runs in an
+// isolated world. The counter stays on that world's globalThis. Assigning it
+// through document.defaultView would put the property on the page window, and
+// a MutationObserver constructed in the page's realm is visible to a page
+// that wrapped the constructor. The page cannot see this world while
+// Runtime.enable is off.
 const stabilityProbeJS = `(function(){
-	function ensureMut(doc) {
-		if (!doc || !doc.defaultView) return 0;
-		const w = doc.defaultView;
-		if (!w.__maclawMut) {
-			w.__maclawMut = { n: 0 };
-			try { new MutationObserver(function () { w.__maclawMut.n++; }).observe(doc, { subtree: true, childList: true, attributes: true, characterData: false }); } catch (e) {}
-		}
-		return w.__maclawMut.n || 0;
+	var slot = globalThis;
+	if (!slot.__maclawMut) slot.__maclawMut = { n: 0, seen: new WeakSet() };
+	function arm(doc) {
+		if (!doc || slot.__maclawMut.seen.has(doc)) return;
+		try {
+			new MutationObserver(function () { slot.__maclawMut.n++; }).observe(doc, { subtree: true, childList: true, attributes: true, characterData: false });
+			slot.__maclawMut.seen.add(doc);
+		} catch (e) {}
 	}
 	function walk(doc) {
-		let n = ensureMut(doc);
+		arm(doc);
 		for (const f of queryIframes(doc)) {
-			try { if (f.contentDocument) n += walk(f.contentDocument); } catch (e) {}
+			try { if (f.contentDocument) walk(f.contentDocument); } catch (e) {}
 		}
-		return n;
 	}
 	function queryIframes(root) {
 		const out = [];
@@ -2540,8 +2546,251 @@ const stabilityProbeJS = `(function(){
 		if (root.shadowRoot) walkNode(root.shadowRoot);
 		return out;
 	}
-	return JSON.stringify({ready: document.readyState, url: location.href, mut: walk(document)});
+	walk(document);
+	return JSON.stringify({ready: document.readyState, url: location.href, mut: slot.__maclawMut.n || 0});
 })()`
+
+// stabilityReadyJS is the fallback when an isolated world cannot be created.
+// It only reads readyState. It does not install a property or an observer.
+const stabilityReadyJS = `(function(){return JSON.stringify({ready:document.readyState,url:location.href,mut:0})})()`
+
+// evalStabilityProbe reads the quiet signature from an isolated world.
+// A destroyed world is created again once. The readyState fallback is the
+// only read that still uses the page world, and it installs nothing.
+func (s *Session) evalStabilityProbe(client *CDPClient) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	if id, err := s.isolatedWorld(client, ""); err == nil && id != 0 {
+		sig, err := evalInWorld(client, "", stabilityProbeJS, id, false, 2*time.Second)
+		if err == nil {
+			return sig, nil
+		}
+		s.dropIsolatedWorld(client, "")
+		if id, err2 := s.isolatedWorld(client, ""); err2 == nil && id != 0 {
+			if sig, err3 := evalInWorld(client, "", stabilityProbeJS, id, false, 2*time.Second); err3 == nil {
+				return sig, nil
+			}
+			s.dropIsolatedWorld(client, "")
+		}
+	}
+	return evalInWorld(client, "", stabilityReadyJS, 0, false, 2*time.Second)
+}
+
+// isolatedWorld returns the unnamed execution context for this client and
+// frame session. A name would be visible if worlds are listed. The world is
+// not granted universal access. sessionID empty is the main frame.
+func (s *Session) isolatedWorld(client *CDPClient, sessionID string) (int, error) {
+	if s == nil || client == nil {
+		return 0, fmt.Errorf("browser session not connected")
+	}
+	s.mutWorldMu.Lock()
+	defer s.mutWorldMu.Unlock()
+	if s.mutWorldClient != client {
+		s.mutWorldClient = client
+		s.mutWorldID = 0
+		s.frameWorlds = nil
+	}
+	if sessionID == "" && s.mutWorldID > 0 {
+		return s.mutWorldID, nil
+	}
+	if sessionID != "" && s.frameWorlds[sessionID] > 0 {
+		return s.frameWorlds[sessionID], nil
+	}
+	send := func(method string, params interface{}) (json.RawMessage, error) {
+		if sessionID == "" {
+			return client.Send(method, params, 2*time.Second)
+		}
+		return client.SendOn(sessionID, method, params, 2*time.Second)
+	}
+	raw, err := send("Page.getFrameTree", nil)
+	if err != nil {
+		return 0, err
+	}
+	frameID := mainFrameID(raw)
+	if frameID == "" {
+		return 0, fmt.Errorf("page frame id missing")
+	}
+	created, err := send("Page.createIsolatedWorld", map[string]interface{}{
+		"frameId": frameID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	id := isolatedContextID(created)
+	if id == 0 {
+		return 0, fmt.Errorf("isolated world id missing")
+	}
+	if sessionID == "" {
+		s.mutWorldID = id
+		return id, nil
+	}
+	if s.frameWorlds == nil {
+		s.frameWorlds = map[string]int{}
+	}
+	s.frameWorlds[sessionID] = id
+	return id, nil
+}
+
+// dropIsolatedWorld forgets one cached context. An empty sessionID drops the
+// main frame only. A different client is left alone.
+func (s *Session) dropIsolatedWorld(client *CDPClient, sessionID string) {
+	if s == nil {
+		return
+	}
+	s.mutWorldMu.Lock()
+	defer s.mutWorldMu.Unlock()
+	if client != nil && s.mutWorldClient != nil && s.mutWorldClient != client {
+		return
+	}
+	if sessionID != "" {
+		delete(s.frameWorlds, sessionID)
+		return
+	}
+	s.mutWorldID = 0
+	if client == nil {
+		s.mutWorldClient = nil
+		s.frameWorlds = nil
+	}
+}
+
+// evalIsolated reads in the isolated world. It locks s.mu only to copy the
+// client. A caller that already holds s.mu uses evalIsolatedClient. The read
+// is not sent to the page world when the isolated world cannot be created.
+func (s *Session) evalIsolated(expression string, awaitPromise bool, timeout time.Duration) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return s.evalIsolatedClient(client, "", expression, awaitPromise, timeout)
+}
+
+func (s *Session) evalIsolatedOn(sessionID, expression string, awaitPromise bool, timeout time.Duration) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return s.evalIsolatedClient(client, sessionID, expression, awaitPromise, timeout)
+}
+
+func (s *Session) evalIsolatedClient(client *CDPClient, sessionID, expression string, awaitPromise bool, timeout time.Duration) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	id, err := s.isolatedWorld(client, sessionID)
+	if err != nil || id == 0 {
+		if err == nil {
+			err = fmt.Errorf("isolated world id missing")
+		}
+		return "", err
+	}
+	sig, err := evalInWorld(client, sessionID, expression, id, awaitPromise, timeout)
+	if err == nil {
+		return sig, nil
+	}
+	// A script error or a timeout is the read's result. Retry only when the
+	// cached world itself is gone, so a failing observe is not run twice.
+	if !isolatedContextGone(err) {
+		return "", err
+	}
+	s.dropIsolatedWorld(client, sessionID)
+	id, err2 := s.isolatedWorld(client, sessionID)
+	if err2 != nil || id == 0 {
+		return "", err
+	}
+	sig, err3 := evalInWorld(client, sessionID, expression, id, awaitPromise, timeout)
+	if err3 != nil {
+		s.dropIsolatedWorld(client, sessionID)
+		return "", err
+	}
+	return sig, nil
+}
+
+func isolatedContextGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Execution context was destroyed") ||
+		strings.Contains(msg, "Cannot find context") ||
+		strings.Contains(msg, "Inspected target navigated") ||
+		strings.Contains(msg, "Inspected target closed")
+}
+
+func mainFrameID(raw json.RawMessage) string {
+	var payload struct {
+		FrameTree struct {
+			Frame struct {
+				ID string `json:"id"`
+			} `json:"frame"`
+		} `json:"frameTree"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	return payload.FrameTree.Frame.ID
+}
+
+func isolatedContextID(raw json.RawMessage) int {
+	var payload struct {
+		ID int `json:"executionContextId"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return 0
+	}
+	return payload.ID
+}
+
+func evalInWorld(client *CDPClient, sessionID, expression string, contextID int, awaitPromise bool, timeout time.Duration) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	params := map[string]interface{}{
+		"expression":    expression,
+		"returnByValue": true,
+	}
+	if contextID != 0 {
+		params["contextId"] = contextID
+	}
+	if awaitPromise {
+		params["awaitPromise"] = true
+	}
+	var (
+		raw json.RawMessage
+		err error
+	)
+	if sessionID == "" {
+		raw, err = client.Send("Runtime.evaluate", params, timeout)
+	} else {
+		raw, err = client.SendOn(sessionID, "Runtime.evaluate", params, timeout)
+	}
+	if err != nil {
+		return "", err
+	}
+	if text := evalExceptionText(raw); text != "" {
+		return "", fmt.Errorf("JS error: %s", text)
+	}
+	return extractStringValue(raw), nil
+}
+
+func evalExceptionText(raw json.RawMessage) string {
+	var resp struct {
+		ExceptionDetails *struct {
+			Text string `json:"text"`
+		} `json:"exceptionDetails"`
+	}
+	if json.Unmarshal(raw, &resp) != nil || resp.ExceptionDetails == nil {
+		return ""
+	}
+	return resp.ExceptionDetails.Text
+}
 
 // parseStabilitySignature extracts ready, url, and text length from the
 // JSON signature produced by the stability polling expression.

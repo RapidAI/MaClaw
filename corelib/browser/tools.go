@@ -688,7 +688,9 @@ func marshalActionResult(s *BrowserAgentSession, result *BrowserActionResult, er
 	if s != nil {
 		s.rememberSubmitClickIfOK(result.submitRememberKey, result)
 	}
-	ok := result.Status == "ok" || result.Status == ""
+	// A frequency hold is a finished decision. ok:false is a failed call,
+	// and a failed call is what the model retries.
+	ok := result.Status == "ok" || result.Status == "" || FrequencyRefusalStops(result.Display)
 	data := result.Data
 	if !ok {
 		data = compactFailureDataFromResult(result)

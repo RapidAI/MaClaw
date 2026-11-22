@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -319,15 +320,57 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 		paths = append(paths, path)
 	}
 	var leftovers []string
+	// A blank line separates a preamble from the card. Empty slots stay with
+	// the one-line conclusion above that blank. The card is the paragraph
+	// that the 文件 line closes. "1." "2." "3." are optional; the host asked
+	// for three lines, then the file line.
+	var paragraphs [][]string
+	var cur []string
+	cardPara := -1
+	// A blank before a new sentence starts another paragraph. A blank before
+	// 无 keeps that empty slot with the one-line conclusion above it.
+	pendingBreak := false
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		paragraphs = append(paragraphs, cur)
+		cur = nil
+	}
+	closeCard := func() {
+		flush()
+		if cardPara < 0 && len(paragraphs) > 0 {
+			cardPara = len(paragraphs) - 1
+		}
+	}
 	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
+		if line == "" {
+			if len(cur) > 0 {
+				pendingBreak = true
+			}
+			continue
+		}
+		if pendingBreak && !emptySlotContinues(cur, line) {
+			flush()
+		}
+		pendingBreak = false
 		if m := helperConclusion.FindStringSubmatch(line); m != nil {
-			lines[m[1][0]-'1'] = cleanProgressText(m[2])
+			// The number also selects a slot. The line stays in the paragraph,
+			// so "2. 无" is still the empty slot in front of 文件. Once 文件
+			// has closed the card, a later number fills an empty slot and
+			// does not replace a conclusion already written.
+			idx := int(m[1][0] - '1')
+			if cardPara < 0 || strings.TrimSpace(lines[idx]) == "" {
+				lines[idx] = cleanProgressText(m[2])
+			}
+			cur = append(cur, line)
 			continue
 		}
 		if m := helperFileLine.FindStringSubmatch(line); m != nil {
 			// One path. Fields would split "演讲稿 完整版.docx" into two names.
 			path := normalizeHelperPath(m[1])
+			closeCard()
 			if helperPathIsNone(path) {
 				fileMarkedNone = true
 				continue
@@ -338,22 +381,563 @@ func CollapseHelperReport(body string, extraPaths []string) (string, error) {
 		for _, path := range helperHomePath.FindAllString(line, -1) {
 			add(path)
 		}
-		if line != "" {
-			leftovers = append(leftovers, line)
-		}
+		cur = append(cur, line)
+		leftovers = append(leftovers, line)
 	}
 	for _, path := range extraPaths {
 		add(path)
 	}
-	if strings.TrimSpace(lines[0]+lines[1]+lines[2]) == "" && len(paths) == 0 {
+	// A failed send clears the slots before adopt. Otherwise "2. 无" would
+	// already be a finished card and the failure sentence would drop out.
+	cleared := false
+	if cardPara >= 0 {
+		cleared = applyCardParagraph(&lines, paragraphs[cardPara])
+	}
+	// Slot names come off before the send fold. "已完成：已发出" is the done
+	// token, and "剩余：无" is an empty slot. Folding first would miss that
+	// token and leave 发给 / 原文 under the leftover labels.
+	stripHelperSlotRoles(&lines)
+	// A 文件：无 line already makes this a card. The send facts are the
+	// conclusion when they are labeled 已发出 / 发给谁 / 发出原文 and not
+	// numbered. Empty 1. 2. 3. slots must not hide that report.
+	// A cleared failure stays cleared: a preamble send must not refill it.
+	if !cleared {
+		adoptLabeledSendFacts(&lines, leftovers)
+	}
+	if helperSlotsNone(lines) && len(paths) == 0 {
 		return "", &HelperReportError{FileMarkedNone: fileMarkedNone, Detail: helperReportDetails(leftovers)}
 	}
+	foldSentMessageConclusion(&lines)
 	file := ProgressOpenNone
 	if len(paths) > 0 {
 		file = strings.Join(paths, " ")
 	}
 	shown := fmt.Sprintf("1. %s\n2. %s\n3. %s\n文件：%s", lines[0], lines[1], lines[2], file)
 	return cleanProgressText(shown), nil
+}
+
+// foldSentMessageConclusion moves a sent-message report into the finished
+// slot. The card's three lines are finished, left, and blocked. A report that
+// puts the recipient on line 2 and the text on line 3 is one finished send.
+func foldSentMessageConclusion(lines *[3]string) {
+	if lines == nil {
+		return
+	}
+	recipient, okRecipient := sentMessageFact(lines[1], sentMessageRecipientPrefixes...)
+	body, okBody := sentMessageFact(lines[2], sentMessageBodyPrefixes...)
+	if !okRecipient || !okBody || !sentMessageAlreadyDone(lines[0]) {
+		return
+	}
+	finished := strings.TrimSpace(lines[0])
+	if !finishedHasLabeledFact(finished, recipient, body) {
+		finished += "；发给：" + recipient + "；原文：" + body
+	}
+	lines[0] = finished
+	lines[1] = ProgressOpenNone
+	lines[2] = ProgressOpenNone
+}
+
+// adoptLabeledSendFacts copies an unnumbered send report into the three
+// slots. A recipient or a body counts only when its label is followed by a
+// colon, so a sentence that merely starts with 发给 or 内容 stays prose.
+// The done line is the status token at the start (已发出。, 已发出了,
+// 已发送成功), with or without a colon. 已提交审核 and 已发出去 are
+// different words. A leading slot name is removed first, and one line that
+// already carries several labeled facts is split on ；. The longest label
+// wins. All three facts must be present. A line that says the send failed
+// is not a finished send. A numbered conclusion that is not a send is left
+// as the helper wrote it.
+func adoptLabeledSendFacts(lines *[3]string, leftovers []string) {
+	if lines == nil {
+		return
+	}
+	if strings.TrimSpace(lines[0]) != "" && !sentMessageAlreadyDone(lines[0]) {
+		return
+	}
+	slotDone := sentMessageAlreadyDone(lines[0])
+	done := ""
+	if slotDone {
+		done = strings.TrimSpace(lines[0])
+	}
+	recipient, slotRecipient := sentMessageFact(lines[1], sentMessageRecipientPrefixes...)
+	body, slotBody := sentMessageFact(lines[2], sentMessageBodyPrefixes...)
+	doneRank, recipientRank, bodyRank := 0, 0, 0
+	for _, line := range leftovers {
+		line = stripLeadingHelperSlotRoles(strings.TrimSpace(line))
+		if line == "" {
+			continue
+		}
+		for _, part := range helperFactParts(line) {
+			part = stripLeadingHelperSlotRoles(strings.TrimSpace(part))
+			if part == "" {
+				continue
+			}
+			if !slotDone {
+				if rank, ok := sentMessageDoneRank(part); ok && rank > doneRank {
+					done = part
+					doneRank = rank
+				}
+			}
+			if !slotRecipient {
+				if fact, rank, ok := sentMessageLabel(part, sentMessageRecipientPrefixes); ok && rank > recipientRank {
+					recipient = fact
+					recipientRank = rank
+				}
+			}
+			if !slotBody {
+				if fact, rank, ok := sentMessageLabel(part, sentMessageBodyPrefixes); ok && rank > bodyRank {
+					body = fact
+					bodyRank = rank
+				}
+			}
+		}
+	}
+	if done == "" || recipient == "" || body == "" {
+		return
+	}
+	if strings.TrimSpace(lines[0]) == "" {
+		lines[0] = done
+	}
+	if strings.TrimSpace(lines[1]) == "" {
+		lines[1] = "发给：" + recipient
+	}
+	if strings.TrimSpace(lines[2]) == "" {
+		lines[2] = "原文：" + body
+	}
+}
+
+var (
+	sentMessageDonePrefixes      = []string{"已经发送", "已发送", "已发出", "已提交"}
+	sentMessageRecipientPrefixes = []string{"发给谁", "发给", "收件人"}
+	sentMessageBodyPrefixes      = []string{"发出的原文", "发出原文", "原文", "内容"}
+	helperSlotRolePrefixes       = [3][]string{
+		{"已完成", "完成", "What finished"},
+		{"还剩", "剩余", "剩餘", "還剩", "What is left"},
+		{"卡住", "阻塞", "What is blocked"},
+	}
+)
+
+// sentMessageLabel reads one label. The prefix must be the whole label:
+// optional space, then a colon. 原文 does not match 原文件, and 内容 does
+// not match 内容提要. The longest prefix wins.
+func sentMessageLabel(line string, prefixes []string) (string, int, bool) {
+	line = strings.TrimSpace(line)
+	best := 0
+	value := ""
+	for _, prefix := range prefixes {
+		rest, ok := labelRest(line, prefix)
+		if !ok || len(prefix) <= best {
+			continue
+		}
+		best = len(prefix)
+		value = rest
+	}
+	if best == 0 {
+		return "", 0, false
+	}
+	return value, best, true
+}
+
+func labelRest(line, prefix string) (string, bool) {
+	if prefix == "" || !strings.HasPrefix(line, prefix) {
+		return "", false
+	}
+	tail := strings.TrimLeft(line[len(prefix):], " \t\r\n　")
+	if tail == "" {
+		return "", false
+	}
+	r, size := utf8.DecodeRuneInString(tail)
+	if r != ':' && r != '：' {
+		return "", false
+	}
+	rest := strings.TrimSpace(tail[size:])
+	if rest == "" || helperPathIsNone(rest) {
+		return "", false
+	}
+	return rest, true
+}
+
+func finishedHasLabeledFact(finished, recipient, body string) bool {
+	return labeledValue(finished, sentMessageRecipientPrefixes, recipient) &&
+		labeledValue(finished, sentMessageBodyPrefixes, body)
+}
+
+// applyCardParagraph writes the three-line card the 文件 line closes.
+// The line before the two empty slots is the conclusion and replaces an
+// earlier numbered slot. A failed send clears those slots. A numbered
+// conclusion stays only when its text is this card's own conclusion line.
+// The bool reports that the slots were cleared.
+func applyCardParagraph(lines *[3]string, para []string) bool {
+	if lines == nil {
+		return false
+	}
+	slots, ok, refused := unnumberedCardSlots(para)
+	if refused {
+		// Keep the numbered conclusion only when it is this card's line.
+		// An earlier "1. 已发出：发送失败" is a different sentence.
+		head := cardConclusion(para)
+		current := stripHelperSlotRole(cardLineBody(lines[0]), helperSlotRolePrefixes[0])
+		if strings.TrimSpace(current) != "" && cleanProgressText(current) == cleanProgressText(head) {
+			return false
+		}
+		*lines = [3]string{}
+		return true
+	}
+	if ok {
+		for i := 0; i < 3; i++ {
+			lines[i] = cleanProgressText(slots[i])
+		}
+	}
+	return false
+}
+
+// unnumberedCardSlots is the three-line card the 文件 line closes.
+// The host asks for a conclusion, then an empty slot, then an empty slot,
+// then the file line. Numbers are optional. The two empty slots mark the
+// card, so a preamble in the same paragraph is not the conclusion. An empty
+// conclusion is not a card. refused is a conclusion whose status word says
+// the send failed; the sentence stays in the detail.
+func unnumberedCardSlots(para []string) (slots [3]string, ok bool, refused bool) {
+	if len(para) < 3 || !helperSlotNone(para[len(para)-1]) || !helperSlotNone(para[len(para)-2]) {
+		return slots, false, false
+	}
+	// The line in front of 无 is a 发给 or 原文 label, and a send fact is
+	// already above it. Those 无 lines belong to that labeled report.
+	if cardHasEarlierSendFact(para) {
+		return slots, false, false
+	}
+	para = para[len(para)-3:]
+	head := stripHelperSlotRole(cardLineBody(para[0]), helperSlotRolePrefixes[0])
+	if helperSlotNone(head) {
+		return slots, false, false
+	}
+	if negatedSendStatus(head) {
+		return slots, false, true
+	}
+	for i := 0; i < 3; i++ {
+		slots[i] = cardLineBody(para[i])
+	}
+	return slots, true, false
+}
+
+// cardConclusion is the line in front of the two empty slots.
+func cardConclusion(para []string) string {
+	if len(para) < 3 {
+		return ""
+	}
+	return stripHelperSlotRole(cardLineBody(para[len(para)-3]), helperSlotRolePrefixes[0])
+}
+
+// cardHasEarlierSendFact reports that the line in front of the empty slots
+// is only a 发给 or 原文 label, and a send fact already appears above it.
+// The 无 lines then belong to that labeled report. A conclusion that is not
+// itself a label stays the conclusion, even when an earlier line says 已发出。
+func cardHasEarlierSendFact(para []string) bool {
+	if len(para) < 4 {
+		return false
+	}
+	head := cardConclusion(para)
+	if _, ok := sentMessageFact(head, sentMessageRecipientPrefixes...); !ok {
+		if _, ok := sentMessageFact(head, sentMessageBodyPrefixes...); !ok {
+			return false
+		}
+	}
+	for _, line := range para[:len(para)-3] {
+		line = stripLeadingHelperSlotRoles(cardLineBody(line))
+		if line == "" {
+			continue
+		}
+		if sentMessageAlreadyDone(line) {
+			return true
+		}
+		if _, ok := sentMessageFact(line, sentMessageRecipientPrefixes...); ok {
+			return true
+		}
+		if _, ok := sentMessageFact(line, sentMessageBodyPrefixes...); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// emptySlotContinues keeps 无 on the one-line conclusion above a blank.
+// A paragraph that already has several lines stays separate, so a labeled
+// 发给 / 原文 report is not pulled into the empty slots below it.
+func emptySlotContinues(cur []string, line string) bool {
+	if len(cur) == 0 || !helperSlotNone(line) {
+		return false
+	}
+	if len(cur) == 1 {
+		return true
+	}
+	return helperSlotNone(cur[len(cur)-1])
+}
+
+// cardLineBody drops an optional "1." "2." "3." prefix. The number is how a
+// slot is chosen; it is not part of the conclusion or the empty-slot word.
+func cardLineBody(line string) string {
+	line = strings.TrimSpace(line)
+	if m := helperConclusion.FindStringSubmatch(line); m != nil {
+		return strings.TrimSpace(m[2])
+	}
+	return line
+}
+
+func helperSlotNone(line string) bool {
+	line = stripLeadingHelperSlotRoles(cardLineBody(line))
+	return helperPathIsNone(normalizeHelperPath(line))
+}
+
+func helperSlotsNone(lines [3]string) bool {
+	for _, line := range lines {
+		if !helperSlotNone(line) {
+			return false
+		}
+	}
+	return true
+}
+
+func negatedSendStatus(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || !sentMessageNegated(line) {
+		return false
+	}
+	for _, prefix := range sentMessageDonePrefixes {
+		if doneStatusAtStart(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func labeledValue(line string, labels []string, value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	for _, label := range labels {
+		if strings.Contains(line, label+"："+value) || strings.Contains(line, label+":"+value) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripHelperSlotRoles removes a leading slot name. The card labels those
+// slots again when the person reads them, so "剩余：无" is just 无.
+func stripHelperSlotRoles(lines *[3]string) {
+	if lines == nil {
+		return
+	}
+	for i := range lines {
+		lines[i] = stripHelperSlotRole(lines[i], helperSlotRolePrefixes[i])
+	}
+}
+
+func stripHelperSlotRole(line string, roles []string) string {
+	line = strings.TrimSpace(line)
+	for {
+		next, ok := cutHelperSlotRole(line, roles)
+		if !ok {
+			return line
+		}
+		line = next
+	}
+}
+
+func cutHelperSlotRole(line string, roles []string) (string, bool) {
+	for _, role := range roles {
+		if role == "" || !strings.HasPrefix(line, role) {
+			continue
+		}
+		tail := strings.TrimSpace(line[len(role):])
+		if tail == "" {
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(tail)
+		if r != ':' && r != '：' {
+			continue
+		}
+		rest := strings.TrimSpace(tail[size:])
+		if rest == "" {
+			continue
+		}
+		return rest, true
+	}
+	return line, false
+}
+
+func sentMessageFact(line string, prefixes ...string) (string, bool) {
+	rest, _, ok := sentMessageLabel(line, prefixes)
+	return rest, ok
+}
+
+func sentMessageAlreadyDone(line string) bool {
+	_, ok := sentMessageDoneRank(line)
+	return ok
+}
+
+func sentMessageDoneRank(line string) (int, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || sentMessageNegated(line) {
+		return 0, false
+	}
+	// A mention later in the sentence is not the slot. "报告已提交" stays a
+	// normal conclusion. The status token has to start the line and end there:
+	// 已发出, 已发出。, 已发出了, 已发送成功, 已发出：成功, or 已发出；发给：….
+	// 已发出去 and 已提交给 are different words. 失败 on this fact is not a send.
+	best := 0
+	for _, prefix := range sentMessageDonePrefixes {
+		if doneStatusAtStart(line, prefix) && len(prefix) > best {
+			best = len(prefix)
+		}
+	}
+	if best == 0 {
+		return 0, false
+	}
+	return best, true
+}
+
+func sentMessageNegated(line string) bool {
+	// Only the status clause can cancel the send. "已发出：发送失败" is a
+	// failure. "已发出：消息发送成功，目标失败原因已修复" is a send; the later
+	// clause is about the goal. ； stays inside the clause so "已发出；发送失败"
+	// is still a failure.
+	head := statusClause(line)
+	return strings.Contains(head, "未发") || strings.Contains(head, "没发") || strings.Contains(head, "没有发") || strings.Contains(head, "失败")
+}
+
+func statusClause(line string) string {
+	for i, r := range line {
+		switch r {
+		case '，', '。', '！', '？', ',', '!', '?', '\n':
+			return strings.TrimSpace(line[:i])
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// doneClosers finish the status word. 了/过/啦 are aspect particles and
+// 成功 is the result. They are not a new word. 去 and 给 are.
+var doneClosers = []string{"成功", "了", "过", "啦"}
+
+func doneStatusAtStart(line, prefix string) bool {
+	if prefix == "" || !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	tail := consumeDoneClosers(line[len(prefix):])
+	if tail == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(tail)
+	if r == utf8.RuneError {
+		return false
+	}
+	return !unicode.Is(unicode.Han, r) && !unicode.IsLetter(r) && !unicode.IsDigit(r)
+}
+
+func consumeDoneClosers(tail string) string {
+	for {
+		trimmed := strings.TrimLeft(tail, " \t\r\n　")
+		rest, ok := cutDoneCloser(trimmed)
+		if !ok {
+			return trimmed
+		}
+		tail = rest
+	}
+}
+
+func cutDoneCloser(tail string) (string, bool) {
+	for _, closer := range doneClosers {
+		if closer != "" && strings.HasPrefix(tail, closer) {
+			return tail[len(closer):], true
+		}
+	}
+	return tail, false
+}
+
+// stripLeadingHelperSlotRoles removes a slot name from a leftover. The
+// numbered slots are stripped before adopt; an unnumbered "已完成：已发出"
+// or "剩余：发给：刘歌" has to lose the same name or the token stays hidden.
+func stripLeadingHelperSlotRoles(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		next := line
+		for slot := range helperSlotRolePrefixes {
+			cut := stripHelperSlotRole(line, helperSlotRolePrefixes[slot])
+			if cut != line {
+				next = cut
+				break
+			}
+		}
+		if next == line {
+			return line
+		}
+		line = next
+	}
+}
+
+// helperFactParts splits one leftover only when it carries at least two
+// labeled facts. "已发出；发给：刘歌；原文：你好" is three facts. A segment
+// that is not a label stays with the previous fact, so "已发出；发送失败"
+// is still the status and "原文：你好；世界" is still one body.
+func helperFactParts(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" || (!strings.Contains(line, "；") && !strings.Contains(line, ";")) {
+		if line == "" {
+			return nil
+		}
+		return []string{line}
+	}
+	type span struct{ start, end int }
+	var spans []span
+	start := 0
+	for i, r := range line {
+		if r != '；' && r != ';' {
+			continue
+		}
+		if i > start {
+			spans = append(spans, span{start, i})
+		}
+		start = i + utf8.RuneLen(r)
+	}
+	if start < len(line) {
+		spans = append(spans, span{start, len(line)})
+	}
+	if len(spans) < 2 {
+		return []string{line}
+	}
+	groups := []span{spans[0]}
+	for _, sp := range spans[1:] {
+		part := strings.TrimSpace(line[sp.start:sp.end])
+		if part != "" && helperFactPart(part) {
+			groups = append(groups, sp)
+			continue
+		}
+		groups[len(groups)-1].end = sp.end
+	}
+	if len(groups) < 2 {
+		return []string{line}
+	}
+	out := make([]string, len(groups))
+	for i, g := range groups {
+		out[i] = strings.TrimSpace(line[g.start:g.end])
+	}
+	return out
+}
+
+func helperFactPart(line string) bool {
+	line = stripLeadingHelperSlotRoles(strings.TrimSpace(line))
+	if line == "" {
+		return false
+	}
+	if sentMessageAlreadyDone(line) {
+		return true
+	}
+	if _, ok := sentMessageFact(line, sentMessageRecipientPrefixes...); ok {
+		return true
+	}
+	_, ok := sentMessageFact(line, sentMessageBodyPrefixes...)
+	return ok
 }
 
 // normalizeHelperPath is the path a file line contributes. Punctuation wrapped

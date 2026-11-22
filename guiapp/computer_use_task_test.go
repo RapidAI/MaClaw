@@ -477,8 +477,11 @@ func TestDesktopMessageSendDispatchesHelperCard(t *testing.T) {
 	if !strings.Contains(ctx.ComputerHelperLimits, "只发送") || strings.Contains(ctx.ComputerHelperLimits, "不发送") {
 		t.Fatalf("limits = %q", ctx.ComputerHelperLimits)
 	}
-	if !strings.Contains(ctx.ComputerHelperSuccess, "没有文件也算完成") {
+	if !strings.Contains(ctx.ComputerHelperSuccess, "没有文件也算完成") || !strings.Contains(ctx.ComputerHelperSuccess, "第 2 行只写无") {
 		t.Fatalf("success = %q", ctx.ComputerHelperSuccess)
+	}
+	if !ctx.DesktopMessageHelperOwns {
+		t.Fatal("desktop IM send did not mark the chat loop as not a second sender")
 	}
 
 	desktopbot.ResetComputerScreens()
@@ -496,6 +499,31 @@ func TestDesktopMessageSendDispatchesHelperCard(t *testing.T) {
 	recordComputerUseGate(h, note, note.ComputerUseRoutingText)
 	if !strings.Contains(note.ComputerHelperLimits, "不发送") || strings.Contains(note.ComputerHelperLimits, "只发送") {
 		t.Fatalf("default card changed: %q", note.ComputerHelperLimits)
+	}
+	if note.DesktopMessageHelperOwns {
+		t.Fatal("opening Notepad is not a desktop message send")
+	}
+}
+
+func TestParentDesktopSendRefusesASecondSender(t *testing.T) {
+	owned := &LoopContext{DesktopMessageHelperOwns: true}
+	for _, tool := range []string{"craft_tool", "search_and_install_skill", "send_to_im", "send_file", "bash", "write_file", chatTaskToolDispatch} {
+		if parentDesktopSendToolRefusal(owned, tool) == "" {
+			t.Fatalf("%s was allowed", tool)
+		}
+	}
+	if parentDesktopSendToolRefusal(owned, "read_file") != "" || parentDesktopSendToolRefusal(owned, "computer_click") != "" {
+		t.Fatal("a read or a helper click was refused on the chat loop")
+	}
+	helper := &LoopContext{ComputerHelper: true, DesktopMessageHelperOwns: true}
+	if parentDesktopSendToolRefusal(helper, "bash") != "" {
+		t.Fatal("the helper loop was treated as a second sender")
+	}
+	if parentDesktopSendToolRefusal(&LoopContext{}, "craft_tool") != "" {
+		t.Fatal("an ordinary chat was refused")
+	}
+	if desktopMessageHelperOwnsNote(owned) == "" || desktopMessageHelperOwnsNote(&LoopContext{}) != "" {
+		t.Fatal("owns note")
 	}
 }
 
@@ -751,5 +779,56 @@ func TestComputerUseDoneHorizonClaimOnly(t *testing.T) {
 	hz := &longhorizon.TaskState{ManagerNext: longhorizon.NextDone}
 	if longhorizon.MarkCompleted(hz) || hz.Completed {
 		t.Fatal("computer_done claim must not complete the outer Horizon task")
+	}
+}
+
+func TestDesktopMessageSubmitStopsFurtherActions(t *testing.T) {
+	goal := "给蓝信中的王占一发消息，告诉它，码卡龙可以顺利发送消息给蓝信用户了。"
+	if got := desktopMessagePayload(goal); got != "码卡龙可以顺利发送消息给蓝信用户了。" {
+		t.Fatalf("payload=%q", got)
+	}
+	if desktopMessagePayload("打开记事本写一段话") != "" {
+		t.Fatal("a non-send goal must not have a message payload")
+	}
+
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseFocusWindowFn = func(string) error {
+		t.Fatal("message-send test must not focus a real window")
+		return nil
+	}
+	beginComputerUseTask(computerUseDefaultOwner, "req-lanxin", goal, nil)
+
+	name := cuHandleType(map[string]interface{}{"text": "王占一"})
+	searchEnter := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.types != 1 || in.keys != 1 || strings.Contains(name, "already submitted") || strings.Contains(searchEnter, "already submitted") {
+		t.Fatalf("types=%d keys=%d name=%s enter=%s", in.types, in.keys, name, searchEnter)
+	}
+
+	typed := cuHandleType(map[string]interface{}{"text": "码卡龙可以顺利发送消息给蓝信用户了。"})
+	newline := cuHandleKey(map[string]interface{}{"keys": "shift+enter"})
+	if in.types != 2 || in.keys != 2 || strings.Contains(typed, "already submitted") || strings.Contains(newline, "already submitted") {
+		t.Fatalf("types=%d keys=%d typed=%s newline=%s", in.types, in.keys, typed, newline)
+	}
+	sent := cuHandleKey(map[string]interface{}{"keys": "return"})
+	if in.types != 2 || in.keys != 3 || !strings.Contains(sent, "already submitted") {
+		t.Fatalf("types=%d keys=%d sent=%s", in.types, in.keys, sent)
+	}
+
+	click := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	again := cuHandleKey(map[string]interface{}{"keys": "enter"})
+	if in.clicks != 0 || in.keys != 3 || !strings.Contains(click, "already submitted") || !strings.Contains(again, "already submitted") {
+		t.Fatalf("clicks=%d keys=%d click=%s again=%s", in.clicks, in.keys, click, again)
+	}
+	if cuRefuseAfterDesktopMessageSent("bash") == "" {
+		t.Fatal("bash must stop after the message is submitted")
+	}
+	done := cuHandleDone("已发给王占一")
+	if !strings.HasPrefix(done, "computer_done:") {
+		t.Fatalf("done=%s", done)
 	}
 }

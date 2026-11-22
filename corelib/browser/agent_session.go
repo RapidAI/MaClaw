@@ -1463,6 +1463,22 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 			s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "download", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
 			s.recentErrors = appendCapped(s.recentErrors, err.Error(), browserAgentErrorLimit)
 		}
+	case "Page.frameNavigated":
+		// A committed top frame is the moment the new document can send its
+		// signed request. Focus emulation does not survive that commit, and
+		// waiting for the load event is after the request. Child frames do
+		// not reset the top document, and each one would repeat the command.
+		var frame struct {
+			Frame struct {
+				ParentID string `json:"parentId"`
+			} `json:"frame"`
+		}
+		if json.Unmarshal(evt.Params, &frame) != nil || frame.Frame.ParentID != "" || s.session == nil {
+			break
+		}
+		if client := sessionClient(s.session); client != nil {
+			go emulatePageFocus(client, "")
+		}
 	case "Target.attachedToTarget":
 		var payload struct {
 			SessionID          string `json:"sessionId"`

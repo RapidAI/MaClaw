@@ -77,6 +77,16 @@ type computerUseCapture struct {
 
 func captureComputerUseScreen(screenIdx int, windowHint string, cropFocused bool) (computerUseCapture, error) {
 	crop, cropOK := resolveObserveWindowCrop(windowHint, cropFocused && screenIdx >= 0)
+	if cropOK {
+		// NativeScreenshotRect photographs whatever is painted at the window
+		// rectangle. A background window's rectangle belongs to the app
+		// covering it, and labeling those pixels with this title makes the
+		// next click land on the wrong window.
+		fg := strings.TrimSpace(cuForegroundTitle())
+		if fg != "" && strings.TrimSpace(crop.Title) != "" && !computeruse.WindowTitlesMatch(crop.Title, fg) {
+			return computerUseCapture{}, fmt.Errorf("window %q is not in the foreground (now %q)", crop.Title, fg)
+		}
+	}
 	if cropOK && runtime.GOOS == "windows" {
 		if png, err := remote.NativeScreenshotRect(crop.X, crop.Y, crop.Width, crop.Height); err == nil && png != "" && !remote.IsBlankImage(png) {
 			w, h := 0, 0
@@ -291,6 +301,18 @@ func computerUseStitchRefusalNote(w, h int, captured bool, cap computerUseCaptur
 }
 
 func cuRequireSameWindow(sess *computeruse.Session) string {
+	return cuSameWindow(sess, true)
+}
+
+// cuReassertOperatedWindow runs immediately before the pointer or key is
+// sent. The first check is before label reads, and a covering window can
+// come back during that work. A raise note from the first check stays when
+// this window is still in front.
+func cuReassertOperatedWindow(sess *computeruse.Session) string {
+	return cuSameWindow(sess, false)
+}
+
+func cuSameWindow(sess *computeruse.Session, clearNote bool) string {
 	if sess == nil {
 		return ""
 	}
@@ -298,10 +320,20 @@ func cuRequireSameWindow(sess *computeruse.Session) string {
 	if last == nil || strings.TrimSpace(last.Meta.CropTitle) == "" {
 		return ""
 	}
-	fg := accessibility.ForegroundWindowTitle()
+	if clearNote {
+		computerUseRaisedNote = ""
+	}
+	fg := cuForegroundTitle()
 	if computeruse.WindowTitlesMatch(last.Meta.CropTitle, fg) {
 		return ""
 	}
+	// The app being driven is still the crop. Bring it forward and continue
+	// instead of spending a turn on another observe.
+	if cuRestoreOperatedApp(sess, last.Meta.CropTitle, true) {
+		return ""
+	}
+	computerUseRaisedNote = ""
+	fg = cuForegroundTitle()
 	sess.InvalidateRefs()
 	line := computerUseRememberExperience(computeruse.ExperienceAppID(fg), computeruse.NoteWindowChanged, false)
 	msg := fmt.Sprintf("foreground window changed (observed %q, now %q); call computer_observe again", last.Meta.CropTitle, fg)

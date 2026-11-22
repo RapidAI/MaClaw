@@ -140,6 +140,11 @@ func TestLightweightRefreshUsesTheOperatedWindow(t *testing.T) {
 		}, nil
 	}
 	t.Cleanup(func() { computerUseRefreshCapture = prev })
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseFocusWindowFn = func(string) error {
+		t.Fatal("named refresh must not focus another window")
+		return nil
+	}
 	text := cuRefreshForeground("clicked e1", "蓝信")
 	if gotWindow != "蓝信" {
 		t.Fatalf("window %q", gotWindow)
@@ -624,6 +629,11 @@ func TestTextRefreshListsOCRRefs(t *testing.T) {
 		}, nil
 	}
 	t.Cleanup(func() { computerUseRefreshCapture = prev })
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseFocusWindowFn = func(string) error {
+		t.Fatal("named refresh must not focus another window")
+		return nil
+	}
 	resetComputerUseExperienceTrace()
 	text := cuRefreshForeground("clicked", "蓝信")
 	globalComputerUse.mu.Lock()
@@ -794,6 +804,232 @@ func TestDragPayEndpointHandsOff(t *testing.T) {
 	moved := cuHandleDrag(map[string]interface{}{"from_x": 180, "from_y": 80, "to_x": 190, "to_y": 90})
 	if in.drags != 2 || ocr.calls != 2 || strings.Contains(moved, "blocked") || strings.Contains(moved, "control labels are from before") {
 		t.Fatalf("drags=%d calls=%d msg=%s", in.drags, ocr.calls, moved)
+	}
+}
+
+func TestRaiseBackgroundWindowBeforeAction(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = "蓝信"
+	in := installCountingComputerUse(t, sess)
+	noteComputerUseOperatedWindow(42)
+	title := "记事本"
+	var id uint64 = 99
+	var focused []string
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseForegroundIDFn = func() uint64 { return id }
+	computerUseFocusWindowFn = func(got string) error {
+		focused = append(focused, got)
+		title = "蓝信"
+		id = 42
+		return nil
+	}
+	computerUseNamedWindowFn = func(hint string) (string, bool) { return hint, true }
+	computerUsePolicyWindowHook = func(int, int) string { return "蓝信" }
+	msg := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 1 || len(focused) != 1 || focused[0] != "蓝信" || !strings.Contains(msg, "raised") || strings.Contains(msg, "foreground window changed") {
+		t.Fatalf("clicks=%d focused=%v msg=%s", in.clicks, focused, msg)
+	}
+
+	sess = computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: "蓝信"}, nil, nil, nil, "")
+	installCountingComputerUse(t, sess)
+	noteComputerUseOperatedWindow(42)
+	title = "记事本"
+	id = 42
+	focused = nil
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseForegroundIDFn = func() uint64 { return id }
+	computerUseFocusWindowFn = func(got string) error {
+		focused = append(focused, got)
+		title = "蓝信"
+		id = 7
+		return nil
+	}
+	computerUseNamedWindowFn = func(hint string) (string, bool) { return hint, true }
+	// The halo followed a click onto the covering window. That is not
+	// computer_focus, so the operated crop still comes forward.
+	covered := cuRequireSameWindow(sess)
+	if covered != "" || len(focused) != 1 || focused[0] != "蓝信" || computerUseRaisedNote != "蓝信" {
+		t.Fatalf("covered focused=%v note=%q msg=%s", focused, computerUseRaisedNote, covered)
+	}
+
+	sess = computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: "蓝信"}, nil, nil, nil, "")
+	installCountingComputerUse(t, sess)
+	computerUseExplicitFocusTitle = "记事本"
+	title = "记事本"
+	id = 42
+	focused = nil
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseForegroundIDFn = func() uint64 { return id }
+	computerUseFocusWindowFn = func(got string) error {
+		focused = append(focused, got)
+		return nil
+	}
+	computerUseNamedWindowFn = func(hint string) (string, bool) { return hint, true }
+	held := cuRequireSameWindow(sess)
+	if len(focused) != 0 || !strings.Contains(held, "foreground window changed") || sess.RefsValid() {
+		t.Fatalf("held focused=%v refs=%v msg=%s", focused, sess.RefsValid(), held)
+	}
+
+	sess = computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: "蓝信"}, nil, nil, nil, "")
+	installCountingComputerUse(t, sess)
+	noteComputerUseOperatedWindow(42)
+	title = "User Account Control"
+	id = 99
+	focused = nil
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseForegroundIDFn = func() uint64 { return id }
+	computerUseFocusWindowFn = func(got string) error {
+		focused = append(focused, got)
+		return nil
+	}
+	computerUseNamedWindowFn = func(hint string) (string, bool) { return hint, true }
+	blocked := cuRequireSameWindow(sess)
+	if len(focused) != 0 || !strings.Contains(blocked, "foreground window changed") {
+		t.Fatalf("focused=%v msg=%s", focused, blocked)
+	}
+}
+
+func TestReassertRaisesWhenTheCoverReturns(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 80, Height: 40, ScaleFactor: 1, CropTitle: "蓝信"}, nil, nil, nil, "")
+	installCountingComputerUse(t, sess)
+	title := "记事本"
+	focused := 0
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseFocusWindowFn = func(string) error {
+		focused++
+		title = "蓝信"
+		return nil
+	}
+	computerUseNamedWindowFn = func(hint string) (string, bool) { return hint, true }
+	if msg := cuRequireSameWindow(sess); msg != "" || focused != 1 || computerUseRaisedNote != "蓝信" {
+		t.Fatalf("first focused=%d note=%q msg=%s", focused, computerUseRaisedNote, msg)
+	}
+	title = "记事本"
+	if msg := cuReassertOperatedWindow(sess); msg != "" || focused != 2 || computerUseRaisedNote != "蓝信" {
+		t.Fatalf("reassert focused=%d note=%q msg=%s", focused, computerUseRaisedNote, msg)
+	}
+	title = "记事本"
+	computerUseFocusWindowFn = func(string) error { return errors.New("stayed back") }
+	msg := cuReassertOperatedWindow(sess)
+	if computerUseRaisedNote != "" || !strings.Contains(msg, "foreground window changed") {
+		t.Fatalf("note=%q msg=%s", computerUseRaisedNote, msg)
+	}
+}
+
+func TestCoveringClickKeepsTheOperatedWindow(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = "蓝信"
+	in := installCountingComputerUse(t, sess)
+	noteComputerUseOperatedWindow(42)
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseForegroundIDFn = func() uint64 { return 42 }
+	computerUseFocusWindowFn = func(string) error {
+		t.Fatal("click on the operated window must not raise")
+		return nil
+	}
+	computerUseWindowAtPointFn = func(int, int) (uint64, string) { return 99, "Grok" }
+	computerUsePolicyWindowHook = func(int, int) string { return "蓝信" }
+	msg := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 1 || computerUseHaloTarget() != 42 || strings.Contains(msg, "foreground window changed") {
+		t.Fatalf("clicks=%d halo=%d msg=%s", in.clicks, computerUseHaloTarget(), msg)
+	}
+
+	title := "记事本"
+	var focused []string
+	var captured []string
+	computerUseForegroundTitleFn = func() string { return title }
+	computerUseFocusWindowFn = func(got string) error {
+		focused = append(focused, got)
+		title = "蓝信"
+		return nil
+	}
+	prevRefresh := computerUseAfterActionRefresh
+	prevCap := computerUseRefreshCapture
+	computerUseAfterActionRefresh = cuRefreshForeground
+	computerUseRefreshCapture = func(window string) (computerUseCapture, error) {
+		captured = append(captured, window)
+		return computerUseCapture{
+			PNG:    "crop",
+			Meta:   computeruse.ScreenMeta{CropTitle: window, Width: 80, Height: 40, ScaleFactor: 1},
+			Width:  80,
+			Height: 40,
+		}, nil
+	}
+	t.Cleanup(func() {
+		computerUseAfterActionRefresh = prevRefresh
+		computerUseRefreshCapture = prevCap
+	})
+	globalComputerUse.mu.Lock()
+	globalComputerUse.turnVisionKnown = true
+	globalComputerUse.turnVision = false
+	prevOCR := globalComputerUse.ocr
+	globalComputerUse.ocr = nil
+	globalComputerUse.mu.Unlock()
+	t.Cleanup(func() {
+		globalComputerUse.mu.Lock()
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.ocr = prevOCR
+		globalComputerUse.mu.Unlock()
+	})
+	computerUseExplicitFocusTitle = "蓝信"
+	text := cuFinishAction("clicked")
+	if len(focused) != 1 || focused[0] != "蓝信" || len(captured) != 1 || captured[0] != "蓝信" || !strings.Contains(text, "raised") || !strings.Contains(text, `crop of "蓝信"`) || computerUseExplicitFocusTitle != "" {
+		t.Fatalf("focused=%v captured=%v hold=%q text=%s", focused, captured, computerUseExplicitFocusTitle, text)
+	}
+
+	title = "记事本"
+	focused = nil
+	computerUseFocusWindowFn = func(string) error { return errors.New("stayed back") }
+	called := false
+	computerUseRefreshCapture = func(string) (computerUseCapture, error) {
+		called = true
+		return computerUseCapture{}, nil
+	}
+	fail := cuFinishAction("clicked")
+	if called || !strings.Contains(fail, "refresh failed") {
+		t.Fatalf("called=%v text=%s", called, fail)
+	}
+	obs := computerUseObserveCaption(0, "", false, true, false)
+	if obs.OK || !strings.Contains(obs.Message, "could not bring") || !strings.Contains(obs.Message, "蓝信") {
+		t.Fatalf("observe ok=%v msg=%s", obs.OK, obs.Message)
+	}
+	if crop := cuSession().LastObserve(); crop == nil || crop.Meta.CropTitle != "蓝信" {
+		t.Fatalf("crop changed: %+v", crop)
+	}
+}
+
+func TestFocusRefusesSecurityWindow(t *testing.T) {
+	cfg := computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess := computeruse.NewSession(cfg)
+	installCountingComputerUse(t, sess)
+	computerUseNamedWindowFn = func(hint string) (string, bool) {
+		if hint == "安全" {
+			return "Windows 安全中心", true
+		}
+		return "", false
+	}
+	blocked := cuHandleFocus(map[string]interface{}{"window": "User Account Control"})
+	resolved := cuHandleFocus(map[string]interface{}{"window": "安全"})
+	if !strings.Contains(blocked, "security") || !strings.Contains(resolved, "security") {
+		t.Fatalf("blocked=%s resolved=%s", blocked, resolved)
+	}
+	ok := cuHandleFocus(map[string]interface{}{"window": "cu-focus-policy-test"})
+	if strings.Contains(ok, "security") || strings.Contains(ok, "max steps") || !strings.Contains(ok, "no visible window") {
+		t.Fatalf("msg=%s", ok)
 	}
 }
 

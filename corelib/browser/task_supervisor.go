@@ -195,7 +195,9 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		if outcome.result != nil && outcome.result.batchStop {
 			state.Status = TaskStatusStopped
 			state.StoppedReason = outcome.result.batchStopReason
-			if outcome.result.Status == "unchanged" {
+			// "unchanged" means probe and submit again. A refusal already
+			// said to stop; that reason has to stay the one the batch reports.
+			if outcome.result.Status == "unchanged" && !FrequencyRefusalStops(outcome.result.Display) {
 				state.StoppedReason = "unchanged"
 			}
 			rememberBatchObservation(state, outcome.result)
@@ -389,6 +391,11 @@ func (s *BrowserTaskSupervisor) Verify(criteria []CriterionSpec) (*VerifyResult,
 func stepOutcomeFailure(o stepOutcome) error {
 	if o.err != nil {
 		return o.err
+	}
+	// A refused document is not a submit that failed to land. Failing the
+	// step makes the retrier click it again.
+	if o.result != nil && FrequencyRefusalStops(o.result.Display) {
+		return nil
 	}
 	if o.result != nil && o.result.GoalClass && o.result.Status == "unchanged" {
 		// The click already ran. In a fast batch, failing the step clears the

@@ -128,6 +128,7 @@ func clearComputerUseSessionActive() {
 	globalComputerUse.mu.Unlock()
 	notifyComputerUseTrayIf(changed)
 	hideComputerUseWindowHalo()
+	clearComputerUseExplicitFocus()
 	resetComputerUseExperienceTrace()
 }
 

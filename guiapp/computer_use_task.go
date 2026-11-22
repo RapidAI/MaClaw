@@ -24,6 +24,13 @@ type computerUseTaskState struct {
 	Acceptance []string
 	LastAudit  string
 	FailedDone int
+	// MessageBody is the text a desktop IM send asked to deliver.
+	// MessageTyped is set once a successful computer_type has covered it.
+	// MessageSubmitted is set by the next Enter. Further desktop actions stop.
+	MessageBody      string
+	MessageTyped     bool
+	MessageSubmitted bool
+	typedCompact     string
 }
 
 func normalizeComputerUseAcceptance(items []string) []string {
@@ -59,11 +66,14 @@ func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 	if owner == "" {
 		owner = computerUseDefaultOwner
 	}
+	goal = strings.TrimSpace(goal)
+	clearComputerUseExplicitFocus()
 	st := &computerUseTaskState{
-		Owner:      owner,
-		RequestID:  strings.TrimSpace(requestID),
-		Goal:       strings.TrimSpace(goal),
-		Acceptance: normalizeComputerUseAcceptance(acceptance),
+		Owner:       owner,
+		RequestID:   strings.TrimSpace(requestID),
+		Goal:        goal,
+		Acceptance:  normalizeComputerUseAcceptance(acceptance),
+		MessageBody: desktopMessagePayload(goal),
 	}
 	resetComputerUseExperienceTrace()
 	globalComputerUse.mu.Lock()
@@ -72,6 +82,154 @@ func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 	}
 	globalComputerUse.taskStates[owner] = st
 	globalComputerUse.mu.Unlock()
+}
+
+const desktopMessageStopText = "the requested message was already submitted. Call computer_done now with three lines: whether it was sent, to whom, and the exact text. Do not click, type, focus, or press Enter again."
+
+// desktopMessagePayload is the text after 告诉它 / 告诉他 / 内容是 in a
+// desktop IM send. A goal that is not that send has no payload, so typing
+// and Enter in another task do not stop the desktop.
+func desktopMessagePayload(goal string) string {
+	if !computeruse.RequestsDesktopMessageSend(goal) {
+		return ""
+	}
+	markers := []string{
+		"告诉它", "告诉他", "告诉她",
+		"告訴它", "告訴他", "告訴她",
+		"跟它说", "跟他说", "跟她说",
+		"内容就是", "内容是",
+	}
+	bestAt := -1
+	best := ""
+	for _, marker := range markers {
+		i := strings.Index(goal, marker)
+		if i < 0 || (bestAt >= 0 && i >= bestAt) {
+			continue
+		}
+		bestAt = i
+		best = goal[i+len(marker):]
+	}
+	if bestAt < 0 {
+		return ""
+	}
+	if i := strings.IndexAny(best, "\r\n"); i >= 0 {
+		best = best[:i]
+	}
+	if i := strings.Index(strings.ToLower(best), "constraints:"); i >= 0 {
+		best = best[:i]
+	}
+	best = strings.TrimSpace(best)
+	best = strings.TrimLeft(best, "，,：:、 ")
+	best = strings.TrimSpace(best)
+	if utf8.RuneCountInString(compactDesktopMessage(best)) < 4 {
+		return ""
+	}
+	return best
+}
+
+func compactDesktopMessage(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func desktopMessageCovers(body, typed string) bool {
+	b := compactDesktopMessage(body)
+	t := compactDesktopMessage(typed)
+	if utf8.RuneCountInString(b) < 4 || t == "" {
+		return false
+	}
+	return strings.Contains(t, b)
+}
+
+func noteDesktopMessageTyped(text string) {
+	owner := computerUseOwnerKey()
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	st := globalComputerUse.taskStates[owner]
+	if st == nil || st.MessageBody == "" || st.MessageSubmitted {
+		return
+	}
+	st.typedCompact += compactDesktopMessage(text)
+	if desktopMessageCovers(st.MessageBody, st.typedCompact) {
+		st.MessageTyped = true
+	}
+}
+
+func desktopMessageSubmitChord(detail string) bool {
+	parts := strings.FieldsFunc(strings.ToLower(detail), func(r rune) bool {
+		return r == '+' || r == ' '
+	})
+	sawEnter := false
+	for _, part := range parts {
+		part = strings.ReplaceAll(part, "_", "")
+		switch part {
+		case "enter", "return", "kpenter":
+			sawEnter = true
+		case "shift", "shiftl", "shiftr", "alt", "altl", "altr", "meta", "super", "win", "cmd", "command":
+			// Shift+Enter is a newline in chat. It must not latch the send.
+			return false
+		}
+	}
+	return sawEnter
+}
+
+// noteDesktopMessageSubmitted latches after the requested message has been
+// typed and Enter was actually sent. A search-box Enter before that text
+// does not latch. The return is true only on the transition.
+func noteDesktopMessageSubmitted(detail string) bool {
+	if !desktopMessageSubmitChord(detail) {
+		return false
+	}
+	owner := computerUseOwnerKey()
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	st := globalComputerUse.taskStates[owner]
+	if st == nil || !st.MessageTyped || st.MessageSubmitted {
+		return false
+	}
+	st.MessageSubmitted = true
+	return true
+}
+
+func cuRefuseAfterDesktopMessageSent(tool string) string {
+	if tool == "computer_done" || tool == "computer_playbook" {
+		return ""
+	}
+	owner := computerUseOwnerKey()
+	globalComputerUse.mu.Lock()
+	submitted := false
+	if st := globalComputerUse.taskStates[owner]; st != nil {
+		submitted = st.MessageSubmitted
+	}
+	globalComputerUse.mu.Unlock()
+	if !submitted {
+		return ""
+	}
+	return desktopMessageStopText
+}
+
+// parentDesktopSendOwnedText is the refusal for a second delivery path.
+// The chat loop does not drive the desktop. The helper already owns the send.
+const parentDesktopSendOwnedText = "the desktop helper is already sending this one message. Do not install a skill, write a script, or send it again. Tell the person the helper result when it appears."
+
+// parentDesktopSendToolRefusal blocks the chat loop from delivering a desktop
+// IM send that a helper already owns. The helper loop itself is not blocked.
+func parentDesktopSendToolRefusal(loop *LoopContext, tool string) string {
+	if loop == nil || loop.ComputerHelper || !loop.DesktopMessageHelperOwns {
+		return ""
+	}
+	switch strings.TrimSpace(tool) {
+	case "craft_tool", "search_and_install_skill", "send_to_im", "send_file", "bash", "write_file", chatTaskToolDispatch:
+		return parentDesktopSendOwnedText
+	default:
+		return ""
+	}
 }
 
 func computerUseTaskStateFor(owner string) *computerUseTaskState {
@@ -177,6 +335,7 @@ func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string
 	ctx.ComputerHelperGoal = card.Goal
 	ctx.ComputerHelperLimits = card.Constraints
 	ctx.ComputerHelperSuccess = card.SuccessCriteria
+	ctx.DesktopMessageHelperOwns = computeruse.RequestsDesktopMessageSend(card.Goal)
 	id := computerHelperLeaseID(screen)
 	started, queued := desktopbot.ClaimComputerScreen(screen, id)
 	ctx.ComputerHelperDispatched = started
@@ -229,7 +388,10 @@ func computerHelperCard(text string) desktopbot.HelperCard {
 		return card
 	}
 	card.Constraints = "只发送用户要求的这一条消息，不另发内容，不付款，不新开站点。"
-	card.SuccessCriteria = "交回三行结论：是否发出、发给谁、发出的原文。没有文件也算完成。"
+	// The helper report has fixed slots: line 1 finished, line 2 left, line 3
+	// blocked. Putting the recipient and the text on lines 2 and 3 makes a
+	// sent message look unfinished.
+	card.SuccessCriteria = "第 1 行同时写是否发出、发给谁、原文。第 2 行只写无。第 3 行只写无。没有文件也算完成。"
 	return card
 }
 

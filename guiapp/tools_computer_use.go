@@ -559,6 +559,11 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 // cuGuardDisabled returns a user-facing message when Computer Use is disabled
 // in settings (computer_use_enabled=false), or "" when the tool may run.
 func cuGuardDisabled(tool string) string {
+	if tool != "computer_done" && tool != "computer_playbook" {
+		if msg := cuRefuseAfterDesktopMessageSent(tool); msg != "" {
+			return msg
+		}
+	}
 	if computerUseToolsEnabled() {
 		return ""
 	}
@@ -568,6 +573,169 @@ func cuGuardDisabled(tool string) string {
 // computerUsePolicyWindowHook overrides the live window under a point in tests.
 // Production leaves it nil.
 var computerUsePolicyWindowHook func(x, y int) string
+
+// computerUseNamedWindowFn overrides the window computer_focus would activate.
+// Production leaves it nil and resolves the visible window.
+var computerUseNamedWindowFn func(hint string) (title string, ok bool)
+
+// computerUseForegroundTitleFn and computerUseForegroundIDFn override the
+// live foreground window in tests. Production leaves them nil.
+var computerUseForegroundTitleFn func() string
+var computerUseForegroundIDFn func() uint64
+
+// computerUseFocusWindowFn overrides bringing a window to the foreground.
+// Production leaves it nil.
+var computerUseFocusWindowFn func(title string) error
+
+// computerUseWindowAtPointFn overrides the window under a click in tests.
+// Production leaves it nil.
+var computerUseWindowAtPointFn func(x, y int) (id uint64, title string)
+
+// computerUseRaisedNote is the window just brought back from the background.
+// The next tool result consumes it.
+var computerUseRaisedNote string
+
+// computerUseExplicitFocusTitle is the window computer_focus just activated
+// when the following refresh did not replace the crop. A click that lands on
+// a covering window must not set this: the halo follows the pointer, and that
+// is not an intentional switch. Empty means the last crop is still the app.
+var computerUseExplicitFocusTitle string
+
+// cuFocusPolicyTitle is the window title computer_focus is about to activate.
+// The request stands in when that window is not visible yet, so a security
+// surface is refused before it appears.
+func cuFocusPolicyTitle(hint string) string {
+	hint = strings.TrimSpace(hint)
+	if computerUseNamedWindowFn != nil {
+		if title, ok := computerUseNamedWindowFn(hint); ok {
+			if title = strings.TrimSpace(title); title != "" {
+				return title
+			}
+		}
+		return hint
+	}
+	if bounds, ok := accessibility.NamedWindowBounds(hint); ok {
+		if title := strings.TrimSpace(bounds.Title); title != "" {
+			return title
+		}
+	}
+	return hint
+}
+
+func cuForegroundTitle() string {
+	if computerUseForegroundTitleFn != nil {
+		return computerUseForegroundTitleFn()
+	}
+	return accessibility.ForegroundWindowTitle()
+}
+
+func cuForegroundID() uint64 {
+	if computerUseForegroundIDFn != nil {
+		return computerUseForegroundIDFn()
+	}
+	return accessibility.ForegroundWindowID()
+}
+
+func cuFocusWindow(title string) error {
+	if computerUseFocusWindowFn != nil {
+		return computerUseFocusWindowFn(title)
+	}
+	return accessibility.FocusWindow(title)
+}
+
+func cuAppendRaisedNote(prefix string) string {
+	note := strings.TrimSpace(computerUseRaisedNote)
+	computerUseRaisedNote = ""
+	if note == "" {
+		return prefix
+	}
+	return prefix + fmt.Sprintf("\nraised %q to the foreground.", note)
+}
+
+// cuRestoreOperatedApp brings title forward when another window is covering
+// the app being driven. It does not cover a security prompt, and it does not
+// pull a stale crop back over a window computer_focus just activated.
+// honorHalo keeps that intentional switch. A halo that followed a click onto
+// the covering window is not that switch. The return is true only when the
+// foreground title now matches title.
+func cuRestoreOperatedApp(sess *computeruse.Session, title string, honorHalo bool) bool {
+	title = strings.TrimSpace(title)
+	if sess == nil || title == "" {
+		return false
+	}
+	if paused, stopped := sess.ControlState(); paused || stopped {
+		return false
+	}
+	fg := strings.TrimSpace(cuForegroundTitle())
+	if computeruse.TitleBlocked(fg) || computeruse.TitleBlocked(cuFocusPolicyTitle(title)) {
+		return false
+	}
+	if honorHalo && computerUseExplicitFocusHolds(title) {
+		return false
+	}
+	if err := cuFocusWindow(title); err != nil {
+		log.Printf("[computer-use] raise window %q: %v", title, err)
+		return false
+	}
+	if !computeruse.WindowTitlesMatch(title, cuForegroundTitle()) {
+		return false
+	}
+	computerUseRaisedNote = title
+	log.Printf("[computer-use] raised background window %q", title)
+	noteComputerUseNamedWindow(title)
+	return true
+}
+
+// computerUseExplicitFocusHolds reports that computer_focus activated a
+// different app and the crop has not caught up yet. The same title does not
+// hold: that window should still be raised when it later goes to the back.
+func computerUseExplicitFocusHolds(crop string) bool {
+	chosen := strings.TrimSpace(computerUseExplicitFocusTitle)
+	if chosen == "" {
+		return false
+	}
+	return !computeruse.WindowTitlesMatch(chosen, crop)
+}
+
+func clearComputerUseExplicitFocus() {
+	computerUseExplicitFocusTitle = ""
+}
+
+func cuObservedCropTitle() string {
+	last := cuSession().LastObserve()
+	if last == nil {
+		return ""
+	}
+	return strings.TrimSpace(last.Meta.CropTitle)
+}
+
+func cuWindowAtPoint(x, y int) (uint64, string) {
+	if computerUseWindowAtPointFn != nil {
+		return computerUseWindowAtPointFn(x, y)
+	}
+	return accessibility.WindowIDAtPoint(x, y), accessibility.WindowTitleAtPoint(x, y)
+}
+
+// cuPointMatchesOperatedCrop is false when title is a different app than the
+// crop. An empty title is unknown and matches, same as WindowTitlesMatch.
+func cuPointMatchesOperatedCrop(title string) bool {
+	crop := cuObservedCropTitle()
+	title = strings.TrimSpace(title)
+	if crop == "" || title == "" {
+		return true
+	}
+	return computeruse.WindowTitlesMatch(crop, title)
+}
+
+// noteComputerUseForegroundIfCrop moves the halo only when the foreground is
+// still the operated crop. A type that leaves another app in front must not
+// retarget the next raise.
+func noteComputerUseForegroundIfCrop() {
+	if !cuPointMatchesOperatedCrop(cuForegroundTitle()) {
+		return
+	}
+	noteComputerUseOperatedWindow(cuForegroundID())
+}
 
 // cuPolicyWindowTitle resolves the window a click at (x,y) will actually land
 // in, falling back to the foreground window title (what type/key target).
@@ -736,7 +904,7 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR, cropFocused b
 
 // computerUseObserveCaption is the observe implementation. Diagnostics/E2E
 // pass caption=false so unlabeled-box HTTP does not inflate self-check time.
-func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool) computerUseObserveResult {
+func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool) (out computerUseObserveResult) {
 	stitchLine := ""
 	refusedStitch := false
 	refusedW, refusedH := 0, 0
@@ -752,10 +920,35 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	}
 	cuKeepPerceptionWarm()
 	rt := globalComputerUse
-	out := computerUseObserveResult{
+	out = computerUseObserveResult{
 		TimingMs: map[string]int64{},
 	}
+	defer func() {
+		out.Message = cuAppendRaisedNote(out.Message)
+	}()
 	totalStart := time.Now()
+
+	if cropFocused && screenIdx >= 0 {
+		explicitHint := strings.TrimSpace(windowHint)
+		raiseHint := explicitHint
+		if raiseHint == "" {
+			raiseHint = cuObservedCropTitle()
+			// computer_focus already chose the foreground. Shoot that window
+			// so the crop catches up, instead of pulling the previous app
+			// back over it.
+			if raiseHint != "" && computerUseExplicitFocusHolds(raiseHint) {
+				raiseHint = ""
+			}
+		}
+		if raiseHint != "" && !computeruse.WindowTitlesMatch(raiseHint, cuForegroundTitle()) {
+			if !cuRestoreOperatedApp(cuSession(), raiseHint, explicitHint == "") {
+				now := cuForegroundTitle()
+				out.Error = "foreground"
+				out.Message = fmt.Sprintf("computer_observe: could not bring %q to the foreground (now %q). Call computer_observe again.", raiseHint, now)
+				return out
+			}
+		}
+	}
 
 	t0 := time.Now()
 	cap, err := captureComputerUseScreen(screenIdx, windowHint, cropFocused)
@@ -946,6 +1139,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	storeComputerUseLastObserveMetrics(payload)
 	emitComputerUseEvent(EventComputerUseObserve, payload)
 	noteComputerUseNamedWindow(windowHint)
+	clearComputerUseExplicitFocus()
 	return out
 }
 
@@ -1056,6 +1250,7 @@ var computerUseAfterActionRefresh = func(prefix, window string) string {
 var computerUseRefreshCapture = captureComputerUseRefresh
 
 func cuFinishAction(prefix string, window ...string) string {
+	prefix = cuAppendRaisedNote(prefix)
 	hint := ""
 	if len(window) > 0 {
 		hint = window[0]
@@ -1074,19 +1269,23 @@ func computerUseStitchNote(refused bool, w, h int, captured bool, cap computerUs
 	return computerUseStitchRefusalNote(w, h, captured, cap)
 }
 
-// cuOperatedWindow is the window this action addressed: an explicit title,
-// otherwise the foreground window, otherwise the last observe crop.
+// cuOperatedWindow is the window this action addressed. An explicit title
+// wins. Otherwise a foreground that belongs to another app is not the crop
+// the action was checked against: a click that lands on a covering window
+// must not make the next refresh operate that window.
 func cuOperatedWindow(explicit string) string {
 	if title := strings.TrimSpace(explicit); title != "" {
 		return title
 	}
-	if title := strings.TrimSpace(accessibility.ForegroundWindowTitle()); title != "" {
-		return title
+	crop := cuObservedCropTitle()
+	fg := strings.TrimSpace(cuForegroundTitle())
+	if crop != "" && fg != "" && !computeruse.WindowTitlesMatch(crop, fg) {
+		return crop
 	}
-	if last := cuSession().LastObserve(); last != nil {
-		return strings.TrimSpace(last.Meta.CropTitle)
+	if fg != "" {
+		return fg
 	}
-	return ""
+	return crop
 }
 
 // captureComputerUseRefresh reuses the settle shot when it is already the
@@ -1107,8 +1306,24 @@ func captureComputerUseRefresh(window string) (computerUseCapture, error) {
 
 // cuRefreshForeground captures the window just operated and describes that
 // crop. A monitor fallback names the screen that was actually captured.
-func cuRefreshForeground(prefix, windowHint string) string {
+func cuRefreshForeground(prefix, windowHint string) (out string) {
+	defer func() {
+		out = cuAppendRaisedNote(out)
+	}()
 	window := cuOperatedWindow(windowHint)
+	if window != "" && !computeruse.WindowTitlesMatch(window, cuForegroundTitle()) {
+		// The shot is the window rectangle. If this app is still behind
+		// another window, that rectangle is the covering window's pixels.
+		if !cuRestoreOperatedApp(cuSession(), window, strings.TrimSpace(windowHint) == "") {
+			cuSession().InvalidateLabels()
+			cuCancelLabelPrefetch()
+			clearComputerUseModelImages()
+			line := computerUseRememberExperience(computeruse.ExperienceAppID(window), computeruse.NoteRefreshFailed, false)
+			return computerUseAppendExperience(prefix+"\nrefresh failed; call computer_observe again", line)
+		}
+		// Settle ran before this raise, so its pixels are the covering window.
+		clearComputerUseSettle()
+	}
 	cap, err := computerUseRefreshCapture(window)
 	if err != nil || strings.TrimSpace(cap.PNG) == "" {
 		cuSession().InvalidateLabels()
@@ -1160,6 +1375,7 @@ func cuDescribeRefresh(prefix string, cap computerUseCapture) string {
 			fmt.Fprintf(&b, " (%dx%d)", cap.Width, cap.Height)
 		}
 		b.WriteString(". This is the window just operated.\n")
+		clearComputerUseExplicitFocus()
 	}
 	if computerUseLLMSupportsVision() {
 		modelPNG, vw, vh := prepareVisionScreenshot(cap.PNG)
@@ -1461,6 +1677,13 @@ func cuHandleFocus(args map[string]interface{}) string {
 	}
 	sess := cuSession()
 	detail := fmt.Sprintf("window=%q", window)
+	// The title we would activate, or the request when that window is not
+	// visible yet. A security surface must not be brought forward.
+	if err := sess.CheckClickPolicy(0, 0, cuFocusPolicyTitle(window)); err != nil {
+		sess.RecordAction("focus", detail, false, err.Error(), false)
+		emitComputerUseActionUI("focus", detail, false, err.Error())
+		return fmt.Sprintf("computer_focus blocked: %v", err)
+	}
 	if err := sess.BeginAction("focus", detail); err != nil {
 		emitComputerUseActionUI("focus", detail, false, err.Error())
 		return fmt.Sprintf("computer_focus: %v", err)
@@ -1472,6 +1695,7 @@ func cuHandleFocus(args map[string]interface{}) string {
 	}
 	sess.RecordAction("focus", detail, true, "", true)
 	markComputerUseSessionActive()
+	computerUseExplicitFocusTitle = strings.TrimSpace(window)
 	noteComputerUseNamedWindow(window)
 	emitComputerUseActionUI("focus", detail, true, "")
 	computerUseTraceFocus()
@@ -1799,6 +2023,9 @@ func cuHandleClick(args map[string]interface{}) string {
 	if msg := cuPointerWindowRefusal(sess, "computer_click", "click", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
 		return msg
 	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_click: " + msg
+	}
 	if err := sess.BeginAction("click", detail); err != nil {
 		emitComputerUseActionUI("click", detail, false, err.Error())
 		return fmt.Sprintf("computer_click: %v", err)
@@ -1925,6 +2152,9 @@ func cuHandleType(args map[string]interface{}) string {
 			}
 		}
 	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_type: " + msg
+	}
 	if err := sess.BeginAction("type", detail); err != nil {
 		return fmt.Sprintf("computer_type: %v", err)
 	}
@@ -1955,7 +2185,8 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
-	noteComputerUseOperatedWindow(accessibility.ForegroundWindowID())
+	noteDesktopMessageTyped(text)
+	noteComputerUseForegroundIfCrop()
 	if typeEl != nil {
 		sess.NoteActuatedID(typeEl.Name, typeEl.Window, typeEl.Type, typeEl.WindowID)
 	}
@@ -2033,6 +2264,9 @@ func cuHandleKey(args map[string]interface{}) string {
 		emitComputerUseActionUI("key", reason, false, reason)
 		return "computer_key blocked: " + cuPersonHandoff(reason, title, refusal)
 	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_key: " + msg
+	}
 	if err := sess.BeginAction("key", detail); err != nil {
 		return fmt.Sprintf("computer_key: %v", err)
 	}
@@ -2042,11 +2276,16 @@ func cuHandleKey(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_key failed: %v", err)
 	}
 	sess.RecordAction("key", detail, true, "", true)
-	noteComputerUseOperatedWindow(fgID)
+	noteComputerUseForegroundIfCrop()
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("key", detail, true, "")
 	cuPostActionSettle()
-	return cuFinishAction(fmt.Sprintf("pressed %s", detail))
+	msg := cuFinishAction(fmt.Sprintf("pressed %s", detail))
+	if noteDesktopMessageSubmitted(detail) {
+		log.Printf("[computer-use] desktop message submitted; further actions stop")
+		msg += "\n" + desktopMessageStopText
+	}
+	return msg
 }
 
 func splitKeyCombo(raw string) []string {
@@ -2117,6 +2356,9 @@ func cuHandleScroll(args map[string]interface{}) string {
 	if msg := cuPointerWindowRefusal(sess, "computer_scroll", "scroll", detail, end); msg != "" {
 		return msg
 	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_scroll: " + msg
+	}
 	if err := sess.BeginAction("scroll", detail); err != nil {
 		return fmt.Sprintf("computer_scroll: %v", err)
 	}
@@ -2169,6 +2411,9 @@ func cuHandleSelect(args map[string]interface{}) string {
 	if msg := cuPointerWindowRefusal(sess, "computer_select", "select", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
 		return msg
 	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_select: " + msg
+	}
 	if err := sess.BeginAction("select", detail); err != nil {
 		return fmt.Sprintf("computer_select: %v", err)
 	}
@@ -2216,6 +2461,9 @@ func cuHandleScrollIntoView(args map[string]interface{}) string {
 	detail := fmt.Sprintf("ref=%s name=%q", mark.Ref, mark.Name)
 	if msg := cuPointerWindowRefusal(sess, "computer_scroll_into_view", "scroll_into_view", detail, cuDragEnd{x: x, y: y, mark: mark}); msg != "" {
 		return msg
+	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_scroll_into_view: " + msg
 	}
 	if err := sess.BeginAction("scroll_into_view", detail); err != nil {
 		return fmt.Sprintf("computer_scroll_into_view: %v", err)
@@ -2270,6 +2518,9 @@ func cuHandleDrag(args map[string]interface{}) string {
 	}
 	if msg := cuPointerWindowRefusal(sess, "computer_drag", "drag", detail, from, to); msg != "" {
 		return msg
+	}
+	if msg := cuReassertOperatedWindow(sess); msg != "" {
+		return "computer_drag: " + msg
 	}
 	if err := sess.BeginAction("drag", detail); err != nil {
 		return fmt.Sprintf("computer_drag: %v", err)

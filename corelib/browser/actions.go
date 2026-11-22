@@ -89,24 +89,37 @@ func (s *BrowserAgentSession) CloseRunTabs(runID string) {
 
 // Navigate performs a browser navigation under the agent session.
 func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error) {
-	if s == nil || s.session == nil {
+	if s == nil {
 		return nil, fmt.Errorf("browser session not connected")
-	}
-	if !s.IsTargetAlive() {
-		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	url = strings.TrimSpace(url)
 	if url == "" {
 		return nil, fmt.Errorf("missing url")
+	}
+	// Pay and domain policy decide before a frequency hold. A refused
+	// document must not skip the checkout card or a blocked domain.
+	if err := s.guardCheckoutNavigate(url); err != nil {
+		return policyBlockResult(s, "browser_navigate", err)
+	}
+	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil && !isCrossOriginDenied(err) {
+		return policyBlockResult(s, "browser_navigate", err)
+	}
+	// A site that already refused this browser is not opened again, on this
+	// path or another. Another request is what keeps the refusal in place.
+	if msg := s.frequencyNavigationBlocked(url); msg != "" {
+		return s.frequencyHoldResult("browser_navigate", msg), nil
+	}
+	if s.session == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
+	if !s.IsTargetAlive() {
+		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
 	if kept := s.keptLoggedInDocument(url); kept != nil {
 		return kept, nil
-	}
-	if err := s.guardCheckoutNavigate(url); err != nil {
-		return policyBlockResult(s, "browser_navigate", err)
 	}
 	tabNote := ""
 	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
@@ -130,6 +143,9 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	readyNote := ""
 	if rep, ok := s.session.waitPageReady(); ok {
 		readyNote = rep.Note()
+		if rep.Wall == "rate_limit" {
+			s.rememberFrequencyDocument(url, rep.State.URL)
+		}
 		if reason, take := wallHandsPageOver(rep.Wall); take {
 			if err := s.handPageToUser(reason, rep.State.URL, rep.State.Title); err != nil && previewHandoffEnabled() {
 				if errors.Is(err, errUserReleased) {
@@ -469,6 +485,19 @@ func (s *BrowserAgentSession) guardSubmitClick(key string) error {
 	return nil
 }
 
+// heldRepeatSubmit is the repeat-submit guard. On a document the site already
+// refused, "probe and submit again" is another request. The hold is that
+// refusal, not a failed click.
+func (s *BrowserAgentSession) heldRepeatSubmit(key string) (*BrowserActionResult, error) {
+	if err := s.guardSubmitClick(key); err != nil {
+		if msg := s.frequencyCurrentDocumentBlocked(); msg != "" {
+			return s.frequencyHoldResult("browser_click", msg), nil
+		}
+		return nil, err
+	}
+	return nil, nil
+}
+
 func (s *BrowserAgentSession) forgetSubmitClick(key string) {
 	if s == nil || key == "" {
 		return
@@ -526,18 +555,23 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	ref = strings.TrimSpace(ref)
 	selector = strings.TrimSpace(selector)
 	candidates, resolvedRef, err := s.selectorCandidatesForAction(snapshotID, ref, selector)
-	if err != nil {
-		return nil, err
+	if held, herr := s.frequencyClickUnresolved(err); held != nil || herr != nil {
+		return held, herr
 	}
 	if err := rejectDisabledRef(resolvedRef); err != nil {
-		return nil, err
+		if held, herr := s.frequencyClickUnresolved(err); held != nil || herr != nil {
+			return held, herr
+		}
 	}
 	if err := s.guardCheckoutClick(resolvedRef, selector, ""); err != nil {
 		return policyBlockResult(s, "browser_click", err)
 	}
+	if msg := s.frequencyReloadClickBlocked(resolvedRef, ""); msg != "" {
+		return s.frequencyHoldResult("browser_click", msg), nil
+	}
 	submitKey := s.submitClickKey(resolvedRef, selector, "")
-	if err := s.guardSubmitClick(submitKey); err != nil {
-		return nil, err
+	if held, err := s.heldRepeatSubmit(submitKey); held != nil || err != nil {
+		return held, err
 	}
 	resolvedSelector, attempts, err := s.clickWithCandidates(candidates, resolvedRef)
 	if err != nil {
@@ -588,18 +622,23 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 		return nil, fmt.Errorf("missing text")
 	}
 	candidates, resolvedRef, err := s.selectorCandidatesForText(snapshotID, text)
-	if err != nil {
-		return nil, err
+	if held, herr := s.frequencyClickUnresolved(err); held != nil || herr != nil {
+		return held, herr
 	}
 	if err := rejectDisabledRef(resolvedRef); err != nil {
-		return nil, err
+		if held, herr := s.frequencyClickUnresolved(err); held != nil || herr != nil {
+			return held, herr
+		}
 	}
 	if err := s.guardCheckoutClick(resolvedRef, "", text); err != nil {
 		return policyBlockResult(s, "browser_click", err)
 	}
+	if msg := s.frequencyReloadClickBlocked(resolvedRef, text); msg != "" {
+		return s.frequencyHoldResult("browser_click", msg), nil
+	}
 	submitKey := s.submitClickKey(resolvedRef, "", text)
-	if err := s.guardSubmitClick(submitKey); err != nil {
-		return nil, err
+	if held, err := s.heldRepeatSubmit(submitKey); held != nil || err != nil {
+		return held, err
 	}
 	resolvedSelector, attempts, err := s.clickWithCandidates(candidates, resolvedRef)
 	if err != nil {
@@ -819,13 +858,29 @@ func (s *BrowserAgentSession) Refresh() (*BrowserActionResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if result != nil && result.Status != "blocked" && result.Status != "ask" {
-		result.Action = "browser_refresh"
-		result.Display = fmt.Sprintf("refreshed %s", info.URL)
-		result.Detail = info.URL
+	result = labelRefreshResult(result, info.URL)
+	if result != nil && result.Action == "browser_refresh" && !FrequencyRefusalStops(result.Display) {
 		s.appendActionTrace("refresh", fmt.Sprintf("refresh %s", info.URL))
 	}
 	return result, nil
+}
+
+// labelRefreshResult names a reload that was sent. A frequency hold already
+// says the document was not opened again, and that sentence stays.
+func labelRefreshResult(result *BrowserActionResult, pageURL string) *BrowserActionResult {
+	if result == nil {
+		return nil
+	}
+	if FrequencyRefusalStops(result.Display) {
+		result.Action = "browser_refresh"
+		return result
+	}
+	if result.Status != "blocked" && result.Status != "ask" {
+		result.Action = "browser_refresh"
+		result.Display = fmt.Sprintf("refreshed %s", pageURL)
+		result.Detail = pageURL
+	}
+	return result
 }
 
 // Back performs browser back navigation and refreshes snapshot state.
@@ -1000,6 +1055,7 @@ func (s *BrowserAgentSession) extractPageTextWindow(offset, maxChars int) (strin
 
 const unchangedDisplaySuffix = "; page did not change — observe and verify before retrying"
 const unchangedBatchSuffix = "; page did not change — probe before another submit"
+const notReadyProbeSentence = "\npage not fully ready yet; probe once more before acting."
 
 func (s *BrowserAgentSession) completeAction(action, display, detail string, obs *BrowserObservation, extra map[string]interface{}, requireChange bool) *BrowserActionResult {
 	snapshotID := ""
@@ -1008,6 +1064,17 @@ func (s *BrowserAgentSession) completeAction(action, display, detail string, obs
 	}
 	status := "ok"
 	data := compactActionData(obs, extra)
+	// The post-action observe is not the tool result. A refusal it recorded
+	// has to be on this result, or the model treats the open as success and
+	// asks for the same document again.
+	if obs != nil && obs.frequencyHold != "" && !FrequencyRefusalStops(display) {
+		display += "\n" + obs.frequencyHold
+	}
+	// Readiness says "probe once more" when it has not classified the page.
+	// Observe may already have classified the same page as the refusal.
+	if FrequencyRefusalStops(display) {
+		display = strings.ReplaceAll(display, notReadyProbeSentence, "")
+	}
 	if requireChange && obs != nil {
 		s.mu.RLock()
 		prior := s.lastFingerprint
@@ -1015,15 +1082,23 @@ func (s *BrowserAgentSession) completeAction(action, display, detail string, obs
 		s.mu.RUnlock()
 		if prior != "" && prior == snapshotFingerprint(obs.Snapshot) && (sess == nil || !sess.hasPendingDialog()) {
 			status = "unchanged"
-			suffix := unchangedDisplaySuffix
-			if s.fastBatchActive() {
-				suffix = unchangedBatchSuffix
+			// The page did not move, but a refusal already says to stop.
+			// "observe and retry" on that same result sends the model back.
+			if !FrequencyRefusalStops(display) {
+				suffix := unchangedDisplaySuffix
+				if s.fastBatchActive() {
+					suffix = unchangedBatchSuffix
+				}
+				display = display + suffix
 			}
-			display = display + suffix
-			data["delta"] = expectDelta(obs, fmt.Errorf("page did not change after %s", action))
+			// The delta error is "page did not change", which a later step
+			// reads as a failed submit and clicks again. A refusal is not that.
+			if !FrequencyRefusalStops(display) {
+				data["delta"] = expectDelta(obs, fmt.Errorf("page did not change after %s", action))
+			}
 		}
 	}
-	return &BrowserActionResult{
+	result := &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: snapshotID,
 		Action:     action,
@@ -1032,6 +1107,12 @@ func (s *BrowserAgentSession) completeAction(action, display, detail string, obs
 		Display:    display,
 		Data:       data,
 	}
+	// A planned batch must not run the later reloads. The hold is the stop.
+	if FrequencyRefusalStops(display) {
+		result.batchStop = true
+		result.batchStopReason = "frequency_refusal"
+	}
+	return result
 }
 
 func activatingRef(ref *BrowserElementRef) bool {
@@ -1213,6 +1294,13 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 	// Stop for the card before the key is sent.
 	if err := s.guardCheckoutPress(key); err != nil {
 		return policyBlockResult(s, "browser_press", err)
+	}
+	// Enter, Space, and a reload key send another request to the site that
+	// already refused this browser. A letter does not.
+	if frequencyPressHitsSite(key) {
+		if msg := s.frequencyCurrentDocumentBlocked(); msg != "" {
+			return s.frequencyHoldResult("browser_press", msg), nil
+		}
 	}
 	if err := s.session.Press(key); err != nil {
 		return nil, err

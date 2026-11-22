@@ -217,6 +217,309 @@ func runNoTranscriptCopy(t *testing.T, c progressCase) {
 	}
 }
 
+func TestCollapseHelperReportFoldsASentMessage(t *testing.T) {
+	body := "1. 已发出\n2. 发给：王占一（奇安信-合伙人）\n3. 原文：码卡龙的computer use能力大大提升了\n文件：无\n"
+	shown, err := desktopbot.CollapseHelperReport(body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "1. 已发出；发给：王占一（奇安信-合伙人）；原文：码卡龙的computer use能力大大提升了") ||
+		!strings.Contains(shown, "2. 无") || !strings.Contains(shown, "3. 无") || !strings.Contains(shown, "文件：无") {
+		t.Fatalf("shown = %q", shown)
+	}
+	left, err := desktopbot.CollapseHelperReport("1. 安装包已下载\n2. 还要通知用户\n3. 无\n文件：C:\\a.exe\n", nil)
+	if err != nil || !strings.Contains(left, "2. 还要通知用户") {
+		t.Fatalf("left = %q err=%v", left, err)
+	}
+	unsent, err := desktopbot.CollapseHelperReport("1. 没发出\n2. 发给：王占一\n3. 原文：你好\n文件：无\n", nil)
+	if err != nil || !strings.Contains(unsent, "2. 发给：王占一") || !strings.Contains(unsent, "3. 原文：你好") {
+		t.Fatalf("unsent = %q err=%v", unsent, err)
+	}
+	labeledBody, err := desktopbot.CollapseHelperReport("1. 已发出\n2. 发给：王占一\n3. 发出原文：你好\n文件：无\n", nil)
+	if err != nil || !strings.Contains(labeledBody, "1. 已发出；发给：王占一；原文：你好") || !strings.Contains(labeledBody, "2. 无") {
+		t.Fatalf("labeled body = %q err=%v", labeledBody, err)
+	}
+}
+
+func TestCollapseHelperReportAcceptsUnnumberedSendFacts(t *testing.T) {
+	// The live 刘歌 report. The facts are labeled, not numbered, and a
+	// separate line talks about a goal-system miss. That line is not the send.
+	body := "目标失败原因已修复：原 goal 从未在目标系统中注册（首次 complete 无目标可关），已补建目标、核验并发送结果后正式关闭，验收通过。\n\n" +
+		"已发出：消息发送成功，10:29 显示在与刘歌的聊天记录中，目标已正式完成关闭。\n" +
+		"发给谁：蓝信用户「刘歌」（奇安信-产研中心-总师办公室）。\n" +
+		"发出原文：“码卡龙现在很擅长给蓝信中的用户发消息了。”\n" +
+		"文件：无"
+	shown, err := desktopbot.CollapseHelperReport(body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shown, "1. 已发出：消息发送成功，10:29 显示在与刘歌的聊天记录中，目标已正式完成关闭。；发给：蓝信用户「刘歌」（奇安信-产研中心-总师办公室）。；原文：“码卡龙现在很擅长给蓝信中的用户发消息了。”") ||
+		!strings.Contains(shown, "2. 无") || !strings.Contains(shown, "3. 无") || !strings.Contains(shown, "文件：无") ||
+		strings.Contains(shown, "目标失败原因") {
+		t.Fatalf("shown = %q", shown)
+	}
+	shortBody := "已发出：消息发送成功，10:29 显示在聊天记录中。\n发给谁：蓝信用户「刘歌」（奇安信-产研中心-总师办公室）。\n发出原文：“码卡龙现在很擅长给蓝信中的用户发消息了。”\n文件：无"
+	short, err := desktopbot.CollapseHelperReport(shortBody, nil)
+	if err != nil || !strings.Contains(short, "发给：蓝信用户「刘歌」") || !strings.Contains(short, "2. 无") {
+		t.Fatalf("short = %q err=%v", short, err)
+	}
+	failed := "已发出：发送失败。\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(failed, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("failed send = %v", err)
+	}
+	partial := "已发出：消息发送成功。\n发给谁：刘歌\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(partial, nil); err == nil {
+		t.Fatal("partial facts succeeded")
+	}
+	other := "1. 安装包已下载\n2. 无\n3. 无\n文件：无\n已发出：消息发送成功。\n发给谁：刘歌\n发出原文：你好\n"
+	kept, err := desktopbot.CollapseHelperReport(other, nil)
+	if err != nil || !strings.Contains(kept, "1. 安装包已下载") || strings.Contains(kept, "刘歌") {
+		t.Fatalf("other conclusion = %q err=%v", kept, err)
+	}
+	prose := "已提交审核。\n发给用户之前要核对。\n内容：安装包没有落到磁盘。\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(prose, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("prose = %v", err)
+	}
+	specific := "已发出：消息发送成功。\n发给：群里所有人\n发给谁：刘歌\n内容：不要另发\n发出原文：你好\n文件：无\n"
+	picked, err := desktopbot.CollapseHelperReport(specific, nil)
+	if err != nil || !strings.Contains(picked, "发给：刘歌") || !strings.Contains(picked, "原文：你好") ||
+		strings.Contains(picked, "群里所有人") || strings.Contains(picked, "不要另发") {
+		t.Fatalf("specific = %q err=%v", picked, err)
+	}
+	twice := "1. 已发出；发给：刘歌；原文：你好\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	once, err := desktopbot.CollapseHelperReport(twice, nil)
+	if err != nil || strings.Count(once, "发给：") != 1 || strings.Count(once, "原文：") != 1 {
+		t.Fatalf("twice = %q err=%v", once, err)
+	}
+	roles := "1. 已完成：给蓝信用户刘歌发出消息，原文“码卡龙现在很擅长给蓝信中的用户发消息了。”，10:29 发送成功\n2. 剩余：无\n3. 阻塞：无\n文件：无\n"
+	shownRoles, err := desktopbot.CollapseHelperReport(roles, nil)
+	if err != nil || !strings.Contains(shownRoles, "1. 给蓝信用户刘歌发出消息") || !strings.Contains(shownRoles, "2. 无") ||
+		!strings.Contains(shownRoles, "3. 无") || strings.Contains(shownRoles, "已完成") || strings.Contains(shownRoles, "剩余") || strings.Contains(shownRoles, "阻塞") {
+		t.Fatalf("roles = %q err=%v", shownRoles, err)
+	}
+	echo := "1. 已完成：已完成：给蓝信\n2. 剩余：无\n3. 阻塞：无\n文件：无\n"
+	stripped, err := desktopbot.CollapseHelperReport(echo, nil)
+	if err != nil || !strings.Contains(stripped, "1. 给蓝信") || strings.Contains(stripped, "已完成") {
+		t.Fatalf("echo = %q err=%v", stripped, err)
+	}
+	bare := "1. 完成安装包下载\n2. 还要通知用户\n3. 无\n文件：无\n"
+	keptBare, err := desktopbot.CollapseHelperReport(bare, nil)
+	if err != nil || !strings.Contains(keptBare, "1. 完成安装包下载") || !strings.Contains(keptBare, "2. 还要通知用户") {
+		t.Fatalf("bare = %q err=%v", keptBare, err)
+	}
+	mentioned := "1. 已发出：向刘歌说你好\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	keptMention, err := desktopbot.CollapseHelperReport(mentioned, nil)
+	if err != nil || strings.Count(keptMention, "发给：刘歌") != 1 || strings.Count(keptMention, "原文：你好") != 1 || !strings.Contains(keptMention, "2. 无") {
+		t.Fatalf("mentioned = %q err=%v", keptMention, err)
+	}
+	fileName := "1. 已发出\n2. 发给：刘歌\n3. 原文件：readme.md\n文件：无\n"
+	keptFile, err := desktopbot.CollapseHelperReport(fileName, nil)
+	if err != nil || !strings.Contains(keptFile, "3. 原文件：readme.md") || strings.Contains(keptFile, "原文：") {
+		t.Fatalf("filename = %q err=%v", keptFile, err)
+	}
+	outline := "1. 已发出\n2. 发给：刘歌\n3. 内容提要：本周\n文件：无\n"
+	keptOutline, err := desktopbot.CollapseHelperReport(outline, nil)
+	if err != nil || !strings.Contains(keptOutline, "3. 内容提要：本周") || strings.Contains(keptOutline, "原文：") {
+		t.Fatalf("outline = %q err=%v", keptOutline, err)
+	}
+	buried := "1. 报告已提交，等待反馈\n2. 发给：老师\n3. 内容：周报\n文件：无\n"
+	keptBuried, err := desktopbot.CollapseHelperReport(buried, nil)
+	if err != nil || !strings.Contains(keptBuried, "1. 报告已提交，等待反馈") || !strings.Contains(keptBuried, "2. 发给：老师") || !strings.Contains(keptBuried, "3. 内容：周报") {
+		t.Fatalf("buried = %q err=%v", keptBuried, err)
+	}
+	period := "1. 已发出。\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	foldedPeriod, err := desktopbot.CollapseHelperReport(period, nil)
+	if err != nil || !strings.Contains(foldedPeriod, "1. 已发出。；发给：刘歌；原文：你好") || !strings.Contains(foldedPeriod, "2. 无") {
+		t.Fatalf("period = %q err=%v", foldedPeriod, err)
+	}
+	underRole := "1. 已完成：已发出\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	foldedRole, err := desktopbot.CollapseHelperReport(underRole, nil)
+	if err != nil || !strings.Contains(foldedRole, "1. 已发出；发给：刘歌；原文：你好") || strings.Contains(foldedRole, "2. 发给") {
+		t.Fatalf("under role = %q err=%v", foldedRole, err)
+	}
+	aspect := "1. 已发出了\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	foldedAspect, err := desktopbot.CollapseHelperReport(aspect, nil)
+	if err != nil || !strings.Contains(foldedAspect, "1. 已发出了；发给：刘歌；原文：你好") || !strings.Contains(foldedAspect, "2. 无") {
+		t.Fatalf("aspect = %q err=%v", foldedAspect, err)
+	}
+	resultWord := "1. 已发送成功\n2. 发给：刘歌\n3. 原文：你好\n文件：无\n"
+	foldedResult, err := desktopbot.CollapseHelperReport(resultWord, nil)
+	if err != nil || !strings.Contains(foldedResult, "1. 已发送成功；发给：刘歌；原文：你好") || !strings.Contains(foldedResult, "3. 无") {
+		t.Fatalf("result = %q err=%v", foldedResult, err)
+	}
+	submittedTo := "1. 已提交给\n2. 发给：老师\n3. 内容：周报\n文件：无\n"
+	keptTo, err := desktopbot.CollapseHelperReport(submittedTo, nil)
+	if err != nil || !strings.Contains(keptTo, "1. 已提交给") || !strings.Contains(keptTo, "2. 发给：老师") || strings.Contains(keptTo, "；发给：") {
+		t.Fatalf("submitted to = %q err=%v", keptTo, err)
+	}
+	bareDone := "已发出。\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	foldedBare, err := desktopbot.CollapseHelperReport(bareDone, nil)
+	if err != nil || !strings.Contains(foldedBare, "1. 已发出。；发给：刘歌；原文：你好") || !strings.Contains(foldedBare, "2. 无") {
+		t.Fatalf("bare done = %q err=%v", foldedBare, err)
+	}
+	unnumberedRole := "已完成：已发出\n剩余：发给：刘歌\n阻塞：原文：你好\n文件：无\n"
+	foldedUnnumbered, err := desktopbot.CollapseHelperReport(unnumberedRole, nil)
+	if err != nil || !strings.Contains(foldedUnnumbered, "1. 已发出；发给：刘歌；原文：你好") || strings.Contains(foldedUnnumbered, "已完成") || strings.Contains(foldedUnnumbered, "剩余") {
+		t.Fatalf("unnumbered role = %q err=%v", foldedUnnumbered, err)
+	}
+	oneLine := "已发出；发给：刘歌；原文：你好\n文件：无\n"
+	foldedOne, err := desktopbot.CollapseHelperReport(oneLine, nil)
+	if err != nil || strings.Count(foldedOne, "发给：") != 1 || strings.Count(foldedOne, "原文：") != 1 || !strings.Contains(foldedOne, "2. 无") {
+		t.Fatalf("one line = %q err=%v", foldedOne, err)
+	}
+	keptBody := "1. 已发出\n2. 发给：刘歌\n3. 原文：你好；世界\n文件：无\n"
+	foldedBody, err := desktopbot.CollapseHelperReport(keptBody, nil)
+	if err != nil || !strings.Contains(foldedBody, "原文：你好；世界") || strings.Count(foldedBody, "原文：") != 1 {
+		t.Fatalf("body semicolon = %q err=%v", foldedBody, err)
+	}
+	gone := "已发出去。\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(gone, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("gone = %v", err)
+	}
+	later := "已发出：消息发送成功，目标失败原因已修复。\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	foldedLater, err := desktopbot.CollapseHelperReport(later, nil)
+	if err != nil || !strings.Contains(foldedLater, "1. 已发出：消息发送成功，目标失败原因已修复。；发给：刘歌；原文：你好") || !strings.Contains(foldedLater, "2. 无") {
+		t.Fatalf("later failure = %q err=%v", foldedLater, err)
+	}
+	stillFailed := "已发出：发送失败，网络超时。\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(stillFailed, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("still failed = %v", err)
+	}
+	semiFailed := "已发出；发送失败\n发给谁：刘歌\n发出原文：你好\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(semiFailed, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("semi failed = %v", err)
+	}
+	joinedFail := "已发出；发送失败；发给：刘歌；原文：你好\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(joinedFail, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("joined fail = %v", err)
+	}
+	joinedBody := "已发出；发给：刘歌；原文：你好；世界\n文件：无\n"
+	foldedJoined, err := desktopbot.CollapseHelperReport(joinedBody, nil)
+	if err != nil || !strings.Contains(foldedJoined, "原文：你好；世界") || strings.Count(foldedJoined, "原文：") != 1 || !strings.Contains(foldedJoined, "2. 无") {
+		t.Fatalf("joined body = %q err=%v", foldedJoined, err)
+	}
+	// The live 马勇 report. The 文件 line closes a three-line card whose
+	// last two lines are 无. The conclusion is not numbered, and a
+	// goal-failure paragraph is not one of those three lines.
+	mayong := "goal 记录核验结果：goal 存储中无活跃目标记录（原始 goal 未持久化到本会话的 goal 系统，这是失败原因）。但实际任务已完成且已核验——消息已成功发送并显示在聊天窗口（时间 14:37，消息列表预览与原文一致），无需用户进一步确认。范围修正：goal 系统无记录可关闭，以本报告作为完成记录。\n\n" +
+		"已发出，发给终端安全的马勇（奇安信-产研中心-产研BG-终端与办公网安全BU），原文：“马勇您好！我是MaClaw（码卡龙），一款运行在您电脑上的AI数智助手。我可以帮您：处理日常事务，如文件管理、文档撰写；操控电脑桌面，代替您完成重复性操作；查询和分析数据，生成报告；收发邮件和消息提醒；编写脚本实现自动化任务。我支持中文交互，随叫随到。有任何需要帮忙的地方，随时告诉我！”\n" +
+		"无\n无\n文件：无"
+	shownMayong, err := desktopbot.CollapseHelperReport(mayong, nil)
+	if err != nil || !strings.Contains(shownMayong, "发给终端安全的马勇（奇安信-产研中心-产研BG-终端与办公网安全BU）") ||
+		strings.Count(shownMayong, "马勇您好！") != 1 || !strings.Contains(shownMayong, "撰写；操控电脑桌面") ||
+		!strings.Contains(shownMayong, "2. 无") || !strings.Contains(shownMayong, "3. 无") || !strings.Contains(shownMayong, "文件：无") ||
+		strings.Contains(shownMayong, "失败原因") {
+		t.Fatalf("mayong = %q err=%v", shownMayong, err)
+	}
+	glued := "已发出，发给用户之前要核对。\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(glued, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("glued recipient = %v", err)
+	}
+	samePara := "goal 这是失败原因。\n已发出，发给马勇，原文：你好\n无\n无\n文件：无\n"
+	shownSame, err := desktopbot.CollapseHelperReport(samePara, nil)
+	if err != nil || !strings.Contains(shownSame, "1. 已发出，发给马勇，原文：你好") ||
+		!strings.Contains(shownSame, "2. 无") || strings.Contains(shownSame, "失败原因") {
+		t.Fatalf("same paragraph = %q err=%v", shownSame, err)
+	}
+	failedNone := "已发出：发送失败。\n无\n无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(failedNone, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("failed none = %v", err)
+	}
+	roleFailed := "已完成：已发出：发送失败。\n剩余：无\n阻塞：无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(roleFailed, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("role failed = %v", err)
+	}
+	blankSlots := "无\n无\n无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(blankSlots, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("blank slots = %v", err)
+	}
+	roleNone := "goal 这是失败原因。\n已完成：已发出，发给马勇，原文：你好\n剩余：无\n阻塞：无\n文件：无\n"
+	shownRole, err := desktopbot.CollapseHelperReport(roleNone, nil)
+	if err != nil || !strings.Contains(shownRole, "1. 已发出，发给马勇，原文：你好") ||
+		strings.Contains(shownRole, "已完成") || strings.Contains(shownRole, "剩余") ||
+		strings.Contains(shownRole, "阻塞") || strings.Contains(shownRole, "失败原因") {
+		t.Fatalf("role none = %q err=%v", shownRole, err)
+	}
+	laterNone := "已发出：消息发送成功，目标失败原因已修复。\n无\n无\n文件：无\n"
+	shownLater, err := desktopbot.CollapseHelperReport(laterNone, nil)
+	if err != nil || !strings.Contains(shownLater, "1. 已发出：消息发送成功，目标失败原因已修复。") ||
+		!strings.Contains(shownLater, "2. 无") || strings.Contains(shownLater, "；发给：") {
+		t.Fatalf("later none = %q err=%v", shownLater, err)
+	}
+	otherWord := "已发出通知：磁盘失败。\n无\n无\n文件：无\n"
+	shownWord, err := desktopbot.CollapseHelperReport(otherWord, nil)
+	if err != nil || !strings.Contains(shownWord, "1. 已发出通知：磁盘失败。") || !strings.Contains(shownWord, "2. 无") {
+		t.Fatalf("other word = %q err=%v", shownWord, err)
+	}
+	numberedNone := "已发出，发给马勇，原文：你好\n2. 无\n3. 无\n文件：无\n"
+	shownNumbered, err := desktopbot.CollapseHelperReport(numberedNone, nil)
+	if err != nil || !strings.Contains(shownNumbered, "1. 已发出，发给马勇，原文：你好") ||
+		!strings.Contains(shownNumbered, "2. 无") || !strings.Contains(shownNumbered, "3. 无") {
+		t.Fatalf("numbered none = %q err=%v", shownNumbered, err)
+	}
+	earlierNumber := "1. 旧结论\n已发出，发给马勇，原文：你好\n无\n无\n文件：无\n"
+	shownEarlier, err := desktopbot.CollapseHelperReport(earlierNumber, nil)
+	if err != nil || !strings.Contains(shownEarlier, "1. 已发出，发给马勇，原文：你好") ||
+		strings.Contains(shownEarlier, "旧结论") {
+		t.Fatalf("earlier number = %q err=%v", shownEarlier, err)
+	}
+	numberedFail := "已发出：发送失败。\n2. 无\n3. 无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(numberedFail, nil); err == nil ||
+		!strings.Contains(err.Error(), "helper_report_empty") || !strings.Contains(err.Error(), "发送失败") {
+		t.Fatalf("numbered fail = %v", err)
+	}
+	keptNumberedFail := "1. 已发出：发送失败。\n2. 无\n3. 无\n文件：无\n"
+	shownKept, err := desktopbot.CollapseHelperReport(keptNumberedFail, nil)
+	if err != nil || !strings.Contains(shownKept, "1. 已发出：发送失败。") || !strings.Contains(shownKept, "2. 无") {
+		t.Fatalf("kept numbered fail = %q err=%v", shownKept, err)
+	}
+	onlyNone := "1. 无\n2. 无\n3. 无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(onlyNone, nil); err == nil || !strings.Contains(err.Error(), "helper_report_empty") {
+		t.Fatalf("only none = %v", err)
+	}
+	blankCard := "goal 这是失败原因。\n\n已发出，发给马勇，原文：你好\n\n无\n\n无\n\n文件：无\n"
+	shownBlank, err := desktopbot.CollapseHelperReport(blankCard, nil)
+	if err != nil || !strings.Contains(shownBlank, "1. 已发出，发给马勇，原文：你好") ||
+		!strings.Contains(shownBlank, "2. 无") || strings.Contains(shownBlank, "失败原因") {
+		t.Fatalf("blank card = %q err=%v", shownBlank, err)
+	}
+	labeledTail := "已发出：消息发送成功。\n发给谁：刘歌\n发出原文：你好\n\n无\n无\n文件：无\n"
+	shownTail, err := desktopbot.CollapseHelperReport(labeledTail, nil)
+	if err != nil || !strings.Contains(shownTail, "1. 已发出：消息发送成功。；发给：刘歌；原文：你好") ||
+		!strings.Contains(shownTail, "2. 无") {
+		t.Fatalf("labeled tail = %q err=%v", shownTail, err)
+	}
+	labeledSame := "已发出：消息发送成功。\n发给谁：刘歌\n发出原文：你好\n无\n无\n文件：无\n"
+	shownLabeled, err := desktopbot.CollapseHelperReport(labeledSame, nil)
+	if err != nil || !strings.Contains(shownLabeled, "发给：刘歌") || !strings.Contains(shownLabeled, "原文：你好") ||
+		strings.Contains(shownLabeled, "1. 发出原文") {
+		t.Fatalf("labeled same = %q err=%v", shownLabeled, err)
+	}
+	contentLine := "内容：周报已写好\n无\n无\n文件：无\n"
+	shownContent, err := desktopbot.CollapseHelperReport(contentLine, nil)
+	if err != nil || !strings.Contains(shownContent, "1. 内容：周报已写好") || !strings.Contains(shownContent, "2. 无") {
+		t.Fatalf("content line = %q err=%v", shownContent, err)
+	}
+	staleFail := "1. 已发出：发送失败（第一次）。\n\n已发出：发送失败。\n无\n无\n文件：无\n"
+	if _, err := desktopbot.CollapseHelperReport(staleFail, nil); err == nil ||
+		!strings.Contains(err.Error(), "helper_report_empty") || !strings.Contains(err.Error(), "发送失败") ||
+		strings.Contains(err.Error(), "第一次") {
+		t.Fatalf("stale numbered fail = %v", err)
+	}
+	earlierDone := "已发出。\n已发出，发给马勇，原文：你好\n无\n无\n文件：无\n"
+	shownEarlierDone, err := desktopbot.CollapseHelperReport(earlierDone, nil)
+	if err != nil || !strings.Contains(shownEarlierDone, "1. 已发出，发给马勇，原文：你好") ||
+		strings.Contains(shownEarlierDone, "1. 已发出。") {
+		t.Fatalf("earlier done = %q err=%v", shownEarlierDone, err)
+	}
+	laterNumber := "1. 安装包已下载\n2. 还要通知用户\n3. 无\n文件：C:\\a.exe\n1. 后来的句子\n"
+	shownLaterNum, err := desktopbot.CollapseHelperReport(laterNumber, nil)
+	if err != nil || !strings.Contains(shownLaterNum, "1. 安装包已下载") ||
+		!strings.Contains(shownLaterNum, "2. 还要通知用户") || strings.Contains(shownLaterNum, "后来的句子") {
+		t.Fatalf("later number = %q err=%v", shownLaterNum, err)
+	}
+}
+
 func TestCollapseHelperReportKeepsSpacesInOnePath(t *testing.T) {
 	path := `C:\Users\ma139\Desktop\演讲稿 完整版.docx`
 	shown, err := desktopbot.CollapseHelperReport("文件："+path, []string{path})

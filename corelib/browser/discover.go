@@ -200,24 +200,33 @@ func DiscoverOrLaunchPersistentCtx(ctx context.Context) (string, error) {
 	// A managed Chrome left running from before this process was headed must
 	// not be reused. Attaching keeps the headless fingerprint, and the profile
 	// cookies survive a restart of that process. DevToolsActivePort from that
-	// process is stale and must not be dialed.
-	retiredHeadless := false
+	// process is stale and must not be dialed. A headed process that is still
+	// tracking window occlusion cannot be parked off-screen: the page would
+	// become hidden. It is restarted with the same profile so the switch is on.
+	retired := false
 	if commandLinesRunHeadless(lines) {
 		if err := retireHeadlessManagedBrowser(ctx, profileDir); err != nil {
 			return "", err
 		}
-		retiredHeadless = true
+		retired = true
+	} else if managedWindowShouldPark(profileDir) && len(lines) > 0 && !commandLinesDisableNativeOcclusion(lines) {
+		if err := retireManagedBrowser(ctx, profileDir, "managed browser is missing "+nativeOcclusionFeature+"; restarting so an off-screen window stays visible"); err != nil {
+			return "", err
+		}
+		retired = true
 	} else if addr, ok := cdpAddrFromCommandLines(lines); ok {
 		if _, err := DiscoverTargetsContext(ctx, addr); err == nil {
 			log.Printf("[browser] reused managed browser from process command line: %s", addr)
+			ensureManagedBrowserParked(profileDir)
 			return addr, nil
 		}
 	}
-	if retiredHeadless {
+	if retired {
 		os.Remove(filepath.Join(profileDir, "DevToolsActivePort"))
 	} else if addr, ok := readCDPAddrFromUserDataDir(profileDir); ok {
 		if _, err := DiscoverTargetsContext(ctx, addr); err == nil {
 			log.Printf("[browser] reused managed browser from DevToolsActivePort: %s", addr)
+			ensureManagedBrowserParked(profileDir)
 			return addr, nil
 		}
 	}
@@ -226,8 +235,9 @@ func DiscoverOrLaunchPersistentCtx(ctx context.Context) (string, error) {
 	// unreachable. Starting a second Chrome against the same profile causes process
 	// churn and unstable sessions. Recovery must reconnect to the existing
 	// profile process or ask the user to close it manually.
-	if !retiredHeadless && browserProcessExistsForDir(profileDir) {
+	if !retired && browserProcessExistsForDir(profileDir) {
 		if addr, ok := waitForPersistentCDPCtx(ctx, profileDir, 10*time.Second); ok {
+			ensureManagedBrowserParked(profileDir)
 			return addr, nil
 		}
 		if err := ctx.Err(); err != nil {
@@ -387,9 +397,18 @@ func launchDebugBrowserCtx(ctx context.Context, bi *browserInfo, userDataDir str
 	cmd.Stdout = nil
 	cmd.Stderr = &stderr
 	log.Printf("[browser] 启动命令: %s %v", bi.path, args)
+	// Remember the foreground window before Chrome can take it. The park loop
+	// runs after the HWND exists, and by then this process is often already
+	// behind the browser.
+	if managedWindowShouldPark(userDataDir) {
+		captureParkForeground()
+	}
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("启动浏览器失败: %w (browser=%s path=%s user_data_dir=%s port=%d)", err, bi.name, bi.path, userDataDir, port)
 	}
+	// The HWND appears before CDP answers. Park it as soon as it exists so the
+	// startup placement does not stay on the desktop.
+	ensureManagedBrowserParked(userDataDir)
 	success := false
 	defer func() {
 		if success {
@@ -933,12 +952,18 @@ func commandLinesRunHeadless(lines []string) bool {
 // headless process. The next launch opens a normal window on the same profile.
 // The caller has already seen --headless on the command line.
 func retireHeadlessManagedBrowser(ctx context.Context, userDataDir string) error {
+	return retireManagedBrowser(ctx, userDataDir, "managed browser is headless; restarting as a normal window")
+}
+
+// retireManagedBrowser closes the managed browser for this profile so the
+// next launch can replace it. Cookies stay in the profile directory.
+func retireManagedBrowser(ctx context.Context, userDataDir, why string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	log.Printf("[browser] managed browser is headless; restarting as a normal window")
+	log.Printf("[browser] %s", why)
 	if !killManagedBrowserForDir(userDataDir) && browserProcessExistsForDir(userDataDir) {
-		return fmt.Errorf("managed browser is headless and could not be closed")
+		return fmt.Errorf("%s, and it could not be closed", why)
 	}
 	deadline := time.Now().Add(8 * time.Second)
 	for {
@@ -960,7 +985,7 @@ func retireHeadlessManagedBrowser(ctx context.Context, userDataDir string) error
 		}
 	}
 	if browserProcessExistsForDir(userDataDir) {
-		return fmt.Errorf("managed browser is still headless after close")
+		return fmt.Errorf("%s, and it is still running", why)
 	}
 	return nil
 }

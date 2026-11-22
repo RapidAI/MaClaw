@@ -276,6 +276,41 @@ func TestRetireRejectedSemanticToolListsSettledIterativeWorkBeforeRefresh(t *tes
 	}
 }
 
+func TestSettledBrowserFailureListsTheNextCall(t *testing.T) {
+	base := "need:browser.control.web:abc123def456"
+	selectionID := "selection:" + base
+	settled := func() *sharedAgentLoopCallbacks {
+		return &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+			plan: tool.ToolPlan{Selections: []tool.PlannedSelection{{
+				ID: selectionID, NeedID: base,
+				FitProof: tool.FitProof{MatchedCapability: tool.CapabilityBrowserControlWeb},
+			}}},
+			completed: map[string]bool{selectionID: true},
+		}}
+	}
+	grown := settled()
+	if got := grown.retireRejectedSemanticTool("browser", selectionID, "[system rejected] stale ref", "selection_execution_failed"); !strings.Contains(got, "semantic_plan_retire_failed") || len(grown.semanticSurface.plan.Selections) != 2 {
+		t.Fatalf("settled browser failure = %q selections=%d", got, len(grown.semanticSurface.plan.Selections))
+	}
+	for _, tc := range []struct {
+		name  string
+		code  string
+		spent bool
+	}{
+		{name: "unknown", code: "selection_execution_unknown"},
+		{name: "stale", code: "dynamic_binding_stale", spent: true},
+		{name: "cancelled", code: "dynamic_execution_cancelled", spent: true},
+	} {
+		cb := settled()
+		if !tc.spent {
+			cb.semanticSurface.completed = nil
+		}
+		if got := cb.retireRejectedSemanticTool("browser", selectionID, tc.code, tc.code); len(cb.semanticSurface.plan.Selections) != 1 {
+			t.Fatalf("%s browser failure listed another call: %q selections=%d", tc.name, got, len(cb.semanticSurface.plan.Selections))
+		}
+	}
+}
+
 func TestVendorMCPRejectionListsTheNextCallBeforeRetire(t *testing.T) {
 	base := "need:~installed-mcp:x:mcp:tengyun:post_work_log_add"
 	selectionID := "selection:" + base

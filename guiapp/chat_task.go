@@ -1490,6 +1490,15 @@ func (h *IMMessageHandler) chatTaskDispatchGuidance(sessionKey string) string {
 	return b.String()
 }
 
+// desktopMessageHelperOwnsNote tells the chat loop that the send is not work
+// left for it. The helper was dispatched while the prompt was built.
+func desktopMessageHelperOwnsNote(loop *LoopContext) string {
+	if loop == nil || !loop.DesktopMessageHelperOwns {
+		return ""
+	}
+	return "\nThe desktop helper is already sending this one message. Do not install a skill, write a script, or send it again from this chat. When its result appears, tell the person that result in plain words.\n"
+}
+
 func chatTaskWorkerGuidance() string {
 	return chatTaskRunGuidance(false)
 }

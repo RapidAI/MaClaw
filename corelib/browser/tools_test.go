@@ -100,6 +100,23 @@ func TestMarshalActionResultUnchangedOmitsRefs(t *testing.T) {
 	}
 }
 
+func TestMarshalActionResultFrequencyHoldIsNotAFailure(t *testing.T) {
+	raw := marshalActionResult(nil, &BrowserActionResult{
+		Status:  "unchanged",
+		Display: frequencyRefusalStopText(true),
+	}, nil, ExpectSpec{})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != true {
+		t.Fatalf("a refusal was a failed call: %#v", payload)
+	}
+	if !strings.Contains(fmt.Sprint(payload["display"]), "把这一步停下来告诉用户") {
+		t.Fatalf("display = %#v", payload["display"])
+	}
+}
+
 func TestPolicyFromArgsParsesDomainLists(t *testing.T) {
 	policy := policyFromArgs(map[string]interface{}{
 		"allowed_domains":               []interface{}{"example.com", "sub.example.com"},
@@ -200,6 +217,9 @@ func TestStepOutcomeFailureGoalClassUnchanged(t *testing.T) {
 	}
 	if stepOutcomeFailure(stepOutcome{result: &BrowserActionResult{GoalClass: false, Status: "unchanged"}}) != nil {
 		t.Fatal("non-goal unchanged should not fail the task step")
+	}
+	if stepOutcomeFailure(stepOutcome{result: &BrowserActionResult{GoalClass: true, Status: "unchanged", Display: frequencyRefusalStopText(false)}}) != nil {
+		t.Fatal("a refused document was retried as a failed submit")
 	}
 }
 
@@ -1080,7 +1100,7 @@ func TestPruneDuplicatePagesNilClient(t *testing.T) {
 }
 
 func TestWaitForLoadOnNilClient(t *testing.T) {
-	if waitForLoadOn(nil, time.Second, 0) != "" {
+	if (*Session)(nil).waitForLoadOn(nil, time.Second, 0) != "" {
 		t.Fatal("nil client should not wait")
 	}
 }

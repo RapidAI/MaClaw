@@ -24,10 +24,10 @@ const browserPageFlagsCollectJS = `
     try {
       const r = el.getBoundingClientRect();
       if (r.width < minW || r.height < minH) return false;
-      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
       for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-        const st = view.getComputedStyle(n);
-        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity || 1) < 0.05) return false;
+        let st = null;
+        try { st = getComputedStyle(n); } catch (e) { return false; }
+        if (!st || st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity || 1) < 0.05) return false;
       }
       return true;
     } catch (e) { return false; }
@@ -81,8 +81,11 @@ const browserPageFlagsCollectJS = `
   const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower)) || (accountEntry && signInPage) || (loginURL && /sign in|log in|登录|create account|邮箱|email|手机号/.test(lower));
   let blockingNotice = '';
   try { blockingNotice = ` + blockingNoticeFnJS + `().join(' | '); } catch (e) {}
+  let frequencyNotice = '';
+  try { frequencyNotice = ` + frequencyNoticeFnJS + `().join(' | '); } catch (e) {}
   const pageFlags = {
     blocking_notice: blockingNotice,
+    frequency_notice: frequencyNotice,
     captcha_widget: captchaWidget,
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
     login_wall: !signedInChrome && typeableLogin,
@@ -268,7 +271,7 @@ func (s *BrowserAgentSession) peekPageFlags() (BrowserPageFlags, error) {
 	if s == nil || s.session == nil {
 		return BrowserPageFlags{}, fmt.Errorf("browser session not connected")
 	}
-	raw, err := s.session.Eval(browserPageFlagsScript)
+	raw, err := s.session.evalIsolated(browserPageFlagsScript, false, DefaultCmdTimeout)
 	if err != nil {
 		return BrowserPageFlags{}, err
 	}

@@ -87,20 +87,34 @@ func noteComputerUseOperatedWindow(id uint64) {
 }
 
 func noteComputerUseNamedWindow(title string) {
+	title = strings.TrimSpace(title)
 	var id uint64
-	if strings.TrimSpace(title) != "" {
+	if title != "" {
 		id = accessibility.NamedWindowID(title)
+		// A miss is not the foreground. Falling through put the rim on
+		// whatever window was in front, which is how a covering app took it.
+		if id == 0 {
+			return
+		}
 	}
 	if id == 0 {
-		id = accessibility.ForegroundWindowID()
+		id = cuForegroundID()
 	}
 	noteComputerUseOperatedWindow(id)
 }
 
 func noteComputerUsePointWindow(x, y int) {
-	id := accessibility.WindowIDAtPoint(x, y)
+	id, title := cuWindowAtPoint(x, y)
 	if id == 0 {
-		id = accessibility.ForegroundWindowID()
+		id = cuForegroundID()
+		if strings.TrimSpace(title) == "" {
+			title = cuForegroundTitle()
+		}
+	}
+	// A click that lands on a covering window is a miss, not a new app.
+	// Moving the halo there made the next raise treat that cover as chosen.
+	if !cuPointMatchesOperatedCrop(title) {
+		return
 	}
 	noteComputerUseOperatedWindow(id)
 }

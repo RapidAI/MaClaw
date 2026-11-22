@@ -22,11 +22,23 @@ var errViewportNewCaret = errors.New("viewport caret moved")
 // create a caret, and a later write never lands in the field. Each caller
 // sends it again because a navigation can drop the emulation. A failed
 // command is ignored and is not treated as done.
-func (s *Session) ensurePageFocusEmulation(client *CDPClient) {
-	if s == nil || client == nil {
+func emulatePageFocus(client *CDPClient, sessionID string) {
+	if client == nil {
 		return
 	}
-	_, _ = client.Send("Emulation.setFocusEmulationEnabled", map[string]interface{}{"enabled": true}, DefaultCmdTimeout)
+	params := map[string]interface{}{"enabled": true}
+	if sessionID == "" {
+		_, _ = client.Send("Emulation.setFocusEmulationEnabled", params, DefaultCmdTimeout)
+		return
+	}
+	_, _ = client.SendOn(sessionID, "Emulation.setFocusEmulationEnabled", params, DefaultCmdTimeout)
+}
+
+func (s *Session) ensurePageFocusEmulation(client *CDPClient) {
+	if s == nil {
+		return
+	}
+	emulatePageFocus(client, "")
 }
 
 // noteViewportCaretPoint records the CSS point of the press. It does not

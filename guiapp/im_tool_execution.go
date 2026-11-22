@@ -1109,6 +1109,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 
 	log.Printf("[tool-call] name=%q args_len=%d summary=%s", name, len(argsJSON), summarizeToolArgsForLog(name, args))
 
+	if msg := cuRefuseAfterDesktopMessageSent(name); msg != "" {
+		return toolExecutionResult{Text: msg, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if msg := parentDesktopSendToolRefusal(policyLoop, name); msg != "" {
+		return toolExecutionResult{Text: msg, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+
 	h.trackSteeringFileFromArgs(name, args)
 
 	if name == "screenshot" {

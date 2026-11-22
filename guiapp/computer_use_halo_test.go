@@ -184,6 +184,20 @@ func TestComputerUseHaloProjectStopsAtTheInterior(t *testing.T) {
 	}
 }
 
+func TestNamedWindowMissKeepsTheHalo(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	noteComputerUseOperatedWindow(42)
+	computerUseForegroundIDFn = func() uint64 { return 99 }
+	noteComputerUseNamedWindow("no-such-window-computer-use-zz")
+	if got := computerUseHaloTarget(); got != 42 {
+		t.Fatalf("missed name took the foreground halo=%d", got)
+	}
+	noteComputerUseNamedWindow("")
+	if got := computerUseHaloTarget(); got != 99 {
+		t.Fatalf("empty name should follow the foreground halo=%d", got)
+	}
+}
+
 func TestComputerUseHaloSkipsOwnProcess(t *testing.T) {
 	computerUseHaloMu.Lock()
 	prevFn := computerUseHaloOwnsWindow

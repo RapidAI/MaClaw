@@ -88,7 +88,7 @@ func (s *BrowserAgentSession) RequestTakeover(reason string) (string, error) {
 	}
 	err := s.handPageToUser(normalizeTakeoverReason(reason), "", "")
 	if err == nil || errors.Is(err, errUserReleased) {
-		return "用户已交还预览。先 probe 再继续。不要在对话里索要密码或验证码。", nil
+		return "用户已交还预览。浏览器会话还在，这一轮继续。先 probe，再继续。不要在对话里索要密码或验证码。", nil
 	}
 	return "", err
 }

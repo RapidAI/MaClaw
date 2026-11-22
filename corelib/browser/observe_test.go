@@ -41,8 +41,6 @@ func TestObserveScriptGeneratesMultipleCandidates(t *testing.T) {
 		"selector_candidates: candidates",
 		"queryAllDeep",
 		"shadowRoot",
-		"__maclawMut",
-		"child.defaultView.__maclawMut",
 		"input_type",
 		"queryIframes",
 		"ownerDocument",
@@ -61,6 +59,12 @@ func TestObserveScriptGeneratesMultipleCandidates(t *testing.T) {
 	}
 	if strings.Contains(browserObserveScript, "selector_candidates: [selector]") {
 		t.Fatal("observe script still emits a single selector candidate")
+	}
+	if strings.Contains(browserObserveScript, "__maclawMut") || strings.Contains(browserObserveScript, "MutationObserver") {
+		t.Fatal("observe script installs a counter on the page window")
+	}
+	if strings.Contains(browserObserveScript, "defaultView") {
+		t.Fatal("observe reads through the page window")
 	}
 	if !strings.Contains(browserObserveScript, "if (isUnique(legacy, doc)) pushRaw(legacy)") {
 		t.Fatal("observe script must not push non-unique legacy nth-of-type selectors")

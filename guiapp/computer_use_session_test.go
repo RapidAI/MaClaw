@@ -19,6 +19,14 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 		globalComputerUse.mu.Unlock()
 		computerUseCropLabelRead = nil
 		computerUsePolicyWindowHook = nil
+		computerUseNamedWindowFn = nil
+		computerUseForegroundTitleFn = nil
+		computerUseForegroundIDFn = nil
+		computerUseFocusWindowFn = nil
+		computerUseWindowAtPointFn = nil
+		computerUseRaisedNote = ""
+		computerUseExplicitFocusTitle = ""
+		hideComputerUseWindowHalo()
 		cuCancelLabelPrefetch()
 	})
 	globalComputerUse.mu.Lock()
@@ -31,6 +39,14 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 	globalComputerUse.mu.Unlock()
 	computerUseCropLabelRead = nil
 	computerUsePolicyWindowHook = nil
+	computerUseNamedWindowFn = nil
+	computerUseForegroundTitleFn = nil
+	computerUseForegroundIDFn = nil
+	computerUseFocusWindowFn = nil
+	computerUseWindowAtPointFn = nil
+	computerUseRaisedNote = ""
+	computerUseExplicitFocusTitle = ""
+	hideComputerUseWindowHalo()
 	cuCancelLabelPrefetch()
 }
 
