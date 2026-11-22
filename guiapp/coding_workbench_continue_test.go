@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -129,6 +130,47 @@ func TestAccumulateStickyCodingUsage(t *testing.T) {
 		t.Fatalf("line=%q", line)
 	}
 	h.clearStickyCodingWorkbenchMemory(userID)
+}
+
+func TestCodingWorkbenchStatusContextTokens(t *testing.T) {
+	// Configured coding model → max comes from the resolved config, and the
+	// used fill is the last request's prompt size.
+	h := &IMMessageHandler{standaloneConfig: &StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{Model: "coding-model", URL: "https://llm.example/v1", Key: "k", ContextLength: 256000}
+		},
+	}}
+	path := t.TempDir()
+	userID := projectSessionOwnerID(path)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.accumulateStickyCodingUsage(userID, 126000, 2000, 0)
+	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 126000 {
+		t.Fatalf("ContextUsedTokens=%d", st.ContextUsedTokens)
+	}
+	// EffectiveContextTokens reserves 20% headroom: 256000 * 0.8 = 204800.
+	if st.ContextMaxTokens != 204800 {
+		t.Fatalf("ContextMaxTokens=%d", st.ContextMaxTokens)
+	}
+}
+
+func TestCodingWorkbenchStatusContextTokensDegrade(t *testing.T) {
+	// No turn yet → session input total stands in for the fill level; no
+	// resolvable model → the cap is 0 rather than an invented number.
+	h := &IMMessageHandler{}
+	path := t.TempDir()
+	userID := projectSessionOwnerID(path)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.SessionInputTokens = 42000
+	})
+	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 42000 {
+		t.Fatalf("ContextUsedTokens=%d", st.ContextUsedTokens)
+	}
+	if st.ContextMaxTokens != 0 {
+		t.Fatalf("ContextMaxTokens=%d, want 0 when no model resolves", st.ContextMaxTokens)
+	}
 }
 
 func TestIsCodingWorkbenchSlashBgCost(t *testing.T) {

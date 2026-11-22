@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, cleanup, fireEvent, act } from "@testing-library/react";
-import { CodingAgentPlanChecklist, codingPlanProgressLabel } from "../CodingAgentPlanChecklist";
+import { CodingAgentPlanChecklist, codingContextUsageLabel, codingPlanProgressLabel, formatCodingContextTokens } from "../CodingAgentPlanChecklist";
 import { codingStepGlyph } from "../CodingWorkbenchControlPanel";
 
 const chrome = {
@@ -49,6 +49,62 @@ describe("codingPlanProgressLabel", () => {
             { index: 7, status: "failed" },
             { index: 8, status: "pending" },
         ])).toBe("6/8");
+    });
+});
+
+describe("context usage formatting", () => {
+    it("keeps raw counts under 1k and rounds to k above", () => {
+        expect(formatCodingContextTokens(0)).toBe("0");
+        expect(formatCodingContextTokens(999)).toBe("999");
+        expect(formatCodingContextTokens(126000)).toBe("126k");
+        expect(formatCodingContextTokens(256000)).toBe("256k");
+        expect(formatCodingContextTokens(120600)).toBe("121k");
+    });
+
+    it("builds 实际/最大 labels with missing-side degradation", () => {
+        expect(codingContextUsageLabel(126000, 256000)).toBe("126k/256k");
+        expect(codingContextUsageLabel(126000, 0)).toBe("126k");
+        expect(codingContextUsageLabel(0, 0)).toBeNull();
+        // A cap alone still renders so a first turn shows 0/max, never "0/0".
+        expect(codingContextUsageLabel(0, 204800)).toBe("0/205k");
+    });
+
+    it("renders the usage at the plan track and localizes the tooltip", () => {
+        const { getByTestId } = render(
+            <CodingAgentPlanChecklist
+                lang="zh-Hant"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "實作", status: "running" }]}
+                contextUsedTokens={126000}
+                contextMaxTokens={204800}
+            />,
+        );
+        const el = getByTestId("coding-agent-plan-context");
+        expect(el.textContent).toBe("126k/205k");
+        expect(el.getAttribute("title")).toBe("上下文 已用/視窗");
+    });
+
+    it("shows only the actual value when the cap is unknown, and hides when both are", () => {
+        const { getByTestId, queryByTestId, rerender } = render(
+            <CodingAgentPlanChecklist
+                lang="en"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "impl", status: "running" }]}
+                contextUsedTokens={42000}
+            />,
+        );
+        expect(getByTestId("coding-agent-plan-context").textContent).toBe("42k");
+        rerender(
+            <CodingAgentPlanChecklist
+                lang="en"
+                theme={theme}
+                chrome={chrome}
+                steps={[{ index: 1, title: "impl", status: "running" }]}
+            />,
+        );
+        expect(queryByTestId("coding-agent-plan-context")).toBeNull();
     });
 });
 

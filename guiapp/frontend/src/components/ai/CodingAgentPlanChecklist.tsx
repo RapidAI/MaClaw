@@ -48,10 +48,34 @@ export type CodingAgentPlanChecklistProps = {
      * copy so the chip is not rendered twice.
      */
     hideFileChanges?: boolean;
+    /**
+     * Context-window usage next to the progress track: `used` is the last
+     * request's input size (or the session input total before any turn), `max`
+     * is the resolved window cap. Both optional — old payloads omit them and
+     * `max` is 0 when the host cannot resolve a model cap.
+     */
+    contextUsedTokens?: number;
+    contextMaxTokens?: number;
     onApprove?: () => void;
     onSkip?: () => void;
     onReject?: () => void;
 };
+
+/** Token counts render compactly: raw under 1k, rounded k above. */
+export function formatCodingContextTokens(n: number): string {
+    const v = Math.max(0, Math.floor(Number(n) || 0));
+    if (v < 1000) return String(v);
+    return `${Math.round(v / 1000)}k`;
+}
+
+/** `实际/最大` for the plan track; null when there is nothing worth showing. */
+export function codingContextUsageLabel(used: number, max: number): string | null {
+    const u = Math.max(0, Math.floor(Number(used) || 0));
+    const m = Math.max(0, Math.floor(Number(max) || 0));
+    if (u <= 0 && m <= 0) return null;
+    if (m <= 0) return formatCodingContextTokens(u);
+    return `${formatCodingContextTokens(u)}/${formatCodingContextTokens(m)}`;
+}
 
 /** Done or skipped advances the counter; a failed step deliberately does not.
  *  `success`/`succeeded` count as finished alongside `passed`/`completed`. */
@@ -133,6 +157,8 @@ export function CodingAgentPlanChecklist({
     executionStatusLabel = "",
     onOpenFile,
     hideFileChanges = false,
+    contextUsedTokens = 0,
+    contextMaxTokens = 0,
     onApprove,
     onSkip,
     onReject,
@@ -233,6 +259,7 @@ export function CodingAgentPlanChecklist({
     const progressPct = steps.length > 0
         ? Math.round(Math.min(100, Math.max(0, (codingPlanDoneCount(steps) / steps.length) * 100)))
         : 0;
+    const contextLabel = codingContextUsageLabel(contextUsedTokens, contextMaxTokens);
 
     return (
         <section
@@ -303,6 +330,15 @@ export function CodingAgentPlanChecklist({
                                 <span className="capc-track" aria-hidden="true">
                                     <span className="capc-fill" style={{ width: `${progressPct}%`, background: chrome.accent }} />
                                 </span>
+                            </span>
+                        ) : null}
+                        {contextLabel ? (
+                            <span
+                                data-testid="coding-agent-plan-context"
+                                className="capc-context"
+                                title={localizeText(lang, "Context used / window", "上下文 已用/窗口", "上下文 已用/視窗")}
+                            >
+                                {contextLabel}
                             </span>
                         ) : null}
                     </span>

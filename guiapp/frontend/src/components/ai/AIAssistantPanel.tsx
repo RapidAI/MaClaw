@@ -308,6 +308,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean; blocked_by?: string[]; block_reason?: string; child_task_id?: string }>>([]);
     const [codingExecutionStatus, setCodingExecutionStatus] = useState("");
     const [codingSessionCost, setCodingSessionCost] = useState("");
+    const [codingContextUsedTokens, setCodingContextUsedTokens] = useState(0);
+    const [codingContextMaxTokens, setCodingContextMaxTokens] = useState(0);
     const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
     const [codingRouteInfo, setCodingRouteInfo] = useState("");
     const [codingConflictCount, setCodingConflictCount] = useState(0);
@@ -1036,6 +1038,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setCodingStepStatuses([]);
             setCodingExecutionStatus("");
             setCodingSessionCost("");
+            setCodingContextUsedTokens(0);
+            setCodingContextMaxTokens(0);
             setCodingWorktreeMode("auto");
             setCodingRouteInfo("");
             setCodingConflictCount(0);
@@ -1121,6 +1125,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 } else {
                     setCodingSessionCost("");
                 }
+                setCodingContextUsedTokens(Number(st.context_used_tokens) || 0);
+                setCodingContextMaxTokens(Number(st.context_max_tokens) || 0);
             }
             {
                 const wm = String(st.worktree_mode || "auto").toLowerCase();
@@ -1504,6 +1510,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     } else {
                         setCodingSessionCost("");
                     }
+                    setCodingContextUsedTokens(Number(st.context_used_tokens) || 0);
+                    setCodingContextMaxTokens(Number(st.context_max_tokens) || 0);
                 }
                 {
                     const model = String(st.route_model || "").trim();
@@ -7995,6 +8003,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         executionStatusLabel={taskExecutionStatus.label}
                         onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined}
                         hideFileChanges={goalQuickBarVisible}
+                        contextUsedTokens={codingContextUsedTokens}
+                        contextMaxTokens={codingContextMaxTokens}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}

@@ -9346,6 +9346,8 @@ export namespace main {
 	    last_turn_input_tokens?: number;
 	    last_turn_output_tokens?: number;
 	    last_turn_est_cost_rmb?: number;
+	    context_used_tokens?: number;
+	    context_max_tokens?: number;
 	    background_verify?: string;
 	    worktree_mode?: string;
 	    worktree_notes?: string[];
@@ -9408,6 +9410,8 @@ export namespace main {
 	        this.last_turn_input_tokens = source["last_turn_input_tokens"];
 	        this.last_turn_output_tokens = source["last_turn_output_tokens"];
 	        this.last_turn_est_cost_rmb = source["last_turn_est_cost_rmb"];
+	        this.context_used_tokens = source["context_used_tokens"];
+	        this.context_max_tokens = source["context_max_tokens"];
 	        this.background_verify = source["background_verify"];
 	        this.worktree_mode = source["worktree_mode"];
 	        this.worktree_notes = source["worktree_notes"];

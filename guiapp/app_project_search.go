@@ -3115,6 +3115,13 @@ type CodingWorkbenchStatus struct {
 	LastTurnInputTokens  int     `json:"last_turn_input_tokens,omitempty"`
 	LastTurnOutputTokens int     `json:"last_turn_output_tokens,omitempty"`
 	LastTurnEstCostRMB   float64 `json:"last_turn_est_cost_rmb,omitempty"`
+	// ContextUsedTokens is the live context-window fill: the last request's
+	// input size, or the session input total when no turn has run yet.
+	ContextUsedTokens int `json:"context_used_tokens,omitempty"`
+	// ContextMaxTokens is the resolved context-window cap for the session's
+	// effective coding model (route/task context_length first, then the
+	// provider model's effective window). 0 means unknown.
+	ContextMaxTokens int `json:"context_max_tokens,omitempty"`
 	// BackgroundVerify holds last async /bg test result summary.
 	BackgroundVerify string `json:"background_verify,omitempty"`
 	// WorktreeMode: auto | always | off
@@ -3241,6 +3248,13 @@ func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMe
 	st.LastTurnInputTokens = mem.LastTurnInputTokens
 	st.LastTurnOutputTokens = mem.LastTurnOutputTokens
 	st.LastTurnEstCostRMB = mem.LastTurnEstCostRMB
+	// Context usage: the last request's prompt size is the real fill level;
+	// before any turn ran the session input total is the best stand-in.
+	st.ContextUsedTokens = mem.LastTurnInputTokens
+	if st.ContextUsedTokens <= 0 {
+		st.ContextUsedTokens = mem.SessionInputTokens
+	}
+	st.ContextMaxTokens = handler.codingContextWindowTokens(userID)
 	st.BackgroundVerify = strings.TrimSpace(mem.BackgroundVerifySummary)
 	st.WorktreeMode = normalizeCodingWorktreeMode(mem.WorktreeMode)
 	if len(mem.WorktreeNotes) > 0 {

@@ -98,6 +98,36 @@ func (h *IMMessageHandler) applyCodingUsageToResponse(userID string, resp *IMAge
 	}
 }
 
+// codingContextWindowTokens resolves the context-window cap for a session's
+// effective coding model. A task pin or route pref can override the coding
+// assignment's context_length, so the turn's own resolution order is kept:
+// mcp live round → task pin → coding assignment → route pref. The pin read is
+// skipped while the memory store is still cold — a status poll must not
+// initialize it (same rule remoteCodingMetaFromTaskTags follows). 0 means no
+// model could be resolved — the UI must not invent a cap.
+func (h *IMMessageHandler) codingContextWindowTokens(userID string) int {
+	if h == nil {
+		return 0
+	}
+	cfg := h.getCodingLLMConfig()
+	if h.app != nil && (h.standaloneConfig == nil || h.standaloneConfig.LLMConfigFunc == nil) {
+		if caller, ok := h.app.mcpLoopModelConfig(userID); ok && strings.TrimSpace(caller.Model) != "" {
+			caller.Profile = maclawLLMProfileCoding
+			caller.RouteSource = mcpCallerModelRoute
+			cfg = caller
+		} else if h.app.memoryStore != nil {
+			if pinned, ok := h.app.taskBoundLLMConfig(projectPathFromSessionOwnerID(userID), maclawLLMProfileCoding); ok {
+				cfg = pinned
+			}
+		}
+	}
+	cfg = h.applyCodingRoutePreference(userID, cfg, false)
+	if strings.TrimSpace(cfg.Model) == "" {
+		return 0
+	}
+	return cfg.EffectiveContextTokens()
+}
+
 func formatCodingSessionCostLine(mem stickyCodingWorkbenchMemory) string {
 	if mem.SessionInputTokens == 0 && mem.SessionOutputTokens == 0 && mem.SessionEstCostRMB == 0 {
 		return ""
