@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS app_install_meta (
 func (a *App) closeMaclawAppInstallDB() {
 	maclawAppInstallDBMu.Lock()
 	defer maclawAppInstallDBMu.Unlock()
+	a.closeMaclawAppInstallDBLocked()
+}
+
+// closeMaclawAppInstallDBLocked assumes the caller already holds
+// maclawAppInstallDBMu.
+func (a *App) closeMaclawAppInstallDBLocked() {
 	if a == nil || a.maclawAppInstallDB == nil {
 		return
 	}

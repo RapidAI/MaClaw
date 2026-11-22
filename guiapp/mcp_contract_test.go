@@ -2021,7 +2021,10 @@ func TestInboundMCPSendCommandModelIsWhatTheLoopRuns(t *testing.T) {
 		}
 		return corelib.MaclawLLMConfig{ProviderName: provider, Model: model}, true
 	}
-	app := &App{}
+	// Isolate this test's config so LoadConfig never touches the real
+	// ~/.maclaw/config.json (root cause of global state leaking across tests).
+	testHome, _ := os.MkdirTemp("", "maclaw-mcp-sendcmd-*")
+	app := &App{testHomeDir: testHome}
 	app.mcpRememberPin("p", "OldPin", "old-pin-model")
 	app.mcpStoreRun(&mcpRunRecord{
 		ProjectPath: "p", Status: mcpStatusRunning, RunID: "run-next",

@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS app_approval_meta (
 func (a *App) closeMaclawAppApprovalDB() {
 	maclawAppApprovalDBMu.Lock()
 	defer maclawAppApprovalDBMu.Unlock()
+	a.closeMaclawAppApprovalDBLocked()
+}
+
+// closeMaclawAppApprovalDBLocked assumes the caller already holds
+// maclawAppApprovalDBMu. Used from resetPathBoundStateForDataDirChange which
+// takes the lock before calling the close helpers.
+func (a *App) closeMaclawAppApprovalDBLocked() {
 	if a == nil || a.maclawAppApprovalDB == nil {
 		return
 	}
