@@ -114,9 +114,48 @@ func setCursor(x, y int) error {
 	x, y = clampXY(x, y)
 	r, _, err := procSetCursorPos.Call(uintptr(x), uintptr(y))
 	if r == 0 {
-		return fmt.Errorf("SetCursorPos: %v", err)
+		return inputOSError("SetCursorPos", 0, 1, err)
 	}
 	return nil
+}
+
+// desktopInputDenied reports a cursor or input call the desktop rejected
+// outright. A zero return with last error 0 is the "completed successfully"
+// failure. ERROR_ACCESS_DENIED is privilege isolation. A delivered event,
+// and a rejected coordinate (ERROR_INVALID_PARAMETER), are not this.
+func desktopInputDenied(sent uintptr, err error) bool {
+	if sent != 0 {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	errno, ok := err.(syscall.Errno)
+	if !ok {
+		return false
+	}
+	return errno == 0 || errno == syscall.ERROR_ACCESS_DENIED
+}
+
+func inputOSError(op string, sent, want int, err error) error {
+	denied := desktopInputDenied(uintptr(sent), err)
+	switch op {
+	case "SetCursorPos":
+		if denied {
+			return fmt.Errorf("SetCursorPos: %v: %w", err, ErrInputDenied)
+		}
+		return fmt.Errorf("SetCursorPos: %v", err)
+	case "SendInput mouse":
+		if denied {
+			return fmt.Errorf("SendInput mouse: %v: %w", err, ErrInputDenied)
+		}
+		return fmt.Errorf("SendInput mouse: %v", err)
+	default:
+		if denied {
+			return fmt.Errorf("SendInput: sent %d/%d: %v: %w", sent, want, err, ErrInputDenied)
+		}
+		return fmt.Errorf("SendInput: sent %d/%d: %v", sent, want, err)
+	}
 }
 
 func sendMouse(flags uint32, data int32) error {
@@ -129,7 +168,7 @@ func sendMouse(flags uint32, data int32) error {
 	}
 	n, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
 	if int(n) != 1 {
-		return fmt.Errorf("SendInput mouse: %v", err)
+		return inputOSError("SendInput mouse", int(n), 1, err)
 	}
 	return nil
 }
@@ -178,7 +217,7 @@ func sendInputs(inputs []winInput) error {
 		uintptr(unsafe.Sizeof(inputs[0])),
 	)
 	if int(n) != len(inputs) {
-		return fmt.Errorf("SendInput: sent %d/%d: %v", n, len(inputs), err)
+		return inputOSError("SendInput", int(n), len(inputs), err)
 	}
 	return nil
 }

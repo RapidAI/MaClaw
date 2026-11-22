@@ -82,9 +82,13 @@ func captureComputerUseScreen(screenIdx int, windowHint string, cropFocused bool
 		// rectangle. A background window's rectangle belongs to the app
 		// covering it, and labeling those pixels with this title makes the
 		// next click land on the wrong window.
+		title := strings.TrimSpace(crop.Title)
 		fg := strings.TrimSpace(cuForegroundTitle())
-		if fg != "" && strings.TrimSpace(crop.Title) != "" && !computeruse.WindowTitlesMatch(crop.Title, fg) {
-			return computerUseCapture{}, fmt.Errorf("window %q is not in the foreground (now %q)", crop.Title, fg)
+		if title != "" && !computeruse.CropIsForeground(title, fg) {
+			if fg == "" {
+				return computerUseCapture{}, fmt.Errorf("window %q is not in the foreground", title)
+			}
+			return computerUseCapture{}, fmt.Errorf("window %q is not in the foreground (now %q)", title, fg)
 		}
 	}
 	if cropOK && runtime.GOOS == "windows" {
@@ -324,7 +328,7 @@ func cuSameWindow(sess *computeruse.Session, clearNote bool) string {
 		computerUseRaisedNote = ""
 	}
 	fg := cuForegroundTitle()
-	if computeruse.WindowTitlesMatch(last.Meta.CropTitle, fg) {
+	if computeruse.CropIsForeground(last.Meta.CropTitle, fg) {
 		return ""
 	}
 	// The app being driven is still the crop. Bring it forward and continue

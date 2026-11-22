@@ -2,7 +2,31 @@
 
 package accessibility
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
+
+func TestGUIThreadInfoMatchesWindowsLayout(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) == 8 && unsafe.Sizeof(winGUIThreadInfo{}) != 72 {
+		t.Fatalf("GUITHREADINFO size = %d", unsafe.Sizeof(winGUIThreadInfo{}))
+	}
+}
+
+func TestWindowTextEmptyHandle(t *testing.T) {
+	if windowText(0) != "" {
+		t.Fatal("a missing window has no caption")
+	}
+}
+
+func TestConsoleHostClassIsNotAnApplicationFrame(t *testing.T) {
+	if !consoleHostClass("ConsoleWindowClass") || !consoleHostClass("PseudoConsoleWindow") {
+		t.Fatal("a command prompt is not an application frame")
+	}
+	if consoleHostClass("Chrome_WidgetWin_0") || consoleHostClass("CASCADIA_HOSTING_WINDOW_CLASS") {
+		t.Fatal("an application window and a terminal the person is using stay frames")
+	}
+}
 
 func TestAppFrameEligibleSkipsToolAndCloakedWindows(t *testing.T) {
 	if !appFrameEligible("微信", 0, false) {

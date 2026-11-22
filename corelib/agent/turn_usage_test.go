@@ -22,6 +22,9 @@ func TestTurnUsageAdd(t *testing.T) {
 	if u.InputTokens != 15 || u.OutputTokens != 2 || u.CachedTokens != 3 || u.Requests != 2 {
 		t.Fatalf("usage=%+v", u)
 	}
+	if u.LastPromptTokens != 5 {
+		t.Fatalf("last prompt=%d, want the latest request", u.LastPromptTokens)
+	}
 	if u.TotalTokens() != 17 {
 		t.Fatalf("total=%d", u.TotalTokens())
 	}
@@ -39,7 +42,7 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	if u.Model != "m1" || u.Provider != "p1" {
 		t.Fatalf("labels=%+v", u)
 	}
-	if u.InputTokens != 1000 || u.OutputTokens != 200 || u.CachedTokens != 50 || u.Requests != 1 {
+	if u.InputTokens != 1000 || u.OutputTokens != 200 || u.CachedTokens != 50 || u.Requests != 1 || u.LastPromptTokens != 1000 {
 		t.Fatalf("tokens=%+v", u)
 	}
 	if u.EstCostRMB <= 0 {
@@ -61,6 +64,22 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	plain := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{PromptTokens: 1})
 	if plain.CreditsReported {
 		t.Fatal("missing debit must stay unreported")
+	}
+}
+
+func TestTurnUsageAddKeepsLastPromptSeparateFromSum(t *testing.T) {
+	var u TurnUsage
+	u.Add(TurnUsage{InputTokens: 30213603, Requests: 1250, LastPromptTokens: 24000})
+	u.Add(TurnUsage{InputTokens: 100, Requests: 4})
+	if u.InputTokens != 30213703 {
+		t.Fatalf("sum=%d", u.InputTokens)
+	}
+	if u.LastPromptTokens != 24000 {
+		t.Fatalf("last=%d, a multi-request sum must not become the prompt size", u.LastPromptTokens)
+	}
+	u.Add(TurnUsage{InputTokens: 18000, Requests: 1})
+	if u.LastPromptTokens != 18000 || u.InputTokens != 30231703 {
+		t.Fatalf("usage=%+v", u)
 	}
 }
 

@@ -58,6 +58,52 @@ func TestSession_MaxSteps(t *testing.T) {
 	if err := s.BeginAction("c", ""); err == nil {
 		t.Fatal("expected max steps error")
 	}
+	before := s.Policy().StepCount()
+	max, exhausted := s.StepsExhausted()
+	if !exhausted || max != 2 || s.Policy().StepCount() != before {
+		t.Fatalf("exhausted=%v max=%d steps=%d before=%d", exhausted, max, s.Policy().StepCount(), before)
+	}
+	s.NoteInputDenied()
+	if !s.InputDenied() {
+		t.Fatal("input denial did not latch")
+	}
+	s.ResetControl()
+	if s.InputDenied() {
+		t.Fatal("reset kept the input denial")
+	}
+	if _, exhausted := s.StepsExhausted(); !exhausted {
+		t.Fatal("reset cleared the step budget")
+	}
+	s.NoteInputDenied()
+	s.ClearInputDenied()
+	if s.InputDenied() {
+		t.Fatal("clear kept the input denial")
+	}
+	if _, exhausted := s.StepsExhausted(); !exhausted {
+		t.Fatal("clearing the denial reset the step budget")
+	}
+	s.Pause()
+	s.NoteInputDenied()
+	s.ResetSteps()
+	if !s.InputDenied() {
+		t.Fatal("reset steps cleared the input denial")
+	}
+	paused, stopped := s.ControlState()
+	if !paused || stopped {
+		t.Fatalf("reset steps changed pause=%v stopped=%v", paused, stopped)
+	}
+	if s.Policy().StepCount() != 0 {
+		t.Fatalf("steps=%d", s.Policy().StepCount())
+	}
+	if _, exhausted := s.StepsExhausted(); exhausted {
+		t.Fatal("reset steps left the budget spent")
+	}
+	if err := s.BeginAction("after-reset", ""); err == nil {
+		t.Fatal("a paused session accepted a step after the counter reset")
+	}
+	if s.Policy().StepCount() != 0 {
+		t.Fatal("a refused step incremented the counter")
+	}
 }
 
 func TestPolicy_BlockedWindow(t *testing.T) {

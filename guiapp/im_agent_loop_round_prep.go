@@ -86,6 +86,16 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 			return result
 		}
 	}
+	// A successful computer_done already wrote the report. Finish rounds are
+	// for calling that tool, not for another desktop action after it.
+	if computerUseStopKindFor(ctx, opts.UserID) == computerUseStopDone {
+		if ctx != nil {
+			computerUseTerminalCeiling(ctx, opts.UserID, opts.Iteration, 0)
+			ctx.dropRaisedIterationCeiling()
+		}
+		result.Stop = true
+		return result
+	}
 	effectiveMax := h.refreshAgentLoopEffectiveMax(ctx, opts.Iteration, opts.EffectiveMax, opts.MinIterations, opts.DriftDetector, opts.SendProgress)
 	result.EffectiveMax = effectiveMax
 	// A background loop used to wait here for a person to grant more rounds,
@@ -105,6 +115,31 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	}
 	effectiveMax = h.applyAgentLoopBoundaryExtensions(ctx, opts.UserID, opts.Iteration, effectiveMax)
 	result.EffectiveMax = effectiveMax
+	// stopAt is the first iteration that must not start. The grace rounds
+	// before it are the only ones left for computer_done. The stored max
+	// stays at least 1 so a later refresh does not treat 0 as unlimited;
+	// the stop below uses stopAt itself, because folding that floor back
+	// through the grace check would start one more round.
+	terminalStopAt := 0
+	if stopAt, terminal := computerUseTerminalCeiling(ctx, opts.UserID, opts.Iteration, computerUseFinishRoundsForGrace(opts.ChatFinalizeGrace)); terminal {
+		terminalStopAt = stopAt
+		// An earlier auto-extend mark names the same stored limit and would
+		// end the next round before those grace rounds run.
+		if ctx != nil {
+			ctx.dropRaisedIterationCeiling()
+		}
+		capped := stopAt - opts.ChatFinalizeGrace
+		if capped < 1 {
+			capped = 1
+		}
+		if effectiveMax > capped {
+			effectiveMax = capped
+			if ctx != nil {
+				ctx.SetMaxIterations(effectiveMax)
+			}
+			result.EffectiveMax = effectiveMax
+		}
+	}
 	// Refill when the configured ceiling is reached, before the chat grace
 	// rounds. Those rounds tell the model to finish, so waiting for them
 	// ends the task while this same loop still has iterations to add.
@@ -112,17 +147,32 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	// a signal to spend another wave catching up.
 	if opts.Iteration >= effectiveMax {
 		codingOpen := h.codingTaskStillOpen(ctx, opts.UserID)
-		if n, ok := ctx.turnIterationCeiling(); ok && opts.Iteration > n && !codingOpen {
+		terminalAttempt := computerUseAttemptBlocksContinuation(ctx, opts.UserID)
+		if n, ok := ctx.turnIterationCeiling(); ok && opts.Iteration > n && !codingOpen && !terminalAttempt {
 			result.Stop = true
 			return result
 		}
 		// The counter is already past a lowered ceiling. One refill brings a
 		// coding task back ahead of the counter. Stepping by a small wave
-		// would spend a model call for every gap.
-		if codingOpen && opts.Iteration > effectiveMax {
+		// would spend a model call for every gap. A computer-use attempt that
+		// can no longer inject does not take that lift: raising the ceiling
+		// to the current iteration keeps the grace check from ever firing.
+		if !terminalAttempt && codingOpen && opts.Iteration > effectiveMax {
 			effectiveMax = opts.Iteration
 		}
-		if extra := sameLoopIterationRefill(ctx, opts.ToolCalls, opts.ConfigMax, codingOpen); extra > 0 {
+		if terminalAttempt {
+			// stopAt is the end of the finish rounds. Adding the grace on
+			// top of a max that was floored to 1 starts one more round when
+			// the attempt was already terminal at iteration 0.
+			reached := terminalStopAt > 0 && opts.Iteration >= terminalStopAt
+			if !reached && terminalStopAt <= 0 && shouldStopForAgentLoopIterationLimit(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace) {
+				reached = true
+			}
+			if reached {
+				result.Stop = true
+				return result
+			}
+		} else if extra := sameLoopIterationRefill(ctx, opts.ToolCalls, opts.ConfigMax, codingOpen); extra > 0 {
 			effectiveMax += extra
 			if ctx != nil {
 				ctx.SetMaxIterations(effectiveMax)
@@ -475,6 +525,16 @@ func shouldForceLightFinalizeWithoutTools(ctx *LoopContext, iteration int, effec
 		return false
 	}
 	return effectiveMax > 0 && iteration >= effectiveMax
+}
+
+// computerUseFinishRoundsForGrace is the model rounds left when the legacy
+// loop adds ChatFinalizeGrace on top of the ceiling. A grace of zero still
+// keeps the round that can call computer_done.
+func computerUseFinishRoundsForGrace(grace int) int {
+	if grace < 1 {
+		return 1
+	}
+	return grace
 }
 
 func extendEffectiveMaxForPendingGuideReference(iteration, effectiveMax int, hasPendingGuideReference bool) int {

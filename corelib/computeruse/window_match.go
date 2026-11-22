@@ -153,6 +153,45 @@ func sortLongestFirst(names []string) {
 	}
 }
 
+// ExecutablePathTitle reports whether title is only a path to an executable.
+// A console opened by start with a quoted program path uses that path as its
+// window title and then sits at a prompt. It is not the application window.
+func ExecutablePathTitle(title string) bool {
+	t := strings.TrimSpace(title)
+	if len(t) >= 2 && t[0] == '"' && t[len(t)-1] == '"' {
+		t = strings.TrimSpace(t[1 : len(t)-1])
+	}
+	if len(t) < 7 || !strings.HasSuffix(strings.ToLower(t), ".exe") {
+		return false
+	}
+	if strings.HasPrefix(t, `\\`) || strings.HasPrefix(t, `//`) {
+		return true
+	}
+	return len(t) >= 3 && t[1] == ':' && (t[2] == '\\' || t[2] == '/') &&
+		((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= 'a' && t[0] <= 'z'))
+}
+
+// WithoutExecutablePathTitles drops console windows whose title is only an
+// executable path, so the model does not focus them.
+func WithoutExecutablePathTitles(titles []string) []string {
+	drop := 0
+	for _, title := range titles {
+		if ExecutablePathTitle(title) {
+			drop++
+		}
+	}
+	if drop == 0 {
+		return titles
+	}
+	kept := make([]string, 0, len(titles)-drop)
+	for _, title := range titles {
+		if !ExecutablePathTitle(title) {
+			kept = append(kept, title)
+		}
+	}
+	return kept
+}
+
 // NormalizeWindowTitle folds case, strips a dirty leading star and zero-width
 // characters, and collapses whitespace so "*Untitled - Notepad" matches
 // "untitled - notepad".
@@ -321,6 +360,20 @@ func WindowTitlesMatch(a, b string) bool {
 	return false
 }
 
+// CropIsForeground reports whether a live caption is the operated crop.
+// An empty foreground caption is not the crop: GetWindowText is blank on a
+// higher-integrity window, and a missing foreground window has no caption.
+// WindowTitlesMatch still treats empty as unknown for callers that have no
+// crop to compare.
+func CropIsForeground(crop, foreground string) bool {
+	crop = strings.TrimSpace(crop)
+	foreground = strings.TrimSpace(foreground)
+	if crop == "" || foreground == "" {
+		return false
+	}
+	return WindowTitlesMatch(crop, foreground)
+}
+
 // sameControlWindow reports whether two titles are the same top-level window,
 // not merely the same application. It is the fallback when a stable window
 // id is missing. Empty values stay unknown and match. "记事本" still matches
@@ -423,7 +476,7 @@ func bestVisibleFrame(hint string, frames []AppFrame, visible bool) int {
 	bestScore := 0
 	best := -1
 	for i, frame := range frames {
-		if frame.Visible != visible {
+		if frame.Visible != visible || ExecutablePathTitle(frame.Title) {
 			continue
 		}
 		score := ScoreWindowHint(hint, frame.Title)

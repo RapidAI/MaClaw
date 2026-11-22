@@ -57,12 +57,14 @@ const computerUseLocalAttachmentMarker = "\n[附件: 当前轮已收到，待本
 
 // clearComputerUseStickyLocked clears sticky flags. Caller must hold globalComputerUse.mu.
 func clearComputerUseStickyLocked() (changed bool) {
-	if !globalComputerUse.activated && globalComputerUse.activatedAt.IsZero() {
+	changed = globalComputerUse.activated || !globalComputerUse.activatedAt.IsZero()
+	if !changed && globalComputerUse.activatedOwner == "" {
 		return false
 	}
 	globalComputerUse.activated = false
 	globalComputerUse.activatedAt = time.Time{}
-	return true
+	globalComputerUse.activatedOwner = ""
+	return changed
 }
 
 func notifyComputerUseTrayIf(changed bool) {
@@ -71,35 +73,62 @@ func notifyComputerUseTrayIf(changed bool) {
 	}
 }
 
+// computerUseStickyDropGap runs after the sticky flag is cleared and before
+// the frame drop re-checks frameEpoch. Production leaves it nil. A test
+// publishes a newer session in that gap.
+var computerUseStickyDropGap func()
+
 // computerUseStickyState returns whether sticky is still valid (hard TTL) and its age.
-// Lazy expiry refreshes the tray when the hard TTL elapses.
+// Lazy expiry takes down the operated-window rim with the flag. The rim is the
+// session: a flag-only clear left the frame up after the bar had already gone
+// idle. The drop is valid only for the mark that expired. A newer mark that
+// lands after the flag is cleared keeps its rim, and this call reports that
+// session. An already inactive session does not hide.
 func computerUseStickyState() (active bool, age time.Duration) {
 	globalComputerUse.mu.Lock()
 	if !globalComputerUse.activated {
 		globalComputerUse.mu.Unlock()
 		return false, 0
 	}
-	if globalComputerUse.activatedAt.IsZero() {
-		changed := clearComputerUseStickyLocked()
+	expired := globalComputerUse.activatedAt.IsZero()
+	if !expired {
+		age = time.Since(globalComputerUse.activatedAt)
+		// Clock skew / time adjustment — treat as expired rather than sticky forever.
+		expired = age < 0 || age > computerUseStickyTTL
+	}
+	if !expired {
 		globalComputerUse.mu.Unlock()
-		notifyComputerUseTrayIf(changed)
+		return true, age
+	}
+	epoch := globalComputerUse.frameEpoch
+	changed := clearComputerUseStickyLocked()
+	globalComputerUse.mu.Unlock()
+	if !changed {
+		return false, 0
+	}
+	if computerUseStickyDropGap != nil {
+		computerUseStickyDropGap()
+	}
+	if !dropComputerUseOperatedFrameIfEpoch(epoch) {
+		notifyComputerUseTrayIf(true)
+		return computerUseStickySnapshot()
+	}
+	notifyComputerUseTrayIf(true)
+	return false, 0
+}
+
+// computerUseStickySnapshot reports the session without expiring it.
+// computerUseStickyState uses it after a newer mark wins the drop gap.
+func computerUseStickySnapshot() (active bool, age time.Duration) {
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	if !globalComputerUse.activated || globalComputerUse.activatedAt.IsZero() {
 		return false, 0
 	}
 	age = time.Since(globalComputerUse.activatedAt)
-	if age < 0 {
-		// Clock skew / time adjustment — treat as expired rather than sticky forever.
-		changed := clearComputerUseStickyLocked()
-		globalComputerUse.mu.Unlock()
-		notifyComputerUseTrayIf(changed)
+	if age < 0 || age > computerUseStickyTTL {
 		return false, 0
 	}
-	if age > computerUseStickyTTL {
-		changed := clearComputerUseStickyLocked()
-		globalComputerUse.mu.Unlock()
-		notifyComputerUseTrayIf(changed)
-		return false, 0
-	}
-	globalComputerUse.mu.Unlock()
 	return true, age
 }
 
@@ -114,22 +143,60 @@ func markComputerUseSessionActive() {
 	was := globalComputerUse.activated
 	globalComputerUse.activated = true
 	globalComputerUse.activatedAt = time.Now()
+	// activeOwner is published by setComputerUseOwner before the tool runs.
+	// computerUseOwnerKey does not take the lock; this hold is the read.
+	globalComputerUse.activatedOwner = computerUseOwnerKey()
+	globalComputerUse.frameEpoch++
 	globalComputerUse.mu.Unlock()
 	// Tray only needs a refresh when entering Active from inactive.
 	notifyComputerUseTrayIf(!was)
 	cuKeepPerceptionWarm()
 }
 
+// dropComputerUseOperatedFrame removes the rim. Stop, reset, and computer_done
+// use it even when the flag is already clear: a later action in that same
+// attempt can redraw the frame after the flag is down. A finished loop must
+// not use this once another owner holds the session.
+func dropComputerUseOperatedFrame() {
+	hideComputerUseWindowHalo()
+	clearComputerUseExplicitFocus()
+	resetComputerUseExperienceTrace()
+}
+
+// dropComputerUseOperatedFrameIfEpoch hides the rim only when epoch is still
+// the mark that was cleared. Hide runs before the lock is released, so a mark
+// blocked on that lock publishes its rim afterwards. Returns false when a
+// newer mark already owns the session.
+func dropComputerUseOperatedFrameIfEpoch(epoch uint64) bool {
+	globalComputerUse.mu.Lock()
+	if globalComputerUse.frameEpoch != epoch || globalComputerUse.activated {
+		globalComputerUse.mu.Unlock()
+		return false
+	}
+	hideComputerUseWindowHalo()
+	clearComputerUseExplicitFocus()
+	resetComputerUseExperienceTrace()
+	globalComputerUse.mu.Unlock()
+	return true
+}
+
+func computerUseClearedEpochCurrent(epoch uint64) bool {
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	return globalComputerUse.frameEpoch == epoch && !globalComputerUse.activated
+}
+
 // clearComputerUseSessionActive ends sticky CU injection (done / stop / reset /
-// non-CU turn / TTL). Safe to call when already inactive.
+// a non-CU turn). Safe to call when already inactive. The rim still comes
+// down: a later action in that same attempt can redraw it after the flag is
+// already clear. The driving loop does not use this. Another owner may be
+// holding the session by the time that loop returns.
 func clearComputerUseSessionActive() {
 	globalComputerUse.mu.Lock()
 	changed := clearComputerUseStickyLocked()
 	globalComputerUse.mu.Unlock()
 	notifyComputerUseTrayIf(changed)
-	hideComputerUseWindowHalo()
-	clearComputerUseExplicitFocus()
-	resetComputerUseExperienceTrace()
+	dropComputerUseOperatedFrame()
 }
 
 // computerUseActivationInput is the pure input to the CU gate (testable without UIC).

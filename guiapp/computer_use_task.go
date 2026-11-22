@@ -31,6 +31,12 @@ type computerUseTaskState struct {
 	MessageTyped     bool
 	MessageSubmitted bool
 	typedCompact     string
+	// DoneAccepted is set only when computer_done succeeds. The attempt is
+	// finished: later tools are refused and the loop does not start another
+	// model round. A rejected done leaves it false so observe and a retry
+	// still run. The next beginComputerUseTask replaces this state.
+	DoneAccepted bool
+	DoneSummary  string
 }
 
 func normalizeComputerUseAcceptance(items []string) []string {
@@ -61,12 +67,200 @@ func isGenericComputerUseChrome(s string) bool {
 	}
 }
 
+// computerUseFinishRounds is how many model rounds may still start after
+// this loop first sees that the computer-use attempt can no longer inject.
+// Those rounds are the call to computer_done. A chat loop matches the
+// finalize grace of two. Any other loop keeps one round.
+func computerUseFinishRounds(loopCtx *LoopContext) int {
+	if loopCtx != nil && loopCtx.Kind == LoopKindChat {
+		return 2
+	}
+	return 1
+}
+
+// computerUseStopKind is why this driving loop must not take another wave.
+// Inject still has finish rounds so the model can call computer_done.
+// Done means that call already succeeded, so the next iteration must not start.
+type computerUseStopKind int
+
+const (
+	computerUseStopNone computerUseStopKind = iota
+	computerUseStopInject
+	computerUseStopDone
+)
+
+// computerUseAttemptBlocksContinuation reports that this loop is driving
+// Computer Use and the attempt can no longer continue. A sent message is
+// not that state: the model still has to call computer_done. A successful
+// computer_done is. A loop that is not driving the desktop does not consult
+// the session.
+func computerUseAttemptBlocksContinuation(loopCtx *LoopContext, fallbackUserID string) bool {
+	return computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopNone
+}
+
+func computerUseStopKindFor(loopCtx *LoopContext, fallbackUserID string) computerUseStopKind {
+	if loopCtx == nil || (!loopCtx.ComputerUseActive && !loopCtx.ComputerHelper) {
+		return computerUseStopNone
+	}
+	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
+	if computerUseTaskCompleted(owner) {
+		return computerUseStopDone
+	}
+	if terminal, _ := cuAttemptTerminal(cuSessionForOwner(owner)); terminal {
+		return computerUseStopInject
+	}
+	return computerUseStopNone
+}
+
+func computerUseTaskCompleted(owner string) bool {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = computerUseDefaultOwner
+	}
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	st := globalComputerUse.taskStates[owner]
+	return st != nil && st.DoneAccepted
+}
+
+// retireFinishedComputerUseAttempt runs when the driving loop returns.
+// computer_done already hides the rim. A later action in that same loop
+// draws it again and marks the session active, and the loop used to end
+// on the completion report without another clear. The report is the end
+// of that attempt, so the rim and the activity bar come down with it only
+// while this loop's owner still holds the sticky session. Another owner
+// who marked it after computer_done keeps the rim, and done is not emitted
+// for them. An already inactive session is left alone: clearing it would
+// hide a rim drawn after the flag was already down. A rejected done does
+// not retire. A loop that is not driving the desktop does not consult the
+// attempt.
+func retireFinishedComputerUseAttempt(loopCtx *LoopContext, fallbackUserID string) {
+	if computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopDone {
+		return
+	}
+	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
+	globalComputerUse.mu.Lock()
+	if !globalComputerUse.activated || globalComputerUse.activatedOwner != owner {
+		globalComputerUse.mu.Unlock()
+		return
+	}
+	epoch := globalComputerUse.frameEpoch
+	changed := clearComputerUseStickyLocked()
+	globalComputerUse.mu.Unlock()
+	if !changed || !dropComputerUseOperatedFrameIfEpoch(epoch) {
+		return
+	}
+	notifyComputerUseTrayIf(true)
+	if !computerUseClearedEpochCurrent(epoch) {
+		return
+	}
+	steps := 0
+	if sess := cuSessionForOwner(owner); sess != nil {
+		if p := sess.Policy(); p != nil {
+			steps = p.StepCount()
+		}
+	}
+	if !computerUseClearedEpochCurrent(epoch) {
+		return
+	}
+	emitComputerUseDoneControl(steps)
+}
+
+func markComputerUseTaskCompleted(owner, summary string) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = computerUseDefaultOwner
+	}
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	st := globalComputerUse.taskStates[owner]
+	if st == nil {
+		return
+	}
+	st.DoneAccepted = true
+	st.DoneSummary = strings.TrimSpace(summary)
+}
+
+// computerUseFinishedReply is the report computer_done already accepted.
+// An empty model sentence must not become a request to continue the desktop.
+func computerUseFinishedReply(loopCtx *LoopContext, fallbackUserID, modelText string) string {
+	if text := strings.TrimSpace(modelText); text != "" {
+		return text
+	}
+	if computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopDone {
+		return ""
+	}
+	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	st := globalComputerUse.taskStates[owner]
+	if st == nil || !st.DoneAccepted {
+		return ""
+	}
+	return strings.TrimSpace(st.DoneSummary)
+}
+
+// computerUseCompletedStopText tells the model the desktop attempt is over.
+// It does not name another observe or another done.
+const computerUseCompletedStopText = "the desktop task already finished. Do not click, type, focus, observe, or press keys."
+
+// computerUseCompletedToolRefusal blocks every tool after a successful
+// computer_done except computer_done itself. The owner is the live computer-use
+// owner, the same key the send latch uses.
+func computerUseCompletedToolRefusal(tool string) string {
+	if tool == "computer_done" {
+		return ""
+	}
+	if !computerUseTaskCompleted(computerUseOwnerKey()) {
+		return ""
+	}
+	return tool + ": " + computerUseCompletedStopText
+}
+
+// computerUseTerminalCeiling is the first iteration that must not start.
+// roundsLeft includes the iteration that first sees an attempt that can no
+// longer inject. A successful computer_done has already used that call, so
+// roundsLeft is 0 and this iteration does not start. Later calls in that
+// same run return the same ceiling. A counter that comes back before the
+// window is a new run: the old absolute number would let that run continue
+// until the previous stop, so it takes its own finish rounds instead.
+func computerUseTerminalCeiling(loopCtx *LoopContext, fallbackUserID string, iteration, roundsLeft int) (int, bool) {
+	kind := computerUseStopKindFor(loopCtx, fallbackUserID)
+	if kind == computerUseStopNone {
+		return 0, false
+	}
+	if kind == computerUseStopDone {
+		roundsLeft = 0
+	} else if roundsLeft < 1 {
+		roundsLeft = 1
+	}
+	loopCtx.mu.Lock()
+	defer loopCtx.mu.Unlock()
+	ceiling := loopCtx.computerUseTerminalCeiling
+	noticing := ceiling - roundsLeft
+	if ceiling <= 0 || iteration < noticing {
+		ceiling = iteration + roundsLeft
+		if roundsLeft > 0 && ceiling < 1 {
+			ceiling = 1
+		}
+		loopCtx.computerUseTerminalCeiling = ceiling
+	}
+	return loopCtx.computerUseTerminalCeiling, true
+}
+
 func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
 		owner = computerUseDefaultOwner
 	}
 	goal = strings.TrimSpace(goal)
+	// The step budget and the input latch belong to the previous attempt.
+	// The session is reused per owner, so a new task starts both clean.
+	// Pause and stop stay: those are the person's controls.
+	if sess := cuSessionForOwner(owner); sess != nil {
+		sess.ClearInputDenied()
+		sess.ResetSteps()
+	}
 	clearComputerUseExplicitFocus()
 	st := &computerUseTaskState{
 		Owner:       owner,
@@ -264,12 +458,21 @@ func maybeBeginComputerUseTask(loopCtx *LoopContext, fallbackUserID, goal string
 	}
 	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
 	req := strings.TrimSpace(loopCtx.Runtime.RequestID)
-	if req != "" {
-		if existing := snapshotComputerUseTaskState(owner); existing != nil && existing.RequestID == req {
-			setComputerUseOwner(owner)
-			loopCtx.ComputerUseBegun = true
-			return
-		}
+	existing := snapshotComputerUseTaskState(owner)
+	if existing != nil && req != "" && existing.RequestID == req {
+		setComputerUseOwner(owner)
+		loopCtx.ComputerUseBegun = true
+		return
+	}
+	// A helper wave is a new request id for the same task. The owner already
+	// names that task. Replacing the state would drop the send latch and a
+	// completed computer_done, and clearing the input latch and the step
+	// count would open another attempt after the desktop had already refused
+	// input or the budget was spent.
+	if loopCtx.ComputerHelper && existing != nil {
+		setComputerUseOwner(owner)
+		loopCtx.ComputerUseBegun = true
+		return
 	}
 	setComputerUseOwner(owner)
 	stored := strings.TrimSpace(goal)

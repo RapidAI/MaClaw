@@ -320,9 +320,12 @@ type CodingSubAgentResult struct {
 	ToolCalls  int
 
 	// Token / cost accounting for this SubAgent loop (when provider reports usage).
-	InputTokens  int
-	OutputTokens int
-	EstCostRMB   float64
+	// InputTokens is the sum of every request. LastPromptTokens is the latest
+	// request's prompt size and is what the context-window meter displays.
+	InputTokens      int
+	OutputTokens     int
+	LastPromptTokens int
+	EstCostRMB       float64
 
 	// RouteModel / RouteSource / RouteTask describe model routing for this loop.
 	RouteModel  string
@@ -1086,7 +1089,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		emitCodingAgentEvent(s.onProgress, event)
 	}
 
-	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
 	return &CodingSubAgentResult{
 		Status:                      status,
 		Summary:                     summary,
@@ -1095,6 +1098,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		ToolCalls:                   result.ToolCalls,
 		InputTokens:                 inTok,
 		OutputTokens:                outTok,
+		LastPromptTokens:            lastPrompt,
 		EstCostRMB:                  cost,
 		RouteModel:                  result.Route.Model,
 		RouteSource:                 result.Route.Source,
@@ -1138,7 +1142,7 @@ func finishCodingSubAgentAsk(s *CodingSubAgent, result agent.LoopResult) *Coding
 	if question == "" {
 		question = "Need more information."
 	}
-	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
 	horizonOwned := false
 	if s != nil {
 		horizonOwned = s.horizonPosture
@@ -1151,6 +1155,7 @@ func finishCodingSubAgentAsk(s *CodingSubAgent, result agent.LoopResult) *Coding
 		ToolCalls:          result.ToolCalls,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,
+		LastPromptTokens:   lastPrompt,
 		EstCostRMB:         cost,
 		RouteModel:         result.Route.Model,
 		RouteSource:        result.Route.Source,
@@ -1221,7 +1226,10 @@ func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
 }
 
 type codingSubAgentCallbacks struct {
-	subagent    *CodingSubAgent
+	subagent *CodingSubAgent
+	// compactor receives each provider prompt size so compaction follows the
+	// real window, not only the byte estimate. buildLoopHooks sets it.
+	compactor   *SubAgentCompactor
 	task        *TaskItem
 	reqCtx      string
 	designCtx   string
@@ -18637,7 +18645,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		event.Detail = string(status)
 		emitCodingAgentEvent(s.onProgress, event)
 	}
-	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
 	return &CodingSubAgentResult{
 		Status:              status,
 		Summary:             summary,
@@ -18646,6 +18654,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		ToolCalls:           result.ToolCalls,
 		InputTokens:         inTok,
 		OutputTokens:        outTok,
+		LastPromptTokens:    lastPrompt,
 		EstCostRMB:          cost,
 		RouteModel:          result.Route.Model,
 		RouteSource:         result.Route.Source,

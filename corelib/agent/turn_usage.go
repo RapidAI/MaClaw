@@ -36,6 +36,11 @@ type TurnUsage struct {
 	// Requests is the number of LLM HTTP rounds in this turn/loop.
 	Requests int `json:"requests,omitempty"`
 
+	// LastPromptTokens is the input size of the latest LLM request.
+	// Add replaces it. It is not summed into InputTokens. The context-window
+	// meter reads this; InputTokens stays the lifetime sum.
+	LastPromptTokens int `json:"last_prompt_tokens,omitempty"`
+
 	// CreditsDeducted is the settled Maclaw official grant debit accumulated
 	// across the rounds in this usage. CreditsReported distinguishes a settled
 	// zero from a round that did not report a debit.
@@ -61,6 +66,13 @@ func (u *TurnUsage) Add(other TurnUsage) {
 	u.EstCostRMB += other.EstCostRMB
 	u.EstCostUSD += other.EstCostUSD
 	u.Requests += other.Requests
+	last := other.LastPromptTokens
+	if last <= 0 && other.Requests <= 1 && other.InputTokens > 0 {
+		last = other.InputTokens
+	}
+	if last > 0 {
+		u.LastPromptTokens = last
+	}
 	if other.CreditsReported {
 		sum := other.CreditsDeducted
 		if u.CreditsReported {
@@ -380,6 +392,7 @@ func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 		CacheWriteTokens: u.CacheWriteTokens,
 		EstCostRMB:       totalCost,
 		Requests:         1,
+		LastPromptTokens: in,
 	}
 	if u.CreditsDeducted != nil {
 		usage.CreditsDeducted = roundDeductedCredits(*u.CreditsDeducted)

@@ -1188,14 +1188,53 @@ func TestComputerUseSessionActiveTTL(t *testing.T) {
 	if !computerUseSessionActive() {
 		t.Fatal("just marked active should be active")
 	}
+	noteComputerUseOperatedWindow(42)
+	if computerUseHaloTarget() != 42 {
+		t.Fatalf("halo=%d", computerUseHaloTarget())
+	}
 	globalComputerUse.mu.Lock()
 	globalComputerUse.activatedAt = time.Now().Add(-computerUseStickyTTL - time.Second)
 	globalComputerUse.mu.Unlock()
 	if computerUseSessionActive() {
 		t.Fatal("expired sticky must not report active")
 	}
+	if computerUseHaloTarget() != 0 {
+		t.Fatal("expired sticky left the operated-window rim")
+	}
 	if computerUseSessionActive() {
 		t.Fatal("expired sticky should stay cleared after lazy expiry")
+	}
+	if computerUseHaloTarget() != 0 {
+		t.Fatal("a second status poll redrew the rim")
+	}
+}
+
+func TestComputerUseStickyExpiryKeepsANewerSession(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("owner-b")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	globalComputerUse.mu.Lock()
+	globalComputerUse.activatedAt = time.Now().Add(-computerUseStickyTTL - time.Second)
+	expired := globalComputerUse.frameEpoch
+	globalComputerUse.mu.Unlock()
+	computerUseStickyDropGap = func() {
+		markComputerUseSessionActive()
+		noteComputerUseOperatedWindow(99)
+	}
+	t.Cleanup(func() { computerUseStickyDropGap = nil })
+	if !computerUseSessionActive() {
+		t.Fatal("expiry cleared a session marked in the drop gap")
+	}
+	if computerUseHaloTarget() != 99 {
+		t.Fatalf("halo=%d", computerUseHaloTarget())
+	}
+	globalComputerUse.mu.Lock()
+	epoch := globalComputerUse.frameEpoch
+	owner := globalComputerUse.activatedOwner
+	globalComputerUse.mu.Unlock()
+	if epoch == expired || owner != "owner-b" {
+		t.Fatalf("epoch=%d expired=%d owner=%s", epoch, expired, owner)
 	}
 }
 

@@ -154,6 +154,40 @@ func TestCodingWorkbenchStatusContextTokens(t *testing.T) {
 	}
 }
 
+func TestCodingWorkbenchStatusContextTokensUsesLastPromptNotSessionSum(t *testing.T) {
+	h := &IMMessageHandler{standaloneConfig: &StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{Model: "coding-model", URL: "https://llm.example/v1", Key: "k", ContextLength: 262144}
+		},
+	}}
+	path := t.TempDir()
+	userID := projectSessionOwnerID(path)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.noteCodingContextFill(userID, 257658, 0)
+	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 257658 {
+		t.Fatalf("live fill=%d", st.ContextUsedTokens)
+	}
+	h.noteCodingContextFill(userID, 122, 0)
+	st = (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 257658 {
+		t.Fatalf("degenerate prompt replaced the fill: %d", st.ContextUsedTokens)
+	}
+	// Task end adds the lifetime sum and a later real prompt. The bar shows the
+	// prompt; the session chip keeps the sum. 262144*0.8 = 209715.
+	h.recordStickyCodingUsage(userID, 30213603, 24000, 199260, 199260, 0)
+	st = (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 24000 {
+		t.Fatalf("ContextUsedTokens=%d, want last prompt", st.ContextUsedTokens)
+	}
+	if st.SessionInputTokens != 30213603 {
+		t.Fatalf("session=%d", st.SessionInputTokens)
+	}
+	if st.ContextMaxTokens != 209715 {
+		t.Fatalf("ContextMaxTokens=%d", st.ContextMaxTokens)
+	}
+}
+
 func TestCodingWorkbenchStatusContextTokensDegrade(t *testing.T) {
 	// No turn yet → session input total stands in for the fill level; no
 	// resolvable model → the cap is 0 rather than an invented number.

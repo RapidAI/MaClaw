@@ -146,6 +146,64 @@ func (s *Session) Policy() *Policy {
 	return s.policy
 }
 
+// NoteInputDenied records that the desktop refused injection.
+func (s *Session) NoteInputDenied() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy != nil {
+		s.policy.NoteInputDenied()
+	}
+}
+
+// ClearInputDenied drops the injection latch for a new task.
+func (s *Session) ClearInputDenied() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy != nil {
+		s.policy.ClearInputDenied()
+	}
+}
+
+// ResetSteps zeroes the step counter for a new attempt.
+// Pause, stop, and the input latch stay.
+func (s *Session) ResetSteps() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy != nil {
+		s.policy.ResetSteps()
+	}
+}
+
+// InputDenied reports the injection latch.
+func (s *Session) InputDenied() bool {
+	if s == nil || s.policy == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policy.InputDenied()
+}
+
+// StepsExhausted reports that this attempt already passed its step budget.
+// The query does not spend a step.
+func (s *Session) StepsExhausted() (max int, exhausted bool) {
+	if s == nil || s.policy == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policy.StepsExhausted()
+}
+
 // Pause soft-blocks interact tools (observe still allowed).
 func (s *Session) Pause() {
 	if s == nil {
@@ -250,6 +308,7 @@ func (s *Session) CommitObserve(
 		}
 	}
 	excerpt := FormatOCRExcerpt(ocr, s.cfg.OCRMaxChars)
+	windows = WithoutExecutablePathTitles(windows)
 	res := &ObserveResult{
 		Mode:          s.cfg.Mode,
 		Meta:          meta,

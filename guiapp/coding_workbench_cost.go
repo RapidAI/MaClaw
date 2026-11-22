@@ -9,9 +9,24 @@ import (
 )
 
 // codingLoopUsageFields extracts token/cost from a loop usage snapshot.
+// input is the lifetime sum of prompt sizes. The context-window fill is
+// codingLoopWindowUsage's lastPrompt, which is one request.
 func codingLoopUsageFields(u agent.TurnUsage) (input, output int, estCostRMB float64) {
+	input, output, estCostRMB, _ = codingLoopWindowUsage(u)
+	return input, output, estCostRMB
+}
+
+// codingLoopWindowUsage splits the session sum from the latest prompt size.
+// A single-request usage with no LastPromptTokens uses InputTokens as that
+// prompt. A multi-request sum does not: the meter must not compare the sum
+// with the context window.
+func codingLoopWindowUsage(u agent.TurnUsage) (input, output int, estCostRMB float64, lastPrompt int) {
 	input = u.InputTokens
 	output = u.OutputTokens
+	lastPrompt = u.LastPromptTokens
+	if lastPrompt <= 0 && u.Requests <= 1 && input > 0 {
+		lastPrompt = input
+	}
 	if u.EstCostRMB > 0 {
 		estCostRMB = u.EstCostRMB
 	} else if input > 0 || output > 0 {
@@ -24,23 +39,60 @@ func codingLoopUsageFields(u agent.TurnUsage) (input, output int, estCostRMB flo
 		)
 		estCostRMB = total
 	}
-	return input, output, estCostRMB
+	return input, output, estCostRMB, lastPrompt
 }
 
 func (h *IMMessageHandler) accumulateStickyCodingUsage(userID string, input, output int, cost float64) {
+	// One call is one prompt: the same value is both the session delta and the
+	// window fill. A multi-request sum must use recordStickyCodingUsage so the
+	// fill stays the last prompt.
+	h.recordStickyCodingUsage(userID, input, input, output, output, cost)
+}
+
+// recordStickyCodingUsage adds sessionInput to the lifetime sum and records
+// lastInput as the context-window fill. lastInput is one request's prompt
+// size. Passing the lifetime sum as lastInput paints the meter over the window.
+func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, lastInput, sessionOutput, lastOutput int, cost float64) {
 	if h == nil || userID == "" {
 		return
 	}
-	if input == 0 && output == 0 && cost == 0 {
+	if sessionInput == 0 && sessionOutput == 0 && cost == 0 && lastInput == 0 {
 		return
 	}
+	window := h.codingContextWindowTokens(userID)
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
-		mem.SessionInputTokens += input
-		mem.SessionOutputTokens += output
+		mem.SessionInputTokens += sessionInput
+		mem.SessionOutputTokens += sessionOutput
 		mem.SessionEstCostRMB += cost
-		mem.LastTurnInputTokens = input
-		mem.LastTurnOutputTokens = output
-		mem.LastTurnEstCostRMB = cost
+		if lastInput > 0 {
+			mem.LastTurnInputTokens = codingPromptFill(mem.LastTurnInputTokens, lastInput, window)
+		}
+		if lastOutput > 0 || lastInput > 0 {
+			mem.LastTurnOutputTokens = lastOutput
+		}
+		if cost > 0 || lastInput > 0 || sessionInput > 0 {
+			mem.LastTurnEstCostRMB = cost
+		}
+	})
+}
+
+// noteCodingContextFill publishes the latest provider prompt as the live
+// window fill. It does not add to the session total; that sum is recorded
+// once when the task finishes.
+func (h *IMMessageHandler) noteCodingContextFill(userID string, promptTokens, outputTokens int) {
+	if h == nil || userID == "" || promptTokens <= 0 {
+		return
+	}
+	window := h.codingContextWindowTokens(userID)
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		next := codingPromptFill(mem.LastTurnInputTokens, promptTokens, window)
+		if next <= 0 {
+			return
+		}
+		mem.LastTurnInputTokens = next
+		if outputTokens > 0 {
+			mem.LastTurnOutputTokens = outputTokens
+		}
 	})
 }
 

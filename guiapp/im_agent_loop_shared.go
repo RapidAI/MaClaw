@@ -731,9 +731,14 @@ func (h *IMMessageHandler) executeSharedTurn(
 	handedOff := false
 	if loopResult.Error == "max iterations reached" {
 		// Refills already ran inside this loop. The ceiling is a pause, not a
-		// failed task and not a new loop.
+		// failed task and not a new loop. A computer_done that already
+		// succeeded is the report, not a request to continue the desktop.
 		if strings.TrimSpace(loopResult.Text) == "" {
-			loopResult.Text = sessionRoundManualContinueText
+			if summary := computerUseFinishedReply(ctx, userID, ""); summary != "" {
+				loopResult.Text = summary
+			} else {
+				loopResult.Text = sessionRoundManualContinueText
+			}
 		}
 		loopResult.Error = ""
 		loopResult.HardExit = false
@@ -3856,6 +3861,12 @@ func (c *sharedAgentLoopCallbacks) TurnIterationCeiling(iteration int) (int, boo
 	if c == nil || c.loopCtx == nil {
 		return 0, false
 	}
+	// A computer-use attempt that can no longer inject keeps only its finish
+	// rounds. Reporting the ceiling on every iteration stops a refill from
+	// raising the loop past it.
+	if n, ok := computerUseTerminalCeiling(c.loopCtx, c.userID, iteration, computerUseFinishRounds(c.loopCtx)); ok {
+		return n, true
+	}
 	n, ok := c.loopCtx.turnIterationCeiling()
 	if !ok || n == c.appliedTurnCeiling {
 		return 0, false
@@ -3872,7 +3883,16 @@ func (c *sharedAgentLoopCallbacks) TurnIterationCeiling(iteration int) (int, boo
 // runs out. The tool transcript stays. A new task would start from a summary
 // and repeat work that already succeeded.
 func (c *sharedAgentLoopCallbacks) ExtendIterationBudget(used, toolCalls int) int {
-	if c == nil || c.loopCtx == nil || !c.loopCtx.claimIterationExtensionForOpenTask(toolCalls, c.handler.codingTaskStillOpen(c.loopCtx, c.userID)) {
+	if c == nil || c.loopCtx == nil {
+		return 0
+	}
+	// The step budget and the input latch belong to this attempt. Another
+	// wave would only repeat the refusal. computer_done still has the finish
+	// rounds already on the ceiling.
+	if computerUseAttemptBlocksContinuation(c.loopCtx, c.userID) {
+		return 0
+	}
+	if !c.loopCtx.claimIterationExtensionForOpenTask(toolCalls, c.handler.codingTaskStillOpen(c.loopCtx, c.userID)) {
 		return 0
 	}
 	extra := c.GetMaxIterations()

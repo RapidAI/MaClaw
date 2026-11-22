@@ -6386,6 +6386,137 @@ func TestRunLoop_OutputTruncatedEmptyIsBounded(t *testing.T) {
 	}
 }
 
+// windowPressureCallbacks reports that a prompt already fills the context window.
+type windowPressureCallbacks struct {
+	mockCallbacks
+	window  int
+	absorb  bool
+	stalled bool
+}
+
+func (m *windowPressureCallbacks) PromptFillsContextWindow(n int) bool {
+	return m != nil && m.window > 0 && n >= m.window
+}
+
+func (m *windowPressureCallbacks) AbsorbContextOverflow(int) bool {
+	return m != nil && m.absorb && !m.stalled
+}
+
+func (m *windowPressureCallbacks) ContextCompactStalled() bool {
+	return m != nil && m.stalled
+}
+
+type stallAfterFirstHook struct {
+	DefaultLoopHooks
+	cb    *windowPressureCallbacks
+	calls int
+}
+
+func (h *stallAfterFirstHook) TransformConversation(conversation []interface{}) []interface{} {
+	if h == nil || h.cb == nil {
+		return nil
+	}
+	h.calls++
+	// The first transform runs before any response. Stall on the retry that
+	// follows an overflow so the loop stops before sending the full prompt again.
+	if h.calls >= 2 {
+		h.cb.stalled = true
+	}
+	return nil
+}
+
+func TestRunLoop_FullWindowTruncationCompactsInsteadOfAppending(t *testing.T) {
+	var requestCount atomic.Int64
+	var sawRecovery atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "cut off by the output length limit") {
+				sawRecovery.Store(true)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":257658,"completion_tokens":0,"total_tokens":257658}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &windowPressureCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:   6,
+			sysPrompt: "You are a coding agent.",
+		},
+		window: 210000,
+		absorb: false,
+	}
+	result := RunLoop(cb, "do the task", nil, server.Client())
+	if result.Error != ErrContextWindowFull || result.HardExit {
+		t.Fatalf("result=%+v, want window-full stop without an empty-reply hard exit", result)
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("requests=%d, want one prompt then stop", requestCount.Load())
+	}
+	if sawRecovery.Load() {
+		t.Fatal("full window appended a shorter-reply continuation")
+	}
+	if result.Usage.LastPromptTokens != 257658 || result.Usage.InputTokens != 257658 {
+		t.Fatalf("usage=%+v", result.Usage)
+	}
+
+	// A prompt that still has output room keeps the shorter-reply recovery.
+	requestCount.Store(0)
+	sawRecovery.Store(false)
+	var smallRequests atomic.Int64
+	small := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := smallRequests.Add(1)
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg["role"] == "user" && strings.Contains(fmt.Sprint(msg["content"]), "cut off by the output length limit") {
+				sawRecovery.Store(true)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":1530,"completion_tokens":0,"total_tokens":1530}}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"recovered"},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1600,"completion_tokens":2,"total_tokens":1602}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer small.Close()
+	cb.config.URL = small.URL
+	cb.absorb = true
+	recovered := RunLoop(cb, "do the task", nil, small.Client())
+	if recovered.Error != "" || recovered.Text != "recovered" || recovered.HardExit {
+		t.Fatalf("small prompt result=%+v", recovered)
+	}
+	if !sawRecovery.Load() {
+		t.Fatal("a short prompt must still get the shorter-reply recovery")
+	}
+
+	// Armed compaction that cannot shrink stops before a second full send.
+	requestCount.Store(0)
+	cb.absorb = true
+	cb.config.URL = server.URL
+	stalled := RunLoop(cb, "do the task", nil, server.Client(), &stallAfterFirstHook{cb: cb})
+	if stalled.Error != ErrContextWindowFull || stalled.HardExit {
+		t.Fatalf("stalled result=%+v", stalled)
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("stalled requests=%d, want no second send", requestCount.Load())
+	}
+}
+
 func TestRunLoop_EmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
@@ -8851,14 +8982,34 @@ func TestApplyTurnIterationCeilingStopsBelowWorkAlreadyDone(t *testing.T) {
 
 type ceilingStub struct {
 	mockCallbacks
-	n int
+	n        int
+	zeroStop bool
 }
 
 func (s *ceilingStub) TurnIterationCeiling(int) (int, bool) {
-	if s == nil || s.n <= 0 {
+	if s == nil {
+		return 0, false
+	}
+	if s.n <= 0 {
+		if s.zeroStop && s.n == 0 {
+			return 0, true
+		}
 		return 0, false
 	}
 	return s.n, true
+}
+
+func TestApplyTurnIterationCeilingZeroMeansDoNotStart(t *testing.T) {
+	cb := &ceilingStub{zeroStop: true}
+	if got, stop := applyTurnIterationCeiling(cb, 0, 300); !stop || got != 0 {
+		t.Fatalf("iteration 0 = %d stop=%v", got, stop)
+	}
+	if got, stop := applyTurnIterationCeiling(cb, 7, 300); !stop || got != 0 {
+		t.Fatalf("later iteration = %d stop=%v", got, stop)
+	}
+	if got, stop := applyTurnIterationCeiling(&ceilingStub{}, 0, 300); stop || got != 300 {
+		t.Fatalf("unset ceiling = %d stop=%v", got, stop)
+	}
 }
 
 func TestExtendSameConversationBudgetRefusesAFreshOrOversizedGrant(t *testing.T) {

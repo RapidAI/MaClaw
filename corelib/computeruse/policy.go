@@ -35,6 +35,11 @@ type Policy struct {
 	Stopped         bool // hard stop; requires Reset/new session to continue
 	MaxSteps        int
 	stepCount       int
+	// inputDenied is set when the desktop refused the input channel
+	// (privilege isolation). It is not Stopped: the person did not press
+	// stop. A later computer_done still has to pass the acceptance audit.
+	// That completion does not clear the latch; the next task does.
+	inputDenied bool
 }
 
 // NewPolicy builds a policy from config.
@@ -73,16 +78,55 @@ func (p *Policy) Stop() {
 	}
 }
 
-// Reset clears pause/stop and optionally step counter.
+// Reset clears pause/stop and the input-denial latch, and optionally the step counter.
 func (p *Policy) Reset(resetSteps bool) {
 	if p == nil {
 		return
 	}
 	p.Paused = false
 	p.Stopped = false
+	p.inputDenied = false
 	if resetSteps {
 		p.stepCount = 0
 	}
+}
+
+// NoteInputDenied latches a desktop that refused injection. Later tools
+// stop without spending another step. Reset clears it.
+func (p *Policy) NoteInputDenied() {
+	if p != nil {
+		p.inputDenied = true
+	}
+}
+
+// ClearInputDenied drops the latch without touching pause, stop, or steps.
+// A new task on the same session can inject again.
+func (p *Policy) ClearInputDenied() {
+	if p != nil {
+		p.inputDenied = false
+	}
+}
+
+// ResetSteps zeroes the step counter for a new attempt on a reused session.
+// Pause, stop, and the input latch stay. Reset(true) would also unpause.
+func (p *Policy) ResetSteps() {
+	if p != nil {
+		p.stepCount = 0
+	}
+}
+
+// InputDenied reports the injection latch.
+func (p *Policy) InputDenied() bool {
+	return p != nil && p.inputDenied
+}
+
+// StepsExhausted reports that BeginStep already passed MaxSteps.
+// It does not increment the counter.
+func (p *Policy) StepsExhausted() (max int, exhausted bool) {
+	if p == nil || p.MaxSteps <= 0 {
+		return 0, false
+	}
+	return p.MaxSteps, p.stepCount > p.MaxSteps
 }
 
 // IsPaused reports soft pause.

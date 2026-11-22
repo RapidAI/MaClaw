@@ -1112,6 +1112,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	if msg := cuRefuseAfterDesktopMessageSent(name); msg != "" {
 		return toolExecutionResult{Text: msg, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
+	if msg := computerUseCompletedToolRefusal(name); msg != "" {
+		return toolExecutionResult{Text: msg, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if msg := parentDesktopSendToolRefusal(policyLoop, name); msg != "" {
 		return toolExecutionResult{Text: msg, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}

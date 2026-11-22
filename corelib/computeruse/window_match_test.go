@@ -29,6 +29,24 @@ func TestWindowTitlesMatch(t *testing.T) {
 	}
 }
 
+func TestCropIsForegroundRequiresAReadableCaption(t *testing.T) {
+	if CropIsForeground("蓝信", "") || CropIsForeground("", "蓝信") || CropIsForeground("蓝信", "   ") {
+		t.Fatal("an empty caption is not the operated window")
+	}
+	if !WindowTitlesMatch("", "蓝信") {
+		t.Fatal("unknown titles still match for callers without a crop")
+	}
+	if !CropIsForeground("蓝信", "蓝信") {
+		t.Fatal("the same caption is the crop")
+	}
+	if CropIsForeground("蓝信", "蓝信 - 马勇") != WindowTitlesMatch("蓝信", "蓝信 - 马勇") {
+		t.Fatal("a readable caption uses the same app match")
+	}
+	if CropIsForeground("蓝信", "记事本") || CropIsForeground("微信", "微信开发者工具") {
+		t.Fatal("a different app is not the crop")
+	}
+}
+
 func TestSameControlWindowDoesNotMergeSameApp(t *testing.T) {
 	if !sameControlWindow("", "收件箱 - Google Chrome") {
 		t.Fatal("empty stays unknown")
@@ -175,6 +193,31 @@ func TestBestAppFramePrefersAVisibleFrame(t *testing.T) {
 	idx, ok = BestAppFrame("蓝信", openChat)
 	if !ok || openChat[idx].Title != "蓝信 - 张三" {
 		t.Fatalf("an open chat should beat a hidden main window, got %+v ok=%v", openChat[idx], ok)
+	}
+}
+
+func TestBestAppFrameDoesNotRaiseAnExecutablePathConsole(t *testing.T) {
+	const console = `C:\Program Files (x86)\LanxinSoftCustom\main\LxMainNew.exe`
+	if !ExecutablePathTitle(console) {
+		t.Fatal("a program path is not an application window")
+	}
+	if ExecutablePathTitle("蓝信") || ExecutablePathTitle(`readme.txt - Notepad`) || ExecutablePathTitle(`C:\notes\密码学笔记.txt`) {
+		t.Fatal("an application title must stay selectable")
+	}
+	frames := []AppFrame{
+		{Title: console, Visible: true},
+		{Title: "蓝信", Visible: true},
+	}
+	if _, ok := BestAppFrame(console, frames); ok {
+		t.Fatal("focus must not raise the console titled with the program path")
+	}
+	idx, ok := BestAppFrame("蓝信", frames)
+	if !ok || frames[idx].Title != "蓝信" {
+		t.Fatalf("蓝信 should still match, got %+v ok=%v", frames[idx], ok)
+	}
+	kept := WithoutExecutablePathTitles([]string{"蓝信", console, "记事本"})
+	if len(kept) != 2 || kept[0] != "蓝信" || kept[1] != "记事本" {
+		t.Fatalf("window list = %#v", kept)
 	}
 }
 

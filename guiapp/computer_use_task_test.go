@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
@@ -217,7 +218,7 @@ func TestComputerUseDoneRejectsUnmetAcceptance(t *testing.T) {
 	seedComputerUseObserve(t, "草稿未保存", "")
 
 	got := cuHandleDone("done")
-	if !strings.Contains(got, "computer_done rejected") {
+	if !strings.Contains(got, "computer_done rejected") || !strings.Contains(got, "computer_observe") {
 		t.Fatalf("got %q", got)
 	}
 	st := computerUseTaskStateFor("sk-fail")
@@ -229,6 +230,157 @@ func TestComputerUseDoneRejectsUnmetAcceptance(t *testing.T) {
 	}
 	if !computerUseSessionActive() {
 		t.Fatal("rejected done must keep sticky")
+	}
+}
+
+func computerUseControlActions(t *testing.T) *[]string {
+	t.Helper()
+	prev := computerUseEventEmitter
+	actions := []string{}
+	computerUseEventEmitter = func(name string, data interface{}) {
+		if name != EventComputerUseControl {
+			return
+		}
+		payload, _ := data.(map[string]interface{})
+		action, _ := payload["action"].(string)
+		if action != "" {
+			actions = append(actions, action)
+		}
+	}
+	t.Cleanup(func() { computerUseEventEmitter = prev })
+	return &actions
+}
+
+func TestTerminalDoneKeepsAFailedAudit(t *testing.T) {
+	t.Run("input denied", func(t *testing.T) {
+		resetComputerUseRuntimeForTest(t)
+		resetComputerUseSessionForTest(t)
+		markComputerUseSessionActive()
+		setComputerUseOwner("sk-denied")
+		beginComputerUseTask("sk-denied", "req-1", "保存文档", []string{"已保存"})
+		seedComputerUseObserve(t, "草稿未保存", "")
+		sess := cuSession()
+		sess.NoteInputDenied()
+		actions := computerUseControlActions(t)
+		text, ok := cuDoneResult("could not type")
+		if ok || strings.Contains(text, "computer_observe") || !strings.Contains(text, "refused input") || !strings.Contains(text, "Do not observe again.") {
+			t.Fatalf("ok=%v text=%q", ok, text)
+		}
+		if !sess.InputDenied() {
+			t.Fatal("refusal cleared the latch")
+		}
+		st := computerUseTaskStateFor("sk-denied")
+		if st == nil || st.LastAudit != computerUseAuditFailed || st.FailedDone != 1 || len(st.Acceptance) == 0 {
+			t.Fatalf("state=%+v", st)
+		}
+		if !computerUseSessionActive() {
+			t.Fatal("refusal cleared the session")
+		}
+		if len(*actions) != 0 {
+			t.Fatalf("refusal emitted %v", *actions)
+		}
+	})
+	t.Run("steps exhausted", func(t *testing.T) {
+		resetComputerUseRuntimeForTest(t)
+		resetComputerUseSessionForTest(t)
+		markComputerUseSessionActive()
+		setComputerUseOwner("sk-spent")
+		beginComputerUseTask("sk-spent", "req-1", "保存文档", []string{"已保存"})
+		seedComputerUseObserve(t, "草稿未保存", "")
+		sess := cuSession()
+		sess.Policy().MaxSteps = 1
+		if err := sess.BeginAction("click", "spend"); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.BeginAction("click", "over"); err == nil {
+			t.Fatal("expected the budget to be spent")
+		}
+		actions := computerUseControlActions(t)
+		text, ok := cuDoneResult("could not finish")
+		if ok || strings.Contains(text, "computer_observe") || !strings.Contains(text, "max steps exceeded (1)") {
+			t.Fatalf("ok=%v text=%q", ok, text)
+		}
+		st := computerUseTaskStateFor("sk-spent")
+		if st == nil || st.LastAudit != computerUseAuditFailed || len(st.Acceptance) == 0 {
+			t.Fatalf("state=%+v", st)
+		}
+		if !computerUseSessionActive() {
+			t.Fatal("refusal cleared the session")
+		}
+		if len(*actions) != 0 {
+			t.Fatalf("refusal emitted %v", *actions)
+		}
+	})
+	t.Run("audit already satisfied", func(t *testing.T) {
+		resetComputerUseRuntimeForTest(t)
+		resetComputerUseSessionForTest(t)
+		markComputerUseSessionActive()
+		setComputerUseOwner("sk-met")
+		beginComputerUseTask("sk-met", "req-1", "保存文档", []string{"已保存"})
+		seedComputerUseObserve(t, "文件已保存", "")
+		sess := cuSession()
+		sess.Policy().MaxSteps = 1
+		if err := sess.BeginAction("click", "spend"); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.BeginAction("click", "over"); err == nil {
+			t.Fatal("expected the budget to be spent")
+		}
+		sess.NoteInputDenied()
+		actions := computerUseControlActions(t)
+		text, ok := cuDoneResult("saved")
+		if !ok || !strings.HasPrefix(text, "computer_done:") || strings.Contains(text, "rejected") {
+			t.Fatalf("ok=%v text=%q", ok, text)
+		}
+		if !sess.InputDenied() {
+			t.Fatal("a satisfied completion cleared the latch")
+		}
+		if _, exhausted := sess.StepsExhausted(); !exhausted {
+			t.Fatal("a satisfied completion reset the step budget")
+		}
+		st := computerUseTaskStateFor("sk-met")
+		if st == nil || st.LastAudit != computerUseAuditPassed || len(st.Acceptance) != 0 {
+			t.Fatalf("state=%+v", st)
+		}
+		if computerUseSessionActive() {
+			t.Fatal("a satisfied completion left the session active")
+		}
+		if len(*actions) != 1 || (*actions)[0] != "done" {
+			t.Fatalf("control=%v", *actions)
+		}
+	})
+}
+
+func TestBeginComputerUseTaskStartsAFreshAttempt(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("sk-fresh")
+	sess := cuSession()
+	sess.Policy().MaxSteps = 1
+	if err := sess.BeginAction("click", "spend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.BeginAction("click", "over"); err == nil {
+		t.Fatal("expected the budget to be spent")
+	}
+	sess.NoteInputDenied()
+	sess.Pause()
+	beginComputerUseTask("sk-fresh", "req-2", "下一句", nil)
+	if sess.InputDenied() {
+		t.Fatal("a new task kept the input denial")
+	}
+	if sess.Policy().StepCount() != 0 {
+		t.Fatalf("steps=%d", sess.Policy().StepCount())
+	}
+	if _, exhausted := sess.StepsExhausted(); exhausted {
+		t.Fatal("a new task kept the spent step budget")
+	}
+	paused, stopped := sess.ControlState()
+	if !paused || stopped {
+		t.Fatalf("pause=%v stopped=%v", paused, stopped)
+	}
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		t.Fatalf("observe after a new task: %s", msg)
 	}
 }
 
@@ -345,6 +497,689 @@ func TestComputerUseBeginLatchedPerRequest(t *testing.T) {
 	st2 := computerUseTaskStateFor("sk-latch")
 	if st2 == nil || st2.FailedDone != 1 || st2.Goal != "first" {
 		t.Fatalf("same RequestID must not replace TaskState: %+v", st2)
+	}
+}
+
+func TestHelperContinuationKeepsTheSpentAttempt(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	goal := "给蓝信中的王占一发消息，告诉它，码卡龙可以顺利发送消息给蓝信用户了。"
+	ctx := &LoopContext{
+		ComputerHelper:         true,
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: goal,
+		Runtime: RuntimeContext{
+			RequestID:    "chat-task-ct-1-0",
+			Conversation: RuntimeConversationRef{SessionKey: "helper-owner"},
+		},
+	}
+	maybeBeginComputerUseTask(ctx, "u1", goal)
+	setComputerUseOwner("helper-owner")
+	sess := cuSession()
+	sess.Policy().MaxSteps = 1
+	if err := sess.BeginAction("click", "spend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.BeginAction("click", "over"); err == nil {
+		t.Fatal("expected the budget to be spent")
+	}
+	sess.NoteInputDenied()
+	noteDesktopMessageTyped("码卡龙可以顺利发送消息给蓝信用户了。")
+	if !noteDesktopMessageSubmitted("enter") {
+		t.Fatal("send did not latch")
+	}
+
+	next := &LoopContext{
+		ComputerHelper:         true,
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: goal,
+		Runtime: RuntimeContext{
+			RequestID:    "chat-task-ct-1-1",
+			Conversation: RuntimeConversationRef{SessionKey: "helper-owner"},
+		},
+	}
+	maybeBeginComputerUseTask(next, "u1", "[系统续轮] 继续完成同一任务")
+	if !next.ComputerUseBegun {
+		t.Fatal("continuation did not attach")
+	}
+	if !sess.InputDenied() {
+		t.Fatal("continuation cleared the input denial")
+	}
+	if _, exhausted := sess.StepsExhausted(); !exhausted || sess.Policy().StepCount() == 0 {
+		t.Fatalf("steps=%d", sess.Policy().StepCount())
+	}
+	st := computerUseTaskStateFor("helper-owner")
+	if st == nil || !st.MessageSubmitted || st.Goal != goal || st.RequestID != "chat-task-ct-1-0" {
+		t.Fatalf("state=%+v", st)
+	}
+	if msg := cuGuardDisabled("computer_click"); !strings.Contains(msg, "already submitted") {
+		t.Fatalf("click=%s", msg)
+	}
+}
+
+func openDrivingComputerUse(t *testing.T, owner, goal string) (*LoopContext, *computeruse.Session) {
+	t.Helper()
+	loop := NewLoopContext("cu-"+owner, config.MaxAgentIterationsCap, nil)
+	loop.ComputerHelper = true
+	loop.ComputerUseActive = true
+	loop.ComputerUseFresh = true
+	loop.ComputerUseRoutingText = goal
+	loop.UserID = owner
+	loop.Runtime.RequestID = "req-" + owner
+	loop.Runtime.Conversation.SessionKey = owner
+	maybeBeginComputerUseTask(loop, owner, goal)
+	setComputerUseOwner(owner)
+	return loop, cuSession()
+}
+
+func spendComputerUseBudget(t *testing.T, sess *computeruse.Session) {
+	t.Helper()
+	sess.Policy().MaxSteps = 1
+	if err := sess.BeginAction("click", "spend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.BeginAction("click", "over"); err == nil {
+		t.Fatal("expected the budget to be spent")
+	}
+}
+
+func TestTerminalComputerUseAttemptDoesNotRefill(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+
+	spentOwner := "cu-spent-refill"
+	spentLoop, spentSess := openDrivingComputerUse(t, spentOwner, "打开记事本")
+	spendComputerUseBudget(t, spentSess)
+	spent := &sharedAgentLoopCallbacks{loopCtx: spentLoop, maxIter: config.MaxAgentIterationsCap, userID: spentOwner}
+	if n, ok := spent.TurnIterationCeiling(40); !ok || n != 42 {
+		t.Fatalf("spent ceiling=%d ok=%v, want 42", n, ok)
+	}
+	if n, ok := spent.TurnIterationCeiling(41); !ok || n != 42 {
+		t.Fatalf("second ceiling=%d ok=%v, want the same 42", n, ok)
+	}
+	if got := spent.ExtendIterationBudget(config.MaxAgentIterationsCap, 8); got != 0 || spentLoop.iterationExtensions != 0 {
+		t.Fatalf("refill=%d extensions=%d", got, spentLoop.iterationExtensions)
+	}
+
+	deniedOwner := "cu-denied-refill"
+	deniedLoop, deniedSess := openDrivingComputerUse(t, deniedOwner, "打开记事本")
+	deniedSess.NoteInputDenied()
+	if _, exhausted := deniedSess.StepsExhausted(); exhausted {
+		t.Fatal("input denial spent the step budget")
+	}
+	denied := &sharedAgentLoopCallbacks{loopCtx: deniedLoop, maxIter: config.MaxAgentIterationsCap, userID: deniedOwner}
+	if n, ok := denied.TurnIterationCeiling(10); !ok || n != 12 {
+		t.Fatalf("denied ceiling=%d ok=%v, want 12", n, ok)
+	}
+	if got := denied.ExtendIterationBudget(config.MaxAgentIterationsCap, 3); got != 0 {
+		t.Fatalf("denied refill=%d", got)
+	}
+
+	plain := NewLoopContext("plain-owner", config.MaxAgentIterationsCap, nil)
+	plain.UserID = spentOwner
+	plain.Runtime.Conversation.SessionKey = spentOwner
+	plainCB := &sharedAgentLoopCallbacks{loopCtx: plain, maxIter: config.MaxAgentIterationsCap, userID: spentOwner}
+	if got := plainCB.ExtendIterationBudget(config.MaxAgentIterationsCap, 4); got != config.MaxAgentIterationsCap {
+		t.Fatalf("a loop that is not driving the desktop refilled by %d", got)
+	}
+
+	spentLoop.computerUseTerminalCeiling = 42
+	spentLoop.releaseTurnIterationExtension(config.MaxAgentIterationsCap)
+	if spentLoop.computerUseTerminalCeiling != 0 {
+		t.Fatal("the next message kept the computer-use ceiling")
+	}
+
+	h := &IMMessageHandler{}
+	legacyOwner := "cu-legacy-spent"
+	legacy, legacySess := openDrivingComputerUse(t, legacyOwner, "打开记事本")
+	spendComputerUseBudget(t, legacySess)
+	mid := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           legacy,
+		UserID:            legacyOwner,
+		Iteration:         40,
+		EffectiveMax:      config.MaxAgentIterationsCap,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      func(string) {},
+	})
+	if mid.Stop || mid.EffectiveMax != 40 {
+		t.Fatalf("mid stop=%v effective=%d, want the finish rounds at 40", mid.Stop, mid.EffectiveMax)
+	}
+	if _, exhausted := legacySess.StepsExhausted(); !exhausted {
+		t.Fatal("preparing the round cleared the spent budget")
+	}
+	end := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           legacy,
+		UserID:            legacyOwner,
+		Iteration:         42,
+		EffectiveMax:      mid.EffectiveMax,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      func(string) {},
+	})
+	if !end.Stop || end.EffectiveMax >= config.MaxAgentIterationsCap {
+		t.Fatalf("end stop=%v effective=%d, want the iteration limit without another wave", end.Stop, end.EffectiveMax)
+	}
+
+	nearOwner := "cu-legacy-near-cap"
+	near, nearSess := openDrivingComputerUse(t, nearOwner, "打开记事本")
+	spendComputerUseBudget(t, nearSess)
+	nearResult := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           near,
+		UserID:            nearOwner,
+		Iteration:         config.MaxAgentIterationsCap - 2,
+		EffectiveMax:      config.MaxAgentIterationsCap,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      func(string) {},
+	})
+	if nearResult.Stop || nearResult.EffectiveMax != config.MaxAgentIterationsCap-2 {
+		t.Fatalf("near stop=%v effective=%d, want %d without an auto-extend", nearResult.Stop, nearResult.EffectiveMax, config.MaxAgentIterationsCap-2)
+	}
+}
+
+func TestTerminalComputerUseKeepsFinishRoundsAfterAutoExtend(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	h := &IMMessageHandler{}
+	owner := "cu-extend-then-terminal"
+	loop, sess := openDrivingComputerUse(t, owner, "打开记事本")
+	// The helper loop is created at the default cap. This case is a chat
+	// budget of 30 that already auto-extended, so the stored limit has to
+	// match the value passed in. A stored 300 would skip the extend.
+	loop.SetMaxIterations(30)
+	if got := h.refreshAgentLoopEffectiveMax(loop, 28, 30, 0, nil, nil); got != 60 || !loop.iterationCeilingRaised {
+		t.Fatalf("auto-extend=%d raised=%v", got, loop.iterationCeilingRaised)
+	}
+	spendComputerUseBudget(t, sess)
+	progress := func(string) {}
+	first := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         40,
+		EffectiveMax:      60,
+		ConfigMax:         30,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if first.Stop || first.EffectiveMax != 40 || loop.iterationCeilingRaised {
+		t.Fatalf("first stop=%v effective=%d raised=%v", first.Stop, first.EffectiveMax, loop.iterationCeilingRaised)
+	}
+	second := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         41,
+		EffectiveMax:      first.EffectiveMax,
+		ConfigMax:         30,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if second.Stop || second.EffectiveMax != 40 {
+		t.Fatalf("second stop=%v effective=%d", second.Stop, second.EffectiveMax)
+	}
+	third := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         42,
+		EffectiveMax:      second.EffectiveMax,
+		ConfigMax:         30,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if !third.Stop || third.EffectiveMax >= 60 {
+		t.Fatalf("third stop=%v effective=%d", third.Stop, third.EffectiveMax)
+	}
+}
+
+func TestTerminalComputerUseDoesNotRefillWhileCoding(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	h := &IMMessageHandler{}
+	owner := "cu-coding-terminal"
+	loop, sess := openDrivingComputerUse(t, owner, "打开记事本")
+	spendComputerUseBudget(t, sess)
+	loop.setCodeSessionID("coding-session")
+	progress := func(string) {}
+	mid := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         40,
+		EffectiveMax:      config.MaxAgentIterationsCap,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if mid.Stop || mid.EffectiveMax != 40 || loop.iterationExtensions != 0 {
+		t.Fatalf("mid stop=%v effective=%d extensions=%d", mid.Stop, mid.EffectiveMax, loop.iterationExtensions)
+	}
+	end := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         42,
+		EffectiveMax:      mid.EffectiveMax,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if !end.Stop || end.EffectiveMax >= config.MaxAgentIterationsCap || loop.iterationExtensions != 0 {
+		t.Fatalf("end stop=%v effective=%d extensions=%d", end.Stop, end.EffectiveMax, loop.iterationExtensions)
+	}
+}
+
+func TestTerminalComputerUseRestartKeepsFinishRounds(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	owner := "cu-restart-ceiling"
+	loop, sess := openDrivingComputerUse(t, owner, "打开记事本")
+	spendComputerUseBudget(t, sess)
+	cb := &sharedAgentLoopCallbacks{loopCtx: loop, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if n, ok := cb.TurnIterationCeiling(40); !ok || n != 42 {
+		t.Fatalf("first ceiling=%d ok=%v", n, ok)
+	}
+	if n, ok := cb.TurnIterationCeiling(41); !ok || n != 42 {
+		t.Fatalf("same run ceiling=%d ok=%v", n, ok)
+	}
+	if n, ok := cb.TurnIterationCeiling(0); !ok || n != 2 {
+		t.Fatalf("restart ceiling=%d ok=%v", n, ok)
+	}
+	if n, ok := cb.TurnIterationCeiling(1); !ok || n != 2 {
+		t.Fatalf("restart next ceiling=%d ok=%v", n, ok)
+	}
+	if got := cb.ExtendIterationBudget(2, 4); got != 0 {
+		t.Fatalf("restart refill=%d", got)
+	}
+
+	h := &IMMessageHandler{}
+	legacyOwner := "cu-terminal-at-zero"
+	legacy, legacySess := openDrivingComputerUse(t, legacyOwner, "打开记事本")
+	spendComputerUseBudget(t, legacySess)
+	progress := func(string) {}
+	effective := config.MaxAgentIterationsCap
+	for _, iteration := range []int{0, 1} {
+		got := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+			Context:           legacy,
+			UserID:            legacyOwner,
+			Iteration:         iteration,
+			EffectiveMax:      effective,
+			ConfigMax:         config.MaxAgentIterationsCap,
+			ChatFinalizeGrace: 2,
+			ToolCalls:         8,
+			SendProgress:      progress,
+		})
+		if got.Stop || legacy.iterationExtensions != 0 {
+			t.Fatalf("iter %d stop=%v extensions=%d", iteration, got.Stop, legacy.iterationExtensions)
+		}
+		effective = got.EffectiveMax
+	}
+	end := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           legacy,
+		UserID:            legacyOwner,
+		Iteration:         2,
+		EffectiveMax:      effective,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if !end.Stop || end.EffectiveMax >= config.MaxAgentIterationsCap || legacy.iterationExtensions != 0 {
+		t.Fatalf("end stop=%v effective=%d extensions=%d", end.Stop, end.EffectiveMax, legacy.iterationExtensions)
+	}
+}
+
+func TestHealthyComputerUseAttemptStillRefills(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	owner := "cu-healthy-refill"
+	loop, sess := openDrivingComputerUse(t, owner, "打开记事本")
+	if sess.InputDenied() {
+		t.Fatal("a fresh attempt started denied")
+	}
+	if _, exhausted := sess.StepsExhausted(); exhausted {
+		t.Fatal("a fresh attempt started exhausted")
+	}
+	cb := &sharedAgentLoopCallbacks{loopCtx: loop, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if _, ok := cb.TurnIterationCeiling(40); ok {
+		t.Fatal("a healthy attempt installed a computer-use ceiling")
+	}
+	if got := cb.ExtendIterationBudget(config.MaxAgentIterationsCap, 6); got != config.MaxAgentIterationsCap {
+		t.Fatalf("healthy refill=%d, want %d", got, config.MaxAgentIterationsCap)
+	}
+
+	legacy, _ := openDrivingComputerUse(t, "cu-healthy-legacy", "打开记事本")
+	legacy.Kind = LoopKindBackground
+	result := (&IMMessageHandler{}).prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:      legacy,
+		UserID:       "cu-healthy-legacy",
+		Iteration:    config.MaxAgentIterationsCap,
+		EffectiveMax: config.MaxAgentIterationsCap,
+		ConfigMax:    config.MaxAgentIterationsCap,
+		ToolCalls:    4,
+	})
+	if result.Stop || result.EffectiveMax != config.MaxAgentIterationsCap*2 {
+		t.Fatalf("healthy legacy stop=%v effective=%d, want %d", result.Stop, result.EffectiveMax, config.MaxAgentIterationsCap*2)
+	}
+}
+
+func TestSentMessageStillContinuesTheIteration(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	goal := "给蓝信中的王占一发消息，告诉它，码卡龙可以顺利发送消息给蓝信用户了。"
+	owner := "cu-sent-refill"
+	loop, sess := openDrivingComputerUse(t, owner, goal)
+	noteDesktopMessageTyped("码卡龙可以顺利发送消息给蓝信用户了。")
+	if !noteDesktopMessageSubmitted("enter") {
+		t.Fatal("send did not latch")
+	}
+	if sess.InputDenied() {
+		t.Fatal("sending the message latched input denial")
+	}
+	if _, exhausted := sess.StepsExhausted(); exhausted {
+		t.Fatal("sending the message spent the step budget")
+	}
+	cb := &sharedAgentLoopCallbacks{loopCtx: loop, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if _, ok := cb.TurnIterationCeiling(15); ok {
+		t.Fatal("a submitted message installed a computer-use ceiling")
+	}
+	if got := cb.ExtendIterationBudget(config.MaxAgentIterationsCap, 5); got != config.MaxAgentIterationsCap {
+		t.Fatalf("submitted-message refill=%d, want %d", got, config.MaxAgentIterationsCap)
+	}
+}
+
+func TestCompletedComputerUseDoesNotOperateAgain(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	owner := "cu-done-stop"
+	summary := "1. 已发出给马勇\n2. 无\n3. 无\n文件：无"
+	loop, _ := openDrivingComputerUse(t, owner, "给蓝信中的马勇发一条消息")
+	text, ok := cuDoneResult(summary)
+	if !ok || !strings.HasPrefix(text, "computer_done:") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	if computerUseSessionActive() {
+		t.Fatal("a finished attempt left the session active")
+	}
+	for _, tool := range []string{"computer_focus", "computer_observe", "computer_type", "computer_key", "computer_click", "bash", "goal"} {
+		msg := computerUseCompletedToolRefusal(tool)
+		if msg == "" || strings.Contains(msg, "computer_observe and retry") || strings.Contains(msg, "Call computer_done") {
+			t.Fatalf("%s refusal=%q", tool, msg)
+		}
+		if strings.HasPrefix(tool, "computer_") {
+			if guarded := cuGuardDisabled(tool); guarded == "" {
+				t.Fatalf("%s was allowed after computer_done", tool)
+			}
+		}
+	}
+	if msg := cuGuardDisabled("computer_done"); msg != "" {
+		t.Fatalf("computer_done after success: %s", msg)
+	}
+	if got := computerUseFinishedReply(loop, owner, ""); got != summary {
+		t.Fatalf("reply=%q", got)
+	}
+	if got := computerUseFinishedReply(loop, owner, "1. 已发出"); got != "1. 已发出" {
+		t.Fatalf("model text replaced: %q", got)
+	}
+
+	cb := &sharedAgentLoopCallbacks{loopCtx: loop, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if n, ceilingOK := cb.TurnIterationCeiling(64); !ceilingOK || n != 64 {
+		t.Fatalf("ceiling=%d ok=%v, want 64 with no finish rounds", n, ceilingOK)
+	}
+	if n, ceilingOK := cb.TurnIterationCeiling(65); !ceilingOK || n != 64 {
+		t.Fatalf("later ceiling=%d ok=%v, want the same 64", n, ceilingOK)
+	}
+	if got := cb.ExtendIterationBudget(64, 8); got != 0 {
+		t.Fatalf("finished refill=%d", got)
+	}
+
+	h := &IMMessageHandler{}
+	progress := func(string) {}
+	stopped := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           loop,
+		UserID:            owner,
+		Iteration:         64,
+		EffectiveMax:      config.MaxAgentIterationsCap,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         8,
+		SendProgress:      progress,
+	})
+	if !stopped.Stop {
+		t.Fatal("the iteration after computer_done was allowed to start")
+	}
+
+	plain := NewLoopContext("plain-after-done", config.MaxAgentIterationsCap, nil)
+	plain.UserID = owner
+	plain.Runtime.Conversation.SessionKey = owner
+	plainCB := &sharedAgentLoopCallbacks{loopCtx: plain, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if _, ceilingOK := plainCB.TurnIterationCeiling(8); ceilingOK {
+		t.Fatal("a loop that is not driving the desktop stopped for a finished attempt")
+	}
+	if got := plainCB.ExtendIterationBudget(config.MaxAgentIterationsCap, 4); got != config.MaxAgentIterationsCap {
+		t.Fatalf("plain refill=%d", got)
+	}
+
+	next := &LoopContext{
+		ComputerHelper:         true,
+		ComputerUseActive:      true,
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: "给蓝信中的马勇发一条消息",
+		UserID:                 owner,
+		Runtime: RuntimeContext{
+			RequestID:    "chat-task-ct-1-1",
+			Conversation: RuntimeConversationRef{SessionKey: owner},
+		},
+	}
+	maybeBeginComputerUseTask(next, owner, "[系统续轮] 继续完成同一任务")
+	if msg := cuGuardDisabled("computer_focus"); msg == "" {
+		t.Fatal("a helper continuation cleared the finished attempt")
+	}
+	nextCB := &sharedAgentLoopCallbacks{loopCtx: next, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if n, ceilingOK := nextCB.TurnIterationCeiling(0); !ceilingOK || n != 0 {
+		t.Fatalf("continuation ceiling=%d ok=%v, want 0", n, ceilingOK)
+	}
+	wave := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
+		Context:           next,
+		UserID:            owner,
+		Iteration:         0,
+		EffectiveMax:      config.MaxAgentIterationsCap,
+		ConfigMax:         config.MaxAgentIterationsCap,
+		ChatFinalizeGrace: 2,
+		ToolCalls:         1,
+		SendProgress:      progress,
+	})
+	if !wave.Stop {
+		t.Fatal("a new helper wave started after computer_done")
+	}
+
+	beginComputerUseTask(owner, "req-next", "下一句", nil)
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		t.Fatalf("a new attempt stayed finished: %s", msg)
+	}
+	if _, ceilingOK := cb.TurnIterationCeiling(3); ceilingOK {
+		t.Fatal("a new attempt kept the finished ceiling")
+	}
+}
+
+func TestFinishedLoopDropsARimDrawnAfterComputerDone(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	owner := "cu-done-rim"
+	loop, _ := openDrivingComputerUse(t, owner, "给蓝信中的马勇发一条消息")
+	if _, ok := cuDoneResult("1. 已发出给马勇\n2. 无\n3. 无\n文件：无"); !ok {
+		t.Fatal("computer_done was not accepted")
+	}
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	if !computerUseSessionActive() || computerUseHaloTarget() != 42 {
+		t.Fatalf("active=%v halo=%d", computerUseSessionActive(), computerUseHaloTarget())
+	}
+	actions := computerUseControlActions(t)
+	retireFinishedComputerUseAttempt(loop, owner)
+	if computerUseSessionActive() {
+		t.Fatal("the finished loop left the session active")
+	}
+	if computerUseHaloTarget() != 0 {
+		t.Fatal("the finished loop left the operated-window rim")
+	}
+	if len(*actions) != 1 || (*actions)[0] != "done" {
+		t.Fatalf("control=%v", *actions)
+	}
+
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(7)
+	plain := NewLoopContext("plain-rim", config.MaxAgentIterationsCap, nil)
+	plain.UserID = owner
+	retireFinishedComputerUseAttempt(plain, owner)
+	if !computerUseSessionActive() || computerUseHaloTarget() != 7 {
+		t.Fatal("a loop that is not driving the desktop cleared the rim")
+	}
+	if len(*actions) != 1 {
+		t.Fatalf("control=%v", *actions)
+	}
+
+	driving, _ := openDrivingComputerUse(t, "cu-not-done", "打开记事本")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(9)
+	retireFinishedComputerUseAttempt(driving, "cu-not-done")
+	if !computerUseSessionActive() || computerUseHaloTarget() != 9 {
+		t.Fatal("an unfinished attempt dropped the rim when its loop returned")
+	}
+	if len(*actions) != 1 {
+		t.Fatalf("control=%v", *actions)
+	}
+}
+
+func TestFinishedLoopLeavesAnotherOwnersSession(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	loop, _ := openDrivingComputerUse(t, "owner-a", "给蓝信中的马勇发一条消息")
+	if _, ok := cuDoneResult("1. 已发出给马勇\n2. 无\n3. 无\n文件：无"); !ok {
+		t.Fatal("computer_done was not accepted")
+	}
+	setComputerUseOwner("owner-b")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(77)
+	actions := computerUseControlActions(t)
+	retireFinishedComputerUseAttempt(loop, "owner-a")
+	if !computerUseSessionActive() || computerUseHaloTarget() != 77 {
+		t.Fatalf("active=%v halo=%d", computerUseSessionActive(), computerUseHaloTarget())
+	}
+	globalComputerUse.mu.Lock()
+	held := globalComputerUse.activatedOwner
+	globalComputerUse.mu.Unlock()
+	if held != "owner-b" {
+		t.Fatalf("owner=%s", held)
+	}
+	if len(*actions) != 0 {
+		t.Fatalf("control=%v", *actions)
+	}
+
+	globalComputerUse.mu.Lock()
+	changed := clearComputerUseStickyLocked()
+	globalComputerUse.mu.Unlock()
+	if !changed {
+		t.Fatal("the other owner's session was already clear")
+	}
+	noteComputerUseOperatedWindow(81)
+	retireFinishedComputerUseAttempt(loop, "owner-a")
+	if computerUseSessionActive() {
+		t.Fatal("a cleared session became active")
+	}
+	if computerUseHaloTarget() != 81 {
+		t.Fatalf("halo=%d", computerUseHaloTarget())
+	}
+	if len(*actions) != 0 {
+		t.Fatalf("control=%v", *actions)
+	}
+}
+
+func TestRejectedComputerDoneStillAllowsObserve(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	owner := "cu-done-reject"
+	loop := NewLoopContext("cu-"+owner, config.MaxAgentIterationsCap, nil)
+	loop.ComputerHelper = true
+	loop.ComputerUseActive = true
+	loop.UserID = owner
+	loop.Runtime.RequestID = "req-reject"
+	loop.Runtime.Conversation.SessionKey = owner
+	setComputerUseOwner(owner)
+	beginComputerUseTask(owner, "req-reject", "save the file", []string{"file saved"})
+	seedComputerUseObserve(t, "draft not saved", "")
+	text, ok := cuDoneResult("not yet")
+	if ok || !strings.Contains(text, "call computer_observe and retry") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	if !computerUseSessionActive() {
+		t.Fatal("a rejected done cleared the session")
+	}
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		t.Fatalf("observe refused: %s", msg)
+	}
+	if msg := computerUseCompletedToolRefusal("bash"); msg != "" {
+		t.Fatalf("bash refused: %s", msg)
+	}
+	cb := &sharedAgentLoopCallbacks{loopCtx: loop, maxIter: config.MaxAgentIterationsCap, userID: owner}
+	if _, ceilingOK := cb.TurnIterationCeiling(10); ceilingOK {
+		t.Fatal("a rejected done installed a computer-use ceiling")
+	}
+	if got := cb.ExtendIterationBudget(config.MaxAgentIterationsCap, 3); got != config.MaxAgentIterationsCap {
+		t.Fatalf("rejected refill=%d", got)
+	}
+	if got := computerUseFinishedReply(loop, owner, ""); got != "" {
+		t.Fatalf("rejected reply=%q", got)
+	}
+}
+
+func TestFreshRequestOnTheSameOwnerStartsANewAttempt(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	ctx := &LoopContext{
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: "第一件事",
+		Runtime: RuntimeContext{
+			RequestID:    "req-1",
+			Conversation: RuntimeConversationRef{SessionKey: "owner-a"},
+		},
+	}
+	maybeBeginComputerUseTask(ctx, "u1", "第一件事")
+	setComputerUseOwner("owner-a")
+	sess := cuSession()
+	sess.Policy().MaxSteps = 1
+	if err := sess.BeginAction("click", "spend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.BeginAction("click", "over"); err == nil {
+		t.Fatal("expected the budget to be spent")
+	}
+	sess.NoteInputDenied()
+
+	next := &LoopContext{
+		ComputerUseFresh:       true,
+		ComputerUseRoutingText: "第二件事",
+		Runtime: RuntimeContext{
+			RequestID:    "req-2",
+			Conversation: RuntimeConversationRef{SessionKey: "owner-a"},
+		},
+	}
+	maybeBeginComputerUseTask(next, "u1", "第二件事")
+	if sess.InputDenied() || sess.Policy().StepCount() != 0 {
+		t.Fatalf("denied=%v steps=%d", sess.InputDenied(), sess.Policy().StepCount())
+	}
+	st := computerUseTaskStateFor("owner-a")
+	if st == nil || st.Goal != "第二件事" || st.RequestID != "req-2" {
+		t.Fatalf("state=%+v", st)
+	}
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		t.Fatalf("observe=%s", msg)
 	}
 }
 

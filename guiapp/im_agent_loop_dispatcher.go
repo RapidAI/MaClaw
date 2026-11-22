@@ -36,6 +36,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
 	h.noteDesktopPetTurnStart(userID, ctx)
 	defer func() { h.noteDesktopPetTurnEnd(userID, ctx, result) }()
+	// After the loop body, including a panic recover in the shared or legacy
+	// path. A finished desktop attempt must not leave the operated-window rim
+	// up once this turn has returned the completion report.
+	defer retireFinishedComputerUseAttempt(ctx, userID)
 	if h.app != nil {
 		defer h.app.noteMainBotTurn(userText)()
 	}

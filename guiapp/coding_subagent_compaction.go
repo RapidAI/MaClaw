@@ -27,7 +27,9 @@ import (
 //   anchors carry the durable facts and the dropped middle is mostly tool
 //   output whose key data is captured by them
 // - Recovery prefix tells model "previous work was compacted"
-// - Maximum 3 compactions per task (prevent infinite compaction loops)
+// - Compaction stays armed for the life of the task. A compact that does not
+//   shrink the estimate is sealed until the conversation grows past that size,
+//   so a long task cannot run past the window after a fixed number of passes.
 // ---------------------------------------------------------------------------
 
 const (
@@ -43,15 +45,50 @@ const (
 	// subAgentHandoffRecencyWindow is the live tail when the handoff flag is on.
 	subAgentHandoffRecencyWindow = 2
 
-	// subAgentMaxCompactionsPerTask: prevent infinite compaction loops.
-	// The handoff flag replaces one block, so it does not use this cap.
-	subAgentMaxCompactionsPerTask = 3
+	// subAgentCompactionMarker is the flag-off summary lead. A later compact
+	// replaces the previous block instead of appending another one.
+	subAgentCompactionMarker = "[上下文压缩]"
+
+	// subAgentDegeneratePromptTokens is a provider prompt size that cannot be a
+	// real coding prompt after one that already filled the window. The incident
+	// reported 122 tokens immediately after 257658, with no compaction between them.
+	subAgentDegeneratePromptTokens = 1000
+
+	// subAgentDegeneratePromptWindow keeps that check off tiny test windows.
+	subAgentDegeneratePromptWindow = 8000
+
+	// subAgentCompactionFallbackWindow is only an estimate trigger for a model
+	// whose context length is still unknown. It is not a stall ceiling: a
+	// guessed 128k window would stop a task that still has output room.
+	subAgentCompactionFallbackWindow = 128000
 )
 
 // SubAgentCompactor handles mid-task context compaction for CodingSubAgent.
 type SubAgentCompactor struct {
-	contextWindow   int // effective context tokens
+	// contextWindow is the effective window when windowFn is nil (tests).
+	// Production reads the live model window through windowFn, because the
+	// loop can route to a different context length after the hooks are built.
+	contextWindow int
+	// windowFn returns the context window of the model the loop is about to
+	// call. A positive value is authoritative. Zero means unknown: the byte
+	// estimate may still compact against the fallback, but a prompt size must
+	// not stall the task against a guessed ceiling.
+	windowFn        func() int
 	compactionCount int
+	// sealedEstimate is the token estimate after a compact that did not shrink.
+	// ShouldCompact stays quiet until the conversation grows past it, unless
+	// the provider prompt already fills the known window.
+	sealedEstimate int
+	// lastPromptTokens is the provider-reported prompt size of the latest
+	// request. The byte estimate is not the only occupancy signal.
+	lastPromptTokens int
+	// forceCompact is set when the latest accepted prompt already fills the
+	// known window, so the next transform compacts even if a no-shrink seal
+	// is holding. A later prompt under that window clears it.
+	forceCompact bool
+	// stalled means the prompt fills the window and the last compact did not
+	// shrink it. The loop stops instead of sending that prompt again.
+	stalled         bool
 	filesModifiedFn func() []string
 	filesCreatedFn  func() []string
 	filesReadFn     func() []string
@@ -70,27 +107,147 @@ func NewSubAgentCompactor(contextWindow int, filesModifiedFn func() []string, fi
 }
 
 // ShouldCompact checks if the conversation needs compaction based on token count.
+// The provider's last prompt size counts as occupancy, so a prompt the byte
+// estimate under-counted still compacts. A no-shrink seal holds until the
+// conversation grows past the sealed estimate, but a prompt that already fills
+// the known window bypasses it. If that pass still does not shrink, the
+// compactor stalls and the loop stops.
 func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
-	if c == nil {
+	if c == nil || c.stalled {
 		return false
 	}
 	if agent.HandoffMemoCoding() && agent.ConversationHasPendingAsk(conversation) {
 		return false
 	}
-	if !agent.HandoffMemoCoding() && c.compactionCount >= subAgentMaxCompactionsPerTask {
-		return false
-	}
-	if c.contextWindow <= 0 {
+	window := c.triggerWindow()
+	if window <= 0 {
 		return false
 	}
 
-	tokenEstimate := estimateConversationTokensForSubAgent(conversation)
+	est := estimateConversationTokensForSubAgent(conversation)
+	if c.sealedEstimate > 0 && est <= c.sealedEstimate && !c.promptPressured() {
+		return false
+	}
+	threshold := c.triggerThreshold()
+	_, known := c.contextLimit()
+	overPrompt := known && c.lastPromptTokens > threshold
+	return c.forceCompact || overPrompt || est > threshold
+}
+
+// contextLimit is the effective window of the model about to be called.
+// known is false when that length was never configured. Callers must not
+// treat the fallback trigger as a full window.
+func (c *SubAgentCompactor) contextLimit() (window int, known bool) {
+	if c == nil {
+		return 0, false
+	}
+	if c.windowFn != nil {
+		if n := c.windowFn(); n > 0 {
+			return n, true
+		}
+		return 0, false
+	}
+	if c.contextWindow > 0 {
+		return c.contextWindow, true
+	}
+	return 0, false
+}
+
+// triggerWindow is the denominator for the byte-estimate trigger. An unknown
+// live window still compacts against the fallback so a long task is not left
+// unbounded, but promptPressured stays false in that case.
+func (c *SubAgentCompactor) triggerWindow() int {
+	if window, known := c.contextLimit(); known {
+		return window
+	}
+	if c != nil && c.windowFn != nil {
+		return subAgentCompactionFallbackWindow
+	}
+	return 0
+}
+
+// promptPressured reports that the latest provider prompt fills the known
+// window, so a no-shrink seal must not skip compaction.
+func (c *SubAgentCompactor) promptPressured() bool {
+	window, known := c.contextLimit()
+	return c != nil && known && (c.forceCompact || c.lastPromptTokens >= window)
+}
+
+func (c *SubAgentCompactor) triggerThreshold() int {
+	window := c.triggerWindow()
+	if window <= 0 {
+		return 0
+	}
 	ratio := subAgentCompactionTriggerRatio
 	if agent.HandoffMemoCoding() {
 		ratio = subAgentHandoffTriggerRatio
 	}
-	threshold := int(float64(c.contextWindow) * ratio)
-	return tokenEstimate > threshold
+	return int(float64(window) * ratio)
+}
+
+// notePromptTokens records a provider prompt size. A tiny report after a
+// prompt that already filled the window is not a successful shrink: the
+// over-window size stays, and the next transform still compacts. A later
+// accepted prompt under the window clears that force, so a reference fan-out
+// cannot stick a full-window flag onto the aggregator's smaller prompt. The
+// bool reports whether the meter should treat n as the live fill.
+func (c *SubAgentCompactor) notePromptTokens(n int) bool {
+	if c == nil || n <= 0 {
+		return false
+	}
+	window, known := c.contextLimit()
+	if known && window >= subAgentDegeneratePromptWindow &&
+		c.lastPromptTokens >= window &&
+		n < subAgentDegeneratePromptTokens {
+		c.forceCompact = true
+		return false
+	}
+	c.lastPromptTokens = n
+	c.forceCompact = known && n >= window
+	return true
+}
+
+// promptFillsWindow reports that this prompt leaves no output room inside the
+// known effective window, or that n is the degenerate tiny report that follows
+// one. An unknown window does not fill: the fallback ceiling is not the model.
+func (c *SubAgentCompactor) promptFillsWindow(promptTokens int) bool {
+	window, known := c.contextLimit()
+	if !known || promptTokens <= 0 {
+		return false
+	}
+	if promptTokens >= window {
+		return true
+	}
+	return window >= subAgentDegeneratePromptWindow &&
+		c.lastPromptTokens >= window &&
+		promptTokens < subAgentDegeneratePromptTokens
+}
+
+// absorbOverflow arms one compaction before the next send. It returns false
+// when a previous pass already stalled, so the loop stops instead of appending
+// a continuation onto a full prompt.
+func (c *SubAgentCompactor) absorbOverflow(promptTokens int) bool {
+	if c == nil || !c.promptFillsWindow(promptTokens) || c.stalled {
+		return false
+	}
+	window, _ := c.contextLimit()
+	if promptTokens >= window {
+		c.lastPromptTokens = promptTokens
+	}
+	c.forceCompact = true
+	return true
+}
+
+// codingPromptFill is the context-window meter value. A pathological tiny
+// prompt after one that already filled the window does not replace it.
+func codingPromptFill(prev, next, window int) int {
+	if next <= 0 {
+		return prev
+	}
+	if window >= subAgentDegeneratePromptWindow && prev >= window && next < subAgentDegeneratePromptTokens {
+		return prev
+	}
+	return next
 }
 
 // Compact performs in-place compaction of the conversation.
@@ -98,13 +255,14 @@ func (c *SubAgentCompactor) ShouldCompact(conversation []interface{}) bool {
 // Middle section is replaced with a static summary.
 func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	if c == nil || len(conversation) < 4 {
+		if c != nil {
+			return c.finishCompact(conversation, conversation, 0)
+		}
 		return conversation // too short to compact
 	}
 	if agent.HandoffMemoCoding() && agent.ConversationHasPendingAsk(conversation) {
 		return conversation
 	}
-	c.compactionCount++
-	log.Printf("[coding-subagent-compaction] triggering compaction #%d (conversation_len=%d)", c.compactionCount, len(conversation))
 
 	// Structure: [system, user(task), ...middle..., recent_window]
 	// Keep: system (idx 0) + user task (idx 1) + recent window
@@ -116,10 +274,11 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	// Flag off keeps the last 5 turns, then shrinks to 30% of the window.
 	// Flag coding/all keeps the last 2, then shrinks to 15% (floor 1000).
 	turns := subAgentCompactionRecencyWindow
-	keepTokens := c.contextWindow * 3 / 10
+	window := c.triggerWindow()
+	keepTokens := window * 3 / 10
 	if agent.HandoffMemoCoding() {
 		turns = subAgentHandoffRecencyWindow
-		keepTokens = c.contextWindow * 15 / 100
+		keepTokens = window * 15 / 100
 	}
 	recentStart := findSubAgentRecencyWindowStart(conversation, turns)
 	if recentStart < 2 {
@@ -128,9 +287,14 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	if keepTokens < 1000 {
 		keepTokens = 1000
 	}
+	// Fit may already have dropped or truncated tool results. The shrink
+	// decision has to see that original, not the fitted slice compared with
+	// itself: a full window would otherwise stall and throw the shorter
+	// prompt away.
+	beforeFit := conversation
 	conversation, recentStart = fitSubAgentRecentWindow(conversation, recentStart, keepTokens)
 	if recentStart <= 2 {
-		return conversation // nothing to compact
+		return c.finishCompact(beforeFit, conversation, 0)
 	}
 	recentWindow := conversation[recentStart:]
 
@@ -156,7 +320,7 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 				recentWindow = conversation[recentStart:]
 				if recentStart <= 2 {
 					log.Printf("[coding-subagent-compaction] memo %s kept_extra", memo.LengthNote())
-					return conversation
+					return c.finishCompact(beforeFit, conversation, 0)
 				}
 				middleSection = conversation[2:recentStart]
 				memo = c.memoFromAnchors(taskContent, middleSection)
@@ -172,7 +336,8 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 			log.Printf("[coding-subagent-compaction] memo %s fallback", memo.LengthNote())
 		}
 	} else {
-		mergedContent = taskContent + "\n\n---\n\n" + c.buildCompactionSummary(middleSection, taskContent)
+		summary := c.buildCompactionSummary(middleSection, taskContent)
+		mergedContent = replaceSubAgentCompactionBlock(taskContent, summary)
 	}
 	mergedTask := map[string]interface{}{
 		"role":    "user",
@@ -183,11 +348,68 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	compacted = append(compacted, systemMsg)
 	compacted = append(compacted, mergedTask)
 	compacted = append(compacted, recentWindow...)
+	return c.finishCompact(beforeFit, compacted, len(middleSection))
+}
 
+// finishCompact applies a shorter rewrite, and seals a rewrite that did not
+// shrink so the next turn does not compact the same bytes again. An
+// already-full provider prompt that still does not shrink stalls the loop.
+func (c *SubAgentCompactor) finishCompact(before, after []interface{}, middle int) []interface{} {
+	if c == nil {
+		return after
+	}
+	if after == nil {
+		after = before
+	}
+	beforeTokens := estimateConversationTokensForSubAgent(before)
+	afterTokens := estimateConversationTokensForSubAgent(after)
+	if afterTokens >= beforeTokens {
+		seal := afterTokens
+		if seal <= 0 {
+			seal = 1
+		}
+		c.sealedEstimate = seal
+		// Read pressure before clearing force. A full prompt stalls; an
+		// estimate-only no-shrink only seals, so the task can still send.
+		pressured := c.promptPressured()
+		c.forceCompact = false
+		if pressured {
+			c.stalled = true
+		}
+		window, _ := c.contextLimit()
+		log.Printf("[coding-subagent-compaction] sealed: %d -> %d tokens (window=%d prompt=%d)",
+			beforeTokens, afterTokens, window, c.lastPromptTokens)
+		return after
+	}
+	c.sealedEstimate = 0
+	c.stalled = false
+	c.forceCompact = false
+	if afterTokens <= c.triggerThreshold() {
+		c.lastPromptTokens = 0
+	}
+	c.compactionCount++
+	log.Printf("[coding-subagent-compaction] triggering compaction #%d (conversation_len=%d)", c.compactionCount, len(before))
 	log.Printf("[coding-subagent-compaction] compacted: %d -> %d entries (middle=%d summarized)",
-		len(conversation), len(compacted), len(middleSection))
+		len(before), len(after), middle)
+	return after
+}
 
-	return compacted
+// replaceSubAgentCompactionBlock keeps a single flag-off summary. Appending a
+// new block on every compact grows the task message once compaction runs for
+// the whole task.
+func replaceSubAgentCompactionBlock(taskContent, summary string) string {
+	const sep = "\n\n---\n\n"
+	marker := sep + subAgentCompactionMarker
+	if idx := strings.Index(taskContent, marker); idx >= 0 {
+		taskContent = taskContent[:idx]
+	} else if idx := strings.Index(taskContent, subAgentCompactionMarker); idx >= 0 {
+		taskContent = strings.TrimRight(taskContent[:idx], "\n- ")
+	}
+	taskContent = strings.TrimRight(taskContent, "\n")
+	if strings.TrimSpace(taskContent) == "" {
+		return summary
+	}
+	return taskContent + sep + summary
 }
 
 func (c *SubAgentCompactor) memoFromAnchors(taskContent string, middle []interface{}) agent.HandoffMemo {
@@ -331,7 +553,7 @@ func findSubAgentRecencyWindowStart(conversation []interface{}, turnsToKeep int)
 func (c *SubAgentCompactor) buildCompactionSummary(middleSection []interface{}, taskContent string) string {
 	var b strings.Builder
 
-	b.WriteString("[上下文压缩] 之前的工具调用因 context 长度限制被压缩。以下是工作摘要。\n\n")
+	b.WriteString(subAgentCompactionMarker + " 之前的工具调用因 context 长度限制被压缩。以下是工作摘要。\n\n")
 	b.WriteString("另一个编码执行器已经开始处理此任务。文件系统反映了已完成的工作。请基于已完成的工作继续，避免重复已做过的事情。\n\n")
 
 	// File anchors. Read paths accumulate with any list already written
@@ -455,6 +677,44 @@ type codingSubAgentHooks struct {
 	replanRevision *atomic.Int64
 }
 
+// OnLLMUsage records the provider prompt size for the next compaction decision
+// and for the context-window meter. The session total stays a sum; this path
+// only publishes the latest prompt.
+func (c *codingSubAgentCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.compactor == nil {
+		return
+	}
+	if !c.compactor.notePromptTokens(inputTokens) {
+		return
+	}
+	if c.subagent == nil || c.subagent.handler == nil {
+		return
+	}
+	c.subagent.handler.noteCodingContextFill(codingSubAgentOwnerUserID(c.subagent.loopCtx), inputTokens, outputTokens)
+}
+
+// PromptFillsContextWindow reports that promptTokens leaves no output room
+// inside this attempt's effective window.
+func (c *codingSubAgentCallbacks) PromptFillsContextWindow(promptTokens int) bool {
+	if c == nil || c.compactor == nil {
+		return false
+	}
+	return c.compactor.promptFillsWindow(promptTokens)
+}
+
+// AbsorbContextOverflow arms compaction before the next send.
+func (c *codingSubAgentCallbacks) AbsorbContextOverflow(promptTokens int) bool {
+	if c == nil || c.compactor == nil {
+		return false
+	}
+	return c.compactor.absorbOverflow(promptTokens)
+}
+
+// ContextCompactStalled reports that compaction cannot shrink a full window.
+func (c *codingSubAgentCallbacks) ContextCompactStalled() bool {
+	return c != nil && c.compactor != nil && c.compactor.stalled
+}
+
 func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) []interface{} {
 	out := conversation
 	changed := false
@@ -481,7 +741,17 @@ func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) 
 	}
 	if h != nil && h.compactor != nil && agent.HandoffMemoPerRound() {
 		if collapsed := h.compactor.collapsePerRound(out); collapsed != nil {
-			return collapsed
+			// A per-round memo used to return before the occupancy compact.
+			// A blocked or non-shrinking collapse then hid a prompt that
+			// already filled the window, and the loop sent it again.
+			if !h.compactor.promptPressured() {
+				return collapsed
+			}
+			if estimateConversationTokensForSubAgent(collapsed) < estimateConversationTokensForSubAgent(out) {
+				return h.compactor.finishCompact(out, collapsed, len(out)-len(collapsed))
+			}
+			out = collapsed
+			changed = true
 		}
 	}
 	if h != nil && h.compactor != nil && h.compactor.ShouldCompact(out) {
@@ -504,18 +774,23 @@ func codingSubAgentOwnerUserID(loopCtx *LoopContext) string {
 
 // buildLoopHooks creates LoopHooks for the SubAgent with compaction + steer injection.
 func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubAgentHooks {
-	contextWindow := s.cfg.EffectiveContextTokens()
-	if contextWindow <= 0 {
-		contextWindow = 128000 // conservative default
-	}
-
 	compactor := NewSubAgentCompactor(
-		contextWindow,
+		0,
 		func() []string { return cb.getFilesModified() },
 		func() []string { return cb.getFilesCreated() },
 		func() []string { return cb.getFilesRead() },
 		func() []CodingSubAgentCommandResult { return cb.getCommandsRun() },
 	)
+	// RouteTurn can replace cfg after these hooks are built. Read the window
+	// at compaction time so the stall ceiling is the model that just ran.
+	if s != nil {
+		compactor.windowFn = func() int {
+			return s.cfg.EffectiveContextTokens()
+		}
+	}
+	if cb != nil {
+		cb.compactor = compactor
+	}
 
 	var handler *IMMessageHandler
 	var loopCtx *LoopContext

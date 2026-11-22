@@ -35,11 +35,17 @@ type LoopContext struct {
 	// refill, such as the chat auto-extend. The next message restores the
 	// configured budget.
 	iterationCeilingRaised bool
-	status                 LoopState
-	userCancelled          bool  // set only for an explicit user stop, before CancelC is closed
-	pauseAfterCurrent      bool  // finish the in-flight request or subtask, then stop before the next one
-	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
-	replansSealed          bool  // final response won the accept/commit race; reject later steering
+	// computerUseTerminalCeiling is the first iteration that must not start
+	// once this loop's computer-use attempt can no longer inject. 0 means
+	// no finish ceiling is stored, and also that a finished computer_done
+	// noticed at iteration 0 must not start. The value stays for this loop
+	// so a later refill cannot move it. The next message clears it.
+	computerUseTerminalCeiling int
+	status                     LoopState
+	userCancelled              bool  // set only for an explicit user stop, before CancelC is closed
+	pauseAfterCurrent          bool  // finish the in-flight request or subtask, then stop before the next one
+	replanRevision             int64 // increments when live user guidance should interrupt/re-plan
+	replansSealed              bool  // final response won the accept/commit race; reject later steering
 	// workStopVerdict caches the host's verification of this turn's stop
 	// request. A stop tool call and the post-turn false-claim guard read the
 	// same sentence, and classifying it twice would spend a second model call.
@@ -578,6 +584,7 @@ func (c *LoopContext) releaseTurnIterationExtension(configuredMax int) {
 	raised := c.iterationExtensions > 0 || c.iterationCeilingRaised
 	c.iterationExtensions = 0
 	c.iterationCeilingRaised = false
+	c.computerUseTerminalCeiling = 0
 	c.codeSessionID = ""
 	if raised && configuredMax > 0 && c.maxIterations != configuredMax {
 		c.maxIterations = configuredMax
@@ -606,6 +613,19 @@ func (c *LoopContext) raiseIterationCeiling(n int) {
 	c.mu.Lock()
 	c.maxIterations = n
 	c.iterationCeilingRaised = true
+	c.mu.Unlock()
+}
+
+// dropRaisedIterationCeiling clears an auto-extend mark. A computer-use
+// attempt that can no longer inject replaces that mark with its own finish
+// ceiling. Leaving the mark set stops the next round as soon as the counter
+// passes the finish limit, before those rounds run.
+func (c *LoopContext) dropRaisedIterationCeiling() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.iterationCeilingRaised = false
 	c.mu.Unlock()
 }
 

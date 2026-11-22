@@ -113,18 +113,20 @@ type TurnIterationCeilingSource interface {
 }
 
 // applyTurnIterationCeiling installs an explicit host ceiling. stop is true
-// when the loop has already run past that ceiling; adding another wave would
-// ignore the cap.
+// when this iteration must not start. A ceiling of 0 means that for the
+// iteration being asked. A positive ceiling is the first iteration that
+// must not start, so the loop has already run past it when iteration is
+// greater. ok false, or a negative ceiling, leaves the loop limit alone.
 func applyTurnIterationCeiling(cb LoopCallbacks, iteration, maxIter int) (int, bool) {
 	src, ok := cb.(TurnIterationCeilingSource)
 	if !ok || src == nil {
 		return maxIter, false
 	}
 	n, apply := src.TurnIterationCeiling(iteration)
-	if !apply || n <= 0 {
+	if !apply || n < 0 {
 		return maxIter, false
 	}
-	if iteration > n {
+	if n == 0 || iteration > n {
 		return n, true
 	}
 	return n, false
@@ -1141,6 +1143,27 @@ type LLMUsageRecorder interface {
 	OnLLMUsage(model string, inputTokens, outputTokens int)
 }
 
+// ErrContextWindowFull stops a turn whose latest prompt already fills the
+// effective context window and whose compaction pass could not shrink it.
+// Appending a continuation would make the next request larger.
+const ErrContextWindowFull = "上下文窗口已满，压缩后仍无法缩短提示，任务中断"
+
+// ContextWindowPressure is implemented by a host that compacts when a prompt
+// already fills the effective context window. An empty finish=length on that
+// prompt is an input-full turn: the loop compacts instead of appending a
+// continuation or counting empty replies.
+type ContextWindowPressure interface {
+	// PromptFillsContextWindow reports that promptTokens leaves no output room
+	// inside the host's effective context window.
+	PromptFillsContextWindow(promptTokens int) bool
+	// AbsorbContextOverflow asks the host to compact before the next send.
+	// False means compaction cannot shrink the prompt; the loop must stop.
+	AbsorbContextOverflow(promptTokens int) bool
+	// ContextCompactStalled reports that the latest transform sealed compaction
+	// because the prompt still fills the window and did not shrink.
+	ContextCompactStalled() bool
+}
+
 // LoopHooks provides optional extension points for the agent loop.
 // Hosts that don't need these features can embed DefaultLoopHooks.
 type LoopHooks interface {
@@ -1735,6 +1758,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Mid-loop conversation transformation (e.g., compaction).
 		if transformed := h.TransformConversation(conversation); transformed != nil {
 			conversation = transformed
+		}
+		if pressure, ok := cb.(ContextWindowPressure); ok && pressure.ContextCompactStalled() {
+			log.Printf("[agent-loop] compaction sealed on a full context window (iteration=%d)", iteration)
+			return finish(LoopResult{Error: ErrContextWindowFull, Iterations: iteration, ToolCalls: totalToolCalls})
 		}
 		conversation = FoldComputerUseObserves(conversation)
 		workingState, conversation = spliceWorkingStateAtHead(cb, conversation, workingState, userText, executedTools)
@@ -2795,8 +2822,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 		// Account aggregator usage with aggregator config (sticky model → force after).
+		var promptTokens int
 		if resp != nil && resp.Usage != nil {
 			round := TurnUsageFromLLM(aggCFG, resp.Usage)
+			promptTokens = round.LastPromptTokens
+			if promptTokens <= 0 {
+				promptTokens = round.InputTokens
+			}
 			if resp.LocalCacheHit {
 				// A client cache replay did not debit the grant again.
 				round.CreditsDeducted = 0
@@ -2935,6 +2967,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			isOutputTruncationFinish(choice.FinishReason) &&
 			strings.TrimSpace(content) == "" &&
 			len(choice.Message.ToolCalls) == 0 {
+			// A prompt that already fills the window did not run out of output
+			// room. Appending a continuation makes the next request larger, and
+			// counting it as an empty reply hard-exits after a few hits. Compact
+			// first. A small prompt keeps the shorter-reply recovery below.
+			if pressure, ok := cb.(ContextWindowPressure); ok && pressure.PromptFillsContextWindow(promptTokens) {
+				disposeSurface(ToolSurfaceResponseAbandoned)
+				if pressure.AbsorbContextOverflow(promptTokens) {
+					log.Printf("[agent-loop] prompt fills context window (prompt_tokens=%d finish_reason=%q); compacting before the next send", promptTokens, choice.FinishReason)
+					continue
+				}
+				log.Printf("[agent-loop] prompt fills context window and compaction cannot shrink it (prompt_tokens=%d)", promptTokens)
+				return finish(LoopResult{Error: ErrContextWindowFull, Iterations: iteration, ToolCalls: totalToolCalls})
+			}
 			consecutiveTruncatedEmpty++
 			if consecutiveTruncatedEmpty <= maxConsecutiveTruncatedEmpty {
 				disposeSurface(ToolSurfaceResponseAbandoned)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -18,8 +19,7 @@ import (
 var (
 	user32Enum                   = syscall.NewLazyDLL("user32.dll")
 	procEnumWindows              = user32Enum.NewProc("EnumWindows")
-	procGetWindowTextW           = user32Enum.NewProc("GetWindowTextW")
-	procGetWindowTextLengthW     = user32Enum.NewProc("GetWindowTextLengthW")
+	procInternalGetWindowText    = user32Enum.NewProc("InternalGetWindowText")
 	procIsWindowVisible          = user32Enum.NewProc("IsWindowVisible")
 	procSetForegroundWindow      = user32Enum.NewProc("SetForegroundWindow")
 	procAllowSetForegroundWindow = user32Enum.NewProc("AllowSetForegroundWindow")
@@ -36,6 +36,8 @@ var (
 	procGetAncestor              = user32Enum.NewProc("GetAncestor")
 	procAttachThreadInput        = user32Enum.NewProc("AttachThreadInput")
 	procGetWindowThreadProcessId = user32Enum.NewProc("GetWindowThreadProcessId")
+	procGetGUIThreadInfo         = user32Enum.NewProc("GetGUIThreadInfo")
+	procGetClassNameW            = user32Enum.NewProc("GetClassNameW")
 	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
 	procGetCurrentThreadId       = kernel32.NewProc("GetCurrentThreadId")
 	dwmapiFocus                  = syscall.NewLazyDLL("dwmapi.dll")
@@ -80,7 +82,7 @@ func listAppFrames() []visibleWindow {
 	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
 		title := windowText(hwnd)
 		ex, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlExStyleArg)
-		if !appFrameEligible(title, ex, windowCloaked(hwnd)) {
+		if !appFrameEligible(title, ex, windowCloaked(hwnd)) || consoleHostClass(windowClass(hwnd)) || computeruse.ExecutablePathTitle(title) {
 			return 1
 		}
 		vis, _, _ := procIsWindowVisible.Call(hwnd)
@@ -101,6 +103,17 @@ func appFrameEligible(title string, exStyle uintptr, cloaked bool) bool {
 		return false
 	}
 	return exStyle&wsExToolWindow == 0
+}
+
+// consoleHostClass is a command-prompt window. Focusing it puts a black
+// console in front of the application the person is using.
+func consoleHostClass(class string) bool {
+	switch class {
+	case "ConsoleWindowClass", "PseudoConsoleWindow":
+		return true
+	default:
+		return false
+	}
 }
 
 func windowCloaked(hwnd uintptr) bool {
@@ -331,6 +344,66 @@ func foregroundWindowID() uint64 {
 	return uint64(hwnd)
 }
 
+// winGUIThreadInfo is GUITHREADINFO. On amd64 the first HWND is 8-aligned,
+// so four bytes of padding sit between Flags and HwndActive. cbSize is 72.
+type winGUIThreadInfo struct {
+	CbSize        uint32
+	Flags         uint32
+	HwndActive    uintptr
+	HwndFocus     uintptr
+	HwndCapture   uintptr
+	HwndMenuOwner uintptr
+	HwndMoveSize  uintptr
+	HwndCaret     uintptr
+	RcLeft        int32
+	RcTop         int32
+	RcRight       int32
+	RcBottom      int32
+}
+
+func foregroundAcceptsText() bool {
+	return foregroundKeyboardTarget().AcceptsText()
+}
+
+// foregroundKeyboardTarget reads the foreground thread. It does not activate
+// a window or send input. A missing foreground window is not a text target.
+func foregroundKeyboardTarget() KeyboardTextTarget {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return KeyboardTextTarget{}
+	}
+	var pid uint32
+	tid, _, _ := procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if tid == 0 {
+		return KeyboardTextTarget{Foreground: uint64(hwnd)}
+	}
+	info := winGUIThreadInfo{CbSize: uint32(unsafe.Sizeof(winGUIThreadInfo{}))}
+	r, _, _ := procGetGUIThreadInfo.Call(tid, uintptr(unsafe.Pointer(&info)))
+	if r == 0 {
+		return KeyboardTextTarget{Foreground: uint64(hwnd)}
+	}
+	return KeyboardTextTarget{
+		Foreground: uint64(hwnd),
+		Focus:      uint64(info.HwndFocus),
+		Caret:      uint64(info.HwndCaret),
+		FocusClass: windowClass(info.HwndFocus),
+	}
+}
+
+// windowClass reads the window class. GetClassName does not send WM_GETTEXT.
+func windowClass(hwnd uintptr) string {
+	if hwnd == 0 || procGetClassNameW.Find() != nil {
+		return ""
+	}
+	buf := make([]uint16, 256)
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	runtime.KeepAlive(buf)
+	if n == 0 || int(n) >= len(buf) {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:n])
+}
+
 type winRect struct {
 	Left, Top, Right, Bottom int32
 }
@@ -422,12 +495,19 @@ func windowIDAtPoint(x, y int) uint64 {
 	return uint64(rootWindowAtPoint(x, y))
 }
 
+// windowText reads the caption without sending WM_GETTEXT.
+// GetWindowText asks the target thread, so a higher-integrity window answers
+// with an empty caption and a hung window never answers. An empty caption
+// must not be treated as "this is the window we are driving".
 func windowText(hwnd uintptr) string {
-	n, _, _ := procGetWindowTextLengthW.Call(hwnd)
-	if n == 0 {
+	if hwnd == 0 || procInternalGetWindowText.Find() != nil {
 		return ""
 	}
-	buf := make([]uint16, n+1)
-	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(n+1))
-	return syscall.UTF16ToString(buf)
+	buf := make([]uint16, 512)
+	n, _, _ := procInternalGetWindowText.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	runtime.KeepAlive(buf)
+	if n == 0 || int(n) >= len(buf) {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:n])
 }

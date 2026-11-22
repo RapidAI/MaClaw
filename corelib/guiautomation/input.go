@@ -24,6 +24,12 @@ type InputSimulator interface {
 // do not treat a missing simulator as a successful click or type.
 var ErrUnsupportedPlatform = fmt.Errorf("input simulation not supported on this platform")
 
+// ErrInputDenied is returned when the desktop refuses the input channel.
+// SetCursorPos failing with no last error, and SendInput returning
+// ERROR_ACCESS_DENIED, are privilege isolation: the call did not reach the
+// foreground window. A bad coordinate is not this error.
+var ErrInputDenied = fmt.Errorf("desktop input denied")
+
 // clampToVirtual keeps a click inside the virtual desktop.
 // Origins may be negative when a monitor sits left of or above the primary.
 func clampToVirtual(x, y, originX, originY, width, height int) (int, int) {

@@ -41,6 +41,13 @@ type computerUseRuntime struct {
 	// It expires after computerUseStickyTTL unless refreshed by further CU activity.
 	activated   bool
 	activatedAt time.Time
+	// activatedOwner is the owner that last marked the sticky session.
+	// The rim and the activity bar are one global session, so a finished
+	// loop may retire it only while this is still that loop's owner.
+	activatedOwner string
+	// frameEpoch increments on every mark. A drop that observed an older
+	// epoch must not hide a rim a newer mark has already published.
+	frameEpoch uint64
 	// lastFreshOpenRequestID is the request that last opened the CU gate via a
 	// fresh (explicit/semantic) decision. A stopped in-flight turn re-gates with
 	// the same request ID while cancel is still taking effect; the ID lets
@@ -104,6 +111,12 @@ func cuHandleDone(summary string) string {
 // describing it. A long-horizon claim and an audit rejection are both refusals
 // to complete, and separating them from an accepted completion by reading the
 // prose is how a refused completion ends up recorded as a finished task.
+// Input denial and a spent step budget do not accept the summary. The audit
+// still decides. A failed audit on a terminal attempt names that reason and
+// does not ask for another observe, and it leaves the latch and the acceptance
+// in place. A passing audit, or a task with no acceptance, still completes.
+// That completion does not clear the latch. It marks the attempt finished
+// so the loop does not start another model round. The next task clears both.
 func cuDoneResult(summary string) (string, bool) {
 	sess, owner := cuSessionAndOwner()
 	if horizonComputerUseClaimOnly(owner) {
@@ -112,6 +125,7 @@ func cuDoneResult(summary string) (string, bool) {
 		}
 		return fmt.Sprintf("computer_done claim: %s (does not complete the long-horizon task)", summary), false
 	}
+	terminal, terminalReason := cuAttemptTerminal(sess)
 	state := snapshotComputerUseTaskState(owner)
 	if state != nil && len(state.Acceptance) > 0 {
 		passed, reason := applyComputerUseAudit(sess, state)
@@ -119,6 +133,9 @@ func cuDoneResult(summary string) (string, bool) {
 			updateComputerUseTaskAudit(owner, computerUseAuditFailed, true)
 			if sess != nil {
 				sess.RecordAction("done", summary, false, reason, false)
+			}
+			if terminal {
+				return fmt.Sprintf("computer_done rejected: %s; %s Do not observe again.", reason, terminalReason), false
 			}
 			return fmt.Sprintf("computer_done rejected: %s; call computer_observe and retry", reason), false
 		}
@@ -133,6 +150,8 @@ func cuDoneResult(summary string) (string, bool) {
 			steps = p.StepCount()
 		}
 	}
+	// The summary is the report. Later tools and the next model round stop.
+	markComputerUseTaskCompleted(owner, summary)
 	// End sticky injection so the next unrelated chat does not keep CU tools.
 	clearComputerUseSessionActive()
 	emitComputerUseDoneControl(steps)
@@ -559,8 +578,14 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 // cuGuardDisabled returns a user-facing message when Computer Use is disabled
 // in settings (computer_use_enabled=false), or "" when the tool may run.
 func cuGuardDisabled(tool string) string {
+	if msg := computerUseCompletedToolRefusal(tool); msg != "" {
+		return msg
+	}
 	if tool != "computer_done" && tool != "computer_playbook" {
 		if msg := cuRefuseAfterDesktopMessageSent(tool); msg != "" {
+			return msg
+		}
+		if msg := cuAttemptFinished(tool); msg != "" {
 			return msg
 		}
 	}
@@ -568,6 +593,53 @@ func cuGuardDisabled(tool string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s: Computer Use is disabled (computer_use_enabled=false). Enable it in Settings → Computer Use first.", tool)
+}
+
+// cuAttemptTerminal reports that this attempt can no longer inject.
+// The reason does not name an observe tool. The managed surface rewrites
+// that name into another observe call.
+func cuAttemptTerminal(sess *computeruse.Session) (bool, string) {
+	if sess == nil {
+		return false, ""
+	}
+	if sess.InputDenied() {
+		return true, "the foreground window refused input."
+	}
+	if max, exhausted := sess.StepsExhausted(); exhausted {
+		return true, fmt.Sprintf("computer use max steps exceeded (%d).", max)
+	}
+	return false, ""
+}
+
+// cuAttemptFinished stops every computer tool except computer_done and
+// computer_playbook once this attempt can no longer inject. The stale-label
+// check says to observe again; that is how a spent budget or a refused
+// input channel keeps the model looping. This answer is the same terminal
+// line, and it does not spend another step.
+func cuAttemptFinished(tool string) string {
+	sess := cuSession()
+	if sess == nil {
+		return ""
+	}
+	if sess.InputDenied() {
+		return fmt.Sprintf("%s: the foreground window refused input. Call computer_done.", tool)
+	}
+	if max, exhausted := sess.StepsExhausted(); exhausted {
+		return fmt.Sprintf("%s: computer use max steps exceeded (%d). Call computer_done.", tool, max)
+	}
+	return ""
+}
+
+// cuInputDenied latches privilege isolation and tells the model to finish.
+// The OS error stays in the audit. The tool result does not ask for another observe.
+func cuInputDenied(sess *computeruse.Session, tool string, err error) string {
+	if err == nil || !errors.Is(err, guiautomation.ErrInputDenied) {
+		return ""
+	}
+	if sess != nil {
+		sess.NoteInputDenied()
+	}
+	return fmt.Sprintf("%s: the foreground window refused input. Call computer_done.", tool)
 }
 
 // computerUsePolicyWindowHook overrides the live window under a point in tests.
@@ -590,6 +662,22 @@ var computerUseFocusWindowFn func(title string) error
 // computerUseWindowAtPointFn overrides the window under a click in tests.
 // Production leaves it nil.
 var computerUseWindowAtPointFn func(x, y int) (id uint64, title string)
+
+// computerUseAcceptsTextFn overrides the foreground keyboard-focus probe.
+// Production leaves it nil and reads the GUI thread. Tests set it so they
+// do not call SetForegroundWindow or depend on the desktop caret.
+var computerUseAcceptsTextFn func() bool
+
+// computerUseNoTextFocus is the tool result when keystrokes would not be
+// inserted. The model has to click a text field before typing again.
+const computerUseNoTextFocus = "keyboard focus is not a text control; computer_click the text field, then computer_type"
+
+func computerUseKeyboardAcceptsText() bool {
+	if computerUseAcceptsTextFn != nil {
+		return computerUseAcceptsTextFn()
+	}
+	return accessibility.ForegroundAcceptsText()
+}
 
 // computerUseRaisedNote is the window just brought back from the background.
 // The next tool result consumes it.
@@ -677,7 +765,7 @@ func cuRestoreOperatedApp(sess *computeruse.Session, title string, honorHalo boo
 		log.Printf("[computer-use] raise window %q: %v", title, err)
 		return false
 	}
-	if !computeruse.WindowTitlesMatch(title, cuForegroundTitle()) {
+	if !computeruse.CropIsForeground(title, cuForegroundTitle()) {
 		return false
 	}
 	computerUseRaisedNote = title
@@ -940,7 +1028,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 				raiseHint = ""
 			}
 		}
-		if raiseHint != "" && !computeruse.WindowTitlesMatch(raiseHint, cuForegroundTitle()) {
+		if raiseHint != "" && !computeruse.CropIsForeground(raiseHint, cuForegroundTitle()) {
 			if !cuRestoreOperatedApp(cuSession(), raiseHint, explicitHint == "") {
 				now := cuForegroundTitle()
 				out.Error = "foreground"
@@ -1032,7 +1120,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	if bridge != nil {
 		if tops, err := bridge.EnumElements(""); err == nil {
 			for _, el := range tops {
-				if el.Name != "" {
+				if el.Name != "" && !computeruse.ExecutablePathTitle(el.Name) {
 					windows = append(windows, el.Name)
 				}
 			}
@@ -1311,7 +1399,7 @@ func cuRefreshForeground(prefix, windowHint string) (out string) {
 		out = cuAppendRaisedNote(out)
 	}()
 	window := cuOperatedWindow(windowHint)
-	if window != "" && !computeruse.WindowTitlesMatch(window, cuForegroundTitle()) {
+	if window != "" && !computeruse.CropIsForeground(window, cuForegroundTitle()) {
 		// The shot is the window rectangle. If this app is still behind
 		// another window, that rectangle is the covering window's pixels.
 		if !cuRestoreOperatedApp(cuSession(), window, strings.TrimSpace(windowHint) == "") {
@@ -1677,6 +1765,12 @@ func cuHandleFocus(args map[string]interface{}) string {
 	}
 	sess := cuSession()
 	detail := fmt.Sprintf("window=%q", window)
+	if computeruse.ExecutablePathTitle(window) {
+		msg := fmt.Sprintf("no application window matching %q", window)
+		sess.RecordAction("focus", detail, false, msg, false)
+		emitComputerUseActionUI("focus", detail, false, msg)
+		return "computer_focus failed: " + msg
+	}
 	// The title we would activate, or the request when that window is not
 	// visible yet. A security surface must not be brought forward.
 	if err := sess.CheckClickPolicy(0, 0, cuFocusPolicyTitle(window)); err != nil {
@@ -2047,6 +2141,9 @@ func cuHandleClick(args map[string]interface{}) string {
 	if err != nil {
 		sess.RecordAction("click", detail, false, err.Error(), false)
 		emitComputerUseActionUI("click", detail, false, err.Error())
+		if msg := cuInputDenied(sess, "computer_click", err); msg != "" {
+			return msg
+		}
 		return fmt.Sprintf("computer_click failed: %v", err)
 	}
 	sess.RecordAction("click", detail+" via "+strategy, true, "", true)
@@ -2155,6 +2252,15 @@ func cuHandleType(args map[string]interface{}) string {
 	if msg := cuReassertOperatedWindow(sess); msg != "" {
 		return "computer_type: " + msg
 	}
+	// Untargeted typing pastes at the caret. The foreground window title is
+	// not that caret: a browser frame and a thread with no focus window drop
+	// the paste, and SendInput still returns success. Refuse before the step
+	// is spent, and do not send the keys.
+	if ref == "" && !computerUseKeyboardAcceptsText() {
+		sess.RecordAction("type", detail, false, "no-text-focus", false)
+		emitComputerUseActionUI("type", detail, false, "no-text-focus")
+		return "computer_type: " + computerUseNoTextFocus
+	}
 	if err := sess.BeginAction("type", detail); err != nil {
 		return fmt.Sprintf("computer_type: %v", err)
 	}
@@ -2166,6 +2272,9 @@ func cuHandleType(args map[string]interface{}) string {
 		} else {
 			if err := input.Click(x, y); err != nil {
 				sess.RecordAction("type", detail, false, err.Error(), false)
+				if msg := cuInputDenied(sess, "computer_type", err); msg != "" {
+					return msg
+				}
 				return fmt.Sprintf("computer_type focus click failed: %v", err)
 			}
 			time.Sleep(80 * time.Millisecond)
@@ -2178,9 +2287,20 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	if strategy != "a11y" {
+		// A ref click was supposed to move keyboard focus onto the control.
+		// Type only after that focus can insert text. A ValuePattern write
+		// already finished above and does not use this path.
+		if !computerUseKeyboardAcceptsText() {
+			sess.RecordAction("type", detail, false, "no-text-focus", false)
+			emitComputerUseActionUI("type", detail, false, "no-text-focus")
+			return "computer_type: " + computerUseNoTextFocus
+		}
 		if err := input.Type(text); err != nil {
 			sess.RecordAction("type", detail, false, err.Error(), false)
 			emitComputerUseActionUI("type", detail, false, err.Error())
+			if msg := cuInputDenied(sess, "computer_type", err); msg != "" {
+				return msg
+			}
 			return fmt.Sprintf("computer_type failed: %v", err)
 		}
 	}
@@ -2267,12 +2387,21 @@ func cuHandleKey(args map[string]interface{}) string {
 	if msg := cuReassertOperatedWindow(sess); msg != "" {
 		return "computer_key: " + msg
 	}
+	// Paste is typing. Enter and arrows still go to the window.
+	if keysInsertText(keys) && !computerUseKeyboardAcceptsText() {
+		sess.RecordAction("key", detail, false, "no-text-focus", false)
+		emitComputerUseActionUI("key", detail, false, "no-text-focus")
+		return "computer_key: " + computerUseNoTextFocus
+	}
 	if err := sess.BeginAction("key", detail); err != nil {
 		return fmt.Sprintf("computer_key: %v", err)
 	}
 	if err := input.KeyCombo(keys...); err != nil {
 		sess.RecordAction("key", detail, false, err.Error(), false)
 		emitComputerUseActionUI("key", detail, false, err.Error())
+		if msg := cuInputDenied(sess, "computer_key", err); msg != "" {
+			return msg
+		}
 		return fmt.Sprintf("computer_key failed: %v", err)
 	}
 	sess.RecordAction("key", detail, true, "", true)
@@ -2286,6 +2415,36 @@ func cuHandleKey(args map[string]interface{}) string {
 		msg += "\n" + desktopMessageStopText
 	}
 	return msg
+}
+
+// keysInsertText reports a paste chord. Ctrl+V and Ctrl+Shift+V paste.
+// Shift+Insert pastes. Enter, Ctrl+Enter, and Ctrl+A do not.
+func keysInsertText(keys []string) bool {
+	if len(keys) == 0 || len(keys) > 3 {
+		return false
+	}
+	var v, insert, ctrl, shift, other bool
+	for _, k := range keys {
+		switch strings.ToLower(strings.TrimSpace(k)) {
+		case "v":
+			v = true
+		case "insert":
+			insert = true
+		case "ctrl", "control":
+			ctrl = true
+		case "shift":
+			shift = true
+		default:
+			other = true
+		}
+	}
+	if other {
+		return false
+	}
+	if v && ctrl {
+		return true
+	}
+	return insert && shift && !ctrl && !v
 }
 
 func splitKeyCombo(raw string) []string {
@@ -2365,6 +2524,9 @@ func cuHandleScroll(args map[string]interface{}) string {
 	if err := input.Scroll(end.x, end.y, dx, dy); err != nil {
 		sess.RecordAction("scroll", detail, false, err.Error(), false)
 		emitComputerUseActionUI("scroll", detail, false, err.Error())
+		if msg := cuInputDenied(sess, "computer_scroll", err); msg != "" {
+			return msg
+		}
 		return fmt.Sprintf("computer_scroll failed: %v", err)
 	}
 	sess.RecordAction("scroll", detail, true, "", true)
@@ -2428,6 +2590,9 @@ func cuHandleSelect(args map[string]interface{}) string {
 	} else if input != nil {
 		if err := input.Click(x, y); err != nil {
 			sess.RecordAction("select", detail, false, err.Error(), false)
+			if msg := cuInputDenied(sess, "computer_select", err); msg != "" {
+				return msg
+			}
 			return fmt.Sprintf("computer_select failed: %v", err)
 		}
 	} else {
@@ -2527,6 +2692,9 @@ func cuHandleDrag(args map[string]interface{}) string {
 	}
 	if err := input.DragDrop(from.x, from.y, to.x, to.y); err != nil {
 		sess.RecordAction("drag", detail, false, err.Error(), false)
+		if msg := cuInputDenied(sess, "computer_drag", err); msg != "" {
+			return msg
+		}
 		return fmt.Sprintf("computer_drag failed: %v", err)
 	}
 	sess.RecordAction("drag", detail, true, "", true)

@@ -25,6 +25,22 @@ type agentLoopMaxRoundsExitOptions struct {
 }
 
 func (h *IMMessageHandler) maxRoundsAgentLoopExit(ctx *LoopContext, opts agentLoopMaxRoundsExitOptions) *IMAgentResponse {
+	if summary := computerUseFinishedReply(ctx, opts.UserID, ""); summary != "" {
+		id := ""
+		if ctx != nil {
+			id = ctx.ID
+		}
+		log.Printf("[AgentLoop] computer use finished loop=%s iteration=%d", id, opts.FinalIteration)
+		resp := &IMAgentResponse{Text: summary}
+		if opts.AttachLLMTelemetry != nil {
+			opts.AttachLLMTelemetry(resp)
+		}
+		if opts.AttachVisibleArtifacts != nil {
+			opts.AttachVisibleArtifacts(resp)
+		}
+		h.saveConversationHistoryTimed(opts.UserID, opts.History, resp)
+		return resp
+	}
 	log.Printf("[AgentLoop] MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
 		ctx.ID, opts.FinalIteration, opts.EffectiveMax, opts.ConfigMax, opts.LoopMaxOverride, opts.ChatFinalizeGrace, ctx.Kind, opts.UserID, truncateRunes(opts.UserText, 80), time.Since(opts.ConversationStartedAt))
 	// In-place refills already happened inside the loop. Another session wave

@@ -24,6 +24,7 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 		computerUseForegroundIDFn = nil
 		computerUseFocusWindowFn = nil
 		computerUseWindowAtPointFn = nil
+		computerUseAcceptsTextFn = nil
 		computerUseRaisedNote = ""
 		computerUseExplicitFocusTitle = ""
 		hideComputerUseWindowHalo()
@@ -44,8 +45,13 @@ func resetComputerUseRuntimeForTest(t *testing.T) {
 	computerUseForegroundIDFn = nil
 	computerUseFocusWindowFn = nil
 	computerUseWindowAtPointFn = nil
+	computerUseAcceptsTextFn = nil
 	computerUseRaisedNote = ""
 	computerUseExplicitFocusTitle = ""
+	if computerUseTestForegroundBound != "" {
+		bound := computerUseTestForegroundBound
+		computerUseForegroundTitleFn = func() string { return bound }
+	}
 	hideComputerUseWindowHalo()
 	cuCancelLabelPrefetch()
 }

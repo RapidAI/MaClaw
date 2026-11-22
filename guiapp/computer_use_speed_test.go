@@ -327,14 +327,21 @@ func installLabelOCR(t *testing.T, ocr taskengine.OCRProvider, sidecar *browser.
 	})
 }
 
+// computerUseTestForegroundBound is the caption tests treat as foreground.
+// resetComputerUseRuntimeForTest clears the hook and then restores this, so
+// an empty live caption does not make CropIsForeground fail and call
+// FocusWindow.
+var computerUseTestForegroundBound string
+
 func computerUseTestForeground(t *testing.T) string {
 	t.Helper()
 	title := strings.TrimSpace(accessibility.ForegroundWindowTitle())
 	if title == "" {
-		// This session has no foreground window. WindowTitlesMatch treats an
-		// empty live title as unknown, so a fixed crop still passes same-window.
-		return "计算机使用测试"
+		title = "计算机使用测试"
 	}
+	computerUseTestForegroundBound = title
+	computerUseForegroundTitleFn = func() string { return computerUseTestForegroundBound }
+	t.Cleanup(func() { computerUseTestForegroundBound = "" })
 	return title
 }
 
@@ -1008,6 +1015,22 @@ func TestCoveringClickKeepsTheOperatedWindow(t *testing.T) {
 	}
 	if crop := cuSession().LastObserve(); crop == nil || crop.Meta.CropTitle != "蓝信" {
 		t.Fatalf("crop changed: %+v", crop)
+	}
+}
+
+func TestFocusDoesNotRaiseAnExecutablePathConsole(t *testing.T) {
+	cfg := computeruse.DefaultConfig()
+	cfg.MaxSteps = 1
+	sess := computeruse.NewSession(cfg)
+	installCountingComputerUse(t, sess)
+	const console = `C:\Program Files (x86)\LanxinSoftCustom\main\LxMainNew.exe`
+	got := cuHandleFocus(map[string]interface{}{"window": console})
+	if !strings.Contains(got, "no application window") || strings.Contains(got, "focused") {
+		t.Fatalf("msg=%s", got)
+	}
+	later := cuHandleFocus(map[string]interface{}{"window": "cu-focus-path-test"})
+	if strings.Contains(later, "max steps") || !strings.Contains(later, "no visible window") {
+		t.Fatalf("later=%s", later)
 	}
 }
 

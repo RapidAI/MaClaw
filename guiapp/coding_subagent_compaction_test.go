@@ -215,17 +215,20 @@ func TestSubAgentCompactionKeepsRecoveryMeasurementOnce(t *testing.T) {
 	}
 }
 
-func TestSubAgentCompactionFlagOffStillAppends(t *testing.T) {
+func TestSubAgentCompactionFlagOffReplacesPriorBlock(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
 	first := compactor.Compact(codingCompactionTurns("do the task", 6))
 	body := taskContentOf(first)
 	if strings.Contains(body, "<handoff-memo>") || strings.Count(body, "[上下文压缩]") != 1 {
-		t.Fatalf("flag off should append one legacy summary: %q", body)
+		t.Fatalf("flag off should write one legacy summary: %q", body)
 	}
 	second := compactor.Compact(insertCodingTurns(first, 2))
-	if strings.Count(taskContentOf(second), "[上下文压缩]") != 2 {
-		t.Fatalf("flag off should keep appending: %q", taskContentOf(second))
+	if strings.Count(taskContentOf(second), "[上下文压缩]") != 1 {
+		t.Fatalf("flag off must replace the previous block: %q", taskContentOf(second))
+	}
+	if !strings.Contains(taskContentOf(second), "do the task") {
+		t.Fatalf("replacement dropped the task: %q", taskContentOf(second))
 	}
 }
 
@@ -245,19 +248,18 @@ func TestSubAgentCompactionHandoffTriggerAndPendingAsk(t *testing.T) {
 	}
 	over := codingCompactionTurns("task", 1)
 	over = append(over, map[string]interface{}{"role": "tool", "content": strings.Repeat("y", 20000)})
-	capped := NewSubAgentCompactor(1000, nil, nil, nil, nil)
-	capped.compactionCount = subAgentMaxCompactionsPerTask
-	if capped.ShouldCompact(over) {
-		t.Fatal("flag off must stop after 3 compactions")
+	kept := NewSubAgentCompactor(1000, nil, nil, nil, nil)
+	kept.compactionCount = 3
+	if !kept.ShouldCompact(over) {
+		t.Fatal("an over-window conversation must keep compacting after earlier passes")
 	}
 
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
 	if !compactor.ShouldCompact(conv) {
 		t.Fatal("flag all should compact above 45% of the window")
 	}
-	capped.compactionCount = subAgentMaxCompactionsPerTask
-	if !capped.ShouldCompact(over) {
-		t.Fatal("flag on must not keep the 3-compaction cap")
+	if !kept.ShouldCompact(over) {
+		t.Fatal("flag on must compact an over-window conversation after earlier passes")
 	}
 	pending := append(conv, map[string]interface{}{"role": "tool", "content": "Asked user: which file?"})
 	if compactor.ShouldCompact(pending) {
@@ -265,6 +267,194 @@ func TestSubAgentCompactionHandoffTriggerAndPendingAsk(t *testing.T) {
 	}
 	if compacted := compactor.Compact(pending); len(compacted) != len(pending) {
 		t.Fatalf("pending ask compact rewrote history: %d -> %d", len(pending), len(compacted))
+	}
+}
+
+func TestSubAgentCompactionSealsUntilTheConversationGrows(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	// The task message itself fills the window, so dropping the middle cannot shrink it.
+	task := strings.Repeat("y", 20000)
+	conv := codingCompactionTurns(task, 1)
+	compactor := NewSubAgentCompactor(1000, nil, nil, nil, nil)
+	if !compactor.ShouldCompact(conv) {
+		t.Fatal("task that fills the window must compact")
+	}
+	out := compactor.Compact(conv)
+	if compactor.sealedEstimate == 0 {
+		t.Fatal("a compact that does not shrink must seal")
+	}
+	if compactor.ShouldCompact(out) {
+		t.Fatal("sealed conversation must not compact again")
+	}
+	grown := append(append([]interface{}{}, out...), map[string]interface{}{
+		"role": "assistant", "content": strings.Repeat("z", 20000),
+	})
+	if !compactor.ShouldCompact(grown) {
+		t.Fatal("growth past the seal must compact again")
+	}
+}
+
+func TestSubAgentCompactionFollowsProviderPrompt(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	// The task text is kept verbatim, so compaction has no middle it can drop.
+	conv := codingCompactionTurns(strings.Repeat("y", 20000), 1)
+	compactor := NewSubAgentCompactor(210000, nil, nil, nil, nil)
+	if compactor.ShouldCompact(conv) {
+		t.Fatal("a short conversation must not compact on the byte estimate alone")
+	}
+	if !compactor.notePromptTokens(257658) {
+		t.Fatal("an over-window prompt is a real fill")
+	}
+	if !compactor.ShouldCompact(conv) {
+		t.Fatal("provider prompt over the window must compact even when the byte estimate is low")
+	}
+	if compactor.notePromptTokens(122) {
+		t.Fatal("122 tokens after a full window is not a successful shrink")
+	}
+	if compactor.lastPromptTokens != 257658 {
+		t.Fatalf("last prompt=%d, want the over-window size kept", compactor.lastPromptTokens)
+	}
+	if !compactor.promptFillsWindow(122) || !compactor.promptFillsWindow(257658) {
+		t.Fatal("both the full prompt and the degenerate report fill the window")
+	}
+	if !compactor.absorbOverflow(257658) {
+		t.Fatal("first overflow must arm compaction")
+	}
+	// Nothing in this short conversation can shrink, so the armed pass stalls.
+	_ = compactor.Compact(conv)
+	if !compactor.stalled {
+		t.Fatal("a full prompt that compaction cannot shrink must stall")
+	}
+	if compactor.absorbOverflow(122) {
+		t.Fatal("a stalled compactor must not arm another send")
+	}
+}
+
+func TestSubAgentCompactionTruncatedToolIsNotAStall(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	huge := strings.Repeat("output ", 8000)
+	conv := []interface{}{
+		map[string]interface{}{"role": "system", "content": "sys"},
+		map[string]interface{}{"role": "user", "content": "do the task"},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "working",
+			"tool_calls": []llm.ToolCall{{
+				ID:       "1",
+				Function: llm.ToolCallFunction{Name: "bash", Arguments: `{"command":"one"}`},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "1", "content": huge},
+	}
+	if !compactor.notePromptTokens(9000) {
+		t.Fatal("9000 tokens fills an 8000 window")
+	}
+	out := compactor.Compact(conv)
+	if compactor.stalled {
+		t.Fatal("truncating the oversized tool result is a shrink and must still be sent")
+	}
+	if estimateConversationTokensForSubAgent(out) >= estimateConversationTokensForSubAgent(conv) {
+		t.Fatalf("fitted tokens=%d, original=%d", estimateConversationTokensForSubAgent(out), estimateConversationTokensForSubAgent(conv))
+	}
+	var kept string
+	for _, msg := range out {
+		m, _ := msg.(map[string]interface{})
+		if m["role"] != "tool" {
+			continue
+		}
+		kept, _ = m["content"].(string)
+	}
+	if kept == "" || len(kept) >= len(huge) {
+		t.Fatalf("tool result was not truncated: %d bytes", len(kept))
+	}
+}
+
+func TestSubAgentCompactionFullPromptBypassesSeal(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	task := strings.Repeat("y", 20000)
+	conv := codingCompactionTurns(task, 1)
+	compactor := NewSubAgentCompactor(210000, nil, nil, nil, nil)
+	sealed := compactor.Compact(conv)
+	if compactor.stalled || compactor.sealedEstimate == 0 {
+		t.Fatalf("under-window no-shrink must seal without stalling (stalled=%v seal=%d)", compactor.stalled, compactor.sealedEstimate)
+	}
+	if compactor.ShouldCompact(sealed) {
+		t.Fatal("seal holds while the provider prompt does not fill the window")
+	}
+	if !compactor.notePromptTokens(257658) || !compactor.forceCompact {
+		t.Fatal("a prompt that fills the window must arm another compact")
+	}
+	if !compactor.ShouldCompact(sealed) {
+		t.Fatal("a sealed estimate must not hide a prompt that fills the window")
+	}
+	if !compactor.notePromptTokens(24000) || compactor.forceCompact || compactor.lastPromptTokens != 24000 {
+		t.Fatalf("under-window prompt=%d force=%v, want 24000 and force cleared", compactor.lastPromptTokens, compactor.forceCompact)
+	}
+	if compactor.ShouldCompact(sealed) {
+		t.Fatal("an under-window prompt stays behind the seal")
+	}
+	// A reference fan-out and the aggregator report back to back. The tiny
+	// report must not stick, and the aggregator's later prompt owns the flag.
+	if !compactor.notePromptTokens(257658) || !compactor.forceCompact {
+		t.Fatal("over-window prompt must arm compaction again")
+	}
+	if compactor.notePromptTokens(122) || compactor.lastPromptTokens != 257658 || !compactor.forceCompact {
+		t.Fatal("degenerate report must keep the full prompt and the force")
+	}
+	if !compactor.notePromptTokens(24000) || compactor.forceCompact || compactor.lastPromptTokens != 24000 {
+		t.Fatal("the later under-window prompt must clear the force")
+	}
+}
+
+func TestSubAgentCompactionUsesLiveWindow(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	compactor := NewSubAgentCompactor(128000, nil, nil, nil, nil)
+	compactor.windowFn = func() int { return 210000 }
+	if compactor.promptFillsWindow(150000) {
+		t.Fatal("150k fills a 128k snapshot, not the live 210k window")
+	}
+	if !compactor.notePromptTokens(257658) || !compactor.promptFillsWindow(257658) {
+		t.Fatal("live window must see 257658 as full")
+	}
+
+	fresh := NewSubAgentCompactor(0, nil, nil, nil, nil)
+	fresh.windowFn = func() int { return 0 }
+	if fresh.promptFillsWindow(257658) || !fresh.notePromptTokens(257658) || fresh.forceCompact {
+		t.Fatal("an unknown window must not treat a prompt as full")
+	}
+	huge := codingCompactionTurns(strings.Repeat("y", 400000), 1)
+	if !fresh.ShouldCompact(huge) {
+		t.Fatal("unknown window still compacts when the byte estimate passes the fallback")
+	}
+	out := fresh.Compact(huge)
+	if fresh.stalled {
+		t.Fatal("unknown window must not stall when the compact cannot shrink")
+	}
+	if fresh.ShouldCompact(out) {
+		t.Fatal("the fallback trigger still seals a no-shrink compact")
+	}
+}
+
+func TestSubAgentCompactionPerRoundStillCompactsFullPrompt(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	t.Setenv("MACLAW_CODING_MEMO_PER_ROUND", "on")
+	conv := codingCompactionTurns(agent.SessionRoundPrefix+" continue the wave", 6)
+	conv[3].(map[string]interface{})["content"] = "SECRET_ROUND_BODY"
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	if !compactor.notePromptTokens(9000) {
+		t.Fatal("9000 fills an 8000 window")
+	}
+	got := (&codingSubAgentHooks{compactor: compactor}).TransformConversation(conv)
+	if got == nil {
+		t.Fatal("a full prompt must rewrite a per-round-blocked wave")
+	}
+	for _, msg := range got {
+		m, _ := msg.(map[string]interface{})
+		content, _ := m["content"].(string)
+		if strings.Contains(content, "SECRET_ROUND_BODY") {
+			t.Fatal("per-round returned the blocked wave without compacting a full prompt")
+		}
 	}
 }
 

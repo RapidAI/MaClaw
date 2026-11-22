@@ -67,6 +67,50 @@ func WindowOwnedBySelf(id uint64) bool {
 	return windowOwnedBySelf(id)
 }
 
+// KeyboardTextTarget is the foreground thread's keyboard focus.
+// Focus and Caret are platform window ids. On Windows they are HWNDs.
+type KeyboardTextTarget struct {
+	Foreground uint64
+	Focus      uint64
+	Caret      uint64
+	FocusClass string
+}
+
+// AcceptsText reports whether typed characters will be inserted.
+// A Win32 caret accepts text. A focused window accepts text when its class
+// is not a shell that never inserts characters: the browser frame
+// Chrome_WidgetWin (page text goes to Chrome_RenderWidgetHostHWND), a
+// button, a static label, the desktop, or a menu. A toolkit that keeps
+// keyboard focus on its own top-level window, such as Qt, still accepts
+// text. No focus window and no caret does not.
+func (t KeyboardTextTarget) AcceptsText() bool {
+	if t.Caret != 0 {
+		return true
+	}
+	if t.Focus == 0 {
+		return false
+	}
+	return !focusClassRejectsText(t.FocusClass)
+}
+
+// focusClassRejectsText reports classes that never insert typed characters.
+// An empty class is not a rejection: the class could not be read, and a
+// focused window of an unknown toolkit still receives the keystrokes.
+func focusClassRejectsText(class string) bool {
+	switch strings.TrimSpace(class) {
+	case "#32768", "#32769", "Button", "Static", "ToolbarWindow32", "Shell_TrayWnd", "Progman", "WorkerW":
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(class), "Chrome_WidgetWin")
+}
+
+// ForegroundAcceptsText reports whether the foreground thread will insert
+// typed characters. Windows reads that thread. Other platforms have no
+// equivalent probe and return true so typing is not refused there.
+func ForegroundAcceptsText() bool {
+	return foregroundAcceptsText()
+}
+
 func parseCSVWindowBounds(s string) (WindowBounds, bool) {
 	parts := strings.SplitN(strings.TrimSpace(s), ",", 5)
 	if len(parts) < 4 {

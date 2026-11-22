@@ -79,6 +79,12 @@ func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iterat
 	if remaining > 2 {
 		return effectiveMax
 	}
+	// A computer-use attempt that can no longer inject must not grow its
+	// iteration budget. The finish rounds already on the ceiling are enough
+	// for computer_done.
+	if computerUseAttemptBlocksContinuation(ctx, "") {
+		return effectiveMax
+	}
 	driftPreview := loopDriftDetector.PreviewDrift()
 	if driftPreview.Drifted && driftPreview.NeedHumanHelp {
 		return effectiveMax
