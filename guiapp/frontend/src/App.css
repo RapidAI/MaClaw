@@ -26938,7 +26938,6 @@ button.tbk-pill {
 .capc-progress { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; min-width: 0; flex: 0 1 auto; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .capc-track { flex: 0 1 48px; width: 48px; min-width: 0; max-width: 48px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); overflow: hidden; }
 .capc-fill { display: block; height: 100%; border-radius: 999px; transition: width 0.25s ease; }
-.capc-context { flex-shrink: 0; margin-left: 2px; font-size: 10px; font-weight: 500; color: var(--theme-text-muted, #5b6b80); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .capc-head-end { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; white-space: nowrap; }
 .capc-current { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
 .capc-pulse-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex-shrink: 0; animation: capc-pulse 1.2s ease-in-out infinite; }
