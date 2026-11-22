@@ -210,7 +210,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                   value: TtsEngine.system,
                   label: Text(context.S.vsTtsSystem),
                 ),
-                if (NativeVoice.supported)
+                if (NativeVoice.usable)
                   ButtonSegment(
                     value: TtsEngine.kokoro,
                     label: Text('Kokoro'),
@@ -225,7 +225,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                     },
             ),
             const SizedBox(height: AppSpacing.sm),
-            if (!NativeVoice.supported)
+            if (!NativeVoice.usable)
               _engineMissingNote(theme)
             else if (!_ttsReady)
               OutlinedButton.icon(
@@ -233,7 +233,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                 icon: const Icon(Icons.download, size: 16),
                 label: Text(context.S.vsDownloadKokoro),
               )
-            else if (NativeVoice.supported) ...[
+            else if (NativeVoice.usable) ...[
               Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
               const SizedBox(height: AppSpacing.xs),
               DropdownButtonFormField<String>(
@@ -276,7 +276,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                   value: AsrEngine.system,
                   label: Text(context.S.vsAsrSystem),
                 ),
-                if (NativeVoice.supported)
+                if (NativeVoice.usable)
                   ButtonSegment(
                     value: AsrEngine.local,
                     label: Text(context.S.vsAsrLocal),
@@ -291,7 +291,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                     },
             ),
             const SizedBox(height: AppSpacing.sm),
-            if (!NativeVoice.supported)
+            if (!NativeVoice.usable)
               // This build has no libmaclaw_voice.so: a download could never
               // fix it, so stop pointing the person at one (papers
               // 2026-11-22 03:05: the assistant kept saying "downloading the
@@ -303,7 +303,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
                 icon: const Icon(Icons.download, size: 16),
                 label: Text(context.S.vsDownloadSenseVoice),
               )
-            else if (NativeVoice.supported)
+            else if (NativeVoice.usable)
               Text(
                 context.S.vsSenseVoiceReady,
                 style: theme.textTheme.bodySmall?.copyWith(

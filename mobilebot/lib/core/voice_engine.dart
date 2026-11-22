@@ -120,19 +120,27 @@ class VoiceEngine {
     await p.setString(_kTtsVoice, id);
   }
 
-  bool get kokoroAvailable => NativeVoice.supported;
+  /// The local library actually opened and has every export. `supported`
+  /// alone only says dlopen returned a handle; a partial build opens and then
+  /// throws on the first call, which reads as "no engine" forever.
+  bool get kvAvailable => NativeVoice.usable;
+
+  bool get kokoroAvailable => kvAvailable;
 
   Future<bool> kokoroReady() async =>
       kokoroAvailable && await VoiceAssets.ttsReady();
 
   Future<bool> localAsrReady() async =>
-      NativeVoice.supported && await VoiceAssets.asrReady();
+      kvAvailable && await VoiceAssets.asrReady();
 
   /// Fire-and-forget model provisioning, kicked at app start. Restores are
   /// free (files already in the external media dir); a fresh install
   /// downloads ~330 MB in the background — no user action needed.
   Future<void> autoEnsure({String? hubBase}) async {
-    if (!NativeVoice.supported) return;
+    // Reopen on every launch: a .so replaced by an install is picked up
+    // without a process restart.
+    NativeVoice.resetProbe();
+    if (!NativeVoice.usable) return;
     if (await kokoroReady() && await localAsrReady()) return;
     try {
       await assets.ensureAll(
@@ -156,7 +164,7 @@ class VoiceEngine {
   }
 
   Future<String?> _ensureTtsLoaded() async {
-    if (!NativeVoice.supported) return 'native voice unavailable';
+    if (!NativeVoice.usable) return 'native voice unavailable';
     if (_ttsLoaded) return null;
     final err = await Isolate.run(
       () => NativeVoice.loadTts(
@@ -215,7 +223,7 @@ class VoiceEngine {
   Future<void> stopSpeaking() => _player.stop();
 
   Future<String?> _ensureAsrLoaded() async {
-    if (!NativeVoice.supported) return 'native voice unavailable';
+    if (!NativeVoice.usable) return 'native voice unavailable';
     if (_asrLoaded) return null;
     if (!await VoiceAssets.asrReady()) {
       _asrPathSnapshot = null;
@@ -244,7 +252,7 @@ class VoiceEngine {
 
   void dispose() {
     _player.dispose();
-    if (NativeVoice.supported) {
+    if (NativeVoice.usable) {
       if (_ttsLoaded) NativeVoice.unloadTts();
       if (_asrLoaded) NativeVoice.unloadAsr();
     }

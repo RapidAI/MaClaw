@@ -784,7 +784,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 但本地引擎是安装包里的原生库，不是可下载的资源：这次安装包没有它时，
   /// 再下载也永远「就绪」不了，别让用户一直等一句下载中的提示。
   void _ensureLocalVoiceModels() {
-    if (!NativeVoice.supported) return;
+    if (!NativeVoice.usable) return;
     final hub = ref.read(sessionProvider).active?.hubUrl;
     unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
   }

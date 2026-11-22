@@ -48,6 +48,25 @@ class NativeVoice {
   /// toast. Empty on a supported ABI or on a platform without the library.
   static String lastOpenError = '';
 
+  /// What [probe] found: the library opened and every export the engine calls
+  /// is present. `missingExport` means the file loaded but was built without
+  /// one of them (an old or partial build), which an open alone cannot see.
+  static String _probeError = '';
+  static bool _probed = false;
+
+  /// Symbols the Dart side resolves. A library missing any of them opens fine
+  /// and then throws on first use, which used to read as "no local engine".
+  static const _requiredExports = [
+    'VoiceLastError',
+    'VoiceFree',
+    'VoiceLoadTTS',
+    'VoiceUnloadTTS',
+    'VoiceTTS',
+    'VoiceLoadASR',
+    'VoiceUnloadASR',
+    'VoiceASR',
+  ];
+
   /// ABIs without a bundled .so (armeabi-v7a) throw ArgumentError on open —
   /// probe once and report unsupported instead of crashing in the isolate.
   static DynamicLibrary? _tryOpen() {
@@ -62,12 +81,54 @@ class NativeVoice {
     }
   }
 
-  /// One line naming the ABI and the open failure. The mic used to answer
-  /// "this build has no local engine" with no cause, so a sideloaded
-  /// armeabi-v7a APK (no .so for that ABI) looked like a broken build.
+  /// Resolves every export once, on whatever thread calls first. Idempotent,
+  /// so a failed launch can be retried (`probe()` again) without a restart.
+  static String probe() {
+    if (_probed) return _probeError;
+    _probed = true;
+    final lib = _tryOpen();
+    if (lib == null) {
+      _probeError = lastOpenError.trim().isEmpty
+          ? 'library not found'
+          : lastOpenError.trim();
+      return _probeError;
+    }
+    for (final name in _requiredExports) {
+      try {
+        lib.lookup(name);
+      } on Object catch (e) {
+        _probeError = 'missing export $name: $e';
+        return _probeError;
+      }
+    }
+    _probeError = '';
+    lastOpenError = '';
+    return '';
+  }
+
+  /// Drops a failed probe so the next [probe] opens again. Called when the
+  /// person pulls to retry or reopens the voice sheet: an install fixed
+  /// underneath the app (a replaced .so) then works without a restart.
+  static void resetProbe() {
+    _probed = false;
+    _probeError = '';
+    _openTried = false;
+    _lib = null;
+  }
+
+  /// Whether the engine can actually run: platform, open, and every export.
+  static bool get usable => Platform.isAndroid && !isOhos && probe().isEmpty;
+
+  /// One line naming the ABI and the failure. The mic used to answer "this
+  /// build has no local engine" with no cause, so a sideloaded armeabi-v7a
+  /// APK (no .so for that ABI) looked like a broken build.
   static String get unsupportedReason {
+    probe();
     final abi = Platform.isAndroid ? _androidAbi() : Platform.operatingSystem;
-    final err = lastOpenError.trim();
+    // One line: the reason is painted in a small note, not a log.
+    final err = _probeError
+        .trim()
+        .replaceAll(RegExp(r'\s+'), ' ');
     return err.isEmpty ? 'ABI $abi' : 'ABI $abi: $err';
   }
 

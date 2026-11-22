@@ -371,7 +371,9 @@ class _HomeShellState extends ConsumerState<_HomeShell> {
     super.initState();
     // Voice models provision themselves in the background — the files live
     // in external media storage, so upgrades/reinstalls skip the download.
-    if (NativeVoice.supported) {
+    // autoEnsure probes the library first: a build without it (or with a
+    // partial one) falls straight back to system recognition.
+    if (NativeVoice.usable) {
       unawaited(
         Future<void>.delayed(const Duration(seconds: 2), () {
           // Logout within the window disposes the shell — ref would throw.

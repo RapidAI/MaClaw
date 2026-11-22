@@ -448,7 +448,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     _activeAsr = AsrEngine.local;
     if (mounted) setState(() {});
     if (!localReady) {
-      if (!NativeVoice.supported) {
+      if (!NativeVoice.usable) {
         _toast(context.S.vsEngineMissing);
         return;
       }
@@ -713,7 +713,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final S = context.S;
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
-      if (!NativeVoice.supported) {
+      if (!NativeVoice.usable) {
         _toast(S.vsEngineMissing);
         return;
       }
@@ -744,7 +744,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           final started = await _startSystemDictate();
           if (started) return;
         }
-        if (!NativeVoice.supported) {
+        if (!NativeVoice.usable) {
           _toast(S.vsEngineMissing);
           return;
         }

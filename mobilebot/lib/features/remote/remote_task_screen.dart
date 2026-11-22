@@ -133,7 +133,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
         final hub = ref.read(sessionProvider).active?.hubUrl;
         unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
       },
-      nativeVoiceSupported: NativeVoice.supported,
+      nativeVoiceSupported: NativeVoice.usable,
       voiceInputSupported: supportsVoiceInput,
       messages: () {
         final S = context.S;
