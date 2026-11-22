@@ -139,3 +139,73 @@ func TestKindOfTitleUsesAppNotDocumentWords(t *testing.T) {
 		t.Fatal("wordpad should be an editor, not office")
 	}
 }
+
+func TestBestAppFramePrefersAVisibleFrame(t *testing.T) {
+	frames := []AppFrame{
+		{Title: "Program Manager", Visible: true},
+		{Title: "dist - 文件资源管理器", Visible: true},
+		{Title: "蓝信", Visible: false},
+		{Title: "蓝信", Visible: true, Owned: true},
+	}
+	idx, ok := BestAppFrame("蓝信", frames)
+	if !ok || frames[idx].Title != "蓝信" || !frames[idx].Visible {
+		t.Fatalf("visible 蓝信 should win, got %+v ok=%v", frames[idx], ok)
+	}
+
+	hidden := []AppFrame{
+		{Title: "Program Manager", Visible: true},
+		{Title: "微信开发者工具", Visible: true},
+		{Title: "微信", Visible: false, Owned: true},
+		{Title: "微信", Visible: false},
+	}
+	idx, ok = BestAppFrame("微信", hidden)
+	if !ok || hidden[idx].Owned || hidden[idx].Visible || hidden[idx].Title != "微信" {
+		t.Fatalf("unowned hidden 微信 should win, got %+v ok=%v", hidden[idx], ok)
+	}
+	if _, ok := BestAppFrame("微信", []AppFrame{{Title: "微信开发者工具", Visible: true}}); ok {
+		t.Fatal("wechat hint must not select wechat devtools")
+	}
+	if _, ok := BestAppFrame("蓝信", []AppFrame{{Title: "码卡龙 8 MaClaw（企缘）", Visible: true}}); ok {
+		t.Fatal("lanxin hint must not select another app")
+	}
+	openChat := []AppFrame{
+		{Title: "蓝信", Visible: false},
+		{Title: "蓝信 - 张三", Visible: true},
+	}
+	idx, ok = BestAppFrame("蓝信", openChat)
+	if !ok || openChat[idx].Title != "蓝信 - 张三" {
+		t.Fatalf("an open chat should beat a hidden main window, got %+v ok=%v", openChat[idx], ok)
+	}
+}
+
+func TestChooseAppLaunchNameUsesTheInstalledShortcut(t *testing.T) {
+	names := []string{"卸载微信", "微信", "蓝信卸载", "蓝信"}
+	got, ok := ChooseAppLaunchName("蓝信", names)
+	if !ok || got != "蓝信" {
+		t.Fatalf("蓝信 shortcut = %q ok=%v", got, ok)
+	}
+	got, ok = ChooseAppLaunchName("lanxin", names)
+	if !ok || got != "蓝信" {
+		t.Fatalf("lanxin shortcut = %q ok=%v", got, ok)
+	}
+	got, ok = ChooseAppLaunchName("蓝信 - 张三", names)
+	if !ok || got != "蓝信" {
+		t.Fatalf("chat title shortcut = %q ok=%v", got, ok)
+	}
+	got, ok = ChooseAppLaunchName("微信", names)
+	if !ok || got != "微信" {
+		t.Fatalf("wechat shortcut = %q ok=%v", got, ok)
+	}
+	if _, ok := ChooseAppLaunchName("微信", []string{"微信开发者工具"}); ok {
+		t.Fatal("wechat must not launch wechat devtools")
+	}
+	if _, ok := ChooseAppLaunchName("chrome", []string{"Google Chrome", "蓝信"}); ok {
+		t.Fatal("a browser hint must not launch a desktop shortcut")
+	}
+	if _, ok := ChooseAppLaunchName("Program Manager", names); ok {
+		t.Fatal("a window that is not an app must not launch")
+	}
+	if _, ok := ChooseAppLaunchName("码卡龙", names); ok {
+		t.Fatal("an unknown title must not launch")
+	}
+}

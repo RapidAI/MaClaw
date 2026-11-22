@@ -295,7 +295,13 @@ func recordComputerUseGate(h *IMMessageHandler, ctx *LoopContext, routingText st
 		}
 		return ctx.ComputerUseActive, ctx.ComputerUseFresh
 	}
-	active, fresh = h.gateComputerUse(routingText)
+	var decided bool
+	active, fresh, decided = h.gateComputerUseDecision(routingText)
+	// The embedder is still warming. A closed result is not a decision, so
+	// this turn stays unsettled and the next sync can still open the helper.
+	if !decided {
+		return false, false
+	}
 	// A group chat does not get a computer helper for an IM send. An explicit
 	// @computer request keeps the previous opt-in. The send decision is the
 	// classifier label, not a phrase list.

@@ -235,33 +235,74 @@ func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	return active
 }
 
+// computerUseGateAwaitingEmbedder is true while a real classifier exists
+// and Layer 2 has not finished warming. That is not a negative decision.
+// A nil classifier, and a noop embedder (ready immediately, every reading
+// degraded), stay fail-closed.
+func (h *IMMessageHandler) computerUseGateAwaitingEmbedder() bool {
+	if h == nil {
+		return false
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return false
+	}
+	return !uic.Ready()
+}
+
 // gateComputerUse evaluates the CU gate. fresh reports an explicit, desktop
 // IM message, or semantic open (a new desktop task) as opposed to sticky
 // continuation of an existing session.
 func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool) {
+	active, fresh, _ = h.gateComputerUseDecision(userText)
+	return
+}
+
+// gateComputerUseDecision is the gate plus whether this call is a decision.
+// decided is false only while the embedder is still warming and the sentence
+// is not an explicit trigger or current local-file work. Those two do not
+// need a vector. A later sync in the same turn classifies again.
+func (h *IMMessageHandler) gateComputerUseDecision(userText string) (active, fresh, decided bool) {
 	if h == nil || !h.computerUseEnabled() {
-		return false, false
+		return false, false, true
 	}
 
-	sticky, stickyAge := computerUseStickyState()
 	// Classify and match cues on the user sentence only. The ACP wrapper's
 	// cwd can contain "desktop", and its instructions say "open and use"
 	// files; that text must not decide the desktop-control gate.
 	text := computerUseGateText(userText)
+	// Warmup has no embedding yet. Closing here would latch the turn, and
+	// the same sentence would stay an ordinary chat after the anchors land.
+	// Explicit addressing and a current attachment still decide.
+	if h.computerUseGateAwaitingEmbedder() &&
+		!computeruse.HasExplicitTrigger(text) &&
+		!hasCurrentLocalFileWork(userText) {
+		return false, false, false
+	}
+
+	sticky, stickyAge := computerUseStickyState()
+	reading := h.classifyComputerUseGate(text)
+	follow := computerUseStickyFollowUp(text)
+	// A desktop_message reading that missed the send bar is not a follow-up.
+	// Cue words must not start the helper, or the card refuses the send.
+	if desktopMessageReadingUnconfirmed(reading) {
+		follow = false
+	}
 	in := computerUseActivationInput{
 		Explicit:         computeruse.HasExplicitTrigger(text),
 		DesktopOperation: computeruse.RequestsDesktopAppOperation(text),
-		DesktopMessage:   h.desktopMessageIntentOpen(text),
-		StickyFollowUp:   computerUseStickyFollowUp(text),
+		DesktopMessage:   desktopMessageIntentActivated(reading),
+		StickyFollowUp:   follow,
 		LocalFileWork:    hasCurrentLocalFileWork(userText),
 		Sticky:           sticky,
 		StickyAge:        stickyAge,
 	}
 	// HasClassification stays unset. A generic computer_use label plus
 	// desktop-operation wording must not open the first wave, and sticky
-	// keeps the degraded window. A desktop message opens only when the
-	// embedding classifier's primary is desktop_message. An explicit
-	// trigger and a sticky follow-up still decide on their own.
+	// keeps the degraded window. A desktop message opens only when that
+	// reading finished as desktop_message. An unconfirmed desktop_message
+	// reading drops the sticky follow-up above. An explicit trigger and a
+	// remaining sticky follow-up still decide on their own.
 	d := decideComputerUseActivation(in)
 	if d.ClearSticky {
 		clearComputerUseSessionActive()
@@ -272,7 +313,7 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 			d.Active, d.ClearSticky, d.Reason, sticky, stickyAge.Round(time.Millisecond))
 	}
 	fresh = d.Active && d.Reason != "sticky" && d.Reason != "sticky_degraded"
-	return d.Active, fresh
+	return d.Active, fresh, true
 }
 
 // computerUseGateText is the user-authored sentence. Attachment excerpts and
@@ -517,6 +558,17 @@ func (h *IMMessageHandler) classifyComputerUseGate(userText string) intent.Class
 		}
 	}
 	return uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
+}
+
+// desktopMessageReadingUnconfirmed is a desktop_message primary that did
+// not clear the send bar. The fresh gate stays closed. Sticky must stay
+// closed too: a keyword cue would still dispatch the helper, and that card
+// refuses the send.
+func desktopMessageReadingUnconfirmed(res intent.ClassificationResult) bool {
+	if res.Degraded || res.Primary != intent.LabelDesktopMessage {
+		return false
+	}
+	return !desktopMessageIntentActivated(res)
 }
 
 // desktopMessageIntentActivated opens the helper only when Layer 2 has

@@ -394,3 +394,118 @@ func stripDocNoise(prefix string) string {
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
 }
+
+// AppFrame is one top-level window the focus matcher may activate.
+// Visible is false for a tray app whose frame still exists but is hidden.
+// Owned is true when another window owns this one (a tool popup or dialog).
+type AppFrame struct {
+	Title   string
+	Visible bool
+	Owned   bool
+}
+
+// BestAppFrame returns the index of the frame that best answers hint.
+// A visible match wins over every hidden frame, so an open chat stays in
+// front of a tray window. Among frames with the same visibility, a higher
+// title score wins, then an unowned frame, then the earlier index
+// (topmost first). A score of 0 is not a match.
+func BestAppFrame(hint string, frames []AppFrame) (int, bool) {
+	if idx := bestVisibleFrame(hint, frames, true); idx >= 0 {
+		return idx, true
+	}
+	if idx := bestVisibleFrame(hint, frames, false); idx >= 0 {
+		return idx, true
+	}
+	return 0, false
+}
+
+func bestVisibleFrame(hint string, frames []AppFrame, visible bool) int {
+	bestScore := 0
+	best := -1
+	for i, frame := range frames {
+		if frame.Visible != visible {
+			continue
+		}
+		score := ScoreWindowHint(hint, frame.Title)
+		if score <= 0 {
+			continue
+		}
+		if best < 0 || appFrameBeats(frame, score, frames[best], bestScore) {
+			best = i
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func appFrameBeats(challenger AppFrame, cScore int, holder AppFrame, hScore int) bool {
+	if cScore != hScore {
+		return cScore > hScore
+	}
+	if challenger.Visible != holder.Visible {
+		return challenger.Visible
+	}
+	if challenger.Owned != holder.Owned {
+		return !challenger.Owned
+	}
+	return false
+}
+
+// DesktopAppFromHint reports the installed desktop application a focus hint
+// names. The hint itself may be the app ("蓝信", "lanxin") or a window title
+// whose prefix or suffix is that app ("蓝信 - 张三", "无标题 - 记事本").
+// Browser aliases are not desktop apps: those windows stay on browser tools.
+func DesktopAppFromHint(hint string) (string, bool) {
+	h := NormalizeWindowTitle(hint)
+	if h == "" {
+		return "", false
+	}
+	if name, ok := desktopAliasName(h); ok {
+		return name, true
+	}
+	pre, suf, split := splitWindowTitle(h)
+	if !split {
+		return "", false
+	}
+	if name, ok := desktopAliasName(pre); ok {
+		return name, true
+	}
+	if name, ok := desktopAliasName(suf); ok {
+		return name, true
+	}
+	return "", false
+}
+
+func desktopAliasName(name string) (string, bool) {
+	key := NormalizeWindowTitle(name)
+	kind, ok := kindByName[key]
+	if !ok || kind == AdapterBrowser {
+		return "", false
+	}
+	return key, true
+}
+
+// ChooseAppLaunchName picks the installed shortcut name for hint.
+// names are shortcut display names, in preference order. An uninstaller
+// ("蓝信卸载") and a different app ("微信") do not score, so they are not
+// chosen. The hint must name a desktop app; a browser hint and a title
+// that names no app return false.
+func ChooseAppLaunchName(hint string, names []string) (string, bool) {
+	app, ok := DesktopAppFromHint(hint)
+	if !ok {
+		return "", false
+	}
+	bestScore := 0
+	best := ""
+	for _, name := range names {
+		score := ScoreWindowHint(app, name)
+		if score > bestScore {
+			bestScore = score
+			best = name
+		}
+	}
+	if bestScore <= 0 {
+		return "", false
+	}
+	return best, true
+}

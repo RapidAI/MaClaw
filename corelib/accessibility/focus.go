@@ -48,8 +48,9 @@ func ForegroundWindowBounds() (WindowBounds, bool) {
 	return foregroundWindowBounds()
 }
 
-// NamedWindowBounds returns the first visible top-level window whose title
-// contains titleSubstring (case-insensitive).
+// NamedWindowBounds returns the best top-level application frame for
+// titleSubstring. A hidden frame is used when no visible frame matches, so a
+// tray app can still be named. Tool windows are not frames.
 func NamedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 	return namedWindowBounds(titleSubstring)
 }

@@ -3,6 +3,7 @@
 package accessibility
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -29,12 +30,16 @@ var (
 	procGetWindowPlacement       = user32Enum.NewProc("GetWindowPlacement")
 	procSetWindowPos             = user32Enum.NewProc("SetWindowPos")
 	procGetWindowRect            = user32Enum.NewProc("GetWindowRect")
+	procGetWindowLongPtrW        = user32Enum.NewProc("GetWindowLongPtrW")
+	procGetWindow                = user32Enum.NewProc("GetWindow")
 	procWindowFromPoint          = user32Enum.NewProc("WindowFromPoint")
 	procGetAncestor              = user32Enum.NewProc("GetAncestor")
 	procAttachThreadInput        = user32Enum.NewProc("AttachThreadInput")
 	procGetWindowThreadProcessId = user32Enum.NewProc("GetWindowThreadProcessId")
 	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
 	procGetCurrentThreadId       = kernel32.NewProc("GetCurrentThreadId")
+	dwmapiFocus                  = syscall.NewLazyDLL("dwmapi.dll")
+	procDwmGetWindowAttribute    = dwmapiFocus.NewProc("DwmGetWindowAttribute")
 )
 
 const (
@@ -50,53 +55,88 @@ const (
 	swpShowWindow         = 0x0040
 	vkMenu                = 0x12
 	keyeventfKeyup        = 0x0002
+	wsExToolWindow        = 0x00000080
+	gwOwner               = 4
+	dwmwaCloaked          = 14
 )
 
+// gwlExStyleArg is GWL_EXSTYLE (-20) in a pointer-sized two's complement
+// value. A signed conversion to uintptr does not compile.
+const gwlExStyleArg = ^uintptr(19)
+
 type visibleWindow struct {
-	hwnd  uintptr
-	title string
+	hwnd    uintptr
+	title   string
+	visible bool
+	owned   bool
 }
 
-func listVisibleWindows() []visibleWindow {
+// listAppFrames lists top-level application frames, including a hidden one.
+// A tray app keeps its main frame alive with IsWindowVisible false. Skipping
+// those frames is why focus cannot find the app while it is still running.
+// Tool windows and cloaked windows are not frames.
+func listAppFrames() []visibleWindow {
 	var hits []visibleWindow
 	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
-		vis, _, _ := procIsWindowVisible.Call(hwnd)
-		if vis == 0 {
-			return 1
-		}
 		title := windowText(hwnd)
-		if title == "" {
+		ex, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlExStyleArg)
+		if !appFrameEligible(title, ex, windowCloaked(hwnd)) {
 			return 1
 		}
-		hits = append(hits, visibleWindow{hwnd: hwnd, title: title})
+		vis, _, _ := procIsWindowVisible.Call(hwnd)
+		hits = append(hits, visibleWindow{
+			hwnd:    hwnd,
+			title:   title,
+			visible: vis != 0,
+			owned:   windowOwned(hwnd),
+		})
 		return 1
 	})
 	procEnumWindows.Call(cb, 0)
 	return hits
 }
 
-// pickBestVisible chooses the window whose title best answers hint.
-// EnumWindows is topmost-first, and BestWindowTitle keeps that order on ties.
+func appFrameEligible(title string, exStyle uintptr, cloaked bool) bool {
+	if strings.TrimSpace(title) == "" || cloaked {
+		return false
+	}
+	return exStyle&wsExToolWindow == 0
+}
+
+func windowCloaked(hwnd uintptr) bool {
+	var cloaked int32
+	r, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCloaked, uintptr(unsafe.Pointer(&cloaked)), unsafe.Sizeof(cloaked))
+	if r != 0 {
+		return false
+	}
+	return cloaked != 0
+}
+
+func windowOwned(hwnd uintptr) bool {
+	owner, _, _ := procGetWindow.Call(hwnd, gwOwner)
+	return owner != 0
+}
+
+// pickBestVisible chooses the frame whose title best answers hint.
+// A visible frame beats a hidden one on a tie. EnumWindows is topmost-first.
 func pickBestVisible(hint string) (visibleWindow, bool) {
-	hits := listVisibleWindows()
+	hits := listAppFrames()
+	return pickFrame(hint, hits)
+}
+
+func pickFrame(hint string, hits []visibleWindow) (visibleWindow, bool) {
 	if len(hits) == 0 {
 		return visibleWindow{}, false
 	}
-	titles := make([]string, len(hits))
+	frames := make([]computeruse.AppFrame, len(hits))
 	for i, hit := range hits {
-		titles[i] = hit.title
+		frames[i] = computeruse.AppFrame{Title: hit.title, Visible: hit.visible, Owned: hit.owned}
 	}
-	best, ok := computeruse.BestWindowTitle(hint, titles)
+	idx, ok := computeruse.BestAppFrame(hint, frames)
 	if !ok {
 		return visibleWindow{}, false
 	}
-	want := computeruse.NormalizeWindowTitle(best)
-	for _, hit := range hits {
-		if computeruse.NormalizeWindowTitle(hit.title) == want {
-			return hit, true
-		}
-	}
-	return visibleWindow{}, false
+	return hits[idx], true
 }
 
 func focusWindow(titleSubstring string) error {
@@ -106,7 +146,16 @@ func focusWindow(titleSubstring string) error {
 	}
 	picked, ok := pickBestVisible(titleSubstring)
 	if !ok {
-		return fmt.Errorf("no visible window matching %q", titleSubstring)
+		if err := launchDesktopApp(titleSubstring); err != nil {
+			if errors.Is(err, errNoInstalledApp) {
+				return fmt.Errorf("no visible window matching %q", titleSubstring)
+			}
+			return fmt.Errorf("no visible window matching %q: %v", titleSubstring, err)
+		}
+		picked, ok = waitForAppFrame(titleSubstring)
+		if !ok {
+			return fmt.Errorf("started %q but no window appeared", titleSubstring)
+		}
 	}
 	found := picked.hwnd
 

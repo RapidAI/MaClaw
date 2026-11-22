@@ -147,6 +147,14 @@ func hasDesktopOperationCue(s string) bool {
 		"on the screen", "the screen", "my screen",
 		"on the desktop", "desktop app", "desktop application", "the desktop",
 	} {
+		// "the desktop" is the surface. "the desktop chat" uses the word as a
+		// modifier, and that sentence is not a request to operate the desktop.
+		if phrase == "the desktop" {
+			if phraseClosed(s, phrase) {
+				return true
+			}
+			continue
+		}
 		if phraseBounded(s, phrase) {
 			return true
 		}
@@ -371,6 +379,43 @@ func launchCompoundIsTopic(span, target string) bool {
 		}
 	}
 	return false
+}
+
+// phraseClosed matches an English noun only when another word does not
+// continue it. Space is not enough: "the desktop chat" is a different noun.
+func phraseClosed(s, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	for start := 0; start < len(s); {
+		i := strings.Index(s[start:], phrase)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(phrase)
+		if i > 0 && isASCIIAlphaNumByte(s[i-1]) {
+			start = i + 1
+			continue
+		}
+		if phraseStandsAlone(s, end) {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+func phraseStandsAlone(s string, end int) bool {
+	if end >= len(s) {
+		return true
+	}
+	rest := strings.TrimLeft(s[end:], " \t")
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 // phraseBounded matches Chinese phrases as substrings. English phrases must

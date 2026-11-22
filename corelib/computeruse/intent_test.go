@@ -57,6 +57,7 @@ func TestRequestsDesktopAppOperation(t *testing.T) {
 		"look at what is on the screen",
 		"open the calculator app and click buttons",
 		"drag a file into a folder on the desktop",
+		"look at the desktop",
 	}
 	no := []string{
 		"",
@@ -97,6 +98,8 @@ func TestRequestsDesktopAppOperation(t *testing.T) {
 		"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
 		"给微信里的张三发消息说你好",
 		"send a message to wechat: hello",
+		"Send one message in the desktop chat app. The message itself introduces a feature.",
+		"Send a message in the desktop chat app to one contact. The body can be a greeting or an introduction.",
 		`[VS Code / ACP programming workspace]
 cwd: F:\desktop\notes
 

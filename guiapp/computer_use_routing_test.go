@@ -1,12 +1,14 @@
 package guiapp
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
@@ -281,6 +283,21 @@ func (s *cuGateStubEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 func (s *cuGateStubEmbedder) Dim() int { return 2 }
 func (s *cuGateStubEmbedder) Close()   {}
 
+// cuGateHoldEmbedder fails every embed. Layer 2 warmup never finishes, so
+// Ready stays false. That is the in-process window before anchors land.
+type cuGateHoldEmbedder struct{}
+
+func (cuGateHoldEmbedder) Embed(string) ([]float32, error) {
+	return nil, errors.New("embedder still warming")
+}
+
+func (cuGateHoldEmbedder) EmbedBatch([]string) ([][]float32, error) {
+	return nil, errors.New("embedder still warming")
+}
+
+func (cuGateHoldEmbedder) Dim() int { return 2 }
+func (cuGateHoldEmbedder) Close()   {}
+
 func resetComputerUseSessionForTest(t *testing.T) {
 	t.Helper()
 	clearComputerUseSessionActive()
@@ -475,6 +492,34 @@ func TestDesktopMessageIntentActivation(t *testing.T) {
 	if desktopMessageIntentActivated(other) {
 		t.Fatal("computer_use is not a message send")
 	}
+	narrow := intent.ClassificationResult{Primary: intent.LabelDesktopMessage, Confidence: 0.90}
+	if !desktopMessageReadingUnconfirmed(narrow) {
+		t.Fatal("a narrow-gap desktop_message reading must not stay a sticky follow-up")
+	}
+	if desktopMessageReadingUnconfirmed(open) || desktopMessageReadingUnconfirmed(other) {
+		t.Fatal("a confirmed send or another label is not an unconfirmed reading")
+	}
+	unknown := intent.ClassificationResult{Primary: intent.LabelDesktopMessage, Degraded: true, Confidence: 0.99}
+	if desktopMessageReadingUnconfirmed(unknown) {
+		t.Fatal("a degraded reading is not a desktop_message decision")
+	}
+}
+
+func TestStickyDesktopChatWordingDoesNotOpen(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	markComputerUseSessionActive()
+	h := &IMMessageHandler{}
+	english := "Send one message in the desktop chat app. The message itself introduces a feature."
+	if active, fresh := h.gateComputerUse(english); active || fresh {
+		t.Fatalf("desktop chat wording kept sticky active=%v fresh=%v", active, fresh)
+	}
+	if computerUseSessionActive() {
+		t.Fatal("an unconfirmed desktop-chat send must clear sticky")
+	}
+	markComputerUseSessionActive()
+	if active, fresh := h.gateComputerUse("look at the desktop"); !active || fresh {
+		t.Fatalf("the desktop surface follow-up active=%v fresh=%v", active, fresh)
+	}
 }
 
 func TestHelperOwnedTurnSkipsSemanticDesktopPlan(t *testing.T) {
@@ -549,6 +594,63 @@ func TestShouldActivateComputerUseDegradedFailsClosed(t *testing.T) {
 		if ready.shouldActivateComputerUse(text) {
 			t.Fatalf("classifier opened a non-send %q", text)
 		}
+	}
+}
+
+func TestComputerUseGateWaitsForEmbedderWarmup(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
+
+	waiting := intent.New(intent.Config{Embedder: cuGateHoldEmbedder{}})
+	if waiting.Ready() {
+		t.Fatal("a failing embedder must not become ready")
+	}
+	h := &IMMessageHandler{unifiedClassifier: waiting}
+	send := "给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。"
+	markComputerUseSessionActive()
+	ctx := &LoopContext{ComputerUseRoutingText: send, UserID: desktopUserID}
+	active, fresh := recordComputerUseGate(h, ctx, send)
+	if active || fresh || ctx.ComputerUseGateSettled || ctx.ComputerHelperNoted || ctx.ComputerHelperDispatched {
+		t.Fatalf("warmup latched the gate active=%v fresh=%v settled=%v noted=%v dispatched=%v",
+			active, fresh, ctx.ComputerUseGateSettled, ctx.ComputerHelperNoted, ctx.ComputerHelperDispatched)
+	}
+	if !computerUseSessionActive() {
+		t.Fatal("warmup cleared an in-progress desktop session")
+	}
+
+	ready := &IMMessageHandler{unifiedClassifier: computerUseGateTestClassifier(t)}
+	active, fresh = recordComputerUseGate(ready, ctx, send)
+	if active || !ctx.ComputerHelperDispatched || !ctx.DesktopMessageHelperOwns || !ctx.ComputerUseGateSettled {
+		t.Fatalf("ready retry active=%v dispatched=%v owns=%v settled=%v fresh=%v",
+			active, ctx.ComputerHelperDispatched, ctx.DesktopMessageHelperOwns, ctx.ComputerUseGateSettled, fresh)
+	}
+	if !strings.Contains(ctx.ComputerHelperLimits, "只发送") || strings.Contains(ctx.ComputerHelperLimits, "不发送") {
+		t.Fatalf("limits = %q", ctx.ComputerHelperLimits)
+	}
+
+	desktopbot.ResetComputerScreens()
+	explicit := &LoopContext{UserID: desktopUserID}
+	recordComputerUseGate(h, explicit, "@computer 打开记事本")
+	if !explicit.ComputerUseGateSettled || !explicit.ComputerHelperDispatched {
+		t.Fatalf("explicit during warmup settled=%v dispatched=%v", explicit.ComputerUseGateSettled, explicit.ComputerHelperDispatched)
+	}
+	if strings.Contains(explicit.ComputerHelperLimits, "只发送") || !strings.Contains(explicit.ComputerHelperLimits, "不发送") {
+		t.Fatalf("explicit card = %q", explicit.ComputerHelperLimits)
+	}
+
+	desktopbot.ResetComputerScreens()
+	markComputerUseSessionActive()
+	attached := &LoopContext{UserID: desktopUserID}
+	fileTurn := send + "\n[附件: notes.zip → 已保存到 C:\\tmp\\notes.zip]"
+	recordComputerUseGate(h, attached, fileTurn)
+	if !attached.ComputerUseGateSettled || attached.ComputerHelperNoted || attached.ComputerHelperDispatched {
+		t.Fatalf("attachment during warmup settled=%v noted=%v dispatched=%v",
+			attached.ComputerUseGateSettled, attached.ComputerHelperNoted, attached.ComputerHelperDispatched)
+	}
+	if computerUseSessionActive() {
+		t.Fatal("a current attachment must still clear sticky while the embedder warms")
 	}
 }
 

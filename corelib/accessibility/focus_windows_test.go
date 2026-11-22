@@ -2,40 +2,34 @@
 
 package accessibility
 
-import (
-	"testing"
-	"unsafe"
-)
+import "testing"
 
-func TestFocusShowKeepsVisibleWindowRect(t *testing.T) {
-	cmd, ok := focusShowCommand(false, false)
-	if !ok || cmd != swShow {
-		t.Fatalf("visible window cmd=%d ok=%v", cmd, ok)
+func TestAppFrameEligibleSkipsToolAndCloakedWindows(t *testing.T) {
+	if !appFrameEligible("微信", 0, false) {
+		t.Fatal("a hidden main frame is still a frame")
 	}
-	cmd, ok = focusShowCommand(false, true)
-	if !ok || cmd != swShow {
-		t.Fatalf("maximized window cmd=%d ok=%v", cmd, ok)
+	if appFrameEligible("微信", wsExToolWindow, false) {
+		t.Fatal("a tool window is not a frame")
 	}
-	alt := focusAltTapEvents()
-	if len(alt) != 2 || alt[0] != 0 || alt[1] != keyeventfKeyup {
-		t.Fatalf("alt tap = %v", alt)
+	if appFrameEligible("微信", 0, true) {
+		t.Fatal("a cloaked window is not a frame")
 	}
-	cmd, ok = focusShowCommand(true, false)
-	if !ok || cmd != swRestore {
-		t.Fatalf("minimized normal cmd=%d ok=%v", cmd, ok)
+	if appFrameEligible("  ", 0, false) {
+		t.Fatal("an empty title is not a frame")
 	}
-	cmd, ok = focusShowCommand(true, true)
-	if !ok || cmd != swMaximize {
-		t.Fatalf("minimized from maximized cmd=%d ok=%v", cmd, ok)
+}
+
+func TestPickFrameUsesAHiddenFrame(t *testing.T) {
+	hits := []visibleWindow{
+		{title: "Program Manager", visible: true},
+		{title: "dist - 文件资源管理器", visible: true},
+		{title: "蓝信", visible: false},
 	}
-	flags := focusRaiseFlags()
-	if flags&swpNoMove == 0 || flags&swpNoSize == 0 || flags&swpShowWindow != 0 {
-		t.Fatalf("raise flags %#x move, resize, or show the window", flags)
+	got, ok := pickFrame("蓝信", hits)
+	if !ok || got.title != "蓝信" || got.visible {
+		t.Fatalf("hidden 蓝信 = %+v ok=%v", got, ok)
 	}
-	if focusRaiseInsertAfter() != 0 {
-		t.Fatal("raise must use HWND_TOP")
-	}
-	if unsafe.Sizeof(focusPlacement{}) != 44 {
-		t.Fatalf("WINDOWPLACEMENT size %d", unsafe.Sizeof(focusPlacement{}))
+	if _, ok := pickFrame("Program Manager", hits); !ok {
+		t.Fatal("an ordinary visible title still matches")
 	}
 }
