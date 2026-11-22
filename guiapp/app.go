@@ -1548,7 +1548,7 @@ func (a *App) runMemoryPipelineWhenIdle(seq uint64) {
 		if quietDelay := time.Until(quietUntil); quietDelay > retryDelay {
 			retryDelay = quietDelay
 		}
-		log.Printf("[agent-qos] defer_memory_pipeline_until_idle seq=%d active=%d quiet_for=%s retry=%s", seq, active, time.Until(quietUntil).Round(time.Millisecond), retryDelay.Round(time.Millisecond))
+		log.Printf("[agent-qos] defer_memory_pipeline_until_idle seq=%d active=%d quiet_for=%s retry=%s", seq, active, foregroundAgentQuietFor(quietUntil), retryDelay.Round(time.Millisecond))
 		a.rescheduleMemoryPipelineRun(seq, retryDelay)
 		return
 	}

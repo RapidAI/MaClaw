@@ -1923,6 +1923,66 @@ func TestChatTaskProgressAndEmptyResult(t *testing.T) {
 	}
 }
 
+// A filtered-out progress line (heartbeat, "still working", identical poll
+// output) is still proof the loop is alive. Feeding it through noteLiveness
+// must refresh UpdatedAt and emit a snapshot while leaving the last real step
+// frozen on the card. This is the path the run callback takes for every line
+// chatTaskProgressMilestone drops, so a long quiet ssh poll can no longer
+// freeze a running task's card.
+func TestChatTaskNoteLivenessKeepsCardAlive(t *testing.T) {
+	reg := newChatTaskRegistry(nil, t.TempDir())
+	stale := time.Now().Add(-10 * time.Minute)
+	reg.tasks["ct-live"] = &chatTaskRecord{
+		ID: "ct-live", SessionKey: desktopUserID, Title: "monitor",
+		Status: chatTaskRunning, Progress: "等待远端完成下载", NextStep: "轮询输出",
+		CreatedAt: stale, UpdatedAt: stale,
+	}
+	before := stale
+	// A filtered heartbeat line is what a quiet ssh poll emits. Before the fix
+	// it was dropped by the milestone gate and UpdatedAt never moved.
+	reg.noteLiveness("ct-live", "〔进度〕仍在执行中，正在处理中（已耗时 5 分 50 秒）...")
+
+	reg.mu.Lock()
+	got := reg.tasks["ct-live"]
+	if !got.UpdatedAt.After(before) {
+		reg.mu.Unlock()
+		t.Fatalf("liveness did not refresh UpdatedAt: still %v", got.UpdatedAt)
+	}
+	if got.Progress != "等待远端完成下载" || got.NextStep != "轮询输出" {
+		reg.mu.Unlock()
+		t.Fatalf("liveness clobbered the last real step: progress=%q next=%q", got.Progress, got.NextStep)
+	}
+	if got.Status != chatTaskRunning {
+		reg.mu.Unlock()
+		t.Fatalf("liveness changed status: %v", got.Status)
+	}
+	reg.mu.Unlock()
+
+	// A line that does carry a milestone must be routed to noteProgress, not
+	// swallowed by the liveness path — a real step can never be lost.
+	reg.noteLiveness("ct-live", "第 4 页已经写好")
+	reg.mu.Lock()
+	got = reg.tasks["ct-live"]
+	reg.mu.Unlock()
+	if got.Progress != "第 4 页已经写好" {
+		t.Fatalf("milestone line was not recorded as a step: %q", got.Progress)
+	}
+
+	// A terminal task must not be revived or re-emitted by liveness.
+	reg.mu.Lock()
+	reg.tasks["ct-done"] = &chatTaskRecord{
+		ID: "ct-done", Status: chatTaskDone, CreatedAt: stale, UpdatedAt: stale,
+	}
+	reg.mu.Unlock()
+	reg.noteLiveness("ct-done", "〔进度〕仍在执行中，正在处理中")
+	reg.mu.Lock()
+	done := reg.tasks["ct-done"]
+	reg.mu.Unlock()
+	if !done.UpdatedAt.Equal(stale) {
+		t.Fatalf("liveness touched a terminal task: %v", done.UpdatedAt)
+	}
+}
+
 func TestChatTaskRestartCanResumeSameTask(t *testing.T) {
 	dir := t.TempDir()
 	h, _ := testChatTaskHandler(t)

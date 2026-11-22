@@ -183,7 +183,7 @@ func (a *App) waitForForegroundAgentIdle(ctx context.Context, purpose, ownerID s
 		return true
 	}
 	startedAt := time.Now()
-	log.Printf("[agent-qos] background_wait_start purpose=%q owner=%q active=%d quiet_for=%s owners=%q", purpose, ownerID, active, time.Until(quietUntil).Round(time.Millisecond), foregroundAgentOwnersSnapshot())
+	log.Printf("[agent-qos] background_wait_start purpose=%q owner=%q active=%d quiet_for=%s owners=%q", purpose, ownerID, active, foregroundAgentQuietFor(quietUntil), foregroundAgentOwnersSnapshot())
 	ticker := time.NewTicker(foregroundAgentIdlePoll)
 	defer ticker.Stop()
 	for {
@@ -252,6 +252,17 @@ func foregroundAgentQuietUntil(ownerID string) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, latest).Add(foregroundAgentBackgroundQuietPeriod)
+}
+
+// foregroundAgentQuietFor renders a quiet-until deadline for logging. A zero
+// deadline means "no quiet period"; time.Until on it would print a huge
+// negative duration (the int64-nanosecond distance to year 1), which made the
+// wait/defer logs read like a freeze even though nothing was blocked.
+func foregroundAgentQuietFor(quietUntil time.Time) string {
+	if quietUntil.IsZero() {
+		return "0s"
+	}
+	return time.Until(quietUntil).Round(time.Millisecond).String()
 }
 
 func (a *App) activeForegroundAgentLoopsForWait(ownerID string) int64 {

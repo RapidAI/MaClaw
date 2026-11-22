@@ -1377,7 +1377,7 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	cleanupWorkRootOwnership := func() {}
 	if h != nil && h.app != nil && isForegroundAgentLoopRuntime(ctx) {
 		cleanupForegroundQoS = h.app.beginForegroundAgentLoop(userID, requestID, loopID)
-	} else if ctx != nil && ctx.Kind == LoopKindBackground {
+	} else if isBackgroundAgentLoopRuntime(ctx) {
 		beginWorkRootAgentOwner(userID)
 		cleanupWorkRootOwnership = func() { endWorkRootAgentOwner(userID) }
 		log.Printf("[agent-qos] foreground_skip_background owner=%q request_id=%q loop=%q slot=%s", userID, requestID, loopID, ctx.SlotKind.String())
@@ -1463,8 +1463,31 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	}
 }
 
+// isBackgroundAgentLoopRuntime reports whether this loop runs as a detached
+// background executor that must neither occupy the foreground QoS slot nor be
+// treated as an interactive turn. Two shapes exist today:
+//   - Kind == LoopKindBackground: scheduled/system loops.
+//   - ChatTaskID != "": a dispatched background chat task (chat_task.go). It
+//     keeps Kind == LoopKindChat because it reuses the chat pipeline, but it
+//     still runs for hours on a worker goroutine and must not pin the global
+//     foreground counter — doing so stalls the memory pipeline and every
+//     waitForForegroundAgentIdle waiter behind a job that never yields.
+//
+// Keeping this single predicate the inverse of isForegroundAgentLoopRuntime
+// guarantees the "skip foreground" and "record work-root owner" branches in
+// beginAgentLoopRuntime can never disagree on the same loop.
+func isBackgroundAgentLoopRuntime(ctx *LoopContext) bool {
+	if ctx == nil {
+		return false
+	}
+	return ctx.Kind == LoopKindBackground || strings.TrimSpace(ctx.ChatTaskID) != ""
+}
+
 func isForegroundAgentLoopRuntime(ctx *LoopContext) bool {
-	return ctx == nil || ctx.Kind != LoopKindBackground
+	if ctx == nil {
+		return true
+	}
+	return !isBackgroundAgentLoopRuntime(ctx)
 }
 
 func (h *IMMessageHandler) clearNonGuidePendingInjection(userID string) {

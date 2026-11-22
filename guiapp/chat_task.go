@@ -714,6 +714,13 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 		}, loop, func(progress string) {
 			milestone, ok := chatTaskProgressMilestone(progress)
 			if !ok {
+				// A filtered line (heartbeat, "still working", identical
+				// poll output) carries no new step, but it is still proof
+				// the loop is alive. Refresh the liveness timestamp and
+				// re-emit so a quiet poll cannot freeze the running card.
+				if reg := h.ensureChatTasks(); reg != nil {
+					reg.noteLiveness(task.ID, progress)
+				}
 				return
 			}
 			if reg := h.ensureChatTasks(); reg != nil {
@@ -846,6 +853,31 @@ func (r *chatTaskRegistry) noteProgress(id, text string) {
 		return
 	}
 	task.Progress = text
+	task.UpdatedAt = time.Now()
+	snap := task.snapshotLocked()
+	r.mu.Unlock()
+	r.emit(snap)
+}
+
+// noteLiveness reports that a running task produced output without a new
+// milestone. raw is the unfiltered progress line; when it still yields a real
+// milestone the line is routed to noteProgress instead so a step is never
+// swallowed by the liveness path. Otherwise it refreshes UpdatedAt and re-emits
+// the current snapshot so the card keeps showing the task as alive while
+// Progress/NextStep stay frozen on the last real step. It never overwrites
+// Progress, so silence cannot erase a meaningful step the way an unfiltered
+// heartbeat would.
+func (r *chatTaskRegistry) noteLiveness(id, raw string) {
+	if milestone, ok := chatTaskProgressMilestone(raw); ok {
+		r.noteProgress(id, milestone)
+		return
+	}
+	r.mu.Lock()
+	task := r.tasks[id]
+	if task == nil || task.Status.terminal() {
+		r.mu.Unlock()
+		return
+	}
 	task.UpdatedAt = time.Now()
 	snap := task.snapshotLocked()
 	r.mu.Unlock()

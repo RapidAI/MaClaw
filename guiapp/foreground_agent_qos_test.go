@@ -342,6 +342,101 @@ func TestBackgroundAgentRuntimeDoesNotCountAsForegroundWork(t *testing.T) {
 	}
 }
 
+// Regression: a dispatched background chat task uses a LoopKindChat
+// LoopContext (chat_task.go), so isForegroundAgentLoopRuntime must still treat
+// it as background. Otherwise its beginForegroundAgentLoop call pins the
+// global foreground counter for the whole multi-hour task, and the memory
+// pipeline plus every waitForForegroundAgentIdle waiter stay deferred behind
+// a job that never yields — the "background task stuck" report.
+func TestChatTaskRuntimeDoesNotCountAsForegroundWork(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	if isForegroundAgentLoopRuntime(&LoopContext{Kind: LoopKindChat, ChatTaskID: "ct-1"}) {
+		t.Fatal("chat-task loop must not be treated as foreground runtime")
+	}
+	if !isForegroundAgentLoopRuntime(&LoopContext{Kind: LoopKindChat}) {
+		t.Fatal("plain chat loop must stay foreground")
+	}
+	if isForegroundAgentLoopRuntime(&LoopContext{Kind: LoopKindBackground}) {
+		t.Fatal("background loop must not be treated as foreground")
+	}
+
+	app := &App{}
+	h := NewIMMessageHandler(app, nil)
+	ctx := NewLoopContext("chat-task-ct-1-0", 3, nil)
+	ctx.ChatTaskID = "ct-1"
+	ctx.Runtime.RequestID = "req-ct-1"
+
+	cleanup := h.beginAgentLoopRuntime(ctx, "owner-task", "monitor task", "desktop")
+	if got := activeForegroundAgentWork(); got != 0 {
+		cleanup()
+		t.Fatalf("activeForegroundAgentWork = %d, want 0 for background chat task", got)
+	}
+	// The loop must be classified as a background executor, so it records a
+	// work-root owner (same branch a scheduled loop takes), not the foreground
+	// QoS counter.
+	workRootAgentOwners.Lock()
+	workRootCount := workRootAgentOwners.counts["owner-task"]
+	workRootAgentOwners.Unlock()
+	if workRootCount != 1 {
+		cleanup()
+		t.Fatalf("workRootAgentOwners[owner-task] = %d, want 1 for background chat task", workRootCount)
+	}
+	cleanup()
+	workRootAgentOwners.Lock()
+	if got := workRootAgentOwners.counts["owner-task"]; got != 0 {
+		workRootAgentOwners.Unlock()
+		t.Fatalf("workRootAgentOwners[owner-task] after cleanup = %d, want 0", got)
+	}
+	workRootAgentOwners.Unlock()
+}
+
+// End-to-end reproduction of the report: a dispatched background chat task
+// stays running for hours while a real foreground turn finishes. The global
+// background wait (ownerID="", the path runMemoryPipelineWhenIdle uses) must
+// not stay pinned by the still-active chat task — before the fix it counted as
+// foreground work, so active>0 forever and every waiter deferred for the
+// task's whole lifetime.
+func TestChatTaskRunningDoesNotBlockGlobalBackgroundWait(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	app := &App{}
+	h := NewIMMessageHandler(app, nil)
+
+	// The long-lived background chat task. It begins its loop and keeps it
+	// open for the duration of the test (its cleanup is deferred to the end).
+	taskCtx := NewLoopContext("chat-task-ct-block-0", 3, nil)
+	taskCtx.ChatTaskID = "ct-block"
+	taskCtx.Runtime.RequestID = "req-ct-block"
+	taskCleanup := h.beginAgentLoopRuntime(taskCtx, "owner-task", "deploy monitor", "desktop")
+	defer taskCleanup()
+
+	// A real foreground turn runs and completes while the task is active.
+	fgCleanup := app.beginForegroundAgentLoop("owner-fg", "req-fg", "chat-fg")
+	fgCleanup()
+	// Skip the post-turn quiet period so the only thing that could keep the
+	// global wait blocked is the chat task's (mis)classification.
+	clearOwnerQuietPeriodForTest("owner-fg")
+
+	// Global background wait — exactly what the memory pipeline issues. It
+	// must return true promptly instead of blocking on the live chat task.
+	done := make(chan bool, 1)
+	go func() { done <- app.waitForForegroundAgentIdle(context.Background(), "memory_pipeline", "") }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("global background wait returned false while only a chat task was active")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("global background wait stayed blocked by an active background chat task")
+	}
+	if got := activeForegroundAgentWork(); got != 0 {
+		t.Fatalf("activeForegroundAgentWork = %d, want 0 with only a chat task running", got)
+	}
+}
+
 func TestBackgroundAgentRuntimeTraceUsesBackgroundCaller(t *testing.T) {
 	app := &App{}
 	h := NewIMMessageHandler(app, nil)
