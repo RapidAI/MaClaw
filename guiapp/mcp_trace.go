@@ -328,7 +328,7 @@ func mcpDependencyStop(steps []mcpStepView) bool {
 		case mcpStepFailed, mcpStepWaiting:
 			return false
 		}
-		if len(step.BlockedBy) > 0 || mcpSkipWaitsOnPrior(step.Error) {
+		if step.Status == mcpStepBlocked || len(step.BlockedBy) > 0 || mcpSkipWaitsOnPrior(step.Error) {
 			saw = true
 		}
 	}

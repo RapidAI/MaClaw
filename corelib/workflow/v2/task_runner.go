@@ -18,7 +18,18 @@ const (
 	TaskPassed  TaskRunStatus = "passed"
 	TaskFailed  TaskRunStatus = "failed"
 	TaskSkipped TaskRunStatus = "skipped"
+	// TaskBlocked means the step never started because a declared dependency
+	// did not pass. It is deliberately not TaskSkipped: a skip is a finished
+	// outcome (cancel, review handoff, transient pause) while a blocked step
+	// is still open work that a later round may run once the blocker clears.
+	TaskBlocked TaskRunStatus = "blocked"
 )
+
+// dependencyBlockErrorText names why a blocked step never ran. Earlier builds
+// recorded the same state as TaskSkipped with Error "dependency not met"; the
+// projection layer still accepts that legacy spelling so old checkpoints
+// reopen instead of counting finished.
+const dependencyBlockErrorText = "blocked: dependency not met"
 
 // TaskRunResult is the outcome of running a single task.
 type TaskRunResult struct {
@@ -139,11 +150,11 @@ func (r *TaskRunner) runAllSequential(ctx context.Context, tasks []*TaskItem, on
 			r.results[i] = TaskRunResult{
 				TaskIndex: task.Index,
 				Title:     task.Title,
-				Status:    TaskSkipped,
-				Error:     "dependency not met",
+				Status:    TaskBlocked,
+				Error:     dependencyBlockErrorText,
 			}
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
+				onProgress(fmt.Sprintf("T%d: %s — 未开始（依赖未通过）", task.Index, task.Title))
 			}
 			continue
 		}
@@ -213,13 +224,13 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 				r.results[i] = TaskRunResult{
 					TaskIndex: task.Index,
 					Title:     task.Title,
-					Status:    TaskSkipped,
-					Error:     "dependency not met",
+					Status:    TaskBlocked,
+					Error:     dependencyBlockErrorText,
 				}
 				done[i] = true
 				remaining--
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
+					onProgress(fmt.Sprintf("T%d: %s — 未开始（依赖未通过）", task.Index, task.Title))
 				}
 				continue
 			}
@@ -231,14 +242,14 @@ func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken
 			break
 		}
 		if len(ready) == 0 {
-			// Deadlock / circular deps — mark leftover skipped.
+			// Deadlock / circular deps — the leftover never started.
 			for i := range tasks {
 				if !done[i] {
 					r.results[i] = TaskRunResult{
 						TaskIndex: tasks[i].Index,
 						Title:     tasks[i].Title,
-						Status:    TaskSkipped,
-						Error:     "dependency not met",
+						Status:    TaskBlocked,
+						Error:     "blocked: dependency deadlock",
 					}
 					done[i] = true
 					remaining--
@@ -386,6 +397,9 @@ func taskRunProgressLine(task *TaskItem, result TaskRunResult) string {
 	if result.Status == TaskFailed {
 		mark = "[ERR]"
 	}
+	if result.Status == TaskBlocked {
+		label = "blocked (not started)"
+	}
 	return fmt.Sprintf("%s T%d: %s — %s", mark, index, title, label)
 }
 
@@ -395,6 +409,8 @@ func iterationBudgetSpent(errText string) bool {
 
 // skipUnstartedAfterFailure marks every step that has not already finished.
 // A parallel wave already in flight is left alone; the next step does not start.
+// A step that never started after a stop is blocked open work, not a finished
+// skip: TaskSkipped would report it as done and let the run look complete.
 func (r *TaskRunner) skipUnstartedAfterFailure(tasks []*TaskItem) {
 	for i, task := range tasks {
 		if r.results[i].Status != "" {
@@ -411,13 +427,15 @@ func (r *TaskRunner) skipUnstartedAfterFailure(tasks []*TaskItem) {
 		r.results[i] = TaskRunResult{
 			TaskIndex: index,
 			Title:     title,
-			Status:    TaskSkipped,
-			Error:     "skipped: prior step failed",
+			Status:    TaskBlocked,
+			Error:     "blocked: prior step failed",
 		}
 	}
 }
 
-// dependenciesFailed is true when any declared dependency finished as failed/skipped.
+// dependenciesFailed is true when any declared dependency finished without
+// passing. A skipped dependency (cancel, handoff) blocks the dependent, and a
+// blocked dependency does the same so a block cascades through the chain.
 func (r *TaskRunner) dependenciesFailed(task *TaskItem, allTasks []*TaskItem) bool {
 	if len(task.DependsOn) == 0 {
 		return false
@@ -431,7 +449,7 @@ func (r *TaskRunner) dependenciesFailed(task *TaskItem, allTasks []*TaskItem) bo
 				return false
 			}
 			st := r.results[i].Status
-			if st == TaskFailed || st == TaskSkipped {
+			if st == TaskFailed || st == TaskSkipped || st == TaskBlocked {
 				return true
 			}
 			break
@@ -640,6 +658,14 @@ func (r *TaskRunner) FinalReport() string {
 				parts = append(parts, "Skipped "+title+": "+err)
 			} else if title != "" {
 				parts = append(parts, "Skipped "+title+".")
+			}
+		case TaskBlocked:
+			// A blocked step never ran; it must not read as "Finished" or
+			// "Skipped" in the final report.
+			if title != "" && err != "" {
+				parts = append(parts, "Not started "+title+": "+err)
+			} else if title != "" {
+				parts = append(parts, "Not started "+title+" (dependency not met).")
 			}
 		default:
 			if summary != "" {

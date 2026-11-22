@@ -4,6 +4,7 @@ import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme"
 import { isFormFieldTarget, isVisibleCodingConflictPanelPresent } from "./codingUiGuards";
 import {
     codingStepIsActive,
+    codingStepIsBlocked,
     codingStepIsDone,
     codingStepIsFailed,
     codingStepIsSkipped,
@@ -24,6 +25,7 @@ export {
     codingWorkbenchStepsFromPayload,
     codingWorkbenchStepsRevision,
     codingStepIsActive,
+    codingStepIsBlocked,
     codingStepIsDone,
     codingStepIsFailed,
     codingStepIsSettled,
@@ -182,7 +184,10 @@ export function codingStepStatusLabel(lang: string | undefined, status: string):
     if (s === "interrupted") {
         return localizeText(lang, "Interrupted", "已中断", "已中斷");
     }
-    if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
+    if (codingStepIsBlocked(s)) {
+        return localizeText(lang, "Blocked", "已阻塞", "已阻塞");
+    }
+    if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review") {
         return localizeText(lang, "Pending", "待确认", "待確認");
     }
     if (codingStepIsSkipped(s)) {

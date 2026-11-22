@@ -179,11 +179,11 @@ func TestMarkTasksBlockedByDependenciesSkipsFailedDependents(t *testing.T) {
 	if skipped := o.MarkTasksBlockedByDependencies(); skipped != 2 {
 		t.Fatalf("skipped blocked tasks = %d, want 2", skipped)
 	}
-	if got := o.Tasks[1]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "dependency T1") {
-		t.Fatalf("dependent on failed task should be skipped, got %#v", got)
+	if got := o.Tasks[1]; got.Status != TaskExecBlocked || !strings.Contains(got.ErrorSummary, "dependency T1") {
+		t.Fatalf("dependent on failed task should be blocked, got %#v", got)
 	}
-	if got := o.Tasks[2]; got.Status != TaskExecSkipped || !strings.Contains(got.ErrorSummary, "invalid dependency") {
-		t.Fatalf("dependent on invalid task should be skipped, got %#v", got)
+	if got := o.Tasks[2]; got.Status != TaskExecBlocked || !strings.Contains(got.ErrorSummary, "invalid dependency") {
+		t.Fatalf("dependent on invalid task should be blocked, got %#v", got)
 	}
 	if got := o.Tasks[3]; got.Status != TaskExecPending {
 		t.Fatalf("independent task should remain pending, got %#v", got)
@@ -204,8 +204,8 @@ func TestMarkDependencyDeadlockTasksSkipsCycles(t *testing.T) {
 		t.Fatalf("deadlock skipped tasks = %d, want 2", skipped)
 	}
 	for _, task := range o.Tasks {
-		if task.Status != TaskExecSkipped || !strings.Contains(task.ErrorSummary, "dependency deadlock") {
-			t.Fatalf("cyclic task should be skipped with deadlock reason, got %#v", task)
+		if task.Status != TaskExecBlocked || !strings.Contains(task.ErrorSummary, "dependency deadlock") {
+			t.Fatalf("cyclic task should be blocked with deadlock reason, got %#v", task)
 		}
 	}
 }

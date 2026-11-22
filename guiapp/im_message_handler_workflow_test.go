@@ -1989,11 +1989,11 @@ func TestConsumePendingRemoteOpsDiagnosisForcesInquiry(t *testing.T) {
 }
 
 func TestRemoteMaintenancePlanStatusUsesMaintenanceIntent(t *testing.T) {
-	got := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0, true)
+	got := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0, 0, true)
 	if !strings.Contains(got, "远程维护") || strings.Contains(got, "远程编程") {
 		t.Fatalf("maintenance plan status = %q, want maintenance wording", got)
 	}
-	standard := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0)
+	standard := formatRemoteCodingPlanStatusText(true, "failed", 2, 1, 1, 0, 0)
 	if !strings.Contains(standard, "远程编程") {
 		t.Fatalf("standard plan status = %q, want remote coding wording", standard)
 	}

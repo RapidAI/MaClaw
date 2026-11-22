@@ -121,8 +121,8 @@ func TestTaskRunner_FailureStopsLaterStepsWithoutDeps(t *testing.T) {
 	if results[0].Status != TaskPassed || results[1].Status != TaskFailed {
 		t.Fatalf("head results=%+v", results[:2])
 	}
-	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
-		t.Fatalf("T3=%+v, want skipped after the failure", results[2])
+	if results[2].Status != TaskBlocked || results[2].Error != "blocked: prior step failed" {
+		t.Fatalf("T3=%+v, want blocked after the failure (never started)", results[2])
 	}
 }
 
@@ -152,8 +152,8 @@ func TestTaskRunner_SerializedWaveStopsAfterFailure(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("subagent calls=%d, want 2", calls)
 	}
-	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
-		t.Fatalf("T3=%+v, want skipped after the serialized failure", results[2])
+	if results[2].Status != TaskBlocked || results[2].Error != "blocked: prior step failed" {
+		t.Fatalf("T3=%+v, want blocked after the serialized failure (never started)", results[2])
 	}
 }
 
@@ -176,8 +176,8 @@ func TestTaskRunner_ParallelWaveDoesNotStartNextAfterFailure(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Fatalf("subagent calls=%d, want the in-flight wave only", got)
 	}
-	if results[2].Status != TaskSkipped || results[2].Error != "skipped: prior step failed" {
-		t.Fatalf("T3=%+v, want skipped after the parallel wave failed", results[2])
+	if results[2].Status != TaskBlocked || results[2].Error != "blocked: prior step failed" {
+		t.Fatalf("T3=%+v, want blocked after the parallel wave failed (never started)", results[2])
 	}
 }
 
@@ -213,8 +213,13 @@ func TestTaskRunner_DependencySkip(t *testing.T) {
 	if results[0].Status != TaskFailed {
 		t.Errorf("T1 status = %s, want failed", results[0].Status)
 	}
-	if results[1].Status != TaskSkipped {
-		t.Errorf("T2 status = %s, want skipped (dep failed)", results[1].Status)
+	// T2 never ran because its dependency failed. That is open work, not a
+	// finished skip: it must surface as blocked, not skipped.
+	if results[1].Status != TaskBlocked {
+		t.Errorf("T2 status = %s, want blocked (dep failed)", results[1].Status)
+	}
+	if !strings.HasPrefix(results[1].Error, "blocked") {
+		t.Errorf("T2 error = %q, want a blocked reason, not a skip", results[1].Error)
 	}
 }
 

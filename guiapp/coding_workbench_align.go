@@ -38,6 +38,10 @@ const (
 	codingStepSkipped     = "skipped"
 	codingStepVerifyFail  = "verify_failed"
 	codingStepInterrupted = "interrupted"
+	// codingStepBlocked means the step never started because a declared
+	// dependency did not pass. It is not a skip: the work is still open and a
+	// later round may run it once the blocker clears.
+	codingStepBlocked = "blocked"
 )
 
 // codingWorkbenchStepStatus tracks one execution-plan step for sticky + UI.
@@ -746,6 +750,10 @@ func codingStepRoundStillOpen(st codingWorkbenchStepStatus) bool {
 	switch strings.TrimSpace(st.Status) {
 	case codingStepPassed, codingStepPending, "":
 		return false
+	case codingStepBlocked:
+		// A blocked row is open work, not a finished skip. It stays visible
+		// until its dependency passes and the step actually runs.
+		return true
 	case codingStepSkipped:
 		if isCodingExecCancelError(st.Summary) || mcpSkipIsReviewHandoff(st.Summary) || mcpSkipWaitsOnPrior(st.Summary) {
 			return true
@@ -897,12 +905,15 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	h.app.emitEvent("coding-workbench-steps", payload)
 }
 
-// markRemainingCodingStepsSkipped marks later plan steps as skipped after a
-// hard failure (sequential plan stops). Mirrors TaskRunner dependency skip UX.
+// markRemainingCodingStepsSkipped marks later plan steps after a hard failure
+// (sequential plan stops). A step whose dependencies never ran is not a skip:
+// it is blocked work that never started. The checklist therefore stores
+// "blocked" rather than "skipped" so the row reads as open work, not a closed
+// outcome. Mirrors the TaskRunner dependency block semantics.
 //
 // Also rewrites premature agent-side "passed"/"running" marks on later steps
 // (e.g. todo_write mirrored into UI before orchestrator isolation, or a rushed
-// subagent that claimed later work done). Terminal failed/verify_failed/skipped
+// subagent that claimed later work done). Terminal failed/verify_failed/blocked
 // statuses are left alone.
 func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterIndex int, reason string) {
 	if h == nil || afterIndex < 0 {
@@ -914,7 +925,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		reason = "skipped: prior step failed"
+		reason = "blocked: prior step failed"
 	}
 	note := codingStepChecklistNote(reason)
 	changed := false
@@ -927,7 +938,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 			}
 			switch st.Status {
 			case codingStepPending, "", codingStepRunning, codingStepPassed:
-				st.Status = codingStepSkipped
+				st.Status = codingStepBlocked
 				st.Summary = note
 				st.UpdatedUnix = now
 				st.Round = mem.DisplayedStepRound
@@ -1009,8 +1020,9 @@ func formatCodingStepsChecklist(steps []codingWorkbenchStepStatus) string {
 }
 
 // countCodingWorkbenchStepOutcomes tallies passed / failed / skipped plan steps
-// for final remote/local pure-coding status banners.
-func countCodingWorkbenchStepOutcomes(steps []codingWorkbenchStepStatus) (passed, failed, skipped int) {
+// for final remote/local pure-coding status banners. A blocked step never ran
+// and is not counted as skipped; the caller folds it into unfinished work.
+func countCodingWorkbenchStepOutcomes(steps []codingWorkbenchStepStatus) (passed, failed, skipped, blocked int) {
 	for _, st := range steps {
 		switch st.Status {
 		case codingStepPassed:
@@ -1019,14 +1031,16 @@ func countCodingWorkbenchStepOutcomes(steps []codingWorkbenchStepStatus) (passed
 			failed++
 		case codingStepSkipped:
 			skipped++
+		case codingStepBlocked:
+			blocked++
 		}
 	}
-	return passed, failed, skipped
+	return passed, failed, skipped, blocked
 }
 
 // formatRemoteCodingPlanStatusText builds the short status banner for a remote
 // multi-step pure-coding turn. Pure helper so unit tests do not need IM handler state.
-func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSteps, passed, failed, skipped int, maintenance ...bool) string {
+func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSteps, passed, failed, skipped, blocked int, maintenance ...bool) string {
 	remoteTaskLabel := func(coding, maintenanceLabel string) string {
 		if len(maintenance) > 0 && maintenance[0] {
 			return maintenanceLabel
@@ -1043,12 +1057,12 @@ func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSt
 		totalSteps = 0
 	}
 	switch {
-	case resultStatus == "success" && totalSteps > 0 && passed >= totalSteps && failed == 0 && skipped == 0:
+	case resultStatus == "success" && totalSteps > 0 && passed >= totalSteps && failed == 0 && skipped == 0 && blocked == 0:
 		return fmt.Sprintf(remoteTaskLabel("远程编程完成（已按 %d 步计划执行）", "远程维护完成（已按 %d 步计划执行）"), totalSteps)
-	case passed > 0 && resultStatus == "success" && failed == 0 && skipped == 0:
+	case passed > 0 && resultStatus == "success" && failed == 0 && skipped == 0 && blocked == 0:
 		return fmt.Sprintf(remoteTaskLabel("远程编程部分完成（%d/%d 步通过）", "远程维护部分完成（%d/%d 步通过）"), passed, totalSteps)
-	case passed > 0 || failed > 0 || skipped > 0:
-		return fmt.Sprintf(remoteTaskLabel("远程编程未完成（通过 %d/%d，失败 %d，跳过 %d）", "远程维护未完成（通过 %d/%d，失败 %d，跳过 %d）"), passed, totalSteps, failed, skipped)
+	case passed > 0 || failed > 0 || skipped > 0 || blocked > 0:
+		return fmt.Sprintf(remoteTaskLabel("远程编程未完成（通过 %d/%d，失败 %d，跳过 %d，阻塞 %d）", "远程维护未完成（通过 %d/%d，失败 %d，跳过 %d，阻塞 %d）"), passed, totalSteps, failed, skipped, blocked)
 	default:
 		return remoteTaskLabel("远程编程未完成", "远程维护未完成")
 	}

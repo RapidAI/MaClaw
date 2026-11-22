@@ -92,6 +92,11 @@ const (
 	TaskExecPassed     TaskExecStatus = "passed"
 	TaskExecFailed     TaskExecStatus = "failed"
 	TaskExecSkipped    TaskExecStatus = "skipped"
+	// TaskExecBlocked means the task never started because a declared
+	// dependency did not pass. It is deliberately not TaskExecSkipped: a skip
+	// is a finished outcome while a blocked task is still open work that a
+	// later round may run once the blocker clears.
+	TaskExecBlocked TaskExecStatus = "blocked"
 	// TaskExecInterrupted requires a ledger recovery probe before a new
 	// execution attempt can be created.
 	TaskExecInterrupted TaskExecStatus = "interrupted"
@@ -336,7 +341,7 @@ func (o *TaskExecutionOrchestrator) MarkTasksBlockedByDependencies() int {
 			continue
 		}
 		if reason := o.taskDependencyBlockReasonLocked(task); reason != "" {
-			applyTaskStatus(task, TaskExecSkipped, reason)
+			applyTaskStatus(task, TaskExecBlocked, reason)
 			blocked++
 		}
 	}
@@ -367,7 +372,7 @@ func (o *TaskExecutionOrchestrator) MarkDependencyDeadlockTasks() int {
 		if task == nil || !taskRunnableLocked(task) || len(task.DependsOn) == 0 {
 			continue
 		}
-		applyTaskStatus(task, TaskExecSkipped, "blocked by dependency deadlock")
+		applyTaskStatus(task, TaskExecBlocked, "blocked by dependency deadlock")
 		blocked++
 	}
 	return blocked
@@ -413,7 +418,7 @@ func (o *TaskExecutionOrchestrator) taskDependencyBlockReasonLocked(task *TaskIt
 		switch dep.Status {
 		case TaskExecPassed:
 			continue
-		case TaskExecFailed, TaskExecSkipped, TaskExecInterrupted:
+		case TaskExecFailed, TaskExecSkipped, TaskExecInterrupted, TaskExecBlocked:
 			return fmt.Sprintf("blocked because dependency T%d is %s", taskDisplayNumber(dep), dep.Status)
 		}
 	}
@@ -566,7 +571,7 @@ func (o *TaskExecutionOrchestrator) TaskStatus(task *TaskItem) (TaskExecStatus, 
 
 func isTerminalTaskStatus(status TaskExecStatus) bool {
 	switch status {
-	case TaskExecPassed, TaskExecFailed, TaskExecSkipped, TaskExecInterrupted, TaskExecWaitingChild:
+	case TaskExecPassed, TaskExecFailed, TaskExecSkipped, TaskExecInterrupted, TaskExecWaitingChild, TaskExecBlocked:
 		return true
 	default:
 		return false
@@ -718,7 +723,7 @@ func (o *TaskExecutionOrchestrator) AllDone() bool {
 			continue
 		}
 		switch t.Status {
-		case TaskExecPassed, TaskExecFailed, TaskExecSkipped:
+		case TaskExecPassed, TaskExecFailed, TaskExecSkipped, TaskExecBlocked:
 		default:
 			return false
 		}
@@ -969,6 +974,8 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 			failedNames = append(failedNames, fmt.Sprintf("Task %d %q", taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		} else if t.Status == TaskExecSkipped {
 			icon = "[SKIP]"
+		} else if t.Status == TaskExecBlocked {
+			icon = "[BLOCKED]"
 		}
 		b.WriteString(fmt.Sprintf("%s task %d: %s\n", icon, taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		if files := taskIntegrationFiles(t); len(files) > 0 {
@@ -1179,6 +1186,12 @@ func (o *TaskExecutionOrchestrator) buildTaskContextLocked(task *TaskItem) strin
 			b.WriteString("\n")
 		case TaskExecSkipped:
 			b.WriteString(fmt.Sprintf("T%d: %s [skipped]\n", t.Index+1, title))
+		case TaskExecBlocked:
+			b.WriteString(fmt.Sprintf("T%d: %s [blocked]", t.Index+1, title))
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
+			}
+			b.WriteString("\n")
 		case TaskExecWaitingApproval:
 			b.WriteString(fmt.Sprintf("T%d: %s [waiting approval]", t.Index+1, title))
 			if t.ErrorSummary != "" {
@@ -1260,6 +1273,11 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 			}
 		case TaskExecSkipped:
 			b.WriteString(" [skipped]")
+		case TaskExecBlocked:
+			b.WriteString(" [blocked]")
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
+			}
 		case TaskExecWaitingApproval:
 			b.WriteString(" [waiting approval]")
 			if t.ErrorSummary != "" {
@@ -1365,6 +1383,9 @@ func (o *TaskExecutionOrchestrator) countStatusLocked() (passed, failed, remaini
 			failed++
 		case TaskExecSkipped:
 			// Skipped tasks don't count as failed or remaining.
+		case TaskExecBlocked:
+			// A blocked task never ran but is terminal for this round; keep it
+			// out of both buckets like a skip.
 		default:
 			remaining++
 		}

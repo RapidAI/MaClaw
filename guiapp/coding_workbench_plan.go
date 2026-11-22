@@ -3868,7 +3868,8 @@ func codingWorkbenchRunHeader(kind codingRequestKind, planned bool, stepCount in
 		return labels.incomplete
 	}
 	if !planned || stepCount <= 1 {
-		if results[0].Status == v2.TaskFailed {
+		if results[0].Status == v2.TaskFailed || results[0].Status == v2.TaskBlocked {
+			// A blocked step never ran; it is incomplete, not a finished skip.
 			return labels.incomplete
 		}
 		if results[0].Status == v2.TaskSkipped {
@@ -3876,7 +3877,7 @@ func codingWorkbenchRunHeader(kind codingRequestKind, planned bool, stepCount in
 		}
 		return labels.complete
 	}
-	passed, failed, skipped := 0, 0, 0
+	passed, failed, skipped, blocked := 0, 0, 0, 0
 	for _, r := range results {
 		switch r.Status {
 		case v2.TaskPassed:
@@ -3885,19 +3886,24 @@ func codingWorkbenchRunHeader(kind codingRequestKind, planned bool, stepCount in
 			failed++
 		case v2.TaskSkipped:
 			skipped++
+		case v2.TaskBlocked:
+			// A blocked step never ran. It is open work, not a finished skip,
+			// so the header must not fold it into the completed count.
+			blocked++
 		}
 	}
+	open := skipped + blocked
 	switch {
-	case passed == 0 && failed == 0 && skipped == 0:
+	case passed == 0 && failed == 0 && skipped == 0 && blocked == 0:
 		return labels.incomplete
-	case failed == 0 && skipped == 0 && passed > 0:
+	case failed == 0 && open == 0 && passed > 0:
 		return fmt.Sprintf("%s (completed %d planned steps)", labels.complete, stepCount)
-	case failed == 0 && skipped > 0 && passed > 0:
-		return fmt.Sprintf("%s (%d/%d passed, %d skipped)", labels.partial, passed, stepCount, skipped)
-	case passed == 0 && (failed > 0 || skipped > 0):
+	case failed == 0 && open > 0 && passed > 0:
+		return fmt.Sprintf("%s (%d/%d passed, %d not started)", labels.partial, passed, stepCount, open)
+	case passed == 0 && (failed > 0 || open > 0):
 		return fmt.Sprintf("%s (%d planned steps, %d passed)", labels.incomplete, stepCount, passed)
 	default:
-		return fmt.Sprintf("%s (%d/%d passed, %d failed, %d skipped)", labels.partial, passed, stepCount, failed, skipped)
+		return fmt.Sprintf("%s (%d/%d passed, %d failed, %d not started)", labels.partial, passed, stepCount, failed, open)
 	}
 }
 

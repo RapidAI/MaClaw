@@ -251,6 +251,11 @@ func normalizeSubAgentResultStatus(result *CodingSubAgentResult) (TaskExecStatus
 			errSummary = "coding SubAgent skipped the task without a reason"
 		}
 		return TaskExecSkipped, errSummary
+	case TaskExecBlocked:
+		if errSummary == "" {
+			errSummary = "blocked: dependency not met"
+		}
+		return TaskExecBlocked, errSummary
 	case TaskExecWaitingApproval:
 		if errSummary == "" {
 			errSummary = "scope approval is required before coding execution can start"
@@ -429,7 +434,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 		}
 
 		if skipped := r.orchestrator.MarkTasksBlockedByDependencies(); skipped > 0 {
-			reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by failed dependencies", skipped))
+			reports = append(reports, fmt.Sprintf("SubAgent left %d task(s) not started (blocked by failed dependencies)", skipped))
 			if r.orchestrator.AllDone() {
 				break
 			}
@@ -439,7 +444,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			handles := r.orchestrator.ReadyTaskHandles(1)
 			if len(handles) == 0 {
 				if skipped := r.orchestrator.MarkDependencyDeadlockTasks(); skipped > 0 {
-					reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by dependency deadlock", skipped))
+					reports = append(reports, fmt.Sprintf("SubAgent left %d task(s) not started (dependency deadlock)", skipped))
 					continue
 				}
 				reports = append(reports, "SubAgent execution stopped: no runnable tasks are ready")
@@ -467,7 +472,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 		handles := r.orchestrator.ReadyTaskHandles(concurrency)
 		if len(handles) == 0 {
 			if skipped := r.orchestrator.MarkDependencyDeadlockTasks(); skipped > 0 {
-				reports = append(reports, fmt.Sprintf("SubAgent skipped %d task(s) blocked by dependency deadlock", skipped))
+				reports = append(reports, fmt.Sprintf("SubAgent left %d task(s) not started (dependency deadlock)", skipped))
 				continue
 			}
 			reports = append(reports, "SubAgent execution stopped: no runnable tasks are ready")
@@ -673,7 +678,7 @@ func isSubAgentNonRetryableFailure(text string) bool {
 }
 
 func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
-	passed, failed, skipped := 0, 0, 0
+	passed, failed, skipped, blocked := 0, 0, 0, 0
 	var modified []string
 	var created []string
 	var plannedOnly []string
@@ -688,6 +693,8 @@ func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
 			failed++
 		case TaskExecSkipped:
 			skipped++
+		case TaskExecBlocked:
+			blocked++
 		}
 		if len(task.ActualFiles) > 0 {
 			modified = append(modified, task.ActualFiles...)
@@ -701,7 +708,7 @@ func appendSubAgentExecutionStats(b *strings.Builder, tasks []*TaskItem) {
 	plannedOnly = uniqueSortedSubAgentStrings(plannedOnly)
 
 	b.WriteString("## Execution Stats\n\n")
-	b.WriteString(fmt.Sprintf("- Task results: %d passed / %d failed / %d skipped\n", passed, failed, skipped))
+	b.WriteString(fmt.Sprintf("- Task results: %d passed / %d failed / %d skipped / %d blocked\n", passed, failed, skipped, blocked))
 	b.WriteString(fmt.Sprintf("- Modified files: %d\n", len(modified)))
 	if len(modified) > 0 {
 		b.WriteString(fmt.Sprintf("  %s\n", compactSubAgentFileList(modified, codingSubAgentFileChangeSummaryMax)))

@@ -15,6 +15,9 @@ const (
 	mcpStepFailed     = "failed"
 	mcpStepSkipped    = "skipped"
 	mcpStepUnfinished = "unfinished"
+	// mcpStepBlocked means the step never started because a declared
+	// dependency did not pass. It is open work, not a finished skip.
+	mcpStepBlocked = "blocked"
 )
 
 // CodingStepOutcome is one coding step as the host finished it.
@@ -125,6 +128,10 @@ func mcpClassifyRunStatus(status, errText string) (string, bool) {
 			return mcpStepUnfinished, true
 		}
 		return mcpStepSkipped, false
+	case mcpStepBlocked:
+		// A blocked step never ran. It stays open work and can be retried once
+		// its dependency passes; it is not a finished skip.
+		return mcpStepBlocked, true
 	case mcpStepWaiting:
 		return mcpStepWaiting, false
 	case codingStepPending, codingStepRunning, mcpStepUnfinished, "":
@@ -306,6 +313,9 @@ func mcpStepsBlockCompletion(steps []mcpStepView) bool {
 		if status == mcpStepSkipped && !mcpSkipWaits(step.Error) {
 			continue
 		}
+		// Every other row — failed, unfinished, waiting, blocked — is open
+		// work and blocks completion. A blocked row never ran and stays open
+		// until its dependency passes or the plan is retried.
 		return true
 	}
 	return false
@@ -524,7 +534,7 @@ func mcpReopenReadySkips(steps []mcpStepView) []mcpStepView {
 	}
 	changed := false
 	for _, step := range steps {
-		if step.Status == mcpStepSkipped && mcpSkipWaitsOnPrior(step.Error) {
+		if step.Status == mcpStepBlocked || (step.Status == mcpStepSkipped && mcpSkipWaitsOnPrior(step.Error)) {
 			changed = true
 			break
 		}
@@ -534,7 +544,8 @@ func mcpReopenReadySkips(steps []mcpStepView) []mcpStepView {
 	}
 	out := mcpCloneSteps(steps)
 	for i := range out {
-		if out[i].Status != mcpStepSkipped || !mcpSkipWaitsOnPrior(out[i].Error) {
+		isDepWait := out[i].Status == mcpStepBlocked || (out[i].Status == mcpStepSkipped && mcpSkipWaitsOnPrior(out[i].Error))
+		if !isDepWait {
 			continue
 		}
 		out[i].Status = mcpStepUnfinished

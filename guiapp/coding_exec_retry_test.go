@@ -165,6 +165,7 @@ func TestIncompleteTaskItemsFromResults(t *testing.T) {
 		{Index: 3, Title: "C"},
 		{Index: 4, Title: "D"},
 		{Index: 5, Title: "E"},
+		{Index: 6, Title: "F"},
 	}
 	results := []v2.TaskRunResult{
 		{TaskIndex: 1, Status: v2.TaskPassed},
@@ -172,11 +173,27 @@ func TestIncompleteTaskItemsFromResults(t *testing.T) {
 		{TaskIndex: 3, Status: v2.TaskSkipped, Error: "cancelled"},
 		{TaskIndex: 4, Status: v2.TaskSkipped, Error: "dependency not met"},
 		{TaskIndex: 5, Status: v2.TaskSkipped, Error: "用户取消"},
+		// A blocked step never ran; it is open work a retry must re-queue.
+		{TaskIndex: 6, Status: v2.TaskBlocked, Error: "blocked: dependency not met"},
 	}
 	got := incompleteTaskItemsFromResults(tasks, results)
-	// Failed + cancelled (en/zh) only; permanent dep-not-met stays out.
-	if len(got) != 3 || got[0].Index != 2 || got[1].Index != 3 || got[2].Index != 5 {
+	// Failed + cancelled (en/zh) + the never-started blocked task.
+	if len(got) != 4 || got[0].Index != 2 || got[1].Index != 3 || got[2].Index != 5 || got[3].Index != 6 {
 		t.Fatalf("incomplete = %#v", got)
+	}
+}
+
+func TestTaskExecStatusToRunResultBlockedIsNotSkipped(t *testing.T) {
+	// A dependency-blocked task never ran. Mapping it to TaskSkipped would
+	// report open work as finished; it must surface as TaskBlocked.
+	if got := taskExecStatusToRunResult(TaskExecBlocked); got != v2.TaskBlocked {
+		t.Fatalf("blocked exec status = %q, want %q", got, v2.TaskBlocked)
+	}
+	if got := taskExecStatusToRunResult(TaskExecSkipped); got != v2.TaskSkipped {
+		t.Fatalf("skipped exec status = %q, want %q", got, v2.TaskSkipped)
+	}
+	if got := taskExecStatusToRunResult(TaskExecFailed); got != v2.TaskFailed {
+		t.Fatalf("failed exec status = %q, want %q", got, v2.TaskFailed)
 	}
 }
 

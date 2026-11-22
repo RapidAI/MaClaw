@@ -2526,37 +2526,39 @@ func TestRemoteVerificationRecoveryUsesSharedCleanVerifier(t *testing.T) {
 }
 
 func TestCountCodingWorkbenchStepOutcomes(t *testing.T) {
-	passed, failed, skipped := countCodingWorkbenchStepOutcomes([]codingWorkbenchStepStatus{
+	passed, failed, skipped, blocked := countCodingWorkbenchStepOutcomes([]codingWorkbenchStepStatus{
 		{Index: 1, Status: codingStepPassed},
 		{Index: 2, Status: codingStepFailed},
 		{Index: 3, Status: codingStepSkipped},
 		{Index: 4, Status: codingStepVerifyFail},
 		{Index: 5, Status: codingStepPending},
 		{Index: 6, Status: codingStepRunning},
+		{Index: 7, Status: codingStepBlocked},
 	})
-	if passed != 1 || failed != 2 || skipped != 1 {
-		t.Fatalf("got passed=%d failed=%d skipped=%d", passed, failed, skipped)
+	if passed != 1 || failed != 2 || skipped != 1 || blocked != 1 {
+		t.Fatalf("got passed=%d failed=%d skipped=%d blocked=%d", passed, failed, skipped, blocked)
 	}
 }
 
 func TestFormatRemoteCodingPlanStatusText(t *testing.T) {
 	cases := []struct {
-		name                        string
-		planned                     bool
-		status                      string
-		total, passed, failed, skip int
-		wantContains                string
+		name                               string
+		planned                            bool
+		status                             string
+		total, passed, failed, skip, block int
+		wantContains                       string
 	}{
-		{"full success", true, "success", 6, 6, 0, 0, "远程编程完成（已按 6 步计划执行）"},
-		{"partial success no fail", true, "success", 6, 2, 0, 0, "部分完成"},
-		{"failed mid plan", true, "failed", 6, 1, 1, 4, "未完成（通过 1/6，失败 1，跳过 4）"},
-		{"only skipped", true, "failed", 6, 0, 0, 6, "未完成（通过 0/6，失败 0，跳过 6）"},
-		{"unplanned success", false, "success", 0, 0, 0, 0, "远程编程完成"},
-		{"unplanned fail", false, "failed", 0, 0, 0, 0, "远程编程未完成"},
+		{"full success", true, "success", 6, 6, 0, 0, 0, "远程编程完成（已按 6 步计划执行）"},
+		{"partial success no fail", true, "success", 6, 2, 0, 0, 0, "部分完成"},
+		{"failed mid plan", true, "failed", 6, 1, 1, 4, 0, "未完成（通过 1/6，失败 1，跳过 4，阻塞 0）"},
+		{"only skipped", true, "failed", 6, 0, 0, 6, 0, "未完成（通过 0/6，失败 0，跳过 6，阻塞 0）"},
+		{"blocked steps", true, "failed", 6, 1, 1, 0, 4, "未完成（通过 1/6，失败 1，跳过 0，阻塞 4）"},
+		{"unplanned success", false, "success", 0, 0, 0, 0, 0, "远程编程完成"},
+		{"unplanned fail", false, "failed", 0, 0, 0, 0, 0, "远程编程未完成"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatRemoteCodingPlanStatusText(tc.planned, tc.status, tc.total, tc.passed, tc.failed, tc.skip)
+			got := formatRemoteCodingPlanStatusText(tc.planned, tc.status, tc.total, tc.passed, tc.failed, tc.skip, tc.block)
 			if !strings.Contains(got, tc.wantContains) {
 				t.Fatalf("got %q want substring %q", got, tc.wantContains)
 			}

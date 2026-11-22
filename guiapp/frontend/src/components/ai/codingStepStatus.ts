@@ -46,6 +46,16 @@ export function codingStepIsSkipped(status: string): boolean {
 }
 
 /**
+ * Step never started because a declared dependency did not pass. It is open
+ * work, not a finished skip: it does not advance the done counter and the
+ * checklist cannot retire while a blocked row remains.
+ */
+export function codingStepIsBlocked(status: string): boolean {
+    const s = (status || "").toLowerCase();
+    return s === "blocked" || s === "not_started";
+}
+
+/**
  * Step reached any terminal state. Progress counters use this: a skipped step
  * still advances "3/5", while a pending or running one does not.
  */

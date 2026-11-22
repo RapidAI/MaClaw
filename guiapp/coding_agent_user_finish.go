@@ -114,6 +114,19 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 			return codingExecText("Skipped this step.", "Skipped this step.", "Skipped this step.")
 		}
 		return fmt.Sprintf("Skipped %s.", title)
+	case v2.TaskBlocked:
+		// A blocked step never ran; the report must not call it skipped or
+		// finished. The dependency reason tells the user why it is open.
+		if err != "" {
+			if title == "" {
+				title = codingExecText("this step", "this step", "this step")
+			}
+			return fmt.Sprintf("Not started %s: %s", title, err)
+		}
+		if title == "" {
+			return codingExecText("This step was not started.", "这一步还没有开始。", "這一步還沒有開始。")
+		}
+		return fmt.Sprintf("Not started %s.", title)
 	default:
 		if summary != "" {
 			return summary
@@ -160,9 +173,9 @@ func codingWorkbenchStickyCarry(results []v2.TaskRunResult, lastStep string) str
 func codingWorkbenchCarrySteps(results []v2.TaskRunResult) []string {
 	steps := make([]string, 0, len(results))
 	for _, result := range results {
-		// A skip notice is host bookkeeping. Keeping it as the protected tail
-		// pushes out the step that actually ran.
-		if result.Status == v2.TaskSkipped {
+		// A skip or block notice is host bookkeeping. Keeping it as the
+		// protected tail pushes out the step that actually ran.
+		if result.Status == v2.TaskSkipped || result.Status == v2.TaskBlocked {
 			continue
 		}
 		paragraph := strings.TrimSpace(strings.ReplaceAll(formatCodingAgentResultParagraph(result), codingSubAgentRecoveryMarker, ""))
@@ -916,7 +929,7 @@ func remoteCodingDependentsAfterStop(status, errText string) string {
 	if strings.EqualFold(strings.TrimSpace(status), "waiting_approval") || mcpSkipIsApprovalWait(errText) {
 		return ""
 	}
-	return "skipped: prior step failed"
+	return "blocked: prior step failed"
 }
 
 // remoteCodingTurnNeedsInterrupt reports a turn whose still-open rows are a
@@ -944,20 +957,27 @@ func appendCodingWorkbenchSkippedResults(results []v2.TaskRunResult, tasks []*v2
 		}
 		st := statusByIndex[task.Index]
 		// Pending and running steps are still open. Only a step the plan
-		// actually skipped belongs in the report. An iteration cap used to
-		// leave the rest pending and this loop then called that a failure.
-		if st.Status != codingStepSkipped {
+		// actually finished as skipped or blocked belongs in the report. An
+		// iteration cap used to leave the rest pending and this loop then
+		// called that a failure.
+		if st.Status != codingStepSkipped && st.Status != codingStepBlocked {
 			continue
 		}
 		summary := strings.TrimSpace(st.Summary)
 		err := summary
-		if err == "" {
+		status := v2.TaskSkipped
+		if st.Status == codingStepBlocked {
+			status = v2.TaskBlocked
+			if err == "" {
+				err = "blocked: prior step failed"
+			}
+		} else if err == "" {
 			err = "skipped: prior step failed"
 		}
 		results = append(results, v2.TaskRunResult{
 			TaskIndex: task.Index,
 			Title:     compactSubAgentTaskTitle(task.Title),
-			Status:    v2.TaskSkipped,
+			Status:    status,
 			Summary:   summary,
 			Error:     err,
 		})
@@ -971,6 +991,10 @@ func taskExecStatusToRunResult(status TaskExecStatus) v2.TaskRunStatus {
 		return v2.TaskFailed
 	case TaskExecSkipped:
 		return v2.TaskSkipped
+	case TaskExecBlocked:
+		// A dependency-blocked task never ran. Projecting it as skipped would
+		// report open work as finished; the runner already uses TaskBlocked.
+		return v2.TaskBlocked
 	case TaskExecPassed:
 		return v2.TaskPassed
 	default:

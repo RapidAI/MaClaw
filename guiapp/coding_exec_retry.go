@@ -492,6 +492,10 @@ func incompleteTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunRe
 		switch r.Status {
 		case v2.TaskFailed:
 			out = append(out, t)
+		case v2.TaskBlocked:
+			// A blocked step never ran. It is open work that a retry/resume
+			// must re-queue once its dependency passes, not drop as done.
+			out = append(out, t)
 		case v2.TaskSkipped:
 			// Resume cancelled work, but not permanent "dependency not met" skips.
 			if isCodingExecCancelError(r.Error) {
@@ -627,6 +631,18 @@ func tasksForSubsetRerun(tasks []*v2.TaskItem) []*v2.TaskItem {
 	return out
 }
 
+// countBlockedTaskRuns counts steps that never started because a declared
+// dependency did not pass. They are open work, not finished skips.
+func countBlockedTaskRuns(results []v2.TaskRunResult) int {
+	blocked := 0
+	for _, r := range results {
+		if r.Status == v2.TaskBlocked {
+			blocked++
+		}
+	}
+	return blocked
+}
+
 func countTaskRunStatuses(results []v2.TaskRunResult) (passed, failed, skipped int) {
 	for _, r := range results {
 		switch r.Status {
@@ -636,6 +652,8 @@ func countTaskRunStatuses(results []v2.TaskRunResult) (passed, failed, skipped i
 			failed++
 		case v2.TaskSkipped:
 			skipped++
+		case v2.TaskBlocked:
+			// A blocked step never ran; it is open work, not a skip.
 		}
 	}
 	return

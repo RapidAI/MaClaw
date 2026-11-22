@@ -2625,10 +2625,10 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 			), failed))
 		} else {
 			onProgress(fmt.Sprintf(codingExecText(
-				"⚠ Coding incomplete (%d skipped) — workflow stays on coding execution",
-				"⚠ 编码未全部完成（跳过 %d），工作流停在「编码执行」",
-				"⚠ 編碼未全部完成（跳過 %d），工作流停在「編碼執行」",
-			), skipped))
+				"⚠ Coding incomplete (%d skipped/blocked) — workflow stays on coding execution",
+				"⚠ 编码未全部完成（%d 步跳过或未开始），工作流停在「编码执行」",
+				"⚠ 編碼未全部完成（%d 步跳過或未開始），工作流停在「編碼執行」",
+			), skipped+countBlockedTaskRuns(results)))
 		}
 	}
 	resp := &IMAgentResponse{
@@ -3227,6 +3227,8 @@ func mapLocalCodingSubAgentStatusForRetry(status TaskExecStatus) v2.TaskRunStatu
 		return v2.TaskPassed
 	case TaskExecSkipped, TaskExecWaitingApproval, TaskExecWaitingChild, TaskExecInterrupted:
 		return v2.TaskSkipped
+	case TaskExecBlocked:
+		return v2.TaskBlocked
 	default:
 		return v2.TaskFailed
 	}
@@ -3246,6 +3248,8 @@ func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatu
 		stepStatus = codingStepPassed
 	case v2.TaskSkipped:
 		stepStatus = codingStepSkipped
+	case v2.TaskBlocked:
+		stepStatus = codingStepBlocked
 	}
 	stepSummary := v1Result.Summary
 	resultErr := v1Result.Error
@@ -3292,12 +3296,13 @@ func codingWorkbenchStepOutcome(v1Result *CodingSubAgentResult) (v2.TaskRunStatu
 	return status, stepStatus, stepSummary, resultErr
 }
 
-// codingRunnerSkipNeedsStickyMirror reports a skip the task runner recorded
-// without a subagent result. A review handoff is already waiting_review on
-// the checklist. Copying the runner's skipped status over that row hides the
-// child and makes 继续 treat the review as ordinary unfinished work.
+// codingRunnerSkipNeedsStickyMirror reports a skip or block the task runner
+// recorded without a subagent result. A review handoff is already
+// waiting_review on the checklist. Copying the runner's skipped status over
+// that row hides the child and makes 继续 treat the review as ordinary
+// unfinished work.
 func codingRunnerSkipNeedsStickyMirror(rr v2.TaskRunResult) bool {
-	if rr.Status != v2.TaskSkipped {
+	if rr.Status != v2.TaskSkipped && rr.Status != v2.TaskBlocked {
 		return false
 	}
 	if rr.RuntimeHandoff || mcpSkipIsReviewHandoff(rr.Error) {
@@ -3321,6 +3326,12 @@ func codingRunnerSkipStickyStatus(errText string) string {
 		return mcpStatusNeedsConfirmation
 	}
 	return codingStepSkipped
+}
+
+// codingRunnerBlockStickyStatus is the checklist status for a runner block:
+// the step never started, so it is open work — not a finished skip.
+func codingRunnerBlockStickyStatus() string {
+	return codingStepBlocked
 }
 
 // failedTaskItemsFromResults returns original task items whose matching result failed.
@@ -4435,9 +4446,14 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	// into the sticky checklist. A review handoff is already waiting_review;
 	// the runner status is skipped only because the ledger has no waiting value.
 	for _, rr := range runResults {
-		if codingRunnerSkipNeedsStickyMirror(rr) {
-			h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, codingRunnerSkipStickyStatus(rr.Error), rr.Error)
+		if !codingRunnerSkipNeedsStickyMirror(rr) {
+			continue
 		}
+		sticky := codingRunnerSkipStickyStatus(rr.Error)
+		if rr.Status == v2.TaskBlocked {
+			sticky = codingRunnerBlockStickyStatus()
+		}
+		h.recordOrchestratedCodingStepStatus(planned, userID, rr.TaskIndex, sticky, rr.Error)
 	}
 	// A step that spent its iteration budget is unfinished, not a failure.
 	// The next round is already queued, so the transcript does not get a
@@ -5211,7 +5227,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}
 		return goalContinuationFailedStart(userText, &IMAgentResponse{Text: remoteTaskLabel("远程编程执行失败：RemoteCodingSubAgent 没有返回结果。", "远程维护执行失败：未收到执行结果。") + note})
 	}
-	passedSteps, failedSteps, skippedSteps := countCodingWorkbenchStepOutcomes(memAfter.StepStatuses)
+	passedSteps, failedSteps, skippedSteps, blockedSteps := countCodingWorkbenchStepOutcomes(memAfter.StepStatuses)
 	totalSteps := codingPlanReportedStepTotal(planned, len(tasks), len(memAfter.StepStatuses))
 	resultStatus := ""
 	if result != nil {
@@ -5224,7 +5240,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if result != nil && codingLoopIterationExhausted(result.Error) && failedSteps == 0 {
 		executorOutcome = ""
 	}
-	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
+	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, blockedSteps, remoteCtx.Maintenance)
 	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
 	// The next round is already queued. Do not close the transcript with a
 	// limit notice or a task-error paragraph. A real failure still shows.
