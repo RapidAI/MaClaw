@@ -1481,6 +1481,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 	}
 	consecutiveEmpty := 0
+	// consecutiveTruncatedEmpty bounds the "cut off before any content"
+	// recovery. Without it a provider that always finishes length/max_tokens
+	// with an empty body would burn one LLM call per iteration until maxIter
+	// (up to 300). After the budget the turn falls through to the
+	// empty-response path so the existing hard-exit machinery terminates it.
+	consecutiveTruncatedEmpty := 0
 	unsettledNoToolStops := 0
 	checklistStopNudges := 0
 	// checklistFallbackNudges counts loop-authored tool-body finishes. Those
@@ -1501,6 +1507,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	deliverablePreAnswer := ""
 	const maxChecklistNudges = 3
 	const maxConsecutiveEmpty = 5
+	const maxConsecutiveTruncatedEmpty = 5
 	var lastToolName string         // track last tool name for empty-response recovery
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
 
@@ -1717,6 +1724,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			sameToolFailureGuidanceInjected = false
 			consecutiveNoProgressIterations = 0
 			consecutiveEmpty = 0
+			consecutiveTruncatedEmpty = 0
 			consecutiveSame = 0
 			recentCalls = nil
 			clear(landedCommits)
@@ -2927,18 +2935,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			isOutputTruncationFinish(choice.FinishReason) &&
 			strings.TrimSpace(content) == "" &&
 			len(choice.Message.ToolCalls) == 0 {
-			disposeSurface(ToolSurfaceResponseAbandoned)
-			log.Printf("[agent-loop] output truncated before any content (iteration=%d finish_reason=%q); prompting continuation", iteration, choice.FinishReason)
-			recoveryPrompt := "[system] Your previous reply was cut off by the output length limit before any content was written. Do not restart or repeat the same long output. Continue from where you stopped with a shorter reply, or emit the next tool call only."
-			if goal := strings.TrimSpace(userText); goal != "" {
-				recoveryPrompt += "\nOriginal user goal: " + truncateRunesPrefix(goal, 200)
+			consecutiveTruncatedEmpty++
+			if consecutiveTruncatedEmpty <= maxConsecutiveTruncatedEmpty {
+				disposeSurface(ToolSurfaceResponseAbandoned)
+				log.Printf("[agent-loop] output truncated before any content (iteration=%d finish_reason=%q streak=%d); prompting continuation", iteration, choice.FinishReason, consecutiveTruncatedEmpty)
+				recoveryPrompt := "[system] Your previous reply was cut off by the output length limit before any content was written. Do not restart or repeat the same long output. Continue from where you stopped with a shorter reply, or emit the next tool call only."
+				if goal := strings.TrimSpace(userText); goal != "" {
+					recoveryPrompt += "\nOriginal user goal: " + truncateRunesPrefix(goal, 200)
+				}
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": recoveryPrompt,
+				})
+				historyDelta = append(historyDelta, HostUserEntry(recoveryPrompt))
+				continue
 			}
-			conversation = append(conversation, map[string]interface{}{
-				"role":    "user",
-				"content": recoveryPrompt,
-			})
-			historyDelta = append(historyDelta, HostUserEntry(recoveryPrompt))
-			continue
+			// The model has truncated before any content maxConsecutiveTruncatedEmpty
+			// times in a row. Another identical "reply shorter" prompt is very
+			// unlikely to help and each retry costs a full LLM call, so stop
+			// recovering and let the empty-response path below count this turn
+			// toward its own hard-exit budget instead of looping to maxIter.
+			log.Printf("[agent-loop] output truncated before any content %d times in a row; treating as empty response", consecutiveTruncatedEmpty)
 		}
 
 		if len(choice.TruncatedToolNames) > 0 {
@@ -3335,6 +3352,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 		}
 		consecutiveEmpty = 0
+		consecutiveTruncatedEmpty = 0
 		// A tool turn often copies its thinking into content. That monologue is
 		// not a reply to keep when a later nameless call ends the turn.
 		if answer := visibleAnswerBesideReasoning(visibleContent, reasoningContent); answer != "" {

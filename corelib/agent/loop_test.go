@@ -6350,6 +6350,42 @@ func TestRunLoop_OutputTruncatedEmptyFinishReasons(t *testing.T) {
 	}
 }
 
+// TestRunLoop_OutputTruncatedEmptyIsBounded verifies the truncation recovery
+// cannot loop to maxIter. A provider that always finishes length with an empty
+// body gets maxConsecutiveTruncatedEmpty "reply shorter" recoveries; after that
+// the turn falls through to the empty-response path and hard-exits on its own
+// budget. Without the bound the run would burn one LLM call per iteration up to
+// maxIter (300 in production) on a model that can never produce output.
+func TestRunLoop_OutputTruncatedEmptyIsBounded(t *testing.T) {
+	var requestCount atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Every turn is an output-truncated empty response. The model never
+		// recovers, so the loop must terminate on its own budgets.
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   30,
+		sysPrompt: "You are a coding agent.",
+	}
+
+	result := RunLoop(cb, "do the task", nil, server.Client())
+	if !result.HardExit {
+		t.Fatalf("RunLoop result = %+v, want hard exit once recovery budgets are spent", result)
+	}
+	// 5 truncation recoveries + 5 empty-response counts before the hard exit.
+	// The exact count is an implementation detail; what matters is the run
+	// stopped far below maxIter=30 instead of exhausting the iteration budget.
+	if got := requestCount.Load(); got >= 30 {
+		t.Fatalf("RunLoop made %d requests with maxIter=30; truncation recovery was not bounded", got)
+	}
+}
+
 func TestRunLoop_EmptyToolArgumentsNormalizeToObject(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
