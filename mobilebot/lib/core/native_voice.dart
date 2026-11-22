@@ -38,9 +38,6 @@ typedef _VoidD = void Function();
 class NativeVoice {
   NativeVoice._();
 
-  static bool get supported =>
-      Platform.isAndroid && !isOhos && _tryOpen() != null;
-
   static DynamicLibrary? _lib;
   static bool _openTried = false;
 
@@ -49,8 +46,9 @@ class NativeVoice {
   static String lastOpenError = '';
 
   /// What [probe] found: the library opened and every export the engine calls
-  /// is present. `missingExport` means the file loaded but was built without
-  /// one of them (an old or partial build), which an open alone cannot see.
+  /// is present. A non-empty value starting with `missing export` means the
+  /// file loaded but was built without one of them (an old or partial build),
+  /// which an open alone cannot see.
   static String _probeError = '';
   static bool _probed = false;
 
@@ -83,9 +81,15 @@ class NativeVoice {
 
   /// Resolves every export once, on whatever thread calls first. Idempotent,
   /// so a failed launch can be retried (`probe()` again) without a restart.
+  /// Non-Android builds have no bundled library — report that instead of
+  /// paying for a dlopen that can only fail and pollute [unsupportedReason].
   static String probe() {
     if (_probed) return _probeError;
     _probed = true;
+    if (!Platform.isAndroid || isOhos) {
+      _probeError = 'no bundled voice library on this platform';
+      return _probeError;
+    }
     final lib = _tryOpen();
     if (lib == null) {
       _probeError = lastOpenError.trim().isEmpty
@@ -114,6 +118,7 @@ class NativeVoice {
     _probeError = '';
     _openTried = false;
     _lib = null;
+    lastOpenError = '';
   }
 
   /// Whether the engine can actually run: platform, open, and every export.

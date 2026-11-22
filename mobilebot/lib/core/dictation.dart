@@ -53,7 +53,10 @@ class ComposerDictation {
   /// Downloads the local model in the background, e.g. `engine.autoEnsure`.
   final void Function() onLocalModelNeeded;
 
-  final bool nativeVoiceSupported;
+  /// Read at each use, not captured once: `autoEnsure` may resetProbe and
+  /// re-probe after this page opened, and a stale `false` would keep
+  /// reporting "no engine" for a library that came back.
+  final bool Function() nativeVoiceSupported;
   final bool voiceInputSupported;
 
   /// Read at each toast so a language change needs no new controller.
@@ -226,7 +229,7 @@ class ComposerDictation {
     activeAsr = AsrEngine.local;
     _notify();
     if (!localReady) {
-      if (!nativeVoiceSupported) {
+      if (!nativeVoiceSupported()) {
         toast(messages().missingEngine);
         return;
       }
@@ -365,7 +368,7 @@ class ComposerDictation {
 
   Future<void> _localDictate() async {
     if (!await engine.localAsrReady()) {
-      if (!nativeVoiceSupported) {
+      if (!nativeVoiceSupported()) {
         toast(messages().missingEngine);
         return;
       }
@@ -398,7 +401,7 @@ class ComposerDictation {
         if (engine.asrEngine == AsrEngine.local) {
           if (await _startSystem()) return;
         }
-        if (!nativeVoiceSupported) {
+        if (!nativeVoiceSupported()) {
           toast(messages().missingEngine);
           return;
         }
