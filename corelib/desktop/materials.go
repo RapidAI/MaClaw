@@ -200,3 +200,40 @@ func MaterialDisplayPath(containerPath string) string {
 	}
 	return containerPath
 }
+
+// AttachmentsStagingDir is where a remote-control attachment waits inside the
+// bot container before it is moved next to its task. Hidden on purpose: it is
+// not a folder the person or the bot browses.
+const AttachmentsStagingDir = ContainerHome + "/.maclaw-attach"
+
+// RenderAttachmentPlace returns the container command that moves a staged
+// attachment to the task attachments folder. The file API wrote base64, so
+// the command decodes it in place; both paths must stay under the container
+// home. A control character in either path is refused here.
+//
+// It renders only; the caller runs the argv through the container command
+// channel (a plain argv, no host shell).
+func RenderAttachmentPlace(staging, target string) ([]string, error) {
+	staging = strings.TrimSpace(staging)
+	target = strings.TrimSpace(target)
+	if staging == "" || target == "" {
+		return nil, fmt.Errorf("attachment path is required")
+	}
+	for _, p := range []string{staging, target} {
+		for _, r := range p {
+			if r < 0x20 || r == 0x7f {
+				return nil, fmt.Errorf("attachment path is invalid")
+			}
+		}
+		resolved, err := ContainerPath(p)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasPrefix(resolved+"/", ContainerHome+"/") {
+			return nil, fmt.Errorf("attachment path is outside the desktop home")
+		}
+	}
+	script := "set -e; mkdir -p -- $(dirname $2); "
+	script += "base64 -d < $1 > $2.part; mv -f -- $2.part $2; rm -f -- $1"
+	return []string{"sh", "-c", script, "sh", staging, target}, nil
+}

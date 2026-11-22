@@ -3333,8 +3333,22 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		emitFinalResponse(turned)
 		return
 	}
+	// A remote controller can attach files: they were written into the task's
+	// attachments/ folder, and the phone named them on their own lines. Turn
+	// those paths into a turn prompt so the desktop agent opens them by absolute
+	// path (relative paths would resolve against the task working dir, one
+	// level up). The user row keeps only the paths, one per line, so a reply
+	// that documents them cannot leak the instruction text back into chat.
+	var remoteAttachments []string
 	if req.RemoteControl {
-		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(text))
+		var cleaned string
+		cleaned, remoteAttachments = extractRemoteAttachmentPaths(projectPath, req.Text)
+		if len(remoteAttachments) > 0 {
+			text = remoteAttachmentTurnPrompt(remoteAttachments, cleaned)
+		}
+	}
+	if req.RemoteControl {
+		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, remoteControlTurnDisplayText(remoteControlDisplayWithAttachments(text, remoteAttachments)))
 	} else if display := strings.TrimSpace(req.BackendDisplayText); display != "" {
 		a.emitAIAssistantForegroundRoundStarted(requestID, userID, text, display)
 	}

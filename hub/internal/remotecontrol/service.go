@@ -34,6 +34,10 @@ const (
 	OpWatchTask   = "watch_task"
 	OpUnwatchTask = "unwatch_task"
 	OpListDirs    = "list_dirs"
+	// OpAttachBegin resolves one task directory for an attachment upload.
+	// The bytes do not travel on this channel (1 MB JSON), only this resolve:
+	// the Hub writes the file itself into the returned directory.
+	OpAttachBegin = "attach_begin"
 
 	inviteTTL = 7 * 24 * time.Hour
 	callWait  = 20 * time.Second
@@ -1151,7 +1155,7 @@ func permissionAllows(permission, op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
 		return permission == PermView || permission == PermOperate
-	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs:
+	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin:
 		return permission == PermOperate
 	default:
 		return false
@@ -1160,7 +1164,7 @@ func permissionAllows(permission, op string) bool {
 
 func allowedOp(op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs:
+	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin:
 		return true
 	default:
 		return false

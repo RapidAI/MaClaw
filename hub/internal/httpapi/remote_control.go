@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/notification"
 	"github.com/RapidAI/CodeClaw/hub/internal/remotecontrol"
@@ -122,7 +123,7 @@ type remoteControlHandler struct {
 // Production leaves it nil. A full buffer still closes the socket inside Send.
 var remoteControlSendHook func(machineID string, msg any) error
 
-func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.IdentityService, devices *device.Service, notifSvc *notification.Service) {
+func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.IdentityService, devices *device.Service, notifSvc *notification.Service, uploads *botmgmt.Service) {
 	if db == nil || identity == nil {
 		return
 	}
@@ -148,6 +149,9 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/ignore", h.ignore)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/revoke", h.revoke)
 	mux.HandleFunc("POST /api/remote-control/grants/{id}/op", h.op)
+	// Attachments carry bytes, so they skip the JSON op channel and are
+	// written by this Hub into the controlled task directory.
+	mux.HandleFunc("POST /api/remote-control/grants/{id}/attach", PostRemoteControlAttachmentHandler(svc, uploads, identity))
 	mux.HandleFunc("GET /api/remote-control/grants/{id}/stream", h.accountStream)
 	mux.HandleFunc("POST /api/remote-control/federation/invites", h.federationInvite)
 	mux.HandleFunc("POST /api/remote-control/federation/proof", h.federationProof)

@@ -543,14 +543,6 @@
   "rtEarlierFailed": "更早的对话没有载入",
   "rtComposerHint": "给这台机器的任务发消息…",
   "rtAttachTooltip": "给这个任务添加图片或文件",
-  "rtAttachSent": "附件已传到对方电脑：{path}",
-  "@rtAttachSent": {
-    "placeholders": {
-      "path": {
-        "type": "String"
-      }
-    }
-  },
   "rtAttachUploading": "附件还在上传，稍等再发送",
   "rtAttachUploadingName": "上传 {name} {percent}%",
   "@rtAttachUploadingName": {

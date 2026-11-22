@@ -53,6 +53,18 @@ type RemoteControlTaskDetail struct {
 	Messages     []ProjectConversationHistoryItem `json:"messages"`
 	MessageTotal int                              `json:"message_total"`
 	Artifacts    []ProjectSearchArtifact          `json:"artifacts"`
+	// Attach tells a remote controller where a file may be placed for this
+	// task: the directory as the bot's computer sees it, and the bot.
+	Attach RemoteControlAttachTarget `json:"attach"`
+}
+
+// RemoteControlAttachTarget is where a remote controller may place files for
+// one task. BotID is empty when the task is not on a computer the Hub can
+// write to, and an attachment is then refused.
+type RemoteControlAttachTarget struct {
+	TaskDir string `json:"task_dir"`
+	BotID   string `json:"bot_id"`
+	NodeID  string `json:"node_id"`
 }
 
 func (a *App) remoteControlLogin() (hub, viewer, machineID string, err error) {
@@ -257,14 +269,14 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 		}
 		return map[string]any{"tasks": tasks}, nil
 	case "get_task":
+		var req struct {
+			ProjectPath string `json:"project_path"`
+		}
+		_ = json.Unmarshal(body, &req)
 		detail, err := a.remoteControlTaskDetail(body)
 		if err == nil {
-			var req struct {
-				ProjectPath string `json:"project_path"`
-			}
-			if json.Unmarshal(body, &req) == nil {
-				a.remoteControlTouchWatch(grantID, req.ProjectPath)
-			}
+			detail.Attach = a.remoteControlAttachTarget(req.ProjectPath, detail.Task.ProjectPath)
+			a.remoteControlTouchWatch(grantID, req.ProjectPath)
 		}
 		return detail, err
 	case "create_task":
@@ -400,7 +412,8 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 	case "attach_begin":
 		// The Hub writes the file itself (the op channel is JSON and capped at
 		// 1 MB), but only after this desktop says the task exists. Answer with
-		// the absolute task directory; nothing is created here.
+		// the task directory as the bot's computer sees it; nothing is created
+		// here.
 		var req struct {
 			ProjectPath string `json:"project_path"`
 		}
@@ -411,7 +424,11 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"task_dir": path}, nil
+		target := a.remoteControlAttachTarget(req.ProjectPath, path)
+		if target.BotID == "" {
+			return nil, errors.New("这个任务不在这台电脑的 Bot 里，无法接收附件")
+		}
+		return map[string]any{"task_dir": target.TaskDir, "bot_id": target.BotID, "node_id": target.NodeID}, nil
 	case "fetch_file":
 		return a.remoteControlTaskFile(body)
 	case "watch_task":

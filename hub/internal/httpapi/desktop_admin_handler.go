@@ -93,6 +93,33 @@ func (c botDesktopControl) UploadFile(ctx context.Context, tenantID, userID, fil
 	return c.pool.UploadFile(ctx, tenantID, userID, filePath, body, size)
 }
 
+// WriteFile writes one small file into the owner's desktop container, used
+// by remote-control attachments that are too big to stream.
+func (c botDesktopControl) WriteFile(ctx context.Context, tenantID, userID, filePath, content string) (string, error) {
+	if c.pool == nil {
+		return "", desktoppool.ErrNotAssigned
+	}
+	return c.pool.WriteFile(ctx, tenantID, userID, filePath, content)
+}
+
+// ReadFile reads one small text file back out of the owner's desktop
+// container, so a controller's attachment can be relayed to another machine.
+func (c botDesktopControl) ReadFile(ctx context.Context, tenantID, userID, filePath string) (string, error) {
+	if c.pool == nil {
+		return "", desktoppool.ErrNotAssigned
+	}
+	return c.pool.ReadFile(ctx, tenantID, userID, filePath)
+}
+
+// RunCommand runs one short command in the owner's desktop container, for
+// relayed remote-control attachments.
+func (c botDesktopControl) RunCommand(ctx context.Context, tenantID, userID, command string) (string, error) {
+	if c.pool == nil {
+		return "", desktoppool.ErrNotAssigned
+	}
+	return c.pool.RunCommand(ctx, tenantID, userID, command)
+}
+
 // Ctl runs one supervisor control op on the desktop user's display (an
 // isolated bot's takeover state).
 func (c botDesktopControl) Ctl(ctx context.Context, tenantID, userID string, request map[string]any) (map[string]any, error) {

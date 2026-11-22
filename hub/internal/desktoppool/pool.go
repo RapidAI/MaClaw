@@ -1101,8 +1101,88 @@ func (p *Pool) UploadFile(ctx context.Context, tenantID, userID, filePath string
 	return out.Output, nil
 }
 
+// WriteFile writes content to one container path and creates its parent
+// directories. content is at most desktop.FileContentMax bytes; a bigger
+// file must go through the streaming upload path instead.
+func (p *Pool) WriteFile(ctx context.Context, tenantID, userID, filePath, content string) (string, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return "", fmt.Errorf("%w: file path is required", ErrInvalidInput)
+	}
+	if len(content) > desktop.FileContentMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
+	}
+	resolved, err := desktop.ContainerPath(filePath)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeFile); err != nil {
+		return "", err
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"action":    "write",
+		"path":      resolved,
+		"content":   content,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/file", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// ReadFile reads one text file from the user's desktop container, at most
+// desktop.FileContentMax bytes (the same cap a write accepts). It is used to
+// place a file the person sent from another machine into a bot container:
+// the Hub stages the bytes and the bot's own desktop writes them where its
+// task lives.
+func (p *Pool) ReadFile(ctx context.Context, tenantID, userID, filePath string) (string, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return "", fmt.Errorf("%w: file path is required", ErrInvalidInput)
+	}
+	if _, err := desktop.ContainerPath(filePath); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	if err := p.ensureOp(ctx, tenantID, userID, WakeFile); err != nil {
+		return "", err
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"action":    "read",
+		"path":      filePath,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/file", body, &out); err != nil {
+		return "", err
+	}
+	if len(out.Output) > desktop.FileContentMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
+	}
+	return out.Output, nil
+}
+
 // RunBash runs one command in the user's desktop container.
 func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	return p.RunBashScreen(ctx, tenantID, userID, command, false)
+}
+
+// RunCommand runs one short command in the user's desktop container without
+// asking for a screen stay. A non-zero exit is an error carrying the output.
+func (p *Pool) RunCommand(ctx context.Context, tenantID, userID, command string) (string, error) {
 	return p.RunBashScreen(ctx, tenantID, userID, command, false)
 }
 

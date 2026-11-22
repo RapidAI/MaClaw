@@ -116,6 +116,14 @@ class ChatComposer extends StatelessWidget {
   final VoidCallback? onSupplement;
   final VoidCallback? onStop;
 
+  /// Attachments staged or staged-in-progress for the next message. Rendered
+  /// as a chip row above the input so the person sees what will be sent.
+  final List<Widget> attachments;
+
+  /// Blocks attach and mic while an upload is running: one queue at a time,
+  /// and a half-sent file must not be quoted in a message yet.
+  final bool busy;
+
   const ChatComposer({
     super.key,
     required this.controller,
@@ -132,6 +140,8 @@ class ChatComposer extends StatelessWidget {
     this.level,
     this.onSupplement,
     this.onStop,
+    this.attachments = const [],
+    this.busy = false,
   });
 
   @override
@@ -158,6 +168,16 @@ class ChatComposer extends StatelessWidget {
                   ),
                 ),
               ),
+            if (attachments.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, right: 4, bottom: 4),
+                child: Wrap(
+                  key: const ValueKey('composer-attachments'),
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: attachments,
+                ),
+              ),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -175,7 +195,7 @@ class ChatComposer extends StatelessWidget {
                   children: [
                     if (onAttach != null)
                       IconButton(
-                        onPressed: onAttach,
+                        onPressed: busy ? null : onAttach,
                         visualDensity: VisualDensity.compact,
                         icon: const Icon(Icons.attach_file),
                         tooltip: attachTooltip ?? context.S.composerAttach,
@@ -201,7 +221,7 @@ class ChatComposer extends StatelessWidget {
                     ),
                     if (onMic != null)
                       IconButton(
-                        onPressed: onMic,
+                        onPressed: busy ? null : onMic,
                         visualDensity: VisualDensity.compact,
                         icon: _MicLevelIcon(
                           listening: listening,

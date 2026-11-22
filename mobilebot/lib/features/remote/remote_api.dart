@@ -196,25 +196,28 @@ class RemoteControlApi {
     });
   }
 
-  /// Stages one attachment on the controlled desktop: `POST
-  /// /api/v1/bots/{botId}/desktop/files` in 2MB chunks, relayed to that
-  /// machine's own Hub. The last answer's `path` is absolute there, so the
-  /// next message can name it. Nothing is written to the task workspace by
-  /// this call.
+  /// Stages one attachment into the controlled task's `attachments/` folder:
+  /// `POST /api/remote-control/grants/{id}/attach` with one raw chunk body.
+  ///
+  /// The phone cannot write to that machine's disk and the op channel carries
+  /// JSON only, so this route takes the bytes. The Hub asks the controlled
+  /// desktop (op `attach_begin`) to resolve [projectPath] to its task
+  /// directory, then writes `attachments/<upload id>-<name>` there. The last
+  /// answer carries that absolute `path`, which the next message quotes so the
+  /// task agent can read the file and the reply can be downloaded back.
   Future<RemoteStagedFile> uploadAttachment(
-    String botId,
     String grantId,
+    String projectPath,
     RemoteOutgoingFile file, {
     void Function(int sent, int total)? onProgress,
   }) async {
-    if (botId.trim().isEmpty) {
-      return const RemoteStagedFile(error: 'no-desktop');
-    }
     if (file.size <= 0 || file.size > remoteAttachmentMaxBytes) {
       return const RemoteStagedFile(error: 'too-large');
     }
-    final uploadId = 'rc-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-'
-        '${file.name.hashCode.abs().toRadixString(36)}';
+    final uploadId = remoteAttachmentUploadId(
+      DateTime.now().microsecondsSinceEpoch,
+      file.name,
+    );
     const chunkSize = 2 << 20;
     var offset = 0;
     String path = '';
@@ -238,14 +241,14 @@ class RemoteControlApi {
         if (chunk.isEmpty) break;
         final answer = await _client.guard(
           () => _client.dio.post<Map<String, dynamic>>(
-            '/api/v1/bots/${Uri.encodeComponent(botId.trim())}/desktop/files',
-            data: {
+            '/api/remote-control/grants/${Uri.encodeComponent(grantId)}/attach',
+            data: chunk,
+            queryParameters: {
+              'task_path': projectPath,
               'upload_id': uploadId,
               'name': file.name,
-              'offset': offset,
-              'total': file.size,
-              'data': base64Encode(chunk),
-              'grant_id': grantId,
+              'offset': '$offset',
+              'total': '${file.size}',
             },
             options: _client.opts(
               receiveTimeout: const Duration(minutes: 5),
