@@ -2000,6 +2000,38 @@ func TestChatTaskNoteLivenessKeepsCardAlive(t *testing.T) {
 	}
 }
 
+func TestChatTaskLivenessPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	reg := newChatTaskRegistry(nil, dir)
+	stale := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	reg.mu.Lock()
+	reg.tasks["ct-live"] = &chatTaskRecord{
+		ID: "ct-live", SessionKey: desktopUserID, Title: "monitor",
+		Status: chatTaskRunning, Progress: "等待远端完成下载", NextStep: "轮询输出",
+		CreatedAt: stale, UpdatedAt: stale,
+	}
+	reg.mu.Unlock()
+	if !reg.persist() {
+		t.Fatal("seed persist")
+	}
+	reg.noteLiveness("ct-live", "〔进度〕仍在执行中，正在处理中（已耗时 5 分 50 秒）...")
+
+	reloaded := newChatTaskRegistry(nil, dir)
+	got := reloaded.List("")
+	if len(got) != 1 {
+		t.Fatalf("reloaded = %+v", got)
+	}
+	if got[0].Status != string(chatTaskInterrupted) {
+		t.Fatalf("restart status = %s, want interrupted", got[0].Status)
+	}
+	if got[0].UpdatedAtUnix < time.Now().Add(-time.Minute).Unix() {
+		t.Fatalf("restart kept the pre-heartbeat timestamp: %d", got[0].UpdatedAtUnix)
+	}
+	if got[0].Progress != "等待远端完成下载" {
+		t.Fatalf("restart clobbered progress: %q", got[0].Progress)
+	}
+}
+
 func TestChatTaskRestartCanResumeSameTask(t *testing.T) {
 	dir := t.TempDir()
 	h, _ := testChatTaskHandler(t)

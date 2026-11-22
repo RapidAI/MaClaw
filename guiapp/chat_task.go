@@ -861,9 +861,10 @@ func (r *chatTaskRegistry) noteProgress(id, text string) {
 // noteLiveness reports that a running task produced output without a new
 // milestone. raw is the unfiltered progress line; when it still yields a real
 // milestone the line is routed to noteProgress instead so a step is never
-// swallowed by the liveness path. Otherwise it refreshes UpdatedAt and re-emits
-// the current snapshot so the card keeps showing the task as alive while
-// Progress/NextStep stay frozen on the last real step. It never overwrites
+// swallowed by the liveness path. Otherwise it refreshes UpdatedAt, persists
+// that timestamp, and re-emits the current snapshot. Progress/NextStep stay on
+// the last real step. Persistence is the liveness record a restart reads:
+// an in-memory bump alone still reloads as interrupted. It never overwrites
 // Progress, so silence cannot erase a meaningful step the way an unfiltered
 // heartbeat would.
 func (r *chatTaskRegistry) noteLiveness(id, raw string) {
@@ -877,9 +878,20 @@ func (r *chatTaskRegistry) noteLiveness(id, raw string) {
 		r.mu.Unlock()
 		return
 	}
-	task.UpdatedAt = time.Now()
+	now := time.Now()
+	// Heartbeats can arrive many times a minute. The card and the restart
+	// boundary only need second resolution, so a same-second repeat must not
+	// rewrite the row or re-emit an identical snapshot.
+	if !now.Truncate(time.Second).After(task.UpdatedAt.Truncate(time.Second)) {
+		r.mu.Unlock()
+		return
+	}
+	task.UpdatedAt = now
 	snap := task.snapshotLocked()
 	r.mu.Unlock()
+	if !r.persist() && r.storePath != "" {
+		log.Printf("[chat-task] liveness persist failed id=%s", id)
+	}
 	r.emit(snap)
 }
 

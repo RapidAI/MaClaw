@@ -1378,8 +1378,14 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	if h != nil && h.app != nil && isForegroundAgentLoopRuntime(ctx) {
 		cleanupForegroundQoS = h.app.beginForegroundAgentLoop(userID, requestID, loopID)
 	} else if isBackgroundAgentLoopRuntime(ctx) {
-		beginWorkRootAgentOwner(userID)
-		cleanupWorkRootOwnership = func() { endWorkRootAgentOwner(userID) }
+		// A scheduled/system loop can hold the project tree. A dispatched chat
+		// task reuses that tree as a worker and must not be recorded as the
+		// holder: its owner resolves back to the project, so recording it
+		// detaches or stalls the interactive turn that owns the tree.
+		if workRootOccupyingBackgroundLoop(ctx) {
+			beginWorkRootAgentOwner(userID)
+			cleanupWorkRootOwnership = func() { endWorkRootAgentOwner(userID) }
+		}
 		log.Printf("[agent-qos] foreground_skip_background owner=%q request_id=%q loop=%q slot=%s", userID, requestID, loopID, ctx.SlotKind.String())
 	}
 	// Tag the loop before it is visible. A pause that lands in this window
@@ -1473,14 +1479,25 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 //     foreground counter — doing so stalls the memory pipeline and every
 //     waitForForegroundAgentIdle waiter behind a job that never yields.
 //
-// Keeping this single predicate the inverse of isForegroundAgentLoopRuntime
-// guarantees the "skip foreground" and "record work-root owner" branches in
-// beginAgentLoopRuntime can never disagree on the same loop.
+// This predicate is only the QoS classification. Work-root occupation is a
+// separate decision: a chat task is a worker on the session's tree, not the
+// holder that later turns must detach from.
 func isBackgroundAgentLoopRuntime(ctx *LoopContext) bool {
 	if ctx == nil {
 		return false
 	}
 	return ctx.Kind == LoopKindBackground || strings.TrimSpace(ctx.ChatTaskID) != ""
+}
+
+// workRootOccupyingBackgroundLoop reports a background executor that is itself
+// the session holding the project tree. A chat-task loop is excluded: its
+// owner id resolves back to that project, so recording it makes the worker
+// look like an earlier holder and detaches or stalls the interactive turn.
+func workRootOccupyingBackgroundLoop(ctx *LoopContext) bool {
+	if ctx == nil || ctx.Kind != LoopKindBackground {
+		return false
+	}
+	return strings.TrimSpace(ctx.ChatTaskID) == ""
 }
 
 func isForegroundAgentLoopRuntime(ctx *LoopContext) bool {

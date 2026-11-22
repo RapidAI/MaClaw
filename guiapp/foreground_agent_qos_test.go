@@ -373,15 +373,15 @@ func TestChatTaskRuntimeDoesNotCountAsForegroundWork(t *testing.T) {
 		cleanup()
 		t.Fatalf("activeForegroundAgentWork = %d, want 0 for background chat task", got)
 	}
-	// The loop must be classified as a background executor, so it records a
-	// work-root owner (same branch a scheduled loop takes), not the foreground
-	// QoS counter.
+	// QoS treats it as background, but it must not occupy the shared work root.
+	// Its owner resolves back to the dispatch project, so a recorded holder
+	// would detach or stall the interactive turn on that tree.
 	workRootAgentOwners.Lock()
 	workRootCount := workRootAgentOwners.counts["owner-task"]
 	workRootAgentOwners.Unlock()
-	if workRootCount != 1 {
+	if workRootCount != 0 {
 		cleanup()
-		t.Fatalf("workRootAgentOwners[owner-task] = %d, want 1 for background chat task", workRootCount)
+		t.Fatalf("workRootAgentOwners[owner-task] = %d, want 0 for background chat task", workRootCount)
 	}
 	cleanup()
 	workRootAgentOwners.Lock()
@@ -390,6 +390,42 @@ func TestChatTaskRuntimeDoesNotCountAsForegroundWork(t *testing.T) {
 		t.Fatalf("workRootAgentOwners[owner-task] after cleanup = %d, want 0", got)
 	}
 	workRootAgentOwners.Unlock()
+}
+
+// A real chat-task loop runs as desktop-user:<project>:task:<id>. That owner
+// resolves back to the project, so recording it (or the dispatch session)
+// makes the worker look like an earlier holder and detaches the interactive
+// turn. QoS still skips the foreground counter; work-root occupation stays
+// with scheduled/system loops only.
+func TestChatTaskRuntimeDoesNotOccupyDispatchSessionWorkRoot(t *testing.T) {
+	resetForegroundAgentOwnersForTest()
+	defer resetForegroundAgentOwnersForTest()
+
+	const project = `E:\work\book`
+	session := projectSessionOwnerID(project)
+	memoryOwner := chatTaskMemoryOwner(session, "ct-book")
+	if projectPathFromSessionOwnerID(memoryOwner) == "" {
+		t.Fatal("memory owner must still resolve to the project path")
+	}
+
+	app := &App{}
+	h := NewIMMessageHandler(app, nil)
+	ctx := NewLoopContext("chat-task-ct-book-0", 3, nil)
+	ctx.ChatTaskID = "ct-book"
+	ctx.Runtime.RequestID = "req-ct-book"
+
+	cleanup := h.beginAgentLoopRuntime(ctx, memoryOwner, "write the book", "desktop")
+	workRootAgentOwners.Lock()
+	sessionCount := workRootAgentOwners.counts[session]
+	memoryCount := workRootAgentOwners.counts[memoryOwner]
+	workRootAgentOwners.Unlock()
+	cleanup()
+	if sessionCount != 0 || memoryCount != 0 {
+		t.Fatalf("work-root owner session=%d memory=%d, want neither occupied by a chat task", sessionCount, memoryCount)
+	}
+	if got := activeForegroundAgentWork(); got != 0 {
+		t.Fatalf("activeForegroundAgentWork = %d, want 0", got)
+	}
 }
 
 // End-to-end reproduction of the report: a dispatched background chat task
