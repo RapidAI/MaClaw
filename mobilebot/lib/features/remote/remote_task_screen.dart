@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -14,13 +17,19 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import '../../components/mermaid/mermaid.dart';
 import '../bots/bots_controller.dart' show failureMessage;
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
+import '../../core/dictation.dart';
 import '../../core/locale.dart';
+import '../../core/native_voice.dart';
+import '../../core/platform.dart' show supportsVoiceInput;
+import '../../core/providers.dart' show sessionProvider;
+import '../../core/voice_engine.dart';
 import '../../core/theme.dart';
 import '../../core/ui_kit.dart'
     show AppBadge, EmptyState, linkifyMarkdownUrls, openExternalUrl;
 import '../bots/widgets.dart' show runStatusColor;
 import 'activity_rows.dart';
 import 'remote_api.dart';
+import 'remote_attachments.dart';
 import 'remote_models.dart';
 import 'remote_screen.dart' show remoteApiProvider, remoteTasksProvider;
 import 'viewer_reducer.dart';
@@ -37,11 +46,17 @@ class RemoteTaskScreen extends ConsumerStatefulWidget {
   final String taskPath;
   final String taskName;
 
+  /// 真机里输入栏在页面内部（导航栏在下面，本来就是对的）。
+  /// 只有测试直接渲染这个页面时不套底部导航，才需要 `inlineComposer: false`
+  /// 先用底部的占位条补回导航栏高度。
+  final bool inlineComposer;
+
   const RemoteTaskScreen({
     super.key,
     required this.grant,
     required this.taskPath,
     this.taskName = '',
+    this.inlineComposer = true,
   });
 
   @override
@@ -61,6 +76,15 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   /// 已点发送、历史还没对上的用户消息。立刻在对话里回显，避免等 get_task。
   final List<PendingUserEcho> _pendingUser = [];
 
+  /// 附件：选好但还没发出（或正在上传）的文件。
+  final List<RemoteOutgoingFile> _files = [];
+  final RemoteUploadQueue _uploads = RemoteUploadQueue();
+  bool _uploading = false;
+  final int _fileGen = 0;
+
+  /// 语音输入：系统识别 → 本地 SenseVoice，逻辑在 ComposerDictation。
+  ComposerDictation? _dictation;
+
   /// 上次对账时历史里已有的用户消息条数。没有文本基线时才用它跳过旧行。
   int _ackedUserCount = 0;
 
@@ -68,6 +92,8 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   final List<String> _ackedUserTexts = [];
   bool _downloading = false;
   bool _pollInFlight = false;
+  bool _loadingEarlier = false;
+  String _earlierError = '';
   bool _paused = false;
   bool _degraded = false;
   bool _rewatching = false;
@@ -97,6 +123,31 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   @override
   void initState() {
     super.initState();
+    _dictation = ComposerDictation(
+      controller: _inputCtrl,
+      engine: ref.read(voiceEngineProvider),
+      toast: _toast,
+      localeId: () => speechLocaleId(Localizations.localeOf(context)),
+      onLocalModelNeeded: () {
+        final hub = ref.read(sessionProvider).active?.hubUrl;
+        unawaited(ref.read(voiceEngineProvider).autoEnsure(hubBase: hub));
+      },
+      nativeVoiceSupported: NativeVoice.supported,
+      voiceInputSupported: supportsVoiceInput,
+      messages: () {
+        final S = context.S;
+        return DictationMessages(
+          missingEngine: S.vsEngineMissing,
+          downloading: S.chatAsrUnavailableDownloading,
+          notHeard: S.chatNotHeard,
+          transcribeFailed: S.chatAsrFailed,
+          micPermission: S.chatMicPermissionDenied,
+          micOpenFailed: S.chatMicOpenFailed,
+        );
+      },
+    )..onStateChanged = () {
+        if (mounted) setState(() {});
+      };
     _load();
     _openStream();
     // Stop the relay while the app is backgrounded. Resuming opens the
@@ -331,6 +382,9 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     _lifecycle.dispose();
     _stopRefresh();
     unawaited(_closeStream());
+    // 先停听写再拆输入框：迟到的识别结果不能写已释放的 controller。
+    _dictation?.dispose();
+    _dictation = null;
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -341,10 +395,16 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     if (api == null) return;
     _pollInFlight = true;
     try {
-      final detail = await api.getTask(widget.grant.id, widget.taskPath);
+      // A later page stays loaded. Polling the default 40 would drop it.
+      final loaded = _detail?.messages.length ?? 0;
+      final detail = await api.getTask(
+        widget.grant.id,
+        widget.taskPath,
+        historyLimit: loaded > 40 ? loaded : 0,
+      );
       if (!mounted) return;
       setState(() {
-        _detail = detail;
+        _detail = _keepEarlierPage(_detail, detail);
         _loading = false;
         _error = '';
         _ackedUserCount = reconcilePendingUserEchoes(
@@ -369,9 +429,259 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
   }
 
+  /// A poll that returns the same window must not drop rows the phone already
+  /// loaded above that window. A shorter reply is treated as a new tail.
+  RemoteTaskDetail _keepEarlierPage(
+    RemoteTaskDetail? previous,
+    RemoteTaskDetail next,
+  ) {
+    final old = previous?.messages ?? const <RemoteMessage>[];
+    if (old.length <= next.messages.length) return next;
+    if (next.messages.isEmpty) {
+      return previous!.copyWith(
+        task: next.task,
+        artifacts: next.artifacts,
+        messageTotal: next.messageTotal,
+      );
+    }
+    final head = old.length - next.messages.length;
+    for (var i = 0; i < next.messages.length; i++) {
+      if (old[head + i].content != next.messages[i].content ||
+          old[head + i].role != next.messages[i].role) {
+        return next;
+      }
+    }
+    return previous!.copyWith(
+      task: next.task,
+      messages: old,
+      artifacts: next.artifacts,
+      messageTotal: next.messageTotal,
+    );
+  }
+
+  /// Rows in [page] that sit strictly before [shown]. Equal content at the
+  /// join is the overlap; anything else is prepended as returned.
+  List<RemoteMessage> _earlierThan(
+    List<RemoteMessage> shown,
+    List<RemoteMessage> page,
+  ) {
+    if (shown.isEmpty) return page;
+    if (page.length <= shown.length) return const [];
+    final head = page.length - shown.length;
+    for (var i = 0; i < shown.length; i++) {
+      if (page[head + i].content != shown[i].content ||
+          page[head + i].role != shown[i].role) {
+        return page;
+      }
+    }
+    return page.sublist(0, head);
+  }
+
+  /// Asks for twice the rows already on screen, capped at 400, and prepends
+  /// only the part the phone did not have. A failure leaves the transcript.
+  Future<void> _loadEarlier() async {
+    final current = _detail;
+    final api = ref.read(remoteApiProvider);
+    if (current == null || api == null || _loadingEarlier) return;
+    final shown = current.messages.length;
+    if (shown >= current.messageTotal) return;
+    var limit = shown * 2;
+    if (limit < 1) limit = 40;
+    if (limit > 400) limit = 400;
+    setState(() {
+      _loadingEarlier = true;
+      _earlierError = '';
+    });
+    try {
+      final page = await api.getTask(
+        widget.grant.id,
+        widget.taskPath,
+        historyLimit: limit,
+      );
+      if (!mounted) return;
+      final earlier = _earlierThan(current.messages, page.messages);
+      setState(() {
+        _detail = current.withEarlier(earlier).copyWith(
+          task: page.task,
+          artifacts: page.artifacts,
+          messageTotal: page.messageTotal,
+        );
+        _loadingEarlier = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingEarlier = false;
+        _earlierError = failureMessage(error);
+      });
+    }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 附件入口 — 拍照 / 相册 / 文件。文件先传到被控机器，再随消息发出。
+  Future<void> _attach() async {
+    if (_uploading || _sending) return;
+    final S = context.S;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: Text(S.chatAttachCamera),
+              onTap: () => Navigator.of(context).pop('camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(S.chatAttachGallery),
+              onTap: () => Navigator.of(context).pop('gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: Text(S.chatAttachFile),
+              onTap: () => Navigator.of(context).pop('file'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    if (choice == 'camera' || choice == 'gallery') {
+      final picked = await ImagePicker().pickImage(
+        source: choice == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 85,
+      );
+      if (picked == null || !mounted) return;
+      final disk = File(picked.path);
+      final size = await disk.length().catchError((_) => 0);
+      if (size <= 0) return;
+      await _stageFile(
+        RemoteOutgoingFile(name: picked.name, size: size, disk: disk),
+      );
+      return;
+    }
+    final picked = await FilePicker.pickFiles();
+    if (picked.isEmpty || !mounted) return;
+    for (final file in picked) {
+      File? disk;
+      final localPath = file.path;
+      if (localPath != null) {
+        final candidate = File(localPath);
+        try {
+          disk = await candidate.length() > 0 ? candidate : null;
+        } on Object {
+          disk = null;
+        }
+      }
+      Uint8List? bytes;
+      var size = 0;
+      if (disk == null) {
+        try {
+          bytes = await file.readAsBytes();
+        } on Object {
+          bytes = null;
+        }
+        if (bytes == null || bytes.isEmpty) continue;
+        size = bytes.length;
+      }
+      await _stageFile(
+        RemoteOutgoingFile(
+          name: file.name,
+          size: size,
+          disk: disk,
+          bytes: bytes,
+        ),
+      );
+    }
+  }
+
+  /// 上传一个文件到被控机器，并把它挂到待发列表上。上传串行执行。
+  Future<void> _stageFile(RemoteOutgoingFile file) async {
+    if (!mounted) return;
+    final sizeLimit = remoteAttachmentMaxBytes;
+    if (file.size > sizeLimit) {
+      _toast(context.S.rtAttachTooLarge(file.name, sizeLimit >> 20));
+      return;
+    }
+    final api = ref.read(remoteApiProvider);
+    final botId = (widget.grant.machineId).trim();
+    if (api == null || botId.isEmpty) {
+      _toast(context.S.rtAttachDesktopUnknown);
+      return;
+    }
+    final gen = _fileGen;
+    setState(() {
+      file.uploading = true;
+      _files.add(file);
+      _uploading = true;
+    });
+    final staged = await _uploads.add(
+      () => api.uploadAttachment(
+        botId,
+        widget.grant.id,
+        file,
+        onProgress: (sent, total) {
+          if (!mounted || gen != _fileGen) return;
+          setState(() => file.progress = stagedProgress(sent, total));
+        },
+      ),
+    );
+    if (!mounted || gen != _fileGen) return;
+    setState(() {
+      file.uploading = false;
+      file.path = staged.ok ? staged.path : '';
+      file.error = staged.ok ? '' : staged.error;
+      _uploading = _files.any((f) => f.uploading);
+    });
+    if (!staged.ok) {
+      _toast(context.S.rtAttachFailed(file.name, staged.error));
+      return;
+    }
+    // 图片直接插进输入框，方便顺手解释一句；其余只显示在附件条上。
+    final caption = context.S.rtAttachSent(file.path);
+    final current = _inputCtrl.text;
+    if (current.isEmpty) {
+      _inputCtrl.text = caption;
+    } else {
+      _inputCtrl.text = current + String.fromCharCode(10) + caption;
+    }
+    _inputCtrl.selection = TextSelection.collapsed(
+      offset: _inputCtrl.text.length,
+    );
+  }
+
+  void _removeFile(RemoteOutgoingFile file) {
+    setState(() => _files.remove(file));
+  }
+
+  Future<void> _toggleDictation() async {
+    final dictation = _dictation;
+    if (dictation == null) return;
+    await dictation.toggle();
+  }
+
   Future<void> _send() async {
     final text = _inputCtrl.text.trim();
-    if (text.isEmpty || _sending) return;
+    if (_sending) return;
+    if (_uploading) {
+      _toast(context.S.rtAttachUploading);
+      return;
+    }
+    final stagedPaths = [
+      for (final file in _files)
+        if (file.staged) file.path,
+    ];
+    if (text.isEmpty && stagedPaths.isEmpty) return;
     if (text.startsWith('/')) {
       // Mirrors the controlled side's remoteControlMessageError — slash
       // commands would run locally on that machine, so reject before the
@@ -383,8 +693,14 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
     final api = ref.read(remoteApiProvider);
     if (api == null) return;
-    final echo = PendingUserEcho(text: text, sentAt: DateTime.now());
-    setState(() => _pendingUser.add(echo));
+    final echo = PendingUserEcho(
+      text: messageWithAttachments(text, stagedPaths),
+      sentAt: DateTime.now(),
+    );
+    setState(() {
+      _pendingUser.add(echo);
+      _files.removeWhere((file) => file.staged);
+    });
     _stickToEnd = true;
     _revealTail();
     await _dispatchEcho(echo, clearInput: true);
@@ -775,6 +1091,21 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       } finally {
         _pinning--;
       }
+      // The count row is laid out with the first history page. A jump before
+      // that row has a size leaves the tail a few dozen pixels short.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_stickToEnd || !_scrollCtrl.hasClients) return;
+        final again = _scrollCtrl.position;
+        if (!again.hasContentDimensions) return;
+        final grown = again.maxScrollExtent;
+        if (grown <= again.pixels + 1) return;
+        _pinning++;
+        try {
+          again.jumpTo(grown);
+        } finally {
+          _pinning--;
+        }
+      });
     });
   }
 
@@ -899,6 +1230,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
             )
           : Column(
               children: [
+                if (!widget.inlineComposer) const _BottomNavPlaceholder(),
                 if (detail != null && detail.task.running)
                   Container(
                     width: double.infinity,
@@ -957,6 +1289,54 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                             padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                             child: Text(
                               context.S.rtTimelineDegraded,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.error,
+                              ),
+                            ),
+                          ),
+                        if (detail != null && detail.messages.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                            child: Text(
+                              context.S.rtShownCount(
+                                detail.messages.length,
+                                detail.messageTotal,
+                              ),
+                              key: const ValueKey('remote-task-shown-count'),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        if (detail != null &&
+                            detail.messages.length < detail.messageTotal)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                key: const ValueKey('remote-task-load-earlier'),
+                                onPressed: _loadingEarlier ? null : _loadEarlier,
+                                icon: _loadingEarlier
+                                    ? SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.5,
+                                          color: theme.colorScheme.primary,
+                                        ),
+                                      )
+                                    : const Icon(Icons.unfold_less, size: 16),
+                                label: Text(context.S.rtLoadEarlier),
+                              ),
+                            ),
+                          ),
+                        if (_earlierError.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                            child: Text(
+                              _earlierError,
+                              key: const ValueKey('remote-task-earlier-error'),
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.error,
                               ),
@@ -1022,13 +1402,115 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                 if (canOperate)
                   ChatComposer(
                     controller: _inputCtrl,
-                    hint: context.S.rtComposerHint,
+                    hint: _dictation?.listening == true
+                        ? context.S.chatVoiceListening
+                        : context.S.rtComposerHint,
                     sending: _sending,
                     onSend: _send,
                     onSubmitted: (_) => _send(),
+                    onAttach: _attach,
+                    attachTooltip: context.S.rtAttachTooltip,
+                    attachments: [
+                      for (final file in _files) _AttachmentChip(
+                        file: file,
+                        onRemove: () => _removeFile(file),
+                      ),
+                    ],
+                    busy: _uploading,
+                    onMic: supportsVoiceInput ? _toggleDictation : null,
+                    listening: _dictation?.listening ?? false,
+                    level: _dictation?.level,
+                    listenStatus: _dictation?.statusText(
+                      listenSystem: context.S.chatListenSystem,
+                      listenLocal: context.S.chatListenLocal,
+                      recognizingSystem: context.S.chatRecognizingSystem,
+                      recognizingLocal: context.S.chatRecognizingLocal,
+                      fallbackLocal: context.S.chatListenFallbackLocal,
+                    ),
                   ),
               ],
             ),
+    );
+  }
+}
+
+/// 测试直接渲染任务页时的底部占位：高度与五栏导航一致，让输入栏和
+/// 对话区的高度与真机对齐。
+class _BottomNavPlaceholder extends StatelessWidget {
+  const _BottomNavPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.maybeOf(context);
+    final padding = media?.padding.bottom ?? 0;
+    return SizedBox(
+      key: const ValueKey('bottom-nav-placeholder'),
+      height: 80 + padding,
+    );
+  }
+}
+
+/// 附件条上的一项：文件名、上传进度或错误，删得掉的叉。
+class _AttachmentChip extends StatelessWidget {
+  final RemoteOutgoingFile file;
+  final VoidCallback onRemove;
+
+  const _AttachmentChip({required this.file, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final failed = file.error.isNotEmpty;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 240),
+      padding: const EdgeInsets.fromLTRB(AppSpacing.sm, 2, 2, 2),
+      decoration: BoxDecoration(
+        color: failed
+            ? scheme.errorContainer.withValues(alpha: 0.5)
+            : scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(AppRadius.sm + 4),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            failed ? Icons.error_outline : Icons.attach_file,
+            size: 14,
+            color: failed ? scheme.error : scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              file.uploading
+                  ? context.S.rtAttachUploadingName(
+                      file.name,
+                      (file.progress * 100).round(),
+                    )
+                  : failed
+                  ? context.S.rtAttachFailedShort(file.name)
+                  : file.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: failed ? scheme.error : scheme.onSurface,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: onRemove,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+            icon: Icon(
+              Icons.close,
+              size: 14,
+              color: scheme.onSurfaceVariant,
+            ),
+            tooltip: context.S.rtAttachRemove,
+          ),
+        ],
+      ),
     );
   }
 }

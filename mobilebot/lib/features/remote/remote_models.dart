@@ -306,26 +306,60 @@ class RemoteTaskDetail {
   final List<RemoteMessage> messages;
   final List<RemoteArtifact> artifacts;
 
+  /// Full transcript length on the desktop. A missing field means the payload
+  /// is the whole history the phone has.
+  final int messageTotal;
+
   const RemoteTaskDetail({
     required this.task,
     this.messages = const [],
     this.artifacts = const [],
+    this.messageTotal = 0,
   });
 
   factory RemoteTaskDetail.fromJson(Map<String, dynamic> json) {
     final task = json['task'];
+    final messages = [
+      for (final item in syncList(json['messages']))
+        if (item is Map) RemoteMessage.fromJson(item),
+    ];
     return RemoteTaskDetail(
       task: task is Map
           ? RemoteTask.fromJson(task)
           : RemoteTask(id: syncText(json['project_path'])),
-      messages: [
-        for (final item in syncList(json['messages']))
-          if (item is Map) RemoteMessage.fromJson(item),
-      ],
+      messages: messages,
       artifacts: [
         for (final item in syncList(json['artifacts']))
           if (item is Map) RemoteArtifact.fromJson(item),
       ],
+      messageTotal: json.containsKey('message_total')
+          ? syncInt(json['message_total'])
+          : messages.length,
+    );
+  }
+
+  RemoteTaskDetail copyWith({
+    RemoteTask? task,
+    List<RemoteMessage>? messages,
+    List<RemoteArtifact>? artifacts,
+    int? messageTotal,
+  }) => RemoteTaskDetail(
+    task: task ?? this.task,
+    messages: messages ?? this.messages,
+    artifacts: artifacts ?? this.artifacts,
+    messageTotal: messageTotal ?? this.messageTotal,
+  );
+
+  /// Prepends an earlier page. The new total is the longer of the desktop
+  /// count and the rows now on screen, so a missing field cannot shrink it.
+  RemoteTaskDetail withEarlier(List<RemoteMessage> earlier) {
+    final merged = [...earlier, ...messages];
+    final total = messageTotal > merged.length ? messageTotal : merged.length;
+    return RemoteTaskDetail(
+      task: task,
+      messages: merged,
+      artifacts: artifacts,
+      messageTotal: total,
     );
   }
 }

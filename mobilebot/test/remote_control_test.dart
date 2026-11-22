@@ -113,8 +113,20 @@ class _FakeRemoteApi extends RemoteControlApi {
     );
   }
 
+  int lastHistoryLimit = 0;
+  Object? earlierError;
+  RemoteTaskDetail? earlierDetail;
+
   @override
-  Future<RemoteTaskDetail> getTask(String grantId, String projectPath) async {
+  Future<RemoteTaskDetail> getTask(
+    String grantId,
+    String projectPath, {
+    int historyLimit = 0,
+  }) async {
+    lastHistoryLimit = historyLimit;
+    calls.add('get:$grantId:$historyLimit');
+    if (historyLimit > 0 && earlierError != null) throw earlierError!;
+    if (historyLimit > 0 && earlierDetail != null) return earlierDetail!;
     if (opError != null) throw opError!;
     return detail ??
         RemoteTaskDetail(
@@ -2657,6 +2669,114 @@ void main() {
       await tester.tap(find.text('D:\\'));
       await pumpFew(tester);
       expect(api.calls, contains('dirs:D:\\'));
+    });
+
+    Future<void> revealHistoryHead(WidgetTester tester) async {
+      final transcript = find.byKey(const ValueKey('remote-task-transcript'));
+      final position = tester.widget<ListView>(transcript).controller!.position;
+      position.jumpTo(0);
+      await tester.pump();
+    }
+
+    testWidgets('capped history loads earlier rows and reports the full count', (
+      tester,
+    ) async {
+      final shown = [
+        for (var i = 20; i < 40; i++)
+          RemoteMessage(role: 'user', content: '记录 $i'),
+      ];
+      final earlier = [
+        for (var i = 0; i < 20; i++)
+          RemoteMessage(role: 'user', content: '记录 $i'),
+        ...shown,
+      ];
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: shown,
+          messageTotal: 40,
+        )
+        ..earlierDetail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: earlier,
+          messageTotal: 40,
+        )
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 1},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      await revealHistoryHead(tester);
+
+      expect(find.text('已显示 20/40 条'), findsOneWidget);
+      expect(find.text('查看更早的对话'), findsOneWidget);
+      expect(find.text('记录 0'), findsNothing);
+
+      await tester.tap(find.text('查看更早的对话'));
+      await pumpFew(tester);
+      await revealHistoryHead(tester);
+
+      expect(api.lastHistoryLimit, 40);
+      expect(find.text('已显示 40/40 条'), findsOneWidget);
+      expect(find.text('查看更早的对话'), findsNothing);
+      expect(find.text('记录 0'), findsOneWidget);
+      final position = tester
+          .widget<ListView>(find.byKey(const ValueKey('remote-task-transcript')))
+          .controller!
+          .position;
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pump();
+      expect(find.text('记录 39'), findsOneWidget);
+    });
+
+    testWidgets('an earlier-page failure keeps the rows already shown', (
+      tester,
+    ) async {
+      final shown = [
+        for (var i = 20; i < 40; i++)
+          RemoteMessage(role: 'user', content: '记录 $i'),
+      ];
+      final api = _FakeRemoteApi()
+        ..earlierError = StateError('older page failed')
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          messages: shown,
+          messageTotal: 40,
+        )
+        ..followEvents = [
+          {'event': 'heartbeat', 'cursor': 1},
+        ];
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      await revealHistoryHead(tester);
+
+      expect(find.text('已显示 20/40 条'), findsOneWidget);
+      await tester.tap(find.text('查看更早的对话'));
+      await pumpFew(tester);
+      await revealHistoryHead(tester);
+
+      expect(find.byKey(const ValueKey('remote-task-earlier-error')), findsOneWidget);
+      expect(find.text('记录 20'), findsOneWidget);
+      expect(find.text('记录 0'), findsNothing);
+      expect(find.text('已显示 20/40 条'), findsOneWidget);
     });
   });
 }

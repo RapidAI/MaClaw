@@ -693,6 +693,29 @@ func TestRemoteControlTaskDetailFiltersNonDownloadableArtifacts(t *testing.T) {
 	if !foundOlder {
 		t.Fatalf("older delivery missing from Artifacts=%+v", detail.Artifacts)
 	}
+	if len(detail.Messages) != 40 {
+		t.Fatalf("default window Messages=%d, want 40", len(detail.Messages))
+	}
+	if detail.MessageTotal != 42 {
+		t.Fatalf("MessageTotal=%d, want 42", detail.MessageTotal)
+	}
+	wide, err := json.Marshal(map[string]any{
+		"project_path":  created.ProjectPath,
+		"history_limit": 400,
+	})
+	if err != nil {
+		t.Fatalf("marshal wide body: %v", err)
+	}
+	detail, err = app.remoteControlTaskDetail(wide)
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail wide history: %v", err)
+	}
+	if len(detail.Messages) != 42 || detail.MessageTotal != 42 {
+		t.Fatalf("wide window messages=%d total=%d, want 42/42", len(detail.Messages), detail.MessageTotal)
+	}
+	if detail.Messages[0].Content != "early file" {
+		t.Fatalf("wide window head=%q, want early file", detail.Messages[0].Content)
+	}
 }
 
 // mustRemoteControlTaskDetailBody builds the {"project_path": ...} request the
@@ -704,6 +727,62 @@ func mustRemoteControlTaskDetailBody(t *testing.T, projectPath string) json.RawM
 		t.Fatalf("marshal detail body: %v", err)
 	}
 	return body
+}
+
+func TestRemoteControlTaskDetailUsesCodingAgentStateWhenSessionHasNoTurns(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	created := app.CreateTask("Completed coding task", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	state := map[string]any{
+		"project_path": created.ProjectPath,
+		"history": []map[string]any{
+			{"role": "user", "content": "修这个接口"},
+			{"role": "assistant", "content": "已改完", "reasoning_content": "先看调用点"},
+			{"role": "tool", "content": "hidden tool row"},
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(created.ProjectPath, codingAgentResumeFileName), raw, 0o644); err != nil {
+		t.Fatalf("write coding agent state: %v", err)
+	}
+
+	detail, err := app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail: %v", err)
+	}
+	if detail.MessageTotal != 2 || len(detail.Messages) != 2 {
+		t.Fatalf("fallback messages=%d total=%d, want 2/2: %+v", len(detail.Messages), detail.MessageTotal, detail.Messages)
+	}
+	if detail.Messages[0].Role != "user" || detail.Messages[0].Content != "修这个接口" {
+		t.Fatalf("fallback user=%+v", detail.Messages[0])
+	}
+	if detail.Messages[1].ReasoningContent != "先看调用点" {
+		t.Fatalf("fallback reasoning=%q", detail.Messages[1].ReasoningContent)
+	}
+
+	app.ensureInteractionInfra()
+	handler := NewIMMessageHandler(app, NewRemoteSessionManager(app))
+	app.imHandler = handler
+	handler.memory.Save(projectSessionOwnerID(created.ProjectPath), []agent.ConversationEntry{
+		{Role: "user", Content: "会话里已有这一轮"},
+		{Role: "assistant", Content: "不要被状态文件替换"},
+	})
+	detail, err = app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail after session turns: %v", err)
+	}
+	if len(detail.Messages) != 2 || detail.Messages[0].Content != "会话里已有这一轮" {
+		t.Fatalf("session turns replaced by state file: %+v", detail.Messages)
+	}
+	if detail.Messages[1].Content != "不要被状态文件替换" {
+		t.Fatalf("session assistant=%q", detail.Messages[1].Content)
+	}
 }
 
 func TestSearchTasksCollapsesDuplicateCloudWorkspaceRows(t *testing.T) {

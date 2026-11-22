@@ -1,10 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../../core/api_client.dart';
+import '../bots/bots_controller.dart' show failureMessage;
+import 'remote_attachments.dart';
 import 'remote_models.dart';
 import 'viewer_reducer.dart';
+
+/// Matches the Hub's upload cap (`corelib/desktop.UploadMax`); a larger
+/// pick is rejected on the phone before any byte is sent.
+const int remoteAttachmentMaxBytes = 200 << 20;
 
 /// One account-level SSE. [events] starts after the response headers arrive.
 class AccountEventStream {
@@ -110,9 +117,14 @@ class RemoteControlApi {
     ];
   }
 
-  Future<RemoteTaskDetail> getTask(String grantId, String projectPath) async {
+  Future<RemoteTaskDetail> getTask(
+    String grantId,
+    String projectPath, {
+    int historyLimit = 0,
+  }) async {
     final result = await _op(grantId, 'get_task', {
       'project_path': projectPath,
+      if (historyLimit != 0) 'history_limit': historyLimit,
     });
     return RemoteTaskDetail.fromJson(result);
   }
@@ -182,6 +194,83 @@ class RemoteControlApi {
       'project_path': projectPath,
       'pinned': pinned,
     });
+  }
+
+  /// Stages one attachment on the controlled desktop: `POST
+  /// /api/v1/bots/{botId}/desktop/files` in 2MB chunks, relayed to that
+  /// machine's own Hub. The last answer's `path` is absolute there, so the
+  /// next message can name it. Nothing is written to the task workspace by
+  /// this call.
+  Future<RemoteStagedFile> uploadAttachment(
+    String botId,
+    String grantId,
+    RemoteOutgoingFile file, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    if (botId.trim().isEmpty) {
+      return const RemoteStagedFile(error: 'no-desktop');
+    }
+    if (file.size <= 0 || file.size > remoteAttachmentMaxBytes) {
+      return const RemoteStagedFile(error: 'too-large');
+    }
+    final uploadId = 'rc-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-'
+        '${file.name.hashCode.abs().toRadixString(36)}';
+    const chunkSize = 2 << 20;
+    var offset = 0;
+    String path = '';
+    RandomAccessFile? raf;
+    try {
+      if (file.disk != null) {
+        raf = await file.disk!.open();
+      }
+      while (offset < file.size) {
+        final List<int> chunk;
+        if (raf != null) {
+          await raf.setPosition(offset);
+          chunk = await raf.read(chunkSize);
+        } else {
+          final source = file.bytes ?? Uint8List(0);
+          chunk = source.sublist(
+            offset,
+            (offset + chunkSize).clamp(0, source.length),
+          );
+        }
+        if (chunk.isEmpty) break;
+        final answer = await _client.guard(
+          () => _client.dio.post<Map<String, dynamic>>(
+            '/api/v1/bots/${Uri.encodeComponent(botId.trim())}/desktop/files',
+            data: {
+              'upload_id': uploadId,
+              'name': file.name,
+              'offset': offset,
+              'total': file.size,
+              'data': base64Encode(chunk),
+              'grant_id': grantId,
+            },
+            options: _client.opts(
+              receiveTimeout: const Duration(minutes: 5),
+              sendTimeout: const Duration(minutes: 5),
+            ),
+          ),
+        );
+        offset += chunk.length;
+        final returned = answer['path'];
+        if (returned is String && returned.trim().isNotEmpty) {
+          path = returned.trim();
+        }
+        onProgress?.call(offset, file.size);
+      }
+    } on Object catch (error) {
+      return RemoteStagedFile(error: failureMessage(error));
+    } finally {
+      try {
+        await raf?.close();
+      } on Object {
+        // The descriptor is already gone.
+      }
+    }
+    if (path.isEmpty) return const RemoteStagedFile(error: 'no-path');
+    return RemoteStagedFile(path: path, name: file.name);
   }
 
   /// One browse page of the controlled machine's directories for the

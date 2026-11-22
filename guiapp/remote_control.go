@@ -47,9 +47,10 @@ type RemoteControlGrant struct {
 
 // RemoteControlTaskDetail is the read-only view of one task on this desktop.
 type RemoteControlTaskDetail struct {
-	Task      ProjectSearchResult              `json:"task"`
-	Messages  []ProjectConversationHistoryItem `json:"messages"`
-	Artifacts []ProjectSearchArtifact          `json:"artifacts"`
+	Task         ProjectSearchResult              `json:"task"`
+	Messages     []ProjectConversationHistoryItem `json:"messages"`
+	MessageTotal int                              `json:"message_total"`
+	Artifacts    []ProjectSearchArtifact          `json:"artifacts"`
 }
 
 func (a *App) remoteControlLogin() (hub, viewer, machineID string, err error) {
@@ -394,6 +395,21 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 		a.PinTask(path, req.Pinned)
 		a.emitProjectIndexChanged(path)
 		return map[string]any{"ok": true}, nil
+	case "attach_begin":
+		// The Hub writes the file itself (the op channel is JSON and capped at
+		// 1 MB), but only after this desktop says the task exists. Answer with
+		// the absolute task directory; nothing is created here.
+		var req struct {
+			ProjectPath string `json:"project_path"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, errors.New("远控请求无效")
+		}
+		path, err := a.remoteControlKnownTask(req.ProjectPath)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"task_dir": path}, nil
 	case "fetch_file":
 		return a.remoteControlTaskFile(body)
 	case "watch_task":
@@ -407,7 +423,8 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 
 func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDetail, error) {
 	var req struct {
-		ProjectPath string `json:"project_path"`
+		ProjectPath  string `json:"project_path"`
+		HistoryLimit int    `json:"history_limit"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return RemoteControlTaskDetail{}, errors.New("远控请求无效")
@@ -417,10 +434,11 @@ func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDe
 		return RemoteControlTaskDetail{}, err
 	}
 	task := a.remoteControlTaskSnapshot(path)
-	history := a.LoadProjectConversationHistory(path)
+	history := a.remoteControlTaskHistory(path)
+	limit := remoteControlHistoryLimit(req.HistoryLimit)
 	messages := history
-	if len(messages) > 40 {
-		messages = append([]ProjectConversationHistoryItem(nil), messages[len(messages)-40:]...)
+	if len(messages) > limit {
+		messages = append([]ProjectConversationHistoryItem(nil), messages[len(messages)-limit:]...)
 	}
 	for i := range messages {
 		messages[i].Content = trimRemoteControlText(messages[i].Content, 4000)
@@ -458,7 +476,78 @@ func (a *App) remoteControlTaskDetail(body json.RawMessage) (RemoteControlTaskDe
 	if messages == nil {
 		messages = []ProjectConversationHistoryItem{}
 	}
-	return RemoteControlTaskDetail{Task: task, Messages: messages, Artifacts: artifacts}, nil
+	return RemoteControlTaskDetail{Task: task, Messages: messages, MessageTotal: len(history), Artifacts: artifacts}, nil
+}
+
+// remoteControlHistoryLimit clamps a phone get_task window. 0 or a missing
+// field stays at the historical 40-row tail; a request may ask for 1..400.
+func remoteControlHistoryLimit(requested int) int {
+	if requested <= 0 {
+		return 40
+	}
+	if requested > 400 {
+		return 400
+	}
+	return requested
+}
+
+// remoteControlTaskHistory is the transcript the phone may page. A project
+// session with real turns wins. Only a session with no user or assistant row
+// falls back to the coding-agent state file in the task directory, and that
+// file never replaces a conversation that already has turns.
+func (a *App) remoteControlTaskHistory(path string) []ProjectConversationHistoryItem {
+	history := a.LoadProjectConversationHistory(path)
+	if projectConversationHistoryHasTurns(history) {
+		return history
+	}
+	fallback := remoteControlCodingAgentHistory(path)
+	if projectConversationHistoryHasTurns(fallback) {
+		return fallback
+	}
+	return history
+}
+
+// remoteControlCodingAgentHistory reads .coding_agent_state.json from the
+// managed task directory. It does not filter, trim, or drop rows the way a
+// resume load does: the phone should see the stored loop, including a user
+// turn that never received an assistant reply.
+func remoteControlCodingAgentHistory(path string) []ProjectConversationHistoryItem {
+	path = normalizeProjectSessionPath(path)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(path, codingAgentResumeFileName))
+	if err != nil {
+		return nil
+	}
+	var disk codingAgentResumeDisk
+	if json.Unmarshal(data, &disk) != nil {
+		return nil
+	}
+	items := make([]ProjectConversationHistoryItem, 0, len(disk.History))
+	for _, entry := range disk.History {
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		if content == "" && reasoning == "" && len(entry.LocalFilePaths) == 0 {
+			continue
+		}
+		items = append(items, withConversationHistoryOutcome(ProjectConversationHistoryItem{
+			Role:             role,
+			Content:          content,
+			ReasoningContent: reasoning,
+			LocalFilePaths:   append([]string{}, entry.LocalFilePaths...),
+		}, entry.TerminalClass, ""))
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return items
 }
 
 // remoteControlDeliveredFilePaths is the set fetch_file will accept: absolute

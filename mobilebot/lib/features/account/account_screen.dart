@@ -11,6 +11,7 @@ import '../../core/ui_kit.dart';
 import '../bots/bot_models.dart';
 import '../bots/bots_controller.dart';
 import '../auth/qr_login_screen.dart';
+import 'about_sheet.dart';
 import 'update_dialog.dart';
 import 'voice_settings_sheet.dart';
 
@@ -112,6 +113,16 @@ class AccountScreen extends ConsumerWidget {
                   }()),
                   trailing: const Icon(Icons.chevron_right, size: 20),
                   onTap: () => _pickLanguage(context, ref),
+                ),
+                const Divider(indent: 68),
+                ListTile(
+                  leading: _SettingsIcon(
+                    icon: Icons.info_outline,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  title: Text(context.S.aboutTitle),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => showAboutSheet(context),
                 ),
               ],
             ),

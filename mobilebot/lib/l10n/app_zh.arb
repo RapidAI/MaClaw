@@ -303,6 +303,20 @@
     }
   },
   "acFooter": "MaclawGo · 桌面 Bot 的移动工作台",
+  "aboutTitle": "关于 MaclawGo",
+  "aboutInfo": "应用信息",
+  "aboutVersion": "版本",
+  "aboutPlatform": "运行平台",
+  "aboutPlatformAndroid": "Android",
+  "aboutPlatformIos": "iOS",
+  "aboutPlatformOhos": "鸿蒙 NEXT",
+  "aboutService": "服务节点",
+  "aboutAccount": "当前账号",
+  "aboutNotSignedIn": "未登录",
+  "aboutLastUpdate": "最近检查更新",
+  "aboutNever": "还没有检查过",
+  "aboutLegal": "法律信息",
+  "aboutLicenses": "开源许可",
   "acCredits": "Bot 额度",
   "acCreditsUsedRemain": "已用 {used} / {total}，剩余 {remain}",
   "@acCreditsUsedRemain": {
@@ -517,7 +531,70 @@
   },
   "rtTimelineDegraded": "时间线已降级",
   "rtNoTranscript": "还没有对话记录",
+  "rtLoadEarlier": "查看更早的对话",
+  "rtShownCount": "已显示 {shown}/{total} 条",
+  "@rtShownCount": {
+    "placeholders": {
+      "shown": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "rtLoadingEarlier": "正在加载更早的对话",
+  "rtEarlierFailed": "更早的对话没有载入",
   "rtComposerHint": "给这台机器的任务发消息…",
+  "rtAttachTooltip": "给这个任务添加图片或文件",
+  "rtAttachSent": "附件已传到对方电脑：{path}",
+  "@rtAttachSent": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "rtAttachUploading": "附件还在上传，稍等再发送",
+  "rtAttachUploadingName": "上传 {name} {percent}%",
+  "@rtAttachUploadingName": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "rtAttachFailed": "{name} 上传失败：{error}",
+  "@rtAttachFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "rtAttachFailedShort": "{name} 上传失败",
+  "@rtAttachFailedShort": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "rtAttachTooLarge": "{name} 太大，单个附件最多 {limit} MB",
+  "@rtAttachTooLarge": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "limit": {
+        "type": "int"
+      }
+    }
+  },
+  "rtAttachDesktopUnknown": "不知道要把文件传到哪台电脑（缺少机器标识）",
+  "rtAttachRemove": "移除附件",
   "rtConfirmInvalid": "确认已失效",
   "rtConfirmRequired": "需要确认",
   "rtFailures": "失败 {count}",
