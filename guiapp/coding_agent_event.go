@@ -393,3 +393,35 @@ func codingWriterAdmissionWaitEvent(task *TaskItem) CodingAgentEvent {
 func emitCodingWriterAdmissionWait(onProgress func(string), task *TaskItem) {
 	emitCodingAgentEvent(onProgress, codingWriterAdmissionWaitEvent(task))
 }
+
+// codingParallelWriterWaitDetail describes a turn that must wait because a
+// sibling coding session already holds the same project directory and this
+// turn could not get its own isolated checkout. The wait is real serialization,
+// not a model call, so the live-activity header must leave "accessing model"
+// and show that the turn is queued behind another writer.
+const codingParallelWriterWaitDetail = "同一目录上另一个任务还在写入，本任务等它结束后再开始"
+
+// emitCodingParallelWriterWait reports a directory-level wait the parallel
+// worktree turn took before any model request. It reuses the waiting_writer
+// phase so the header switches to "waiting for writer" instead of staying on
+// "contacting the model" while the turn is actually blocked on a sibling task.
+func emitCodingParallelWriterWait(onProgress func(string), detail string) {
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseWaitingWriter, nil, "", "")
+	event.Event = codingAgentEventKindAssistantNote.String()
+	if strings.TrimSpace(detail) == "" {
+		detail = codingParallelWriterWaitDetail
+	}
+	event.Detail = detail
+	emitCodingAgentEvent(onProgress, event)
+}
+
+// emitCodingParallelWriterReady clears the directory wait once an isolated
+// checkout exists. The starting phase lets the header leave waiting_writer and
+// fall through to the normal model/tool status before the runner emits its own
+// task events. Without it a deferred turn keeps the "waiting for writer" label
+// even though it is already free to run.
+func emitCodingParallelWriterReady(onProgress func(string)) {
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseStarting, nil, "", "")
+	event.Event = codingAgentEventKindAssistantNote.String()
+	emitCodingAgentEvent(onProgress, event)
+}

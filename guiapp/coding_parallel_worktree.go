@@ -163,23 +163,24 @@ func (h *IMMessageHandler) beginCodingParallelTurn(userID, presented string, kin
 		turn.stayPut = true
 		turn.waitPrimary = true
 		codingParallelTurns.Store(codingParallelTurnKey(taskPath), turn)
-		if onProgress != nil {
-			onProgress("同一目录上另一个任务还在使用，本任务等它结束后再开始")
-		}
+		emitCodingParallelWriterWait(onProgress, "同一目录上另一个任务还在使用，本任务等它结束后再开始")
 		return turn
 	}
+	// Surface the possible wait before attempting an isolated checkout. The
+	// attempt may have to wait on the holder's git metadata lock; without an
+	// event the header keeps the previous "contacting the model" state while
+	// the turn is actually queued behind another writer.
+	emitCodingParallelWriterWait(onProgress, "同一目录上另一个任务还在写入，本任务正在尝试独立检出")
 	wt, err := codingParallelWorktreeCreate(primary, 0, "parallel-task")
 	if err != nil || wt == nil {
 		turn.stayPut = true
 		turn.waitPrimary = true
 		codingParallelTurns.Store(codingParallelTurnKey(taskPath), turn)
-		if onProgress != nil {
-			if err != nil {
-				onProgress("独立检出创建失败，本任务等另一个任务写完后再在主目录开始")
-			} else {
-				onProgress("这个目录不是 git 仓库，本任务等另一个任务写完后再开始，避免互相覆盖")
-			}
+		detail := "这个目录不是 git 仓库，本任务等另一个任务写完后再开始，避免互相覆盖"
+		if err != nil {
+			detail = "独立检出创建失败，本任务等另一个任务写完后再在主目录开始"
 		}
+		emitCodingParallelWriterWait(onProgress, detail)
 		return turn
 	}
 	base, baseErr := codingParallelGitText(wt.Path, "rev-parse", "HEAD")
@@ -188,9 +189,7 @@ func (h *IMMessageHandler) beginCodingParallelTurn(userID, presented string, kin
 		turn.stayPut = true
 		turn.waitPrimary = true
 		codingParallelTurns.Store(codingParallelTurnKey(taskPath), turn)
-		if onProgress != nil {
-			onProgress("独立检出创建失败，本任务等另一个任务写完后再在主目录开始")
-		}
+		emitCodingParallelWriterWait(onProgress, "独立检出创建失败，本任务等另一个任务写完后再在主目录开始")
 		return turn
 	}
 	turn.wt = wt
@@ -199,6 +198,11 @@ func (h *IMMessageHandler) beginCodingParallelTurn(userID, presented string, kin
 	turn.deferred = true
 	codingParallelTurns.Store(codingParallelTurnKey(taskPath), turn)
 	codingParallelRememberExec(turn)
+	// The isolated checkout is ready, so the turn is no longer waiting on the
+	// holder. Move the header off waiting_writer before the runner emits its
+	// own starting/tool events; otherwise the deferred path looks like it is
+	// still queued behind the other task.
+	emitCodingParallelWriterReady(onProgress)
 	if onProgress != nil {
 		onProgress("本任务在独立检出中执行，结束后合并回主目录")
 	}
@@ -614,6 +618,8 @@ func (t *codingParallelTurn) waitHolder(ctx context.Context) error {
 	if t == nil || t.handler == nil || t.handler.app == nil {
 		return nil
 	}
+	waitLogged := false
+	waitStart := time.Now()
 	for {
 		// A stop must win even when the other task has already left.
 		// Otherwise finish writes the primary for a turn the person cancelled.
@@ -622,10 +628,21 @@ func (t *codingParallelTurn) waitHolder(ctx context.Context) error {
 		}
 		holder, _ := t.handler.app.earlierLiveWorkRootHolder(t.taskPath, t.primary)
 		if holder == "" {
+			if waitLogged {
+				log.Printf("[work-root] task %q released: earlier writer done after %s", t.taskPath, time.Since(waitStart).Round(time.Second))
+			}
 			if ctx != nil && ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return nil
+		}
+		if !waitLogged {
+			waitLogged = true
+			log.Printf("[work-root] task %q waiting on earlier writer holding %q holder=%q", t.taskPath, t.primary, holder)
+			// Re-announce the queued state when the wait actually begins. The
+			// begin-time event can race a later progress snapshot; re-sending
+			// here keeps waiting_writer on the header for the whole block.
+			emitCodingParallelWriterWait(t.onProgress, "")
 		}
 		timer := time.NewTimer(500 * time.Millisecond)
 		if ctx == nil {

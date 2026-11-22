@@ -1,9 +1,11 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +14,33 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
+
+// codingWorktreeGitTimeout bounds the repository-mutating git calls behind an
+// isolated checkout (worktree add/remove/prune, branch -D). remote.RunGit has
+// no deadline, so when a sibling writer holds the shared .git metadata lock —
+// or when a large checkout makes `Preparing worktree` genuinely slow — the
+// approved plan stalls before its first model call for as long as the lock is
+// held. 90s is well above a healthy worktree add on a large repo yet still
+// bounded: past it the turn falls back to waiting on the primary directory
+// (surfacing waiting_writer) instead of hanging silently.
+var codingWorktreeGitTimeout = 90 * time.Second
+
+// runCodingWorkbenchGit runs one repo-mutating git command with a bounded
+// context so a held lock or a wedged checkout cannot stall the turn
+// indefinitely.
+func runCodingWorkbenchGit(repoPath string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), codingWorktreeGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoPath}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("git %s timed out after %s", strings.Join(args, " "), codingWorktreeGitTimeout)
+	}
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
 
 // Worktree modes for pure-coding multi-step execution.
 //   - auto: isolate only when a parallel wave needs write-capable steps (default)
@@ -216,15 +245,15 @@ func createCodingWorkbenchWorktree(projectPath string, stepIndex int, label stri
 
 	_ = os.RemoveAll(wtPath)
 	// Best-effort: drop leftover branch from a previous crash with same id (rare).
-	_ = remote.RunGit(gitRoot, "branch", "-D", branch)
+	_ = runCodingWorkbenchGit(gitRoot, "branch", "-D", branch)
 	// Prune stale worktree metadata so "already registered" cannot block add.
-	_ = remote.RunGit(gitRoot, "worktree", "prune")
+	_ = runCodingWorkbenchGit(gitRoot, "worktree", "prune")
 
-	if err := remote.RunGit(gitRoot, "worktree", "add", "-b", branch, wtPath, "HEAD"); err != nil {
+	if err := runCodingWorkbenchGit(gitRoot, "worktree", "add", "-b", branch, wtPath, "HEAD"); err != nil {
 		// One retry after force-remove path + prune (Windows file lock races).
 		_ = os.RemoveAll(wtPath)
-		_ = remote.RunGit(gitRoot, "worktree", "prune")
-		if err2 := remote.RunGit(gitRoot, "worktree", "add", "-b", branch, wtPath, "HEAD"); err2 != nil {
+		_ = runCodingWorkbenchGit(gitRoot, "worktree", "prune")
+		if err2 := runCodingWorkbenchGit(gitRoot, "worktree", "add", "-b", branch, wtPath, "HEAD"); err2 != nil {
 			return nil, fmt.Errorf("git worktree add: %w", err2)
 		}
 	}
@@ -234,9 +263,9 @@ func createCodingWorkbenchWorktree(projectPath string, stepIndex int, label stri
 	if rel, relErr := filepath.Rel(gitRoot, abs); relErr == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 		prepared = filepath.Join(wtPath, rel)
 		if err := os.MkdirAll(prepared, 0o755); err != nil {
-			_ = remote.RunGit(gitRoot, "worktree", "remove", "--force", wtPath)
+			_ = runCodingWorkbenchGit(gitRoot, "worktree", "remove", "--force", wtPath)
 			_ = os.RemoveAll(wtPath)
-			_ = remote.RunGit(gitRoot, "branch", "-D", branch)
+			_ = runCodingWorkbenchGit(gitRoot, "branch", "-D", branch)
 			return nil, err
 		}
 	}
