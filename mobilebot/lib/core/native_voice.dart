@@ -44,6 +44,10 @@ class NativeVoice {
   static DynamicLibrary? _lib;
   static bool _openTried = false;
 
+  /// Why [supported] is false on Android, for the settings sheet and the mic
+  /// toast. Empty on a supported ABI or on a platform without the library.
+  static String lastOpenError = '';
+
   /// ABIs without a bundled .so (armeabi-v7a) throw ArgumentError on open —
   /// probe once and report unsupported instead of crashing in the isolate.
   static DynamicLibrary? _tryOpen() {
@@ -52,9 +56,28 @@ class NativeVoice {
     _openTried = true;
     try {
       return _lib = DynamicLibrary.open('libmaclaw_voice.so');
-    } on Object {
+    } on Object catch (e) {
+      lastOpenError = '$e';
       return null;
     }
+  }
+
+  /// One line naming the ABI and the open failure. The mic used to answer
+  /// "this build has no local engine" with no cause, so a sideloaded
+  /// armeabi-v7a APK (no .so for that ABI) looked like a broken build.
+  static String get unsupportedReason {
+    final abi = Platform.isAndroid ? _androidAbi() : Platform.operatingSystem;
+    final err = lastOpenError.trim();
+    return err.isEmpty ? 'ABI $abi' : 'ABI $abi: $err';
+  }
+
+  /// `ro.product.cpu.abi`-level guess from the Dart VM: the APK ships
+  /// arm64-v8a and x86_64 only, so anything else has no library to open.
+  static String _androidAbi() {
+    if (Platform.version.contains('arm64')) return 'arm64-v8a';
+    if (Platform.version.contains('arm')) return 'armeabi-v7a';
+    if (Platform.version.contains('x64')) return 'x86_64';
+    return 'unknown';
   }
 
   static DynamicLibrary get _dylib => _tryOpen()!;

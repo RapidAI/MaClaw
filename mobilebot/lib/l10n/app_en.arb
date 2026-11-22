@@ -596,6 +596,14 @@
   "chatMicPermissionDenied": "No microphone permission",
   "chatMicOpenFailed": "Cannot open the microphone for recording",
   "vsEngineMissing": "This build does not include the local voice engine, so local models cannot work. Switch to system recognition / system speech in Me -> Voice, or install an official build.",
+  "vsEngineMissingDetail": "The local engine failed to load ({reason}). Use system recognition; if Me -> Voice offers only system recognition, this package lacks the voice library for this phone CPU — install the official arm64 build.",
+  "@vsEngineMissingDetail": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
   "chatAsrUnavailableDownloading": "Speech recognition unavailable: the local model is still downloading (~250 MB). Try again later, or check progress in Me -> Voice",
   "chatNotHeard": "Didn't catch that, please try again",
   "chatAsrFailed": "Speech recognition failed, please retry",

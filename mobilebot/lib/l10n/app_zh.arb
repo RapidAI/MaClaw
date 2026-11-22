@@ -654,6 +654,14 @@
   "chatMicPermissionDenied": "没有麦克风权限",
   "chatMicOpenFailed": "无法打开麦克风录音",
   "vsEngineMissing": "当前安装包没有内置本地语音引擎，本地模型不可用；请在「我的 → 语音」里改用系统识别/系统发音，或安装正式安装包。",
+  "vsEngineMissingDetail": "本地引擎加载失败（{reason}）。手机识别请用系统识别；若手机上「我的 → 语音」只显示系统识别，说明这个安装包缺少对应 CPU 架构的语音库，请换装官方 arm64 安装包。",
+  "@vsEngineMissingDetail": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
   "chatAsrUnavailableDownloading": "语音识别不可用：本地模型还在下载（约 250MB）。稍后再试，或到「我的 → 语音」看下载进度",
   "chatNotHeard": "没听清，请再试",
   "chatAsrFailed": "语音识别失败，请重试",

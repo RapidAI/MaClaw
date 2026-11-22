@@ -98,8 +98,13 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
   /// is absent from the build, say so instead of offering a download that
   /// cannot make the model usable.
   Widget _engineMissingNote(ThemeData theme) {
+    final reason = NativeVoice.unsupportedReason.trim();
+    final detail = reason.isEmpty
+        ? context.S.vsEngineMissing
+        : context.S.vsEngineMissingDetail(reason);
     return Text(
-      context.S.vsEngineMissing,
+      detail,
+      key: const ValueKey('vs-engine-missing-detail'),
       style: theme.textTheme.bodySmall?.copyWith(
         color: theme.colorScheme.onSurfaceVariant,
       ),

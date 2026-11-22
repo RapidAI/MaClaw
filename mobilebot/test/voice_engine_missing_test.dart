@@ -17,4 +17,14 @@ void main() {
     // exactly the branch the guard takes.
     expect(NativeVoice.supported, isFalse);
   });
+
+  test('an unsupported engine names the ABI and the open failure', () {
+    // The mic used to say only "this build has no local engine". A phone
+    // running an armeabi-v7a APK (the library ships arm64-v8a and x86_64
+    // only) now reads which ABI was asked for and why the open failed.
+    final reason = NativeVoice.unsupportedReason;
+    expect(reason, isNotEmpty);
+    expect(reason, contains('ABI'));
+    expect(reason, isNot(contains('\n')));
+  });
 }
