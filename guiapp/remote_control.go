@@ -514,13 +514,28 @@ func (a *App) remoteControlTaskHistory(path string) []ProjectConversationHistory
 // resume load does: the phone should see the stored loop, including a user
 // turn that never received an assistant reply.
 func remoteControlCodingAgentHistory(path string) []ProjectConversationHistoryItem {
+	items := remoteControlCodingAgentItems(path)
+	if len(items) == 0 {
+		return nil
+	}
+	return visibleProjectConversationHistory(items)
+}
+
+// remoteControlCodingAgentItems projects the stored loop without the visible
+// fold, so a test can assert the metadata a filtered and an unfiltered row
+// both carry.
+func remoteControlCodingAgentItems(path string) []ProjectConversationHistoryItem {
 	path = normalizeProjectSessionPath(path)
 	if path == "" {
 		return nil
 	}
+	// The state file's path is the task's working directory, not the task
+	// folder the phone named.
 	data, err := os.ReadFile(filepath.Join(path, codingAgentResumeFileName))
 	if err != nil {
-		return nil
+		if err != nil {
+			return nil
+		}
 	}
 	var disk codingAgentResumeDisk
 	if json.Unmarshal(data, &disk) != nil {
@@ -530,28 +545,43 @@ func remoteControlCodingAgentHistory(path string) []ProjectConversationHistoryIt
 	for _, entry := range disk.History {
 		role := strings.TrimSpace(strings.ToLower(entry.Role))
 		switch role {
-		case "user", "assistant", "system", "error":
+		case "user", "assistant", "system", "error", "tool":
 		default:
 			continue
 		}
 		content := stringifyProjectConversationContent(entry.Content)
 		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		// A tool row carries only the call's output: it is not prose, and on
+		// its own it is not worth a phone row.
 		if content == "" && reasoning == "" && len(entry.LocalFilePaths) == 0 {
 			continue
 		}
-		items = append(items, withConversationHistoryOutcome(ProjectConversationHistoryItem{
+		if role == "tool" && reasoning == "" && len(entry.LocalFilePaths) == 0 &&
+			strings.TrimSpace(entry.ToolName) == "" {
+			continue
+		}
+		item := withConversationHistoryOutcome(ProjectConversationHistoryItem{
 			Role:             role,
 			Content:          content,
 			ReasoningContent: reasoning,
 			LocalFilePaths:   append([]string{}, entry.LocalFilePaths...),
 			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, entry.FinishReason, entry.ToolCalls),
 			hostContinuation: entry.HostContinuation,
-		}, entry.TerminalClass, ""))
+		}, entry.TerminalClass, "")
+		// A tool turn is kept only so the phone can name the call. Its content
+		// is the model's tool JSON, not prose: the phone paints one row per
+		// call and never appends that body to the answer.
+		if role == "assistant" {
+			item.ToolCalls = entry.ToolCalls
+		}
+		if role == "tool" {
+			item.ToolName = strings.TrimSpace(entry.ToolName)
+			item.ToolOutcome = strings.TrimSpace(entry.ToolOutcome)
+			item.FailureKind = strings.TrimSpace(entry.FailureKind)
+		}
+		items = append(items, item)
 	}
-	if len(items) == 0 {
-		return nil
-	}
-	return visibleProjectConversationHistory(items)
+	return items
 }
 
 // remoteControlDeliveredFilePaths is the set fetch_file will accept: absolute

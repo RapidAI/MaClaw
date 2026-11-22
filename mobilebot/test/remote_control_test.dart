@@ -2107,6 +2107,64 @@ void main() {
       expect(find.byIcon(Icons.more_vert), findsNothing);
     });
 
+    testWidgets('a stored tool call is its own row, not run into the answer', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(
+            id: '/p/a',
+            name: '任务甲',
+            projectPath: '/p/a',
+          ),
+          messages: const [
+            RemoteMessage(role: 'user', content: '铺满图标'),
+            RemoteMessage(
+              role: 'assistant',
+              content: '',
+              reasoning: '先看一眼图标文件',
+              toolCalls: [
+                {
+                  'id': 'call_1',
+                  'type': 'function',
+                  'function': {
+                    'name': 'edit_file',
+                    'arguments': '{"path":"E:/app/icon.dart"}',
+                  },
+                },
+              ],
+            ),
+            RemoteMessage(
+              role: 'tool',
+              toolName: 'edit_file',
+              toolOutcome: 'failure',
+              content: 'E:/app/icon.dart',
+            ),
+            RemoteMessage(role: 'assistant', content: '图标改好了'),
+          ],
+        );
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+
+      // The call names itself and shows the target it touched: one row for
+      // the call and one for the failed completion, each with a pill.
+      expect(find.byKey(const ValueKey('history-tool-name')), findsNWidgets(2));
+      expect(find.text('edit_file'), findsNWidgets(2));
+      expect(find.text('E:/app/icon.dart'), findsNWidgets(2));
+      expect(find.text('图标改好了', findRichText: true), findsOneWidget);
+      // The tool body is not appended to the answer as one run-on paragraph.
+      expect(find.textContaining('icon.dart 图标改好了'), findsNothing);
+    });
+
     testWidgets('operate grant echoes the user message before send returns', (
       tester,
     ) async {

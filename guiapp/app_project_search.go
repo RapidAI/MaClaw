@@ -269,6 +269,15 @@ type ProjectConversationHistoryItem struct {
 	// hostContinuation is a loop hint stored as a user row. It stays inside
 	// the person turn and is not shown as something the person typed.
 	hostContinuation bool `json:"-"`
+	// ToolCalls are the calls an assistant row issued, as stored. Remote
+	// control sends them so the controller can list one row per call; chat
+	// surfaces leave them out.
+	ToolCalls interface{} `json:"tool_calls,omitempty"`
+	// ToolName / ToolOutcome / FailureKind label one `tool` row so the
+	// controller can show which call finished and whether it failed.
+	ToolName    string `json:"tool_name,omitempty"`
+	ToolOutcome string `json:"tool_outcome,omitempty"`
+	FailureKind string `json:"failure_kind,omitempty"`
 }
 
 // ProjectWorkflowState is a compact workflow snapshot attached to a

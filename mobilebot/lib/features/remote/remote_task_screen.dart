@@ -28,6 +28,7 @@ import '../../core/ui_kit.dart'
     show AppBadge, EmptyState, linkifyMarkdownUrls, openExternalUrl;
 import '../bots/widgets.dart' show runStatusColor;
 import 'activity_rows.dart';
+import 'history_rows.dart';
 import 'remote_api.dart';
 import 'remote_attachments.dart';
 import 'remote_models.dart';
@@ -605,7 +606,11 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     }
   }
 
-  /// 上传一个文件到被控机器，并把它挂到待发列表上。上传串行执行。
+  /// 上传一个文件到被控机器对应任务的 `attachments/` 目录，然后挂到待发列表。
+  ///
+  /// 走远控的 `attach` 分片接口（Hub 收下后在任务目录里写文件），不走 Bot
+  /// 素材目录：任务里的 agent 能直接读到，回包里的本地文件也按这个路径
+  /// 记成投递文件，手机才能再下载回来。上传串行执行。
   Future<void> _stageFile(RemoteOutgoingFile file) async {
     if (!mounted) return;
     final sizeLimit = remoteAttachmentMaxBytes;
@@ -614,8 +619,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       return;
     }
     final api = ref.read(remoteApiProvider);
-    final botId = (widget.grant.machineId).trim();
-    if (api == null || botId.isEmpty) {
+    if (api == null) {
       _toast(context.S.rtAttachDesktopUnknown);
       return;
     }
@@ -627,8 +631,8 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
     });
     final staged = await _uploads.add(
       () => api.uploadAttachment(
-        botId,
         widget.grant.id,
+        widget.taskPath,
         file,
         onProgress: (sent, total) {
           if (!mounted || gen != _fileGen) return;
@@ -647,17 +651,8 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
       _toast(context.S.rtAttachFailed(file.name, staged.error));
       return;
     }
-    // 图片直接插进输入框，方便顺手解释一句；其余只显示在附件条上。
-    final caption = context.S.rtAttachSent(file.path);
-    final current = _inputCtrl.text;
-    if (current.isEmpty) {
-      _inputCtrl.text = caption;
-    } else {
-      _inputCtrl.text = current + String.fromCharCode(10) + caption;
-    }
-    _inputCtrl.selection = TextSelection.collapsed(
-      offset: _inputCtrl.text.length,
-    );
+    // 不往输入框里写路径文案：气泡会把原文当附件清单解析，多一行说明
+    // 就得多一条路径，对不上。附件只显示在附件条上，发送时拼进消息。
   }
 
   void _removeFile(RemoteOutgoingFile file) {
@@ -2015,6 +2010,85 @@ IconData _toolIcon(ToolKind kind) {
   }
 }
 
+/// One stored tool call or note inside a history turn. Same geometry as the
+/// live [_ToolChip] so a call reads the same before and after the round ends.
+class _HistoryRowView extends StatelessWidget {
+  final HistoryRow row;
+
+  const _HistoryRowView({required this.row});
+
+  @override
+  Widget build(BuildContext context) {
+    final tool = row.tool;
+    if (tool == null) {
+      return _NoteLine(text: row.text, asError: row.asError);
+    }
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final failed = tool.state == ToolState.failed;
+    final tone = failed ? scheme.error : scheme.onSurfaceVariant;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(
+            _toolIcon(historyToolKind(tool.name)),
+            size: 14,
+            color: tone,
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                tool.name,
+                key: const ValueKey('history-tool-name'),
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontFamilyFallback: const ['Menlo', 'Consolas', 'Roboto Mono'],
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: failed ? scheme.error : scheme.onSurface,
+                  height: 1.3,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (tool.target.trim().isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(
+                    tool.target.trim(),
+                    key: const ValueKey('history-tool-target'),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (tool.state != ToolState.unknown) ...[
+          const SizedBox(width: AppSpacing.xs + 2),
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: AppBadge(
+              label: failed ? context.S.rtToolFailed : context.S.rtToolDone,
+              color: tone,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 /// A tool call: kind icon, tool name in the code face, muted target, and a
 /// tinted state pill on the right — the mobile form of the desktop tool row.
 class _ToolChip extends StatelessWidget {
@@ -2566,6 +2640,9 @@ class _AssistantTurn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // A stored tool call keeps its own row, the way the desktop transcript
+    // lists it; the prose stays the answer body.
+    final display = historyDisplayOf(message.historyEntry);
     return MessageBubble(
       role: ChatRole.assistant,
       maxWidth: MediaQuery.of(context).size.width * 0.84,
@@ -2590,9 +2667,14 @@ class _AssistantTurn extends StatelessWidget {
             _ReasoningBlock(text: message.reasoning),
             const SizedBox(height: AppSpacing.sm),
           ],
-          if (message.content.isNotEmpty)
+          for (final row in display.toolRows)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+              child: _HistoryRowView(row: row),
+            ),
+          if (display.answer.isNotEmpty)
             MermaidMarkdown(
-              data: linkifyMarkdownUrls(message.content),
+              data: linkifyMarkdownUrls(display.answer),
               selectable: true,
               onTapLink: (text, href, title) {
                 if (href != null) openExternalUrl(href);

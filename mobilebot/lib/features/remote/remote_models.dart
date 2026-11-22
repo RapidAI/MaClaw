@@ -244,12 +244,23 @@ class RemoteMessage {
   final String resultStatus;
   final List<String> filePaths;
 
+  /// Tool calls this assistant row issued, as the desktop stored them.
+  final List<Map> toolCalls;
+
+  /// `tool_outcome` / `failure_kind` of a tool row or a failed call turn.
+  final String toolOutcome;
+  final String failureKind;
+
   const RemoteMessage({
     this.role = '',
     this.content = '',
     this.reasoning = '',
     this.resultStatus = '',
     this.filePaths = const [],
+    this.toolCalls = const [],
+    this.toolOutcome = '',
+    this.failureKind = '',
+    this.toolName = '',
   });
 
   factory RemoteMessage.fromJson(Map json) => RemoteMessage(
@@ -260,7 +271,28 @@ class RemoteMessage {
     filePaths: [
       for (final p in syncList(json['local_file_paths'])) syncText(p),
     ],
+    toolCalls: [
+      for (final call in syncList(json['tool_calls']))
+        if (call is Map) Map<String, dynamic>.from(call),
+    ],
+    toolOutcome: syncText(json['tool_outcome']),
+    failureKind: syncText(json['failure_kind']),
+    toolName: syncText(json['tool_name']),
   );
+
+  /// The row as the fold in history_rows.dart reads it.
+  Map<String, dynamic> get historyEntry => {
+    'role': role,
+    'content': content,
+    'reasoning_content': reasoning,
+    'tool_calls': toolCalls,
+    'tool_outcome': toolOutcome,
+    'failure_kind': failureKind,
+    'tool_name': toolName,
+  };
+
+  /// `tool_name` on a tool row, kept only for the row label.
+  final String toolName;
 }
 
 /// One produced artifact summary (`ProjectSearchArtifact`).
