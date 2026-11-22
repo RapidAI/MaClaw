@@ -785,6 +785,47 @@ func TestRemoteControlTaskDetailUsesCodingAgentStateWhenSessionHasNoTurns(t *tes
 	}
 }
 
+func TestRemoteControlTaskDetailCodingAgentStateFiltersInternalRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	created := app.CreateTask("Coding task with internal rows", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty path")
+	}
+	state := map[string]any{
+		"project_path": created.ProjectPath,
+		"history": []map[string]any{
+			{"role": "user", "content": "修这个接口"},
+			{"role": "user", "content": "继续", "host_continuation": true},
+			{"role": "assistant", "content": "先看调用点", "reasoning_content": "先看调用点", "finish_reason": "tool_calls", "tool_calls": []any{map[string]any{"name": "read_file"}}},
+			{"role": "assistant", "content": "已改完"},
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(created.ProjectPath, codingAgentResumeFileName), raw, 0o644); err != nil {
+		t.Fatalf("write coding agent state: %v", err)
+	}
+
+	detail, err := app.remoteControlTaskDetail(mustRemoteControlTaskDetailBody(t, created.ProjectPath))
+	if err != nil {
+		t.Fatalf("remoteControlTaskDetail: %v", err)
+	}
+	// host_continuation user row and planning-echo assistant row must be hidden,
+	// matching LoadProjectConversationHistory's visibleProjectConversationHistory.
+	if len(detail.Messages) != 2 {
+		t.Fatalf("messages=%d want 2: %+v", len(detail.Messages), detail.Messages)
+	}
+	if detail.Messages[0].Role != "user" || detail.Messages[0].Content != "修这个接口" {
+		t.Fatalf("first=%+v", detail.Messages[0])
+	}
+	if detail.Messages[1].Role != "assistant" || detail.Messages[1].Content != "已改完" {
+		t.Fatalf("second=%+v", detail.Messages[1])
+	}
+}
+
 func TestSearchTasksCollapsesDuplicateCloudWorkspaceRows(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.ensureMemoryStore()

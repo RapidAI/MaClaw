@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // RemoteControlState is the task-list snapshot for this desktop.
@@ -542,12 +544,14 @@ func remoteControlCodingAgentHistory(path string) []ProjectConversationHistoryIt
 			Content:          content,
 			ReasoningContent: reasoning,
 			LocalFilePaths:   append([]string{}, entry.LocalFilePaths...),
+			planningEcho:     agent.AssistantPlanningEcho(content, reasoning, entry.FinishReason, entry.ToolCalls),
+			hostContinuation: entry.HostContinuation,
 		}, entry.TerminalClass, ""))
 	}
 	if len(items) == 0 {
 		return nil
 	}
-	return items
+	return visibleProjectConversationHistory(items)
 }
 
 // remoteControlDeliveredFilePaths is the set fetch_file will accept: absolute
