@@ -25,7 +25,7 @@ func WantsAmbientRetrieval(primary IntentLabel) bool {
 	}
 	switch primary {
 	case LabelAudioRecord, LabelAudioTranscribe, LabelAudioSynthesize, LabelAudioDeliver,
-		LabelScreenshot, LabelComputerUse, LabelCurrentTime,
+		LabelScreenshot, LabelComputerUse, LabelDesktopMessage, LabelCurrentTime,
 		LabelAttachmentDelivery, LabelDocumentDelivery, LabelDocumentOpen, LabelDocumentGenerate,
 		LabelAppLaunch, LabelFileDownload,
 		LabelScheduleManage, LabelScheduleDispatch,
@@ -83,7 +83,7 @@ func CallerWantsDynamicLookup(primary IntentLabel) bool {
 		LabelKnowledgeAdmin, LabelKnowledgeWrite,
 		LabelCurrentTime,
 		LabelAudioDeliver, LabelAudioSynthesize, LabelAudioRecord, LabelAudioTranscribe,
-		LabelScreenshot, LabelComputerUse:
+		LabelScreenshot, LabelComputerUse, LabelDesktopMessage:
 		return false
 	default:
 		return true

@@ -87,6 +87,9 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		intent.LabelComputerUse: {
 			{Capability: coretool.CapabilityComputerControlDesktop, Required: true, MaxInvocations: 8},
 		},
+		intent.LabelDesktopMessage: {
+			{Capability: coretool.CapabilityComputerControlDesktop, Required: true, MaxInvocations: 8},
+		},
 		intent.LabelAttachmentDelivery: {
 			{Capability: CapabilityArtifactDeliverCurrent, Qualifiers: map[string]string{QualifierArtifactFormat: ArtifactFormatFile}, Required: true},
 		},

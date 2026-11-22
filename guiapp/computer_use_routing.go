@@ -155,15 +155,18 @@ type computerUseActivationDecision struct {
 // decideComputerUseActivation is the pure root-cause gate:
 //
 //  1. Explicit @computer / "computer use" → open
-//  2. A desktop IM message send → open. The chat loop cannot type into that
-//     client, so the computer helper is the operator. No classifier.
+//  2. DesktopMessage is the caller's classifier decision that this sentence
+//     asks the desktop to deliver one chat message. The chat loop cannot type
+//     into that client, so the computer helper is the operator. The flag is
+//     not a phrase scan.
 //  3. Confident LabelComputerUse AND a desktop-app operation in the user text → open
 //  4. Sticky from recent computer_* activity → open only while the user has not
 //     clearly left desktop control; shortened when classification is unavailable
 //
 // Classifier similarity alone must not open a fresh session. "写一份 word 简历"
 // often embeds near the computer-use anchors. Desktop-operation wording alone
-// (打开记事本, 打开微信, 打开 word 写简历) also stays closed.
+// (打开记事本, 打开微信, 打开 word 写简历) also stays closed. A generic
+// LabelComputerUse primary is not a message send.
 func decideComputerUseActivation(in computerUseActivationInput) computerUseActivationDecision {
 	if in.Explicit {
 		return computerUseActivationDecision{Active: true, Reason: "explicit_trigger"}
@@ -248,16 +251,17 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 	in := computerUseActivationInput{
 		Explicit:         computeruse.HasExplicitTrigger(text),
 		DesktopOperation: computeruse.RequestsDesktopAppOperation(text),
-		DesktopMessage:   computeruse.RequestsDesktopMessageSend(text),
+		DesktopMessage:   h.desktopMessageIntentOpen(text),
 		StickyFollowUp:   computerUseStickyFollowUp(text),
 		LocalFileWork:    hasCurrentLocalFileWork(userText),
 		Sticky:           sticky,
 		StickyAge:        stickyAge,
 	}
-	// Tool routing does not ask the intent classifier to open desktop
-	// control. An explicit trigger, a desktop IM message send, and a
-	// sticky follow-up still decide. Desktop-operation wording alone
-	// does not put computer_use on the first wave.
+	// HasClassification stays unset. A generic computer_use label plus
+	// desktop-operation wording must not open the first wave, and sticky
+	// keeps the degraded window. A desktop message opens only when the
+	// embedding classifier's primary is desktop_message. An explicit
+	// trigger and a sticky follow-up still decide on their own.
 	d := decideComputerUseActivation(in)
 	if d.ClearSticky {
 		clearComputerUseSessionActive()
@@ -493,6 +497,54 @@ func releaseFalseComputerUseClassification(ctx *LoopContext) {
 	log.Printf("[computer-use] demoted computer_use classification: no desktop operation request")
 }
 
+// classifyComputerUseGate is the embedding decision for this gate. A nil
+// handler or a classifier that is not ready is degraded, and a degraded
+// result does not open a desktop message. The call does not wait on the
+// tree-reasoning model.
+func (h *IMMessageHandler) classifyComputerUseGate(userText string) intent.ClassificationResult {
+	text := strings.TrimSpace(computerUseGateText(userText))
+	if h == nil || text == "" {
+		return intent.ClassificationResult{
+			Primary: intent.LabelUnknown, Degraded: true,
+			Reason: "computer-use gate has no classifier",
+		}
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return intent.ClassificationResult{
+			Primary: intent.LabelUnknown, Degraded: true,
+			Reason: "computer-use gate has no classifier",
+		}
+	}
+	return uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
+}
+
+// desktopMessageIntentActivated opens the helper only when Layer 2 has
+// finished a desktop_message reading. EmbeddingEarlyExit is that bit:
+// anchor identity and a separated cosine both set it, and a narrow gap
+// leaves it false. A raw score above the old 0.65 floor is not a grant.
+// A generic computer_use primary stays closed. A competing secondary still
+// needs the clearer win.
+func desktopMessageIntentActivated(res intent.ClassificationResult) bool {
+	if res.Degraded || !res.EmbeddingEarlyExit || res.Primary != intent.LabelDesktopMessage {
+		return false
+	}
+	if res.Confidence < computerUseIntentMinConfidence {
+		return false
+	}
+	if computerUseHasCompetingSecondary(res) && res.Confidence < computerUseIntentCompetingConfidence {
+		return false
+	}
+	return true
+}
+
+func (h *IMMessageHandler) desktopMessageIntentOpen(userText string) bool {
+	if h == nil {
+		return false
+	}
+	return desktopMessageIntentActivated(h.classifyComputerUseGate(userText))
+}
+
 // computerUseIntentActivated is the pure decision on a UIC result: the gate
 // opens only for a confident, non-degraded computer_use primary intent.
 // Competing secondaries (office/browser/content) require a clearer win.
@@ -545,6 +597,7 @@ func computerUseStickyShouldRelease(res intent.ClassificationResult) bool {
 	}
 	switch res.Primary {
 	case intent.LabelComputerUse,
+		intent.LabelDesktopMessage,
 		intent.LabelContinuation,
 		intent.LabelUnknown,
 		intent.LabelAmbiguous,

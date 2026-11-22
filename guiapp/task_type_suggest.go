@@ -322,7 +322,7 @@ func newTaskKindForLabel(label intent.IntentLabel) string {
 		intent.LabelDocumentDelivery, intent.LabelDocumentGenerate,
 		intent.LabelDocumentRead, intent.LabelDocumentOpen, intent.LabelAttachmentDelivery,
 		intent.LabelBusinessData, intent.LabelDatabase, intent.LabelOffice,
-		intent.LabelScreenshot, intent.LabelComputerUse,
+		intent.LabelScreenshot, intent.LabelComputerUse, intent.LabelDesktopMessage,
 		intent.LabelKnowledgeWrite, intent.LabelKnowledgeRead, intent.LabelKnowledgeAdmin,
 		intent.LabelCurrentTime,
 		intent.LabelAudioRecord, intent.LabelAudioTranscribe, intent.LabelAudioSynthesize, intent.LabelAudioDeliver,

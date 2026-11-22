@@ -419,10 +419,85 @@ func TestComputerUseStickyFollowUpPhrases(t *testing.T) {
 			t.Errorf("computerUseStickyFollowUp(%q) = false, want true", text)
 		}
 	}
-	for _, text := range []string{"随便聊聊", "然后帮我写一份报告", "接着帮我写一份报告", "下一步我们讨论预算", "修改短文的开头", "确定一下需求", "输入法怎么设置", "帮我写一份word简历", "是的，帮我写一份新简历", "请点击查看详情", "不要继续了", "别继续", "不继续了", "别再继续", "往下写一段", "滚动条怎么自定义"} {
+	for _, text := range []string{"随便聊聊", "然后帮我写一份报告", "接着帮我写一份报告", "下一步我们讨论预算", "修改短文的开头", "确定一下需求", "输入法怎么设置", "帮我写一份word简历", "是的，帮我写一份新简历", "请点击查看详情", "不要继续了", "别继续", "不继续了", "别再继续", "往下写一段", "滚动条怎么自定义", "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。", "给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。"} {
 		if computerUseStickyFollowUp(text) {
 			t.Errorf("computerUseStickyFollowUp(%q) = true, want false", text)
 		}
+	}
+}
+
+func computerUseGateTestClassifier(t *testing.T) *intent.UnifiedIntentClassifier {
+	t.Helper()
+	// The marker is absent from every anchor, so a non-exemplar ties and the
+	// first label wins. An exact embed sentence is that label before cosine.
+	uic := intent.New(intent.Config{Embedder: &cuGateStubEmbedder{hit: "\x00cu-gate-unused"}})
+	waitUICReady(t, uic)
+	return uic
+}
+
+func TestDesktopMessageIntentActivation(t *testing.T) {
+	open := intent.ClassificationResult{
+		Primary: intent.LabelDesktopMessage, Confidence: 1, EmbeddingEarlyExit: true,
+	}
+	if !desktopMessageIntentActivated(open) {
+		t.Fatal("a confident desktop_message primary must open")
+	}
+	low := open
+	low.Confidence = 0.64
+	low.EmbeddingEarlyExit = false
+	if desktopMessageIntentActivated(low) {
+		t.Fatal("below the floor must stay closed")
+	}
+	unseparated := intent.ClassificationResult{Primary: intent.LabelDesktopMessage, Confidence: 0.90}
+	if desktopMessageIntentActivated(unseparated) {
+		t.Fatal("a narrow-gap cosine must stay closed")
+	}
+	competing := intent.ClassificationResult{
+		Primary: intent.LabelDesktopMessage, Confidence: 0.70, EmbeddingEarlyExit: true,
+		Secondary: []intent.IntentLabel{intent.LabelNonCoding},
+	}
+	if desktopMessageIntentActivated(competing) {
+		t.Fatal("a competing secondary must stay closed")
+	}
+	clear := competing
+	clear.Confidence = 0.78
+	if !desktopMessageIntentActivated(clear) {
+		t.Fatal("a clear win over a competing secondary must open")
+	}
+	degraded := open
+	degraded.Degraded = true
+	if desktopMessageIntentActivated(degraded) {
+		t.Fatal("a degraded result must stay closed")
+	}
+	other := intent.ClassificationResult{
+		Primary: intent.LabelComputerUse, Confidence: 0.99, EmbeddingEarlyExit: true,
+	}
+	if desktopMessageIntentActivated(other) {
+		t.Fatal("computer_use is not a message send")
+	}
+}
+
+func TestHelperOwnedTurnSkipsSemanticDesktopPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	owned := &LoopContext{ComputerHelperDispatched: true, UserID: "u"}
+	_, _, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(owned, "u", "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。", "desktop", nil)
+	if handled || err != nil {
+		t.Fatalf("helper-owned handled=%v err=%v", handled, err)
+	}
+	fence := &LoopContext{DesktopMessageHelperOwns: true, UserID: "u"}
+	_, _, handled, err = h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(fence, "u", "查天气", "desktop", nil)
+	if handled || err != nil {
+		t.Fatalf("message fence handled=%v err=%v", handled, err)
+	}
+	h.unifiedClassifier = computerUseGateTestClassifier(t)
+	group := &LoopContext{
+		UserID:                    "lansenger:group",
+		LansengerGroupPermissions: &lansengerGroupPermissionPolicy{},
+		ComputerUseRoutingText:    "给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。",
+	}
+	_, _, handled, err = h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(group, group.UserID, group.ComputerUseRoutingText, "lansenger", nil)
+	if handled || err != nil {
+		t.Fatalf("group handled=%v err=%v", handled, err)
 	}
 }
 
@@ -438,8 +513,12 @@ func TestShouldActivateComputerUseDegradedFailsClosed(t *testing.T) {
 		t.Fatal("nil classifier must fail closed")
 	}
 	incident := "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。"
-	if !h2.shouldActivateComputerUse(incident) {
-		t.Fatal("a desktop IM message send must open without a classifier")
+	mayong := "给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。"
+	english := "Send one message in the desktop chat app. The message itself introduces a feature."
+	for _, text := range []string{incident, mayong, english} {
+		if h2.shouldActivateComputerUse(text) || h.shouldActivateComputerUse(text) {
+			t.Fatalf("nil or degraded classifier opened %q", text)
+		}
 	}
 	if h2.shouldActivateComputerUse("打开记事本") || h2.shouldActivateComputerUse("打开微信") {
 		t.Fatal("opening an app must not open the fresh gate")
@@ -447,8 +526,29 @@ func TestShouldActivateComputerUseDegradedFailsClosed(t *testing.T) {
 	if h2.shouldActivateComputerUse("怎么给微信发消息") || h2.shouldActivateComputerUse("写一份蓝信发消息的说明") {
 		t.Fatal("an inquiry or a document about sending must stay closed")
 	}
-	if h2.shouldActivateComputerUse(incident + "\n[附件: notes.zip → 已保存到 C:\\tmp\\notes.zip]") {
+	attached := incident + "\n[附件: notes.zip → 已保存到 C:\\tmp\\notes.zip]"
+	if h2.shouldActivateComputerUse(attached) {
 		t.Fatal("a current attachment must keep a message send closed")
+	}
+
+	ready := &IMMessageHandler{unifiedClassifier: computerUseGateTestClassifier(t)}
+	for _, text := range []string{incident, mayong, english} {
+		if !ready.shouldActivateComputerUse(text) {
+			t.Fatalf("classifier desktop_message did not open %q", text)
+		}
+	}
+	for _, text := range []string{
+		"介绍一下maclaw的伴读功能",
+		"怎么给微信发消息",
+		"写一份蓝信发消息的说明",
+		"打开记事本",
+		"打开微信",
+		"打开word程序，编写一个你（maclaw）的简历。",
+		attached,
+	} {
+		if ready.shouldActivateComputerUse(text) {
+			t.Fatalf("classifier opened a non-send %q", text)
+		}
 	}
 }
 
@@ -765,7 +865,7 @@ func TestDecideComputerUseActivation(t *testing.T) {
 			wantReason: "explicit_trigger",
 		},
 		{
-			name: "desktop IM message send opens without a classifier",
+			name: "desktop message decision opens",
 			in: computerUseActivationInput{
 				DesktopMessage: true,
 			},

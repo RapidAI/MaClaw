@@ -297,8 +297,10 @@ func recordComputerUseGate(h *IMMessageHandler, ctx *LoopContext, routingText st
 	}
 	active, fresh = h.gateComputerUse(routingText)
 	// A group chat does not get a computer helper for an IM send. An explicit
-	// @computer request keeps the previous opt-in.
-	if active && computerUseMessageSendBlocked(ctx, routingText) {
+	// @computer request keeps the previous opt-in. The send decision is the
+	// classifier label, not a phrase list.
+	deliver := h.desktopMessageIntentOpen(routingText)
+	if active && computerUseMessageSendBlocked(ctx, routingText, deliver) {
 		active = false
 		fresh = false
 	}
@@ -313,13 +315,13 @@ func recordComputerUseGate(h *IMMessageHandler, ctx *LoopContext, routingText st
 		ctx.ComputerUseActive = false
 		ctx.ComputerUseFresh = fresh
 		if active {
-			noteMainComputerDispatch(h, ctx, routingText)
+			noteMainComputerDispatch(h, ctx, routingText, deliver)
 		}
 	}
 	return false, fresh
 }
 
-func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string) {
+func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string, deliver bool) {
 	if ctx == nil || ctx.ComputerHelper || ctx.ComputerHelperNoted {
 		return
 	}
@@ -331,11 +333,11 @@ func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string
 	if screen == "" {
 		screen = strings.TrimSpace(ctx.SessionID)
 	}
-	card := computerHelperCard(text)
+	card := computerHelperCard(text, deliver)
 	ctx.ComputerHelperGoal = card.Goal
 	ctx.ComputerHelperLimits = card.Constraints
 	ctx.ComputerHelperSuccess = card.SuccessCriteria
-	ctx.DesktopMessageHelperOwns = computeruse.RequestsDesktopMessageSend(card.Goal)
+	ctx.DesktopMessageHelperOwns = deliver
 	id := computerHelperLeaseID(screen)
 	started, queued := desktopbot.ClaimComputerScreen(screen, id)
 	ctx.ComputerHelperDispatched = started
@@ -366,25 +368,24 @@ func noteMainComputerDispatch(h *IMMessageHandler, ctx *LoopContext, text string
 // computerUseMessageSendBlocked keeps a group conversation from starting the
 // desktop helper just because the sentence sends a chat message. The helper
 // would drive this machine. Explicit @computer is unchanged.
-func computerUseMessageSendBlocked(ctx *LoopContext, routingText string) bool {
-	if ctx == nil || ctx.LansengerGroupPermissions == nil {
+func computerUseMessageSendBlocked(ctx *LoopContext, routingText string, deliver bool) bool {
+	if ctx == nil || ctx.LansengerGroupPermissions == nil || !deliver {
 		return false
 	}
-	text := computerUseGateText(routingText)
-	if computeruse.HasExplicitTrigger(text) {
+	if computeruse.HasExplicitTrigger(computerUseGateText(routingText)) {
 		return false
 	}
-	return computeruse.RequestsDesktopMessageSend(text)
+	return true
 }
 
 // computerHelperCard is the text the helper runs. A desktop IM send is
 // allowed to send exactly the message the user asked for, and it is done
 // without a file. Every other job keeps the default card, which refuses
 // sending and requires a path.
-func computerHelperCard(text string) desktopbot.HelperCard {
+func computerHelperCard(text string, deliver bool) desktopbot.HelperCard {
 	goal := computerHelperGoalText(text)
 	card := desktopbot.CardForGoal(goal)
-	if !computeruse.RequestsDesktopMessageSend(goal) {
+	if !deliver {
 		return card
 	}
 	card.Constraints = "只发送用户要求的这一条消息，不另发内容，不付款，不新开站点。"

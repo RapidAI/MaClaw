@@ -34,7 +34,6 @@ func TestHasExplicitTrigger(t *testing.T) {
 func TestRequestsDesktopAppOperation(t *testing.T) {
 	yes := []string{
 		"打开word程序，编写一个你（maclaw）的简历。",
-		"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
 		"帮我在电脑上打开Excel程序，把这一列求和",
 		"打开记事本程序输入一段文字",
 		"打开微信",
@@ -95,6 +94,9 @@ func TestRequestsDesktopAppOperation(t *testing.T) {
 		"搜索一下excel函数怎么用",
 		"随便聊聊",
 		"继续",
+		"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
+		"给微信里的张三发消息说你好",
+		"send a message to wechat: hello",
 		`[VS Code / ACP programming workspace]
 cwd: F:\desktop\notes
 
@@ -143,12 +145,17 @@ func TestRequestsDesktopMessageSend(t *testing.T) {
 		"在微信里看开发信息",
 		"打开qq浏览器",
 	}
+	// Opening the app is still an app operation. A pure send is not: the
+	// embedding classifier owns that decision, and the phrase list must not
+	// keep a sticky desktop session.
+	launchesApp := "在本机桌面打开蓝信（Lanxin）客户端，找到张勇，发送一条文本消息：我是码卡龙"
 	for _, text := range yes {
 		if !RequestsDesktopMessageSend(text) {
 			t.Errorf("RequestsDesktopMessageSend(%q) = false, want true", text)
 		}
-		if !RequestsDesktopAppOperation(text) {
-			t.Errorf("RequestsDesktopAppOperation(%q) = false, want true for a desktop IM send", text)
+		wantOp := text == launchesApp
+		if got := RequestsDesktopAppOperation(text); got != wantOp {
+			t.Errorf("RequestsDesktopAppOperation(%q) = %v, want %v", text, got, wantOp)
 		}
 	}
 	for _, text := range no {

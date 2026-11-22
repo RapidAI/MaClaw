@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
 )
 
@@ -1613,23 +1612,24 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if loop == nil || !loop.OfferChatTaskDispatch {
 		return chatTaskToolRejected("dispatch_background_task", "this turn cannot hand work to a background chat task")
 	}
-	if loop.chatTaskHandoffSent() {
-		return chatTaskToolRejected("dispatch_background_task", "this turn already handed the work off")
-	}
-	request := chatTaskArg(args, "request", "task", "text", "prompt")
-	if request == "" {
-		return chatTaskToolRejected("dispatch_background_task", "request is required")
-	}
-	// The gate may already have started the computer helper. A second worker
-	// for that desktop job cannot drive the screen.
-	if (loop.ComputerHelperDispatched || loop.ComputerHelperQueued) &&
-		(computeruse.RequestsDesktopMessageSend(request) || computeruse.RequestsDesktopAppOperation(request)) {
+	// The gate may already have started the computer helper. Another worker
+	// cannot drive the same screen, whatever language the request uses. This
+	// stays ahead of the generic handoff latch: the first refusal marks the
+	// turn handed off, and a later dispatch must still name the helper.
+	if loop.ComputerHelperDispatched || loop.ComputerHelperQueued {
 		loop.markChatTaskHandoffSent()
 		return toolExecutionResult{
 			Text:     "桌面助手已经在做这件事。用一句话告诉用户，然后停止。不要再派任务。",
 			ToolName: "dispatch_background_task",
 			Outcome:  toolOutcomeSucceeded,
 		}
+	}
+	if loop.chatTaskHandoffSent() {
+		return chatTaskToolRejected("dispatch_background_task", "this turn already handed the work off")
+	}
+	request := chatTaskArg(args, "request", "task", "text", "prompt")
+	if request == "" {
+		return chatTaskToolRejected("dispatch_background_task", "request is required")
 	}
 	sessionKey := strings.TrimSpace(policyUserID)
 	if sessionKey == "" && loop != nil {
@@ -1639,7 +1639,7 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 	if reg == nil {
 		return chatTaskToolRejected("dispatch_background_task", "chat tasks are unavailable")
 	}
-	if desktopMessageNeedsHelper(loop, request) {
+	if h.desktopMessageNeedsHelper(loop, request) {
 		return h.dispatchDesktopMessageHelper(loop, reg, request, sessionKey)
 	}
 	snap, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: request, SessionKey: sessionKey})
@@ -1659,17 +1659,17 @@ func (h *IMMessageHandler) dispatchBackgroundTaskTool(policyUserID string, args 
 }
 
 // desktopMessageNeedsHelper is the fallback when the fresh-turn gate did not
-// already start the helper and the dispatched request is itself a desktop IM
-// send. Opening Notepad, writing a resume, a group chat, and a turn that is
-// already handling a local file stay ordinary chat tasks.
-func desktopMessageNeedsHelper(loop *LoopContext, request string) bool {
-	if loop == nil || loop.ComputerHelperNoted || loop.LansengerGroupPermissions != nil {
+// already start the helper and the dispatched request itself classifies as
+// one desktop chat message. Opening Notepad, writing a resume, a group chat,
+// and a turn that is already handling a local file stay ordinary chat tasks.
+func (h *IMMessageHandler) desktopMessageNeedsHelper(loop *LoopContext, request string) bool {
+	if h == nil || loop == nil || loop.ComputerHelperNoted || loop.LansengerGroupPermissions != nil {
 		return false
 	}
 	if localFileWorkBlocksComputerUse(loop.ComputerUseRoutingText) {
 		return false
 	}
-	return computeruse.RequestsDesktopMessageSend(request)
+	return h.desktopMessageIntentOpen(request)
 }
 
 // dispatchDesktopMessageHelper starts the one computer helper for this screen.
@@ -1683,11 +1683,12 @@ func (h *IMMessageHandler) dispatchDesktopMessageHelper(loop *LoopContext, reg *
 	if screen == "" {
 		screen = strings.TrimSpace(sessionKey)
 	}
-	card := computerHelperCard(request)
+	card := computerHelperCard(request, true)
 	loop.ComputerHelperNoted = true
 	loop.ComputerHelperGoal = card.Goal
 	loop.ComputerHelperLimits = card.Constraints
 	loop.ComputerHelperSuccess = card.SuccessCriteria
+	loop.DesktopMessageHelperOwns = true
 	id := computerHelperLeaseID(screen)
 	started, queued := desktopbot.ClaimComputerScreen(screen, id)
 	loop.ComputerHelperDispatched = started

@@ -709,6 +709,7 @@ func TestDispatchDesktopMessageSendStartsComputerHelper(t *testing.T) {
 	desktopbot.ResetComputerScreens()
 	t.Cleanup(desktopbot.ResetComputerScreens)
 	h, _ := testChatTaskHandler(t)
+	h.unifiedClassifier = computerUseGateTestClassifier(t)
 	reg := h.ensureChatTasks()
 	reg.executor = func(*IMMessageHandler, *chatTaskRecord) chatTaskRunResult {
 		return chatTaskRunResult{Text: "1. 已发出\n2. 张勇\n3. 我是码卡龙"}
@@ -726,6 +727,12 @@ func TestDispatchDesktopMessageSendStartsComputerHelper(t *testing.T) {
 	})
 	if !strings.Contains(held.Text, "已经在做") {
 		t.Fatalf("held = %q", held.Text)
+	}
+	introduced := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{
+		"request": "给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。",
+	})
+	if !strings.Contains(introduced.Text, "已经在做") {
+		t.Fatalf("introduced = %q", introduced.Text)
 	}
 	if tasks := reg.List(desktopUserID); len(tasks) != 0 {
 		t.Fatalf("second worker started: %d", len(tasks))
@@ -784,8 +791,18 @@ func TestDispatchDesktopMessageSendStartsComputerHelper(t *testing.T) {
 	}
 	waitChatTaskStatus(t, reg, helperID, chatTaskDone)
 
-	// Unrelated work still starts an ordinary task after the helper handoff
-	// is cleared.
+	// While the helper still owns the screen, unrelated work does not start
+	// another worker either.
+	loop.mu.Lock()
+	loop.ChatTaskHandoffSent = false
+	loop.mu.Unlock()
+	blockedWeather := h.dispatchBackgroundTaskTool(desktopUserID, map[string]interface{}{"request": "查天气生成 PDF"})
+	if !strings.Contains(blockedWeather.Text, "已经在做") {
+		t.Fatalf("weather while helper owns the screen = %q", blockedWeather.Text)
+	}
+	loop.ComputerHelperDispatched = false
+	loop.ComputerHelperQueued = false
+	loop.ComputerHelperNoted = false
 	loop.mu.Lock()
 	loop.ChatTaskHandoffSent = false
 	loop.mu.Unlock()

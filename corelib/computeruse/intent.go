@@ -41,12 +41,11 @@ func RequestsDesktopAppOperation(userText string) bool {
 	if s == "" || browserTaskWithoutDesktop(s) {
 		return false
 	}
-	// A desktop IM send is desktop work for a sticky follow-up. It does not
-	// by itself open a fresh Computer Use session; the gate does that only
-	// through RequestsDesktopMessageSend.
-	if RequestsDesktopMessageSend(s) {
-		return true
-	}
+	// A message send is not an app operation. Click, launch, and screen cues
+	// stay here. The embedding classifier is what opens a send, including
+	// while a desktop task is still sticky. The phrase list must not keep
+	// that session: it would start the helper, then the card would refuse
+	// the send whenever the classifier did not agree.
 	return hasDesktopOperationCue(s)
 }
 

@@ -62,7 +62,7 @@ func TestSemanticArchetypeBundleExpansionIsDeterministic(t *testing.T) {
 		intent.LabelOffice, intent.LabelDocumentGenerate, intent.LabelSearch,
 		intent.LabelLiveData, intent.LabelWebFetch, intent.LabelFileRead,
 		intent.LabelFileWrite, intent.LabelDocumentRead, intent.LabelShellCommand,
-		intent.LabelDelegateTask, intent.LabelBrowser, intent.LabelComputerUse,
+		intent.LabelDelegateTask, intent.LabelBrowser, intent.LabelComputerUse, intent.LabelDesktopMessage,
 	} {
 		classification := intent.ClassificationResult{Primary: primary, Confidence: .98}
 		first, _, err := semanticIntentNeedsFromClassification(registry, classification)

@@ -835,7 +835,7 @@ func semanticPureInteractiveClassification(current intent.ClassificationResult) 
 	saw := false
 	for _, label := range current.Labels() {
 		switch label {
-		case intent.LabelBrowser, intent.LabelComputerUse:
+		case intent.LabelBrowser, intent.LabelComputerUse, intent.LabelDesktopMessage:
 			saw = true
 		default:
 			if !label.IsNonCapabilityLabel() && len(imSemanticIntentRuleSet[label]) > 0 {

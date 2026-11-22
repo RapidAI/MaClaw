@@ -2480,6 +2480,25 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		log.Printf("[semantic-routing] background chat task keeps the full tool surface user=%q", userID)
 		return nil, nil, false, nil
 	}
+	// The helper already owns the screen, or a group chat was refused a
+	// desktop message. This loop must not plan a second desktop operator.
+	// The decision is the classifier label, not the wording.
+	if ctx != nil && !loopKeepsDrivingTools(ctx) {
+		gateText := userText
+		if strings.TrimSpace(ctx.ComputerUseRoutingText) != "" {
+			gateText = ctx.ComputerUseRoutingText
+		}
+		// Classify only for a group refusal. An ordinary chat already ran
+		// the gate, and a second embedding here is the same decision.
+		refused := false
+		if ctx.LansengerGroupPermissions != nil {
+			refused = computerUseMessageSendBlocked(ctx, gateText, h.desktopMessageIntentOpen(gateText))
+		}
+		if ctx.ComputerHelperDispatched || ctx.ComputerHelperQueued || ctx.DesktopMessageHelperOwns || refused {
+			log.Printf("[semantic-routing] desktop helper owns this screen; chat loop keeps its surface user=%q", userID)
+			return nil, nil, false, nil
+		}
+	}
 	// The reply that approves an installed MCP write already has that tool
 	// on the loop. Task-context merge classifies the short answer from the
 	// surrounding task and would publish a different surface, or HostReject

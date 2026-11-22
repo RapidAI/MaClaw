@@ -461,7 +461,7 @@ func TestDesktopMessageSendDispatchesHelperCard(t *testing.T) {
 	resetComputerUseSessionForTest(t)
 	desktopbot.ResetComputerScreens()
 	t.Cleanup(desktopbot.ResetComputerScreens)
-	h := &IMMessageHandler{}
+	h := &IMMessageHandler{unifiedClassifier: computerUseGateTestClassifier(t)}
 	text := "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。"
 	ctx := &LoopContext{ComputerUseRoutingText: text, UserID: desktopUserID}
 	active, _ := recordComputerUseGate(h, ctx, text)
@@ -502,6 +502,50 @@ func TestDesktopMessageSendDispatchesHelperCard(t *testing.T) {
 	}
 	if note.DesktopMessageHelperOwns {
 		t.Fatal("opening Notepad is not a desktop message send")
+	}
+}
+
+func TestStickySendDoesNotOpenFromThePhraseList(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	desktopbot.ResetComputerScreens()
+	t.Cleanup(desktopbot.ResetComputerScreens)
+	send := "给蓝信中的张勇用户发送消息，告诉它你是码卡龙。"
+
+	markComputerUseSessionActive()
+	closed := &IMMessageHandler{}
+	if active, fresh := closed.gateComputerUse(send); active || fresh {
+		t.Fatalf("phrase list kept sticky computer use active=%v fresh=%v", active, fresh)
+	}
+	if computerUseSessionActive() {
+		t.Fatal("an unconfirmed send must clear sticky")
+	}
+	ctx := &LoopContext{ComputerUseRoutingText: send, UserID: desktopUserID}
+	recordComputerUseGate(closed, ctx, send)
+	if ctx.ComputerHelperNoted || ctx.ComputerHelperDispatched || ctx.DesktopMessageHelperOwns {
+		t.Fatalf("unconfirmed send started a helper noted=%v dispatched=%v owns=%v limits=%q",
+			ctx.ComputerHelperNoted, ctx.ComputerHelperDispatched, ctx.DesktopMessageHelperOwns, ctx.ComputerHelperLimits)
+	}
+
+	markComputerUseSessionActive()
+	if active, fresh := closed.gateComputerUse("打开记事本"); !active || fresh {
+		t.Fatalf("a launch follow-up active=%v fresh=%v", active, fresh)
+	}
+
+	markComputerUseSessionActive()
+	ready := &IMMessageHandler{unifiedClassifier: computerUseGateTestClassifier(t)}
+	active, fresh := ready.gateComputerUse(send)
+	if !active || !fresh {
+		t.Fatalf("classifier send during sticky active=%v fresh=%v", active, fresh)
+	}
+	desktopbot.ResetComputerScreens()
+	confirmed := &LoopContext{ComputerUseRoutingText: send, UserID: desktopUserID}
+	recordComputerUseGate(ready, confirmed, send)
+	if !confirmed.ComputerHelperDispatched || !confirmed.DesktopMessageHelperOwns {
+		t.Fatalf("dispatched=%v owns=%v", confirmed.ComputerHelperDispatched, confirmed.DesktopMessageHelperOwns)
+	}
+	if !strings.Contains(confirmed.ComputerHelperLimits, "只发送") || strings.Contains(confirmed.ComputerHelperLimits, "不发送") {
+		t.Fatalf("limits = %q", confirmed.ComputerHelperLimits)
 	}
 }
 

@@ -1189,6 +1189,13 @@ func TestReviewedDynamicIntentRulesDoNotImportGUIMCatalog(t *testing.T) {
 	if cuNeeds[0].Capability == CapabilityBrowserControl {
 		t.Fatal("computer_use must not map onto browser.control.web")
 	}
+	msgNeeds, ok := rules[intent.LabelDesktopMessage]
+	if !ok || len(msgNeeds) != 1 || msgNeeds[0].Capability != CapabilityComputerUse || !msgNeeds[0].Required || msgNeeds[0].MaxInvocations != 8 {
+		t.Fatalf("desktop_message rule=%#v", msgNeeds)
+	}
+	if msgNeeds[0].Capability == CapabilityBrowserControl || msgNeeds[0].Capability == CapabilityMessageSend {
+		t.Fatal("desktop_message must stay on the desktop computer-use capability")
+	}
 	mutateNeeds, ok := rules[intent.LabelGitMutate]
 	if !ok || len(mutateNeeds) != 1 || mutateNeeds[0].Capability != CapabilityRepoMutate {
 		t.Fatalf("git_mutate rule=%#v", mutateNeeds)
@@ -1207,8 +1214,8 @@ func TestReviewedDynamicIntentRulesDoNotImportGUIMCatalog(t *testing.T) {
 			}
 		}
 	}
-	if len(rules) != 39 {
-		t.Fatalf("reviewed dynamic rules=%d, want search, live_data, current_time, knowledge_read, audit_read, web_fetch, file_download, file_read, git_inspect, git_mutate, document_read, audio_transcribe, file_write, office_write, shell, delegate, ssh, browser, computer_use, knowledge_write, memory_manage, task_track, goal_manage, template_manage, schedule_manage, schedule_dispatch, knowledge_admin, config_manage, session_manage, document_delivery, attachment_delivery, document_generate, audio_deliver, audio_synthesize, screenshot, document_open, app_launch, worklog_read, and worklog_update", len(rules))
+	if len(rules) != 40 {
+		t.Fatalf("reviewed dynamic rules=%d, want search, live_data, current_time, knowledge_read, audit_read, web_fetch, file_download, file_read, git_inspect, git_mutate, document_read, audio_transcribe, file_write, office_write, shell, delegate, ssh, browser, computer_use, desktop_message, knowledge_write, memory_manage, task_track, goal_manage, template_manage, schedule_manage, schedule_dispatch, knowledge_admin, config_manage, session_manage, document_delivery, attachment_delivery, document_generate, audio_deliver, audio_synthesize, screenshot, document_open, app_launch, worklog_read, and worklog_update", len(rules))
 	}
 }
 

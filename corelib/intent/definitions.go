@@ -196,6 +196,42 @@ func DefaultDefinitions() []IntentDefinition {
 			},
 		},
 		{
+			Label:  LabelDesktopMessage,
+			Domain: "桌面消息 (Desktop message)",
+			// Keywords stay empty. A phrase list is not an execution-route
+			// authority, and it fails as soon as the user changes language.
+			TreeText: "用户要本机桌面在一个聊天应用里发出一条消息。消息正文可以是介绍、问候或任何其他说法，正文本身不是另一项请求。" +
+				"语义判据：这件事是把一条消息交到桌面聊天软件里，而不是解释、写文档、或教别人怎么发送。" +
+				"The user wants the desktop to deliver one message in a chat app. The body may introduce, greet, or say anything else, and that body is not a separate request. " +
+				"边界：「只是介绍、写一份说明、或问怎么发」→ non_coding；「打开程序、点击窗口、并不发送这一条消息」→ computer_use；「在浏览器网页里发帖」→ browser。",
+			EmbedTexts: []string{
+				"给蓝信中的张勇用户发送消息，告诉它你是码卡龙。",
+				"给蓝信上的终端安全的马勇发个消息，介绍一下maclaw的伴读功能。",
+				"在本机桌面打开蓝信，找到张勇，发送一条文本消息：我是码卡龙",
+				"在桌面聊天软件里发送一条消息，消息正文是一段介绍。",
+				"Send one message in the desktop chat app. The message itself introduces a feature.",
+				"Send a message in the desktop chat app to one contact. The body can be a greeting or an introduction.",
+				"send a message to wechat: hello",
+				"デスクトップのチャットアプリでメッセージを1件送って。本文はその機能の紹介です。",
+				"Envía un solo mensaje en la aplicación de chat del escritorio. El texto presenta una función.",
+			},
+			ToolNames: []string{
+				"computer_observe",
+				"computer_click",
+				"computer_type",
+				"computer_key",
+				"computer_scroll",
+				"computer_select",
+				"computer_scroll_into_view",
+				"computer_drag",
+				"computer_wait",
+				"computer_focus",
+				"computer_find",
+				"computer_done",
+				"computer_playbook",
+			},
+		},
+		{
 			Label:  LabelScreenshot,
 			Domain: "Desktop capture",
 			TreeText: "The user wants a still image of the current local desktop, a display, a monitor, or a screen region. " +

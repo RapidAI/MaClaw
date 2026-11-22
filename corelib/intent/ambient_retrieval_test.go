@@ -6,7 +6,7 @@ func TestWantsAmbientRetrievalAllLabels(t *testing.T) {
 	want := map[IntentLabel]bool{
 		LabelNonCoding: false, LabelContinuation: false, LabelAmbiguous: false, LabelUnknown: false,
 		LabelAudioRecord: false, LabelAudioTranscribe: false, LabelAudioSynthesize: false, LabelAudioDeliver: false,
-		LabelScreenshot: false, LabelComputerUse: false, LabelCurrentTime: false,
+		LabelScreenshot: false, LabelComputerUse: false, LabelDesktopMessage: false, LabelCurrentTime: false,
 		LabelAttachmentDelivery: false, LabelDocumentDelivery: false, LabelDocumentOpen: false, LabelDocumentGenerate: false,
 		LabelAppLaunch: false, LabelFileDownload: false,
 		LabelScheduleManage: false, LabelScheduleDispatch: false,

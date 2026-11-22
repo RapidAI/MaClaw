@@ -27,6 +27,7 @@ func SemanticArchetypeBundles() map[intent.IntentLabel][]intent.IntentLabel {
 		intent.LabelDelegateTask:     {intent.LabelFileRead, intent.LabelFileWrite},
 		intent.LabelBrowser:          {intent.LabelScreenshot, intent.LabelAppLaunch},
 		intent.LabelComputerUse:      {intent.LabelScreenshot, intent.LabelAppLaunch},
+		intent.LabelDesktopMessage:   {intent.LabelScreenshot, intent.LabelAppLaunch},
 	}
 }
 

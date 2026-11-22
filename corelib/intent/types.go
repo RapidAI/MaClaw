@@ -51,6 +51,11 @@ const (
 	LabelMaintenance  IntentLabel = "maintenance"
 	LabelOffice       IntentLabel = "office"
 	LabelComputerUse  IntentLabel = "computer_use"
+	// LabelDesktopMessage asks the desktop to deliver one message in a chat
+	// app. The body may be an introduction, a greeting, or any other wording.
+	// Explaining, writing a document, or teaching how to send is a different
+	// request, and so is a generic desktop operation such as opening an app.
+	LabelDesktopMessage IntentLabel = "desktop_message"
 	// LabelScreenshot is a focused desktop screen-capture request. It is kept
 	// distinct from computer_use so a user asking only to capture the display
 	// gets the lightweight screenshot tool rather than the full desktop-control
@@ -175,6 +180,7 @@ func AllLabels() []IntentLabel {
 		LabelMaintenance,
 		LabelOffice,
 		LabelComputerUse,
+		LabelDesktopMessage,
 		LabelScreenshot,
 		LabelKnowledgeWrite,
 		LabelCurrentTime,
@@ -275,9 +281,9 @@ type KeywordEntry struct {
 
 // ClassificationResult is the structured output of the UIC.
 type ClassificationResult struct {
-	Primary          IntentLabel   // exactly one primary intent
-	Confidence       float64       // [0, 1]
-	Secondary        []IntentLabel // zero or more secondary intents
+	Primary    IntentLabel   // exactly one primary intent
+	Confidence float64       // [0, 1]
+	Secondary  []IntentLabel // zero or more secondary intents
 	// Offered admits a capability onto the tool surface without making it
 	// a required effect. Finishing the confirmed work without calling it
 	// does not leave the turn unsettled. This is an L2 lookup companion
@@ -285,7 +291,7 @@ type ClassificationResult struct {
 	// cosine cannot separate that companion from a real lookup, and the
 	// tree's artifact-only verdict is the rejection. A lookup Layer 2
 	// already led with stays a required secondary instead.
-	Offered []IntentLabel `json:"offered,omitempty"`
+	Offered          []IntentLabel `json:"offered,omitempty"`
 	ToolNames        []string      // tool names to activate (from Tool Affinity)
 	Layer            int           // 1, 2, or 3 (23 = fusion of L2+L3)
 	Reason           string        // human-readable explanation

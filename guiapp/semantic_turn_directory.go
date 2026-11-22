@@ -250,7 +250,7 @@ func semanticDirectoryClosed(result intent.ClassificationResult, name string) bo
 	case "mailbox_send":
 		return result.Degraded || result.Confidence < imSemanticMinimumConfidence || result.Primary != intent.LabelMailboxSend
 	case "computer_use":
-		return result.Degraded || result.Confidence < imSemanticMinimumConfidence || result.Primary != intent.LabelComputerUse
+		return result.Degraded || result.Confidence < imSemanticMinimumConfidence || (result.Primary != intent.LabelComputerUse && result.Primary != intent.LabelDesktopMessage)
 	case "bash":
 		return result.Primary != intent.LabelShellCommand
 	case "write_file":
@@ -291,7 +291,7 @@ func semanticDirectoryNamesForLabel(label intent.IntentLabel) []string {
 		return []string{"ssh"}
 	case intent.LabelMailboxSend:
 		return []string{"mailbox_send"}
-	case intent.LabelComputerUse:
+	case intent.LabelComputerUse, intent.LabelDesktopMessage:
 		return []string{"computer_use"}
 	case intent.LabelBrowser:
 		return []string{"browser"}

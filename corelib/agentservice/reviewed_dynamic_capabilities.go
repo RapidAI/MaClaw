@@ -872,6 +872,12 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			Required:       true,
 			MaxInvocations: 8,
 		}},
+		intent.LabelDesktopMessage: {{
+			Capability:     CapabilityComputerUse,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 8,
+		}},
 		intent.LabelKnowledgeWrite: {{
 			Capability: CapabilityKnowledgeWrite,
 			Polarity:   coretool.NeedRequire,
