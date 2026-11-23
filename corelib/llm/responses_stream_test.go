@@ -32,6 +32,18 @@ func (r *responsesStreamReadErrorBody) Read(p []byte) (int, error) {
 
 func (r *responsesStreamReadErrorBody) Close() error { return nil }
 
+type responsesStreamChunkReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *responsesStreamChunkReader) Read(p []byte) (int, error) {
+	if c.n > 0 && len(p) > c.n {
+		p = p[:c.n]
+	}
+	return c.r.Read(p)
+}
+
 type responsesStreamRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f responsesStreamRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -887,7 +899,7 @@ func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *te
 	body = append(body, bytes.Repeat([]byte("y"), maxEvent)...)
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Split(scanResponsesAPIStreamEvent)
+	scanner.Split(newResponsesStreamSplitter())
 	scanner.Buffer(make([]byte, 0, 64*1024), maxEvent)
 	if !scanner.Scan() || !bytes.Contains(scanner.Bytes(), []byte("response.output_item.added")) {
 		t.Fatalf("scanner dropped the kept event: %v", scanner.Err())
@@ -1048,3 +1060,46 @@ func TestDoResponsesAPIRequestStreamKeepsEmptyObjectWhenTailExceedsScanLimit(t *
 		}
 	}
 }
+
+func TestDoResponsesAPIRequestStreamKeepsEventAfterSkippedOversizedFrame(t *testing.T) {
+	const maxEvent = 64 * 1024
+	saved := responsesStreamMaxEventBytes
+	responsesStreamMaxEventBytes = maxEvent
+	t.Cleanup(func() { responsesStreamMaxEventBytes = saved })
+
+	prefix := []byte("event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.go\\\"}\"}}\n\n")
+	body := append(append([]byte(nil), prefix...), []byte("event: response.output_text.delta\ndata: {\"delta\":\"")...)
+	body = append(body, bytes.Repeat([]byte("Q"), maxEvent)...)
+	body = append(body, []byte("\"}\n\nevent: response.output_item.added\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"b.go\\\"}\"}}\n\n")...)
+
+	for _, chunk := range []int{1, 512, 4096, maxEvent} {
+		response, err := doResponsesStreamChunk(body, chunk)
+		if err != nil || response == nil || len(response.Choices) != 1 {
+			t.Fatalf("chunk %d: response=%#v err=%v", chunk, response, err)
+		}
+		calls := response.Choices[0].Message.ToolCalls
+		if len(calls) != 2 || calls[0].Function.Name != "read_file" || calls[1].Function.Name != "write_file" {
+			t.Fatalf("chunk %d dropped the event after the skipped frame: %#v", chunk, calls)
+		}
+	}
+}
+
+func doResponsesStreamChunk(body []byte, chunk int) (*Response, error) {
+	return DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: "http://responses.invalid", Model: "test", WireAPI: "responses"},
+		[]any{map[string]any{"role": "user", "content": "test"}},
+		nil,
+		&http.Client{Transport: responsesStreamRoundTripper(func(r *http.Request) (*http.Response, error) {
+			reader := &responsesStreamChunkReader{r: bytes.NewReader(body), n: chunk}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(reader),
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Request:    r,
+			}, nil
+		})},
+		nil, nil,
+	)
+}
+

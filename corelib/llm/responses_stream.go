@@ -28,9 +28,12 @@ import (
 // twenty max-sized calls in one snapshot; a larger event is not scanned into
 // one token. The split function emits every complete event already in the
 // buffer before it reports that limit, so a later oversized event cannot
-// erase them. A usable prefix is a truncated turn, not a failed one: pairing
-// it with an error makes the agent loop drop the calls it just kept. Tests
-// shrink this before the scanner is created.
+// erase them. The oversized frame itself is skipped, not the rest of the
+// stream: a zero advance on a full buffer is ErrTooLong and drops every
+// event still waiting behind that frame. A skipped frame is a truncated
+// turn, not a failed one: pairing the prefix with an error makes the agent
+// loop drop the calls it just kept. Tests shrink this before the scanner
+// is created.
 var responsesStreamMaxEventBytes = 4 << 20
 
 type responsesStreamItem struct {
@@ -152,7 +155,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 	}
 
 	scanner := bufio.NewScanner(idleBody)
-	scanner.Split(scanResponsesAPIStreamEvent)
+	scanner.Split(newResponsesStreamSplitter())
 	scanner.Buffer(make([]byte, 0, 64*1024), responsesStreamMaxEventBytes)
 	var oversizedEvent error
 	for scanner.Scan() {
@@ -161,13 +164,15 @@ func DoResponsesAPIRequestStreamWithOptions(
 			continue
 		}
 		if eventType == responsesStreamEventTooLarge {
-			// Complete events already in the scanner buffer were returned on
-			// earlier Scan calls. A lone oversized event still fails: nothing
-			// arrived. A usable prefix is truncated output, not a transport
-			// failure. Returning it with an error makes the agent loop discard
-			// the calls this scan just kept.
+			// The split function already returned every complete event before
+			// this frame and will keep scanning after it. One frame that
+			// cannot fit is a cut, not a transport failure, and it does not
+			// end the stream: the next event may be the closed tool call.
+			// Returning the prefix with an error makes the agent loop discard
+			// the calls this scan just kept. A stream that never delivered an
+			// event still fails below.
 			oversizedEvent = fmt.Errorf("Responses API SSE event exceeds %d bytes", responsesStreamMaxEventBytes)
-			break
+			continue
 		}
 		seenEvent = true
 		if payload == "[DONE]" {
@@ -371,19 +376,16 @@ completed:
 		}
 		return nil, fmt.Errorf("Responses API SSE stream read error: %w", err)
 	}
-	if oversizedEvent != nil {
-		if textBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(items) > 0 {
-			// The unread tail was cut. Mark length only when a call's arguments
-			// are not a complete JSON object: filterStreamTruncatedToolCalls
-			// treats every empty-argument call as truncated under length, and
-			// a finished call must still execute. A hard error is what makes
-			// the agent loop discard this prefix.
-			if finishReason == "" && responsesStreamArgsCut(items) {
-				finishReason = "length"
-			}
-			return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), nil
-		}
+	if oversizedEvent != nil && !seenEvent {
 		return nil, oversizedEvent
+	}
+	if oversizedEvent != nil && finishReason == "" && responsesStreamArgsCut(items) {
+		// A frame was skipped. Mark length only when a call's arguments are
+		// not a complete JSON object: filterStreamTruncatedToolCalls treats
+		// every empty-argument call as truncated under length, and a call
+		// that already closed must still execute. Events after the skipped
+		// frame are already in this response.
+		finishReason = "length"
 	}
 	if !seenEvent {
 		return nil, fmt.Errorf("Responses API stream contained no SSE events from %s", endpoint)
@@ -928,57 +930,121 @@ func responsesStreamEventError(payload string) error {
 	return fmt.Errorf("Responses API stream failed: payload_len=%d", len(payload))
 }
 
-// responsesStreamEventTooLarge is a synthetic event type. The split function
-// emits it once the unread tail cannot fit in the scanner buffer, so the
-// caller can keep every event that already parsed.
+// responsesStreamEventTooLarge is a synthetic event type. The splitter emits
+// it once for an SSE frame that cannot fit, skips to that frame's blank line,
+// and keeps scanning. The caller records the cut and still accepts later events.
 const responsesStreamEventTooLarge = "maclaw.responses_stream_event_too_large"
 
-func scanResponsesAPIStreamEvent(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF {
-		return scanResponsesAPIStreamTail(data, true)
-	}
-	return scanResponsesAPIStreamTail(data, false)
-}
-
-// responsesStreamTooLargeToken is the frame Scan returns once the unread tail
-// cannot fit. It is not a provider event.
+// responsesStreamTooLargeToken is the frame Scan returns for a skipped event.
+// It is not a provider event.
 var responsesStreamTooLargeToken = []byte("event: " + responsesStreamEventTooLarge + "\ndata: {}")
 
-// scanResponsesAPIStreamTail returns one complete SSE event. A full buffer
-// that still holds an earlier event must return that event first: Scanner
-// stops with ErrTooLong, and drops the buffer, when a full buffer makes no
-// progress. The oversized tail is reported only after those events are out.
-func scanResponsesAPIStreamTail(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
-		return i + 4, bytes.TrimRight(data[:i], "\r\n"), nil
+// responsesStreamSplitter skips one SSE event that does not fit in the scanner
+// buffer, then resumes after its blank line. A stateless split cannot: taking
+// the whole buffer drops every later event, and a zero advance on a full
+// buffer is ErrTooLong. One splitter per request, so concurrent streams do
+// not share the skip flag.
+type responsesStreamSplitter struct {
+	skipping bool
+}
+
+func newResponsesStreamSplitter() bufio.SplitFunc {
+	return (&responsesStreamSplitter{}).split
+}
+
+func (s *responsesStreamSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
+	if s.skipping {
+		return s.skipOversized(data, atEOF)
 	}
-	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
-		return i + 2, bytes.TrimRight(data[:i], "\r\n"), nil
-	}
-	// Some compatible gateways omit the blank SSE separator. The following
-	// event field still provides an unambiguous boundary. Avoid data[1:] when
-	// Scanner invokes the split function with an empty/one-byte buffer.
-	if len(data) > 1 {
-		if i := bytes.Index(data[1:], []byte("\r\nevent:")); i >= 0 {
-			boundary := i + 1
-			return boundary + 2, bytes.TrimRight(data[:boundary], "\r\n"), nil
-		}
-		if i := bytes.Index(data[1:], []byte("\nevent:")); i >= 0 {
-			boundary := i + 1
-			return boundary + 1, bytes.TrimRight(data[:boundary], "\r\n"), nil
-		}
+	return s.nextEvent(data, atEOF)
+}
+
+func (s *responsesStreamSplitter) nextEvent(data []byte, atEOF bool) (int, []byte, error) {
+	if advance, token, ok := responsesStreamDelimitedEvent(data); ok {
+		return advance, token, nil
 	}
 	if len(data) >= responsesStreamMaxEventBytes {
-		// No delimiter in a full buffer. The tail is one event that cannot
-		// fit, not a pile of earlier events: those returned above. Advance
-		// the buffer so Scanner can deliver the sentinel and stop. At EOF the
-		// same tail is still not a usable event.
-		return len(data), append([]byte(nil), responsesStreamTooLargeToken...), nil
+		s.skipping = true
+		advance, token, err := s.skipOversized(data, atEOF)
+		if token == nil && err == nil {
+			return advance, append([]byte(nil), responsesStreamTooLargeToken...), nil
+		}
+		return advance, token, err
 	}
 	if atEOF && len(data) > 0 {
 		return len(data), bytes.TrimRight(data, "\r\n"), nil
 	}
 	return 0, nil, nil
+}
+
+func (s *responsesStreamSplitter) skipOversized(data []byte, atEOF bool) (int, []byte, error) {
+	if advance, ok := responsesStreamBlankLineEnd(data); ok {
+		s.skipping = false
+		return advance, nil, nil
+	}
+	if atEOF {
+		s.skipping = false
+		return len(data), nil, nil
+	}
+	if len(data) >= responsesStreamMaxEventBytes {
+		return responsesStreamDiscardKeepingBreak(data), nil, nil
+	}
+	return 0, nil, nil
+}
+
+func responsesStreamDelimitedEvent(data []byte) (advance int, token []byte, ok bool) {
+	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
+		return i + 4, bytes.TrimRight(data[:i], "\r\n"), true
+	}
+	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
+		return i + 2, bytes.TrimRight(data[:i], "\r\n"), true
+	}
+	// Some gateways omit the blank line. The next event field is then the
+	// boundary. Do not use this while skipping an oversized payload: that
+	// payload can contain the same bytes.
+	if len(data) > 1 {
+		if i := bytes.Index(data[1:], []byte("\r\nevent:")); i >= 0 {
+			boundary := i + 1
+			return boundary + 2, bytes.TrimRight(data[:boundary], "\r\n"), true
+		}
+		if i := bytes.Index(data[1:], []byte("\nevent:")); i >= 0 {
+			boundary := i + 1
+			return boundary + 1, bytes.TrimRight(data[:boundary], "\r\n"), true
+		}
+	}
+	return 0, nil, false
+}
+
+func responsesStreamBlankLineEnd(data []byte) (int, bool) {
+	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
+		return i + 4, true
+	}
+	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
+		return i + 2, true
+	}
+	return 0, false
+}
+
+// responsesStreamDiscardKeepingBreak drops a full window of an oversized
+// event but keeps a trailing CR/LF. The blank line that ends the event can
+// be split across two reads; discarding that byte would miss it.
+func responsesStreamDiscardKeepingBreak(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	advance := len(data)
+	if data[advance-1] == '\n' {
+		advance--
+		if advance > 0 && data[advance-1] == '\r' {
+			advance--
+		}
+	} else if data[advance-1] == '\r' {
+		advance--
+	}
+	if advance == 0 {
+		return 1
+	}
+	return advance
 }
 
 func parseResponsesAPIStreamEvent(frame string) (eventType, payload string, ok bool) {
