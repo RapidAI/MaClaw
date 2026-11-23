@@ -549,3 +549,83 @@ func TestResponsesStreamWrapperCancelAbortsAfterHeaders(t *testing.T) {
 		t.Fatal("wrapper cancel also stopped the turn")
 	}
 }
+
+// A provider may report output_index only in the stream and let response.output
+// interleave reasoning and message items. The final snapshot used to be keyed by
+// slice position, so its function_call merged onto the wrong item and the tool
+// call lost the name its deltas had. A nameless call is dropped by the agent
+// loop, and two of those in a row end the turn as "consecutive empty responses".
+func TestResponsesCompletedToolCallsUseProviderOutputIndex(t *testing.T) {
+	payload := `{"type":"response.completed","response":{"output":[
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]},
+		{"type":"message","content":[{"type":"output_text","text":"hi"}]},
+		{"type":"function_call","output_index":2,"call_id":"call_a","name":"read_file","arguments":"{\"path\":\"a.go\"}"}
+	]}}`
+	items := responsesCompletedStreamToolCalls(payload)
+	got := items[2]
+	if got == nil {
+		t.Fatalf("function_call was not keyed by its output_index: %v", items)
+	}
+	if got.name != "read_file" || got.callID != "call_a" || !strings.Contains(got.args.String(), "a.go") {
+		t.Fatalf("snapshot item = %+v args=%q", got, got.args.String())
+	}
+	if _, wrong := items[1]; wrong {
+		t.Fatalf("snapshot landed on the message position")
+	}
+}
+
+// function_call_arguments.* can arrive without output_item.added. The delta path
+// then creates an item that has arguments and no name; the final snapshot has
+// the name, and the backfill is what stops it reaching the loop as a nameless
+// tool call.
+func TestResponsesStreamBackfillsToolNameMissingFromDeltas(t *testing.T) {
+	items := map[int]*responsesStreamItem{}
+	deltas := &responsesStreamItem{itemType: "function_call", callID: "call_a"}
+	deltas.args.WriteString(`{"path":"a.go"}`)
+	items[0] = deltas
+
+	snapshot := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_a", name: "read_file"},
+	}
+	backfillResponsesStreamToolNames(items, snapshot)
+	if got := items[0]; got.name != "read_file" {
+		t.Fatalf("name was not backfilled: %+v", got)
+	}
+	if got := items[0].args.String(); got != `{"path":"a.go"}` {
+		t.Fatalf("backfill changed the arguments: %q", got)
+	}
+}
+
+func TestResponsesStreamBackfillMatchesOnCallIDAcrossIndices(t *testing.T) {
+	items := map[int]*responsesStreamItem{}
+	items[0] = &responsesStreamItem{itemType: "function_call", callID: "call_b"}
+	items[1] = &responsesStreamItem{itemType: "function_call", callID: "call_a"}
+
+	// The snapshot orders the calls the other way round.
+	snapshot := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_a", name: "write_file"},
+		1: {itemType: "function_call", callID: "call_b", name: "read_file"},
+	}
+	backfillResponsesStreamToolNames(items, snapshot)
+	if items[0].name != "read_file" || items[1].name != "write_file" {
+		t.Fatalf("call ids were not used: %q %q", items[0].name, items[1].name)
+	}
+}
+
+func TestResponsesStreamBackfillKeepsExistingNameAndIgnoresEmptySnapshot(t *testing.T) {
+	items := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_a", name: "read_file"},
+		1: {itemType: "function_call", callID: "call_b"},
+	}
+	snapshot := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_a", name: "write_file"},
+		1: {itemType: "function_call", callID: "call_b"},
+	}
+	backfillResponsesStreamToolNames(items, snapshot)
+	if items[0].name != "read_file" {
+		t.Fatalf("an existing name was replaced: %q", items[0].name)
+	}
+	if items[1].name != "" {
+		t.Fatalf("a nameless snapshot invented a name: %q", items[1].name)
+	}
+}

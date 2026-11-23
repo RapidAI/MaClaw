@@ -314,6 +314,12 @@ func DoResponsesAPIRequestStreamWithOptions(
 				}
 				items[outputIndex] = mergeResponsesStreamToolItem(items[outputIndex], item)
 			}
+			// A provider can send function_call_arguments.* without the matching
+			// output_item.added. The delta path then had to create an item with
+			// arguments but no name, and every such item reaches the loop as a
+			// nameless tool call, which the loop drops as a broken batch. The
+			// final snapshot still names them, so fill those names back in.
+			backfillResponsesStreamToolNames(items, responsesCompletedStreamToolCalls(payload))
 			goto completed
 		case "response.failed", "error":
 			// Keep whatever text/reasoning/tool calls were accumulated before
@@ -445,18 +451,64 @@ func responsesCompletedStreamText(payload string) []string {
 func responsesCompletedStreamToolCalls(payload string) map[int]*responsesStreamItem {
 	output := responsesCompletedStreamOutput(payload)
 	items := make(map[int]*responsesStreamItem)
-	for index, item := range output {
+	for position, item := range output {
 		if !strings.EqualFold(strings.TrimSpace(item.Type), "function_call") {
 			continue
 		}
 		streamItem := &responsesStreamItem{itemType: item.Type, callID: item.CallID, name: item.Name}
 		streamItem.args.WriteString(item.Arguments)
+		// The provider's own output_index is the index the delta events used.
+		// Without it, slice position is the only candidate, but every reasoning
+		// or message item before this one offsets it.
+		index := position
+		if item.OutputIndex != nil {
+			index = *item.OutputIndex
+		}
 		items[index] = streamItem
 	}
 	return items
 }
 
-// mergeResponsesStreamToolItem lets response.completed fill only the fields a
+// backfillResponsesStreamToolNames gives a tool item the name the final
+// snapshot carries when the stream never named it. It matches on call id
+// first because that is the provider's own identity for the call; position
+// is only a fallback for streams that omit call ids. An item that already has
+// a name keeps it, and a snapshot without a name never clears one.
+func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapshot map[int]*responsesStreamItem) {
+	if len(items) == 0 || len(snapshot) == 0 {
+		return
+	}
+	byCallID := make(map[string]*responsesStreamItem, len(snapshot))
+	for _, item := range snapshot {
+		if item == nil {
+			continue
+		}
+		if id := strings.TrimSpace(item.callID); id != "" {
+			byCallID[id] = item
+		}
+	}
+	for index, item := range items {
+		if item == nil || strings.TrimSpace(item.name) != "" {
+			continue
+		}
+		var named *responsesStreamItem
+		if id := strings.TrimSpace(item.callID); id != "" {
+			named = byCallID[id]
+		}
+		if named == nil {
+			named = snapshot[index]
+		}
+		if named == nil {
+			continue
+		}
+		if name := strings.TrimSpace(named.name); name != "" {
+			item.name = name
+		}
+		if item.callID == "" {
+			item.callID = named.callID
+		}
+	}
+}
 // compatible provider omitted from earlier stream events. It must not replace
 // already-received delta arguments with an incomplete final snapshot.
 func mergeResponsesStreamToolItem(existing, completed *responsesStreamItem) *responsesStreamItem {

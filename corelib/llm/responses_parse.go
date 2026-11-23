@@ -26,6 +26,12 @@ type responsesAPIOutputItem struct {
 	CallID    string                    `json:"call_id,omitempty"`
 	Name      string                    `json:"name,omitempty"`
 	Arguments string                    `json:"arguments,omitempty"`
+	// OutputIndex is the position the provider gave this item in the stream.
+	// Stream events address items by output_index, but response.output can
+	// interleave reasoning and message items, so slice position is not that
+	// index. Keeping the provider value lets the final snapshot merge onto the
+	// item the deltas created instead of a same-positioned neighbour.
+	OutputIndex *int `json:"output_index,omitempty"`
 	// Summary is the user-displayable reasoning summary returned by Responses
 	// reasoning items. It is intentionally distinct from private chain of thought.
 	Summary []responsesAPIContentPart `json:"summary,omitempty"`
