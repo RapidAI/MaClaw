@@ -629,3 +629,21 @@ func TestResponsesStreamBackfillKeepsExistingNameAndIgnoresEmptySnapshot(t *test
 		t.Fatalf("a nameless snapshot invented a name: %q", items[1].name)
 	}
 }
+
+func TestResponsesStreamBackfillDoesNotBorrowNeighbourWhenCallIDMisses(t *testing.T) {
+	items := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_missing"},
+		1: {itemType: "function_call"},
+	}
+	snapshot := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", callID: "call_other", name: "write_file"},
+		1: {itemType: "function_call", callID: "call_b", name: "read_file"},
+	}
+	backfillResponsesStreamToolNames(items, snapshot)
+	if items[0].name != "" {
+		t.Fatalf("unmatched call id borrowed the neighbour name: %q", items[0].name)
+	}
+	if items[1].name != "" {
+		t.Fatalf("blank call id borrowed a named neighbour: %q", items[1].name)
+	}
+}

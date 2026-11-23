@@ -471,9 +471,11 @@ func responsesCompletedStreamToolCalls(payload string) map[int]*responsesStreamI
 
 // backfillResponsesStreamToolNames gives a tool item the name the final
 // snapshot carries when the stream never named it. It matches on call id
-// first because that is the provider's own identity for the call; position
-// is only a fallback for streams that omit call ids. An item that already has
-// a name keeps it, and a snapshot without a name never clears one.
+// first because that is the provider's own identity for the call. Position is
+// only a fallback when both sides omit call ids: a known id that the snapshot
+// does not contain must not borrow the neighbour sitting at the same index.
+// An item that already has a name keeps it, and a snapshot without a name
+// never clears one.
 func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapshot map[int]*responsesStreamItem) {
 	if len(items) == 0 || len(snapshot) == 0 {
 		return
@@ -492,11 +494,11 @@ func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapsh
 			continue
 		}
 		var named *responsesStreamItem
-		if id := strings.TrimSpace(item.callID); id != "" {
+		id := strings.TrimSpace(item.callID)
+		if id != "" {
 			named = byCallID[id]
-		}
-		if named == nil {
-			named = snapshot[index]
+		} else if candidate := snapshot[index]; candidate != nil && strings.TrimSpace(candidate.callID) == "" {
+			named = candidate
 		}
 		if named == nil {
 			continue
