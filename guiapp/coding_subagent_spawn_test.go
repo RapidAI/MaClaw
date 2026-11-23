@@ -739,3 +739,28 @@ func TestFinishInspectionRoleTaskRequiresEvidence(t *testing.T) {
 		t.Fatalf("expected inspection note, summary=%q", got.Summary)
 	}
 }
+
+func TestFinishInspectionRoleTaskHardExitDoesNotUseModelProse(t *testing.T) {
+	sa := &CodingSubAgent{nestDepth: 1, role: codingRoleExplorer, projectPath: t.TempDir()}
+	cb := &codingSubAgentCallbacks{subagent: sa, task: &TaskItem{Index: 1, Title: "explore"}}
+	cb.filesRead = map[string]bool{"a.go": true}
+	prose := "已完成探查，没有发现问题。"
+	got := sa.finishInspectionRoleTask(cb, cb.task, "explore", agent.LoopResult{
+		Text: prose, HardExit: true, Iterations: 2, ToolCalls: 2,
+	})
+	if got.Status != TaskExecFailed {
+		t.Fatalf("status=%s, want failed", got.Status)
+	}
+	if got.Error != "模型连续返回空响应，任务中断" {
+		t.Fatalf("error=%q, model prose must not be the cause", got.Error)
+	}
+	if strings.Contains(got.Error, prose) {
+		t.Fatalf("error reused model prose: %q", got.Error)
+	}
+	named := sa.finishInspectionRoleTask(cb, cb.task, "explore", agent.LoopResult{
+		Text: prose, Error: "工具 bash 连续失败 3 次，已停止执行。", HardExit: true, Iterations: 2, ToolCalls: 2,
+	})
+	if !strings.Contains(named.Error, "连续失败") {
+		t.Fatalf("named hard-exit cause was replaced: %q", named.Error)
+	}
+}

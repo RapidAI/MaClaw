@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -735,5 +736,126 @@ func TestDoResponsesAPIRequestStreamAcceptsLargeCompletedSnapshot(t *testing.T) 
 	}
 	if !strings.Contains(calls[0].Function.Arguments, blob[:64]) {
 		t.Fatalf("arguments were not carried through the larger event")
+	}
+}
+
+// Argument deltas for two calls can arrive interleaved (A1, B1, A2, B2).
+// output_index is what keeps them apart; a missing index used to append the
+// next fragment onto whichever call sat at 0.
+func TestDoResponsesAPIRequestStreamKeepsInterleavedArgumentDeltas(t *testing.T) {
+	body := responsesStreamEvents(
+		responsesStreamEvent("response.output_item.added", map[string]interface{}{
+			"output_index": 0,
+			"item":         map[string]interface{}{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file"},
+		}),
+		responsesStreamEvent("response.output_item.added", map[string]interface{}{
+			"output_index": 1,
+			"item":         map[string]interface{}{"type": "function_call", "id": "fc_b", "call_id": "call_b", "name": "write_file"},
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]interface{}{
+			"output_index": 0, "item_id": "fc_a", "delta": `{"path":"a.go"`,
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]interface{}{
+			"output_index": 1, "item_id": "fc_b", "delta": `{"path":"b.go"`,
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]interface{}{
+			"output_index": 0, "item_id": "fc_a", "delta": `,"line":1}`,
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]interface{}{
+			"output_index": 1, "item_id": "fc_b", "delta": `,"content":"x"}`,
+		}),
+		responsesStreamEvent("response.completed", map[string]interface{}{
+			"response": map[string]interface{}{"output": []interface{}{
+				map[string]interface{}{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file", "arguments": `{"path":"a.go","line":1}`},
+				map[string]interface{}{"type": "function_call", "id": "fc_b", "call_id": "call_b", "name": "write_file", "arguments": `{"path":"b.go","content":"x"}`},
+			}},
+		}),
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	calls := response.Choices[0].Message.ToolCalls
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %#v, want 2", calls)
+	}
+	if calls[0].ID != "call_a" || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.go","line":1}` {
+		t.Fatalf("call A = %+v", calls[0])
+	}
+	if calls[1].ID != "call_b" || calls[1].Function.Name != "write_file" || calls[1].Function.Arguments != `{"path":"b.go","content":"x"}` {
+		t.Fatalf("call B = %+v", calls[1])
+	}
+}
+
+func responsesStreamEvent(eventType string, payload map[string]interface{}) []byte {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return []byte("event: " + eventType + "\ndata: " + string(raw) + "\n\n")
+}
+
+func responsesStreamEvents(parts ...[]byte) []byte {
+	return bytes.Join(parts, nil)
+}
+
+// A later event can still exceed the scan limit (a snapshot of more calls than
+// 4 MiB holds). That must not erase the argument deltas already accepted, or
+// the turn looks like a consecutive empty response.
+func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t *testing.T) {
+	body := responsesStreamEvents(
+		responsesStreamEvent("response.output_item.added", map[string]interface{}{
+			"output_index": 0,
+			"item":         map[string]interface{}{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file"},
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]interface{}{
+			"output_index": 0, "item_id": "fc_a", "delta": `{"path":"a.go"}`,
+		}),
+	)
+	body = append(body, []byte("event: response.completed\ndata: {\"pad\":\"")...)
+	body = append(body, bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
+	body = append(body, []byte("\"}\n\n")...)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want scan-limit failure", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	calls := response.Choices[0].Message.ToolCalls
+	if len(calls) != 1 || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.go"}` {
+		t.Fatalf("kept arguments = %#v", calls)
 	}
 }
