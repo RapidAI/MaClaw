@@ -1046,6 +1046,22 @@ func TestReleaseHorizonGUIAfterProbeClearsSticky(t *testing.T) {
 	}
 }
 
+func TestHorizonProbeReleaseLeavesAnotherOwner(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("owner-b")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(77)
+	beginComputerUseTask("u1", "req-hz", "open notepad", nil)
+	releaseHorizonGUIAfterProbe("u1")
+	if !computerUseSessionActive() || computerUseHaloTarget() != 77 {
+		t.Fatalf("active=%v halo=%d", computerUseSessionActive(), computerUseHaloTarget())
+	}
+	if computerUseTaskStateFor("u1") != nil {
+		t.Fatal("the probe owner's contract stayed behind")
+	}
+}
+
 func TestHorizonGUIProbeUsesStoredComputerUseOwner(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	resetComputerUseSessionForTest(t)

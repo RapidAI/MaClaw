@@ -439,15 +439,15 @@ func (l *cancelMergeLLM) ChatCallContext(ctx context.Context, messages []map[str
 	return "", ctx.Err()
 }
 
-func TestCompressorReturnsMergeCancellationWithoutLongCandidates(t *testing.T) {
+func TestCompressorReturnsProjectionCancellation(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Stop()
 	for _, entry := range []Entry{
-		{ID: "first", Content: "first short preference", Category: CategoryPreference},
-		{ID: "second", Content: "second short preference", Category: CategoryPreference},
+		{ID: "first", Content: "first preference " + strings.Repeat("with durable detail ", 20), Category: CategoryPreference},
+		{ID: "second", Content: "second preference " + strings.Repeat("with durable detail ", 20), Category: CategoryPreference},
 	} {
 		if err := store.Save(entry); err != nil {
 			t.Fatal(err)

@@ -17,11 +17,11 @@ import (
 // Navigate readiness and login/risk-wall detection.
 //
 // After a navigate the page must be loaded (document.readyState=complete) and
-// show at least one interactive element before the step returns; a page that
-// stays blank is reloaded once. A sign-in form is marked login_wall so the
-// agent calls submit_secret. A captcha / "安全验证" check, or a page that is
-// still blank after the wait, carries LoginWallMarker and hands the preview
-// to the person.
+// show at least one interactive element before the step returns. Readiness is
+// read-only: a blank page is never an instruction to send another request.
+// A sign-in form is marked login_wall so the agent calls submit_secret. An
+// automatic browser check shares one wait budget per document; an interactive
+// captcha or a page that stays blank hands the preview to the person.
 //
 // MACLAW_BROWSER_NAV_READY_TIMEOUT (seconds, default 18, 0 disables) bounds
 // each wait; the blank-page threshold for a wall is MACLAW_BROWSER_BLANK_WALL
@@ -59,6 +59,7 @@ type PageReadyState struct {
 	Title       string `json:"title"`
 	TextLen     int    `json:"tl"`
 	Wall        string `json:"wall"`
+	Challenge   string `json:"challenge"`
 	// ContentType of the document: an image, video, PDF or plain-text
 	// resource opened directly has no interactive element and no sign-in.
 	ContentType string `json:"ct"`
@@ -179,9 +180,33 @@ const pageReadyExpr = `(() => {
     if (t.length >= 4 && t.length <= 80 && (freqRe.test(t) || (freqRate.test(t) && freqCue.test(t)))) { wall = 'rate_limit'; break; }
     at += raw.length + 1;
   }
-  if (!wall && /安全验证|请完成验证|人机验证|滑动验证|拖动滑块|captcha|are you a robot|verify you are human/i.test(head)) wall = 'captcha';
+  const short = body.length < 8000 && head.trim().length < 1500;
+  const frames = Array.from(document.getElementsByTagName('iframe')).map(f => {
+    let visible = false;
+    try { const r = f.getBoundingClientRect(); visible = r.width > 20 && r.height > 20 && getComputedStyle(f).visibility !== 'hidden'; } catch (e) {}
+    return {src: String(f.src || ''), visible};
+  });
+  const frame = (re) => frames.some(f => f.visible && re.test(f.src));
+  const has = (sel) => { try { return document.querySelector(sel) !== null; } catch (e) { return false; } };
+  let challenge = '';
+  const cloudflare = frame(/challenges\.cloudflare\.com/) || has('script[src*="/cdn-cgi/challenge-platform/"]');
+  const cloudflarePage = has('script[src*="/cdn-cgi/challenge-platform/"][src*="/orchestrate/chl_page/"]');
+  if (!wall && (cloudflare || short) && has('#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running, .cf-browser-verification, #cf-please-wait')) {
+    wall = 'checking'; challenge = 'cloudflare';
+  }
+  if (!wall && cloudflare && ((short || cloudflarePage) && /^(just a moment|attention required)/i.test(document.title || '') || /^one more step/i.test(document.title || ''))) {
+    wall = 'checking'; challenge = 'cloudflare';
+  }
+  if (!wall && has('html:has(head > script[src*=".awswaf.com/"][src$="/challenge.js"]) > body > #challenge-container')) {
+    wall = 'checking'; challenge = 'aws-waf';
+  }
+  if (!wall && short && /checking (if the site connection is secure|your browser)|verifying you are human|please wait while we (verify|check)|正在(?:进行)?(?:安全|人机|浏览器|环境)验证|正在验证(?:您|你)?的?(?:浏览器|环境)|安全检测中/i.test(head)) {
+    wall = 'checking'; challenge = 'generic';
+  }
+  if (!wall && frame(/captcha-delivery\.com/)) { wall = 'captcha'; challenge = 'datadome'; }
+  if (!wall && /安全验证|请完成验证|人机验证|滑动验证|拖动滑块|captcha|are you a robot|verify you are human/i.test(head)) { wall = 'captcha'; challenge = 'generic'; }
   else if (!wall && document.querySelector('input[type=password]') && /登录|注册|sign ?in|log ?in/i.test(head + ' ' + document.title)) wall = 'login_form';
-  return JSON.stringify({rs: document.readyState, n, url: location.href, title: document.title || '', tl: body.length, wall, ct: document.contentType || ''});
+  return JSON.stringify({rs: document.readyState, n, url: location.href, title: document.title || '', tl: body.length, wall, challenge, ct: document.contentType || ''});
 })()`
 
 // pageReady reads the readiness state of the current page.
@@ -193,6 +218,10 @@ func (s *Session) pageReady() (PageReadyState, error) {
 	}
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
 		return st, fmt.Errorf("parse ready state: %w", err)
+	}
+	if s.documentRateLimit(st.URL) {
+		st.Wall = "rate_limit"
+		st.Challenge = "http_429"
 	}
 	return st, nil
 }
@@ -219,10 +248,7 @@ func (s *Session) waitPageReadyOnce(timeout time.Duration) (PageReadyState, bool
 		st, err := s.pageReady()
 		if err == nil {
 			last = st
-			if st.Wall != "" || loginWallURL(st.URL) != "" {
-				return st, true
-			}
-			if st.ReadyState == "complete" && (st.Interactive > 0 || st.rawResource()) {
+			if pageReadyStateSatisfied(st) {
 				return st, true
 			}
 		}
@@ -235,11 +261,11 @@ func (s *Session) waitPageReadyOnce(timeout time.Duration) (PageReadyState, bool
 
 // NavReadyReport is the outcome of waitPageReady.
 type NavReadyReport struct {
-	State    PageReadyState
-	Ready    bool
-	Reloaded bool
-	Wall     string // "", login_url, login_form, captcha, blank, rate_limit
-	Waited   time.Duration
+	State            PageReadyState
+	Ready            bool
+	ChallengeCleared bool
+	Wall             string // "", login_url, login_form, checking, captcha, blank, rate_limit
+	Waited           time.Duration
 }
 
 // Note is the text appended to a navigate result.
@@ -249,16 +275,20 @@ func (r NavReadyReport) Note() string {
 		fmt.Fprintf(&b, "\nfinal URL: %s", r.State.URL)
 	}
 	fmt.Fprintf(&b, " (readyState=%s, interactive elements=%d, waited %.1fs", nz(r.State.ReadyState, "unknown"), r.State.Interactive, r.Waited.Seconds())
-	if r.Reloaded {
-		b.WriteString(", reloaded once")
-	}
 	b.WriteString(")")
-	if r.Wall == "login_form" || r.Wall == "login_url" {
+	if r.ChallengeCleared {
+		b.WriteString("\n[browser_challenge] 自动安全检查已在当前文档内通过，没有发送刷新或重复导航。")
+		if !r.Ready {
+			b.WriteString("\npage not fully ready yet; probe once more before acting.")
+		}
+	} else if r.Wall == "checking" {
+		fmt.Fprintf(&b, "\n[browser_challenge] %s: 站点正在当前文档内自动进行安全检查。不要刷新、重新打开或点击；probe 会复用当前文档剩余的等待时间。", nz(r.State.Challenge, "generic"))
+	} else if r.Wall == "login_form" || r.Wall == "login_url" {
 		fmt.Fprintf(&b, "\n%s %s: this is a sign-in page. Type the account name yourself. Call browser(action=\"submit_secret\", method, ref) for the password, email/SMS code, or authenticator code. method is password, otp, or authenticator. Do not pass the secret and do not ask for it in chat. A captcha, QR code, or passkey uses browser(action=\"request_takeover\").", LoginWallMarker, r.Wall)
 	} else if r.Wall == "rate_limit" {
 		b.WriteString("\n" + frequencyRefusalStopText(false))
 	} else if r.Wall != "" {
-		fmt.Fprintf(&b, "\n%s %s: this page needs the person (captcha/安全验证, or it stays blank). The person should take over the MaClaw preview. Do not ask for a password or code in chat. After they finish, probe before the next click or type.", LoginWallMarker, r.Wall)
+		fmt.Fprintf(&b, "\n%s %s: this page needs the person (captcha/安全验证, or it stays blank). The person should take over the MaClaw preview. Do not reload or retry the check. Do not ask for a password or code in chat. After they finish, probe before the next click or type.", LoginWallMarker, r.Wall)
 	} else if !r.Ready {
 		b.WriteString("\npage not fully ready yet; probe once more before acting.")
 	}
@@ -272,8 +302,9 @@ func nz(s, d string) string {
 	return s
 }
 
-// waitPageReady waits for the navigated page, reloads a blank page once, and
-// detects login/risk walls. Disabled when the timeout env is 0.
+// waitPageReady waits for the navigated page and detects login/risk walls.
+// It never reloads: an automatic check gets one shared, document-scoped budget.
+// Disabled when the timeout env is 0.
 func (s *Session) waitPageReady() (NavReadyReport, bool) {
 	timeout := navEnvSeconds(navReadyTimeoutEnv, 18*time.Second)
 	if s == nil || timeout <= 0 {
@@ -281,32 +312,89 @@ func (s *Session) waitPageReady() (NavReadyReport, bool) {
 	}
 	blankWall := navEnvSeconds(navBlankWallEnv, 20*time.Second)
 	start := time.Now()
+	callDeadline := start.Add(timeout)
 	st, ok := s.waitPageReadyOnce(timeout)
-	rep := NavReadyReport{State: st, Ready: ok}
-	if !ok || (st.Interactive == 0 && st.Wall == "" && loginWallURL(st.URL) == "" && !st.rawResource()) {
-		s.mu.Lock()
-		client := s.client
-		s.mu.Unlock()
-		if client != nil {
-			if _, err := client.Send("Page.reload", map[string]interface{}{"ignoreCache": false}, NavTimeout); err == nil {
-				rep.Reloaded = true
-				st, ok = s.waitPageReadyOnce(timeout)
-				rep.State, rep.Ready = st, ok
+	identity := s.documentIdentity()
+	if identity.ID == "" && st.URL != "" {
+		identity = documentIdentity{ID: "url:" + st.URL, URL: st.URL}
+	}
+	rep := NavReadyReport{State: st, Ready: ok, Wall: st.Wall}
+	challengeWaited := st.Wall == documentChallengeChecking
+	if challengeWaited {
+		identity.URL = st.URL
+		firstSeen := s.beginDocumentChallenge(identity, documentChallengeChecking, st.Challenge)
+		deadline := firstSeen.Add(documentChallengeWaitBudget)
+		rep.Ready = false
+		for st.Wall == documentChallengeChecking && time.Now().Before(deadline) && time.Now().Before(callDeadline) {
+			remaining := time.Until(deadline)
+			if callRemaining := time.Until(callDeadline); callRemaining < remaining {
+				remaining = callRemaining
 			}
+			pause := navReadyPoll
+			if remaining < pause {
+				pause = remaining
+			}
+			if pause > 0 {
+				time.Sleep(pause)
+			}
+			next, err := s.pageReady()
+			if err != nil {
+				continue
+			}
+			st = next
+			rep.State = st
+			if st.Wall != documentChallengeChecking {
+				rep.Ready = st.Wall == "" && pageReadyStateSatisfied(st)
+				rep.ChallengeCleared = st.Wall == ""
+			}
+		}
+		rep.State = st
+		switch {
+		case rep.ChallengeCleared:
+			rep.Wall = ""
+		case st.Wall == documentChallengeChecking && !time.Now().Before(deadline):
+			rep.Wall = documentChallengeCaptcha
+		default:
+			rep.Wall = st.Wall
 		}
 	}
 	rep.Waited = time.Since(start)
-	switch {
-	case rep.State.Wall != "":
-		rep.Wall = rep.State.Wall
-	case loginWallURL(rep.State.URL) != "":
-		rep.Wall = "login_url"
-	case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= blankWall && !localPageURL(rep.State.URL) && !rep.State.rawResource():
-		// A blank local page (an image preview, a dev server) has no
-		// sign-in; only remote sites get the person called in (XHS-7).
-		rep.Wall = "blank"
+	if rep.Wall == "" && !rep.ChallengeCleared {
+		switch {
+		case rep.State.Wall != "":
+			rep.Wall = rep.State.Wall
+		case loginWallURL(rep.State.URL) != "":
+			rep.Wall = "login_url"
+		case rep.State.Interactive == 0 && rep.State.TextLen < 20 && rep.Waited >= min(timeout, blankWall) && !localPageURL(rep.State.URL) && !rep.State.rawResource():
+			rep.Wall = "blank"
+		}
+	}
+	if challengeWaited {
+		if latest := s.documentIdentity(); latest.ID != "" {
+			identity = latest
+		}
+	}
+	if rep.State.URL != "" {
+		identity.URL = rep.State.URL
+	}
+	if identity.ID != "" {
+		switch rep.Wall {
+		case documentChallengeChecking, documentChallengeCaptcha, "rate_limit":
+			s.finishDocumentChallenge(identity, rep.Wall, rep.State.Challenge)
+		default:
+			if rep.State.URL != "" || rep.ChallengeCleared {
+				s.finishDocumentChallenge(identity, "", "")
+			}
+		}
 	}
 	return rep, true
+}
+
+func pageReadyStateSatisfied(st PageReadyState) bool {
+	if st.Wall != "" || loginWallURL(st.URL) != "" {
+		return true
+	}
+	return st.ReadyState == "complete" && (st.Interactive > 0 || st.rawResource())
 }
 
 var localPageRe = regexp.MustCompile(`(?i)^(file:|data:|blob:|about:|https?://(localhost|127\.|0\.0\.0\.0|\[::1\])[:/]?)`)
@@ -654,9 +742,9 @@ func (s *BrowserAgentSession) frequencyClickUnresolved(err error) (*BrowserActio
 	return nil, err
 }
 
-// frequencyPressHitsSite is a key that reloads the page or activates the
-// focused control. A letter does not, so typing into a field is not itself
-// a new request.
+// frequencyPressHitsSite is a key that reloads the page, moves through
+// history, or activates the focused control. A letter does not, so typing
+// into a field is not itself a new request.
 func frequencyPressHitsSite(key string) bool {
 	return reloadKey(key) || checkoutKeySubmits(key) || pressActivatesFocusedControl(key)
 }
@@ -692,7 +780,8 @@ func reloadKey(key string) bool {
 	k := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), " ", ""))
 	switch k {
 	case "f5", "ctrl+r", "control+r", "ctrl+shift+r", "control+shift+r",
-		"meta+r", "cmd+r", "command+r", "meta+shift+r", "cmd+shift+r":
+		"meta+r", "cmd+r", "command+r", "meta+shift+r", "cmd+shift+r",
+		"alt+left", "alt+leftarrow", "alt+arrowleft", "alt+right", "alt+rightarrow", "alt+arrowright", "alt+home":
 		return true
 	default:
 		return false

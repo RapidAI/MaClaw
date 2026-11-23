@@ -54,12 +54,9 @@ func estimateToolsTokens(tools []map[string]interface{}) int {
 	return estimateBytesToTokens(data)
 }
 
-// estimateBytesToTokens converts JSON bytes to an approximate token count.
-// For JSON data, uses a byte-based heuristic (~2.5 bytes/token) rather than
-// character-based, because JSON structural overhead ({, ", :) inflates the
-// ASCII char count beyond what represents actual content tokens.
+// estimateBytesToTokens uses the shared CJK-aware estimator for JSON payloads.
 func estimateBytesToTokens(data []byte) int {
-	return (len(data)*10 + 24) / 25 // equivalent to len/2.5, rounded up
+	return corelib.EstimateTextTokens(string(data))
 }
 
 // precomputeMsgTokens computes per-message token estimates for an entire
@@ -1194,7 +1191,13 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	if maxEntries > 0 {
 		limit = maxEntries
 	}
-	entryOverLimit := len(entries) > limit
+	// The first compaction fires at the normal entry limit. Once a durable
+	// checkpoint exists, use a higher water mark: the compacted representation
+	// intentionally includes turn anchors in addition to its recent window, so
+	// using the original limit again rewrites the checkpoint after every reply.
+	// Token pressure still fires independently and remains the hard size guard.
+	entryTrigger := historyEntryCompactionTrigger(entries, limit)
+	entryOverLimit := len(entries) > entryTrigger
 	var tokenOverLimit bool
 	if maxTokens > 0 {
 		tokEst := precomputedTokens
@@ -1381,6 +1384,23 @@ func trimHistoryWithSummaryPrecomputed(entries []agent.ConversationEntry, summar
 	result = append(result, groupAlignedSlice(entries, recentStart)...)
 
 	return result
+}
+
+func historyEntryCompactionTrigger(entries []agent.ConversationEntry, limit int) int {
+	if limit <= 0 {
+		return limit
+	}
+	for _, entry := range entries {
+		if !isCompactionHandoffEntry(entry) {
+			continue
+		}
+		headroom := limit / 2
+		if headroom < 8 {
+			headroom = 8
+		}
+		return limit + headroom
+	}
+	return limit
 }
 
 func entryTokenCount(entry agent.ConversationEntry) int {

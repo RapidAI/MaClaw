@@ -168,6 +168,7 @@ type BrowserObservation struct {
 	// the page. The action result is what the model sees; the observe
 	// display is not that result.
 	frequencyHold string `json:"-"`
+	challengeNote string `json:"-"`
 }
 
 // BrowserActionResult is the structured result of a browser action.
@@ -228,10 +229,11 @@ type BrowserAgentState struct {
 
 // BrowserAgentSession is the agent-facing long-lived browser session.
 type BrowserAgentSession struct {
-	mu        sync.RWMutex
-	recoverMu sync.Mutex
-	ID        string
-	OwnerID   string
+	mu          sync.RWMutex
+	recoverMu   sync.Mutex
+	operationMu sync.Mutex
+	ID          string
+	OwnerID     string
 	// checkoutOwner is the person whose message may confirm a purchase.
 	// The desktop session id is not that person.
 	checkoutOwner string

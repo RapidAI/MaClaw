@@ -2446,6 +2446,9 @@ type AIAssistantStreamEvent struct {
 	// uses for a live token. A one-delta payload leaves this empty so a real
 	// snapshot still trims. Text stays the join for callers that concatenate.
 	Deltas []string `json:"deltas,omitempty"`
+	// Context usage is the latest single model request, never a session sum.
+	ContextUsedTokens int `json:"context_used_tokens,omitempty"`
+	ContextMaxTokens  int `json:"context_max_tokens,omitempty"`
 }
 
 // assistantTokenCoalesceWindow merges a same-lane token run onto one Wails

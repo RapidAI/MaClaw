@@ -80,8 +80,13 @@ type SubAgentCompactor struct {
 	// the provider prompt already fills the known window.
 	sealedEstimate int
 	// lastPromptTokens is the provider-reported prompt size of the latest
-	// request. The byte estimate is not the only occupancy signal.
-	lastPromptTokens int
+	// accepted request. The byte estimate is not the only occupancy signal.
+	// A shrink that lands under the trigger clears it so a missing usage
+	// report cannot keep compacting. fullPromptLatched survives that clear:
+	// a later sub-1000 report is still the incident's 122, not proof the
+	// window now fits, until a plausible under-window prompt is accepted.
+	lastPromptTokens  int
+	fullPromptLatched bool
 	// forceCompact is set when the latest accepted prompt already fills the
 	// known window, so the next transform compacts even if a no-shrink seal
 	// is holding. A later prompt under that window clears it.
@@ -187,24 +192,43 @@ func (c *SubAgentCompactor) triggerThreshold() int {
 
 // notePromptTokens records a provider prompt size. A tiny report after a
 // prompt that already filled the window is not a successful shrink: the
-// over-window size stays, and the next transform still compacts. A later
-// accepted prompt under the window clears that force, so a reference fan-out
-// cannot stick a full-window flag onto the aggregator's smaller prompt. The
-// bool reports whether the meter should treat n as the live fill.
+// over-window size stays, and the next transform still compacts. Compaction
+// may clear lastPromptTokens once the byte estimate drops under the trigger;
+// the latch still rejects that tiny report until a plausible under-window
+// prompt is accepted. A later accepted prompt under the window clears the
+// force, so a reference fan-out cannot stick a full-window flag onto the
+// aggregator's smaller prompt. The bool reports whether the meter should
+// treat n as the live fill.
 func (c *SubAgentCompactor) notePromptTokens(n int) bool {
 	if c == nil || n <= 0 {
 		return false
 	}
 	window, known := c.contextLimit()
-	if known && window >= subAgentDegeneratePromptWindow &&
-		c.lastPromptTokens >= window &&
-		n < subAgentDegeneratePromptTokens {
+	if c.degeneratePrompt(window, known, n) {
 		c.forceCompact = true
 		return false
 	}
 	c.lastPromptTokens = n
 	c.forceCompact = known && n >= window
+	if c.forceCompact {
+		c.fullPromptLatched = true
+	} else if known {
+		c.fullPromptLatched = false
+	}
 	return true
+}
+
+// degeneratePrompt is the incident's 122-token reading. It is not a real
+// coding prompt after one that filled the window, including when the shrink
+// itself already cleared the stored prompt size.
+func (c *SubAgentCompactor) degeneratePrompt(window int, known bool, n int) bool {
+	if c == nil || !known || n <= 0 || n >= subAgentDegeneratePromptTokens {
+		return false
+	}
+	if window < subAgentDegeneratePromptWindow {
+		return false
+	}
+	return c.fullPromptLatched || c.lastPromptTokens >= window
 }
 
 // promptFillsWindow reports that this prompt leaves no output room inside the
@@ -218,9 +242,7 @@ func (c *SubAgentCompactor) promptFillsWindow(promptTokens int) bool {
 	if promptTokens >= window {
 		return true
 	}
-	return window >= subAgentDegeneratePromptWindow &&
-		c.lastPromptTokens >= window &&
-		promptTokens < subAgentDegeneratePromptTokens
+	return c.degeneratePrompt(window, known, promptTokens)
 }
 
 // absorbOverflow arms one compaction before the next send. It returns false
@@ -230,9 +252,10 @@ func (c *SubAgentCompactor) absorbOverflow(promptTokens int) bool {
 	if c == nil || !c.promptFillsWindow(promptTokens) || c.stalled {
 		return false
 	}
-	window, _ := c.contextLimit()
-	if promptTokens >= window {
+	window, known := c.contextLimit()
+	if known && promptTokens >= window {
 		c.lastPromptTokens = promptTokens
+		c.fullPromptLatched = true
 	}
 	c.forceCompact = true
 	return true
@@ -384,6 +407,8 @@ func (c *SubAgentCompactor) finishCompact(before, after []interface{}, middle in
 	c.sealedEstimate = 0
 	c.stalled = false
 	c.forceCompact = false
+	// Drop the stale size so a missing usage report does not compact again
+	// and stall. The full-window latch stays: the next 122 is still degenerate.
 	if afterTokens <= c.triggerThreshold() {
 		c.lastPromptTokens = 0
 	}
@@ -495,6 +520,15 @@ func (c *SubAgentCompactor) collapsePerRound(conversation []interface{}) []inter
 			"content": agent.ReplaceHandoffBlock(taskContent, memo.Render()),
 		},
 	}
+}
+
+// sameConversationHead reports that b is a, returned unchanged.
+// collapsePerRound does that when it refuses to fold the wave.
+func sameConversationHead(a, b []interface{}) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+	return &a[0] == &b[0]
 }
 
 func codingPerRoundBlocked(conversation []interface{}) bool {
@@ -620,46 +654,10 @@ func (c *SubAgentCompactor) buildCompactionSummary(middleSection []interface{}, 
 	return b.String()
 }
 
-// estimateConversationTokensForSubAgent estimates the token count of a conversation.
+// estimateConversationTokensForSubAgent shares the main loop's CJK-aware count
+// so routing between chat and coding cannot change the effective budget.
 func estimateConversationTokensForSubAgent(conversation []interface{}) int {
-	totalBytes := 0
-	for _, msg := range conversation {
-		switch m := msg.(type) {
-		case map[string]interface{}:
-			if content, ok := m["content"].(string); ok {
-				totalBytes += len(content)
-			}
-			// Handle tool_calls in both typed and untyped forms.
-			// In RunLoop, tool_calls are stored as []llm.ToolCall.
-			// After JSON round-trip they might become []interface{}.
-			switch tc := m["tool_calls"].(type) {
-			case []llm.ToolCall:
-				for _, call := range tc {
-					totalBytes += len(call.Function.Arguments)
-				}
-			case []interface{}:
-				for _, item := range tc {
-					if call, ok := item.(map[string]interface{}); ok {
-						if fn, ok := call["function"].(map[string]interface{}); ok {
-							if args, ok := fn["arguments"].(string); ok {
-								totalBytes += len(args)
-							}
-						}
-					}
-				}
-			}
-		case map[string]string:
-			if content, ok := m["content"]; ok {
-				totalBytes += len(content)
-			}
-		case agent.ConversationEntry:
-			if content, ok := m.Content.(string); ok {
-				totalBytes += len(content)
-			}
-		}
-	}
-	// bytes / 2.5 ≈ tokens
-	return (totalBytes*10 + 24) / 25
+	return estimateConversationTokens(conversation)
 }
 
 // codingSubAgentHooks implements agent.LoopHooks with mid-task compaction and
@@ -740,10 +738,12 @@ func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) 
 		h.iteration++
 	}
 	if h != nil && h.compactor != nil && agent.HandoffMemoPerRound() {
-		if collapsed := h.compactor.collapsePerRound(out); collapsed != nil {
+		if collapsed := h.compactor.collapsePerRound(out); collapsed != nil && !sameConversationHead(collapsed, out) {
 			// A per-round memo used to return before the occupancy compact.
-			// A blocked or non-shrinking collapse then hid a prompt that
-			// already filled the window, and the loop sent it again.
+			// A blocked call returns the same slice (session-round wave or
+			// pending ask). That is not a finished collapse: the occupancy
+			// check below still runs. A real shrink is applied here so a
+			// two-message memo is not compared with itself and stalled.
 			if !h.compactor.promptPressured() {
 				return collapsed
 			}

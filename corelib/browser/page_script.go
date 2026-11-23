@@ -15,7 +15,7 @@ const pageScriptTimeout = 20 * time.Second
 // pageScriptDenied keeps a desktop page script on the controls it can see.
 // A button labeled "Forgot password" is still allowed. Reading cookies,
 // storage, or a password field, and calling the network, are not.
-var pageScriptDenied = regexp.MustCompile(`(?i)(document\s*\.\s*cookie|\.cookie\b|localstorage|sessionstorage|indexeddb|navigator\s*\.\s*credentials|fetch\s*\(|xmlhttprequest|websocket|sendbeacon|eventsource|\beval\s*\(|new\s+function|import\s*\(|document\s*\.\s*write|inserttext|execcommand|getownpropertydescriptor|\.prototype\b|\bconstructor\b|\b__proto__\b|\bglobalthis\b|document\s*\[|window\s*\[|this\s*\[|type\s*=\s*['\"]password['\"]|\[\s*type\s*=\s*['\"]?password|autocomplete\s*=\s*['\"]cc-|chrome\s*\.\s*cookies|\blocation\s*(?:\.href)?\s*=(?:\s*[^=]|$)|\blocation\s*\.\s*(?:assign|replace)\s*\(|window\s*\.\s*open)`)
+var pageScriptDenied = regexp.MustCompile(`(?i)(document\s*\.\s*cookie|\.cookie\b|localstorage|sessionstorage|indexeddb|navigator\s*\.\s*credentials|fetch\s*\(|xmlhttprequest|websocket|sendbeacon|eventsource|\beval\s*\(|new\s+function|import\s*\(|document\s*\.\s*write|inserttext|execcommand|getownpropertydescriptor|\.prototype\b|\bconstructor\b|\b__proto__\b|\bglobalthis\b|document\s*\[|window\s*\[|this\s*\[|type\s*=\s*['\"]password['\"]|\[\s*type\s*=\s*['\"]?password|autocomplete\s*=\s*['\"]cc-|chrome\s*\.\s*cookies|\blocation\s*(?:\.href)?\s*=(?:\s*[^=]|$)|\blocation\s*\.\s*(?:assign|replace|reload)\s*\(|\bhistory\s*\.\s*(?:back|forward|go)\s*\(|window\s*\.\s*open)`)
 
 // ValidatePageScript rejects an empty script and one that reads secrets or
 // leaves the page. The script itself is the sequence of clicks, typing,
@@ -85,6 +85,7 @@ func (s *BrowserAgentSession) RunPageScript(script string) (*BrowserActionResult
 // and the page is a different website. The check happens inside the script,
 // before the first click.
 func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := ValidatePageScript(script); err != nil {
 		return nil, err
 	}
@@ -99,6 +100,9 @@ func (s *BrowserAgentSession) RunPageScriptForSite(script, siteHost string) (*Br
 	}
 	if err := s.guardCheckoutScript(script); err != nil {
 		return policyBlockResult(s, "browser_script", err)
+	}
+	if held := s.challengeMutationResult("script"); held != nil {
+		return held, nil
 	}
 	// One guard read. A probe from this turn already has the flags, so a
 	// script that follows it does not walk the page before it clicks.

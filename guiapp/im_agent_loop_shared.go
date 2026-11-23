@@ -5429,7 +5429,13 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolCall(name, argsJSON, callID string
 func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
 	if c != nil {
 		setComputerUseTurnVision(c.llmCfg.SupportsVision)
-		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
+		owner := computerUseOwnerFromLoop(c.loopCtx, c.userID)
+		setComputerUseOwner(owner)
+		// Bind the owner computed here for the whole call. The handler runs
+		// later, including the managed desktop adapter, and another tab can
+		// overwrite activeOwner during focus or input.
+		pushComputerUseCallOwner(owner)
+		defer popComputerUseCallOwner()
 	}
 	var result agent.ToolExecutionResult
 	terminalDenial := ""
@@ -11115,7 +11121,10 @@ func appendUniqueStrings(dst []string, values ...string) []string {
 func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
 	if c != nil {
 		setComputerUseTurnVision(c.llmCfg.SupportsVision)
-		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
+		owner := computerUseOwnerFromLoop(c.loopCtx, c.userID)
+		setComputerUseOwner(owner)
+		pushComputerUseCallOwner(owner)
+		defer popComputerUseCallOwner()
 	}
 	text := c.ExecuteTool(name, argsJSON)
 	return attachPendingComputerUseModelImage(classifySharedLoopToolResult(name, text))
@@ -11933,6 +11942,7 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 		model = c.llmCfg.Model
 	}
 	c.handler.recordLLMCost(model, inputTokens, outputTokens)
+	c.handler.publishContextWindowUsage(c.userID, inputTokens, c.llmCfg.EffectiveContextTokens())
 }
 
 func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {

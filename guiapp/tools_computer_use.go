@@ -151,10 +151,12 @@ func cuDoneResult(summary string) (string, bool) {
 		}
 	}
 	// The summary is the report. Later tools and the next model round stop.
+	// The rim comes down only when this owner still holds it. Another
+	// owner's session stays, and done is not emitted for them.
 	markComputerUseTaskCompleted(owner, summary)
-	// End sticky injection so the next unrelated chat does not keep CU tools.
-	clearComputerUseSessionActive()
-	emitComputerUseDoneControl(steps)
+	if _, released := releaseComputerUseSessionForOwner(owner); released {
+		emitComputerUseDoneControl(steps)
+	}
 	return fmt.Sprintf("computer_done: %s", summary), true
 }
 
@@ -534,7 +536,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	registry.Register(RegisteredTool{
 		Name: "computer_find",
 		Description: "Find on-screen text or UI elements by keyword (e.g. a contact name in an IM app). " +
-			"Runs a fresh observe, then searches element labels AND raw OCR text; matches become " +
+			"Searches element labels AND raw OCR text in both vision and text modes; matches become " +
 			"clickable eN refs — even for text no YOLO/a11y element covers. " +
 			"Use this before clicking anything you cannot see a ref for.",
 		Category: ToolCategoryBuiltin,
@@ -881,10 +883,7 @@ func cuHandleFind(args map[string]interface{}) string {
 	if strings.TrimSpace(query) == "" {
 		return "computer_find: query is required"
 	}
-	if computerUseLLMSupportsVision() {
-		return "computer_find: the chat model can see the screenshot from computer_observe. " +
-			"Look at that image and computer_click x,y; do not use OmniParser/OCR find."
-	}
+	vision := computerUseLLMSupportsVision()
 	windowHint := guiStrArg(args, "window", "")
 	limit := guiIntArg(args, "limit", 10)
 
@@ -893,16 +892,18 @@ func cuHandleFind(args map[string]interface{}) string {
 	// skip a second screenshot+YOLO+OCR cycle. Only without a window bias and
 	// only while refs are still valid.
 	obs := sess.LastObserve()
+	matches := computeruse.FindMatches(obs, query, limit)
 	tookObserve := false
-	if obs == nil || windowHint != "" || !sess.RefsValid() || time.Since(obs.ObservedAt) > 2*time.Second {
-		res := computerUseObserve(0, windowHint, true, true)
+	needsOCR := vision && len(matches) == 0 && obs != nil && len(obs.OCRLines) == 0
+	if obs == nil || windowHint != "" || !sess.RefsValid() || time.Since(obs.ObservedAt) > 2*time.Second || needsOCR {
+		res := computerUseObserve(0, windowHint, true, true, vision)
 		if !res.OK {
 			return res.Message
 		}
 		tookObserve = true
 		obs = sess.LastObserve()
+		matches = computeruse.FindMatches(obs, query, limit)
 	}
-	matches := computeruse.FindMatches(obs, query, limit)
 	if len(matches) == 0 {
 		title := ""
 		if obs != nil {
@@ -986,13 +987,15 @@ type computerUseObserveResult struct {
 // computerUseObserve runs screenshot → YOLO/a11y/OCR → SoM commit.
 // withOCR enables OCR (slower); smoke checks may set it false.
 // cropFocused captures the focused (or window=) window instead of a full monitor.
-func computerUseObserve(screenIdx int, windowHint string, withOCR, cropFocused bool) computerUseObserveResult {
-	return computerUseObserveCaption(screenIdx, windowHint, withOCR, cropFocused, true)
+func computerUseObserve(screenIdx int, windowHint string, withOCR, cropFocused bool, forceOCR ...bool) computerUseObserveResult {
+	return computerUseObserveCaption(screenIdx, windowHint, withOCR, cropFocused, true, forceOCR...)
 }
 
 // computerUseObserveCaption is the observe implementation. Diagnostics/E2E
 // pass caption=false so unlabeled-box HTTP does not inflate self-check time.
-func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool) (out computerUseObserveResult) {
+// forceOCR is used by computer_find on vision turns; ordinary vision observes
+// stay screenshot-fast and leave OCR to the asynchronous label prefetch.
+func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool, forceOCR ...bool) (out computerUseObserveResult) {
 	stitchLine := ""
 	refusedStitch := false
 	refusedW, refusedH := 0, 0
@@ -1094,8 +1097,13 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 	rt.mu.Lock()
 	yolo := rt.yolo
 	ocr := rt.ocr
+	ocrSidecar := rt.ocrSidecar
 	bridge := rt.bridge
 	rt.mu.Unlock()
+	ocrOnVision := len(forceOCR) > 0 && forceOCR[0]
+	if ocrOnVision && ocrSidecar != nil {
+		ocr = &taskOCRFromBrowser{inner: &configGatedOCRProvider{inner: ocrSidecar}}
+	}
 
 	yoloN, a11yN := 0, 0
 	useYOLO := !vision && yolo != nil && yolo.IsAvailable()
@@ -1152,7 +1160,7 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 
 	var ocrResults []taskengine.OCRResult
 	tOCR := time.Now()
-	if !vision && withOCR && ocr != nil {
+	if withOCR && ocr != nil && (!vision || ocrOnVision) {
 		// Always attempt Recognize: IsAvailable is advisory (install-on-demand).
 		res, ocrErr := ocr.Recognize(pngB64)
 		if ocrErr != nil {
@@ -2156,7 +2164,12 @@ func cuHandleClick(args map[string]interface{}) string {
 	markComputerUseSessionActive()
 	emitComputerUseActionUI("click", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
-	return cuFinishAction(fmt.Sprintf("clicked %s via %s", detail, strategy))
+	msg := cuFinishAction(fmt.Sprintf("clicked %s via %s", detail, strategy))
+	if button == "left" && count == 1 && noteDesktopMessageClickSubmitted(append(payNames, hits...)...) {
+		log.Printf("[computer-use] desktop message submitted by Send click; further actions stop")
+		msg += "\n" + desktopMessageStopText
+	}
+	return msg
 }
 
 func cuHandleType(args map[string]interface{}) string {
@@ -2305,7 +2318,7 @@ func cuHandleType(args map[string]interface{}) string {
 		}
 	}
 	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
-	noteDesktopMessageTyped(text)
+	messageTyped := noteDesktopMessageTyped(text)
 	noteComputerUseForegroundIfCrop()
 	if typeEl != nil {
 		sess.NoteActuatedID(typeEl.Name, typeEl.Window, typeEl.Type, typeEl.WindowID)
@@ -2315,6 +2328,9 @@ func cuHandleType(args map[string]interface{}) string {
 	computerUseTraceType()
 	cuPostActionSettle()
 	msg := cuFinishAction(fmt.Sprintf("typed %s via %s", detail, strategy))
+	if messageTyped {
+		msg += "\n" + desktopMessageTypedStopText
+	}
 	if computerUseLLMSupportsVision() {
 		msg = computerUseAppendExperience(msg, computerUseRememberVisionSearch(cuOperatedWindow("")))
 	}

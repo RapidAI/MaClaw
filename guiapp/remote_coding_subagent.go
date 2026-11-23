@@ -245,6 +245,7 @@ type RemoteCodingSubAgentResult struct {
 	InputTokens           int
 	OutputTokens          int
 	LastPromptTokens      int
+	LastCompletionTokens  int
 	EstCostRMB            float64
 	RouteModel            string
 	RouteSource           string
@@ -939,22 +940,23 @@ func remoteCodingOfficeReadConfig(r *RemoteCodingSubAgent) agent.OfficeReadConfi
 }
 
 func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCodingSubAgentResult {
-	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
+	inTok, outTok, cost, lastPrompt, lastCompletion := codingLoopWindowUsage(result.Usage)
 	base := func(status, errText string) *RemoteCodingSubAgentResult {
 		return &RemoteCodingSubAgentResult{
-			Status:           status,
-			Error:            errText,
-			Summary:          result.Text,
-			Iterations:       result.Iterations,
-			ToolCalls:        result.ToolCalls,
-			InputTokens:      inTok,
-			OutputTokens:     outTok,
-			LastPromptTokens: lastPrompt,
-			EstCostRMB:       cost,
-			RouteModel:       result.Route.Model,
-			RouteSource:      result.Route.Source,
-			RouteTask:        result.Route.TaskType,
-			RouteReason:      result.Route.Reason,
+			Status:               status,
+			Error:                errText,
+			Summary:              result.Text,
+			Iterations:           result.Iterations,
+			ToolCalls:            result.ToolCalls,
+			InputTokens:          inTok,
+			OutputTokens:         outTok,
+			LastPromptTokens:     lastPrompt,
+			LastCompletionTokens: lastCompletion,
+			EstCostRMB:           cost,
+			RouteModel:           result.Route.Model,
+			RouteSource:          result.Route.Source,
+			RouteTask:            result.Route.TaskType,
+			RouteReason:          result.Route.Reason,
 		}
 	}
 	if result.Error != "" {

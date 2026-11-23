@@ -97,7 +97,41 @@ func previewTerminal(s string, limit int) string {
 	if strings.Contains(s, CommandOutputMarker) {
 		return previewTerminalCommandSection(s, limit)
 	}
-	return previewHeadTail(s, limit, 0.25, 0.75)
+	originalBytes := len(s)
+	if compact := collapseConsecutiveRepeatedLines(s); compact != s {
+		if len(compact) <= limit {
+			return compact
+		}
+		s = compact
+	}
+	return previewHeadTailCited(s, limit, 0.25, 0.75, originalBytes)
+}
+
+func collapseConsecutiveRepeatedLines(s string) string {
+	if len(s) < 512 || strings.Count(s, "\n") < 8 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	changed := false
+	for i := 0; i < len(lines); {
+		j := i + 1
+		for j < len(lines) && lines[j] == lines[i] {
+			j++
+		}
+		out = append(out, lines[i])
+		if count := j - i; count >= 3 {
+			out = append(out, fmt.Sprintf("... (%d identical lines omitted) ...", count-1))
+			changed = true
+		} else if count == 2 {
+			out = append(out, lines[i])
+		}
+		i = j
+	}
+	if !changed {
+		return s
+	}
+	return strings.Join(out, "\n")
 }
 
 func previewTerminalCommandSection(s string, limit int) string {

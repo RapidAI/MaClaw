@@ -28,6 +28,40 @@ func TestStructuredPreview_SSHKeepsCommandSection(t *testing.T) {
 	}
 }
 
+func TestProjectTerminalCollapsesExactDuplicateLinesAndKeepsOriginal(t *testing.T) {
+	raw := "UNIQUE_START\n" + strings.Repeat("compiler waiting\n", 200) + "UNIQUE_END"
+	root := t.TempDir()
+	projection, err := Project(ProjectOptions{
+		ToolName:   "bash",
+		SessionKey: "owner",
+		Content:    raw,
+		Limit:      1024,
+		Root:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.Spilled || projection.Handle == nil {
+		t.Fatal("repetitive terminal output did not retain its original handle")
+	}
+	if !strings.Contains(projection.Preview, "199 identical lines omitted") ||
+		!strings.Contains(projection.Preview, "UNIQUE_START") ||
+		!strings.Contains(projection.Preview, "UNIQUE_END") {
+		t.Fatalf("lossless repetitive preview is incomplete:\n%s", projection.Preview)
+	}
+	stored, err := Read(ReadOptions{
+		ID:         projection.Handle.ID,
+		SessionKey: "owner",
+		Root:       root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Content != raw {
+		t.Fatal("read-back lost the original terminal output")
+	}
+}
+
 func TestStructuredPreview_TerminalTailHeavy(t *testing.T) {
 	raw := "HEAD" + strings.Repeat("x", 8000) + "TAIL_END"
 	p := StructuredPreview("bash", raw, 200)

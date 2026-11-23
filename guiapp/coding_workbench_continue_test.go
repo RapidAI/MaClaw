@@ -111,6 +111,23 @@ func TestCodingLoopUsageFields(t *testing.T) {
 	if cost <= 0 {
 		t.Fatalf("expected est cost > 0, got %v", cost)
 	}
+	_, _, _, lastPrompt, lastCompletion := codingLoopWindowUsage(agent.TurnUsage{InputTokens: 10, OutputTokens: 5})
+	if lastPrompt != 10 || lastCompletion != 5 {
+		t.Fatalf("single request last prompt=%d completion=%d", lastPrompt, lastCompletion)
+	}
+	_, _, _, lastPrompt, lastCompletion = codingLoopWindowUsage(agent.TurnUsage{
+		InputTokens: 30213603, OutputTokens: 199260, Requests: 1250,
+		LastPromptTokens: 24000, LastCompletionTokens: 180,
+	})
+	if lastPrompt != 24000 || lastCompletion != 180 {
+		t.Fatalf("multi-request last prompt=%d completion=%d", lastPrompt, lastCompletion)
+	}
+	_, _, _, _, lastCompletion = codingLoopWindowUsage(agent.TurnUsage{
+		InputTokens: 100, OutputTokens: 50, Requests: 4,
+	})
+	if lastCompletion != 0 {
+		t.Fatalf("multi-request output sum became 本轮 out: %d", lastCompletion)
+	}
 }
 
 func TestAccumulateStickyCodingUsage(t *testing.T) {
@@ -173,9 +190,10 @@ func TestCodingWorkbenchStatusContextTokensUsesLastPromptNotSessionSum(t *testin
 	if st.ContextUsedTokens != 257658 {
 		t.Fatalf("degenerate prompt replaced the fill: %d", st.ContextUsedTokens)
 	}
-	// Task end adds the lifetime sum and a later real prompt. The bar shows the
-	// prompt; the session chip keeps the sum. 262144*0.8 = 209715.
-	h.recordStickyCodingUsage(userID, 30213603, 24000, 199260, 199260, 0)
+	// Task end adds the lifetime sums and the last request. The bar shows the
+	// prompt; 本轮 out shows the last completion; the session chip keeps both
+	// sums. 262144*0.8 = 209715.
+	h.recordStickyCodingUsage(userID, 30213603, 24000, 199260, 180, 0)
 	st = (&App{}).codingWorkbenchStatusFromHandler(path, h)
 	if st.ContextUsedTokens != 24000 {
 		t.Fatalf("ContextUsedTokens=%d, want last prompt", st.ContextUsedTokens)
@@ -183,8 +201,17 @@ func TestCodingWorkbenchStatusContextTokensUsesLastPromptNotSessionSum(t *testin
 	if st.SessionInputTokens != 30213603 {
 		t.Fatalf("session=%d", st.SessionInputTokens)
 	}
+	if st.LastTurnOutputTokens != 180 || st.SessionOutputTokens != 199260 {
+		t.Fatalf("本轮 out=%d session out=%d", st.LastTurnOutputTokens, st.SessionOutputTokens)
+	}
 	if st.ContextMaxTokens != 209715 {
 		t.Fatalf("ContextMaxTokens=%d", st.ContextMaxTokens)
+	}
+	// A task-end report with no completion must not wipe the live 本轮 out.
+	h.recordStickyCodingUsage(userID, 10, 3000, 20, 0, 0)
+	st = (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.LastTurnOutputTokens != 180 || st.SessionOutputTokens != 199280 {
+		t.Fatalf("zero completion clobbered 本轮 out=%d session out=%d", st.LastTurnOutputTokens, st.SessionOutputTokens)
 	}
 }
 

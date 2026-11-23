@@ -435,7 +435,7 @@ func TestCheckpointConversationNoSavingsRemovesUnexposedHandle(t *testing.T) {
 		map[string]string{"role": "user", "content": strings.Repeat("a", 100)},
 		map[string]string{"role": "assistant", "content": strings.Repeat("b", 100)},
 		map[string]string{"role": "user", "content": strings.Repeat("c", 100)},
-		map[string]string{"role": "assistant", "content": strings.Repeat("d", 15000)},
+		map[string]string{"role": "assistant", "content": strings.Repeat("d", 20000)},
 	}
 	result := CheckpointConversation(conversation, ContextCheckpointOptions{
 		ContextLimit: 4000,
@@ -588,7 +588,7 @@ func TestCheckpointConversationKeepsFittingWindowInline(t *testing.T) {
 		Tools:        []map[string]interface{}{checkpointReaderTool()},
 		Root:         t.TempDir(),
 	})
-	if result.Applied || result.Reason != "protected_window" {
+	if result.Applied || (result.Reason != "protected_window" && result.Reason != "below_threshold") {
 		t.Fatalf("a window that fits the budget must stay inline, got %+v", result)
 	}
 }
@@ -608,7 +608,7 @@ func TestCheckpointConversationKeepsFittingManyGroupsInline(t *testing.T) {
 		KeepGroups:   4,
 		Root:         t.TempDir(),
 	})
-	if result.Applied || result.Reason != "protected_window" {
+	if result.Applied || (result.Reason != "protected_window" && result.Reason != "below_threshold") {
 		t.Fatalf("a transcript inside the budget must stay inline even with more groups than the keep window, got %+v", result)
 	}
 	if len(result.Conversation) != len(conversation) {

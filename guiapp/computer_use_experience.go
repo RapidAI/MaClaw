@@ -114,9 +114,9 @@ func computerUseRememberVisionSearch(window string) string {
 }
 
 // computerUseRememberFind records a find hit or miss. A hit always notes
-// that on-screen text was found. The search-box lesson is added only when
-// this text-mode round already focused, typed, and stayed under the
-// observe cap. Vision mode does not reach computer_find.
+// that on-screen text was found. The text-mode search-box lesson is added only
+// when this round already focused, typed, and stayed under the observe cap.
+// Vision mode records that lesson after focus and type, before the find hit.
 func computerUseRememberFind(title, windowHint string, hit bool) string {
 	app := computeruse.ExperienceAppID(title)
 	if app == "" {

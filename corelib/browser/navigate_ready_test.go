@@ -20,9 +20,9 @@ func TestLoginWallURL(t *testing.T) {
 }
 
 func TestNavReadyNote(t *testing.T) {
-	r := NavReadyReport{State: PageReadyState{URL: "https://zhuanlan.zhihu.com/write", ReadyState: "loading"}, Reloaded: true, Wall: "blank", Waited: 36 * time.Second}
+	r := NavReadyReport{State: PageReadyState{URL: "https://zhuanlan.zhihu.com/write", ReadyState: "loading"}, Wall: "blank", Waited: 36 * time.Second}
 	n := r.Note()
-	for _, want := range []string{"final URL: https://zhuanlan.zhihu.com/write", "reloaded once", LoginWallMarker, "take over"} {
+	for _, want := range []string{"final URL: https://zhuanlan.zhihu.com/write", LoginWallMarker, "take over"} {
 		if !strings.Contains(n, want) {
 			t.Fatalf("missing %q in %q", want, n)
 		}
@@ -44,6 +44,14 @@ func TestNavReadyNote(t *testing.T) {
 	}
 	if _, take := wallHandsPageOver("rate_limit"); take {
 		t.Fatal("a frequency refusal has nothing for the person to solve")
+	}
+	checking := NavReadyReport{State: PageReadyState{URL: "https://search.jd.com/Search", ReadyState: "complete", Wall: "checking", Challenge: "generic"}, Wall: "checking"}
+	if note := checking.Note(); !strings.Contains(note, "不要刷新") || !strings.Contains(note, "剩余的等待时间") {
+		t.Fatalf("checking note = %q", note)
+	}
+	cleared := NavReadyReport{State: PageReadyState{URL: "https://search.jd.com/Search", ReadyState: "complete", Interactive: 3}, Ready: true, ChallengeCleared: true}
+	if note := cleared.Note(); !strings.Contains(note, "没有发送刷新") {
+		t.Fatalf("cleared note = %q", note)
 	}
 	limited := NavReadyReport{State: PageReadyState{URL: "https://search.example/Search", ReadyState: "complete", Interactive: 85}, Wall: "rate_limit"}
 	limitNote := limited.Note()
@@ -317,7 +325,7 @@ func TestFrequencyRefusalStaysNarrow(t *testing.T) {
 	if _, submitErr = open.heldRepeatSubmit("submit"); submitErr == nil || !strings.Contains(submitErr.Error(), "probe the page") {
 		t.Fatalf("a normal repeat submit lost its guard: %v", submitErr)
 	}
-	if !reloadKey("F5") || !reloadKey("Ctrl+R") || reloadKey("Enter") || reloadKey("r") {
+	if !reloadKey("F5") || !reloadKey("Ctrl+R") || !reloadKey("Alt+Left") || !reloadKey("Alt+ArrowLeft") || !reloadKey("Alt+Right") || !reloadKey("Alt+ArrowRight") || reloadKey("Enter") || reloadKey("r") {
 		t.Fatal("reload key set is wrong")
 	}
 	if !strings.Contains(browserPageFlagsCollectJS, "frequency_notice") {

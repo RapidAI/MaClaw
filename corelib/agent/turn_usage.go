@@ -40,6 +40,10 @@ type TurnUsage struct {
 	// Add replaces it. It is not summed into InputTokens. The context-window
 	// meter reads this; InputTokens stays the lifetime sum.
 	LastPromptTokens int `json:"last_prompt_tokens,omitempty"`
+	// LastCompletionTokens is the output size of the latest LLM request.
+	// Add replaces it. It is not summed into OutputTokens. The 本轮 out line
+	// reads this; OutputTokens stays the lifetime sum.
+	LastCompletionTokens int `json:"last_completion_tokens,omitempty"`
 
 	// CreditsDeducted is the settled Maclaw official grant debit accumulated
 	// across the rounds in this usage. CreditsReported distinguishes a settled
@@ -72,6 +76,13 @@ func (u *TurnUsage) Add(other TurnUsage) {
 	}
 	if last > 0 {
 		u.LastPromptTokens = last
+	}
+	lastOut := other.LastCompletionTokens
+	if lastOut <= 0 && other.Requests <= 1 && other.OutputTokens > 0 {
+		lastOut = other.OutputTokens
+	}
+	if lastOut > 0 {
+		u.LastCompletionTokens = lastOut
 	}
 	if other.CreditsReported {
 		sum := other.CreditsDeducted
@@ -384,15 +395,16 @@ func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 		inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
 	)
 	usage := TurnUsage{
-		Model:            cfg.Model,
-		Provider:         cfg.ProviderName,
-		InputTokens:      in,
-		OutputTokens:     out,
-		CachedTokens:     u.CachedInputTokens,
-		CacheWriteTokens: u.CacheWriteTokens,
-		EstCostRMB:       totalCost,
-		Requests:         1,
-		LastPromptTokens: in,
+		Model:                cfg.Model,
+		Provider:             cfg.ProviderName,
+		InputTokens:          in,
+		OutputTokens:         out,
+		CachedTokens:         u.CachedInputTokens,
+		CacheWriteTokens:     u.CacheWriteTokens,
+		EstCostRMB:           totalCost,
+		Requests:             1,
+		LastPromptTokens:     in,
+		LastCompletionTokens: out,
 	}
 	if u.CreditsDeducted != nil {
 		usage.CreditsDeducted = roundDeductedCredits(*u.CreditsDeducted)

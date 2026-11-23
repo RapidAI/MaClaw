@@ -37,10 +37,15 @@ type Session struct {
 	client *CDPClient
 	addr   string // e.g. "http://127.0.0.1:9222"
 
-	activeTabID   string
-	activeFrameID string
-	recentNetwork []string
-	recentErrors  []string
+	activeTabID         string
+	activeFrameID       string
+	recentNetwork       []string
+	recentErrors        []string
+	challenge           *documentChallenge
+	mainFrameID         string
+	documentStatusURL   string
+	documentStatusCode  int
+	documentStatusFrame string
 	// stayOnCurrentPage keeps navigation on the tab the person is looking at.
 	// The cloud desktop's website login lives in that tab.
 	stayOnCurrentPage bool

@@ -31,7 +31,7 @@ Page actions:
 - hover, press, dialog: open menus, send keys, accept/dismiss JS alerts
 - select, scroll, back, refresh, set_files (select/scroll/set_files accept ref)
 - extract, wait
-- Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog. Required on a lone submit/publish click or navigate. Not required when that submit is the last task_run step; the batch stops and returns the page. Links/tabs do not need expect. If page flags include captcha_widget, or the page is a QR sign-in or a passkey, call request_takeover and probe after the person finishes.
+- Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog. Required on a lone submit/publish click or navigate. Not required when that submit is the last task_run step; the batch stops and returns the page. Links/tabs do not need expect. A browser_challenge checking state forbids navigate/refresh/click; probe reuses the current document's wait. If page flags include captcha_widget, or the page is a QR sign-in or a passkey, call request_takeover and probe after the person finishes.
 - submit_secret: password, otp, or authenticator. Pass method and ref from probe. submission is fill, enter, or click; click also needs submit_ref. Never pass the secret. The person types it on the preview card.
 - request_takeover: captcha, qr, passkey, or a step the person must do on the page. reason is optional.
 

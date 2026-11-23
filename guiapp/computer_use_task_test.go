@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
@@ -189,8 +190,8 @@ func TestComputerUseProbeDigestSamplesHugeElementAndKeepsLater(t *testing.T) {
 func TestComputerUseDoneEmptyAcceptanceMatchesToday(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	resetComputerUseSessionForTest(t)
-	markComputerUseSessionActive()
 	setComputerUseOwner("sk-empty")
+	markComputerUseSessionActive()
 	beginComputerUseTask("sk-empty", "req-1", "看看屏幕", nil)
 
 	got := cuHandleDone("all good")
@@ -314,8 +315,8 @@ func TestTerminalDoneKeepsAFailedAudit(t *testing.T) {
 	t.Run("audit already satisfied", func(t *testing.T) {
 		resetComputerUseRuntimeForTest(t)
 		resetComputerUseSessionForTest(t)
-		markComputerUseSessionActive()
 		setComputerUseOwner("sk-met")
+		markComputerUseSessionActive()
 		beginComputerUseTask("sk-met", "req-1", "保存文档", []string{"已保存"})
 		seedComputerUseObserve(t, "文件已保存", "")
 		sess := cuSession()
@@ -414,8 +415,8 @@ func TestComputerUseDoneRetryAfterReject(t *testing.T) {
 func TestComputerUseDonePassesWhenCorpusMatches(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	resetComputerUseSessionForTest(t)
-	markComputerUseSessionActive()
 	setComputerUseOwner("sk-pass")
+	markComputerUseSessionActive()
 	beginComputerUseTask("sk-pass", "req-1", "保存文档", []string{"已保存"})
 	seedComputerUseObserve(t, "文件已保存", "")
 
@@ -1100,6 +1101,134 @@ func TestFinishedLoopLeavesAnotherOwnersSession(t *testing.T) {
 	}
 }
 
+func TestComputerDoneLeavesAnotherOwnersSession(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("owner-b")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(77)
+	setComputerUseOwner("owner-a")
+	beginComputerUseTask("owner-a", "req-a", "给蓝信中的马勇发一条消息", nil)
+	actions := computerUseControlActions(t)
+	text, ok := cuDoneResult("1. 已发出给马勇\n2. 无\n3. 无\n文件：无")
+	if !ok || !strings.HasPrefix(text, "computer_done:") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	if !computerUseSessionActive() || computerUseHaloTarget() != 77 {
+		t.Fatalf("active=%v halo=%d", computerUseSessionActive(), computerUseHaloTarget())
+	}
+	globalComputerUse.mu.Lock()
+	held := globalComputerUse.activatedOwner
+	globalComputerUse.mu.Unlock()
+	if held != "owner-b" {
+		t.Fatalf("owner=%s", held)
+	}
+	if len(*actions) != 0 {
+		t.Fatalf("control=%v", *actions)
+	}
+
+	setComputerUseOwner("owner-a")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	text, ok = cuDoneResult("再次完成")
+	if !ok || !strings.HasPrefix(text, "computer_done:") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	if computerUseSessionActive() || computerUseHaloTarget() != 0 {
+		t.Fatalf("active=%v halo=%d", computerUseSessionActive(), computerUseHaloTarget())
+	}
+	if len(*actions) != 1 || (*actions)[0] != "done" {
+		t.Fatalf("control=%v", *actions)
+	}
+}
+
+func TestComputerUseCallOwnerSurvivesGlobalSteal(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	loop, _ := openDrivingComputerUse(t, "owner-a", "给蓝信中的马勇发一条消息")
+	callWithComputerUseOwner("owner-a", func() {
+		setComputerUseOwner("owner-b")
+		if computerUseOwnerKey() != "owner-b" {
+			t.Fatalf("global=%s", computerUseOwnerKey())
+		}
+		if computerUseCallOwner() != "owner-a" {
+			t.Fatalf("call=%s", computerUseCallOwner())
+		}
+		markComputerUseSessionActive()
+		noteComputerUseOperatedWindow(77)
+	})
+	globalComputerUse.mu.Lock()
+	held := globalComputerUse.activatedOwner
+	globalComputerUse.mu.Unlock()
+	if held != "owner-a" || !computerUseSessionActive() || computerUseHaloTarget() != 77 {
+		t.Fatalf("owner=%s active=%v halo=%d", held, computerUseSessionActive(), computerUseHaloTarget())
+	}
+
+	setComputerUseOwner("owner-b")
+	beginComputerUseTask("owner-b", "req-b", "另一件事", nil)
+	actions := computerUseControlActions(t)
+	text, ok := cuDoneResult("1. 已发出给别人\n2. 无\n3. 无\n文件：无")
+	if !ok || !strings.HasPrefix(text, "computer_done:") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	globalComputerUse.mu.Lock()
+	held = globalComputerUse.activatedOwner
+	globalComputerUse.mu.Unlock()
+	if held != "owner-a" || !computerUseSessionActive() || computerUseHaloTarget() != 77 || len(*actions) != 0 {
+		t.Fatalf("owner=%s active=%v halo=%d control=%v", held, computerUseSessionActive(), computerUseHaloTarget(), *actions)
+	}
+
+	setComputerUseOwner("owner-b")
+	callWithComputerUseOwner("owner-a", func() {
+		text, ok = cuDoneResult("1. 已发出给马勇\n2. 无\n3. 无\n文件：无")
+	})
+	if !ok || !strings.HasPrefix(text, "computer_done:") {
+		t.Fatalf("ok=%v text=%q", ok, text)
+	}
+	if computerUseSessionActive() || computerUseHaloTarget() != 0 || len(*actions) != 1 || (*actions)[0] != "done" {
+		t.Fatalf("active=%v halo=%d control=%v", computerUseSessionActive(), computerUseHaloTarget(), *actions)
+	}
+
+	callWithComputerUseOwner("owner-a", func() {
+		setComputerUseOwner("owner-b")
+		markComputerUseSessionActive()
+		noteComputerUseOperatedWindow(81)
+	})
+	setComputerUseOwner("owner-b")
+	retireFinishedComputerUseAttempt(loop, "owner-a")
+	if computerUseSessionActive() || computerUseHaloTarget() != 0 || len(*actions) != 2 || (*actions)[1] != "done" {
+		t.Fatalf("active=%v halo=%d control=%v", computerUseSessionActive(), computerUseHaloTarget(), *actions)
+	}
+
+	left := make(chan string, 1)
+	right := make(chan string, 1)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		callWithComputerUseOwner("owner-a", func() {
+			<-start
+			left <- computerUseCallOwner()
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		callWithComputerUseOwner("owner-b", func() {
+			<-start
+			right <- computerUseCallOwner()
+		})
+	}()
+	close(start)
+	wg.Wait()
+	if got := <-left; got != "owner-a" {
+		t.Fatalf("left=%s", got)
+	}
+	if got := <-right; got != "owner-b" {
+		t.Fatalf("right=%s", got)
+	}
+}
+
 func TestRejectedComputerDoneStillAllowsObserve(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	resetComputerUseSessionForTest(t)
@@ -1690,7 +1819,7 @@ func TestDesktopMessageSubmitStopsFurtherActions(t *testing.T) {
 
 	typed := cuHandleType(map[string]interface{}{"text": "码卡龙可以顺利发送消息给蓝信用户了。"})
 	newline := cuHandleKey(map[string]interface{}{"keys": "shift+enter"})
-	if in.types != 2 || in.keys != 2 || strings.Contains(typed, "already submitted") || strings.Contains(newline, "already submitted") {
+	if in.types != 2 || in.keys != 2 || !strings.Contains(typed, "press Enter once") || strings.Contains(typed, "already submitted") || strings.Contains(newline, "already submitted") {
 		t.Fatalf("types=%d keys=%d typed=%s newline=%s", in.types, in.keys, typed, newline)
 	}
 	sent := cuHandleKey(map[string]interface{}{"keys": "return"})
@@ -1709,5 +1838,93 @@ func TestDesktopMessageSubmitStopsFurtherActions(t *testing.T) {
 	done := cuHandleDone("已发给王占一")
 	if !strings.HasPrefix(done, "computer_done:") {
 		t.Fatalf("done=%s", done)
+	}
+}
+
+func TestDesktopMessageSpeechSubmitHidesOnlyOwnHalo(t *testing.T) {
+	const goal = "给终端安全的马勇发消息，选读它码卡龙现在很擅长给蓝信中的用户发消息了。"
+	const body = "码卡龙现在很擅长给蓝信中的用户发消息了。"
+	if got := desktopMessagePayload(goal); got != body {
+		t.Fatalf("payload=%q", got)
+	}
+
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("speech-owner")
+	beginComputerUseTask("speech-owner", "req-speech", goal, nil)
+	if !noteDesktopMessageTyped(body) {
+		t.Fatal("speech-transcribed body did not latch as typed")
+	}
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	if !noteDesktopMessageSubmitted("enter") {
+		t.Fatal("enter did not latch the send")
+	}
+	if computerUseHaloTarget() != 0 || !computerUseSessionActive() {
+		t.Fatalf("halo=%d active=%v", computerUseHaloTarget(), computerUseSessionActive())
+	}
+
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner("speech-owner")
+	beginComputerUseTask("speech-owner", "req-speech-2", goal, nil)
+	noteDesktopMessageTyped(body)
+	setComputerUseOwner("other-owner")
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(77)
+	setComputerUseOwner("speech-owner")
+	if !noteDesktopMessageSubmitted("enter") || computerUseHaloTarget() != 77 {
+		t.Fatalf("another owner's halo=%d", computerUseHaloTarget())
+	}
+}
+
+func TestDesktopMessageSendClickLatchesAndHidesHalo(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "发送", BBox: [4]int{100, 40, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	in := installCountingComputerUse(t, sess)
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseForegroundIDFn = func() uint64 { return 42 }
+	computerUseWindowAtPointFn = func(int, int) (uint64, string) { return 42, "蓝信" }
+	computerUsePolicyWindowHook = func(int, int) string { return "蓝信" }
+	setComputerUseOwner(computerUseDefaultOwner)
+	beginComputerUseTask(computerUseDefaultOwner, "req-click", "给蓝信中的马勇发消息，告诉它，测试发送。", nil)
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "发送", BBox: [4]int{100, 40, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	if !noteDesktopMessageTyped("测试发送。") {
+		t.Fatal("body did not latch as typed")
+	}
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	for _, name := range []string{"联系人", "发送文件", "消息里提到发送"} {
+		if noteDesktopMessageClickSubmitted(name) {
+			t.Fatalf("non-Send label %q latched", name)
+		}
+	}
+
+	right := cuHandleClick(map[string]interface{}{"ref": "e0", "button": "right"})
+	if in.clicks != 1 || strings.Contains(right, "already submitted") || computerUseHaloTarget() != 42 {
+		t.Fatalf("right clicks=%d halo=%d msg=%s", in.clicks, computerUseHaloTarget(), right)
+	}
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "发送", BBox: [4]int{100, 40, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	double := cuHandleClick(map[string]interface{}{"ref": "e0", "count": 2})
+	if in.clicks != 2 || strings.Contains(double, "already submitted") || computerUseHaloTarget() != 42 {
+		t.Fatalf("double clicks=%d halo=%d msg=%s", in.clicks, computerUseHaloTarget(), double)
+	}
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "发送", BBox: [4]int{100, 40, 40, 20}, Source: "yolo"},
+	}, nil, "")
+
+	msg := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 3 || !strings.Contains(msg, "already submitted") || computerUseHaloTarget() != 0 {
+		t.Fatalf("clicks=%d halo=%d msg=%s", in.clicks, computerUseHaloTarget(), msg)
+	}
+	again := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 3 || !strings.Contains(again, "already submitted") {
+		t.Fatalf("clicks=%d msg=%s", in.clicks, again)
 	}
 }

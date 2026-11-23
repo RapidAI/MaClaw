@@ -310,7 +310,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			contextTokens = h.getMaclawLLMConfig().EffectiveContextTokens()
 		}
 		recallCtx := withCodingKnowledgeRecallContext(execCtx, opts.Context)
-		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withMailboxOwner(withTrustedAuditPrincipal(recallCtx, opts.UserID), opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
+		callWithComputerUseOwner(computerUseOwnerFromLoop(opts.Context, opts.UserID), func() {
+			result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withMailboxOwner(withTrustedAuditPrincipal(recallCtx, opts.UserID), opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
+		})
 	}
 	h.noteMainAgentCodingToolResult(opts.Context, toolGeneration, tc.Function.Name, tc.Function.Arguments, result)
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)

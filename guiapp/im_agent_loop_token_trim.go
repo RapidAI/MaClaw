@@ -67,13 +67,16 @@ func firstRequestCompactionLimit(effectiveLimit, beforeTokens int, conversation 
 	return firstAgentLoopRequestTokenLimit(effectiveLimit, conversation, tools), true
 }
 
-func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []interface{}, lastInputTokens int, lastOutputTokens int) (int, int) {
+func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []interface{}, toolsTokens, lastInputTokens int, lastOutputTokens int) (int, int) {
 	effectiveTokenLimit := cfg.EffectiveContextTokens()
 	estimated := 0
 	if lastInputTokens <= 0 {
 		return effectiveTokenLimit, estimated
 	}
-	estimated = estimateConversationTokens(conversation)
+	// Provider input usage includes the rendered tool definitions. Compare it
+	// with the same complete surface instead of charging those definitions once
+	// in this ratio and again when compaction subtracts toolsTokens.
+	estimated = estimateConversationTokens(conversation) + toolsTokens
 	if estimated > 0 {
 		ratio := float64(lastInputTokens) / float64(estimated)
 		if ratio > 1.15 {

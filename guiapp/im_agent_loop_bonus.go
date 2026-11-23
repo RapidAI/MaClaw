@@ -283,5 +283,9 @@ func (h *IMMessageHandler) executeBonusRoundToolWithConfig(tc llm.ToolCall, onPr
 		execCtx, cancel = ctx.Context()
 		defer cancel()
 	}
-	return h.executeToolDetailedWithRuntimeContextAndContextTokens(withMailboxOwner(withTrustedAuditPrincipal(execCtx, userID), userID), policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), cfg.EffectiveContextTokens(), tc.Function.Name, tc.Function.Arguments, "", onProgress)
+	var result toolExecutionResult
+	callWithComputerUseOwner(computerUseOwnerFromLoop(ctx, userID), func() {
+		result = h.executeToolDetailedWithRuntimeContextAndContextTokens(withMailboxOwner(withTrustedAuditPrincipal(execCtx, userID), userID), policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), cfg.EffectiveContextTokens(), tc.Function.Name, tc.Function.Arguments, "", onProgress)
+	})
+	return result
 }

@@ -245,7 +245,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	// Keep the run state's effective limit derived from the provider and prior
 	// usage. The first-request cap below is only a one-shot compaction target;
 	// storing it here would accidentally constrain every later tool round.
-	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
+	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, toolsTokenBudget, opts.LastInputTokens, opts.LastOutputTokens)
 	compactionTokenLimit := effectiveTokenLimit
 	if opts.FirstRequest {
 		// Same guard as the shared loop: the latency budget only applies to a

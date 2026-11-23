@@ -185,7 +185,7 @@ func NewCompressor(store *Store, llm LLMChatCaller, emitter corelib.EventEmitter
 	}
 }
 
-// SetLLM rewires the LLM used by compression and semantic merge passes.
+// SetLLM rewires the LLM used to build compact prompt projections.
 func (mc *Compressor) SetLLM(llm LLMChatCaller) {
 	mc.mu.Lock()
 	mc.llm = llm
@@ -213,7 +213,9 @@ func (mc *Compressor) SetGCThreshold(n int) {
 	mc.gcThreshold = n
 }
 
-// Compress performs dedup then LLM compression on long entries.
+// Compress performs exact dedup and builds compact prompt projections.
+// Canonical Content is never rewritten: repeated lossy compression would make
+// facts decay on every maintenance cycle and could not be recovered by recall.
 func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 	if mc.store == nil {
 		return nil, fmt.Errorf("memory store is nil")
@@ -249,21 +251,10 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 	}
 
 	if mc.llm != nil && mc.llm.IsConfigured() {
-		merged, mergeErr := mc.mergeSemanticDuplicates(ctx)
-		result.MergedCount = merged
-		if mergeErr != nil {
-			result.ErrorCount++
-			if errors.Is(mergeErr, context.Canceled) || errors.Is(mergeErr, context.DeadlineExceeded) {
-				return result, mergeErr
-			}
-		}
-	}
-
-	if mc.llm != nil && mc.llm.IsConfigured() {
 		mc.store.mu.RLock()
 		var candidates []Entry
 		for _, e := range mc.store.entries {
-			if !e.IsActive() || e.Category.IsProtected() || e.Pinned {
+			if !e.IsActive() || e.Category.IsProtected() || e.Pinned || e.CompactForm != "" {
 				continue
 			}
 			if len([]rune(e.Content)) >= mc.minContentLen {
@@ -279,22 +270,18 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 			default:
 			}
 
-			compressed, err := mc.compressEntry(ctx, entry)
+			compact, err := mc.compactOneEntry(ctx, entry.Content, entry.Category)
 			if err != nil {
 				result.ErrorCount++
 				continue
 			}
-			if compressed == "" || len([]rune(compressed)) >= len([]rune(entry.Content)) {
+			if compact == "" || len([]rune(compact)) >= len([]rune(entry.Content)) {
 				result.SkippedCount++
 				continue
 			}
 
 			updated := entry
-			updated.Content = compressed
-			updated.CompactForm = ""
-			updated.Embedding = nil
-			updated.InvalidAt = nil
-			updated.Stale = false
+			updated.CompactForm = compact
 			applied, err := mc.store.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated}, nil, entryExpectations([]Entry{entry}))
 			if err != nil {
 				result.ErrorCount++
@@ -304,9 +291,8 @@ func (mc *Compressor) Compress(ctx context.Context) (*CompressResult, error) {
 				result.SkippedCount++
 				continue
 			}
-			mc.store.scheduleStoredEntryEmbedding(entry.ID)
 			result.CompressedCount++
-			result.SavedChars += len([]rune(entry.Content)) - len([]rune(compressed))
+			result.SavedChars += len([]rune(entry.Content)) - len([]rune(compact))
 		}
 	}
 
@@ -930,45 +916,6 @@ func (mc *Compressor) recordRun(result *CompressResult, err error) {
 	if err != nil {
 		mc.lastError = err.Error()
 	}
-}
-
-// ---------------------------------------------------------------------------
-// LLM compression helpers
-// ---------------------------------------------------------------------------
-
-func (mc *Compressor) compressEntry(ctx context.Context, entry Entry) (string, error) {
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	default:
-	}
-
-	systemPrompt := `You are a memory compression assistant. Your task is to compress the given memory content into a much shorter version while preserving ALL key facts, decisions, and actionable information. Rules:
-- Keep the compressed version under 50% of the original length
-- Preserve names, numbers, paths, commands, and technical terms exactly
-- Remove filler words, redundant explanations, and verbose descriptions
-- Use concise bullet points or short sentences
-- Do NOT add any commentary — return ONLY the compressed content`
-
-	userPrompt := fmt.Sprintf("Category: %s\nTags: %s\n\nOriginal content to compress:\n%s",
-		entry.Category, strings.Join(entry.Tags, ", "), entry.Content)
-	if protection := mc.experienceProtectionPrompt(); protection != "" {
-		userPrompt = protection + "\n\n" + userPrompt
-	}
-	if hint := CompressionProtectionHint(entry); hint != "" {
-		userPrompt = fmt.Sprintf("Protection hint: %s\n\n%s", hint, userPrompt)
-	}
-
-	messages := []map[string]string{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": userPrompt},
-	}
-
-	result, err := chatCallWithContext(ctx, mc.llm, messages)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(result), nil
 }
 
 func (mc *Compressor) entryCount() int {

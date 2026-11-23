@@ -459,6 +459,7 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 	if sess == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	challengeNote := sess.waitForChallengeSnapshot()
 
 	script := browserObserveScript
 	if probe {
@@ -558,6 +559,9 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 	}
 	s.addSnapshot(snapshot)
 	display := formatObserveDisplay(snapshot)
+	if challengeNote != "" {
+		display += "\n" + challengeNote
+	}
 	extra := s.noteFrequencyRefusalLocked(snapshot)
 	if extra != "" {
 		display += "\n" + extra
@@ -576,6 +580,7 @@ func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText
 		Display:       display,
 		Data:          data,
 		frequencyHold: extra,
+		challengeNote: challengeNote,
 	}
 	s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "observe", Summary: display, CreatedAt: now}, browserAgentConsoleLimit)
 	s.activityLog = appendCapped(s.activityLog, display, browserAgentConsoleLimit)

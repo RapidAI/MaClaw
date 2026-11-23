@@ -4031,7 +4031,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	}
 	var lastCodingResult *CodingSubAgentResult
 	totalToolCalls, totalIters := 0, 0
-	totalInTok, totalOutTok, lastInTok := 0, 0, 0
+	totalInTok, totalOutTok, lastInTok, lastOutTok := 0, 0, 0, 0
 	totalCost := 0.0
 	var usageMu sync.Mutex
 	var mergeMu sync.Mutex // serialize worktree cherry-picks into main tree
@@ -4249,6 +4249,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			totalCost += v1Result.EstCostRMB
 			if v1Result.LastPromptTokens > 0 {
 				lastInTok = v1Result.LastPromptTokens
+			}
+			if v1Result.LastCompletionTokens > 0 {
+				lastOutTok = v1Result.LastCompletionTokens
 			}
 			if v1Result.RouteModel != "" || v1Result.RouteSource != "" {
 				h.recordStickyCodingRoute(userID, v1Result.RouteModel, v1Result.RouteSource, v1Result.RouteTask, v1Result.RouteReason)
@@ -4519,7 +4522,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			}
 		})
 	}
-	h.recordStickyCodingUsage(userID, totalInTok, lastInTok, totalOutTok, totalOutTok, totalCost)
+	h.recordStickyCodingUsage(userID, totalInTok, lastInTok, totalOutTok, lastOutTok, totalCost)
 	if postTurn := runCodingWorkbenchHookPhase(parallelTurn.shellDir(sessionProject), hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
@@ -4996,7 +4999,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	var result *RemoteCodingSubAgentResult
 	var turnFilesModified, turnFilesCreated []string
 	totalTools, totalIters := 0, 0
-	totalInTok, totalOutTok, lastInTok := 0, 0, 0
+	totalInTok, totalOutTok, lastInTok, lastOutTok := 0, 0, 0, 0
 	totalCost := 0.0
 	var runResults []v2.TaskRunResult
 	for i, step := range tasks {
@@ -5111,6 +5114,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			if stepResult.LastPromptTokens > 0 {
 				lastInTok = stepResult.LastPromptTokens
 			}
+			if stepResult.LastCompletionTokens > 0 {
+				lastOutTok = stepResult.LastCompletionTokens
+			}
 			if stepResult.RouteModel != "" || stepResult.RouteSource != "" {
 				h.recordStickyCodingRoute(userID, stepResult.RouteModel, stepResult.RouteSource, stepResult.RouteTask, stepResult.RouteReason)
 			}
@@ -5216,7 +5222,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if remoteCodingTurnNeedsInterrupt(loopCtx != nil && loopCtx.IsCancelled(), result) {
 		h.interruptOpenCodingSteps(userID)
 	}
-	h.recordStickyCodingUsage(userID, totalInTok, lastInTok, totalOutTok, totalOutTok, totalCost)
+	h.recordStickyCodingUsage(userID, totalInTok, lastInTok, totalOutTok, lastOutTok, totalCost)
 	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}

@@ -1425,6 +1425,18 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 				s.recentNetworkEntries = appendCappedNetworkEntries(s.recentNetworkEntries, BrowserNetworkEvent{RequestID: payload.RequestID, Method: payload.Request.Method, URL: payload.Request.URL, Kind: "request", CreatedAt: now}, browserAgentNetworkLimit)
 			}
 		}
+	case "Network.responseReceived":
+		var payload struct {
+			Type     string `json:"type"`
+			FrameID  string `json:"frameId"`
+			Response struct {
+				URL    string `json:"url"`
+				Status int    `json:"status"`
+			} `json:"response"`
+		}
+		if json.Unmarshal(evt.Params, &payload) == nil && payload.Type == "Document" && s.session != nil {
+			s.session.noteDocumentResponse(payload.FrameID, payload.Response.URL, payload.Response.Status)
+		}
 	case "Network.loadingFinished", "Network.loadingFailed":
 		var payload struct {
 			RequestID string `json:"requestId"`
@@ -1470,12 +1482,14 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		// not reset the top document, and each one would repeat the command.
 		var frame struct {
 			Frame struct {
+				ID       string `json:"id"`
 				ParentID string `json:"parentId"`
 			} `json:"frame"`
 		}
 		if json.Unmarshal(evt.Params, &frame) != nil || frame.Frame.ParentID != "" || s.session == nil {
 			break
 		}
+		s.session.noteMainFrame(frame.Frame.ID)
 		if client := sessionClient(s.session); client != nil {
 			go emulatePageFocus(client, "")
 		}

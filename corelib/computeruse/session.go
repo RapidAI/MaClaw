@@ -1014,6 +1014,7 @@ func PlaybookBeforePerception() string {
 - Pass window (an app title substring) to computer_observe or computer_focus to bring one app forward. If omitted, the foreground window is used. Do not pass screen_index=-1. A stitch larger than 8 megapixels is refused and the foreground window is captured instead.
 - To find a person, button, or text, call computer_find query=... It searches labels and OCR and returns clickable eN refs.
 - In an IM app or a long list, use that app's search box: focus the window, click the search field, computer_type the name, then computer_find the result. Otherwise computer_scroll. The scroll result includes a fresh foreground-window crop.
+- For one requested IM message: focus the app once, search the exact recipient, open the matching row, click the message input, type the exact body once, press Enter once, then call computer_done. Do not use shell/PowerShell, repeat focus, retype the body, or click Send after Enter.
 - A successful click, type, key, scroll, focus, select, drag, or wait already includes a fresh foreground-window crop of the window just operated, and a screenshot when this model can see images. Use that result. Call computer_observe only to switch windows, or when the result says the refresh failed.
 - Use computer_key for shortcuts such as enter, ctrl+c, and alt+tab. Use computer_select for a list or tab item, and computer_scroll_into_view before clicking something off screen.
 - Web pages use the browser tools. Office documents use office_read. Computer Use is for native desktop windows.
@@ -1031,7 +1032,8 @@ func PlaybookFor(mode ObserveMode) string {
 - A successful click, type, key, scroll, focus, select, drag, or wait already includes a fresh foreground-window crop of the window just operated and a new screenshot. Use that image. Call computer_observe only to switch windows, or when the result says the refresh failed.
 - Do not pass screen_index=-1. A stitch larger than 8 megapixels is refused. Pass window=<app title> to observe one app.
 - Use computer_focus with a window title substring before interacting with a specific app.
-- To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name). The type result includes the next screenshot.
+- To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name), then computer_find the result. Prefer the returned ref=eN over estimating x,y. The type result includes the next screenshot.
+- For one requested IM message: focus the app once, search the exact recipient, open the matching row, click the message input, type the exact body once, press Enter once, then call computer_done. Do not use shell/PowerShell, repeat focus, retype the body, or click Send after Enter.
 - Prefer computer_key for shortcuts (enter, ctrl+c, alt+tab). Use computer_select for list/tab items and computer_scroll_into_view before clicking off-screen chrome.
 - Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.
 - Do not computer_click a pay or place-order control, and do not press Enter or Space to activate one. Web checkout uses browser confirm_order, then one browser click after the person confirms. The person clicks a desktop pay button.

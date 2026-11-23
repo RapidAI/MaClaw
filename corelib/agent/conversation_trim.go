@@ -35,10 +35,8 @@ func EstimateConversationEntryTokens(entries []ConversationEntry) int {
 }
 
 // EstimateConversationTokens estimates the token count for a raw conversation
-// slice ([]interface{}) used inside the agent loop.
-// For Chinese-heavy content the JSON byte length underestimates token count
-// because CJK characters are 3 bytes in UTF-8 but typically 1-2 tokens.
-// We use len/3 instead of len/4 to be more conservative.
+// slice ([]interface{}) used inside the agent loop with the shared CJK-aware
+// text estimator.
 //
 // For multimodal messages (content is []interface{} with image_url blocks),
 // base64 image data is excluded from the estimate since it doesn't consume
@@ -102,14 +100,11 @@ func EstimateTextTokens(text string) int {
 	return corelib.EstimateTextTokens(text)
 }
 
-// EstimateBytesToTokens converts JSON bytes to an approximate token count.
-// For JSON data, we use a byte-based heuristic rather than character-based
-// because JSON structural overhead ({, ", :, etc.) is all ASCII bytes that
-// don't represent actual content tokens. The blended ratio of ~2.5 bytes/token
-// accounts for mixed CJK (3 bytes/char, ~1.5 tokens) and ASCII (1 byte/char,
-// ~0.25 tokens) content within JSON envelopes.
+// EstimateBytesToTokens uses the shared CJK-aware estimator for JSON payloads.
+// A byte-only ratio counts every non-ASCII rune as several ASCII characters and
+// makes identical text trigger compaction at different sizes after JSON encoding.
 func EstimateBytesToTokens(data []byte) int {
-	return (len(data)*10 + 24) / 25 // equivalent to len/2.5, rounded up
+	return corelib.EstimateTextTokens(string(data))
 }
 
 // defaultContextTokens is re-exported from corelib for local use.
@@ -1021,7 +1016,8 @@ func DocumentReadToolResultLimit(contextTokens int) int {
 		return DocumentReadMaxToolResult
 	}
 	// Reserve about one quarter of the usable input window for one document
-	// page. EstimateBytesToTokens uses 2.5 bytes/token, hence /8 * 5 bytes.
+	// page. Keep the historical byte cap while token estimation is calibrated
+	// independently from provider usage.
 	bytes := contextTokens * 5 / 8
 	if bytes < minBytes {
 		return minBytes

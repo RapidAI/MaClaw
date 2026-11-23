@@ -28,7 +28,7 @@ func handoffChatLimit(t *testing.T, conversation []interface{}) (int, int) {
 		Root:         t.TempDir(),
 	})
 	before := probe.BeforeTokens
-	if before < 2000 {
+	if before < 1000 {
 		t.Fatalf("fixture too small: %d tokens", before)
 	}
 	// before is above 40% and below 50% of this limit.
@@ -38,7 +38,7 @@ func handoffChatLimit(t *testing.T, conversation []interface{}) (int, int) {
 func TestCheckpointAllSummarizesOnceAfterThreshold(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
 	calls := 0
-	conversation := handoffChatFixture(8, 500)
+	conversation := handoffChatFixture(8, 800)
 	conversation[11] = map[string]string{"role": "user", "content": "ship the report"}
 	opts := ContextCheckpointOptions{
 		ContextLimit: 6000,
@@ -83,7 +83,7 @@ func TestCheckpointAllSummarizesOnceAfterThreshold(t *testing.T) {
 
 func TestCheckpointAllSummaryKeepsPriorMeasurement(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
-	conversation := handoffChatFixture(8, 500)
+	conversation := handoffChatFixture(8, 800)
 	conversation[1] = map[string]string{"role": "user", "content": longRecoveryHandoff()}
 	task := strings.Repeat("约束", 2000)
 	progress := strings.Repeat("噪声", 200)
@@ -115,7 +115,7 @@ func TestCheckpointAllSummaryKeepsPriorMeasurement(t *testing.T) {
 func TestCheckpointFlagOffIgnoresMemoSummarizer(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	calls := 0
-	result := CheckpointConversation(handoffChatFixture(8, 500), ContextCheckpointOptions{
+	result := CheckpointConversation(handoffChatFixture(8, 800), ContextCheckpointOptions{
 		ContextLimit: 4000,
 		KeepGroups:   6,
 		Tools:        []map[string]interface{}{tooldef.BuildToolDef("read_tool_result", "read", map[string]interface{}{"type": "object"})},
@@ -284,7 +284,7 @@ func TestCheckpointAllPendingAskUnchanged(t *testing.T) {
 
 func TestCheckpointAllSecondPassReplacesMemo(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
-	conversation := handoffChatFixture(8, 500)
+	conversation := handoffChatFixture(8, 800)
 	opts := ContextCheckpointOptions{
 		ContextLimit: 6000,
 		SessionKey:   "owner-replace",

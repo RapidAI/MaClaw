@@ -26,7 +26,7 @@ type computerUseTaskState struct {
 	FailedDone int
 	// MessageBody is the text a desktop IM send asked to deliver.
 	// MessageTyped is set once a successful computer_type has covered it.
-	// MessageSubmitted is set by the next Enter. Further desktop actions stop.
+	// MessageSubmitted is set by the next Enter or Send click. Further desktop actions stop.
 	MessageBody      string
 	MessageTyped     bool
 	MessageSubmitted bool
@@ -139,19 +139,8 @@ func retireFinishedComputerUseAttempt(loopCtx *LoopContext, fallbackUserID strin
 		return
 	}
 	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
-	globalComputerUse.mu.Lock()
-	if !globalComputerUse.activated || globalComputerUse.activatedOwner != owner {
-		globalComputerUse.mu.Unlock()
-		return
-	}
-	epoch := globalComputerUse.frameEpoch
-	changed := clearComputerUseStickyLocked()
-	globalComputerUse.mu.Unlock()
-	if !changed || !dropComputerUseOperatedFrameIfEpoch(epoch) {
-		return
-	}
-	notifyComputerUseTrayIf(true)
-	if !computerUseClearedEpochCurrent(epoch) {
+	epoch, released := releaseComputerUseSessionForOwner(owner)
+	if !released {
 		return
 	}
 	steps := 0
@@ -205,13 +194,13 @@ func computerUseFinishedReply(loopCtx *LoopContext, fallbackUserID, modelText st
 const computerUseCompletedStopText = "the desktop task already finished. Do not click, type, focus, observe, or press keys."
 
 // computerUseCompletedToolRefusal blocks every tool after a successful
-// computer_done except computer_done itself. The owner is the live computer-use
-// owner, the same key the send latch uses.
+// computer_done except computer_done itself. The owner is the tool call's
+// attempt, the same key the send latch uses.
 func computerUseCompletedToolRefusal(tool string) string {
 	if tool == "computer_done" {
 		return ""
 	}
-	if !computerUseTaskCompleted(computerUseOwnerKey()) {
+	if !computerUseTaskCompleted(computerUseCallOwner()) {
 		return ""
 	}
 	return tool + ": " + computerUseCompletedStopText
@@ -279,9 +268,10 @@ func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 }
 
 const desktopMessageStopText = "the requested message was already submitted. Call computer_done now with three lines: whether it was sent, to whom, and the exact text. Do not click, type, focus, or press Enter again."
+const desktopMessageTypedStopText = "the requested message body is typed. If it is in the chat input, press Enter once, then call computer_done. Do not type the body again or click Send after Enter."
 
-// desktopMessagePayload is the text after 告诉它 / 告诉他 / 内容是 in a
-// desktop IM send. A goal that is not that send has no payload, so typing
+// desktopMessagePayload is the text after 告诉它 / 告诉他 / 选读它 / 内容是
+// in a desktop IM send. A goal that is not that send has no payload, so typing
 // and Enter in another task do not stop the desktop.
 func desktopMessagePayload(goal string) string {
 	if !computeruse.RequestsDesktopMessageSend(goal) {
@@ -290,6 +280,7 @@ func desktopMessagePayload(goal string) string {
 	markers := []string{
 		"告诉它", "告诉他", "告诉她",
 		"告訴它", "告訴他", "告訴她",
+		"选读它", "选读他", "选读她",
 		"跟它说", "跟他说", "跟她说",
 		"内容就是", "内容是",
 	}
@@ -341,18 +332,19 @@ func desktopMessageCovers(body, typed string) bool {
 	return strings.Contains(t, b)
 }
 
-func noteDesktopMessageTyped(text string) {
-	owner := computerUseOwnerKey()
+func noteDesktopMessageTyped(text string) bool {
+	owner := computerUseCallOwner()
 	globalComputerUse.mu.Lock()
 	defer globalComputerUse.mu.Unlock()
 	st := globalComputerUse.taskStates[owner]
 	if st == nil || st.MessageBody == "" || st.MessageSubmitted {
-		return
+		return false
 	}
 	st.typedCompact += compactDesktopMessage(text)
 	if desktopMessageCovers(st.MessageBody, st.typedCompact) {
 		st.MessageTyped = true
 	}
+	return st.MessageTyped
 }
 
 func desktopMessageSubmitChord(detail string) bool {
@@ -380,22 +372,48 @@ func noteDesktopMessageSubmitted(detail string) bool {
 	if !desktopMessageSubmitChord(detail) {
 		return false
 	}
-	owner := computerUseOwnerKey()
+	return latchDesktopMessageSubmitted()
+}
+
+func noteDesktopMessageClickSubmitted(names ...string) bool {
+	for _, name := range names {
+		key := strings.ToLower(compactDesktopMessage(name))
+		switch key {
+		case "发送", "发送消息", "send", "sendmessage", "sendnow":
+			return latchDesktopMessageSubmitted()
+		}
+	}
+	return false
+}
+
+func latchDesktopMessageSubmitted() bool {
+	owner := computerUseCallOwner()
 	globalComputerUse.mu.Lock()
-	defer globalComputerUse.mu.Unlock()
 	st := globalComputerUse.taskStates[owner]
 	if st == nil || !st.MessageTyped || st.MessageSubmitted {
+		globalComputerUse.mu.Unlock()
 		return false
 	}
 	st.MessageSubmitted = true
+	globalComputerUse.mu.Unlock()
+	hideComputerUseWindowHaloForOwner(owner)
 	return true
+}
+
+func hideComputerUseWindowHaloForOwner(owner string) {
+	globalComputerUse.mu.Lock()
+	defer globalComputerUse.mu.Unlock()
+	if !globalComputerUse.activated || globalComputerUse.activatedOwner != owner {
+		return
+	}
+	hideComputerUseWindowHalo()
 }
 
 func cuRefuseAfterDesktopMessageSent(tool string) string {
 	if tool == "computer_done" || tool == "computer_playbook" {
 		return ""
 	}
-	owner := computerUseOwnerKey()
+	owner := computerUseCallOwner()
 	globalComputerUse.mu.Lock()
 	submitted := false
 	if st := globalComputerUse.taskStates[owner]; st != nil {

@@ -296,6 +296,9 @@ func shouldAskCaptchaWidget(hasSnapshot, snapshotWidget, didPeek bool, peekedWid
 }
 
 func (s *BrowserAgentSession) personAskIfNeeded(action string) *BrowserActionResult {
+	if held := s.challengeMutationResult(action); held != nil {
+		return held
+	}
 	if ask := s.captchaAskIfNeeded(action); ask != nil {
 		return ask
 	}

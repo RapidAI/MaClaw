@@ -671,7 +671,7 @@ func marshalActionResult(s *BrowserAgentSession, result *BrowserActionResult, er
 		}
 		return marshalBrowserResult(false, llmSafeBrowserError(err), extra)
 	}
-	if s != nil {
+	if s != nil && (result == nil || (result.Detail != "browser_challenge_checking" && browserNavigationSent(result))) {
 		result = s.applyGoalClassContract(result, expect)
 		result = s.applyExpect(result, expect)
 	}

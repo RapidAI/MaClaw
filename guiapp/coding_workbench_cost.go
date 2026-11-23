@@ -12,20 +12,24 @@ import (
 // input is the lifetime sum of prompt sizes. The context-window fill is
 // codingLoopWindowUsage's lastPrompt, which is one request.
 func codingLoopUsageFields(u agent.TurnUsage) (input, output int, estCostRMB float64) {
-	input, output, estCostRMB, _ = codingLoopWindowUsage(u)
+	input, output, estCostRMB, _, _ = codingLoopWindowUsage(u)
 	return input, output, estCostRMB
 }
 
-// codingLoopWindowUsage splits the session sum from the latest prompt size.
-// A single-request usage with no LastPromptTokens uses InputTokens as that
-// prompt. A multi-request sum does not: the meter must not compare the sum
-// with the context window.
-func codingLoopWindowUsage(u agent.TurnUsage) (input, output int, estCostRMB float64, lastPrompt int) {
+// codingLoopWindowUsage splits the session sums from the latest request.
+// A single-request usage with no last-request field uses that request's own
+// input or output. A multi-request sum does not: the window meter and 本轮
+// out must not treat the lifetime sum as one request.
+func codingLoopWindowUsage(u agent.TurnUsage) (input, output int, estCostRMB float64, lastPrompt, lastCompletion int) {
 	input = u.InputTokens
 	output = u.OutputTokens
 	lastPrompt = u.LastPromptTokens
 	if lastPrompt <= 0 && u.Requests <= 1 && input > 0 {
 		lastPrompt = input
+	}
+	lastCompletion = u.LastCompletionTokens
+	if lastCompletion <= 0 && u.Requests <= 1 && output > 0 {
+		lastCompletion = output
 	}
 	if u.EstCostRMB > 0 {
 		estCostRMB = u.EstCostRMB
@@ -39,7 +43,7 @@ func codingLoopWindowUsage(u agent.TurnUsage) (input, output int, estCostRMB flo
 		)
 		estCostRMB = total
 	}
-	return input, output, estCostRMB, lastPrompt
+	return input, output, estCostRMB, lastPrompt, lastCompletion
 }
 
 func (h *IMMessageHandler) accumulateStickyCodingUsage(userID string, input, output int, cost float64) {
@@ -49,9 +53,10 @@ func (h *IMMessageHandler) accumulateStickyCodingUsage(userID string, input, out
 	h.recordStickyCodingUsage(userID, input, input, output, output, cost)
 }
 
-// recordStickyCodingUsage adds sessionInput to the lifetime sum and records
-// lastInput as the context-window fill. lastInput is one request's prompt
-// size. Passing the lifetime sum as lastInput paints the meter over the window.
+// recordStickyCodingUsage adds the session sums and records one request as
+// the window fill and 本轮 out. lastInput is one prompt. lastOutput is one
+// completion. Passing either lifetime sum paints the meter or 本轮 out as
+// the whole task. A zero lastOutput leaves the live completion in place.
 func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, lastInput, sessionOutput, lastOutput int, cost float64) {
 	if h == nil || userID == "" {
 		return
@@ -67,7 +72,7 @@ func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, 
 		if lastInput > 0 {
 			mem.LastTurnInputTokens = codingPromptFill(mem.LastTurnInputTokens, lastInput, window)
 		}
-		if lastOutput > 0 || lastInput > 0 {
+		if lastOutput > 0 {
 			mem.LastTurnOutputTokens = lastOutput
 		}
 		if cost > 0 || lastInput > 0 || sessionInput > 0 {
@@ -93,6 +98,22 @@ func (h *IMMessageHandler) noteCodingContextFill(userID string, promptTokens, ou
 		if outputTokens > 0 {
 			mem.LastTurnOutputTokens = outputTokens
 		}
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	h.publishContextWindowUsage(userID, mem.LastTurnInputTokens, window)
+}
+
+func (h *IMMessageHandler) publishContextWindowUsage(userID string, usedTokens, maxTokens int) {
+	if h == nil || h.app == nil || userID == "" || maxTokens <= 0 {
+		return
+	}
+	if usedTokens < 0 {
+		usedTokens = 0
+	}
+	h.app.emitAIAssistantStreamEvent("ai-assistant-context-usage", AIAssistantStreamEvent{
+		SessionKey:        userID,
+		ContextUsedTokens: usedTokens,
+		ContextMaxTokens:  maxTokens,
 	})
 }
 

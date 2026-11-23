@@ -66,21 +66,21 @@ func (h *IMMessageHandler) retryLLMRequestAfterContextWindowExceeded(
 		}
 	}
 	const maxContextTrimRetries = 5
+	retryLimit := cfg.EffectiveContextTokens()
 	for ctxTrimRetry := 0; ctxTrimRetry < maxContextTrimRetries; ctxTrimRetry++ {
-		removed := false
-		for ci := 0; ci < len(conversation); ci++ {
-			r := msgRole(conversation[ci])
-			if r != "system" {
-				conversation = append(conversation[:ci], conversation[ci+1:]...)
-				removed = true
-				log.Printf("[agent-loop] context window exceeded, removed entry at %d (role=%s), retry %d/%d",
-					ci, r, ctxTrimRetry+1, maxContextTrimRetries)
-				break
-			}
+		before := estimateConversationTokens(conversation)
+		retryLimit = retryLimit * 3 / 4
+		if retryLimit < 4000 {
+			retryLimit = 4000
 		}
-		if !removed {
+		next := trimConversation(conversation, retryLimit, estimateToolsTokens(tools), nil)
+		after := estimateConversationTokens(next)
+		if after >= before {
 			break
 		}
+		conversation = next
+		log.Printf("[agent-loop] context window exceeded, group-trimmed conversation %d->%d tokens, retry %d/%d",
+			before, after, ctxTrimRetry+1, maxContextTrimRetries)
 		if attempt() {
 			return result
 		}

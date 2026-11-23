@@ -428,6 +428,29 @@ function mockURLObjectURLs(value: string) {
 }
 
 describe('AIAssistantPanel property tests', () => {
+    it('renders live usage for the active session from backend events', async () => {
+        renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                ...defaultPanelProps().state,
+                messages: [makeMsg({ id: 'context-user', role: 'user', content: 'inspect context' })],
+            },
+        });
+        const handler = runtimeEventsOnMock.mock.calls
+            .find(([eventName]) => eventName === 'ai-assistant-context-usage')?.[1] as ((payload: string) => void) | undefined;
+        expect(handler).toBeTruthy();
+        act(() => {
+            handler?.(JSON.stringify({
+                session_key: 'desktop-user',
+                context_used_tokens: 24000,
+                context_max_tokens: 204800,
+            }));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('context-window-meter-value').textContent).toBe('24.0k / 205k · 12%');
+        });
+    });
+
     afterEach(() => {
         vi.mocked(PreviewTaskResultFile).mockClear();
         cleanup();

@@ -25,6 +25,9 @@ func TestTurnUsageAdd(t *testing.T) {
 	if u.LastPromptTokens != 5 {
 		t.Fatalf("last prompt=%d, want the latest request", u.LastPromptTokens)
 	}
+	if u.LastCompletionTokens != 2 {
+		t.Fatalf("last completion=%d, want the latest request that produced output", u.LastCompletionTokens)
+	}
 	if u.TotalTokens() != 17 {
 		t.Fatalf("total=%d", u.TotalTokens())
 	}
@@ -42,7 +45,7 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	if u.Model != "m1" || u.Provider != "p1" {
 		t.Fatalf("labels=%+v", u)
 	}
-	if u.InputTokens != 1000 || u.OutputTokens != 200 || u.CachedTokens != 50 || u.Requests != 1 || u.LastPromptTokens != 1000 {
+	if u.InputTokens != 1000 || u.OutputTokens != 200 || u.CachedTokens != 50 || u.Requests != 1 || u.LastPromptTokens != 1000 || u.LastCompletionTokens != 200 {
 		t.Fatalf("tokens=%+v", u)
 	}
 	if u.EstCostRMB <= 0 {
@@ -69,16 +72,22 @@ func TestTurnUsageFromLLM(t *testing.T) {
 
 func TestTurnUsageAddKeepsLastPromptSeparateFromSum(t *testing.T) {
 	var u TurnUsage
-	u.Add(TurnUsage{InputTokens: 30213603, Requests: 1250, LastPromptTokens: 24000})
-	u.Add(TurnUsage{InputTokens: 100, Requests: 4})
-	if u.InputTokens != 30213703 {
-		t.Fatalf("sum=%d", u.InputTokens)
+	u.Add(TurnUsage{
+		InputTokens: 30213603, OutputTokens: 199260, Requests: 1250,
+		LastPromptTokens: 24000, LastCompletionTokens: 180,
+	})
+	u.Add(TurnUsage{InputTokens: 100, OutputTokens: 50, Requests: 4})
+	if u.InputTokens != 30213703 || u.OutputTokens != 199310 {
+		t.Fatalf("sum in=%d out=%d", u.InputTokens, u.OutputTokens)
 	}
 	if u.LastPromptTokens != 24000 {
 		t.Fatalf("last=%d, a multi-request sum must not become the prompt size", u.LastPromptTokens)
 	}
-	u.Add(TurnUsage{InputTokens: 18000, Requests: 1})
-	if u.LastPromptTokens != 18000 || u.InputTokens != 30231703 {
+	if u.LastCompletionTokens != 180 {
+		t.Fatalf("last completion=%d, a multi-request output sum must not become 本轮 out", u.LastCompletionTokens)
+	}
+	u.Add(TurnUsage{InputTokens: 18000, OutputTokens: 40, Requests: 1})
+	if u.LastPromptTokens != 18000 || u.LastCompletionTokens != 40 || u.InputTokens != 30231703 {
 		t.Fatalf("usage=%+v", u)
 	}
 }

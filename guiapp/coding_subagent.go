@@ -320,12 +320,15 @@ type CodingSubAgentResult struct {
 	ToolCalls  int
 
 	// Token / cost accounting for this SubAgent loop (when provider reports usage).
-	// InputTokens is the sum of every request. LastPromptTokens is the latest
-	// request's prompt size and is what the context-window meter displays.
-	InputTokens      int
-	OutputTokens     int
-	LastPromptTokens int
-	EstCostRMB       float64
+	// InputTokens and OutputTokens are the sums of every request.
+	// LastPromptTokens is the latest prompt and is what the context-window
+	// meter displays. LastCompletionTokens is the latest completion and is
+	// what 本轮 out displays.
+	InputTokens          int
+	OutputTokens         int
+	LastPromptTokens     int
+	LastCompletionTokens int
+	EstCostRMB           float64
 
 	// RouteModel / RouteSource / RouteTask describe model routing for this loop.
 	RouteModel  string
@@ -1089,7 +1092,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		emitCodingAgentEvent(s.onProgress, event)
 	}
 
-	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
+	inTok, outTok, cost, lastPrompt, lastCompletion := codingLoopWindowUsage(result.Usage)
 	return &CodingSubAgentResult{
 		Status:                      status,
 		Summary:                     summary,
@@ -1099,6 +1102,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		InputTokens:                 inTok,
 		OutputTokens:                outTok,
 		LastPromptTokens:            lastPrompt,
+		LastCompletionTokens:        lastCompletion,
 		EstCostRMB:                  cost,
 		RouteModel:                  result.Route.Model,
 		RouteSource:                 result.Route.Source,
@@ -1142,30 +1146,31 @@ func finishCodingSubAgentAsk(s *CodingSubAgent, result agent.LoopResult) *Coding
 	if question == "" {
 		question = "Need more information."
 	}
-	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
+	inTok, outTok, cost, lastPrompt, lastCompletion := codingLoopWindowUsage(result.Usage)
 	horizonOwned := false
 	if s != nil {
 		horizonOwned = s.horizonPosture
 	}
 	return &CodingSubAgentResult{
-		Status:             TaskExecSkipped,
-		Summary:            question,
-		AskQuestion:        question,
-		Iterations:         result.Iterations,
-		ToolCalls:          result.ToolCalls,
-		InputTokens:        inTok,
-		OutputTokens:       outTok,
-		LastPromptTokens:   lastPrompt,
-		EstCostRMB:         cost,
-		RouteModel:         result.Route.Model,
-		RouteSource:        result.Route.Source,
-		RouteTask:          result.Route.TaskType,
-		RouteReason:        result.Route.Reason,
-		ExplorationStatus:  codingSubAgentQualityNotNeeded,
-		VerificationStatus: codingSubAgentQualityNotNeeded,
-		QualityStatus:      codingSubAgentQualityNotNeeded,
-		QualitySummary:     "inner loop paused for user input",
-		HorizonOwned:       horizonOwned,
+		Status:               TaskExecSkipped,
+		Summary:              question,
+		AskQuestion:          question,
+		Iterations:           result.Iterations,
+		ToolCalls:            result.ToolCalls,
+		InputTokens:          inTok,
+		OutputTokens:         outTok,
+		LastPromptTokens:     lastPrompt,
+		LastCompletionTokens: lastCompletion,
+		EstCostRMB:           cost,
+		RouteModel:           result.Route.Model,
+		RouteSource:          result.Route.Source,
+		RouteTask:            result.Route.TaskType,
+		RouteReason:          result.Route.Reason,
+		ExplorationStatus:    codingSubAgentQualityNotNeeded,
+		VerificationStatus:   codingSubAgentQualityNotNeeded,
+		QualityStatus:        codingSubAgentQualityNotNeeded,
+		QualitySummary:       "inner loop paused for user input",
+		HorizonOwned:         horizonOwned,
 	}
 }
 
@@ -2743,6 +2748,8 @@ func (c *codingSubAgentCallbacks) executeHorizonHostTool(name, argsJSON string) 
 	}
 	if owner != "" && (role == longhorizon.RoleGUIExecutor || strings.HasPrefix(name, "computer_")) {
 		setComputerUseOwner(owner)
+		pushComputerUseCallOwner(owner)
+		defer popComputerUseCallOwner()
 	}
 	beforeBrowserIDs := map[string]bool{}
 	if name == "browser_session_start" {
@@ -18645,31 +18652,32 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		event.Detail = string(status)
 		emitCodingAgentEvent(s.onProgress, event)
 	}
-	inTok, outTok, cost, lastPrompt := codingLoopWindowUsage(result.Usage)
+	inTok, outTok, cost, lastPrompt, lastCompletion := codingLoopWindowUsage(result.Usage)
 	return &CodingSubAgentResult{
-		Status:              status,
-		Summary:             summary,
-		Error:               errMsg,
-		Iterations:          result.Iterations,
-		ToolCalls:           result.ToolCalls,
-		InputTokens:         inTok,
-		OutputTokens:        outTok,
-		LastPromptTokens:    lastPrompt,
-		EstCostRMB:          cost,
-		RouteModel:          result.Route.Model,
-		RouteSource:         result.Route.Source,
-		RouteTask:           result.Route.TaskType,
-		RouteReason:         result.Route.Reason,
-		FilesModified:       nil,
-		FilesCreated:        nil,
-		FilesRead:           filesRead,
-		CommandsRun:         commandsRun,
-		SearchesRun:         searchesRun,
-		QualityStatus:       qualityStatus,
-		QualitySummary:      qualitySummary,
-		qualityGateDisabled: !qualityGateEnabled && status == TaskExecPassed,
-		Localization:        cb.localization.snapshot(),
-		HorizonOwned:        s.horizonPosture,
+		Status:               status,
+		Summary:              summary,
+		Error:                errMsg,
+		Iterations:           result.Iterations,
+		ToolCalls:            result.ToolCalls,
+		InputTokens:          inTok,
+		OutputTokens:         outTok,
+		LastPromptTokens:     lastPrompt,
+		LastCompletionTokens: lastCompletion,
+		EstCostRMB:           cost,
+		RouteModel:           result.Route.Model,
+		RouteSource:          result.Route.Source,
+		RouteTask:            result.Route.TaskType,
+		RouteReason:          result.Route.Reason,
+		FilesModified:        nil,
+		FilesCreated:         nil,
+		FilesRead:            filesRead,
+		CommandsRun:          commandsRun,
+		SearchesRun:          searchesRun,
+		QualityStatus:        qualityStatus,
+		QualitySummary:       qualitySummary,
+		qualityGateDisabled:  !qualityGateEnabled && status == TaskExecPassed,
+		Localization:         cb.localization.snapshot(),
+		HorizonOwned:         s.horizonPosture,
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
@@ -479,10 +480,7 @@ func checkpointMessageTokens(conversation []interface{}) []int {
 }
 
 func estimateStringTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	return (len(s)*10 + 24) / 25
+	return corelib.EstimateTextTokens(s)
 }
 
 // EstimateMessageTokens is the allocation-free size of one conversation
@@ -698,7 +696,8 @@ func checkpointKeepCount(systemTokens int, groupCosts []int, maxKeep, budget, pr
 	// System prompt plus the checkpoint preview that will replace the prefix.
 	running := systemTokens
 	if previewLimit > 0 {
-		// Same rounding as EstimateBytesToTokens.
+		// Reserve conservatively before the actual preview is available;
+		// checkpointKeptTokens measures the final rendered text below.
 		running += (previewLimit*10 + 24) / 25
 	}
 	keep := 0

@@ -252,6 +252,40 @@ func TestSettleShotMatchesOnlyTheOperatedWindow(t *testing.T) {
 	}
 }
 
+func TestVisionFindReturnsOCRClickRef(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, nil, []taskengine.OCRResult{
+		{Text: "马勇", BBox: [4]int{20, 30, 60, 20}, Confidence: 0.99},
+	}, "")
+	installCountingComputerUse(t, sess)
+	setComputerUseTurnVision(true)
+
+	msg := cuHandleFind(map[string]interface{}{"query": "马勇"})
+	if !strings.Contains(msg, "e0") || strings.Contains(msg, "can see the screenshot") {
+		t.Fatalf("find=%s", msg)
+	}
+	x, y, el, err := sess.ResolveClickRef("e0")
+	if err != nil || el == nil || el.Name != "马勇" || x != 50 || y != 40 {
+		t.Fatalf("x=%d y=%d el=%+v err=%v", x, y, el, err)
+	}
+}
+
+func TestVisionFindReusesA11yMatchWithoutOCR(t *testing.T) {
+	fg := computerUseTestForeground(t)
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 100, ScaleFactor: 1, CropTitle: fg}, nil, []taskengine.UIElement{
+		{Name: "马勇", Type: "list item", BBox: [4]int{20, 30, 60, 20}, Source: "accessibility", Interactable: true},
+	}, nil, "")
+	installCountingComputerUse(t, sess)
+	setComputerUseTurnVision(true)
+
+	msg := cuHandleFind(map[string]interface{}{"query": "马勇"})
+	if !strings.Contains(msg, "reused last observe") || !strings.Contains(msg, "e0") {
+		t.Fatalf("find=%s", msg)
+	}
+}
+
 func TestVisionSearchLessonNeedsFocusTypeAndFewObserves(t *testing.T) {
 	resetComputerUseRuntimeForTest(t)
 	dir := t.TempDir()

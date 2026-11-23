@@ -370,6 +370,98 @@ func TestSubAgentCompactionTruncatedToolIsNotAStall(t *testing.T) {
 	}
 }
 
+func TestSubAgentCompactionCountsReasoningInTheTail(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	reasoning := strings.Repeat("think ", 5000)
+	conv := []interface{}{
+		map[string]interface{}{"role": "system", "content": "sys"},
+		map[string]interface{}{"role": "user", "content": "do the task"},
+	}
+	for i := 0; i < 8; i++ {
+		id := strconv.Itoa(i)
+		conv = append(conv,
+			map[string]interface{}{
+				"role":              "assistant",
+				"content":           "turn " + id,
+				"reasoning_content": reasoning,
+				"tool_calls": []llm.ToolCall{{
+					ID:       id,
+					Function: llm.ToolCallFunction{Name: "bash", Arguments: `{"command":"echo"}`},
+				}},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": id, "content": "ok " + id},
+		)
+	}
+	if !compactor.notePromptTokens(9000) {
+		t.Fatal("9000 tokens fills an 8000 window")
+	}
+	out := compactor.Compact(conv)
+	if compactor.stalled {
+		t.Fatal("dropping reasoning-heavy turns is a shrink and must still be sent")
+	}
+	if estimateConversationTokensForSubAgent(out) >= estimateConversationTokensForSubAgent(conv) {
+		t.Fatal("the fitted conversation still holds the reasoning tail")
+	}
+	kept := 0
+	for _, msg := range out {
+		m, _ := msg.(map[string]interface{})
+		text, _ := m["reasoning_content"].(string)
+		kept += len(text)
+	}
+	if kept >= len(reasoning)*8 {
+		t.Fatalf("reasoning bytes kept=%d original=%d", kept, len(reasoning)*8)
+	}
+}
+
+func TestSubAgentCompactionDegenerateAfterShrink(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	huge := strings.Repeat("output ", 8000)
+	conv := []interface{}{
+		map[string]interface{}{"role": "system", "content": "sys"},
+		map[string]interface{}{"role": "user", "content": "do the task"},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "working",
+			"tool_calls": []llm.ToolCall{{
+				ID:       "1",
+				Function: llm.ToolCallFunction{Name: "bash", Arguments: `{"command":"one"}`},
+			}},
+		},
+		map[string]interface{}{"role": "tool", "tool_call_id": "1", "content": huge},
+	}
+	if !compactor.notePromptTokens(9000) || !compactor.fullPromptLatched {
+		t.Fatal("9000 tokens must latch the full window")
+	}
+	out := compactor.Compact(conv)
+	if compactor.stalled || compactor.lastPromptTokens != 0 || !compactor.fullPromptLatched {
+		t.Fatalf("shrink cleared prompt=%d latch=%v stalled=%v", compactor.lastPromptTokens, compactor.fullPromptLatched, compactor.stalled)
+	}
+	if compactor.notePromptTokens(122) || compactor.lastPromptTokens != 0 || !compactor.forceCompact {
+		t.Fatal("122 after a shrink is still not a successful compact")
+	}
+	if !compactor.promptFillsWindow(122) || !compactor.ShouldCompact(out) {
+		t.Fatal("the latched 122 must compact before the next send")
+	}
+	again := compactor.Compact(out)
+	if !compactor.stalled || len(again) == 0 {
+		t.Fatal("a second pass that cannot shrink the latched prompt must stall")
+	}
+	if compactor.absorbOverflow(122) {
+		t.Fatal("a stalled compactor must not arm another send")
+	}
+	// A later plausible prompt is the recovery. It owns the flag, so a
+	// following glitch is just a small prompt.
+	recovered := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	if !recovered.notePromptTokens(9000) || !recovered.notePromptTokens(3000) || recovered.fullPromptLatched || recovered.forceCompact {
+		t.Fatal("a plausible under-window prompt must clear the latch")
+	}
+	if !recovered.notePromptTokens(122) || recovered.forceCompact || recovered.lastPromptTokens != 122 || recovered.promptFillsWindow(122) {
+		t.Fatalf("122 after recovery prompt=%d force=%v fill=%v", recovered.lastPromptTokens, recovered.forceCompact, recovered.promptFillsWindow(122))
+	}
+}
+
 func TestSubAgentCompactionFullPromptBypassesSeal(t *testing.T) {
 	t.Setenv("MACLAW_HANDOFF_MEMO", "")
 	task := strings.Repeat("y", 20000)
@@ -496,11 +588,15 @@ func TestCodingMemoPerRoundCollapsesToolBodies(t *testing.T) {
 
 	pending := append(append([]interface{}{}, conv...), map[string]interface{}{"role": "tool", "content": "Asked user: which file?"})
 	kept := hooks.TransformConversation(pending)
-	if kept == nil || len(kept) != len(pending) {
+	if kept != nil && len(kept) != len(pending) {
 		t.Fatalf("pending ask collapsed: %d", len(kept))
 	}
 	foundSecret := false
-	for _, msg := range kept {
+	scan := kept
+	if scan == nil {
+		scan = pending
+	}
+	for _, msg := range scan {
 		m, _ := msg.(map[string]interface{})
 		if content, _ := m["content"].(string); strings.Contains(content, "SECRET_TOOL_BODY") {
 			foundSecret = true
@@ -511,7 +607,29 @@ func TestCodingMemoPerRoundCollapsesToolBodies(t *testing.T) {
 	}
 
 	round := codingCompactionTurns(agent.SessionRoundPrefix+" continue the wave", 2)
-	if got := hooks.TransformConversation(round); got == nil || len(got) != len(round) {
+	if got := hooks.TransformConversation(round); got != nil && len(got) != len(round) {
 		t.Fatal("session-round wave must not be cleared per round")
+	}
+}
+
+func TestSubAgentCompactionPerRoundDoesNotSkipOccupancy(t *testing.T) {
+	t.Setenv("MACLAW_HANDOFF_MEMO", "all")
+	t.Setenv("MACLAW_CODING_MEMO_PER_ROUND", "on")
+	conv := codingCompactionTurns(agent.SessionRoundPrefix+" continue the wave", 6)
+	conv[3].(map[string]interface{})["content"] = strings.Repeat("SECRET_ROUND_BODY ", 2000)
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	if compactor.promptPressured() || !compactor.ShouldCompact(conv) {
+		t.Fatal("fixture must be over the occupancy trigger before any provider prompt")
+	}
+	got := (&codingSubAgentHooks{compactor: compactor}).TransformConversation(conv)
+	if got == nil {
+		t.Fatal("a blocked per-round wave must still compact when the estimate is over the trigger")
+	}
+	for _, msg := range got {
+		m, _ := msg.(map[string]interface{})
+		content, _ := m["content"].(string)
+		if strings.Contains(content, "SECRET_ROUND_BODY") {
+			t.Fatal("per-round returned the blocked wave without compacting")
+		}
 	}
 }

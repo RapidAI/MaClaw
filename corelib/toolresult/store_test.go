@@ -158,7 +158,11 @@ func TestProjectSSHPreviewTruncatesOnce(t *testing.T) {
 }
 
 func TestProjectCallerPreviewDoesNotNestTruncationMarker(t *testing.T) {
-	raw := strings.Repeat("line\n", 5000)
+	var lines strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&lines, "line %d\n", i)
+	}
+	raw := lines.String()
 	preview := DefaultPreview(raw, 4096)
 	proj, err := Project(ProjectOptions{
 		ToolName:   "ssh",
@@ -796,7 +800,11 @@ func TestResolveMissingHandle(t *testing.T) {
 
 func TestProjectEqualPreviewOverLimitTruncatesOnce(t *testing.T) {
 	dir := t.TempDir()
-	content := strings.Repeat("line\n", 2000)
+	var lines strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&lines, "line %d\n", i)
+	}
+	content := lines.String()
 	includeFooter := false
 	proj, err := Project(ProjectOptions{
 		ToolName:            "bash",

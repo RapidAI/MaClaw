@@ -121,6 +121,8 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListPendingScopeApprovals, ListWorkflowTemplateSummaries, LoadConfig, LoadProjectTabConversation, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
+import { ContextWindowMeter } from "./ContextWindowMeter";
+import { useContextWindowUsage } from "./useContextWindowUsage";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepIsFailed, codingStepPresentedLabel, codingStepStatusColor, codingChecklistAllDone, codingPlanAwaitingStart, codingStepsClockFrom, codingStepsClockIsCurrent, codingStepsSnapshotRegresses, codingSharedExecutionStatus, codingWorkbenchStepsFromPayload, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
@@ -310,6 +312,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingSessionCost, setCodingSessionCost] = useState("");
     const [codingContextUsedTokens, setCodingContextUsedTokens] = useState(0);
     const [codingContextMaxTokens, setCodingContextMaxTokens] = useState(0);
+    const contextUsageBySession = useContextWindowUsage();
     const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
     const [codingRouteInfo, setCodingRouteInfo] = useState("");
     const [codingConflictCount, setCodingConflictCount] = useState(0);
@@ -7256,6 +7259,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         />
     ) : null;
     const conversationChrome = useMemo(() => ({ inline: !!inline, maximized: !!maximized, onHideWindow, onToggleMaximize, onActivateTab: activateSwitchingTab, onCloseTab: closeTabWithProjectCleanup }), [inline, maximized, onHideWindow, onToggleMaximize, activateSwitchingTab, closeTabWithProjectCleanup]);
+    const liveContextUsage = contextUsageBySession[normalizeAssistantSessionKey(activeSessionKey)];
+    const contextUsedTokens = liveContextUsage?.used ?? (isPureCodingEnvironment ? codingContextUsedTokens : 0);
+    const contextMaxTokens = liveContextUsage?.max ?? (isPureCodingEnvironment ? codingContextMaxTokens : 0);
     return (
         <MarkdownImagePreviewProvider onPreviewImage={previewChatImage}>
         <div data-testid="ai-panel-root" data-ai-view={newTaskHome ? "welcome" : "execution"} style={containerStyle}>
@@ -8003,8 +8009,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         executionStatusLabel={taskExecutionStatus.label}
                         onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined}
                         hideFileChanges={goalQuickBarVisible}
-                        contextUsedTokens={codingContextUsedTokens}
-                        contextMaxTokens={codingContextMaxTokens}
                         onApprove={() => { void handleCodingPlanGate("approve"); }}
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}
@@ -8017,6 +8021,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {!showWelcomeView && !remoteChat && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && !remoteChat && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => chatTaskInSession(task.sessionKey, activeSessionKey))} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && !remoteChat && !wizardScreen && <GoalQuickBar lang={lang} theme={t} sessionKey={activeSessionKey} fileChanges={isPureCodingEnvironment ? codingTurnFiles.files : undefined} fileChangesChrome={codingBannerChrome} onOpenFile={codingPreviewAllowed ? focusCodeFile : undefined} onVisibilityChange={setGoalQuickBarVisible} />}
+                {!showWelcomeView && !remoteChat && !wizardScreen && (
+                    <ContextWindowMeter
+                        lang={lang}
+                        usedTokens={contextUsedTokens}
+                        maxTokens={contextMaxTokens}
+                        mutedColor={t.promptColor}
+                    />
+                )}
                 {goalChecklistFloatActive ? (
                     <GoalChecklistOverlay
                         lang={lang}

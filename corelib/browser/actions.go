@@ -87,8 +87,21 @@ func (s *BrowserAgentSession) CloseRunTabs(runID string) {
 	s.session.CloseRunTabs(runID)
 }
 
+func (s *BrowserAgentSession) beginBrowserOperation() func() {
+	if s == nil {
+		return func() {}
+	}
+	s.operationMu.Lock()
+	return s.operationMu.Unlock
+}
+
 // Navigate performs a browser navigation under the agent session.
 func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
+	return s.navigate(url)
+}
+
+func (s *BrowserAgentSession) navigate(url string) (*BrowserActionResult, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
@@ -122,26 +135,31 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 		return kept, nil
 	}
 	tabNote := ""
-	if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
-		if !isCrossOriginDenied(err) {
+	held := s.session.challengeForNavigation(url)
+	sent := held == nil
+	if sent {
+		if err := validateNavigationPolicy(s.loggedInNavigationPolicy(url), url, currentDomainFromSession(s)); err != nil {
+			if !isCrossOriginDenied(err) {
+				return policyBlockResult(s, "browser_navigate", err)
+			}
+			// The cross-origin rule exists so the current page is never replaced
+			// by another site. An explicit navigate names its target, so keep the
+			// current tab and open the target in its own tab (or switch to a tab
+			// already on that host). Blocked/allowed domain lists still applied.
+			note, terr := s.session.openTargetInOwnTab(url)
+			if terr != nil {
+				log.Printf("[browser] cross-origin navigate to own tab failed url=%q err=%v", url, terr)
+				return policyBlockResult(s, "browser_navigate", err)
+			}
+			tabNote = note
+			s.adoptSwitchedTab()
+		} else if _, err := s.session.Navigate(url); err != nil {
 			return policyBlockResult(s, "browser_navigate", err)
 		}
-		// The cross-origin rule exists so the current page is never replaced
-		// by another site. An explicit navigate names its target, so keep the
-		// current tab and open the target in its own tab (or switch to a tab
-		// already on that host). Blocked/allowed domain lists still applied.
-		note, terr := s.session.openTargetInOwnTab(url)
-		if terr != nil {
-			log.Printf("[browser] cross-origin navigate to own tab failed url=%q err=%v", url, terr)
-			return policyBlockResult(s, "browser_navigate", err)
-		}
-		tabNote = note
-		s.adoptSwitchedTab()
-	} else if _, err := s.session.Navigate(url); err != nil {
-		return policyBlockResult(s, "browser_navigate", err)
 	}
 	readyNote := ""
 	if rep, ok := s.session.waitPageReady(); ok {
+		s.session.noteChallengeRequest(url)
 		readyNote = rep.Note()
 		if rep.Wall == "rate_limit" {
 			s.rememberFrequencyDocument(url, rep.State.URL)
@@ -155,18 +173,27 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 				}
 			}
 		}
-		log.Printf("[browser] navigate ready url=%q final=%q rs=%s n=%d reloaded=%t wall=%s waited=%s", url, rep.State.URL, rep.State.ReadyState, rep.State.Interactive, rep.Reloaded, rep.Wall, rep.Waited.Round(100*time.Millisecond))
+		log.Printf("[browser] navigate ready url=%q final=%q rs=%s n=%d sent=%t wall=%s waited=%s", url, rep.State.URL, rep.State.ReadyState, rep.State.Interactive, sent, rep.Wall, rep.Waited.Round(100*time.Millisecond))
 	}
 	followed := s.followAction("browser_navigate", 3*time.Second, 300*time.Millisecond, true, 0, 0, "navigate")
 	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
 		return blocked, ferr
 	}
 	obs := followed.obs
-	s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
-	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s%s%s", url, tabNote, readyNote), url, obs, map[string]interface{}{
-		"url":   obs.Snapshot.URL,
-		"title": obs.Snapshot.Title,
-	}, true)), nil
+	display := fmt.Sprintf("navigated to %s%s%s", url, tabNote, readyNote)
+	if held != nil {
+		followed.stop = true
+		followed.reason = "browser_challenge"
+		display = fmt.Sprintf("navigation not sent; current document challenge=%s %s%s", held.Kind, url, readyNote)
+		s.appendActionTrace("challenge", fmt.Sprintf("navigation held on %s challenge=%s", url, held.Kind))
+	} else {
+		s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
+	}
+	return followed.stamp(s.completeAction("browser_navigate", display, url, obs, map[string]interface{}{
+		"url":             obs.Snapshot.URL,
+		"title":           obs.Snapshot.Title,
+		"navigation_sent": sent,
+	}, sent)), nil
 }
 
 // loggedInNavigationPolicy lets the agent open another host of the site the
@@ -540,6 +567,7 @@ func (s *BrowserAgentSession) submitClickRecentLocked(key string, now time.Time)
 
 // Click clicks an element by ref or selector.
 func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -605,6 +633,7 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 
 // ClickText clicks an element from the latest snapshot by visible text/name.
 func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -680,6 +709,7 @@ func (s *BrowserAgentSession) TypeContent(snapshotID, ref, selector, text, conte
 
 // TypeContentAppend types into a ref/selector, optionally appending instead of replacing.
 func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text, contentFormat string, appendText bool) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -844,6 +874,7 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 
 // Refresh reloads the current page and refreshes snapshot state.
 func (s *BrowserAgentSession) Refresh() (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
@@ -854,12 +885,12 @@ func (s *BrowserAgentSession) Refresh() (*BrowserActionResult, error) {
 	if err != nil || info == nil || strings.TrimSpace(info.URL) == "" {
 		return nil, fmt.Errorf("unable to determine current page for refresh")
 	}
-	result, err := s.Navigate(info.URL)
+	result, err := s.navigate(info.URL)
 	if err != nil {
 		return nil, err
 	}
 	result = labelRefreshResult(result, info.URL)
-	if result != nil && result.Action == "browser_refresh" && !FrequencyRefusalStops(result.Display) {
+	if result != nil && result.Action == "browser_refresh" && browserNavigationSent(result) && !FrequencyRefusalStops(result.Display) {
 		s.appendActionTrace("refresh", fmt.Sprintf("refresh %s", info.URL))
 	}
 	return result, nil
@@ -871,7 +902,7 @@ func labelRefreshResult(result *BrowserActionResult, pageURL string) *BrowserAct
 	if result == nil {
 		return nil
 	}
-	if FrequencyRefusalStops(result.Display) {
+	if FrequencyRefusalStops(result.Display) || !browserNavigationSent(result) {
 		result.Action = "browser_refresh"
 		return result
 	}
@@ -885,6 +916,7 @@ func labelRefreshResult(result *BrowserActionResult, pageURL string) *BrowserAct
 
 // Back performs browser back navigation and refreshes snapshot state.
 func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
@@ -893,6 +925,22 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 	}
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
+	}
+	target, historyErr := s.session.historyEntryURL(-1)
+	if historyErr == nil && target != "" {
+		if msg := s.frequencyNavigationBlocked(target); msg != "" {
+			return s.frequencyHoldResult("browser_back", msg), nil
+		}
+		if held := s.session.challengeForNavigation(target); held != nil {
+			return s.documentChallengeResult("back", held), nil
+		}
+	} else {
+		if msg := s.frequencyCurrentDocumentBlocked(); msg != "" {
+			return s.frequencyHoldResult("browser_back", msg), nil
+		}
+		if held := s.session.currentDocumentChallenge(); held != nil {
+			return s.documentChallengeResult("back", held), nil
+		}
 	}
 	if err := s.session.Back(); err != nil {
 		return nil, err
@@ -1070,6 +1118,9 @@ func (s *BrowserAgentSession) completeAction(action, display, detail string, obs
 	if obs != nil && obs.frequencyHold != "" && !FrequencyRefusalStops(display) {
 		display += "\n" + obs.frequencyHold
 	}
+	if obs != nil && obs.challengeNote != "" && !strings.Contains(display, "[browser_challenge]") {
+		display += "\n" + obs.challengeNote
+	}
 	// Readiness says "probe once more" when it has not classified the page.
 	// Observe may already have classified the same page as the refusal.
 	if FrequencyRefusalStops(display) {
@@ -1202,6 +1253,7 @@ func (s *BrowserAgentSession) CaptureScreenshotPNG() ([]byte, error) {
 }
 
 func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.requireLiveSession(); err != nil {
 		return nil, err
 	}
@@ -1274,6 +1326,7 @@ func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserA
 }
 
 func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -1316,6 +1369,7 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 }
 
 func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -1343,6 +1397,7 @@ func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*Bro
 }
 
 func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}
@@ -1407,6 +1462,7 @@ func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value stri
 }
 
 func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX, deltaY int) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.requireLiveSession(); err != nil {
 		return nil, err
 	}
@@ -1463,6 +1519,7 @@ func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX,
 }
 
 func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files []string) (*BrowserActionResult, error) {
+	defer s.beginBrowserOperation()()
 	if err := s.blockIfUserHolds(); err != nil {
 		return nil, err
 	}

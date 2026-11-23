@@ -143,9 +143,10 @@ func markComputerUseSessionActive() {
 	was := globalComputerUse.activated
 	globalComputerUse.activated = true
 	globalComputerUse.activatedAt = time.Now()
-	// activeOwner is published by setComputerUseOwner before the tool runs.
-	// computerUseOwnerKey does not take the lock; this hold is the read.
-	globalComputerUse.activatedOwner = computerUseOwnerKey()
+	// The tool call binds its loop owner before the action. A concurrent
+	// tab can overwrite activeOwner while focus or input is still running.
+	// computerUseCallOwner reads that bind; this hold covers the fallback.
+	globalComputerUse.activatedOwner = computerUseCallOwner()
 	globalComputerUse.frameEpoch++
 	globalComputerUse.mu.Unlock()
 	// Tray only needs a refresh when entering Active from inactive.
@@ -184,6 +185,35 @@ func computerUseClearedEpochCurrent(epoch uint64) bool {
 	globalComputerUse.mu.Lock()
 	defer globalComputerUse.mu.Unlock()
 	return globalComputerUse.frameEpoch == epoch && !globalComputerUse.activated
+}
+
+// releaseComputerUseSessionForOwner takes down the global sticky session only
+// when owner is still the one that marked it. computer_done, the driving
+// loop's return, and a horizon probe all end one attempt; none of them may
+// hide another owner's rim or emit done for that owner. An already inactive
+// session is left alone, so a rim drawn after the flag was cleared stays.
+// released is true only when this call took that mark's frame down.
+func releaseComputerUseSessionForOwner(owner string) (epoch uint64, released bool) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = computerUseDefaultOwner
+	}
+	globalComputerUse.mu.Lock()
+	if !globalComputerUse.activated || globalComputerUse.activatedOwner != owner {
+		globalComputerUse.mu.Unlock()
+		return 0, false
+	}
+	epoch = globalComputerUse.frameEpoch
+	changed := clearComputerUseStickyLocked()
+	globalComputerUse.mu.Unlock()
+	if !changed || !dropComputerUseOperatedFrameIfEpoch(epoch) {
+		return 0, false
+	}
+	notifyComputerUseTrayIf(true)
+	if !computerUseClearedEpochCurrent(epoch) {
+		return epoch, false
+	}
+	return epoch, true
 }
 
 // clearComputerUseSessionActive ends sticky CU injection (done / stop / reset /

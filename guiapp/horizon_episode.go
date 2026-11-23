@@ -510,7 +510,7 @@ func releaseHorizonGUIAfterProbe(ownerID string) {
 	if ownerID != "" {
 		horizonLogOwner(ownerID, "gui_release", "")
 	}
-	clearComputerUseSessionActive()
+	releaseComputerUseSessionForOwner(ownerID)
 	clearComputerUseTaskStateForOwner(ownerID)
 	setHorizonComputerUseClaimOnly(ownerID, false)
 }
