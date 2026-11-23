@@ -295,10 +295,7 @@ func (a *Agent) mcp(ctx context.Context, stream net.Conn, req Request) error {
 	if err != nil {
 		return err
 	}
-	if len(text) > 200000 {
-		text = text[:200000] + "\n…truncated"
-	}
-	return WriteLine(stream, Response{OK: true, Text: text})
+	return WriteLine(stream, Response{OK: true, Text: fitMCPText(text)})
 }
 
 func (a *Agent) summary(s Settings, req Request) *Summary {

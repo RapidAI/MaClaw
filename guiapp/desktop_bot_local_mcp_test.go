@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,19 @@ func TestMCPCallHostToolCreatesALocalProgrammingTask(t *testing.T) {
 	}
 	if _, err := mcpCallHostTool(ctx, api, "get_task", `{}`); err == nil || !strings.Contains(err.Error(), "没有找到这个任务") {
 		t.Fatalf("missing task: %v", err)
+	}
+}
+
+func TestMCPHostRelayRedactsAJSONPassword(t *testing.T) {
+	secret := "p&ass<word!!"
+	quoted, err := json.Marshal(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escaped := string(quoted[1 : len(quoted)-1])
+	got := mcpHostRelayRedact(`{"text":"`+escaped+`"}`, `{"sshPassword":"`+secret+`"}`)
+	if strings.Contains(got, "p&ass") || strings.Contains(got, `\u0026`) || strings.Contains(got, `\u003c`) {
+		t.Fatal(got)
 	}
 }
 

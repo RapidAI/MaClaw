@@ -18,6 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Stream operations, sent by Hub as Request.Op.
@@ -175,6 +178,134 @@ func CodeOf(err error) string {
 		return e.Code
 	}
 	return CodeFailed
+}
+
+// RedactSecret removes one secret from text. The JSON encoding is removed
+// too, so a password that contains & or < does not survive Marshal. A short
+// secret is removed only when it stands alone, so "run" does not erase
+// the status word "running".
+func RedactSecret(text, secret string) string {
+	secret = strings.TrimSpace(secret)
+	if secret == "" || text == "" {
+		return text
+	}
+	if esc := jsonStringContents(secret); esc != secret {
+		text = strings.ReplaceAll(text, esc, "••••")
+	}
+	if len([]rune(secret)) >= 8 {
+		return strings.ReplaceAll(text, secret, "••••")
+	}
+	return redactBoundedSecret(text, secret)
+}
+
+// redactBoundedSecret removes a short secret only when it stands alone.
+// Replacing every "run" would also erase the status word "running".
+func redactBoundedSecret(text, secret string) string {
+	if secret == "" || !strings.Contains(text, secret) {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for text != "" {
+		i := strings.Index(text, secret)
+		if i < 0 {
+			b.WriteString(text)
+			break
+		}
+		b.WriteString(text[:i])
+		rest := text[i+len(secret):]
+		if secretBoundary(text[:i], true) && secretBoundary(rest, false) {
+			b.WriteString("••••")
+		} else {
+			b.WriteString(secret)
+		}
+		text = rest
+	}
+	return b.String()
+}
+
+func secretBoundary(side string, before bool) bool {
+	if side == "" {
+		return true
+	}
+	var r rune
+	var size int
+	if before {
+		r, size = utf8.DecodeLastRuneInString(side)
+	} else {
+		r, size = utf8.DecodeRuneInString(side)
+	}
+	if r == utf8.RuneError && size == 1 {
+		return true
+	}
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+}
+
+func jsonStringContents(s string) string {
+	raw, err := json.Marshal(s)
+	if err != nil || len(raw) < 2 {
+		return s
+	}
+	return string(raw[1 : len(raw)-1])
+}
+
+// mcpTextAlwaysFits is the longest result that stays under MaxLine even when
+// every byte becomes a six-byte \u00XX escape, plus the response wrapper.
+const mcpTextAlwaysFits = (MaxLine - 80) / 6
+
+// fitMCPText keeps one MCP result on a single relay line. Results longer
+// than 200000 bytes are cut first. A shorter result is cut only when JSON
+// quoting would still pass MaxLine. The cut stays on a UTF-8 boundary.
+func fitMCPText(text string) string {
+	const marker = "\n…truncated"
+	const prefer = 200000
+	if len(text) <= mcpTextAlwaysFits {
+		return text
+	}
+	limit := len(text)
+	cut := false
+	if limit > prefer {
+		limit = prefer
+		cut = true
+	}
+	body := trimPartialUTF8(text[:limit])
+	if cut {
+		if mcpTextLineFits(body + marker) {
+			return body + marker
+		}
+	} else if mcpTextLineFits(body) {
+		return body
+	}
+	lo, hi := 0, len(body)
+	best := 0
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		piece := trimPartialUTF8(body[:mid])
+		if mcpTextLineFits(piece + marker) {
+			best = len(piece)
+			lo = mid + 1
+			continue
+		}
+		if mid == 0 {
+			break
+		}
+		hi = mid - 1
+	}
+	return trimPartialUTF8(body[:best]) + marker
+}
+
+func trimPartialUTF8(s string) string {
+	// A cut lands inside the last rune, which is at most three leftover bytes.
+	// Peeling further would delete a whole log because of one bad byte earlier.
+	for i := 0; i < 3 && s != "" && !utf8.ValidString(s); i++ {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func mcpTextLineFits(text string) bool {
+	raw, err := json.Marshal(Response{OK: true, Text: text})
+	return err == nil && len(raw)+1 <= MaxLine
 }
 
 // WriteLine writes v as one JSON line.

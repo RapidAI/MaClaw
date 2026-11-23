@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudAgentEntryButton, CloudAgentManage } from '../CloudAgentManage';
-import { applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds } from '../cloudAgentSession';
+import { applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, expireCloudAgentCards, resetCloudAgentRounds } from '../cloudAgentSession';
 
 const streamHandlers: Array<(payload: unknown) => void> = [];
 
@@ -21,10 +21,10 @@ function setBindings(bindings: Record<string, (...args: never[]) => Promise<unkn
 
 describe('cloud agent page', () => {
     afterEach(() => {
+        cleanup();
         resetCloudAgentRounds();
         streamHandlers.length = 0;
         delete (window as unknown as { go?: unknown }).go;
-        cleanup();
     });
 
     it('mounts 云端管理 and keeps an empty project path on the grant session key', async () => {
@@ -335,5 +335,80 @@ describe('cloud agent page', () => {
         expect(cards).toHaveLength(1);
         expect((cards[0] as any).actions.map((action: any) => action.command)).toEqual(['仅这一次', '本任务内允许', '拒绝']);
         expect(round.body).toContain('请确认推送');
+    });
+
+    it('drops a confirmation when the main panel expires that ask', async () => {
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1', title: 'ship' }] });
+            return '{}';
+        });
+        setBindings({
+            ListCloudAgents: vi.fn(async () => [{ id: 'cag_1', name: 'demo', kind: 'coding', status: 'idle' }]),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_1'));
+        fireEvent.click(await screen.findByTestId('cloud-agent-task-task-1'));
+        await waitFor(() => expect(streamHandlers.length).toBeGreaterThan(0));
+        await act(async () => {
+            streamHandlers[0](JSON.stringify({
+                grant_id: 'grant-1',
+                session_key: 'cloud-agent:cag_1:task-1',
+                project_path: '',
+                event: 'response',
+                cursor: 1,
+                text: '请确认推送',
+                terminal: {
+                    text: '请确认推送',
+                    confirmation: { id: 'commit-approval;task-1' },
+                    actions: [{ label: '仅这一次', command: '仅这一次' }],
+                },
+            }));
+        });
+        expect(await screen.findByText('仅这一次')).toBeTruthy();
+        const key = cloudAgentStoreKey('grant-1', cloudAgentSessionKey('cag_1', 'task-1'));
+        await act(async () => {
+            expireCloudAgentCards(key);
+        });
+        await waitFor(() => expect(screen.queryByText('仅这一次')).toBeNull());
+    });
+
+    it('stop closes the ask because cancel does not stream a response', async () => {
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1', title: 'ship' }] });
+            if (name === 'cloud_stop_task') return JSON.stringify({ ok: true, cancelled: ['req-1'] });
+            return '{}';
+        });
+        setBindings({
+            ListCloudAgents: vi.fn(async () => [{ id: 'cag_1', name: 'demo', kind: 'coding', status: 'idle' }]),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_1'));
+        fireEvent.click(await screen.findByTestId('cloud-agent-task-task-1'));
+        await waitFor(() => expect(streamHandlers.length).toBeGreaterThan(0));
+        await act(async () => {
+            streamHandlers[0](JSON.stringify({
+                grant_id: 'grant-1',
+                session_key: 'cloud-agent:cag_1:task-1',
+                project_path: '',
+                event: 'response',
+                cursor: 1,
+                text: '请确认推送',
+                terminal: {
+                    text: '请确认推送',
+                    confirmation: { id: 'commit-approval;task-1' },
+                    actions: [{ label: '仅这一次', command: '仅这一次' }],
+                },
+            }));
+        });
+        expect(await screen.findByText('仅这一次')).toBeTruthy();
+        fireEvent.click(screen.getByText('停止'));
+        await waitFor(() => expect(op.mock.calls.some((call) => call[1] === 'cloud_stop_task')).toBe(true));
+        await waitFor(() => expect(screen.queryByText('仅这一次')).toBeNull());
+        const key = cloudAgentStoreKey('grant-1', cloudAgentSessionKey('cag_1', 'task-1'));
+        expect(cloudAgentRound(key).responded).toBe(true);
     });
 });

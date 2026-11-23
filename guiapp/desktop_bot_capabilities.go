@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/botcapability"
+	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/corelib/mcp"
 )
 
@@ -470,7 +471,30 @@ func (a *App) localRelayMCPHost(ctx context.Context, toolName, argsJSON string) 
 	}
 	// The access log shows who started the task. No bearer key crosses Hub.
 	ctx = context.WithValue(ctx, mcpClientInfoContextKey{}, mcpClientInfo{IP: "desktop-bot"})
-	return mcpCallHostTool(ctx, a, toolName, argsJSON)
+	text, err := mcpCallHostTool(ctx, a, toolName, argsJSON)
+	if err != nil {
+		msg := mcpHostRelayRedact(err.Error(), argsJSON)
+		if msg == err.Error() {
+			return "", err
+		}
+		return "", errors.New(msg)
+	}
+	return mcpHostRelayRedact(text, argsJSON), nil
+}
+
+// mcpHostRelayRedact removes an SSH password from a result before it is
+// written back across Hub. JSON escapes & and <, so the raw password and
+// that encoding are both covered.
+func mcpHostRelayRedact(text, argsJSON string) string {
+	var obj map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(argsJSON)), &obj) != nil {
+		return text
+	}
+	for _, key := range []string{"ssh_password", "sshPassword", "password"} {
+		secret, _ := obj[key].(string)
+		text = localrelay.RedactSecret(text, secret)
+	}
+	return text
 }
 
 // mcpCallHostTool runs one MCP task tool in-process, the same dispatcher the

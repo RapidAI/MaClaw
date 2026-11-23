@@ -1,6 +1,17 @@
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 
 const rounds = new Map<string, ViewerReduceState>();
+const roundListeners = new Set<() => void>();
+
+function notifyRounds() {
+    roundListeners.forEach(listener => listener());
+}
+
+/** Both the main panel and the cloud page read this store. */
+export function subscribeCloudAgentRounds(listener: () => void): () => void {
+    roundListeners.add(listener);
+    return () => { roundListeners.delete(listener); };
+}
 
 export function cloudAgentSessionKey(instanceID: string, taskID: string): string {
     const instance = instanceID.trim();
@@ -22,7 +33,9 @@ export function cloudAgentRound(key: string): ViewerReduceState {
 }
 
 export function resetCloudAgentRounds(): void {
+    if (rounds.size === 0) return;
     rounds.clear();
+    notifyRounds();
 }
 
 type CloudFrame = Record<string, unknown>;
@@ -86,14 +99,26 @@ export function reduceCloudAgentEvent(state: ViewerReduceState, event: CloudFram
     return reduceViewerEvent(state, nextEvent);
 }
 
-/** Fold a cloud_watch_task snapshot onto this grant and session. */
-export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapshot: unknown): string {
+/** Fold a cloud_watch_task snapshot onto this grant and session.
+ * The snapshot is the authority for this task, except for frames that
+ * arrived after this watch was issued: a late snapshot must not wipe them.
+ * Pass that issued cursor as baselineCursor. Omit it to always apply. */
+export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapshot: unknown, baselineCursor?: number): string {
     const key = cloudAgentStoreKey(grantID, sessionKey);
     if (!key) return '';
     const live = frameOf(snapshot);
     const cursor = Number(live.cursor);
     const shaped = typeof live.session_key === 'string' || Array.isArray(live.parts) || Number.isFinite(cursor);
-    if (!shaped || !Number.isFinite(cursor) || cursor <= 0) return '';
+    if (!shaped) return '';
+    const stored = rounds.get(key);
+    const storedLast = stored?.last ?? 0;
+    const floor = typeof baselineCursor === 'number' && Number.isFinite(baselineCursor) ? baselineCursor : storedLast;
+    if (stored && storedLast > floor && (!Number.isFinite(cursor) || cursor < storedLast)) return key;
+    rounds.delete(key);
+    if (!Number.isFinite(cursor) || cursor <= 0) {
+        notifyRounds();
+        return key;
+    }
     const event: CloudFrame = {
         grant_id: grantID,
         session_key: sessionKey,
@@ -103,7 +128,7 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
         cursor,
         live: { ...live, project_path: '' },
     };
-    let round = reduceCloudAgentEvent(cloudAgentRound(key), event);
+    let round = reduceCloudAgentEvent(emptyViewerState(), event);
     const terminal = live.terminal;
     const hasCard = round.cards.some((card) => !card.expired && card.kind === 'confirmation');
     if (!hasCard && terminal && typeof terminal === 'object') {
@@ -116,15 +141,37 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
         });
     }
     rounds.set(key, round);
+    notifyRounds();
     return key;
 }
 
-/** Store one stream payload. Returns the store key, or empty when the frame is not a cloud task. */
+/** Store one stream payload. Returns the store key, or empty when the frame is not a cloud task.
+ * A new request owns the round, so an ask from the previous request is closed. */
 export function applyCloudAgentStream(payload: unknown): string {
     const event = frameOf(payload);
     const key = cloudAgentStoreKey(String(event.grant_id || ''), String(event.session_key || ''));
     if (!key) return '';
+    const previousId = cloudAgentRound(key).requestId;
     const next = reduceCloudAgentEvent(cloudAgentRound(key), event);
+    if (next.requestId && previousId && next.requestId !== previousId) {
+        for (const card of next.cards) {
+            if (card.requestId !== next.requestId) card.expired = true;
+        }
+    }
     rounds.set(key, next);
+    notifyRounds();
     return key;
+}
+
+/** The open ask belonged to a turn that has been sent or cancelled. */
+export function expireCloudAgentCards(key: string): void {
+    const round = rounds.get(key);
+    if (!round) return;
+    let changed = false;
+    for (const card of round.cards) {
+        if (card.expired) continue;
+        card.expired = true;
+        changed = true;
+    }
+    if (changed) notifyRounds();
 }

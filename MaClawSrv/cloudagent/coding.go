@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 )
 
@@ -93,7 +94,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		cfg:     cfg,
 	}
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
-	result := agent.RunLoop(host, text, codingHistory(history), rt.httpClient)
+	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
 		return "", true
 	}

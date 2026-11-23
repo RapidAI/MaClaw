@@ -7,6 +7,7 @@ import {
     cloudAgentRound,
     cloudAgentSessionKey,
     cloudAgentStoreKey,
+    expireCloudAgentCards,
 } from './cloudAgentSession';
 import {
     bindRemoteAssistantActions,
@@ -15,7 +16,7 @@ import {
     type RemoteLivePart,
     type RemoteLiveRound,
 } from './remoteAssistantSession';
-import { asCloudAgentListItem, rememberCloudOpen, type CloudAgentListItem } from './taskPlace';
+import { asCloudAgentListItem, cloudTurnRunning, noteCloudTurn, rememberCloudOpen, type CloudAgentListItem } from './taskPlace';
 
 type Binding = (...args: unknown[]) => Promise<unknown>;
 
@@ -27,7 +28,17 @@ type Owner = {
     taskId: string;
     history: string[];
     historyRequest: string;
+    /** Bumped when a send appends a line. A fetch from before that send is stale. */
+    historyEpoch: number;
+    /** Bumped when a history fetch starts. Only the latest fetch may write. */
+    historyLoad: number;
     error: string;
+    /** A send was accepted and this round has not closed. */
+    pending: boolean;
+    /** Request id already stored when the send left. The same closed round must not end the wait. */
+    pendingBaseline: string;
+    /** cloud_stop_task is in flight. The stream does not announce the cancel. */
+    stopping: boolean;
 };
 
 let generation = 0;
@@ -89,6 +100,102 @@ function stripOrigin(text: string): string {
     return text.replace(/^〔[^〕]*〕/, '').trim();
 }
 
+function currentRound(current: Owner): ReturnType<typeof cloudAgentRound> | null {
+    const storeKey = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
+    return storeKey ? cloudAgentRound(storeKey) : null;
+}
+
+function roundHasWork(round: ReturnType<typeof cloudAgentRound> | null): boolean {
+    if (!round) return false;
+    if (round.requestId) return true;
+    if ((round.visible || round.body).trim()) return true;
+    if (round.thinking.some(block => block.text.trim())) return true;
+    return round.timeline.length > 0;
+}
+
+/** The send's own round has responded. The round already on screen does not count. */
+function followUpClosed(round: ReturnType<typeof cloudAgentRound> | null, pending: boolean, baseline: string): boolean {
+    return pending && !!round?.responded && !!round.requestId && round.requestId !== baseline;
+}
+
+/** A send waits even when the previous round already responded. That round is not this send. */
+function turnPhase(round: ReturnType<typeof cloudAgentRound> | null, pending: boolean, baseline: string): 'running' | 'idle' | 'unknown' {
+    if (pending && !followUpClosed(round, pending, baseline)) return 'running';
+    if (round?.responded) return 'idle';
+    if (roundHasWork(round)) return 'running';
+    return 'unknown';
+}
+
+function instanceIdFromStoreKey(key: string): string {
+    const breakAt = key.indexOf('\n');
+    const session = breakAt < 0 ? '' : key.slice(breakAt + 1);
+    const prefix = 'cloud-agent:';
+    if (!session.startsWith(prefix)) return '';
+    const rest = session.slice(prefix.length);
+    const split = rest.indexOf(':');
+    return split < 0 ? '' : rest.slice(0, split);
+}
+
+/** Instance id to the request id already on screen when its send left. */
+const awaitingBaseline = new Map<string, string>();
+
+function setAwaiting(current: Owner) {
+    awaitingBaseline.set(current.item.id, current.pendingBaseline);
+}
+
+function clearAwaiting(instanceId: string) {
+    awaitingBaseline.delete(instanceId);
+}
+
+/** A responded round closes the wait only when it is not the round the send already saw. */
+function awaitingClosed(instanceId: string, round: ReturnType<typeof cloudAgentRound> | null): boolean {
+    const baseline = awaitingBaseline.get(instanceId);
+    if (baseline === undefined) return true;
+    return !!round?.responded && !!round.requestId && round.requestId !== baseline;
+}
+
+/** Project one observed turn onto the list. An unknown phase leaves the last observation. */
+function observeTurn(current: Owner, round: ReturnType<typeof cloudAgentRound> | null): boolean {
+    if (followUpClosed(round, current.pending, current.pendingBaseline)) {
+        current.pending = false;
+        clearAwaiting(current.item.id);
+    }
+    const phase = turnPhase(round, current.pending, current.pendingBaseline);
+    if (phase === 'running') noteCloudTurn(current.item.id, true);
+    else if (phase === 'idle') noteCloudTurn(current.item.id, false);
+    if (phase === 'idle') return false;
+    if (phase === 'running') return true;
+    return cloudTurnRunning(current.item.id, current.item.status);
+}
+
+/** A watch snapshot replaces the stored round, so it also replaces the list mark.
+ * baselineCursor is the cursor already stored when the watch was issued. */
+function applyWatchedTurn(instanceId: string, grant: string, session: string, snapshot: unknown, baselineCursor: number) {
+    const key = applyCloudAgentWatch(grant, session, snapshot, baselineCursor);
+    if (!key) return;
+    const round = cloudAgentRound(key);
+    const running = !round.responded && roundHasWork(round);
+    const pendingHere = !!owner && owner.pending && owner.item.id === instanceId;
+    // A detached send must not keep 进行中 after this watch shows the lane is idle.
+    if (running || pendingHere) {
+        if (awaitingClosed(instanceId, round)) clearAwaiting(instanceId);
+        noteCloudTurn(instanceId, true);
+        return;
+    }
+    clearAwaiting(instanceId);
+    noteCloudTurn(instanceId, false);
+}
+
+/** The send did not start a turn. Drop the in-flight mark when the list is not running. */
+function dropUnansweredSend(current: Owner) {
+    current.pending = false;
+    clearAwaiting(current.item.id);
+    const round = currentRound(current);
+    const phase = turnPhase(round, false, current.pendingBaseline);
+    if (phase === 'running') return;
+    if (phase === 'idle' || current.item.status !== 'running') noteCloudTurn(current.item.id, false);
+}
+
 /** The same live round a remote task projects: draft body, thinking, and progress. */
 function cloudLive(round: ReturnType<typeof cloudAgentRound> | null): RemoteLiveRound | null {
     if (!round) return null;
@@ -130,7 +237,22 @@ function publishOwner() {
     const liveText = (round?.visible || round?.body || '').trim();
     const reasoning = (round?.thinking || []).map(block => block.text).filter(Boolean).join('\n\n');
     const last = messages[messages.length - 1];
-    if (liveText && last && last.role !== 'user' && last.content.trim() === liveText) {
+    // The round still on screen is the one this send already saw. Keep it above
+    // the new line; a later request paints its own text after that line.
+    const previousRound = current.pending && !!round?.requestId && round.requestId === current.pendingBaseline;
+    if (previousRound && last?.role === 'user') {
+        const prior = messages.slice(0, -1);
+        const seen = !!liveText && prior.some(message => message.role !== 'user' && message.content.trim() === liveText);
+        if (!seen && (liveText || reasoning)) {
+            messages.splice(messages.length - 1, 0, {
+                role: 'assistant',
+                content: liveText,
+                reasoning: reasoning || undefined,
+                remoteLive: true,
+                liveThinking: !!round?.thinking.some(block => !block.done),
+            });
+        }
+    } else if (liveText && last && last.role !== 'user' && last.content.trim() === liveText) {
         if (reasoning && !last.reasoning) last.reasoning = reasoning;
     } else if (liveText || reasoning) {
         messages.push({
@@ -172,7 +294,8 @@ function publishOwner() {
         offline: false,
         error: current.error,
         loading: !current.grant && !current.error,
-        busy: current.item.status === 'running' || (!!live && !live.responded),
+        busy: observeTurn(current, round),
+        activity: current.stopping ? { stopping: true } : undefined,
         live,
         messages,
     });
@@ -187,30 +310,75 @@ function ensureStream() {
     if (streamOff) return;
     const off = EventsOn('remote-control:stream', (payload: unknown) => {
         const key = applyCloudAgentStream(payload);
+        if (!key) return;
         const current = owner;
-        if (!current || !key) return;
-        const want = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
-        if (key !== want) return;
+        const want = current ? cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId)) : '';
+        if (!current || key !== want) {
+            const instanceId = instanceIdFromStoreKey(key);
+            const streamed = cloudAgentRound(key);
+            if (!instanceId) return;
+            if (streamed.responded && awaitingClosed(instanceId, streamed)) {
+                clearAwaiting(instanceId);
+                noteCloudTurn(instanceId, false);
+            } else if (!streamed.responded && roundHasWork(streamed)) {
+                noteCloudTurn(instanceId, true);
+            }
+            return;
+        }
         if (current.error) current.error = '';
         publishOwner();
         const round = cloudAgentRound(key);
         if (round.responded && round.requestId && current.historyRequest !== round.requestId) {
             current.historyRequest = round.requestId;
-            void reloadHistory(current.generation);
+            const ticket = takeHistoryTicket(current);
+            void reloadHistory(current.generation, ticket);
         }
     });
     streamOff = typeof off === 'function' ? off : () => {};
 }
 
-async function reloadHistory(gen: number) {
+type HistoryTicket = { epoch: number; load: number };
+
+function takeHistoryTicket(current: Owner): HistoryTicket {
+    current.historyLoad += 1;
+    return { epoch: current.historyEpoch, load: current.historyLoad };
+}
+
+function userLineCount(lines: string[]): number {
+    return lines.reduce((count, line) => count + (line.startsWith('user\n') ? 1 : 0), 0);
+}
+
+/** Server history is the transcript, plus local user lines it does not have yet. */
+function keepUnackedUserLines(local: string[], incoming: string[]): string[] {
+    const missing = userLineCount(local) - userLineCount(incoming);
+    if (missing <= 0) return incoming;
+    const suffix: string[] = [];
+    for (let index = local.length - 1; index >= 0 && suffix.length < missing; index -= 1) {
+        if (!local[index].startsWith('user\n')) break;
+        suffix.push(local[index]);
+    }
+    if (suffix.length !== missing) return incoming;
+    suffix.reverse();
+    return [...incoming, ...suffix];
+}
+
+/** A fetch writes only when no send and no newer fetch has happened since it started. */
+function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boolean {
+    if (current.historyEpoch !== ticket.epoch || current.historyLoad !== ticket.load) return false;
+    const body = parseJSON<{ messages?: string[] }>(raw, {});
+    const incoming = Array.isArray(body.messages) ? body.messages : [];
+    current.history = keepUnackedUserLines(current.history, incoming);
+    return true;
+}
+
+async function reloadHistory(gen: number, ticket: HistoryTicket) {
     const current = owner;
     const op = binding('RemoteControlOp');
     if (!current || current.generation !== gen || !op || !current.grant || !current.taskId) return;
     try {
         const raw = await op(current.grant, 'cloud_get_task', JSON.stringify({ task_id: current.taskId }));
         if (!owner || owner.generation !== gen) return;
-        const body = parseJSON<{ messages?: string[] }>(raw, {});
-        owner.history = Array.isArray(body.messages) ? body.messages : [];
+        if (!acceptHistory(owner, ticket, raw)) return;
         publishOwner();
     } catch {
         // The live round still shows what already arrived.
@@ -229,6 +397,7 @@ export function releaseCloudAssistant() {
 export function resetCloudAssistantForTests() {
     generation += 1;
     owner = null;
+    awaitingBaseline.clear();
     if (streamOff) {
         const off = streamOff;
         streamOff = null;
@@ -254,6 +423,10 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
     const current = owner;
     const op = binding('RemoteControlOp');
     if (!current || current.generation !== gen || !op || !current.grant || !outgoing) return false;
+    current.pending = true;
+    current.pendingBaseline = currentRound(current)?.requestId || '';
+    setAwaiting(current);
+    publishOwner();
     try {
         let taskId = current.taskId;
         if (!taskId) {
@@ -264,25 +437,45 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
                 {},
             );
             taskId = String(created.task_id || '').trim();
-            if (!owner || owner.generation !== gen || !taskId) return false;
+            if (!owner || owner.generation !== gen || !taskId) {
+                if (owner && owner.generation === gen) {
+                    dropUnansweredSend(owner);
+                    publishOwner();
+                } else {
+                    dropUnansweredSend(current);
+                }
+                return false;
+            }
             owner.taskId = taskId;
             const session = cloudAgentSessionKey(current.item.id, taskId);
+            const baseline = cloudAgentRound(cloudAgentStoreKey(current.grant, session)).last;
             const watchRaw = await op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: taskId, session_key: session }));
-            applyCloudAgentWatch(current.grant, session, parseJSON(watchRaw, {}));
+            applyWatchedTurn(current.item.id, current.grant, session, parseJSON(watchRaw, {}), baseline);
         }
-        if (!owner || owner.generation !== gen) return false;
+        if (!owner || owner.generation !== gen) {
+            dropUnansweredSend(current);
+            return false;
+        }
         await op(current.grant, 'cloud_send_message', JSON.stringify({
-            task_id: owner.taskId,
+            task_id: current.taskId,
             text: outgoing,
             client_message_id: `cm_${Date.now()}`,
         }));
-        owner.history = [...owner.history, `user\n${outgoing}`];
-        owner.error = '';
+        const asked = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
+        if (asked) expireCloudAgentCards(asked);
+        current.historyEpoch += 1;
+        current.history = [...current.history, `user\n${outgoing}`];
+        current.error = '';
+        if (!owner || owner.generation !== gen) return true;
         publishOwner();
         return true;
     } catch (err) {
-        if (!owner || owner.generation !== gen) return false;
+        if (!owner || owner.generation !== gen) {
+            dropUnansweredSend(current);
+            return false;
+        }
         owner.error = err instanceof Error ? err.message : String(err);
+        dropUnansweredSend(owner);
         publishOwner();
         return false;
     }
@@ -292,10 +485,31 @@ async function stopCloud(gen: number): Promise<boolean> {
     const current = owner;
     const op = binding('RemoteControlOp');
     if (!current || current.generation !== gen || !op || !current.grant || !current.taskId) return false;
+    current.stopping = true;
+    publishOwner();
     try {
         await op(current.grant, 'cloud_stop_task', JSON.stringify({ task_id: current.taskId }));
+        // Cancel returns without a stream frame. Close this instance's round
+        // even when the panel has already moved to another task.
+        const session = cloudAgentSessionKey(current.item.id, current.taskId);
+        applyCloudAgentStream({
+            grant_id: current.grant,
+            session_key: session,
+            project_path: '',
+            event: 'response',
+        });
+        expireCloudAgentCards(cloudAgentStoreKey(current.grant, session));
+        current.stopping = false;
+        current.pending = false;
+        clearAwaiting(current.item.id);
+        noteCloudTurn(current.item.id, false);
+        if (!owner || owner.generation !== gen) return true;
+        publishOwner();
         return true;
     } catch {
+        current.stopping = false;
+        if (!owner || owner.generation !== gen) return false;
+        publishOwner();
         return false;
     }
 }
@@ -307,7 +521,7 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyRequest: '', error: '' };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false };
     notify();
     ensureStream();
     publishOwner();
@@ -338,13 +552,14 @@ export async function openCloudAgent(item: CloudAgentListItem, lang: string): Pr
         owner.taskId = taskId;
         if (taskId) {
             const session = cloudAgentSessionKey(item.id, taskId);
+            const baseline = cloudAgentRound(cloudAgentStoreKey(grant, session)).last;
             const watchRaw = await op(grant, 'cloud_watch_task', JSON.stringify({ task_id: taskId, session_key: session }));
             if (!owner || owner.generation !== gen) return;
-            applyCloudAgentWatch(grant, session, parseJSON(watchRaw, {}));
+            applyWatchedTurn(item.id, grant, session, parseJSON(watchRaw, {}), baseline);
+            const ticket = takeHistoryTicket(owner);
             const raw = await op(grant, 'cloud_get_task', JSON.stringify({ task_id: taskId }));
             if (!owner || owner.generation !== gen) return;
-            const body = parseJSON<{ messages?: string[] }>(raw, {});
-            owner.history = Array.isArray(body.messages) ? body.messages : [];
+            acceptHistory(owner, ticket, raw);
         }
         publishOwner();
     } catch (err) {
@@ -352,6 +567,19 @@ export async function openCloudAgent(item: CloudAgentListItem, lang: string): Pr
         owner.error = err instanceof Error ? err.message : String(err);
         publishOwner();
     }
+}
+
+/** Send through the open panel when it is already on this instance and task. */
+export function sendShownCloudAgent(instanceId: string, taskId: string, text: string): Promise<boolean> | null {
+    if (!owner || owner.item.id !== instanceId || !owner.grant) return null;
+    if ((taskId || '') !== (owner.taskId || '')) return null;
+    return sendCloud(owner.generation, text);
+}
+
+/** Stop through the open panel when it is already on this instance and task. */
+export function stopShownCloudAgent(instanceId: string, taskId: string): Promise<boolean> | null {
+    if (!owner || owner.item.id !== instanceId || owner.taskId !== taskId) return null;
+    return stopCloud(owner.generation);
 }
 
 export function cloudAgentsFromList(value: unknown): CloudAgentListItem[] {

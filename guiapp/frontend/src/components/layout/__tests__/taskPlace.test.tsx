@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+    CloudAgentListRow,
     TaskPlaceIcon,
     asCloudAgentListItem,
     cloudAgentRecency,
+    cloudTurnRunning,
     mixRecentEntries,
+    noteCloudTurn,
     readCloudOpenStamps,
     rememberCloudOpen,
+    resetCloudTurnNotes,
     taskPlaceStamp,
 } from '../taskPlace';
 
@@ -16,6 +20,7 @@ const OPEN_STAMP_KEY = 'maclaw.cloud-agent-opened.v1';
 afterEach(() => {
     localStorage.removeItem(OPEN_STAMP_KEY);
     cleanup();
+    resetCloudTurnNotes();
 });
 
 describe('task place', () => {
@@ -69,5 +74,18 @@ describe('task place', () => {
         expect(screen.getByTestId('task-place-icon-local').getAttribute('aria-label')).toBe('本地任务');
         expect(screen.getByTestId('task-place-icon-cloud').getAttribute('aria-label')).toBe('云端任务');
         expect(screen.getByTestId('task-place-icon-cloud').innerHTML).not.toContain('M12 13v5');
+    });
+
+    it('shows 进行中 from the live turn, not a frozen list status', () => {
+        const row = { id: 'cag_1', name: '演示', kind: 'session', status: 'running', updatedAt: '' };
+        const { rerender } = render(<CloudAgentListRow item={row} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toContain('进行中');
+        act(() => { noteCloudTurn('cag_1', false); });
+        rerender(<CloudAgentListRow item={row} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toBe('会话');
+        expect(cloudTurnRunning('cag_1', 'running')).toBe(false);
+        act(() => { noteCloudTurn('cag_1', true); });
+        rerender(<CloudAgentListRow item={{ ...row, status: 'idle' }} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toContain('进行中');
     });
 });

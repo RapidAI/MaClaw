@@ -4,10 +4,14 @@ import { localizeText } from '../../i18n';
 import {
     applyCloudAgentStream,
     applyCloudAgentWatch,
+    expireCloudAgentCards,
     cloudAgentRound,
     cloudAgentSessionKey,
     cloudAgentStoreKey,
+    subscribeCloudAgentRounds,
 } from './cloudAgentSession';
+import { cloudAssistantInstanceId, sendShownCloudAgent, stopShownCloudAgent } from './cloudAgentAssistant';
+import { noteCloudTurn } from './taskPlace';
 
 type CloudAgentRow = {
     id: string;
@@ -101,6 +105,10 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         });
     }, []);
 
+    useEffect(() => subscribeCloudAgentRounds(() => {
+        refreshLive();
+    }), []);
+
     useEffect(() => {
         const off = EventsOn('remote-control:stream', (payload: unknown) => {
             const key = applyCloudAgentStream(payload);
@@ -152,14 +160,18 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         const op = appBinding('RemoteControlOp');
         const current = selected.current;
         if (!op || !current.grant) return;
+        const generation = openGeneration.current;
         setChoices([]);
         setLive('');
         selected.current = { ...current, task: task.id };
         const session = cloudAgentSessionKey(current.instance, task.id);
+        const baseline = cloudAgentRound(cloudAgentStoreKey(current.grant, session)).last;
         try {
             const watchRaw = await op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: task.id, session_key: session }));
-            applyCloudAgentWatch(current.grant, session, parseJSON(watchRaw, {}));
+            applyCloudAgentWatch(current.grant, session, parseJSON(watchRaw, {}), baseline);
+            if (generation !== openGeneration.current || selected.current.instance !== current.instance || selected.current.task !== task.id) return;
             const raw = await op(current.grant, 'cloud_get_task', JSON.stringify({ task_id: task.id }));
+            if (generation !== openGeneration.current || selected.current.instance !== current.instance || selected.current.task !== task.id) return;
             const body = parseJSON<{ messages?: string[] }>(raw, {});
             const history = Array.isArray(body.messages) ? body.messages.join('\n') : '';
             const key = cloudAgentStoreKey(current.grant, session);
@@ -170,7 +182,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
             else setLive('');
             refreshLive();
         } catch (err) {
-            fail(err);
+            if (generation === openGeneration.current && selected.current.instance === current.instance) fail(err);
         }
     };
 
@@ -194,6 +206,17 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         const current = selected.current;
         const outgoing = message.trim();
         if (!op || !current.grant || !outgoing) return;
+        const generation = openGeneration.current;
+        const shown = sendShownCloudAgent(current.instance, current.task, outgoing);
+        if (shown) {
+            setChoices([]);
+            setError('');
+            const ok = await shown;
+            if (!ok || generation !== openGeneration.current || selected.current.instance !== current.instance) return;
+            setDraft('');
+            refreshLive();
+            return;
+        }
         setChoices([]);
         setError('');
         try {
@@ -205,25 +228,32 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 );
                 taskID = String(created.task_id || '').trim();
                 if (!taskID) {
-                    setError(text('The cloud task was not created', '云端任务没有创建', '雲端任務沒有建立'));
+                    if (generation === openGeneration.current && selected.current.instance === current.instance) {
+                        setError(text('The cloud task was not created', '云端任务没有创建', '雲端任務沒有建立'));
+                    }
                     return;
                 }
-                selected.current = { ...current, task: taskID };
-                const title = Array.from(outgoing).slice(0, 48).join('');
-                setTasks((prev) => (prev.some((item) => item.id === taskID) ? prev : [...prev, { id: taskID, title }]));
                 const session = cloudAgentSessionKey(current.instance, taskID);
+                const baseline = cloudAgentRound(cloudAgentStoreKey(current.grant, session)).last;
+                if (generation === openGeneration.current && selected.current.instance === current.instance) {
+                    selected.current = { ...current, task: taskID };
+                    const title = Array.from(outgoing).slice(0, 48).join('');
+                    setTasks((prev) => (prev.some((item) => item.id === taskID) ? prev : [...prev, { id: taskID, title }]));
+                }
                 const watchRaw = await op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: taskID, session_key: session }));
-                applyCloudAgentWatch(current.grant, session, parseJSON(watchRaw, {}));
+                applyCloudAgentWatch(current.grant, session, parseJSON(watchRaw, {}), baseline);
             }
             await op(current.grant, 'cloud_send_message', JSON.stringify({
                 task_id: taskID,
                 text: outgoing,
                 client_message_id: `cm_${Date.now()}`,
             }));
+            expireCloudAgentCards(cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.instance, taskID)));
+            if (generation !== openGeneration.current || selected.current.instance !== current.instance) return;
             setDraft('');
             refreshLive();
         } catch (err) {
-            fail(err);
+            if (generation === openGeneration.current && selected.current.instance === current.instance) fail(err);
         }
     };
 
@@ -255,10 +285,27 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         const op = appBinding('RemoteControlOp');
         const current = selected.current;
         if (!op || !current.grant || !current.task) return;
+        const generation = openGeneration.current;
+        const shown = stopShownCloudAgent(current.instance, current.task);
+        if (shown) {
+            await shown;
+            return;
+        }
         try {
             await op(current.grant, 'cloud_stop_task', JSON.stringify({ task_id: current.task }));
+            const session = cloudAgentSessionKey(current.instance, current.task);
+            applyCloudAgentStream({
+                grant_id: current.grant,
+                session_key: session,
+                project_path: '',
+                event: 'response',
+            });
+            expireCloudAgentCards(cloudAgentStoreKey(current.grant, session));
+            if (cloudAssistantInstanceId() !== current.instance) noteCloudTurn(current.instance, false);
+            if (generation !== openGeneration.current || selected.current.instance !== current.instance) return;
+            refreshLive();
         } catch (err) {
-            fail(err);
+            if (generation === openGeneration.current && selected.current.instance === current.instance) fail(err);
         }
     };
 

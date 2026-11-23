@@ -72,6 +72,51 @@ export function useCloudOpenRevision(): number {
     );
 }
 
+/** Last observed turn. Absent means the list status is still the authority. */
+const turnListeners = new Set<() => void>();
+let turnNotes = new Map<string, boolean>();
+let turnVersion = 0;
+
+function notifyTurns() {
+    turnVersion += 1;
+    turnListeners.forEach(listener => listener());
+}
+
+/** Record whether this instance's turn is in flight. The same value does not notify. */
+export function noteCloudTurn(id: string, running: boolean): void {
+    const key = id.trim();
+    if (!key || turnNotes.get(key) === running) return;
+    const next = new Map(turnNotes);
+    next.set(key, running);
+    turnNotes = next;
+    notifyTurns();
+}
+
+/** In-flight when we have seen it, otherwise the list row's own status. */
+export function cloudTurnRunning(id: string, listStatus: string): boolean {
+    const noted = turnNotes.get(id);
+    if (noted !== undefined) return noted;
+    return listStatus === 'running';
+}
+
+export function useCloudTurnRunning(id: string, listStatus: string): boolean {
+    useSyncExternalStore(
+        (listener: () => void) => {
+            turnListeners.add(listener);
+            return () => turnListeners.delete(listener);
+        },
+        () => turnVersion,
+        () => 0,
+    );
+    return cloudTurnRunning(id, listStatus);
+}
+
+export function resetCloudTurnNotes(): void {
+    if (turnNotes.size === 0) return;
+    turnNotes = new Map();
+    notifyTurns();
+}
+
 function textOf(row: Record<string, unknown>, ...keys: string[]): string {
     for (const key of keys) {
         const value = row[key];
@@ -206,7 +251,7 @@ export function CloudAgentListRow({
 }) {
     const title = item.name || item.id;
     const kind = cloudAgentKindLabel(item.kind, lang);
-    const running = item.status === 'running';
+    const running = useCloudTurnRunning(item.id, item.status);
     const kindLine = running
         ? `${kind} · ${localizeText(lang, 'In progress', '进行中', '進行中')}`
         : kind;

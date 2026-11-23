@@ -31,10 +31,20 @@ echo "  x86_64 ok"
 
 # The c-shared build links libc++_shared.so; a plain APK does not ship it, so
 # dlopen fails and the app reports "no local engine". Copy it beside each ABI.
+# NDK sysroot libraries are named by LLVM target triple (aarch64-linux-android),
+# not by APK ABI folder.
 for abi in arm64-v8a x86_64; do
-  src=$(find "$NDK/toolchains/llvm/prebuilt" -name libc++_shared.so -path "*$abi*" | head -1)
+  triple="$abi"
+  case "$abi" in
+    arm64-v8a) triple="aarch64-linux-android" ;;
+    x86_64)    triple="x86_64-linux-android" ;;
+  esac
+  src=$(find "$NDK/toolchains/llvm/prebuilt" -name libc++_shared.so -path "*$triple*" 2>/dev/null | head -1)
   if [ -z "$src" ]; then
-    echo "libc++_shared.so for $abi not found in NDK $NDK" >&2
+    src=$(find "$NDK/toolchains/llvm/prebuilt" -name libc++_shared.so -path "*$abi*" 2>/dev/null | head -1)
+  fi
+  if [ -z "$src" ]; then
+    echo "libc++_shared.so for $abi (triple=$triple) not found in NDK $NDK" >&2
     exit 1
   fi
   cp "$src" "$OUT/$abi/libc++_shared.so"
