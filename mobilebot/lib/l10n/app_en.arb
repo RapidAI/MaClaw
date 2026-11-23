@@ -610,6 +610,14 @@
   "chatAsrUnavailableDownloading": "Speech recognition unavailable: the local model is still downloading (~250 MB). Try again later, or check progress in Me -> Voice",
   "chatNotHeard": "Didn't catch that, please try again",
   "chatAsrFailed": "Speech recognition failed, please retry",
+  "chatAudioTooShort": "Recording too short (~{ms} ms); speak a little longer",
+  "@chatAudioTooShort": {
+    "placeholders": {
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
   "chatAsrFailedWith": "Speech recognition failed: {reason}",
   "@chatAsrFailedWith": {
     "placeholders": {

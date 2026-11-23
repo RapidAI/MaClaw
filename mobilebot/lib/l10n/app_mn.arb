@@ -610,6 +610,14 @@
   "chatAsrUnavailableDownloading": "Дуун танилт боломжгүй: локал модель татагдаж байна (~250MB). Дараа дахин оролдох эсвэл «Миний → Дуу хоолой»-с явцыг харна уу",
   "chatNotHeard": "Сонсож чадсангүй — дахин хэлнэ үү",
   "chatAsrFailed": "Дуун танилт амжилтгүй боллоо — дахин оролдоно уу",
+  "chatAudioTooShort": "Бичлэг хэт богино (~{ms} мс); жаахан урт ярина уу",
+  "@chatAudioTooShort": {
+    "placeholders": {
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
   "chatAsrFailedWith": "Дуу танихад алдаа гарлаа: {reason}",
   "@chatAsrFailedWith": {
     "placeholders": {

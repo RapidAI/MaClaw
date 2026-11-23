@@ -739,17 +739,28 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     // 权限/开麦失败时 _capturePcm 已 toast。未挂载则页面已走，不必再提示。
     if (pcm == null || !mounted) return;
     if (pcm.length < 32000) {
-      _toast(S.chatNotHeard);
+      // 只有几百毫秒采样时给具体数字，否则「没听清」和「没开麦」分不清。
+      _toast(S.chatAudioTooShort(-(-pcm.length ~/ 32)));
       return;
     }
+    // 识别期间显示「识别中」，并记录推理阶段：推理卡住不再静默。
+    if (mounted) setState(() => _recognizing = true);
+    engine.onTranscribeStage = (stage) {
+      if (!mounted || stage != 'transcribing') return;
+      setState(() => _recognizing = true);
+    };
     try {
       final text = (await engine.transcribe(pcm)).trim();
+      if (mounted) setState(() => _recognizing = false);
+      engine.onTranscribeStage = null;
       if (RegExp(r'[\w一-鿿]{2,}').hasMatch(text)) {
         _appendInput(text);
       } else {
         _toast(S.chatNotHeard);
       }
     } on Object catch (error) {
+      engine.onTranscribeStage = null;
+      if (mounted) setState(() => _recognizing = false);
       if (!await engine.localAsrReady()) {
         // 权重校验/加载失败：文件已丢弃。选了本地才再试系统，和 Bot 输入框
         // 同一条件。系统路径失败后进来的调用方不再开麦。

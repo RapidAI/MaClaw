@@ -354,6 +354,14 @@
   "chatAsrUnavailableDownloading": "語音識別不可用：本地模型還在下載（約 250MB）。稍後再試，或到「我的 → 語音」看下載進度",
   "chatNotHeard": "沒聽清，請再試",
   "chatAsrFailed": "語音識別失敗，請重試",
+  "chatAudioTooShort": "錄音太短（約 {ms} 毫秒），請多說幾秒",
+  "@chatAudioTooShort": {
+    "placeholders": {
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
   "chatAsrFailedWith": "語音辨識失敗：{reason}",
   "@chatAsrFailedWith": {
     "placeholders": {

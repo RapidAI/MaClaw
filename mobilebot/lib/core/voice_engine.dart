@@ -3,6 +3,7 @@
 /// worker isolates so the UI thread never blocks on a 2–8s inference.
 library;
 
+import 'dart:async';
 import 'dart:isolate';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
@@ -280,12 +281,33 @@ class VoiceEngine {
     return future;
   }
 
+  /// Report each transcription step, so a silent microphone and a model that
+  /// never finishes inference do not both look like "nothing happened".
+  void Function(String stage)? onTranscribeStage;
+
+  /// Upper bound for one transcription. Phone inference is seconds; a
+  /// wedged native call used to leave the mic shut with no message at all.
+  static const transcribeTimeout = Duration(seconds: 45);
+
   /// PCM s16le mono 16 kHz → transcript (off-isolate).
   Future<String> transcribe(Uint8List pcm16) async {
+    onTranscribeStage?.call('loading');
     await _snapshotPaths();
     final err = await _ensureAsrLoaded();
     if (err != null) throw StateError(err);
-    return Isolate.run(() => NativeVoice.asr(pcm16));
+    onTranscribeStage?.call('transcribing');
+    try {
+      return await Isolate.run(() => NativeVoice.asr(pcm16))
+          .timeout(transcribeTimeout);
+    } on TimeoutException {
+      // Drop the cached manager: the stuck call owns the library mutex, so
+      // the next attempt must load it fresh.
+      _asrLoaded = false;
+      _asrPathSnapshot = null;
+      throw StateError('transcribe timed out');
+    } finally {
+      onTranscribeStage?.call('done');
+    }
   }
 
   void dispose() {

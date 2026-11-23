@@ -668,6 +668,14 @@
   "chatAsrUnavailableDownloading": "语音识别不可用：本地模型还在下载（约 250MB）。稍后再试，或到「我的 → 语音」看下载进度",
   "chatNotHeard": "没听清，请再试",
   "chatAsrFailed": "语音识别失败，请重试",
+  "chatAudioTooShort": "录音太短（约 {ms} 毫秒），请按住多说几秒",
+  "@chatAudioTooShort": {
+    "placeholders": {
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
   "chatAsrFailedWith": "语音识别失败：{reason}",
   "@chatAsrFailedWith": {
     "placeholders": {
