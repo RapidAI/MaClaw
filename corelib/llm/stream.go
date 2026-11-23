@@ -669,6 +669,12 @@ var sseStreamMaxLineBytes = 4 << 20
 // line. It is not a provider payload.
 const sseStreamLineTooLarge = "maclaw.sse_line_too_large"
 
+// sseStreamMaxSkippedLines bounds how many physical lines one scan may drop.
+// One oversized line is a cut the caller can recover from. A stream of them
+// is not a usable turn: continuing to skip would return a silently incomplete
+// response with no error.
+const sseStreamMaxSkippedLines = 8
+
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
 // not wait for the final [DONE] event: hosts use the live callback to keep the
@@ -702,9 +708,12 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 
 	scanner := bufio.NewScanner(body)
 	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
-	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
+	// Scanner reports ErrTooLong when its buffer is full and the split
+	// function has not advanced. The extra byte lets the splitter see a line
+	// past its window and skip to the next newline instead.
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes+1)
 	var lastPayload string
-	var skippedLine bool
+	var skippedLines int
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -712,7 +721,10 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			// One line that cannot fit is a cut, not a transport failure.
 			// Returning the prefix with an error makes the agent loop discard
 			// the deltas this scan already kept. Later lines may close the turn.
-			skippedLine = true
+			skippedLines++
+			if err := noteSkippedSSELine("OpenAI", skippedLines); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -826,6 +838,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		}
 	}
 	streamErr := scanner.Err()
+	skippedLine := skippedLines > 0
 	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !legacyFunctionCallSeen && !skippedLine {
 		return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
@@ -942,13 +955,16 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 
 	scanner := bufio.NewScanner(body)
 	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
-	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
-	var skippedLine bool
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes+1)
+	var skippedLines int
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == sseStreamLineTooLarge {
-			skippedLine = true
+			skippedLines++
+			if err := noteSkippedSSELine("Anthropic", skippedLines); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -1059,6 +1075,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 		}
 	}
 	streamErr := scanner.Err()
+	skippedLine := skippedLines > 0
 	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !skippedLine {
 		return nil, fmt.Errorf("Anthropic SSE stream read: %w", streamErr)
 	}
@@ -1108,13 +1125,34 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 }
 
 
+// noteSkippedSSELine records one dropped physical line. Past the cap the
+// scan stops: further skipping would hide a turn that is mostly missing.
+func noteSkippedSSELine(wire string, skipped int) error {
+	log.Printf("[LLM-stream] skipped oversized %s SSE line (%d/%d)", wire, skipped, sseStreamMaxSkippedLines)
+	if skipped > sseStreamMaxSkippedLines {
+		return fmt.Errorf("%s SSE stream skipped %d oversized lines", wire, skipped)
+	}
+	return nil
+}
+
 // sseFinishAfterSkippedLine marks a cut only when a skipped line may have
-// removed part of a tool call. A provider finish_reason already says how the
-// turn ended. Complete JSON arguments must still execute: treating every
+// removed part of the turn and the provider did not already close it.
+// A provider finish_reason stays: a later stop means the turn closed after
+// the gap. Complete JSON arguments must still execute: treating every
 // empty-argument call as truncated drops a call the provider closed.
+// An open turn with no text, reasoning, or tool call is also a cut. Leaving
+// finish_reason empty makes the agent loop count it as a consecutive empty
+// response and hard-exit, instead of the truncation recovery a skipped
+// Responses frame takes.
 func sseFinishAfterSkippedLine(finishReason string, msg *Message) string {
 	if finishReason != "" || msg == nil {
 		return finishReason
+	}
+	if strings.TrimSpace(msg.Content) != "" || strings.TrimSpace(msg.ReasoningContent) != "" {
+		return finishReason
+	}
+	if len(msg.ToolCalls) == 0 {
+		return "length"
 	}
 	for _, call := range msg.ToolCalls {
 		if !json.Valid([]byte(call.Function.Arguments)) {
@@ -1150,7 +1188,14 @@ func (s *sseLineSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
 
 func (s *sseLineSplitter) nextLine(data []byte, atEOF bool) (int, []byte, error) {
 	if advance, token, ok := sseDelimitedLine(data); ok {
-		return advance, token, nil
+		// A newline inside the scanner buffer is not proof the line fits.
+		// The buffer starts at 64 KiB and grows to the window, so an
+		// oversized line can still be delimited. Returning it would splice
+		// its tail into the next event. Skip the whole physical line.
+		if len(token) <= s.maxLine {
+			return advance, token, nil
+		}
+		return advance, []byte(sseStreamLineTooLarge), nil
 	}
 	if len(data) >= s.maxLine {
 		s.skipping = true

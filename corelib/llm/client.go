@@ -3287,13 +3287,16 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
-	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
-	var skippedLine bool
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes+1)
+	var skippedLines int
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == sseStreamLineTooLarge {
-			skippedLine = true
+			skippedLines++
+			if err := noteSkippedSSELine("OpenAI", skippedLines); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -3383,6 +3386,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		}
 
 	}
+	skippedLine := skippedLines > 0
 	if err := scanner.Err(); err != nil && !skippedLine {
 		return nil, fmt.Errorf("SSE stream read error: %w", err)
 	}

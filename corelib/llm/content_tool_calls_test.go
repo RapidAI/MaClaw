@@ -1797,7 +1797,7 @@ func TestParseSSEStreamWithReasoningKeepsLaterLinesWhenOneExceedsScanLimit(t *te
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Split(splitter)
-	scanner.Buffer(make([]byte, 0, 1024), maxLine)
+	scanner.Buffer(make([]byte, 0, 1024), maxLine+1)
 	if !scanner.Scan() || scanner.Text() != sseStreamLineTooLarge {
 		t.Fatalf("scanner dropped the oversized line as a hard error: %v", scanner.Err())
 	}
@@ -1869,4 +1869,101 @@ func TestParseSSEToResponseKeepsLaterLinesWhenOneExceedsOldScanLimit(t *testing.
 	if !strings.Contains(got, "after") {
 		t.Fatalf("content = %q, want the line after the oversized one", got)
 	}
+	if response.Choices[0].FinishReason == "length" {
+		t.Fatalf("a closed text turn was marked truncated: %#v", response.Choices[0])
+	}
 }
+
+// Skipping one physical line must not splice the next data line onto the
+// previous event. The following JSON is a new chunk, not a continuation of
+// the dropped line, and the comment between them is not payload.
+func TestSSELineSplitterDoesNotJoinNextDataOntoSkippedLine(t *testing.T) {
+	const maxLine = 32
+	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n" +
+		": " + strings.Repeat("x", maxLine) + "\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n")
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(newSSELineSplitter(maxLine))
+	scanner.Buffer(make([]byte, 0, 16), maxLine+1)
+
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(lines) != 3 || lines[1] != sseStreamLineTooLarge {
+		t.Fatalf("lines = %#v, want before, skip marker, after", lines)
+	}
+	if strings.Contains(lines[0], "after") || strings.Contains(lines[2], "before") {
+		t.Fatalf("skipped line spliced events: %#v", lines)
+	}
+	if strings.Contains(lines[2], "x") {
+		t.Fatalf("comment tail leaked into the next data line: %q", lines[2])
+	}
+}
+
+// A skipped line with no later finish_reason and no recovered text is a cut,
+// not a successful empty completion. The agent loop hard-exits consecutive
+// empty responses; truncation recovery needs finish_reason=length.
+func TestParseSSEStreamWithReasoningMarksEmptySkippedLineAsTruncated(t *testing.T) {
+	const maxLine = 64
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := "data: " + strings.Repeat("z", maxLine+1) + "\n\n"
+	response, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
+	if err != nil {
+		t.Fatalf("one skipped line must not fail the turn: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	choice := response.Choices[0]
+	if choice.FinishReason != "length" {
+		t.Fatalf("finish_reason = %q, want length so an empty skip is truncation", choice.FinishReason)
+	}
+	if strings.TrimSpace(choice.Message.Content) != "" || len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("skipped payload leaked into the response: %#v", choice.Message)
+	}
+}
+
+func TestParseSSEToResponseMarksEmptySkippedLineAsTruncated(t *testing.T) {
+	const maxLine = 64
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := []byte("data: " + strings.Repeat("z", maxLine+1) + "\n\n")
+	response, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 || response.Choices[0].FinishReason != "length" {
+		t.Fatalf("response = %#v, want length", response)
+	}
+}
+
+// Past the skip cap the scan must fail. Silently dropping every remaining
+// line would return a short answer with no signal that most of the turn is gone.
+func TestParseSSEStreamWithReasoningFailsAfterTooManySkippedLines(t *testing.T) {
+	const maxLine = 32
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	var body strings.Builder
+	for i := 0; i <= sseStreamMaxSkippedLines; i++ {
+		body.WriteString("data: ")
+		body.WriteString(strings.Repeat("x", maxLine+1))
+		body.WriteByte('\n')
+	}
+	body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n")
+	_, err := parseSSEStreamWithReasoning(strings.NewReader(body.String()), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Fatalf("err = %v, want skipped-line cap", err)
+	}
+}
+

@@ -156,7 +156,9 @@ func DoResponsesAPIRequestStreamWithOptions(
 
 	scanner := bufio.NewScanner(idleBody)
 	scanner.Split(newResponsesStreamSplitter())
-	scanner.Buffer(make([]byte, 0, 64*1024), responsesStreamMaxEventBytes)
+	// One byte past the event window so a full buffer still reaches the
+	// splitter. At equality Scanner returns ErrTooLong before skipOversized.
+	scanner.Buffer(make([]byte, 0, 64*1024), responsesStreamMaxEventBytes+1)
 	var oversizedEvent error
 	for scanner.Scan() {
 		eventType, payload, ok := parseResponsesAPIStreamEvent(scanner.Text())
@@ -961,7 +963,13 @@ func (s *responsesStreamSplitter) split(data []byte, atEOF bool) (int, []byte, e
 
 func (s *responsesStreamSplitter) nextEvent(data []byte, atEOF bool) (int, []byte, error) {
 	if advance, token, ok := responsesStreamDelimitedEvent(data); ok {
-		return advance, token, nil
+		// The scanner buffer can hold a delimited event that is still past
+		// the frame cap. Treat that the same as an undelimited overflow:
+		// one sentinel, then the next event.
+		if len(token) <= responsesStreamMaxEventBytes {
+			return advance, token, nil
+		}
+		return advance, append([]byte(nil), responsesStreamTooLargeToken...), nil
 	}
 	if len(data) >= responsesStreamMaxEventBytes {
 		s.skipping = true
