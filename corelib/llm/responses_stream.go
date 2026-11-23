@@ -28,7 +28,9 @@ import (
 // twenty max-sized calls in one snapshot; a larger event is not scanned into
 // one token. The split function emits every complete event already in the
 // buffer before it reports that limit, so a later oversized event cannot
-// erase them. Tests shrink this before the scanner is created.
+// erase them. A usable prefix is a truncated turn, not a failed one: pairing
+// it with an error makes the agent loop drop the calls it just kept. Tests
+// shrink this before the scanner is created.
 var responsesStreamMaxEventBytes = 4 << 20
 
 type responsesStreamItem struct {
@@ -160,9 +162,10 @@ func DoResponsesAPIRequestStreamWithOptions(
 		}
 		if eventType == responsesStreamEventTooLarge {
 			// Complete events already in the scanner buffer were returned on
-			// earlier Scan calls. Keep those deltas; do not fail the turn as
-			// if nothing arrived. An empty buffer still fails, so a lone
-			// oversized event is not a successful empty response.
+			// earlier Scan calls. A lone oversized event still fails: nothing
+			// arrived. A usable prefix is truncated output, not a transport
+			// failure. Returning it with an error makes the agent loop discard
+			// the calls this scan just kept.
 			oversizedEvent = fmt.Errorf("Responses API SSE event exceeds %d bytes", responsesStreamMaxEventBytes)
 			break
 		}
@@ -370,7 +373,15 @@ completed:
 	}
 	if oversizedEvent != nil {
 		if textBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(items) > 0 {
-			return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), oversizedEvent
+			// The unread tail was cut. Mark length only when a call's arguments
+			// are not a complete JSON object: filterStreamTruncatedToolCalls
+			// treats every empty-argument call as truncated under length, and
+			// a finished call must still execute. A hard error is what makes
+			// the agent loop discard this prefix.
+			if finishReason == "" && responsesStreamArgsCut(items) {
+				finishReason = "length"
+			}
+			return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), nil
 		}
 		return nil, oversizedEvent
 	}
@@ -846,6 +857,22 @@ func appendResponsesStreamText(buf *strings.Builder, text string) string {
 	buf.WriteByte('\n')
 	buf.WriteString(text)
 	return "\n" + text
+}
+
+// responsesStreamArgsCut reports a function call whose arguments are not a
+// complete JSON object. An oversized tail may have cut that object; a call
+// that already closed is not evidence the scan limit ate its arguments.
+func responsesStreamArgsCut(items map[int]*responsesStreamItem) bool {
+	for _, item := range items {
+		if item == nil || !strings.EqualFold(strings.TrimSpace(item.itemType), "function_call") {
+			continue
+		}
+		args := strings.TrimSpace(item.args.String())
+		if args == "" || !json.Valid([]byte(args)) {
+			return true
+		}
+	}
+	return false
 }
 
 func responsesStreamToolArgumentsTooLarge(name string, size int) error {

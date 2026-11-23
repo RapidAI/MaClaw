@@ -818,8 +818,8 @@ func responsesStreamEvents(parts ...[]byte) []byte {
 }
 
 // A later event can still exceed the scan limit (a snapshot of more calls than
-// 4 MiB holds). That must not erase the argument deltas already accepted, or
-// the turn looks like a consecutive empty response.
+// 4 MiB holds). That must not erase the argument deltas already accepted, and
+// it must not fail the turn: the agent loop drops resp whenever err != nil.
 func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t *testing.T) {
 	body := responsesStreamEvents(
 		responsesStreamEvent("response.output_item.added", map[string]interface{}{
@@ -849,15 +849,14 @@ func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t 
 		nil,
 		nil,
 	)
-	got := ""
-	if response != nil && len(response.Choices) > 0 {
-		got = response.Choices[0].Message.Content
-	}
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("error=%v body=%d content=%q", err, len(body), got)
+	if err != nil {
+		t.Fatalf("usable prefix must not fail the turn: %v", err)
 	}
 	if response == nil || len(response.Choices) != 1 {
 		t.Fatalf("partial response = %#v", response)
+	}
+	if response.Choices[0].FinishReason == "length" {
+		t.Fatalf("complete arguments were marked truncated: %#v", response.Choices[0])
 	}
 	calls := response.Choices[0].Message.ToolCalls
 	if len(calls) != 1 || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.go"}` {
@@ -868,7 +867,7 @@ func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t 
 // A complete event can sit in the same full scanner buffer as the oversized
 // tail. Scanner asks the split function for a token before it reports
 // ErrTooLong, and a zero advance drops that event. The kept call must
-// survive; only the tail that cannot fit is the failure.
+// survive as a truncated turn, not as an error the loop will discard.
 func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *testing.T) {
 	const maxEvent = 64 * 1024
 	saved := responsesStreamMaxEventBytes
@@ -909,11 +908,14 @@ func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *te
 		nil,
 		nil,
 	)
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("error=%v body=%d", err, len(body))
+	if err != nil {
+		t.Fatalf("usable prefix must not fail the turn: %v body=%d", err, len(body))
 	}
 	if response == nil || len(response.Choices) != 1 {
 		t.Fatalf("partial response = %#v", response)
+	}
+	if response.Choices[0].FinishReason == "length" {
+		t.Fatalf("complete arguments were marked truncated: %#v", response.Choices[0])
 	}
 	calls := response.Choices[0].Message.ToolCalls
 	if len(calls) != 1 || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.go"}` {
@@ -921,3 +923,60 @@ func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *te
 	}
 }
 
+
+func TestDoResponsesAPIRequestStreamOversizedEventWithNoPrefixStillFails(t *testing.T) {
+	body := append([]byte("event: response.completed\ndata: {\"pad\":\""), bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
+	body = append(body, []byte("\"}\n\n")...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]any{map[string]any{"role": "user", "content": "test"}},
+		nil, srv.Client(), nil, nil,
+	)
+	if response != nil || err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("response=%#v err=%v, want scan-limit failure and no payload", response, err)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamMarksCutArgumentsWhenTailExceedsScanLimit(t *testing.T) {
+	body := responsesStreamEvents(
+		responsesStreamEvent("response.output_item.added", map[string]any{
+			"output_index": 0,
+			"item":         map[string]any{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file"},
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]any{
+			"output_index": 0, "item_id": "fc_a", "delta": `{"path":"a.go"`,
+		}),
+	)
+	body = append(body, []byte("event: response.completed\ndata: {\"pad\":\"")...)
+	body = append(body, bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]any{map[string]any{"role": "user", "content": "test"}},
+		nil, srv.Client(), nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("cut prefix must not fail the turn: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	choice := response.Choices[0]
+	if choice.FinishReason != "length" || len(choice.TruncatedToolNames) != 1 || choice.TruncatedToolNames[0] != "read_file" {
+		t.Fatalf("cut call was not marked truncated: %#v", choice)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("incomplete JSON must not execute: %#v", choice.Message.ToolCalls)
+	}
+}
