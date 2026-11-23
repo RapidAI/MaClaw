@@ -144,3 +144,33 @@ func TestBuildAnthropicMessagesRequestBodyFitsMemberMaxTokens(t *testing.T) {
 		t.Fatalf("thinking = %#v, want budget 127", thinking)
 	}
 }
+
+// parseAnthropicSSEStream shares the Chat Completions line scanner, so the same
+// old 256 KiB limit aborted an Anthropic turn with "token too long"
+// (BR-20261123-9FD249AF31B3). A large thinking delta must still stream.
+func TestParseAnthropicSSEStreamAcceptsLinePastOldScanLimit(t *testing.T) {
+	pad := strings.Repeat("h", 400*1024)
+	body := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + pad + "\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n"
+	if len(body) <= 256*1024 {
+		t.Fatalf("fixture body is %d bytes, must exceed the old limit", len(body))
+	}
+	var thinking, text strings.Builder
+	resp, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(body), func(d string) {
+		text.WriteString(d)
+	}, func(d string) {
+		thinking.WriteString(d)
+	})
+	if err != nil {
+		t.Fatalf("parseAnthropicSSEStreamWithReasoning: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("nil response")
+	}
+	if got := thinking.Len(); got < 400*1024 {
+		t.Fatalf("thinking length = %d, want at least %d", got, 400*1024)
+	}
+	if text.String() != "done" {
+		t.Fatalf("text = %q", text.String())
+	}
+}

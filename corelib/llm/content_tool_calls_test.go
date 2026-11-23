@@ -1748,3 +1748,38 @@ func TestParseSSEToResponse_DoesNotDropNormalAnglePrefix(t *testing.T) {
 		t.Fatalf("content = %q, want normal text", got)
 	}
 }
+
+// A single Chat Completions data line is not bounded by MaxToolArgumentsBytes:
+// a gateway may resend a whole tool_calls array, and a content or reasoning
+// delta can be large too. At the old 256 KiB scan limit such a line aborted the
+// entire turn with "bufio.Scanner: token too long", the agent loop saw an empty
+// response, and the user was shown "模型连续返回空响应"
+// (BR-20261123-9FD249AF31B3). The reader now allows 4 MiB per line.
+func TestParseSSEStreamWithReasoningAcceptsLinePastOldScanLimit(t *testing.T) {
+	const padLen = 400 * 1024
+	chunk, err := json.Marshal(map[string]any{
+		"id": "resp-big-line",
+		"choices": []any{map[string]any{
+			"index": 0,
+			"delta": map[string]any{"content": strings.Repeat("c", padLen)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	if len(chunk) <= 256*1024 {
+		t.Fatalf("fixture line is %d bytes, must exceed the old limit", len(chunk))
+	}
+	body := "data: " + string(chunk) + "\n\ndata: [DONE]\n\n"
+
+	response, err := parseSSEStreamWithReasoning(bytes.NewReader([]byte(body)), nil, nil)
+	if err != nil {
+		t.Fatalf("parseSSEStreamWithReasoning: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if got := len(response.Choices[0].Message.Content); got < padLen {
+		t.Fatalf("content length = %d, want at least %d", got, padLen)
+	}
+}

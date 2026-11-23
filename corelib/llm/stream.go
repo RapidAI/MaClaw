@@ -653,6 +653,17 @@ func mergeSSEUsage(prev, next *Usage) *Usage {
 	return &out
 }
 
+// sseStreamMaxLineBytes bounds one SSE line for the Chat Completions and
+// Anthropic readers, which scan physical lines rather than whole events.
+// A single provider line is not bounded by MaxToolArgumentsBytes: a tool call's
+// 	arguments are streamed as many deltas, but a gateway may also resend the
+// whole tool_calls array (or one complete arguments string) in a single data
+// line, and a reasoning snapshot can be large too. With 256 KiB those lines
+// failed the entire turn with "bufio.Scanner: token too long" and the agent
+// loop saw an empty response (BR-20261123-9FD249AF31B3). The Google and
+// Responses readers already allow 4 MiB per frame for the same reason.
+const sseStreamMaxLineBytes = 4 << 20
+
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
 // not wait for the final [DONE] event: hosts use the live callback to keep the
@@ -685,7 +696,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	legacyFunctionCallSeen := false
 
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
 	var lastPayload string
 
 	for scanner.Scan() {
@@ -913,7 +924,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	var currentToolIdx int = -1
 
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
 
 	for scanner.Scan() {
 		line := scanner.Text()
