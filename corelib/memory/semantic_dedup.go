@@ -159,7 +159,8 @@ func (s *Store) PendingDedupCount() int {
 
 // ProcessPendingDedup processes all pending dedup pairs using LLM judgment.
 // For each pair, the LLM decides: merge (true duplicate) or keep (different).
-// Returns the number of entries merged (removed).
+// Returns the number of entries merged. A merged source is superseded, not
+// deleted, so its exact text remains available as evidence.
 //
 // This should be called:
 //   - After each agent loop iteration (piggyback on existing work)
@@ -250,11 +251,20 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 			}
 			updated.Tags = mergeTags(updated.Tags, newEntry.Tags)
 			updated.Entities = mergeTags(updated.Entities, newEntry.Entities)
+			updated.EvidenceIDs = mergeTags(append(updated.EvidenceIDs, newEntry.ID), newEntry.EvidenceIDs)
 			updated.RelatedIDs = removeStringValue(updated.RelatedIDs, newEntry.ID)
 			updated.RelatedEdges = removeRelatedEdgeValue(updated.RelatedEdges, newEntry.ID)
-			updated.UpdatedAt = time.Now()
+			now := time.Now()
+			updated.UpdatedAt = now
 			updated.AccessCount++
-			applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated}, []string{newEntry.ID}, entryExpectations([]Entry{*newEntry, *candEntry}))
+			superseded := *newEntry
+			superseded.Status = StatusSuperseded
+			superseded.Stale = true
+			superseded.InvalidAt = &now
+			superseded.UpdatedAt = now
+			superseded.RelatedIDs = nil
+			superseded.RelatedEdges = nil
+			applied, err := s.UpdateEntriesAndDeleteIDsIfUnchanged([]Entry{updated, superseded}, nil, entryExpectations([]Entry{*newEntry, *candEntry}))
 			if err != nil {
 				log.Printf("[semantic_dedup] merge persist error: %v", err)
 				continue

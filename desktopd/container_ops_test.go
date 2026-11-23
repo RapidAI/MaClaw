@@ -15,6 +15,34 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
+func TestDockerOutputIsBoundedByOperation(t *testing.T) {
+	out := &tailOutput{limit: 4}
+	_, _ = out.Write([]byte("abcdef"))
+	_, _ = out.Write([]byte("XY"))
+	if got := out.String(); got != "efXY" {
+		t.Fatalf("tail=%q", got)
+	}
+	shell, err := commandServiceArgs("container", commandRequest{Op: "shell", Command: "yes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dockerOutputLimit(shell); got != desktop.BashOutputMax {
+		t.Fatalf("shell limit=%d", got)
+	}
+	if got := dockerOutputLimit(fileServiceArgs("container", "read", "/tmp/a", desktop.FileReadMax+1)); got <= desktop.FileReadMax {
+		t.Fatalf("read limit=%d", got)
+	}
+}
+
+func TestDefaultRunCommandReportsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := defaultRunCommand(ctx, nil, "version")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrDocker) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestContainerFileAndBashStayInTheUsersContainer(t *testing.T) {
 	var commands [][]string
 	var stdin string

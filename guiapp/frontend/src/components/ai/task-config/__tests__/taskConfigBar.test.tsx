@@ -81,6 +81,11 @@ afterEach(() => {
 
 // Stateful harness for round-trip UI flows (mock-onChange renderBar cannot
 // feed the emitted draft back into the controlled component).
+function openMoreSettings() {
+    const more = screen.queryByTestId('task-config-more');
+    if (more && more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+}
+
 function renderStatefulBar(initialDraft?: TaskDraft, extra?: Partial<Parameters<typeof TaskConfigBar>[0]>) {
     function Stateful() {
         const [draft, setDraft] = useState(initialDraft ?? defaultTaskDraft());
@@ -305,19 +310,37 @@ describe('TaskConfigBar', () => {
         expect(collapsed.getAttribute('title')).toContain('No workflow');
     });
 
-    it('expands into the task chips, including the run window, after clicking the collapsed chip', () => {
+    it('expands the everyday settings onto one row, and keeps model and run window behind More', () => {
         renderBar(defaultTaskDraft(), vi.fn());
         fireEvent.click(screen.getByTestId('task-config-collapsed'));
-        expect(screen.getByTestId('task-config-chip-type')).toBeTruthy();
-        expect(screen.getByTestId('task-config-chip-expert')).toBeTruthy();
-        expect(screen.getByTestId('task-config-chip-workflow')).toBeTruthy();
-        expect(screen.getByTestId('task-config-chip-workspace')).toBeTruthy();
+        const primary = screen.getByTestId('task-config-primary');
+        expect(primary.className).toContain('mc-taskcfg-row');
+        expect(primary.querySelector('[data-testid="task-config-chip-type"]')).toBeTruthy();
+        expect(primary.querySelector('[data-testid="task-config-chip-expert"]')).toBeTruthy();
+        expect(primary.querySelector('[data-testid="task-config-chip-workflow"]')).toBeTruthy();
+        expect(primary.querySelector('[data-testid="task-config-chip-workspace"]')).toBeTruthy();
+        expect(primary.querySelector('[data-testid="task-config-chip-model"]')).toBeNull();
+        expect(primary.querySelector('[data-testid="task-config-chip-window"]')).toBeNull();
+        expect(screen.queryByTestId('task-config-chip-window')).toBeNull();
+        const more = screen.getByTestId('task-config-more');
+        expect(more.textContent).toContain('更多');
+        expect(more.querySelector('[data-icon="chevronsRight"]')).toBeTruthy();
+        expect(primary.lastElementChild).toBe(more);
+        fireEvent.click(more);
+        const advanced = screen.getByTestId('task-config-advanced');
+        expect(advanced.contains(screen.getByTestId('task-config-chip-window'))).toBe(true);
+        expect(advanced.contains(screen.getByTestId('task-config-chip-model'))).toBe(true);
         expect(screen.getByTestId('task-config-chip-window').textContent).toContain('运行时段');
         expect(screen.getByTestId('task-config-chip-window').textContent).toContain('立即');
+        expect(screen.getByTestId('task-config-more').textContent).toContain('收起');
+        fireEvent.click(screen.getByTestId('task-config-more'));
+        expect(screen.queryByTestId('task-config-advanced')).toBeNull();
+        expect(screen.queryByTestId('task-config-chip-window')).toBeNull();
     });
 
     it('lets a new task stay immediate or pick a start and optional end', () => {
         renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true });
+        openMoreSettings();
         fireEvent.click(screen.getByTestId('task-config-chip-window'));
         fireEvent.click(screen.getByTestId('run-window-scheduled'));
         expect(screen.getByTestId('run-window-start')).toBeTruthy();
@@ -347,6 +370,7 @@ describe('TaskConfigBar', () => {
 
     it('uses a dark native picker when the task bar is dark', () => {
         renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true, theme: { ...theme, isDark: true } });
+        openMoreSettings();
         fireEvent.click(screen.getByTestId('task-config-chip-window'));
         fireEvent.click(screen.getByTestId('run-window-scheduled'));
         expect((screen.getByTestId('run-window-start') as HTMLInputElement).style.colorScheme).toBe('dark');
@@ -1039,6 +1063,7 @@ describe('RemoteServerForm', () => {
 describe('TaskConfigBar lead icons', () => {
     it('puts a representative svg before each default dimension, including the default directory', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
+        openMoreSettings();
         expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="chat"]')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-window-label').querySelector('[data-icon="clock"]')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-expert-label').querySelector('[data-icon="robot"]')).toBeTruthy();
@@ -1081,6 +1106,7 @@ describe('TaskConfigBar variant', () => {
 
     it('bare variant renders borderless transparent chips for the below-card strip', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true, variant: 'bare' });
+        openMoreSettings();
         for (const testId of ['task-config-chip-type', 'task-config-chip-expert', 'task-config-chip-workflow', 'task-config-chip-workspace', 'task-config-chip-window']) {
             const chip = screen.getByTestId(testId);
             expect(chip.style.borderStyle).toBe('none');
@@ -1298,11 +1324,14 @@ describe('TaskConfigBar model chip', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { modelCatalog: catalog });
         expect(screen.getByTestId('task-config-collapsed')).toBeTruthy();
         expect(screen.queryByTestId('task-config-chip-model')).toBeNull();
+        expect(screen.queryByTestId('task-config-more')).toBeNull();
     });
 
     it('shows the assignment for the task type and pins a different model', () => {
         const onChange = vi.fn();
         renderBar(defaultTaskDraft(), onChange, { defaultExpanded: true, modelCatalog: catalog });
+        expect(screen.queryByTestId('task-config-chip-model')).toBeNull();
+        openMoreSettings();
         const chip = screen.getByTestId('task-config-chip-model');
         expect(chip.textContent).toContain('跟随分配');
         expect(chip.textContent).toContain('Devin');
@@ -1321,6 +1350,7 @@ describe('TaskConfigBar model chip', () => {
     it('clears the pin when the chosen pair is the assignment', () => {
         const onChange = vi.fn();
         renderBar(defaultTaskDraft(), onChange, { defaultExpanded: true, modelCatalog: catalog });
+        openMoreSettings();
         fireEvent.click(screen.getByTestId('task-config-chip-model'));
         fireEvent.click(screen.getByTestId('task-model-option-swe-2-max'));
         expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
@@ -1358,6 +1388,30 @@ describe('TaskConfigBar model chip', () => {
         fireEvent.click(chip);
         expect(screen.queryByTestId('task-model-popover')).toBeNull();
         expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('opens the extra row for a scheduled window, and Less can hide it again', () => {
+        renderBar({
+            ...defaultTaskDraft(),
+            runWindow: { mode: 'scheduled', startAt: '2099-03-01T02:00', endAt: '' },
+        }, vi.fn(), { defaultExpanded: true });
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('03-01 02:00');
+        expect(screen.getByTestId('task-config-advanced').contains(screen.getByTestId('task-config-chip-window'))).toBe(true);
+        fireEvent.click(screen.getByTestId('task-config-more'));
+        expect(screen.queryByTestId('task-config-chip-window')).toBeNull();
+        const hidden = screen.getByTestId('task-config-more');
+        expect(hidden.getAttribute('aria-expanded')).toBe('false');
+        expect(hidden.getAttribute('data-customized')).toBe('true');
+        expect(hidden.getAttribute('title')).toContain('已设置');
+        expect(screen.getByTestId('task-config-primary').querySelector('[data-testid="task-config-chip-type"]')).toBeTruthy();
+    });
+
+    it('uses English More / Less when lang is en', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true, lang: 'en' });
+        const more = screen.getByTestId('task-config-more');
+        expect(more.textContent).toContain('More');
+        fireEvent.click(more);
+        expect(screen.getByTestId('task-config-more').textContent).toContain('Less');
     });
 
     it('keeps a pin when the task type changes', () => {

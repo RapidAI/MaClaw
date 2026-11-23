@@ -67,6 +67,7 @@ func (s *Service) serveViewer(w http.ResponseWriter, r *http.Request) {
 	if !claims.Control {
 		query := clone.URL.Query()
 		query.Set("view_only", "1")
+		query.Set("input", "0")
 		clone.URL.RawQuery = query.Encode()
 	}
 	// The container page often sends X-Frame-Options. The GUI embeds this

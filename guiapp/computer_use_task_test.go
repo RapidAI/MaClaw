@@ -1878,6 +1878,90 @@ func TestDesktopMessageSpeechSubmitHidesOnlyOwnHalo(t *testing.T) {
 	}
 }
 
+func TestDesktopMessageRejectedDoneAllowsAuditObserve(t *testing.T) {
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner(computerUseDefaultOwner)
+	goal := "给蓝信中的马勇发消息，告诉它，测试发送。"
+	beginComputerUseTask(computerUseDefaultOwner, "req-audit", goal, []string{"已发送"})
+	noteDesktopMessageTyped("测试发送。")
+	if !noteDesktopMessageSubmitted("enter") {
+		t.Fatal("enter did not latch the send")
+	}
+
+	done := cuHandleDone("已发送")
+	if !strings.Contains(done, "computer_done rejected") || !strings.Contains(done, "computer_observe") {
+		t.Fatalf("done=%s", done)
+	}
+	if msg := cuGuardDisabled("computer_observe"); msg != "" {
+		t.Fatalf("audit observe blocked: %s", msg)
+	}
+	for _, tool := range []string{"computer_click", "computer_type", "computer_key", "computer_find", "bash"} {
+		if msg := cuRefuseAfterDesktopMessageSent(tool); !strings.Contains(msg, "already submitted") {
+			t.Fatalf("%s was not blocked: %s", tool, msg)
+		}
+	}
+	seedComputerUseObserve(t, "已发送", "")
+	if retry := cuHandleDone("已发送"); !strings.HasPrefix(retry, "computer_done:") {
+		t.Fatalf("retry=%s", retry)
+	}
+}
+
+func TestDesktopMessagePayloadDoesNotExcludeIntentWordsInBody(t *testing.T) {
+	for goal, want := range map[string]string{
+		"给蓝信中的马勇发消息，告诉它，介绍一下伴读功能。":   "介绍一下伴读功能。",
+		"给蓝信中的马勇发消息，告诉它，在吗？":         "在吗？",
+		"给蓝信上的终端安全的马勇发个消息，介绍一下伴读功能。": "介绍一下伴读功能。",
+	} {
+		if got := desktopMessagePayload(goal); got != want {
+			t.Errorf("payload(%q)=%q, want %q", goal, got, want)
+		}
+	}
+	if got := desktopMessagePayload("写一份蓝信发消息的说明，内容是介绍一下操作步骤"); got != "" {
+		t.Fatalf("document request produced a payload: %q", got)
+	}
+	if got := desktopMessagePayload("怎么给蓝信发消息，再介绍一下操作步骤"); got != "" {
+		t.Fatalf("inquiry produced a payload: %q", got)
+	}
+}
+
+func TestDesktopMessageShortBodyLatchesWithoutSubstringMatch(t *testing.T) {
+	const goal = "给蓝信中的马勇发消息，告诉它，好。"
+	if got := desktopMessagePayload(goal); got != "好。" {
+		t.Fatalf("payload=%q", got)
+	}
+	if got := desktopMessagePayload("给蓝信中的马勇发消息，告诉它，……"); got != "" {
+		t.Fatalf("punctuation-only payload=%q", got)
+	}
+	if desktopMessageCovers("好", "马好") || !desktopMessageCovers("好", "好。") {
+		t.Fatal("short body must require an exact compact match")
+	}
+
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	setComputerUseOwner(computerUseDefaultOwner)
+	beginComputerUseTask(computerUseDefaultOwner, "req-short", goal, nil)
+	if noteDesktopMessageTyped("马勇") {
+		t.Fatal("the recipient search was mistaken for the short body")
+	}
+	if !noteDesktopMessageTyped("好。") || !noteDesktopMessageSubmitted("enter") {
+		t.Fatal("short body after recipient search did not reach the submitted state")
+	}
+}
+
+func TestDesktopMessageSendControlNames(t *testing.T) {
+	for _, name := range []string{"发送", "发送消息", "发送(S)", "发送按钮", "發送", "發送(S)", "發送按鈕", "Send", "Send message", "Send now", "Send button", "the blue Send button"} {
+		if !desktopMessageSendControlName(name) {
+			t.Errorf("Send label %q was rejected", name)
+		}
+	}
+	for _, name := range []string{"联系人", "发送文件", "发送文件按钮", "消息里提到发送", "sender", "已发送"} {
+		if desktopMessageSendControlName(name) {
+			t.Errorf("non-Send label %q was accepted", name)
+		}
+	}
+}
+
 func TestDesktopMessageSendClickLatchesAndHidesHalo(t *testing.T) {
 	sess := computeruse.NewSession(computeruse.DefaultConfig())
 	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{

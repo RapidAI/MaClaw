@@ -16,7 +16,9 @@ package guiapp
 // dual-array desync problem: `conversation` contains injected system
 // messages (GoalAnchor, ProgressTracker, recover prompts) that `history`
 // doesn't have, so index-based compression on both arrays would produce
-// inconsistent boundaries.
+// inconsistent boundaries. Before the summary replaces any entries, their
+// exact JSON is persisted as an encrypted read_tool_result handle; failure
+// to persist leaves the original history untouched.
 
 import (
 	"fmt"
@@ -33,6 +35,9 @@ func (h *IMMessageHandler) toolCompressContext(args map[string]interface{}) stri
 	summary, _ := args["summary"].(string)
 	if strings.TrimSpace(summary) == "" {
 		return "缺少 summary 参数。请提供当前工作状态的摘要。"
+	}
+	if compactionSummaryUnusable(summary, "") {
+		return "摘要为空、过长或包含工具调用标记。请提供不超过 5000 字符的纯文本工作状态摘要。"
 	}
 
 	preserveLastN := 4
@@ -53,7 +58,7 @@ func (h *IMMessageHandler) toolCompressContext(args map[string]interface{}) stri
 		Timestamp:     time.Now(),
 	})
 
-	return "上下文压缩已排队。下一轮迭代开始时，之前的详细历史将被替换为你提供的摘要。"
+	return "上下文压缩已排队。下一轮迭代开始时，详细历史将替换为你提供的摘要；原文会保留为加密的 read_tool_result 句柄，可用 id 和 query 检索。"
 }
 
 // contextCompressionRequest holds a pending compression request.
@@ -80,8 +85,14 @@ type contextCompressionRequest struct {
 //
 //	"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
 func applyHistoryCompression(history []agent.ConversationEntry, req *contextCompressionRequest) []agent.ConversationEntry {
+	compressed, _, _ := planHistoryCompression(history, req)
+	return compressed
+}
+
+func planHistoryCompression(history []agent.ConversationEntry, req *contextCompressionRequest) (compressed, dropped []agent.ConversationEntry, summaryIndex int) {
+	summaryIndex = -1
 	if req == nil || len(history) < 6 {
-		return history
+		return history, nil, summaryIndex
 	}
 
 	preserveTail := req.PreserveLastN
@@ -104,7 +115,7 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 	headEnd := firstUserIdx + 1
 	tailStart := len(history) - preserveTail
 	if tailStart <= headEnd {
-		return history
+		return history, nil, summaryIndex
 	}
 
 	// --- Group-align tailStart ---
@@ -122,7 +133,7 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 		tailStart = g.Start
 	}
 	if tailStart <= headEnd {
-		return history
+		return history, nil, summaryIndex
 	}
 
 	removedCount := tailStart - headEnd
@@ -131,8 +142,9 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 		removedCount, req.Summary,
 	)
 
-	var compressed []agent.ConversationEntry
+	dropped = append(dropped, history[headEnd:tailStart]...)
 	compressed = append(compressed, history[:headEnd]...)
+	summaryIndex = len(compressed)
 	compressed = append(compressed, agent.ConversationEntry{
 		Role:    "system",
 		Content: summaryMsg,
@@ -142,7 +154,7 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 	log.Printf("[compress_context] history: removed %d entries, preserved head=%d tail=%d (group-aligned), new_len=%d",
 		removedCount, headEnd, len(history)-tailStart, len(compressed))
 
-	return compressed
+	return compressed, dropped, summaryIndex
 }
 
 // persistLastCompressionSummary saves the most recent compress_context

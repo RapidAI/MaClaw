@@ -106,7 +106,7 @@ func (r *reaper) once(ctx context.Context, s *Service) {
 			continue
 		}
 		log.Printf("[desktopd] reaping idle desktop container=%s tenant=%s user=%s idle=%ds", container, tenantID, userID, status.IdleSeconds)
-		if err := s.withUser(tenantID, userID, func() error {
+		if err := s.withUserContext(ctx, tenantID, userID, func() error {
 			return r.stopOne(ctx, s, container, tenantID, userID, key)
 		}); err != nil {
 			log.Printf("[desktopd] reaper stop failed container=%s tenant=%s user=%s: %v", container, tenantID, userID, err)

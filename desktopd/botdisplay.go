@@ -203,8 +203,8 @@ func withBotID(next http.Handler) http.Handler {
 	})
 }
 
-// maxBotRewriteBody is above the largest /v1/desktops body (file writes).
-const maxBotRewriteBody = 64 << 20
+// maxBotRewriteBody matches the largest JSON body accepted by the file route.
+const maxBotRewriteBody = 1 << 20
 
 func rewriteBotBody(raw []byte) ([]byte, error) {
 	if !bytes.Contains(raw, []byte(`"bot_id"`)) {

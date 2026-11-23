@@ -921,6 +921,12 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	// Read the config from cb every round: hosts may escalate the model, and
 	// the context window is what decides when to trim.
 	compressionHooks := agent.NewCompressionHook(func() corelib.MaclawLLMConfig { return cb.GetLLMConfig() }, cb.httpClient)
+	checkpointTools := cb.BuildTools(cb.userText)
+	compressionHooks.ToolsTokens = agent.EstimateToolsTokens(checkpointTools)
+	compressionHooks.Checkpoint = &agent.ContextCheckpointOptions{
+		SessionKey: memoryOwnerIDForPrincipal(req.Principal),
+		Tools:      checkpointTools,
+	}
 	if cb.promptPrefixActive() && strings.TrimSpace(req.Message.Content) != "" {
 		agent.NoteUserReturned(cb.botID, cb.session.ID, time.Now())
 	}

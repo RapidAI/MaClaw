@@ -1,8 +1,11 @@
 package desktopd
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +89,48 @@ func TestViewerRejectsABadTicketAndLeavesPostView(t *testing.T) {
 	handler.ServeHTTP(rec, socket)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("unconfirmed socket status %d", rec.Code)
+	}
+}
+
+func TestViewerReadOnlyForcesH264ViewOnly(t *testing.T) {
+	seenQuery := make(chan url.Values, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery <- r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := &HubLink{Key: "desk-key"}
+	link.creds.NodeID = "node-1"
+	svc := &Service{HubLink: link, PublishBind: "127.0.0.1", Run: func(context.Context, ...string) (string, error) {
+		return "127.0.0.1:" + port, nil
+	}}
+	key, err := desktop.UserKey("tenant-a", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := edgelink.SignViewer("desk-key", edgelink.ViewerClaims{
+		NodeID: "node-1", TenantID: "tenant-a", UserID: "alice", UserKey: key,
+		Display: "desktop", Control: false, Exp: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const gateToken = "0123456789abcdef0123456789abcdef"
+	desktopGates.remember(gateToken, gateScreen{TenantID: "tenant-a", UserID: "alice", Display: ":20"})
+	defer desktopGates.forget("tenant-a", "alice")
+	req := httptest.NewRequest(http.MethodGet, "/v1/desktops/viewer/"+ticket+"/h264?input=1&view_only=0", nil)
+	rec := httptest.NewRecorder()
+	svc.serveViewer(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	query := <-seenQuery
+	if query.Get("view_only") != "1" || query.Get("input") != "0" {
+		t.Fatalf("read-only query was not enforced: %v", query)
 	}
 }
 

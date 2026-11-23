@@ -22,6 +22,7 @@ import {
     withLatexTemplate,
     withTaskModel,
     withWorkflow,
+    taskModelPinned,
     workspaceKindsForExpert,
     workspaceSummaryLabel,
     WORKFLOW_AUTO,
@@ -140,8 +141,9 @@ function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boole
 }
 
 /**
- * 新任务引导页配置条：折叠态一枚「⚙ 默认」chip；展开态四枚 chip
- * （类型 · 专家 · 工作流 · 工作空间），点击打开对应弹层。
+ * 新任务引导页配置条：折叠态一枚「⚙ 默认」chip；展开态默认一行
+ * （类型 · 专家 · 工作流 · 工作空间 · 更多）。模型与运行时段收在「更多」里，
+ * 点开后在下一行展开。已指定模型、已定时或选了远程机器时，这一行直接展开。
  * 互斥 / 类型联动全部由 taskDraft.ts 的纯函数保证，UI 只反映状态。
  */
 export function TaskConfigBar({
@@ -194,13 +196,25 @@ export function TaskConfigBar({
     } satisfies Record<ConfigMenu, RefObject<HTMLButtonElement | null>>;
 
     const scheduledWindow = isRunWindowScheduled(draft);
+    const modelPinned = taskModelPinned(draft);
+    // 远控机器目标：专家/工作流/工作空间/定时在对方电脑上不可配——锁定。
+    const remoteMachineLocked = draft.machine != null;
+    // 模型 / 运行时段默认收起。已偏离默认（指定模型、定时、远程机器）时直接展开，
+    // 避免把已经做出的选择藏起来；用户仍可再点「收起」。
+    const advancedCustomized = modelPinned || scheduledWindow || remoteMachineLocked;
+    const [moreOpen, setMoreOpen] = useState(advancedCustomized);
+    useEffect(() => {
+        if (advancedCustomized) setMoreOpen(true);
+    }, [advancedCustomized]);
     const expanded = userExpanded || !isDraftDefault(draft) || scheduledWindow;
     const expertSpecified = isExpertSpecified(draft);
     const workflowLocked = !canSpecifyWorkflow(draft);
     const expertLocked = !canSpecifyExpert(draft);
     const localPathMissing = needsLocalPath(draft);
-    // 远控机器目标：专家/工作流/工作空间/定时在对方电脑上不可配——锁定。
-    const remoteMachineLocked = draft.machine != null;
+    const toggleMore = useCallback(() => {
+        setMoreOpen((open) => !open);
+        setMenu((current) => (current === "model" || current === "window" ? null : current));
+    }, []);
     const showMachineChip = remoteMachines != null && remoteMachines.length > 0;
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
@@ -273,7 +287,9 @@ export function TaskConfigBar({
         userSelect: "none",
         fontFamily: "system-ui, -apple-system, sans-serif",
         opacity: disabled ? 0.5 : 1,
-        flexShrink: 0,
+        flexShrink: 1,
+        minWidth: 0,
+        maxWidth: "100%",
         transition: "border-color 120ms ease, background 120ms ease",
     };
 
@@ -299,7 +315,7 @@ export function TaskConfigBar({
         testId: string,
         keyLabel: string,
         value: ReactNode,
-        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean } = {},
+        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean; valueMaxWidth?: number } = {},
     ) => {
         const valueColor = options.warning ? warnValueColor : options.active ? accent : t.text;
         const lead = configLeadIcon(key, draft, workflowLocked);
@@ -318,7 +334,7 @@ export function TaskConfigBar({
                     ...(options.locked ? { opacity: 0.55 } : {}),
                 }}
             >
-                <span data-testid={`${testId}-label`} style={{ display: "inline-flex", alignItems: "center", gap: bare ? 4 : 5 }}>
+                <span data-testid={`${testId}-label`} style={{ display: "inline-flex", alignItems: "center", gap: bare ? 4 : 5, flexShrink: 0 }}>
                     <TaskConfigIcon name={lead} size={leadIconSize} style={leadIconStyle} />
                     {chipKey(keyLabel)}
                 </span>
@@ -327,7 +343,8 @@ export function TaskConfigBar({
                     style={{
                         color: valueColor,
                         fontWeight: options.active || options.warning ? 600 : 400,
-                        maxWidth: 200,
+                        maxWidth: options.valueMaxWidth ?? 160,
+                        minWidth: 0,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
@@ -335,7 +352,7 @@ export function TaskConfigBar({
                 >
                     {value}
                 </span>
-                <TaskConfigIcon name="chevronDown" size={10} style={{ color: options.active ? accent : t.textMuted }} />
+                <TaskConfigIcon name="chevronDown" size={10} style={{ color: options.active ? accent : t.textMuted, flexShrink: 0 }} />
             </button>
         );
     };
@@ -363,10 +380,14 @@ export function TaskConfigBar({
                 : tailText(lang ?? "", "Model assignment", "模型分配");
     const workspaceLabel = workspaceSummaryLabel(draft, (lang || (isZh ? "zh-Hans" : "en")));
 
+    const moreLabel = moreOpen
+        ? tailText(lang ?? "", "Less", "收起")
+        : tailText(lang ?? "", "More", "更多");
+
     return (
         <div
             data-testid="task-config-bar"
-            style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
+            className={bare ? "mc-taskcfg-bar mc-taskcfg-bar--bare" : "mc-taskcfg-bar mc-taskcfg-bar--chip"}
         >
             {!expanded ? (
                 <button
@@ -384,6 +405,7 @@ export function TaskConfigBar({
                 </button>
             ) : (
                 <>
+                    <div className="mc-taskcfg-row" data-testid="task-config-primary">
                     {showMachineChip && renderChip('machine', "task-config-chip-machine", tailText(lang ?? "", "Location", "位置"), (
                         (draft.machine?.machineName?.trim() ? draft.machine.machineName : tailText(lang ?? "", "This computer", "本机"))
                     ), {
@@ -393,14 +415,6 @@ export function TaskConfigBar({
                     {renderChip('type', "task-config-chip-type", tailText(lang ?? "", "Type", "类型"), draft.taskType === 'chat' ? (tailText(lang ?? "", "Chat", "会话")) : (tailText(lang ?? "", "Coding", "编程")), {
                         active: draft.taskType === 'coding',
                         title: tailText(lang ?? "", "Chat / Coding", "会话 / 编程"),
-                    })}
-                    {renderChip('model', "task-config-chip-model", tailText(lang ?? "", "Model", "模型"), modelChipText, {
-                        active: modelChip.pinned,
-                        locked: modelChip.remote,
-                        noMenu: modelChip.remote,
-                        title: modelChip.remote
-                            ? REMOTE_LOCKED_TITLE
-                            : tailText(lang ?? "", "Starts from model assignment. A change here affects only this task.", "默认来自模型分配。在这里改只影响这个任务。"),
                     })}
                     {renderChip('expert', "task-config-chip-expert", tailText(lang ?? "", "Expert", "专家"), (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
@@ -458,12 +472,44 @@ export function TaskConfigBar({
                                     ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
                                     : undefined,
                     })}
-                    {renderChip('window', "task-config-chip-window", tailText(lang ?? "", "Window", "运行时段"), runWindowChipLabel(draft.runWindow, (lang || (isZh ? "zh-Hans" : "en"))), {
-                        active: scheduledWindow,
-                        locked: remoteMachineLocked,
-                        noMenu: remoteMachineLocked,
-                        title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : tailText(lang ?? "", "Run now, or set a start and optional end", "立即执行，或设定开始和结束时间"),
-                    })}
+                    <button
+                        type="button"
+                        className="mc-taskcfg-more"
+                        data-testid="task-config-more"
+                        data-customized={advancedCustomized ? "true" : "false"}
+                        disabled={disabled}
+                        aria-expanded={moreOpen}
+                        aria-controls="task-config-advanced"
+                        title={moreOpen
+                            ? tailText(lang ?? "", "Hide model and run window", "收起模型与运行时段")
+                            : advancedCustomized
+                                ? tailText(lang ?? "", "Model or run window is set", "已设置模型或运行时段")
+                                : tailText(lang ?? "", "Model and run window", "模型与运行时段")}
+                        onClick={toggleMore}
+                    >
+                        {moreLabel}
+                        <TaskConfigIcon name="chevronsRight" size={13} />
+                    </button>
+                    </div>
+                    {moreOpen && (
+                        <div className="mc-taskcfg-row mc-taskcfg-row--more" id="task-config-advanced" data-testid="task-config-advanced">
+                            {renderChip('model', "task-config-chip-model", tailText(lang ?? "", "Model", "模型"), modelChipText, {
+                                active: modelChip.pinned,
+                                locked: modelChip.remote,
+                                noMenu: modelChip.remote,
+                                valueMaxWidth: 360,
+                                title: modelChip.remote
+                                    ? REMOTE_LOCKED_TITLE
+                                    : tailText(lang ?? "", "Starts from model assignment. A change here affects only this task.", "默认来自模型分配。在这里改只影响这个任务。"),
+                            })}
+                            {renderChip('window', "task-config-chip-window", tailText(lang ?? "", "Window", "运行时段"), runWindowChipLabel(draft.runWindow, (lang || (isZh ? "zh-Hans" : "en"))), {
+                                active: scheduledWindow,
+                                locked: remoteMachineLocked,
+                                noMenu: remoteMachineLocked,
+                                title: remoteMachineLocked ? (REMOTE_LOCKED_TITLE) : tailText(lang ?? "", "Run now, or set a start and optional end", "立即执行，或设定开始和结束时间"),
+                            })}
+                        </div>
+                    )}
                 </>
             )}
 

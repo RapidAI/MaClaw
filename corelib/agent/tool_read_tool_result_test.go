@@ -114,6 +114,9 @@ func TestRegisterCoreTools_IncludesReadToolResult(t *testing.T) {
 			}
 			parameters, _ := fn["parameters"].(map[string]interface{})
 			properties, _ := parameters["properties"].(map[string]interface{})
+			if _, exposed := properties["query"]; !exposed {
+				t.Fatal("read_tool_result must expose keyword search to avoid sequential read amplification")
+			}
 			if _, exposed := properties["session_key"]; exposed {
 				t.Fatal("read_tool_result exposed host-owned session_key to the model")
 			}

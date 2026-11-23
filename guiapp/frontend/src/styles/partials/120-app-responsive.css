@@ -2165,6 +2165,95 @@
   --theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted));
 }
 
+/* ===== 新任务配置条（src/components/ai/task-config）=====
+   默认一行：类型 / 专家 / 工作流 / 工作空间，行尾「更多」。
+   模型与运行时段点开后才占下一行，避免长模型名把默认条折成两行。 */
+.mc-taskcfg-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+}
+.mc-taskcfg-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+}
+.mc-taskcfg-row--more {
+    flex-wrap: wrap;
+    padding-top: 2px;
+}
+.mc-taskcfg-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 4px;
+    height: 28px;
+    padding: 0 8px 0 10px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-muted, #8a94a6);
+    font-size: 12.5px;
+    font-weight: 500;
+    font-family: system-ui, -apple-system, sans-serif;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    user-select: none;
+    position: relative;
+}
+.mc-taskcfg-row > .mc-taskcfg-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: color-mix(in srgb, var(--theme-text-muted, #8a94a6) 45%, transparent);
+}
+.mc-taskcfg-more [data-icon="chevronsRight"] {
+    transition: transform 140ms ease;
+}
+.mc-taskcfg-more[aria-expanded="true"],
+.mc-taskcfg-more[data-customized="true"] {
+    color: var(--theme-primary, #2e75cb);
+}
+.mc-taskcfg-more[aria-expanded="true"] [data-icon="chevronsRight"] {
+    transform: rotate(90deg);
+}
+.mc-taskcfg-more:hover {
+    color: var(--theme-primary, #2e75cb);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+}
+.mc-taskcfg-more:focus-visible {
+    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline-offset: 1px;
+}
+.mc-taskcfg-more:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px dashed var(--theme-border, #dde5f0);
+    border-radius: 15px;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more::before {
+    content: none;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more[aria-expanded="true"],
+.mc-taskcfg-bar--chip .mc-taskcfg-more[data-customized="true"] {
+    border-color: var(--theme-primary, #2e75cb);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+}
+
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */
 .mc-taskcfg-pop {
     animation: mc-taskcfg-pop-in 150ms cubic-bezier(.2, .7, .3, 1);
@@ -2226,5 +2315,8 @@
     .mc-taskcfg-pop,
     .mc-taskcfg-pane {
         animation: none;
+    }
+    .mc-taskcfg-more [data-icon="chevronsRight"] {
+        transition: none;
     }
 }

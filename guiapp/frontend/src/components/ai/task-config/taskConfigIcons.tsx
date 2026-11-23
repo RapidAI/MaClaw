@@ -14,6 +14,7 @@ export type TaskConfigIconName =
     | "check"
     | "plus"
     | "chevronDown"
+    | "chevronsRight"
     | "search"
     | "back"
     | "grid"
@@ -38,6 +39,7 @@ const PATHS: Record<TaskConfigIconName, ReactNode> = {
     check: (<path {...s} d="m5 12.5 4.5 4.5L19 7.5" />),
     plus: (<><path {...s} d="M12 5v14" /><path {...s} d="M5 12h14" /></>),
     chevronDown: (<path {...s} d="m6 9 6 6 6-6" />),
+    chevronsRight: (<><path {...s} d="m6 7 5 5-5 5" /><path {...s} d="m13 7 5 5-5 5" /></>),
     search: (<><circle {...s} cx="11" cy="11" r="6.5" /><path {...s} d="m16 16 4.5 4.5" /></>),
     back: (<path {...s} d="M15 5l-7 7 7 7" />),
     grid: (<><rect {...s} x="4" y="4" width="7" height="7" rx="1.5" /><rect {...s} x="13" y="4" width="7" height="7" rx="1.5" /><rect {...s} x="4" y="13" width="7" height="7" rx="1.5" /><rect {...s} x="13" y="13" width="7" height="7" rx="1.5" /></>),

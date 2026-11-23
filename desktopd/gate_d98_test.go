@@ -49,6 +49,60 @@ func TestD98WaitingWriterDoesNotQueueReaders(t *testing.T) {
 	}
 }
 
+func TestD98GateWaitHonorsCancellation(t *testing.T) {
+	svc := &Service{}
+	release := make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		_ = svc.withUserRead("t", "u", func() error { close(held); <-release; return nil })
+	}()
+	<-held
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	err := svc.withUserContext(ctx, "t", "u", func() error { return nil })
+	close(release)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestD98LongWaitingWriterEventuallyBlocksNewReaders(t *testing.T) {
+	svc := &Service{}
+	release := make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		_ = svc.withUserRead("t", "u", func() error { close(held); <-release; return nil })
+	}()
+	<-held
+	writerDone := make(chan struct{})
+	go func() {
+		_ = svc.withUser("t", "u", func() error { return nil })
+		close(writerDone)
+	}()
+	time.Sleep(userGateWriterGrace + 100*time.Millisecond)
+	readerDone := make(chan struct{})
+	go func() {
+		_ = svc.withUserRead("t", "u", func() error { return nil })
+		close(readerDone)
+	}()
+	select {
+	case <-readerDone:
+		t.Fatal("a new reader passed a long-waiting writer")
+	case <-time.After(60 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-writerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not run")
+	}
+	select {
+	case <-readerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not resume")
+	}
+}
+
 func TestD98WriterStillExcludesReaders(t *testing.T) {
 	svc := &Service{}
 	var mu sync.Mutex

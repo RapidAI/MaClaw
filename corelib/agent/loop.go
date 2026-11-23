@@ -1755,14 +1755,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			readContinuations = nil
 			spentReadContinuations = nil
 		}
-		// Mid-loop conversation transformation (e.g., compaction).
-		if transformed := h.TransformConversation(conversation); transformed != nil {
-			conversation = transformed
-		}
-		if pressure, ok := cb.(ContextWindowPressure); ok && pressure.ContextCompactStalled() {
-			log.Printf("[agent-loop] compaction sealed on a full context window (iteration=%d)", iteration)
-			return finish(LoopResult{Error: ErrContextWindowFull, Iterations: iteration, ToolCalls: totalToolCalls})
-		}
 		conversation = FoldComputerUseObserves(conversation)
 		workingState, conversation = spliceWorkingStateAtHead(cb, conversation, workingState, userText, executedTools)
 		memoryRetractions = loadInitialMemoryRetractions(cb)
@@ -1776,6 +1768,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			retractionsForPrompt = nil
 		}
 		conversation = applyPromptOverlays(conversation, workingState, attachWS, sessionFacts, retractionsForPrompt)
+		// Compact only after every request-scoped overlay is present. Measuring
+		// before WorkingState and memory retractions undercounted the actual send
+		// and pushed the provider straight into another context-window retry.
+		if transformed := h.TransformConversation(conversation); transformed != nil {
+			conversation = transformed
+		}
+		// A host compactor may replace the system prompt to save space. Reattach
+		// the live state afterwards so the final request keeps the current goal.
+		conversation = applyPromptOverlays(conversation, workingState, attachWS, sessionFacts, retractionsForPrompt)
+		if pressure, ok := cb.(ContextWindowPressure); ok && pressure.ContextCompactStalled() {
+			log.Printf("[agent-loop] compaction sealed on a full context window (iteration=%d)", iteration)
+			return finish(LoopResult{Error: ErrContextWindowFull, Iterations: iteration, ToolCalls: totalToolCalls})
+		}
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
 		// Notify before every request, including the first: hosts flip the

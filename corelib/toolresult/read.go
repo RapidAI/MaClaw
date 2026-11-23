@@ -29,6 +29,14 @@ type ReadOptions struct {
 	// Limit is the max number of bytes to return. A non-positive limit uses
 	// DefaultReadLimit. Values above MaxReadLimit are capped.
 	Limit int
+	// Query returns bounded case-insensitive matching excerpts instead of a
+	// sequential page. Match offsets can be used to read surrounding raw bytes.
+	Query string
+	// BeforeBytes and AfterBytes bound context around each match.
+	BeforeBytes int
+	AfterBytes  int
+	// MaxMatches caps one search response. DefaultReadLimit caps their total size.
+	MaxMatches int
 }
 
 // ReadResult is a bounded slice of a spilled tool result.
@@ -41,6 +49,9 @@ type ReadResult struct {
 	TotalBytes    int    `json:"total_bytes"`
 	Truncated     bool   `json:"truncated"`
 	NextOffset    int    `json:"next_offset,omitempty"`
+	// Query is set for a filtered search. Matches counts merged match windows.
+	Query   string `json:"query,omitempty"`
+	Matches int    `json:"matches,omitempty"`
 }
 
 // DefaultReadLimit is the model-facing default slice size for read_tool_result.
@@ -223,6 +234,9 @@ func Read(opts ReadOptions) (ReadResult, error) {
 	// From here on, ONLY the already-validated descriptor is read. Closing it
 	// and reopening by path would invalidate the SameFile check above and
 	// reopen the TOCTOU window it was meant to close.
+	if strings.TrimSpace(opts.Query) != "" {
+		return readSearchOpened(rootAbs, path, file, info.Size(), opts)
+	}
 	if strings.HasSuffix(path, encryptedSuffix) {
 		// Encrypted handles are bounded (spills cap payload size), so a
 		// whole-file decrypt is safe and keeps the read path simple.
@@ -399,6 +413,9 @@ func FormatReadResult(r ReadResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[tool_result_read]\nid: %s\noffset: %d\nreturned_bytes: %d\ntotal_bytes: %d\n",
 		r.ID, r.Offset, r.ReturnedBytes, r.TotalBytes)
+	if r.Query != "" {
+		fmt.Fprintf(&b, "query: %q\nreturned_matches: %d\n", r.Query, r.Matches)
+	}
 	if r.Truncated {
 		fmt.Fprintf(&b, "truncated: true\nnext_offset: %d\n", r.NextOffset)
 	} else {
@@ -410,6 +427,8 @@ func FormatReadResult(r ReadResult) string {
 	if r.Truncated {
 		fmt.Fprintf(&b, "hint: truncated is true. Call read_tool_result with this id and offset=%d. Omit limit. Do not send offset=%d.\n",
 			r.NextOffset, r.Offset)
+	} else if r.Query != "" {
+		fmt.Fprintf(&b, "hint: search complete for query %q. Do not repeat the same id, query, and offset %d.\n", r.Query, r.Offset)
 	} else {
 		fmt.Fprintf(&b, "hint: truncated is false. This page is complete. Do not call read_tool_result for this id and offset %d.\n",
 			r.Offset)

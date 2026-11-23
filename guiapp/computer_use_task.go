@@ -26,7 +26,8 @@ type computerUseTaskState struct {
 	FailedDone int
 	// MessageBody is the text a desktop IM send asked to deliver.
 	// MessageTyped is set once a successful computer_type has covered it.
-	// MessageSubmitted is set by the next Enter or Send click. Further desktop actions stop.
+	// MessageSubmitted is set by the next Enter or Send click. Write actions stop;
+	// a rejected done audit may still take a read-only observe before retrying.
 	MessageBody      string
 	MessageTyped     bool
 	MessageSubmitted bool
@@ -274,9 +275,6 @@ const desktopMessageTypedStopText = "the requested message body is typed. If it 
 // in a desktop IM send. A goal that is not that send has no payload, so typing
 // and Enter in another task do not stop the desktop.
 func desktopMessagePayload(goal string) string {
-	if !computeruse.RequestsDesktopMessageSend(goal) {
-		return ""
-	}
 	markers := []string{
 		"告诉它", "告诉他", "告诉她",
 		"告訴它", "告訴他", "告訴她",
@@ -295,6 +293,12 @@ func desktopMessagePayload(goal string) string {
 		best = goal[i+len(marker):]
 	}
 	if bestAt < 0 {
+		bestAt, best = desktopMessagePayloadAfterSendVerb(goal)
+	}
+	if bestAt < 0 {
+		return ""
+	}
+	if !computeruse.RequestsDesktopMessageSend(goal) && !computeruse.RequestsDesktopMessageSend(goal[:bestAt]) {
 		return ""
 	}
 	if i := strings.IndexAny(best, "\r\n"); i >= 0 {
@@ -306,10 +310,34 @@ func desktopMessagePayload(goal string) string {
 	best = strings.TrimSpace(best)
 	best = strings.TrimLeft(best, "，,：:、 ")
 	best = strings.TrimSpace(best)
-	if utf8.RuneCountInString(compactDesktopMessage(best)) < 4 {
+	if compactDesktopMessage(best) == "" {
 		return ""
 	}
 	return best
+}
+
+func desktopMessagePayloadAfterSendVerb(goal string) (int, string) {
+	bestAt := -1
+	best := ""
+	for _, verb := range []string{"发送消息", "发送信息", "发送一条", "回复消息", "回消息", "发个消息", "发个信息", "发消息", "发信息"} {
+		from := 0
+		for from < len(goal) {
+			i := strings.Index(goal[from:], verb)
+			if i < 0 {
+				break
+			}
+			i += from
+			at := i + len(verb)
+			if at < len(goal) {
+				r, _ := utf8.DecodeRuneInString(goal[at:])
+				if strings.ContainsRune("，,：:、", r) && (bestAt < 0 || at < bestAt) {
+					bestAt, best = at, goal[at:]
+				}
+			}
+			from = at
+		}
+	}
+	return bestAt, best
 }
 
 func compactDesktopMessage(s string) string {
@@ -326,8 +354,12 @@ func compactDesktopMessage(s string) string {
 func desktopMessageCovers(body, typed string) bool {
 	b := compactDesktopMessage(body)
 	t := compactDesktopMessage(typed)
-	if utf8.RuneCountInString(b) < 4 || t == "" {
+	n := utf8.RuneCountInString(b)
+	if n == 0 || t == "" {
 		return false
+	}
+	if n < 4 {
+		return t == b
 	}
 	return strings.Contains(t, b)
 }
@@ -340,8 +372,15 @@ func noteDesktopMessageTyped(text string) bool {
 	if st == nil || st.MessageBody == "" || st.MessageSubmitted {
 		return false
 	}
+	if st.MessageTyped {
+		return true
+	}
 	st.typedCompact += compactDesktopMessage(text)
-	if desktopMessageCovers(st.MessageBody, st.typedCompact) {
+	covered := desktopMessageCovers(st.MessageBody, st.typedCompact)
+	if utf8.RuneCountInString(compactDesktopMessage(st.MessageBody)) < 4 {
+		covered = desktopMessageCovers(st.MessageBody, text)
+	}
+	if covered {
 		st.MessageTyped = true
 	}
 	return st.MessageTyped
@@ -375,11 +414,18 @@ func noteDesktopMessageSubmitted(detail string) bool {
 	return latchDesktopMessageSubmitted()
 }
 
+func desktopMessageSendControlName(name string) bool {
+	key := strings.ToLower(compactDesktopMessage(name))
+	switch key {
+	case "发送", "发送消息", "发送s", "發送", "發送消息", "發送s", "send", "sendmessage", "sendnow":
+		return true
+	}
+	return strings.HasSuffix(key, "发送按钮") || strings.HasSuffix(key, "發送按鈕") || strings.HasSuffix(key, "sendbutton")
+}
+
 func noteDesktopMessageClickSubmitted(names ...string) bool {
 	for _, name := range names {
-		key := strings.ToLower(compactDesktopMessage(name))
-		switch key {
-		case "发送", "发送消息", "send", "sendmessage", "sendnow":
+		if desktopMessageSendControlName(name) {
 			return latchDesktopMessageSubmitted()
 		}
 	}
@@ -416,11 +462,13 @@ func cuRefuseAfterDesktopMessageSent(tool string) string {
 	owner := computerUseCallOwner()
 	globalComputerUse.mu.Lock()
 	submitted := false
+	auditObserve := false
 	if st := globalComputerUse.taskStates[owner]; st != nil {
 		submitted = st.MessageSubmitted
+		auditObserve = tool == "computer_observe" && st.LastAudit == computerUseAuditFailed
 	}
 	globalComputerUse.mu.Unlock()
-	if !submitted {
+	if !submitted || auditObserve {
 		return ""
 	}
 	return desktopMessageStopText

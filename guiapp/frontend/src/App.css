@@ -29794,7 +29794,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .awv-news-inner { width: 100%; max-width: 520px; }
 .awv-main { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; padding: 16px 16px 16px; gap: 14px; margin: auto 0; flex-shrink: 0; }
 .awv-toolbar { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; padding-top: 8px; }
-.awv-task-config { padding: 8px 8px 0; }
+.awv-task-config { width: 100%; box-sizing: border-box; padding: 2px 4px 0; }
 /* Four quick-task fills on an even grid: 4-up on desktop, 2×2 below 1280px
    (the old flex-wrap left a 3+1 row with one stretched orphan card). */
 .awv-quick-tasks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -43122,6 +43122,95 @@ body.companion-pdf-translation-dragging * {
   --theme-text-secondary: color-mix(in srgb, var(--mc-chrome-ink) 55%, var(--theme-text-muted));
 }
 
+/* ===== 新任务配置条（src/components/ai/task-config）=====
+   默认一行：类型 / 专家 / 工作流 / 工作空间，行尾「更多」。
+   模型与运行时段点开后才占下一行，避免长模型名把默认条折成两行。 */
+.mc-taskcfg-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+}
+.mc-taskcfg-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+}
+.mc-taskcfg-row--more {
+    flex-wrap: wrap;
+    padding-top: 2px;
+}
+.mc-taskcfg-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 4px;
+    height: 28px;
+    padding: 0 8px 0 10px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-muted, #8a94a6);
+    font-size: 12.5px;
+    font-weight: 500;
+    font-family: system-ui, -apple-system, sans-serif;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    user-select: none;
+    position: relative;
+}
+.mc-taskcfg-row > .mc-taskcfg-more::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 1px;
+    background: color-mix(in srgb, var(--theme-text-muted, #8a94a6) 45%, transparent);
+}
+.mc-taskcfg-more [data-icon="chevronsRight"] {
+    transition: transform 140ms ease;
+}
+.mc-taskcfg-more[aria-expanded="true"],
+.mc-taskcfg-more[data-customized="true"] {
+    color: var(--theme-primary, #2e75cb);
+}
+.mc-taskcfg-more[aria-expanded="true"] [data-icon="chevronsRight"] {
+    transform: rotate(90deg);
+}
+.mc-taskcfg-more:hover {
+    color: var(--theme-primary, #2e75cb);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+}
+.mc-taskcfg-more:focus-visible {
+    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline-offset: 1px;
+}
+.mc-taskcfg-more:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more {
+    height: 30px;
+    padding: 0 12px;
+    border: 1px dashed var(--theme-border, #dde5f0);
+    border-radius: 15px;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more::before {
+    content: none;
+}
+.mc-taskcfg-bar--chip .mc-taskcfg-more[aria-expanded="true"],
+.mc-taskcfg-bar--chip .mc-taskcfg-more[data-customized="true"] {
+    border-color: var(--theme-primary, #2e75cb);
+    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+}
+
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */
 .mc-taskcfg-pop {
     animation: mc-taskcfg-pop-in 150ms cubic-bezier(.2, .7, .3, 1);
@@ -43183,5 +43272,8 @@ body.companion-pdf-translation-dragging * {
     .mc-taskcfg-pop,
     .mc-taskcfg-pane {
         animation: none;
+    }
+    .mc-taskcfg-more [data-icon="chevronsRight"] {
+        transition: none;
     }
 }

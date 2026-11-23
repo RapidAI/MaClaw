@@ -1,10 +1,12 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"log"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 func (h *IMMessageHandler) persistCompressionSummaryOnExit(userID string, summary *string) {
@@ -37,10 +39,31 @@ func (h *IMMessageHandler) applyPendingContextCompression(userID string, history
 		return history
 	}
 
-	history = applyHistoryCompression(history, ccReq)
+	compressed, dropped, summaryIndex := planHistoryCompression(history, ccReq)
+	if summaryIndex < 0 || len(dropped) == 0 {
+		return history
+	}
+	raw, err := json.Marshal(dropped)
+	if err != nil {
+		log.Printf("[compress_context] keep original history: marshal dropped entries failed: %v", err)
+		return history
+	}
+	projection, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   "context_checkpoint",
+		SessionKey: h.workflowPolicyOwnerID(userID, nil),
+		Content:    string(raw),
+		Preview:    compressed[summaryIndex].Content.(string),
+		Limit:      4096,
+		ForceSpill: true,
+	})
+	if err != nil || projection.Handle == nil || !projection.Spilled {
+		log.Printf("[compress_context] keep original history: persist dropped entries failed: %v", err)
+		return history
+	}
+	compressed[summaryIndex].Content = projection.Preview
 	if lastSummary != nil {
 		*lastSummary = ccReq.Summary
 	}
-	log.Printf("[compress_context] applied history compression for user=%s summary_len=%d", userID, len(ccReq.Summary))
-	return history
+	log.Printf("[compress_context] applied lossless history compression for user=%s summary_len=%d handle=%s", userID, len(ccReq.Summary), projection.Handle.ID)
+	return compressed
 }

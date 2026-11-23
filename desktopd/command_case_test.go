@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,6 +15,21 @@ import (
 
 // Section 4.2. The control plane asks the in-container command service to
 // run a shell, a screenshot, a click, and ctl. Offline: no browser, no docker run.
+func TestSupervisorShellTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group timeout is a POSIX behavior")
+	}
+	out := runSupervisorPython(t, `
+request = base64.b64encode(json.dumps({"op": "shell", "command": "sleep 30", "timeout_seconds": 1}).encode()).decode()
+started = time.monotonic()
+code = sup.run_command(["supervisor", "command", request])
+print(code, 0.8 <= time.monotonic() - started < 5)
+`)
+	if out != "124 True" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestDesktopBotCommandCases(t *testing.T) {
 	t.Run("command_service_inside_the_container", func(t *testing.T) {
 		supervisor, err := os.ReadFile("image/desktop_supervisor.py")

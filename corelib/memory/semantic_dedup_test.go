@@ -63,8 +63,11 @@ ew.md`,
 	}
 
 	store.WaitRebuild()
-	if got := store.SearchDirectByID("new-entry"); len(got) != 0 {
-		t.Fatalf("new entry should be removed from store, got %+v", got)
+	if got := store.SearchDirectByID("new-entry"); len(got) != 1 || got[0].Status != StatusSuperseded || got[0].Content != newEntry.Content {
+		t.Fatalf("merged source should stay as superseded evidence, got %+v", got)
+	}
+	if got := store.SearchDirectByID("candidate"); len(got) != 1 || !containsString(got[0].EvidenceIDs, "new-entry") {
+		t.Fatalf("merged candidate should link the superseded evidence, got %+v", got)
 	}
 	if scores := store.vecIndex.score([]float32{1, 0, 0, 0}); scores["new-entry"] != 0 {
 		t.Fatalf("new entry should be removed from vector index, got scores=%v", scores)
@@ -151,15 +154,18 @@ func TestProcessPendingDedupMergePersistsUpdateAndDeleteThroughSQLiteBatch(t *te
 	if len(mergedEntry.RelatedIDs) != 0 || len(mergedEntry.RelatedEdges) != 0 {
 		t.Fatalf("candidate should drop edges to deleted entry: related=%v edges=%v", mergedEntry.RelatedIDs, mergedEntry.RelatedEdges)
 	}
-	if _, ok := seen["new-entry-sqlite"]; ok {
-		t.Fatalf("merged new entry should be absent from LoadAll: %+v", seen["new-entry-sqlite"])
+	if got := seen["new-entry-sqlite"]; got.Status != StatusSuperseded || got.Content != newEntry.Content || got.InvalidAt == nil {
+		t.Fatalf("merged source should persist as superseded evidence: %+v", got)
+	}
+	if !containsString(mergedEntry.EvidenceIDs, "new-entry-sqlite") {
+		t.Fatalf("candidate should link superseded evidence: %+v", mergedEntry.EvidenceIDs)
 	}
 	_, deleted, err := backend.Since(0)
 	if err != nil {
 		t.Fatalf("Since: %v", err)
 	}
-	if len(deleted) != 1 || deleted[0] != "new-entry-sqlite" {
-		t.Fatalf("new entry delete should be visible in sync stream, got %v", deleted)
+	if len(deleted) != 0 {
+		t.Fatalf("superseded evidence must not produce delete tombstones: %v", deleted)
 	}
 }
 

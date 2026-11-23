@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	defaultCheckpointThresholdPct = 50
-	defaultCheckpointKeepGroups   = 12
-	defaultCheckpointPreviewLimit = 4096
+	defaultCheckpointThresholdPct  = 50
+	defaultCheckpointKeepGroups    = 12
+	defaultCheckpointPreviewLimit  = 4096
+	defaultCheckpointTailTargetPct = 80
 )
 
 // ContextCheckpointOptions configures lossless model-context checkpoints.
@@ -176,7 +177,11 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 	if memoWindow {
 		drop, dropped, handoffMemo, keptExtra, opaqueBlocked = planHandoffCheckpoint(tail, groups, inlineOK, groupCosts, budget, opts.KeepUserEquals)
 	} else {
-		keepGroups = checkpointKeepCount(systemTokens, groupCosts, keepGroups, budget, previewLimit, result.BeforeTokens)
+		// Leave headroom for subsequent tool rounds. Compressing back to the
+		// hard ceiling forced a new checkpoint and a new provider-prefix cache
+		// miss after almost every tool batch. The full JSON remains queryable.
+		fitBudget := budget * defaultCheckpointTailTargetPct / 100
+		keepGroups = checkpointKeepCount(systemTokens, groupCosts, keepGroups, fitBudget, previewLimit, result.BeforeTokens)
 		if keepGroups < 1 {
 			result.Reason = "protected_window"
 			return result
@@ -263,7 +268,7 @@ func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOp
 		globalContextCheckpoint.shadowSaved.Add(int64(result.BeforeTokens - result.AfterTokens))
 		return result
 	}
-	raw, err := json.Marshal(dropped)
+	raw, err := json.Marshal(checkpointMessagesForStorage(dropped))
 	if err != nil {
 		globalContextCheckpoint.fallbacks.Add(1)
 		result.Reason = "marshal_failed"
@@ -893,6 +898,40 @@ func sameCheckpointToolIDs(declared, actual map[string]int) bool {
 	return true
 }
 
+func checkpointMessagesForStorage(dropped []interface{}) []interface{} {
+	out := make([]interface{}, 0, len(dropped))
+	for _, msg := range dropped {
+		if id := checkpointReferenceID(msg); id != "" {
+			out = append(out, map[string]string{"role": "context_checkpoint_ref", "content": id})
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func checkpointReferenceID(msg interface{}) string {
+	if MsgRole(msg) != "user" {
+		return ""
+	}
+	_, content := ExtractRoleContent(msg)
+	if !strings.HasPrefix(strings.TrimSpace(content), "[context_checkpoint]") {
+		return ""
+	}
+	marker := toolresult.HandleFooterMarker
+	idx := strings.LastIndex(content, marker)
+	if idx < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(content[idx:], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "id:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+		}
+	}
+	return ""
+}
+
 func buildContextCheckpointPreview(dropped []interface{}) string {
 	var users []string
 	var progress []string
@@ -938,7 +977,7 @@ func buildContextCheckpointPreview(dropped []interface{}) string {
 	fmt.Fprintf(&b, "dropped_messages: %d\n", len(dropped))
 	fmt.Fprintf(&b, "dropped_tool_results: %d\n", toolCount)
 	b.WriteString("status: full original message JSON is stored in the handle below\n")
-	b.WriteString("instruction: preserve the user goals and constraints below; continue from recent messages; use read_tool_result on this checkpoint before guessing any omitted decision, path, error, or tool detail\n")
+	b.WriteString("instruction: preserve the user goals and constraints below; continue from recent messages; use read_tool_result with a query for the omitted decision, path, error, or tool detail before guessing or sequentially paging this checkpoint\n")
 	if len(users) > 0 {
 		b.WriteString("preserved_user_goals_and_constraints:\n")
 		for _, user := range users {

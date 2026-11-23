@@ -60,7 +60,7 @@ func (s *Service) computerOp(ctx context.Context, spec Spec, force bool, action 
 		return ComputerResult{}, fmt.Errorf("%w: %s is only supported on the docker runtime", ErrInvalid, action)
 	}
 	var out ComputerResult
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserContext(ctx, spec.TenantID, spec.UserID, func() error {
 		var opErr error
 		if action == "reset" {
 			out, opErr = s.resetUnlocked(ctx, spec, force)

@@ -44,6 +44,7 @@ func ToolReadToolResult(args map[string]interface{}) string {
 		SessionKey: session,
 		Offset:     offset,
 		Limit:      limit,
+		Query:      toolresult.ParseArgsString(args, "query"),
 	})
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)

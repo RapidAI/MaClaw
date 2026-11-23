@@ -607,7 +607,19 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		mux.ServeHTTP(w, r)
 	})
-	return withBotID(guardDesktopTenant(svc, tunnel))
+	return authorizeDesktopBody(authOK, withBotID(guardDesktopTenant(svc, tunnel)))
+}
+
+func authorizeDesktopBody(authOK func(*http.Request) bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protected := r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/desktops") &&
+			!strings.HasPrefix(r.URL.Path, tunnelPrefix) && !strings.HasPrefix(r.URL.Path, viewerPrefix) && !strings.HasPrefix(r.URL.Path, localPrefix)
+		if protected && !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // guardDesktopTenant is the local check from the node design: once this
@@ -639,6 +651,9 @@ func requestTenantIDs(r *http.Request) (query, body string) {
 		return "", ""
 	}
 	query = strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if r.URL.Path == "/v1/desktops/upload" {
+		return query, ""
+	}
 	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return query, ""
 	}

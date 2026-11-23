@@ -340,6 +340,9 @@ func TestCheckpointConversationCanRepeatWithoutNestingCheckpointAsUserGoal(t *te
 	if !first.Applied || first.Handle == nil {
 		t.Fatalf("first checkpoint not applied: %+v", first)
 	}
+	if quiet := CheckpointConversation(first.Conversation, opts); quiet.Applied {
+		t.Fatal("a checkpoint that already left headroom was immediately rewritten")
+	}
 	secondInput := append([]interface{}{}, first.Conversation...)
 	for i := 0; i < 12; i++ {
 		secondInput = append(secondInput, map[string]string{
@@ -360,6 +363,16 @@ func TestCheckpointConversationCanRepeatWithoutNestingCheckpointAsUserGoal(t *te
 	}
 	if !strings.Contains(preview["content"], first.Handle.ID) {
 		t.Fatalf("prior lossless checkpoint handle %q not retained:\n%s", first.Handle.ID, preview["content"])
+	}
+	secondStored, err := toolresult.Read(toolresult.ReadOptions{ID: second.Handle.ID, SessionKey: owner, Root: root, Limit: toolresult.MaxReadLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(secondStored.Content, "context_checkpoint_ref") || !strings.Contains(secondStored.Content, first.Handle.ID) {
+		t.Fatalf("second checkpoint did not preserve the prior handle by reference:\n%s", secondStored.Content)
+	}
+	if strings.Contains(secondStored.Content, "[context_checkpoint]\ndropped_messages:") {
+		t.Fatalf("second checkpoint nested the complete prior preview:\n%s", secondStored.Content)
 	}
 	for _, handle := range []*toolresult.Handle{first.Handle, second.Handle} {
 		page, err := toolresult.Read(toolresult.ReadOptions{ID: handle.ID, SessionKey: owner, Root: root, Limit: toolresult.MaxReadLimit})
@@ -613,6 +626,15 @@ func TestCheckpointConversationKeepsFittingManyGroupsInline(t *testing.T) {
 	}
 	if len(result.Conversation) != len(conversation) {
 		t.Fatalf("inline len = %d, want %d", len(result.Conversation), len(conversation))
+	}
+}
+
+func TestCheckpointKeepCountLeavesHeadroom(t *testing.T) {
+	costs := []int{300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300, 300}
+	// At 80% of a 4000-token budget, system+preview consumes 600,
+	// leaving room for 11 groups rather than the full 12-group window.
+	if got := checkpointKeepCount(100, costs, 12, 4000, 1500, 6000); got != 11 {
+		t.Fatalf("keep count = %d, want 11 groups with subsequent-round headroom", got)
 	}
 }
 

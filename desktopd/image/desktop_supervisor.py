@@ -23,6 +23,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -2067,7 +2068,11 @@ def command_plan(req):
     display = command_display(req.get("display"), op != "shell")
     env = {}
     cwd = None
+    timeout = 0
     if op == "shell":
+        timeout = req.get("timeout_seconds", 0)
+        if type(timeout) is not int or timeout < 0 or timeout > 3600:
+            raise ValueError("command timeout is invalid")
         command = req.get("command")
         if not isinstance(command, str) or command.strip() == "" or "\x00" in command or len(command) > SHELL_MAX:
             raise ValueError("command is empty")
@@ -2095,7 +2100,7 @@ def command_plan(req):
     token = req.get("sentinel") if op == "shell" else ""
     if not isinstance(token, str):
         token = ""
-    return {"op": op, "argv": argv, "env": env, "cwd": cwd, "sentinel": token}
+    return {"op": op, "argv": argv, "env": env, "cwd": cwd, "sentinel": token, "timeout": timeout}
 
 
 SENTINEL_DIR = "/tmp/maclaw-sentinel"
@@ -2237,6 +2242,34 @@ def read_sentinel(token):
     return {"x_client": bool(data.get("x_client"))}
 
 
+def run_shell_command(plan):
+    proc = subprocess.Popen(plan["argv"], cwd=plan["cwd"], env=plan["env"], start_new_session=True)
+    try:
+        return proc.wait(timeout=plan.get("timeout") or None)
+    except subprocess.TimeoutExpired:
+        print("command timed out", file=sys.stderr)
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        elif proc.poll() is None:
+            proc.kill()
+    except OSError:
+        pass
+    proc.wait()
+    return 124
+
+
 def run_command(argv):
     """Run one shell, screenshot, click, or ctl request.
 
@@ -2275,12 +2308,15 @@ def run_command(argv):
         sentinel = SentinelDisplay()
         if sentinel.display:
             child["DISPLAY"] = sentinel.display
-    try:
-        proc = subprocess.run(plan["argv"], cwd=plan["cwd"], env=child)
-    finally:
-        if sentinel is not None:
-            sentinel.close()
-            sentinel.write(token)
+    if plan["op"] == "shell":
+        plan["env"] = child
+        try:
+            return run_shell_command(plan)
+        finally:
+            if sentinel is not None:
+                sentinel.close()
+                sentinel.write(token)
+    proc = subprocess.run(plan["argv"], cwd=plan["cwd"], env=child)
     return proc.returncode
 
 
@@ -5374,7 +5410,7 @@ class H264Viewer:
         self.send_raw(json.dumps(message, separators=(",", ":")).encode("utf-8"), 0x81)
 
     def input_allowed(self):
-        return h264_input_allowed(self.key, self.owner)
+        return self.want_input and h264_input_allowed(self.key, self.owner)
 
     # -- frames from the encoder
     def offer(self, frame, key):
@@ -5707,7 +5743,7 @@ def serve_h264(client, head, owner_token):
             except (TypeError, ValueError):
                 view_width = 0
             stream_h264(client, key, screen, mse=query.get("mse") == "1",
-                        want_input=query.get("input") == "1", fps=fps,
+                        want_input=query.get("input") == "1" and query.get("view_only") != "1", fps=fps,
                         view_width=view_width)
         finally:
             _h264_streams.release()

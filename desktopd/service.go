@@ -200,7 +200,7 @@ func (s *Service) Create(ctx context.Context, spec Spec) (Desktop, error) {
 		return Desktop{}, err
 	}
 	var out Desktop
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserContext(ctx, spec.TenantID, spec.UserID, func() error {
 		var createErr error
 		out, createErr = s.createUnlocked(ctx, spec)
 		return createErr
@@ -408,7 +408,7 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 	// /mcp for whatever runs there next.
 	desktopGates.forget(spec.TenantID, spec.UserID)
 	var out Desktop
-	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserContext(ctx, spec.TenantID, spec.UserID, func() error {
 		var stopErr error
 		out, stopErr = s.runtime().Stop(ctx, spec)
 		return stopErr
@@ -480,7 +480,7 @@ func (s *Service) OpenSession(ctx context.Context, spec Spec) (Session, error) {
 				return opened, err
 			}
 		}
-		err := s.withUser(spec.TenantID, spec.UserID, func() error {
+		err := s.withUserContext(ctx, spec.TenantID, spec.UserID, func() error {
 			var openErr error
 			session, openErr = s.openSessionUnlocked(ctx, spec)
 			return openErr
@@ -507,8 +507,8 @@ var botOpenExclusiveWait = 3 * time.Second
 // stopped or missing container that needs create/start).
 func (s *Service) openBotSessionShared(ctx context.Context, spec Spec) (Session, bool, error) {
 	key := spec.TenantID + "\x00" + spec.UserID
-	value, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
-	gate := value.(*sync.RWMutex)
+	value, _ := s.userGates.LoadOrStore(key, &userGate{})
+	gate := value.(*userGate)
 	deadline := time.Now().Add(botOpenExclusiveWait)
 	for time.Now().Before(deadline) {
 		if gate.TryLock() {
@@ -523,7 +523,7 @@ func (s *Service) openBotSessionShared(ctx context.Context, spec Spec) (Session,
 	}
 	var session Session
 	shared := false
-	err := s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err := s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		name := containerName(spec.TenantID, spec.UserID)
 		if name == "" {
 			return nil
@@ -645,7 +645,7 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 		}
 	}
 	var out string
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		command, cmdErr := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
 			Op:      "click",
 			Display: display,
@@ -681,7 +681,7 @@ func (s *Service) Open(ctx context.Context, tenantID, userID, display, program s
 		return "", err
 	}
 	var out string
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		var runErr error
 		out, runErr = s.docker(ctx, command...)
 		return runErr
@@ -714,8 +714,8 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 	var output string
 	release := s.holdWork(spec.TenantID, spec.UserID)
 	defer release()
-	err = s.withUserInstall(spec.TenantID, spec.UserID, func() error {
-		return s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserInstallContext(ctx, spec.TenantID, spec.UserID, func() error {
+		return s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 			container, _, cErr := s.toolContainer(ctx, spec)
 			if cErr != nil {
 				return cErr
@@ -798,7 +798,7 @@ func (s *Service) CaptureShot(ctx context.Context, tenantID, userID, display, na
 		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalid, desktopbot.DisplayInvalidNextStep)
 	}
 	var out string
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		command, cmdErr := commandServiceArgs(containerName(spec.TenantID, spec.UserID), commandRequest{
 			Op:      "shot",
 			Display: display,
@@ -846,85 +846,165 @@ func loginWriteContext(ctx context.Context) (context.Context, context.CancelFunc
 	return context.WithTimeout(context.WithoutCancel(ctx), loginWriteTimeout)
 }
 
-// withUser is the exclusive side of a user's gate. Container lifecycle and
-// state-changing config — create, stop, session restore, restart/reset,
-// ensure, reaper stop, file writes — take it: they replace or reconfigure
-// the container, so no exec of that user may run inside them.
-func (s *Service) withUser(tenantID, userID string, fn func() error) error {
-	if s == nil {
-		return fn()
-	}
-	key := tenantID + "\x00" + userID
-	gate, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
-	lockWithoutQueueing(gate.(*sync.RWMutex))
-	defer gate.(*sync.RWMutex).Unlock()
-	return fn()
-}
-
-// userGateRetry is how often a writer looks for a moment with no reader.
 var userGateRetry = 20 * time.Millisecond
+var userGateWriterGrace = 250 * time.Millisecond
 
-// lockWithoutQueueing takes the write side without parking on the mutex.
-// sync.RWMutex blocks every new reader as soon as a writer waits, so one
-// long bash of one isolated bot (an RLock held for a minute) plus one
-// waiting Ensure, Stop or session open used to freeze every other bot of
-// the same container until that bash ended (papers 2026-11-11 10:08-10:12:
-// a 5 s screenshot and a 2 s file_edit took 90 s and 28 s while three bots
-// shared one container). Polling TryLock never registers a waiting writer,
-// so readers keep flowing; the writer gets the gate in the next gap between
-// calls, which bots leave every few seconds while the model thinks.
-func lockWithoutQueueing(gate *sync.RWMutex) {
-	for !gate.TryLock() {
-		time.Sleep(userGateRetry)
+type userGate struct {
+	rw          sync.RWMutex
+	mu          sync.Mutex
+	hardWriters int
+}
+
+func (g *userGate) TryLock() bool { return g.rw.TryLock() }
+func (g *userGate) Unlock()       { g.rw.Unlock() }
+func (g *userGate) RUnlock()      { g.rw.RUnlock() }
+func (g *userGate) readersAllowed() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hardWriters == 0
+}
+
+func (g *userGate) setHardWriter(hard bool) {
+	g.mu.Lock()
+	if hard {
+		g.hardWriters++
+	} else {
+		g.hardWriters--
+	}
+	g.mu.Unlock()
+}
+
+func waitGateRetry(ctx context.Context) error {
+	timer := time.NewTimer(userGateRetry)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
-// withUserRead is the shared side of the same gate. The runtime executes one
-// docker exec per call, and the in-container supervisor serializes only
-// start/stop, so concurrent execs of one user are safe. Screenshot, click,
-// ctl, reads, installs, and status take it: one slow call no longer queues
-// this user's other requests behind it. A withUser call still excludes all
-// of them and is excluded by all of them.
-func (s *Service) withUserRead(tenantID, userID string, fn func() error) error {
+func (g *userGate) Lock(ctx context.Context) error {
+	started := time.Now()
+	hard := false
+	for {
+		if g.rw.TryLock() {
+			if hard {
+				g.setHardWriter(false)
+			}
+			return nil
+		}
+		if !hard && time.Since(started) >= userGateWriterGrace {
+			g.setHardWriter(true)
+			hard = true
+		}
+		if err := waitGateRetry(ctx); err != nil {
+			if hard {
+				g.setHardWriter(false)
+			}
+			return err
+		}
+	}
+}
+
+func (g *userGate) RLock(ctx context.Context) error {
+	for {
+		if g.readersAllowed() && g.rw.TryRLock() {
+			return nil
+		}
+		if err := waitGateRetry(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func lockMutexContext(ctx context.Context, lock *sync.Mutex) error {
+	for !lock.TryLock() {
+		if err := waitGateRetry(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) userGate(tenantID, userID string) *userGate {
+	key := tenantID + "\x00" + userID
+	gate, _ := s.userGates.LoadOrStore(key, &userGate{})
+	return gate.(*userGate)
+}
+
+func (s *Service) withUser(tenantID, userID string, fn func() error) error {
+	return s.withUserContext(context.Background(), tenantID, userID, fn)
+}
+
+func (s *Service) withUserContext(ctx context.Context, tenantID, userID string, fn func() error) error {
 	if s == nil {
 		return fn()
 	}
-	key := tenantID + "\x00" + userID
-	gate, _ := s.userGates.LoadOrStore(key, &sync.RWMutex{})
-	gate.(*sync.RWMutex).RLock()
-	defer gate.(*sync.RWMutex).RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gate := s.userGate(tenantID, userID)
+	if err := gate.Lock(ctx); err != nil {
+		return err
+	}
+	defer gate.Unlock()
 	return fn()
 }
 
-// withUserFile is the shared side of the user gate plus one lock per file.
-// A file write, edit or upload changes one path, so it excludes other file
-// calls on that path (an edit's read and write stay one step) but not the
-// container's other calls. On the exclusive side it waited for a moment with
-// no other call at all, which sibling bots of one container may never leave:
-// papers 2026-11-12 06:1x, a 1 KB file_write of one bot took 1m31s behind
-// another bot's 1m31s bash.
-func (s *Service) withUserFile(tenantID, userID, filePath string, fn func() error) error {
+func (s *Service) withUserRead(tenantID, userID string, fn func() error) error {
+	return s.withUserReadContext(context.Background(), tenantID, userID, fn)
+}
+
+func (s *Service) withUserReadContext(ctx context.Context, tenantID, userID string, fn func() error) error {
 	if s == nil {
 		return fn()
 	}
-	return s.withUserRead(tenantID, userID, func() error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gate := s.userGate(tenantID, userID)
+	if err := gate.RLock(ctx); err != nil {
+		return err
+	}
+	defer gate.RUnlock()
+	return fn()
+}
+
+func (s *Service) withUserFile(tenantID, userID, filePath string, fn func() error) error {
+	return s.withUserFileContext(context.Background(), tenantID, userID, filePath, fn)
+}
+
+func (s *Service) withUserFileContext(ctx context.Context, tenantID, userID, filePath string, fn func() error) error {
+	if s == nil {
+		return fn()
+	}
+	return s.withUserReadContext(ctx, tenantID, userID, func() error {
 		lock, _ := s.fileGates.LoadOrStore(tenantID+"\x00"+userID+"\x00"+filePath, &sync.Mutex{})
-		lock.(*sync.Mutex).Lock()
-		defer lock.(*sync.Mutex).Unlock()
+		mutex := lock.(*sync.Mutex)
+		if err := lockMutexContext(ctx, mutex); err != nil {
+			return err
+		}
+		defer mutex.Unlock()
 		return fn()
 	})
 }
 
-// withUserInstall serializes the whole apt/dpkg sequence for one user. It is
-// acquired before withUserRead so a queued install holds neither user gate.
 func (s *Service) withUserInstall(tenantID, userID string, fn func() error) error {
+	return s.withUserInstallContext(context.Background(), tenantID, userID, fn)
+}
+
+func (s *Service) withUserInstallContext(ctx context.Context, tenantID, userID string, fn func() error) error {
 	if s == nil {
 		return fn()
 	}
-	key := tenantID + "\x00" + userID
-	gate, _ := s.installGates.LoadOrStore(key, &sync.Mutex{})
-	gate.(*sync.Mutex).Lock()
-	defer gate.(*sync.Mutex).Unlock()
+	gate, _ := s.installGates.LoadOrStore(tenantID+"\x00"+userID, &sync.Mutex{})
+	mutex := gate.(*sync.Mutex)
+	if err := lockMutexContext(ctx, mutex); err != nil {
+		return err
+	}
+	defer mutex.Unlock()
 	return fn()
 }
 
@@ -1291,9 +1371,17 @@ func (s *Service) docker(ctx context.Context, args ...string) (string, error) {
 }
 
 func defaultRun(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
+	out := &tailOutput{limit: dockerOutputLimit(args)}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	text := strings.TrimSpace(out.String())
+	if ctx.Err() != nil {
+		return text, fmt.Errorf("%w: %w", ErrDocker, ctx.Err())
+	}
 	if err != nil {
 		if text == "" {
 			text = err.Error()
@@ -1440,7 +1528,7 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 		return nil, err
 	}
 	var out string
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		result, runErr := s.runtime().Exec(ctx, spec, ExecRequest{Kind: ExecCtl, Args: command, Combined: true})
 		out = result.Out
 		return runErr

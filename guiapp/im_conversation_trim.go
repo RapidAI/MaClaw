@@ -2279,8 +2279,12 @@ func buildCompactionSummarizerInput(entries []agent.ConversationEntry) string {
 	}
 
 	result := sb.String()
-	if len([]rune(result)) > 12000 {
-		result = string([]rune(result)[:12000]) + "\n...(truncated)"
+	if runes := []rune(result); len(runes) > 12000 {
+		// Keep both the original goal and the newest outcome. A head-only cut
+		// silently discarded the latest decisions, failures, and next steps.
+		head := 8000
+		tailCount := 12000 - head
+		result = string(runes[:head]) + "\n\n...(中间工具细节已省略)...\n\n" + string(runes[len(runes)-tailCount:])
 	}
 	return result
 }

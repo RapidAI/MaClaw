@@ -25,12 +25,12 @@ import (
 // Its labels are maclaw.work.*, not maclaw.tenant/maclaw.user: the desktop
 // reaper, the admin list and the sleep path never mistake it for a desktop.
 const (
-	workspacePrefix     = "maclaw-work-"
-	workspaceTenantLbl  = "maclaw.work.tenant"
-	workspaceUserLbl    = "maclaw.work.user"
-	workspaceImageLbl   = "maclaw.work.image"
-	workspaceHold       = `trap 'exit 0' TERM INT; sleep infinity & wait`
-	workspaceStopGrace  = "5"
+	workspacePrefix    = "maclaw-work-"
+	workspaceTenantLbl = "maclaw.work.tenant"
+	workspaceUserLbl   = "maclaw.work.user"
+	workspaceImageLbl  = "maclaw.work.image"
+	workspaceHold      = `trap 'exit 0' TERM INT; sleep infinity & wait`
+	workspaceStopGrace = "5"
 )
 
 func workspaceName(tenantID, userID string) string {
@@ -209,7 +209,7 @@ func (s *Service) reapWorkspaces(ctx context.Context, maxIdle time.Duration) {
 		if s.now().Sub(at) < maxIdle || s.userBusy(tenantID, userID) {
 			continue
 		}
-		err := s.withUser(tenantID, userID, func() error {
+		err := s.withUserContext(ctx, tenantID, userID, func() error {
 			if s.userBusy(tenantID, userID) {
 				return nil
 			}

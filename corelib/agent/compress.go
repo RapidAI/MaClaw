@@ -50,6 +50,9 @@ type CompressionHook struct {
 	// can itself fail when the provider is throttling, so it stays off unless a
 	// host opts in.
 	Summarize bool
+	// Checkpoint enables the same lossless spill-and-query path used by the
+	// desktop loop. Nil preserves the legacy TrimConversation-only behavior.
+	Checkpoint *ContextCheckpointOptions
 
 	summarizer func(string) string
 }
@@ -81,6 +84,23 @@ func (h *CompressionHook) TransformConversation(conversation []interface{}) []in
 	var summarizer func(string) string
 	if h.Summarize {
 		summarizer = h.summarizerFor(cfg)
+	}
+	if h.Checkpoint != nil {
+		opts := *h.Checkpoint
+		opts.ContextLimit = limit
+		opts.ToolsTokens = h.ToolsTokens
+		opts.Summarize = summarizer
+		checkpoint := CheckpointConversation(conversation, opts)
+		if checkpoint.Applied {
+			log.Printf("[auto-compress] mid-loop checkpoint %d→%d tokens (%d→%d messages, handle=%s)",
+				before, checkpoint.AfterTokens, len(conversation), len(checkpoint.Conversation), checkpoint.Handle.ID)
+			return checkpoint.Conversation
+		}
+		switch checkpoint.Reason {
+		case "below_threshold", "protected_window", "no_savings", "opaque_content", "nothing_to_drop", "pending_ask":
+			return checkpoint.Conversation
+		}
+		conversation = checkpoint.Conversation
 	}
 	trimmed := TrimConversation(conversation, limit, h.ToolsTokens, summarizer)
 	if len(trimmed) == len(conversation) {

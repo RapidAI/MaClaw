@@ -167,6 +167,7 @@ print(repr(sup.h264_fallback_location(b"GET /h264.html?vnc=https://evil/x HTTP/1
 import socket
 a, b = socket.socketpair()
 v = sup.H264Viewer(a, 20, bot, False)
+v.want_input = True
 sent = []
 v.send_json = sent.append
 class Fake:
@@ -192,6 +193,32 @@ print(len(Fake.calls), sent[-1]["code"])
 
 // bot_state reports the input lease: the bot takes it when it asks to act,
 // the person holds it during takeover or right after typing.
+func TestSupervisorH264ViewOnlyRejectsDirectInput(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+owner = "ab" * 8
+os.environ["MACLAW_DESKTOP_KEY"] = owner
+v = sup.H264Viewer(socket.socketpair()[0], 20, owner, True)
+calls = []
+class Fake:
+    def apply(self, viewer, events):
+        calls.append(events); return ""
+    def release(self, viewer): pass
+v.screen = Fake()
+sent = []
+v.send_json = sent.append
+sup.clipboard_set = lambda display, text: calls.append(("set", text)) or True
+sup.clipboard_get = lambda display: calls.append(("get", display)) or "secret"
+v.handle({"type": "input", "seq": 0, "events": [{"t": "move", "x": 0, "y": 0}]})
+v.handle({"type": "clipboard_set", "text": "changed"})
+v.handle({"type": "clipboard_get"})
+print(calls, [m.get("code") for m in sent], v.input_allowed())
+`)
+	if out != "[] ['view_only', 'view_only'] False" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestSupervisorBotStateLease(t *testing.T) {
 	out := runSupervisorPython(t, `
 os.environ["MACLAW_DESKTOP_KEY"] = "ab" * 8

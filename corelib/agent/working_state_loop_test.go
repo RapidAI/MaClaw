@@ -332,6 +332,19 @@ func TestRunLoop_WorkingStateLightDoesNotSplice(t *testing.T) {
 	}
 }
 
+type overlayOrderHooks struct {
+	DefaultLoopHooks
+	sawWorkingState bool
+}
+
+func (h *overlayOrderHooks) TransformConversation(conversation []interface{}) []interface{} {
+	if len(conversation) > 0 {
+		_, content, _ := systemPromptContent(conversation[0])
+		h.sawWorkingState = strings.Contains(content, WorkingStateMarker)
+	}
+	return nil
+}
+
 type wipeSystemAfterToolHooks struct {
 	DefaultLoopHooks
 }
@@ -588,6 +601,37 @@ func TestRunLoop_WorkingStateSurvivesCompactAfterTool(t *testing.T) {
 	}
 	if !strings.Contains(secondSystem, "compacted") {
 		t.Fatalf("expected compacted body: %q", secondSystem)
+	}
+}
+
+func TestRunLoopCompactionSeesFinalWorkingStateOverlay(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var resp map[string]interface{}
+		if calls == 1 {
+			resp = toolCallResponse("write_file", `{"path":"main.go","content":"x"}`)
+		} else {
+			resp = textResponse("done")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    2,
+		sysPrompt:  "sys",
+		toolResult: "ok",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
+	}
+	hooks := &overlayOrderHooks{}
+	result := RunLoop(cb, "fix compile error please", nil, nil, hooks)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if !hooks.sawWorkingState {
+		t.Fatal("compaction ran before the final WorkingState overlay was attached")
 	}
 }
 

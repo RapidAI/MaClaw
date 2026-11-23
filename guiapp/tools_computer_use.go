@@ -892,10 +892,14 @@ func cuHandleFind(args map[string]interface{}) string {
 	// skip a second screenshot+YOLO+OCR cycle. Only without a window bias and
 	// only while refs are still valid.
 	obs := sess.LastObserve()
-	matches := computeruse.FindMatches(obs, query, limit)
+	reusable := obs != nil && windowHint == "" && sess.RefsValid() && time.Since(obs.ObservedAt) <= 2*time.Second
+	var matches []computeruse.MarkedElement
+	if reusable {
+		matches = computeruse.FindMatches(obs, query, limit)
+	}
 	tookObserve := false
-	needsOCR := vision && len(matches) == 0 && obs != nil && len(obs.OCRLines) == 0
-	if obs == nil || windowHint != "" || !sess.RefsValid() || time.Since(obs.ObservedAt) > 2*time.Second || needsOCR {
+	needsOCR := reusable && vision && len(matches) == 0 && len(obs.OCRLines) == 0
+	if !reusable || needsOCR {
 		res := computerUseObserve(0, windowHint, true, true, vision)
 		if !res.OK {
 			return res.Message

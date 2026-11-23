@@ -183,7 +183,7 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 		case "user":
 			// A new user turn 鈥?the previous assistant message is the "final"
 			// one for the preceding turn.
-			if lastAssistantIdx >= 0 && lastAssistantText != "" && len(texts) < maxTexts {
+			if lastAssistantIdx >= 0 && lastAssistantText != "" {
 				// Skip if this is the same as the first assistant (already in turn boundaries).
 				if lastAssistantIdx != firstAssistantIdx {
 					runes := []rune(lastAssistantText)
@@ -199,7 +199,7 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 		}
 	}
 	// Don't forget the last assistant message at the end of the conversation.
-	if lastAssistantIdx >= 0 && lastAssistantText != "" && len(texts) < maxTexts {
+	if lastAssistantIdx >= 0 && lastAssistantText != "" {
 		if lastAssistantIdx != firstAssistantIdx {
 			runes := []rune(lastAssistantText)
 			if len(runes) > 600 {
@@ -207,6 +207,9 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 			}
 			texts = append(texts, lastAssistantText)
 		}
+	}
+	if maxTexts > 0 && len(texts) > maxTexts {
+		texts = texts[len(texts)-maxTexts:]
 	}
 	return texts
 }

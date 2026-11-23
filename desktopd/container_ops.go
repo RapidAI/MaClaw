@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -41,6 +42,74 @@ func fileServiceArgs(container, op, filePath string, limit int) []string {
 	return args
 }
 
+const defaultDockerOutputMax = 32 << 20
+
+type tailOutput struct {
+	mu    sync.Mutex
+	limit int
+	data  []byte
+}
+
+func (b *tailOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	if n >= b.limit {
+		b.data = append(b.data[:0], p[n-b.limit:]...)
+		return n, nil
+	}
+	if overflow := len(b.data) + n - b.limit; overflow > 0 {
+		copy(b.data, b.data[overflow:])
+		b.data = b.data[:len(b.data)-overflow]
+	}
+	b.data = append(b.data, p...)
+	return n, nil
+}
+
+func (b *tailOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}
+
+func dockerOutputLimit(args []string) int {
+	for i, arg := range args {
+		if arg == "curl" {
+			return desktop.HTTPBodyMax + 64<<10
+		}
+		if arg == "file" && i+1 < len(args) {
+			switch args[i+1] {
+			case "read":
+				return desktop.FileReadMax + 4<<10
+			case "bytes", "link":
+				return desktop.FileDeliverBase64Max + 4<<10
+			default:
+				return 64 << 10
+			}
+		}
+		if arg != "command" || i+1 >= len(args) {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(args[i+1])
+		if err != nil {
+			continue
+		}
+		var req commandRequest
+		if json.Unmarshal(raw, &req) != nil {
+			continue
+		}
+		switch req.Op {
+		case "shell":
+			return desktop.BashOutputMax
+		case "shot":
+			return 64 << 20
+		case "ctl":
+			return 1 << 20
+		}
+	}
+	return defaultDockerOutputMax
+}
+
 func defaultRunCommand(ctx context.Context, stdin io.Reader, args ...string) (string, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -49,8 +118,13 @@ func defaultRunCommand(ctx context.Context, stdin io.Reader, args ...string) (st
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
-	out, err := cmd.CombinedOutput()
-	text := string(out)
+	out := &tailOutput{limit: dockerOutputLimit(args)}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	text := out.String()
+	if ctx.Err() != nil {
+		return text, 0, fmt.Errorf("%w: %w", ErrDocker, ctx.Err())
+	}
 	if err == nil {
 		return text, 0, nil
 	}
@@ -79,7 +153,7 @@ func (s *Service) ReadFile(ctx context.Context, tenantID, userID, filePath strin
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -138,7 +212,7 @@ func (s *Service) readEncodedFile(ctx context.Context, tenantID, userID, filePat
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -182,7 +256,7 @@ func (s *Service) WriteFile(ctx context.Context, tenantID, userID, filePath, con
 	var output string
 	var container string
 	var onDesktop bool
-	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
+	err = s.withUserFileContext(ctx, spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -225,7 +299,7 @@ func (s *Service) EditFile(ctx context.Context, tenantID, userID, filePath, old,
 	var exitCode int
 	// Read and write share one user lock. Releasing it between them lets
 	// another command from this user replace the file before the edit lands.
-	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
+	err = s.withUserFileContext(ctx, spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -288,7 +362,7 @@ func (s *Service) ListFile(ctx context.Context, tenantID, userID, filePath strin
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -356,10 +430,11 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 		sentinel = newSentinelToken()
 	}
 	shell := commandRequest{
-		Op:       "shell",
-		Command:  strings.TrimSpace(command),
-		Display:  display,
-		Sentinel: sentinel,
+		Op:             "shell",
+		Command:        strings.TrimSpace(command),
+		Display:        display,
+		Sentinel:       sentinel,
+		TimeoutSeconds: int((desktop.BashBudget - 5*time.Second) / time.Second),
 	}
 	if _, err := commandServiceArgs(containerName(spec.TenantID, spec.UserID), shell); err != nil {
 		return "", err
@@ -375,7 +450,7 @@ func (s *Service) bash(ctx context.Context, tenantID, userID, command string, ne
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		if spec.BotID != "" && !needsScreen && s.httpUsesWorkspace() {
 			name, wErr := s.ensureWorkspace(ctx, spec)
 			if wErr != nil {
@@ -486,7 +561,7 @@ func (s *Service) httpGet(ctx context.Context, spec Spec, rawURL string) (string
 	var exitCode int
 	var container string
 	var onDesktop bool
-	err := s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	err := s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr
@@ -575,7 +650,7 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	counted := &countingReader{r: io.LimitReader(body, desktop.UploadMax+1)}
 	var container string
 	var onDesktop bool
-	err = s.withUserFile(spec.TenantID, spec.UserID, filePath, func() error {
+	err = s.withUserFileContext(ctx, spec.TenantID, spec.UserID, filePath, func() error {
 		c, desk, cErr := s.toolContainer(ctx, spec)
 		if cErr != nil {
 			return cErr

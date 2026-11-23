@@ -509,8 +509,17 @@ func TestSemanticDedup_ProcessPending_Merge(t *testing.T) {
 	pendingCount := len(s.pendingDedup)
 	s.mu.RUnlock()
 
-	if count != 1 {
-		t.Fatalf("expected 1 entry after merge, got %d", count)
+	if count != 2 {
+		t.Fatalf("expected merged fact plus superseded evidence, got %d entries", count)
+	}
+	active := 0
+	for _, entry := range s.entries {
+		if entry.IsActive() {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("expected only one active fact after merge, got %d", active)
 	}
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending after processing, got %d", pendingCount)

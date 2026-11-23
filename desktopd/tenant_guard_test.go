@@ -1,12 +1,47 @@
 package desktopd
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRegisteredDesktopUploadKeepsTheWholeBody(t *testing.T) {
+	link := &HubLink{Key: "primary-token-value-0123456789"}
+	link.creds.TenantID = "tenant-a"
+	var uploaded int
+	svc := &Service{
+		HubLink:       link,
+		ToolWorkspace: true,
+		Run: func(context.Context, ...string) (string, error) {
+			return "true", nil
+		},
+		RunCommand: func(_ context.Context, in io.Reader, _ ...string) (string, int, error) {
+			if in != nil {
+				raw, err := io.ReadAll(in)
+				if err != nil {
+					return "", 0, err
+				}
+				uploaded = len(raw)
+			}
+			return "", 0, nil
+		},
+	}
+	handler := Handler(svc, "primary-token-value-0123456789", t.TempDir(), nil, nil)
+	payload := bytes.Repeat([]byte("x"), 2<<20)
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktops/upload?tenant_id=tenant-a&user_id=alice&path=~%2F%E7%B4%A0%E6%9D%90%2Fa.bin", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer primary-token-value-0123456789")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || uploaded != len(payload) {
+		t.Fatalf("status=%d uploaded=%d body=%s", rec.Code, uploaded, rec.Body.String())
+	}
+}
 
 func TestRegisteredDesktopRejectsAnotherTenant(t *testing.T) {
 	dir := t.TempDir()

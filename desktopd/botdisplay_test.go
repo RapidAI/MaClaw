@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,6 +123,26 @@ func TestBotRequestsUseTheServerDerivedDisplay(t *testing.T) {
 	}
 	if rec := post("/v1/desktops/app", `{"tenant_id":"tenant","user_id":"alice","bot_id":"bad id","args":["key","a"]}`); rec.Code != 400 {
 		t.Fatalf("bad bot id %d", rec.Code)
+	}
+}
+
+type unreadableDesktopBody struct{ reads int }
+
+func (b *unreadableDesktopBody) Read([]byte) (int, error) {
+	b.reads++
+	return 0, errors.New("body must not be read before authentication")
+}
+
+func (b *unreadableDesktopBody) Close() error { return nil }
+
+func TestDesktopBodyIsNotReadBeforeAuthentication(t *testing.T) {
+	body := &unreadableDesktopBody{}
+	handler := Handler(&Service{}, "secret", t.TempDir(), nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/desktops/bash", body)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || body.reads != 0 {
+		t.Fatalf("status=%d reads=%d", rec.Code, body.reads)
 	}
 }
 

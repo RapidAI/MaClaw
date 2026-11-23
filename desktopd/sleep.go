@@ -257,7 +257,7 @@ func (s *Service) Ensure(ctx context.Context, spec Spec) error {
 		return s.openNamedBotScreen(ctx, spec)
 	}
 	if err := s.flightErr(ensureFlightKey(spec), ctx, func(ctx context.Context) error {
-		return s.withUser(spec.TenantID, spec.UserID, func() error {
+		return s.withUserContext(ctx, spec.TenantID, spec.UserID, func() error {
 			return s.runtime().Ensure(ctx, spec)
 		})
 	}); err != nil {
@@ -468,7 +468,7 @@ func (s *Service) ensureWithoutExclusiveGate(ctx context.Context, spec Spec) (do
 		return false, nil
 	}
 	started := s.now()
-	_ = s.withUserRead(spec.TenantID, spec.UserID, func() error {
+	_ = s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
 		current, inspectErr := s.inspect(ctx, containerName(spec.TenantID, spec.UserID))
 		switch {
 		case inspectErr != nil:
