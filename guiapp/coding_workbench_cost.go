@@ -65,12 +65,17 @@ func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, 
 		return
 	}
 	window := h.codingContextWindowTokens(userID)
+	published := 0
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		// Session totals are a lifetime sum. They share this lock with the
+		// window fill so a status poll cannot observe one without the other,
+		// but they are not the fill and must not be published as it.
 		mem.SessionInputTokens += sessionInput
 		mem.SessionOutputTokens += sessionOutput
 		mem.SessionEstCostRMB += cost
 		if lastInput > 0 {
 			mem.LastTurnInputTokens = codingPromptFill(mem.LastTurnInputTokens, lastInput, window)
+			published = mem.LastTurnInputTokens
 		}
 		if lastOutput > 0 {
 			mem.LastTurnOutputTokens = lastOutput
@@ -79,6 +84,12 @@ func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, 
 			mem.LastTurnEstCostRMB = cost
 		}
 	})
+	// The window event is the fill commit. A task that ends without a live
+	// note still has to publish the last prompt here; publishing the session
+	// sum is what painted used far above the window.
+	if lastInput > 0 && published > 0 {
+		h.publishContextWindowUsage(userID, published, window)
+	}
 }
 
 // noteCodingContextFill publishes the latest provider prompt as the live

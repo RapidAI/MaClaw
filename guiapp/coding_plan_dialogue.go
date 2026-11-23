@@ -2204,14 +2204,68 @@ func codingPlanDialogueConfirms(text string) bool {
 
 func codingPlanDialogueDirect(text string) bool {
 	compact := codingPlanDialogueCompact(text)
-	if compact == "" || utf8.RuneCountInString(compact) > 24 {
+	if compact == "" || codingPlanDialogueHoldsForApprove(compact) {
 		return false
 	}
+	// A start order can name the gate it is refusing. "直接开工，不要等
+	// /plan approve" is still "start now", not a revision of the draft.
+	// The length cap only applies when the order does not name that gate,
+	// so a long implementation request cannot skip planning by mentioning
+	// "直接做" in passing.
+	if codingPlanDialogueNamesApproveWait(compact) {
+		return codingPlanDialogueHasStartOrder(compact)
+	}
+	if utf8.RuneCountInString(compact) > 24 {
+		return false
+	}
+	return codingPlanDialogueHasStartOrder(compact)
+}
+
+func codingPlanDialogueHasStartOrder(compact string) bool {
 	for _, marker := range []string{
-		"直接做", "直接执行", "直接執行", "不用规划", "不用規劃",
-		"跳过规划", "跳過規劃", "justdoit", "skipplan", "skiptheplan",
+		"直接做", "直接执行", "直接執行", "直接开工", "直接開工",
+		"不用规划", "不用規劃", "跳过规划", "跳過規劃",
+		"justdoit", "skipplan", "skiptheplan", "donotwait", "dontwait",
 	} {
 		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingPlanDialogueNamesApproveWait(compact string) bool {
+	return strings.Contains(compact, "planapprove")
+}
+
+func codingPlanDialogueHoldsForApprove(compact string) bool {
+	for _, marker := range []string{"等批准", "等确认", "等確認", "先确认", "先確認", "waitforapprove"} {
+		if codingPlanDialogueAffirms(compact, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingPlanDialogueAffirms(compact, marker string) bool {
+	from := 0
+	for from <= len(compact) {
+		rel := strings.Index(compact[from:], marker)
+		if rel < 0 {
+			return false
+		}
+		at := from + rel
+		if !codingPlanDialogueNegated(compact[:at]) {
+			return true
+		}
+		from = at + len(marker)
+	}
+	return false
+}
+
+func codingPlanDialogueNegated(prefix string) bool {
+	for _, neg := range []string{"不要", "不用", "无需", "無需", "别", "別", "dont", "donot", "not"} {
+		if strings.HasSuffix(prefix, neg) {
 			return true
 		}
 	}

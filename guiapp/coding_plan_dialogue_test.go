@@ -48,11 +48,56 @@ func TestCodingPlanDialogueConfirmAndExitPhrases(t *testing.T) {
 	if !codingPlanDialogueDirect("不用规划了，直接做") {
 		t.Fatal("expected direct-execute phrase")
 	}
-	if codingPlanDialogueDirect("先规划再开发一个完整的登录页和测试") {
-		t.Fatal("a plan-first request must not look like skipping the plan")
+	for _, text := range []string{
+		"直接开工",
+		"直接开工，不要等 /plan approve",
+		"直接开工，不要输出需要确认的计划，不要等 /plan approve。",
+		"不要等批准，直接开工",
+	} {
+		if !codingPlanDialogueDirect(text) {
+			t.Fatalf("expected direct-execute phrase: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"先规划再开发一个完整的登录页和测试",
+		"等批准后再 /plan approve",
+		"直接做完登录页之后再补一套完整的表单校验和端到端测试",
+	} {
+		if codingPlanDialogueDirect(text) {
+			t.Fatalf("must not skip planning: %q", text)
+		}
 	}
 	if !codingPlanDialogueCancels("取消规划") {
 		t.Fatal("expected cancel phrase")
+	}
+}
+
+func TestPendingPlanStartNowDoesNotWaitForApprove(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	goal := "修复窗口已用量把会话累计画进上下文"
+	h.storeStickyPendingCodingPlan(userID, goal, "plan", []*v2.TaskItem{
+		{Index: 1, Title: "对照提交边界", Description: "窗口事件只带最后一次 prompt"},
+		{Index: 2, Title: "补回归", Description: "任务结束不能把累计画成已用量"},
+	})
+	h.updateStickyCodingWorkbenchMemory(userID, func(m *stickyCodingWorkbenchMemory) {
+		m.PlanDialogue = true
+		m.PlanDialogueBrief = goal
+	})
+	text := "直接开工，不要输出需要确认的计划，不要等 /plan approve。"
+	next, stop := h.prepareCodingPlanDialogue(userID, text, "D:/repo", true, nil, nil)
+	if stop != nil {
+		t.Fatalf("start-now must leave planning, got %s", stop.Text)
+	}
+	if next != goal {
+		t.Fatalf("start-now should execute the pending goal, got %q", next)
+	}
+	if _, ok := h.loadStickyPendingCodingPlan(userID); ok {
+		t.Fatal("pending plan must be cleared so the runner does not wait for /plan approve")
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.PlanDialogue || !mem.SkipNextPlan || mem.SkipPlanText != goal {
+		t.Fatalf("dialogue should skip to direct execution: %+v", mem)
 	}
 }
 

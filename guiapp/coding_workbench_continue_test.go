@@ -215,6 +215,114 @@ func TestCodingWorkbenchStatusContextTokensUsesLastPromptNotSessionSum(t *testin
 	}
 }
 
+func TestRecordStickyCodingUsagePublishesPromptNotSessionSum(t *testing.T) {
+	var raw string
+	app := &App{ctx: context.Background(), testEmit: func(name string, data ...interface{}) {
+		if name == "ai-assistant-context-usage" && len(data) > 0 {
+			raw, _ = data[0].(string)
+		}
+	}}
+	h := &IMMessageHandler{app: app, standaloneConfig: &StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{Model: "coding-model", URL: "https://llm.example/v1", Key: "k", ContextLength: 256000}
+		},
+	}}
+	userID := "desktop-user:usage-boundary"
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+
+	h.noteCodingContextFill(userID, 257658, 40)
+	if !strings.Contains(raw, `"context_used_tokens":257658`) {
+		t.Fatalf("live event=%s", raw)
+	}
+	raw = ""
+	// Task end: the session sum and the last prompt commit together, but the
+	// window event carries only the prompt.
+	h.recordStickyCodingUsage(userID, 30213603, 24000, 199260, 180, 0)
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.SessionInputTokens != 30213603 || mem.LastTurnInputTokens != 24000 {
+		t.Fatalf("session=%d last=%d", mem.SessionInputTokens, mem.LastTurnInputTokens)
+	}
+	if !strings.Contains(raw, `"context_used_tokens":24000`) || strings.Contains(raw, "30213603") {
+		t.Fatalf("task-end event=%s", raw)
+	}
+	raw = ""
+	h.recordStickyCodingUsage(userID, 10, 0, 0, 0, 0)
+	if raw != "" {
+		t.Fatalf("session-only delta published %s", raw)
+	}
+	mem = h.getStickyCodingWorkbenchMemory(userID)
+	if mem.LastTurnInputTokens != 24000 || mem.SessionInputTokens != 30213613 {
+		t.Fatalf("session-only delta moved the fill: session=%d last=%d", mem.SessionInputTokens, mem.LastTurnInputTokens)
+	}
+}
+
+// Repro BR-20261122-4FFF37BF12F7: the provider reported a 257658 prompt, then
+// the task ended with a 1250-request sum of 30213603. Task end must commit
+// that sum as the session total and the last prompt as the window fill. A
+// status poll after the live note is gone must not paint the sum as used.
+func TestCodingTaskEndReproDoesNotPaintSessionSumAsWindow(t *testing.T) {
+	var raw string
+	app := &App{ctx: context.Background(), testEmit: func(name string, data ...interface{}) {
+		if name == "ai-assistant-context-usage" && len(data) > 0 {
+			raw, _ = data[0].(string)
+		}
+	}}
+	h := &IMMessageHandler{app: app, standaloneConfig: &StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{Model: "coding-model", URL: "https://llm.example/v1", Key: "k", ContextLength: 262144}
+		},
+	}}
+	path := t.TempDir()
+	userID := projectSessionOwnerID(path)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+
+	live := agent.TurnUsage{InputTokens: 257658, OutputTokens: 40, Requests: 1}
+	h.noteCodingContextFill(userID, live.InputTokens, live.OutputTokens)
+	if !strings.Contains(raw, `"context_used_tokens":257658`) || strings.Contains(raw, "30213603") {
+		t.Fatalf("live event=%s", raw)
+	}
+
+	// Same shape the subagent hands the workflow: lifetime sums plus the last
+	// request. The window fields come from that split, not from the sum.
+	finished := agent.TurnUsage{
+		InputTokens: 30213603, OutputTokens: 199260, Requests: 1250,
+		LastPromptTokens: 24000, LastCompletionTokens: 180,
+	}
+	sessionIn, sessionOut, _, lastPrompt, lastCompletion := codingLoopWindowUsage(finished)
+	if sessionIn != 30213603 || lastPrompt != 24000 || lastCompletion != 180 {
+		t.Fatalf("handoff session=%d prompt=%d completion=%d", sessionIn, lastPrompt, lastCompletion)
+	}
+	raw = ""
+	h.recordStickyCodingUsage(userID, sessionIn, lastPrompt, sessionOut, lastCompletion, 0)
+
+	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 24000 || st.ContextMaxTokens != 209715 {
+		t.Fatalf("status used=%d max=%d, session sum must not fill the meter", st.ContextUsedTokens, st.ContextMaxTokens)
+	}
+	if st.SessionInputTokens != 30213603 || st.SessionOutputTokens != 199260 {
+		t.Fatalf("session in=%d out=%d", st.SessionInputTokens, st.SessionOutputTokens)
+	}
+	if st.LastTurnOutputTokens != 180 {
+		t.Fatalf("本轮 out=%d", st.LastTurnOutputTokens)
+	}
+	if !strings.Contains(raw, `"context_used_tokens":24000`) || strings.Contains(raw, "30213603") {
+		t.Fatalf("task-end event=%s", raw)
+	}
+
+	// The log path that missed the live note: task end is the only commit.
+	// The session sum still must not become the fill.
+	h.clearStickyCodingWorkbenchMemory(userID)
+	raw = ""
+	h.recordStickyCodingUsage(userID, sessionIn, lastPrompt, sessionOut, lastCompletion, 0)
+	st = (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 24000 || st.SessionInputTokens != 30213603 {
+		t.Fatalf("task-end-only used=%d session=%d", st.ContextUsedTokens, st.SessionInputTokens)
+	}
+	if !strings.Contains(raw, `"context_used_tokens":24000`) || strings.Contains(raw, "30213603") {
+		t.Fatalf("task-end-only event=%s", raw)
+	}
+}
+
 func TestCodingWorkbenchStatusContextTokensDegrade(t *testing.T) {
 	// No turn yet and no resolvable model → the cap is 0 rather than an
 	// invented number. The session sum must not stand in for the window fill:
