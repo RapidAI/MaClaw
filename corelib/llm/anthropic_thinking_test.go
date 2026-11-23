@@ -184,7 +184,7 @@ func TestParseAnthropicSSEStreamKeepsTextWhenThinkingLineExceedsScanLimit(t *tes
 	sseStreamMaxLineBytes = maxLine
 	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
 
-	body := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + strings.Repeat("h", maxLine) + "\"}}\n" +
+	body := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + strings.Repeat("h", maxLine) + "\"}}\n\n" +
 		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"kept\"}}\n\n"
 	var text strings.Builder
 	resp, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(body), func(d string) {
@@ -195,5 +195,97 @@ func TestParseAnthropicSSEStreamKeepsTextWhenThinkingLineExceedsScanLimit(t *tes
 	}
 	if resp == nil || text.String() != "kept" {
 		t.Fatalf("text = %q resp = %#v", text.String(), resp)
+	}
+}
+
+// A newline inside an oversized thinking payload is not a new event. The
+// tail must not be parsed, and the text event after the blank line must.
+func TestParseAnthropicSSEStreamDoesNotParseTailOfOversizedFoldedEvent(t *testing.T) {
+	const maxLine = 256
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := "event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + strings.Repeat("h", maxLine) + "\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"poison\"}}\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"kept\"}}\n\n"
+	var text strings.Builder
+	_, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(body), func(d string) {
+		text.WriteString(d)
+	}, nil)
+	if err != nil {
+		t.Fatalf("folded oversized event must not fail the turn: %v", err)
+	}
+	if text.String() != "kept" {
+		t.Fatalf("text = %q, want only the event after the blank line", text.String())
+	}
+}
+
+
+// A skipped thinking event that cuts an open tool call is a truncation, not
+// an executable call and not a successful empty completion.
+func TestParseAnthropicSSEStreamMarksCutArgumentsAfterSkippedEvent(t *testing.T) {
+	const maxLine = 128
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_cut\",\"name\":\"read_file\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"\"}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"" + strings.Repeat("p", maxLine) + "\"}}\n\n"
+	resp, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
+	if err != nil {
+		t.Fatalf("one skipped event must not fail the turn: %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+	choice := resp.Choices[0]
+	if choice.FinishReason != "length" {
+		t.Fatalf("finish_reason = %q, want length", choice.FinishReason)
+	}
+	if len(choice.TruncatedToolNames) == 0 || choice.TruncatedToolNames[0] != "read_file" {
+		t.Fatalf("truncated tools = %#v, want read_file", choice.TruncatedToolNames)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("incomplete call was kept executable: %#v", choice.Message.ToolCalls)
+	}
+	got, ok := choice.TruncatedToolArgs["read_file"]
+	if !ok || !strings.Contains(got, "path") {
+		t.Fatalf("truncated args = %#v, want the partial path prefix", choice.TruncatedToolArgs)
+	}
+}
+
+// Eight skipped events are still a recoverable cut. The ninth is the fuse:
+// further skipping would hide a turn that is mostly missing.
+func TestParseAnthropicSSEStreamSkippedEventCap(t *testing.T) {
+	const maxLine = 128
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	oversized := "data: " + strings.Repeat("x", maxLine+1) + "\n\n"
+	var eight strings.Builder
+	for i := 0; i < sseStreamMaxSkippedLines; i++ {
+		eight.WriteString(oversized)
+	}
+	eight.WriteString("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"after\"}}\n\n")
+	resp, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(eight.String()), nil, nil)
+	if err != nil {
+		t.Fatalf("%d skipped events must still succeed: %v", sseStreamMaxSkippedLines, err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "after" {
+		t.Fatalf("response = %#v, want the event after %d skips", resp, sseStreamMaxSkippedLines)
+	}
+
+	var nine strings.Builder
+	for i := 0; i <= sseStreamMaxSkippedLines; i++ {
+		nine.WriteString(oversized)
+	}
+	nine.WriteString("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"after\"}}\n\n")
+	_, err = parseAnthropicSSEStreamWithReasoning(strings.NewReader(nine.String()), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Fatalf("err = %v, want skipped-event cap", err)
 	}
 }
