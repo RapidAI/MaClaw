@@ -679,3 +679,61 @@ func TestResponsesStreamCompletedWithoutIndexKeepsSingleCallName(t *testing.T) {
 		t.Fatal("snapshot occupied a second slot")
 	}
 }
+
+// response.completed carries every output item of the turn in ONE event, each
+// with its full argument string. With several large calls the line passes the
+// old 256 KiB scan limit, and the turn failed with "bufio.Scanner: token too
+// long" before any of it reached the caller. The streaming round under review
+// (BR-20261123-600B21AFE72D) failed exactly that way.
+func TestDoResponsesAPIRequestStreamAcceptsLargeCompletedSnapshot(t *testing.T) {
+	// Three calls, each well under MaxToolArgumentsBytes, together far past the
+	// old per-event limit.
+	blob := strings.Repeat("x", 120*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		args := `{"path":"a.go","pad":"` + blob + `"}`
+		completed := map[string]interface{}{
+			"response": map[string]interface{}{
+				"id": "resp-big",
+				"output": []interface{}{
+					map[string]interface{}{"type": "reasoning", "summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": "plan"}}},
+					map[string]interface{}{"type": "function_call", "output_index": 1, "call_id": "call_a", "name": "read_file", "arguments": args},
+					map[string]interface{}{"type": "function_call", "output_index": 2, "call_id": "call_b", "name": "write_file", "arguments": args},
+					map[string]interface{}{"type": "function_call", "output_index": 3, "call_id": "call_c", "name": "edit_file", "arguments": args},
+				},
+			},
+		}
+		payload, err := json.Marshal(completed)
+		if err != nil {
+			t.Fatalf("marshal completed: %v", err)
+		}
+		_, _ = w.Write([]byte("event: response.completed\ndata: " + string(payload) + "\n\n"))
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	calls := response.Choices[0].Message.ToolCalls
+	if len(calls) != 3 {
+		t.Fatalf("tool calls = %d, want 3", len(calls))
+	}
+	if calls[0].Function.Name != "read_file" || calls[1].Function.Name != "write_file" || calls[2].Function.Name != "edit_file" {
+		t.Fatalf("names = %q %q %q", calls[0].Function.Name, calls[1].Function.Name, calls[2].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, blob[:64]) {
+		t.Fatalf("arguments were not carried through the larger event")
+	}
+}

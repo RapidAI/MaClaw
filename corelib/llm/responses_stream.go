@@ -19,7 +19,14 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const responsesStreamMaxEventBytes = 256 * 1024
+// responsesStreamMaxEventBytes bounds one SSE event line. It must not be sized
+// to a single tool call: response.completed carries every output item of the
+// turn, each with its full argument string, in one event. Several large calls
+// together exceed 256 KiB (single-call arguments alone are capped at
+// MaxToolArgumentsBytes), and bufio.Scanner then fails the whole turn with
+// "token too long" before any of the deltas reach the caller. Google's stream
+// reader already allows 4 MiB for the same reason.
+const responsesStreamMaxEventBytes = 4 << 20
 
 type responsesStreamItem struct {
 	itemType string
