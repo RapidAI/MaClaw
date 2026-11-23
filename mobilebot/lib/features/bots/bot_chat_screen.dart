@@ -346,7 +346,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   }
 
   /// 系统听写写入输入框。listen 抛错时复位并返回 false，调用方可回退本地。
+  ///
+  /// 先要端上识别：不设 onDevice 时每次都交给默认（多为云端）识别器，
+  /// 没有 GMS 或没网的机型一个词都不回。没有端上模型的机型会直接拒绝，
+  /// 第二次保留默认识别器。
   Future<bool> _listenSystemDictate() async {
+    if (await _listenSystemDictateWith(onDevice: true)) return true;
+    if (!mounted) return false;
+    return _listenSystemDictateWith(onDevice: false);
+  }
+
+  Future<bool> _listenSystemDictateWith({required bool onDevice}) async {
     _speechPrefix = _inputCtrl.text;
     final fallbackLocaleId = speechLocaleId(Localizations.localeOf(context));
     // 上一轮的界面复位不能算到这一轮。
@@ -364,7 +374,10 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         return false;
       }
       _beginListen(AsrEngine.system);
-      final params = SystemListenParams(localeId: before.localeId);
+      final params = SystemListenParams(
+        localeId: before.localeId,
+        onDevice: onDevice,
+      );
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -372,6 +385,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           listenFor: params.listenFor,
           pauseFor: params.pauseFor,
           listenMode: stt.ListenMode.dictation,
+          onDevice: params.onDevice,
         ),
         onSoundLevelChange: (_) => _keepListenAlive(),
         onResult: (result) {
@@ -637,7 +651,11 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         return false;
       }
       _beginListen(AsrEngine.system);
-      final params = SystemListenParams(localeId: before.localeId);
+      // 语音助手模式（自动发送）也要端上识别优先，回退逻辑同上。
+      final params = SystemListenParams(
+        localeId: before.localeId,
+        onDevice: true,
+      );
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -645,6 +663,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           listenFor: params.listenFor,
           pauseFor: params.pauseFor,
           listenMode: stt.ListenMode.dictation,
+          onDevice: params.onDevice,
         ),
         onSoundLevelChange: (_) => _keepListenAlive(),
         onResult: (result) {

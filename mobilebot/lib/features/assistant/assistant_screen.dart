@@ -467,6 +467,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   /// 会话中途的 onError 只结束聆听态，不在这里回退——麦克风已开，再切
   /// 本地采集会抢麦。完全没有回调则由看门狗回退一次。
   Future<bool> _startSystemDictate() async {
+    // 先要端上识别：不设 onDevice 时每次都交给默认（多为云端）识别器，
+    // 没有 GMS 或没网的机型一个词都不回。没有端上模型的机型会直接拒绝，
+    // 第二次保留默认识别器。
+    if (await _startSystemDictateWith(onDevice: true)) return true;
+    if (!mounted) return false;
+    return _startSystemDictateWith(onDevice: false);
+  }
+
+  Future<bool> _startSystemDictateWith({required bool onDevice}) async {
     // 代次在 initialize 前捕获：它的 onError/onStatus 会晚于 stop() 到达，
     // 必须能和下一轮区分开。
     final gen = ++_listenGen;
@@ -528,7 +537,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         return false;
       }
       _beginListen(AsrEngine.system);
-      final params = SystemListenParams(localeId: before.localeId);
+      final params = SystemListenParams(
+        localeId: before.localeId,
+        onDevice: onDevice,
+      );
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -536,6 +548,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           listenFor: params.listenFor,
           pauseFor: params.pauseFor,
           listenMode: stt.ListenMode.dictation,
+          onDevice: params.onDevice,
         ),
         onSoundLevelChange: (_) => _keepListenAlive(),
         onResult: (r) {

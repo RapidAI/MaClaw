@@ -242,7 +242,18 @@ class ComposerDictation {
 
   /// System recognition writes straight into the composer. Returns false when
   /// the recognizer never started, so the caller can fall back.
+  ///
+  /// On-device recognition is tried first: without it every listen goes to
+  /// the default (usually cloud) recognizer, which hears nothing on a phone
+  /// without GMS or network. A phone with no on-device model refuses that
+  /// attempt outright, so the second try keeps the default recognizer.
   Future<bool> _startSystem() async {
+    if (await _startSystemWith(onDevice: true)) return true;
+    if (_disposed) return false;
+    return _startSystemWith(onDevice: false);
+  }
+
+  Future<bool> _startSystemWith({required bool onDevice}) async {
     final gen = ++_gen;
     final bool ok;
     try {
@@ -281,7 +292,10 @@ class ComposerDictation {
         return false;
       }
       _begin(AsrEngine.system);
-      final params = SystemListenParams(localeId: before.localeId);
+      final params = SystemListenParams(
+        localeId: before.localeId,
+        onDevice: onDevice,
+      );
       await _speech.listen(
         listenOptions: stt.SpeechListenOptions(
           localeId: params.localeId,
@@ -289,6 +303,7 @@ class ComposerDictation {
           listenFor: params.listenFor,
           pauseFor: params.pauseFor,
           listenMode: stt.ListenMode.dictation,
+          onDevice: params.onDevice,
         ),
         onSoundLevelChange: (_) => _cancelWatchdog(),
         onResult: (result) {

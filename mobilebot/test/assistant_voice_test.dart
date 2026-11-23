@@ -72,6 +72,26 @@ void main() {
       expect(params.localeId, 'zh_CN');
     });
 
+    test('on-device recognition is opt-in and defaults off', () {
+      // The first system attempt asks for the on-device recognizer; the
+      // retry keeps the default one. A phone without an on-device model
+      // otherwise never hears anything when the cloud recognizer is absent.
+      expect(const SystemListenParams().onDevice, isFalse);
+      expect(
+        const SystemListenParams(localeId: 'zh_CN', onDevice: true).onDevice,
+        isTrue,
+      );
+    });
+
+    test('an on-device refusal is told apart from an empty turn', () {
+      expect(systemListenOnDeviceUnsupported('error_language_not_supported'),
+          isTrue);
+      expect(systemListenOnDeviceUnsupported('recognizerNotAvailable'),
+          isFalse);
+      expect(systemListenOnDeviceUnsupported('error_no_match'), isFalse);
+      expect(systemListenOnDeviceUnsupported(''), isFalse);
+    });
+
     test('partial hypotheses replace each other in the composer', () {
       expect(applyRecognitionHypothesis('', '你'), '你');
       expect(applyRecognitionHypothesis('', '你好'), '你好');

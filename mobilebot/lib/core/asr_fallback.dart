@@ -96,9 +96,18 @@ bool shouldPublishListenLevel({
 /// session die after a couple of seconds with no text. Kept as plain values
 /// so this library does not depend on the plugin.
 class SystemListenParams {
-  const SystemListenParams({this.localeId});
+  const SystemListenParams({this.localeId, this.onDevice = false});
 
   final String? localeId;
+
+  /// Ask the platform for its on-device recognizer first. Without it every
+  /// listen goes to the default (usually cloud) recognizer, which returns no
+  /// word at all on a phone without GMS, without network, or with the
+  /// service restricted — the session then dies silently and the app falls
+  /// back to the local engine. The first attempt sets this; an OEM whose
+  /// on-device model is missing fails the listen outright and the caller
+  /// retries with the default recognizer.
+  final bool onDevice;
 
   /// Must be explicit: some OEM recognizers skip partials unless the extra is set.
   bool get partialResults => true;
@@ -217,6 +226,21 @@ class SystemListenProbe {
   /// speech_to_text `SpeechRecognitionError.errorMsg`, or the method-channel
   /// code (`recognizerNotAvailable`) when `initialize` itself failed.
   final String errorCode;
+}
+
+/// Whether [errorCode] is the platform refusing the on-device attempt rather
+/// than a finished empty turn. Those failures mean "this phone has no
+/// on-device model", so the caller retries once with the default recognizer
+/// instead of jumping to the local engine.
+bool systemListenOnDeviceUnsupported(String errorCode) {
+  final code = errorCode.trim().toLowerCase();
+  if (code.isEmpty) return false;
+  return code == 'error_language_not_supported' ||
+      code == 'error_language_unavailable' ||
+      code == 'error_client' ||
+      code == 'error_service_not_allowed' ||
+      code.contains('ondevice') ||
+      code.contains('on_device');
 }
 
 /// True when this probe already proves the platform recognizer cannot
