@@ -116,6 +116,7 @@ class VoiceEngine {
     if (!VoiceAssets.voiceIds.contains(id)) return;
     ttsVoice = id;
     _ttsLoaded = false; // reload with the new voice next speak
+    _ttsVoiceGen++; // an in-flight load for the old voice must not mark loaded
     final p = await SharedPreferences.getInstance();
     await p.setString(_kTtsVoice, id);
   }
@@ -137,9 +138,12 @@ class VoiceEngine {
   /// free (files already in the external media dir); a fresh install
   /// downloads ~330 MB in the background — no user action needed.
   Future<void> autoEnsure({String? hubBase}) async {
-    // Reopen on every launch: a .so replaced by an install is picked up
-    // without a process restart.
-    NativeVoice.resetProbe();
+    // The probe result is cached for the process: the .so lives inside the
+    // APK and cannot be swapped without a restart, so re-opening it on every
+    // call only leaks a dlopen refcount and re-runs the export checks. A
+    // replaced library is picked up on the next launch, when `_probed` is
+    // false again. Callers that must force a re-probe (an explicit retry)
+    // call `NativeVoice.resetProbe()` first.
     if (!NativeVoice.usable) return;
     if (await kokoroReady() && await localAsrReady()) return;
     try {
@@ -163,18 +167,39 @@ class VoiceEngine {
     return ttsEngine == TtsEngine.kokoro && await kokoroReady();
   }
 
+  // In-flight engine loads, shared by concurrent callers so two speaks (or
+  // two transcribes) started together do not each spawn an Isolate.run that
+  // reloads the same Go-side manager. Cleared in `finally` so a failure can
+  // be retried by the next call.
+  Future<String?>? _ttsLoading;
+  Future<String?>? _asrLoading;
+  int _ttsVoiceGen = 0;
+
   Future<String?> _ensureTtsLoaded() async {
     if (!NativeVoice.usable) return 'native voice unavailable';
     if (_ttsLoaded) return null;
-    final err = await Isolate.run(
-      () => NativeVoice.loadTts(
-        _modelPathSnapshot!,
-        _voiceDirSnapshot!,
-        ttsVoice,
-      ),
-    );
-    if (err == null) _ttsLoaded = true;
-    return err;
+    final inFlight = _ttsLoading;
+    if (inFlight != null) return inFlight;
+    final gen = _ttsVoiceGen;
+    final voice = ttsVoice;
+    // Read the snapshots into locals: the Isolate.run closure must not
+    // capture `this` (the engine holds an AudioPlayer, which is not sendable).
+    final model = _modelPathSnapshot!;
+    final voiceDir = _voiceDirSnapshot!;
+    final future = () async {
+      try {
+        final err = await Isolate.run(
+          () => NativeVoice.loadTts(model, voiceDir, voice),
+        );
+        // A voice switch mid-load must not mark the new voice as loaded.
+        if (err == null && gen == _ttsVoiceGen) _ttsLoaded = true;
+        return err;
+      } finally {
+        _ttsLoading = null;
+      }
+    }();
+    _ttsLoading = future;
+    return future;
   }
 
   // Paths are looked up once and snapshotted for the worker isolate (the
@@ -225,21 +250,34 @@ class VoiceEngine {
   Future<String?> _ensureAsrLoaded() async {
     if (!NativeVoice.usable) return 'native voice unavailable';
     if (_asrLoaded) return null;
-    if (!await VoiceAssets.asrReady()) {
-      _asrPathSnapshot = null;
-      return 'asr model missing or failed validation';
-    }
-    final err = await Isolate.run(() => NativeVoice.loadAsr(_asrPathSnapshot!));
-    if (err == null) {
-      _asrLoaded = true;
-      return null;
-    }
-    // Header looked fine but the weights failed to load. Drop the file so
-    // the next ensure does not treat the same bytes as ready forever.
-    _asrLoaded = false;
-    _asrPathSnapshot = null;
-    await VoiceAssets.rejectAsrFile();
-    return err;
+    final inFlight = _asrLoading;
+    if (inFlight != null) return inFlight;
+    final future = () async {
+      try {
+        if (!await VoiceAssets.asrReady()) {
+          _asrPathSnapshot = null;
+          return 'asr model missing or failed validation';
+        }
+        // Local snapshot: the Isolate.run closure must not capture `this`
+        // (the engine holds an AudioPlayer, which is not sendable).
+        final model = _asrPathSnapshot!;
+        final err = await Isolate.run(() => NativeVoice.loadAsr(model));
+        if (err == null) {
+          _asrLoaded = true;
+          return null;
+        }
+        // Header looked fine but the weights failed to load. Drop the file so
+        // the next ensure does not treat the same bytes as ready forever.
+        _asrLoaded = false;
+        _asrPathSnapshot = null;
+        await VoiceAssets.rejectAsrFile();
+        return err;
+      } finally {
+        _asrLoading = null;
+      }
+    }();
+    _asrLoading = future;
+    return future;
   }
 
   /// PCM s16le mono 16 kHz → transcript (off-isolate).

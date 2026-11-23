@@ -3010,6 +3010,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		if len(choice.TruncatedToolNames) > 0 {
 			disposeSurface(ToolSurfaceResponseAbandoned)
+			// A truncated tool call means the model produced output — it tried
+			// to emit a call and only the arguments were cut. That is progress,
+			// not the "no content at all" stall consecutiveTruncatedEmpty
+			// bounds, so the streak restarts here.
+			consecutiveTruncatedEmpty = 0
 			truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
 			log.Printf("[agent-loop] truncated tool call recovery (iteration=%d tools=%s valid_tools=%d)", iteration, truncatedList, len(choice.Message.ToolCalls))
 
@@ -3065,6 +3070,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		if invalidToolNames := invalidLoopToolArgumentNames(choice.Message.ToolCalls); len(invalidToolNames) > 0 {
 			disposeSurface(ToolSurfaceResponseAbandoned)
+			// Same reasoning as the truncated-call branch above: the model
+			// emitted tool calls, so the no-output truncation streak is over.
+			consecutiveTruncatedEmpty = 0
 			invalidList := strings.Join(invalidToolNames, ", ")
 			log.Printf("[agent-loop] invalid tool call argument recovery (iteration=%d tools=%s)", iteration, invalidList)
 			recoveryPrompt := buildToolCallTruncationRecovery(invalidToolNames, tools, userText)

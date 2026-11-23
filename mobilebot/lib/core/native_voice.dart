@@ -110,9 +110,11 @@ class NativeVoice {
     return '';
   }
 
-  /// Drops a failed probe so the next [probe] opens again. Called when the
-  /// person pulls to retry or reopens the voice sheet: an install fixed
-  /// underneath the app (a replaced .so) then works without a restart.
+  /// Drops a failed probe so the next [probe] opens again. Currently only
+  /// tests call this: `autoEnsure` no longer resets the probe on every call
+  /// because the .so lives inside the APK and cannot be swapped without a
+  /// process restart. A future explicit retry path (e.g. a replaced .so on
+  /// a sideloaded build) can call this first.
   static void resetProbe() {
     _probed = false;
     _probeError = '';
