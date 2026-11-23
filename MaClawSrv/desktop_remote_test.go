@@ -574,6 +574,20 @@ func TestDesktopStopNamesTheInstanceThatFinished(t *testing.T) {
 	}
 }
 
+func TestDesktopHubRejectsEmptySuccessForSessionAndStop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := &desktopHubClient{baseURL: srv.URL, token: "t", http: srv.Client()}
+	if _, err := client.Session(context.Background(), "tenant-a", "alice"); !errors.As(err, new(desktopInvalidBodyError)) {
+		t.Fatalf("empty session err=%v", err)
+	}
+	if err := client.Stop(context.Background(), "tenant-a", "alice"); !errors.As(err, new(desktopInvalidBodyError)) {
+		t.Fatalf("empty stop err=%v", err)
+	}
+}
+
 func TestDesktopStopIdleLeavesTheDisplayUp(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

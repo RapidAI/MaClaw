@@ -8,9 +8,10 @@ import (
 // appAlias binds equivalent window-title names for one application, plus the
 // observe-playbook family that should steer Computer Use when that app is focused.
 type appAlias struct {
-	id    string
-	kind  AdapterKind
-	names []string
+	id                     string
+	kind                   AdapterKind
+	names                  []string
+	singleInstanceActivate bool
 }
 
 // aliasGroups are exact normalized names only. Short or overlapping needles
@@ -52,7 +53,7 @@ var aliasGroups = []appAlias{
 	{id: "wecom", kind: AdapterIM, names: []string{"企业微信", "wxwork", "wecom"}},
 	{id: "dingtalk", kind: AdapterIM, names: []string{"钉钉", "dingtalk"}},
 	{id: "feishu", kind: AdapterIM, names: []string{"飞书", "feishu", "lark"}},
-	{id: "lanxin", kind: AdapterIM, names: []string{"蓝信", "lanxin"}},
+	{id: "lanxin", kind: AdapterIM, names: []string{"蓝信", "lanxin"}, singleInstanceActivate: true},
 	{id: "qq", kind: AdapterIM, names: []string{"qq"}},
 	{id: "slack", kind: AdapterIM, names: []string{"slack"}},
 	{id: "telegram", kind: AdapterIM, names: []string{"telegram"}},
@@ -527,6 +528,23 @@ func DesktopAppFromHint(hint string) (string, bool) {
 		return name, true
 	}
 	return "", false
+}
+
+// DesktopAppSupportsSingleInstanceActivation reports an explicit application
+// contract: opening its shortcut activates the existing process and the new
+// launcher exits. Unknown applications never opt in implicitly.
+func DesktopAppSupportsSingleInstanceActivation(hint string) bool {
+	app, ok := DesktopAppFromHint(hint)
+	if !ok {
+		return false
+	}
+	id := groupByName[NormalizeWindowTitle(app)]
+	for _, group := range aliasGroups {
+		if group.id == id {
+			return group.singleInstanceActivate
+		}
+	}
+	return false
 }
 
 func desktopAliasName(name string) (string, bool) {

@@ -81,6 +81,11 @@ func (a *App) syncMCPHostFromConfig() {
 		}
 		return
 	}
+	// A listener already on this address keeps its port. Restarting it would
+	// drop clients and publish a gap where endpoint.json and the API key disagree.
+	if a.alignRunningMCPHost(cfg) {
+		return
+	}
 	a.stopMCPHostLocked()
 	host := newMCPHost(a)
 	if err := host.Start(cfg.PreferredMcpHostPort(), cfg.IsMcpHostLanEnabled()); err != nil {
@@ -156,6 +161,12 @@ func (h *mcpHost) Start(preferredPort int, lan bool) error {
 			log.Printf("[mcp-host] serve: %v", serveErr)
 		}
 	}()
+	// Align before discovery is published, so a stdio client never learns a
+	// port whose listener still has a different key.
+	if err := h.alignMCPAPIKeyFile(); err != nil {
+		h.setLastErr(err.Error())
+		log.Printf("[mcp-host] apikey: %v", err)
+	}
 	if err := writeMCPHostEndpoint(port); err != nil {
 		h.setLastErr(err.Error())
 		log.Printf("[mcp-host] discovery: %v", err)
@@ -216,6 +227,82 @@ func (h *mcpHost) setToken(token string) {
 	h.prevToken = h.token
 	h.token = token
 	h.mu.Unlock()
+}
+
+// applyMCPAPIKey makes key the only token the listener accepts.
+func (h *mcpHost) applyMCPAPIKey(key string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.token = key
+	h.prevToken = ""
+	h.mu.Unlock()
+}
+
+// alignMCPAPIKeyFile makes the apikey file and the live listener token the
+// same key. A usable file wins. A missing file is rewritten from the listener
+// so stdio sends the key the listener already accepts. Matching keys leave a
+// rotation's previous token in place. This read does not generate a new key.
+func (h *mcpHost) alignMCPAPIKeyFile() error {
+	if h == nil {
+		return nil
+	}
+	_, _, running, _, token, _ := h.snapshot()
+	if !running {
+		return nil
+	}
+	fileKey, err := readMCPAPIKey()
+	if err == nil && mcpAPIKeyAcceptable(fileKey) {
+		if fileKey != token {
+			h.applyMCPAPIKey(fileKey)
+		}
+		return nil
+	}
+	if mcpAPIKeyAcceptable(token) {
+		return writeMCPAPIKey(token)
+	}
+	key, err := loadOrCreateMCPAPIKey()
+	if err != nil {
+		return err
+	}
+	h.applyMCPAPIKey(key)
+	return nil
+}
+
+// alignRunningMCPHost reports whether the current listener can stay bound.
+// Port and LAN changes still restart. A key or discovery mismatch is fixed
+// on the live listener.
+func (a *App) alignRunningMCPHost(cfg corelib.AppConfig) bool {
+	if a == nil {
+		return false
+	}
+	a.mcpHostMu.Lock()
+	host := a.mcpHost
+	a.mcpHostMu.Unlock()
+	if host == nil {
+		return false
+	}
+	_, port, running, _, _, lan := host.snapshot()
+	if !running || port <= 0 || lan != cfg.IsMcpHostLanEnabled() {
+		return false
+	}
+	if preferred := cfg.PreferredMcpHostPort(); preferred > 0 && port != preferred {
+		return false
+	}
+	if err := host.alignMCPAPIKeyFile(); err != nil {
+		log.Printf("[mcp-host] apikey: %v", err)
+		host.setLastErr(err.Error())
+	} else {
+		host.setLastErr("")
+	}
+	if !mcpEndpointPublished(port) {
+		if err := writeMCPHostEndpoint(port); err != nil {
+			log.Printf("[mcp-host] discovery: %v", err)
+			host.setLastErr(err.Error())
+		}
+	}
+	return true
 }
 
 func (h *mcpHost) setLastErr(message string) {
@@ -529,6 +616,22 @@ func writeMCPHostEndpoint(port int) error {
 
 func clearMCPHostEndpoint() {
 	_ = os.Remove(filepath.Join(mcpDiscoveryDir(), "endpoint.json"))
+}
+
+func mcpEndpointPublished(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(mcpDiscoveryDir(), "endpoint.json"))
+	if err != nil {
+		return false
+	}
+	var ep mcpHostEndpoint
+	if json.Unmarshal(raw, &ep) != nil || ep.Port != port {
+		return false
+	}
+	_, ok := mcpSafeEndpointURL(ep)
+	return ok
 }
 
 func readMCPHostDiscovery() (mcpHostEndpoint, string, bool) {

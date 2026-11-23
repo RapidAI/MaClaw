@@ -88,6 +88,51 @@ func cloudAgentAdminUserLimits(svc *cloudagent.Service, audit store.AdminAuditRe
 	}
 }
 
+func cloudAgentAdminAccessGet(svc *cloudagent.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "云端管理暂时不可用")
+			return
+		}
+		items, err := svc.ListAccess(r.Context(), AdminTenantID(r.Context()))
+		if err != nil {
+			writeCloudAgentErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+func cloudAgentAdminAccessPut(svc *cloudagent.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "云端管理暂时不可用")
+			return
+		}
+		var in cloudagent.AccessView
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID", "开通范围无效")
+			return
+		}
+		saved, deleted, err := svc.SaveAccess(r.Context(), AdminTenantID(r.Context()), in)
+		if err != nil {
+			writeCloudAgentErr(w, err)
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "cloud_agent.access.update", map[string]any{
+			"scope":     saved.Scope,
+			"target_id": saved.TargetID,
+			"enabled":   saved.Enabled,
+			"deleted":   deleted,
+		})
+		if deleted {
+			writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "scope": saved.Scope, "target_id": saved.TargetID})
+			return
+		}
+		writeJSON(w, http.StatusOK, saved)
+	}
+}
+
 func writeCloudAgentErr(w http.ResponseWriter, err error) {
 	var failure *cloudagent.Failure
 	if errors.As(err, &failure) {

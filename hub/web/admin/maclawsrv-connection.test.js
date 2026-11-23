@@ -27,8 +27,9 @@ async function main() {
   assert(start > 0, 'system tab owns the maclawsrv connection copy');
   const source = system.slice(start);
   assert(!/[\u0080-\uffff]/.test(source), 'maclawsrv connection script stays ASCII');
-  const card = html.slice(html.indexOf('id="maclawsrvConnectionCard"'), html.indexOf('id="cloudAgentQuotaCard"'));
+  const card = html.slice(html.indexOf('id="maclawsrvConnectionCard"'), html.indexOf('id="registrationAuthCard"'));
   assert(card && !/[\u0080-\uffff]/.test(card), 'maclawsrv card markup stays ASCII');
+  assert(card.includes('id="maclawsrvConnectionTestBtn"'), 'system settings can test the connection');
   assert(source.includes('\\u4e91\\u7aef\\u4efb\\u52a1\\u5171\\u7528'), 'hint says cloud tasks share this record');
   assert(source.includes('127.0.0.1'), 'hint names the loopback address');
 
@@ -39,6 +40,7 @@ async function main() {
     maclawsrvAdminSecretLabel: element('maclawsrvAdminSecretLabel'),
     maclawsrvAccessTokenLabel: element('maclawsrvAccessTokenLabel'),
     maclawsrvConnectionSaveBtn: element('maclawsrvConnectionSaveBtn'),
+    maclawsrvConnectionTestBtn: element('maclawsrvConnectionTestBtn'),
     maclawsrvConnectionReloadBtn: element('maclawsrvConnectionReloadBtn'),
     maclawsrvConnectionStatus: element('maclawsrvConnectionStatus'),
     maclawsrvBaseUrl: element('maclawsrvBaseUrl', 'http://10.0.0.8:18080'),
@@ -47,10 +49,15 @@ async function main() {
   };
   const calls = [];
   const toasts = [];
+  const state = { testError: '' };
   const context = {
     document: { getElementById: function (id) { return elements[id] || null; } },
     api: async function (url, opts) {
       calls.push({ url: url, opts: opts || null });
+      if (opts && opts.method === 'POST' && url === '/api/admin/bots/connection/test') {
+        if (state.testError) throw new Error(state.testError);
+        return { ok: true, instance_count: 3 };
+      }
       if (!opts) return { base_url: 'http://127.0.0.1:18080', admin_secret_set: true, token_set: false };
       return { ok: true };
     },
@@ -90,6 +97,30 @@ async function main() {
   await context.saveMaclawsrvConnection();
   assert(calls.length === before, 'a bad URL does not write');
   assert(toasts.length > 0, 'a bad URL is reported');
+
+  elements.maclawsrvBaseUrl.value = 'http://127.0.0.1:18080';
+  elements.maclawsrvAdminSecret.value = 'draft';
+  elements.maclawsrvAccessToken.value = '';
+  const testsBefore = calls.filter(function (call) { return call.opts && call.opts.method === 'POST'; }).length;
+  await context.testMaclawsrvConnection();
+  assert(calls.filter(function (call) { return call.opts && call.opts.method === 'POST'; }).length === testsBefore, 'an unsaved secret is not tested');
+  assert(toasts.some(function (toast) { return String(toast).indexOf('\u8fd8\u6ca1\u4fdd\u5b58') !== -1; }), 'asks to save before testing');
+
+  elements.maclawsrvAdminSecret.value = '';
+  await context.testMaclawsrvConnection();
+  assert(calls.some(function (call) { return call.url === '/api/admin/bots/connection/test'; }), 'tests the saved connection');
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('3') !== -1, 'reports the instance count');
+
+  state.testError = 'MaClawSrv rejected the instance request (HTTP 401; the access token was rejected, re-save it in bot settings): unauthorized';
+  await context.testMaclawsrvConnection();
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('HTTP 401') !== -1, 'names the status code');
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('\u51ed\u8bc1') !== -1, 'explains a rejected credential in Chinese');
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('unauthorized') !== -1, 'keeps what MaClawSrv said');
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('the access token was rejected') === -1, 'drops the English hint');
+
+  state.testError = 'MaClawSrv rejected the instance request (HTTP 404; endpoint not found, check the service URL): not found';
+  await context.testMaclawsrvConnection();
+  assert(elements.maclawsrvConnectionStatus.textContent.indexOf('HTTP 404') !== -1, 'explains a wrong URL in Chinese');
 
   console.log(passed + ' passed, ' + failed + ' failed');
   if (failed) process.exit(1);

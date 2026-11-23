@@ -10,7 +10,7 @@ import {
     cloudAgentStoreKey,
     subscribeCloudAgentRounds,
 } from './cloudAgentSession';
-import { cloudAssistantInstanceId, sendShownCloudAgent, stopShownCloudAgent } from './cloudAgentAssistant';
+import { cloudAgentCatalog, cloudAssistantInstanceId, sendShownCloudAgent, stopShownCloudAgent } from './cloudAgentAssistant';
 import { noteCloudTurn } from './taskPlace';
 
 type CloudAgentRow = {
@@ -30,6 +30,15 @@ function appBinding(name: string): Binding | null {
     return typeof fn === 'function' ? fn as Binding : null;
 }
 
+function listedInstances(value: unknown): CloudAgentRow[] {
+    return cloudAgentCatalog(value).instances.flatMap((item) => {
+        if (!item || typeof item !== 'object') return [];
+        const row = item as Partial<CloudAgentRow>;
+        if (!row.id || !row.kind) return [];
+        return [{ id: row.id, name: row.name || '', kind: row.kind, status: row.status || '' }];
+    });
+}
+
 function parseJSON<T>(raw: unknown, fallback: T): T {
     if (typeof raw !== 'string' || !raw.trim()) return fallback;
     try {
@@ -37,19 +46,6 @@ function parseJSON<T>(raw: unknown, fallback: T): T {
     } catch {
         return fallback;
     }
-}
-
-export function CloudAgentEntryButton({ lang, onOpen }: { lang: string; onOpen: () => void }) {
-    return (
-        <button
-            type="button"
-            className="mc-task-pane__create-group"
-            data-testid="task-pane-cloud-agents"
-            onClick={onOpen}
-        >
-            <span>{localizeText(lang, 'Cloud agents', '云端管理', '雲端管理')}</span>
-        </button>
-    );
 }
 
 export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; onClose: () => void; onCreated?: (row: CloudAgentRow) => void }) {
@@ -99,7 +95,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         const list = appBinding('ListCloudAgents');
         if (!list) return;
         void list().then((rows) => {
-            setInstances(Array.isArray(rows) ? rows as CloudAgentRow[] : []);
+            setInstances(listedInstances(rows));
         }).catch((err: unknown) => {
             setError(err instanceof Error ? err.message : String(err));
         });
@@ -193,7 +189,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         try {
             const created = await create(name.trim() || text('Cloud task', '云端任务', '雲端任務'), kind) as CloudAgentRow;
             const rows = await list();
-            setInstances(Array.isArray(rows) ? rows as CloudAgentRow[] : []);
+            setInstances(listedInstances(rows));
             setName('');
             if (created && created.id) onCreated?.(created);
         } catch (err) {

@@ -11,8 +11,8 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
-import { closeCloudAssistant, cloudAgentsFromList, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
-import { CloudAgentEntryButton, CloudAgentManage } from './CloudAgentManage';
+import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
+import { CloudAgentManage } from './CloudAgentManage';
 import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
@@ -2810,6 +2810,7 @@ export const SidebarTaskManagement = ({
     };
     const [creatingTask, setCreatingTask] = useState(false);
     const [cloudAgentsOpen, setCloudAgentsOpen] = useState(false);
+    const [cloudAgentsEnabled, setCloudAgentsEnabled] = useState(false);
     const [cloudAgents, setCloudAgents] = useState<CloudAgentListItem[]>([]);
     const [cloudListEpoch, setCloudListEpoch] = useState(0);
     const [cloudFolderCollapsed, setCloudFolderCollapsed] = useState(false);
@@ -2820,9 +2821,16 @@ export const SidebarTaskManagement = ({
         const list = (window as unknown as { go?: { main?: { App?: { ListCloudAgents?: () => Promise<unknown> } } } }).go?.main?.App?.ListCloudAgents;
         if (typeof list !== 'function') return;
         void list().then((rows) => {
-            if (!cancelled) setCloudAgents(cloudAgentsFromList(rows));
+            if (cancelled) return;
+            const catalog = cloudAgentCatalog(rows);
+            setCloudAgents(cloudAgentsFromList(catalog.instances));
+            setCloudAgentsEnabled(catalog.enabled);
+            if (!catalog.enabled) setCloudAgentsOpen(false);
         }).catch(() => {
-            if (!cancelled) setCloudAgents([]);
+            if (cancelled) return;
+            setCloudAgents([]);
+            setCloudAgentsEnabled(false);
+            setCloudAgentsOpen(false);
         });
         return () => { cancelled = true; };
     }, [cloudListEpoch]);
@@ -5953,7 +5961,6 @@ export const SidebarTaskManagement = ({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
                 <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
             </button>
-            <CloudAgentEntryButton lang={lang} onOpen={() => setCloudAgentsOpen(true)} />
             {cloudAgentsOpen ? (
                 <CloudAgentManage
                     lang={lang}
@@ -6100,6 +6107,13 @@ export const SidebarTaskManagement = ({
         <TaskMachineBar
             lang={lang}
             remote={remote}
+            cloudAvailable={cloudAgentsEnabled}
+            cloudSelected={!remote.selected && (cloudAgentsOpen || !!openCloudId)}
+            onSelectCloud={() => setCloudAgentsOpen(true)}
+            onLeaveCloud={() => {
+                setCloudAgentsOpen(false);
+                closeCloudAssistant();
+            }}
             onCloseGrant={(grantId, name) => {
                 void showConfirm(
                     textForLang(lang, `End remote control of ${name}?`, `结束对${name}的远控？`, `結束對${name}的遠控？`),

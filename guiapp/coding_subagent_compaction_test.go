@@ -1,13 +1,18 @@
 package guiapp
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 func TestSubAgentCompactionIncludesReadFilesAndKeepsEarlierModified(t *testing.T) {
@@ -631,5 +636,107 @@ func TestSubAgentCompactionPerRoundDoesNotSkipOccupancy(t *testing.T) {
 		if strings.Contains(content, "SECRET_ROUND_BODY") {
 			t.Fatal("per-round returned the blocked wave without compacting")
 		}
+	}
+}
+
+func TestSubAgentCompactionPreservesDroppedMessagesAndHandleChain(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	compactor.lossless = true
+	compactor.sessionKey = "coding-owner"
+	var spilled string
+	compactor.onSpill = func(preview string) { spilled = preview }
+	conversation := codingCompactionTurns("implement the parser", 7)
+	conversation[3].(map[string]interface{})["content"] = "CODING_MIDDLE_UNIQUE_TOOL_DETAIL"
+	compacted := compactor.Compact(conversation)
+	if len(compacted) >= len(conversation) {
+		t.Fatalf("fixture did not compact: %d -> %d", len(conversation), len(compacted))
+	}
+	firstID := spilledHandleID(taskContentOf(compacted))
+	if firstID == "" || !strings.Contains(spilled, toolresult.HandleFooterMarker) {
+		t.Fatalf("coding compaction has no recovery handle: %s", taskContentOf(compacted))
+	}
+	result, err := toolresult.Read(toolresult.ReadOptions{ID: firstID, SessionKey: "coding-owner", Query: "CODING_MIDDLE_UNIQUE_TOOL_DETAIL"})
+	if err != nil || !strings.Contains(result.Content, "CODING_MIDDLE_UNIQUE_TOOL_DETAIL") {
+		t.Fatalf("dropped coding output is not recoverable: result=%+v err=%v", result, err)
+	}
+
+	secondInput := append(compacted,
+		map[string]interface{}{"role": "assistant", "content": "latest", "tool_calls": []llm.ToolCall{{ID: "latest", Function: llm.ToolCallFunction{Name: "bash", Arguments: `{}`}}}},
+		map[string]interface{}{"role": "tool", "tool_call_id": "latest", "content": "ok"},
+	)
+	second := compactor.Compact(secondInput)
+	secondID := spilledHandleID(taskContentOf(second))
+	if secondID == "" || secondID == firstID {
+		t.Fatalf("second compaction did not create a new handle: first=%s second=%s", firstID, secondID)
+	}
+	if count := strings.Count(taskContentOf(second), toolresult.HandleFooterMarker); count != 1 {
+		t.Fatalf("recovery footers accumulated across compactions: count=%d content=%s", count, taskContentOf(second))
+	}
+	chain, err := toolresult.Read(toolresult.ReadOptions{ID: secondID, SessionKey: "coding-owner", Query: firstID})
+	if err != nil || !strings.Contains(chain.Content, firstID) {
+		t.Fatalf("second checkpoint lost the previous recovery link: result=%+v err=%v", chain, err)
+	}
+}
+
+func TestSubAgentCompactionKeepsOriginalWhenSpillFails(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	badBase := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(badBase, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	maclawpath.SetBaseDir(badBase)
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+	t.Setenv("MACLAW_HANDOFF_MEMO", "")
+
+	compactor := NewSubAgentCompactor(8000, nil, nil, nil, nil)
+	compactor.lossless = true
+	compactor.sessionKey = "coding-owner"
+	conversation := codingCompactionTurns("task", 7)
+	conversation[3].(map[string]interface{})["content"] = "DO_NOT_LOSE_CODING_OUTPUT"
+	got := compactor.Compact(conversation)
+	if len(got) != len(conversation) || taskContentOf(got) != "task" {
+		t.Fatalf("spill failure changed the original coding conversation: %#v", got)
+	}
+	if content, _ := got[3].(map[string]interface{})["content"].(string); content != "DO_NOT_LOSE_CODING_OUTPUT" {
+		t.Fatalf("spill failure dropped tool output: %q", content)
+	}
+}
+
+func TestSubAgentPerRoundCompactionIsRecoverable(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+	t.Setenv("MACLAW_HANDOFF_MEMO", "coding")
+	t.Setenv("MACLAW_CODING_MEMO_PER_ROUND", "1")
+
+	compactor := NewSubAgentCompactor(8000, func() []string { return []string{"demo.go"} }, nil, nil, nil)
+	compactor.lossless = true
+	compactor.sessionKey = "coding-owner"
+	conversation := codingCompactionTurns("task", 3)
+	conversation[3].(map[string]interface{})["content"] = "PER_ROUND_UNIQUE_DETAIL"
+	got := compactor.collapsePerRound(conversation)
+	if len(got) != 2 {
+		t.Fatalf("per-round fixture did not collapse: %#v", got)
+	}
+	id := spilledHandleID(taskContentOf(got))
+	result, err := toolresult.Read(toolresult.ReadOptions{ID: id, SessionKey: "coding-owner", Query: "PER_ROUND_UNIQUE_DETAIL"})
+	if err != nil || !strings.Contains(result.Content, "PER_ROUND_UNIQUE_DETAIL") {
+		t.Fatalf("per-round original is not recoverable: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRemoteCodingHooksUseLosslessCompaction(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		handler: &IMMessageHandler{},
+		cfg:     corelib.MaclawLLMConfig{ContextLength: 10000},
+	}}
+	hooks := cb.agent.buildRemoteCodingLoopHooks(cb)
+	if hooks.compactor == nil || cb.compactor == nil || !hooks.compactor.lossless {
+		t.Fatal("remote coding still lacks the lossless loop compactor")
 	}
 }

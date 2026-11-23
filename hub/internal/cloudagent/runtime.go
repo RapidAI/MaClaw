@@ -39,7 +39,7 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 	if d == nil || d.svc == nil {
 		return nil, offlineStatus()
 	}
-	enabled, err := d.svc.FeatureEnabled(ctx, grant.TenantID)
+	_, _, enabled, err := d.svc.EffectiveLimits(ctx, grant.TenantID, grant.TargetUserID)
 	if err != nil || !enabled {
 		return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: DisabledMessage}
 	}

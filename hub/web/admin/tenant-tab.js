@@ -1018,7 +1018,7 @@
     var hasProfile = !!profile;
     updateTenantAdminRoleOptions(profile);
     var globalOnly = global.adminGlobalOnlyTabs || { center: true, console: true };
-    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, userreferrals: true, marketplace: true, knowledge: true, 'digital-assets': true, im: true, machines: true, virtualemployees: true, invitationcodes: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true, bots: true };
+    var tenantOnly = global.adminTenantOnlyTabs || { governance: true, userreferrals: true, marketplace: true, knowledge: true, 'digital-assets': true, im: true, machines: true, virtualemployees: true, invitationcodes: true, security: true, llmproviders: true, usagestats: true, modelservices: true, servicecards: true, failurelogs: true, bots: true, 'cloud-agents': true };
     global.document.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       var tab = button.dataset.tab || '';
       var hidden = false;

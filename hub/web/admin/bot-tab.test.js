@@ -669,7 +669,7 @@ async function testAssignmentLabelFollowsDirectory() {
 }
 
 async function testConnectionAndDockerUrls() {
-  console.log('  Test: connection and Docker forms reject an empty or non-http address');
+  console.log('  Test: Docker forms reject an empty or non-http address');
   const harness = createHarness({ loadDesktop: true });
   await harness.open();
   await flush();
@@ -678,10 +678,6 @@ async function testConnectionAndDockerUrls() {
       return call.method === 'PUT' || (call.method === 'POST' && call.path === '/api/admin/desktop-services');
     });
   }
-  harness.elements.botBaseUrl.value = '';
-  harness.elements.botSave.listeners.click[0]();
-  harness.elements.botBaseUrl.value = 'ftp://maclaw.example';
-  harness.elements.botSave.listeners.click[0]();
   harness.elements.desktopName.value = '';
   harness.elements.desktopAdd.listeners.click[0]();
   harness.elements.desktopName.value = 'dockerd';
@@ -691,16 +687,11 @@ async function testConnectionAndDockerUrls() {
   harness.elements.desktopUrl.value = 'http://desktopd.abc.NODE.INVALID';
   harness.elements.desktopToken.value = 'secret';
   harness.elements.desktopAdd.listeners.click[0]();
-  harness.elements.botBaseUrl.value = 'https://srv.abc.Node.Invalid/v1';
-  harness.elements.botSave.listeners.click[0]();
   assert(puts().length === 0, 'does not save an empty, non-http, or virtual node address');
   assert(harness.toasts.filter(function (toast) { return toast.kind === 'error'; }).length >= 3, 'explains why the save did not run');
-  harness.elements.botBaseUrl.value = 'http://maclaw.example';
-  harness.elements.botSave.listeners.click[0]();
-  await flush();
-  assert(harness.calls.some(function (call) {
+  assert(!harness.calls.some(function (call) {
     return call.path === '/api/admin/bots/settings' && call.method === 'PUT';
-  }), 'saves an http MaClawSrv address');
+  }), 'the bot page does not write the maclawsrv connection');
 }
 
 async function testDockerServiceGuards() {
@@ -729,81 +720,17 @@ async function testDockerServiceGuards() {
   assert(harness.toasts.some(function (toast) { return toast.msg.indexOf('\u5185\u5b58') !== -1; }), 'explains the resource format');
 }
 
-async function testTypedUrlSurvivesFirstLoad() {
-  console.log('  Test: the first settings load keeps an address already typed');
-  const harness = createHarness({ delaySettings: true });
-  const pending = harness.open();
-  await flush();
-  harness.elements.botBaseUrl.value = 'http://typed.example';
-  harness.releaseSettings();
-  await pending;
-  await flush();
-  assert(harness.elements.botBaseUrl.value === 'http://typed.example', 'does not replace an address typed before settings return');
-}
-
-async function testUnsavedUrlSurvivesReload() {
-  console.log('  Test: reloading settings keeps an unsaved MaClawSrv address');
+async function testBotPageLeavesMaclawsrvToSystemSettings() {
+  console.log('  Test: the bot page shows connection state and does not edit it');
   const harness = createHarness();
   await harness.open();
   await flush();
-  assert(harness.elements.botBaseUrl.value === 'http://maclaw.example', 'fills the saved address');
-  harness.elements.botBaseUrl.value = 'http://typed.example';
-  harness.settings.base_url = 'http://updated.example';
-  await harness.open();
-  await flush();
-  assert(harness.elements.botBaseUrl.value === 'http://typed.example', 'does not replace an address the admin is still editing');
-  harness.elements.botBaseUrl.value = 'http://maclaw.example';
-  harness.elements.botBaseUrl._serverValue = 'http://maclaw.example';
-  await harness.open();
-  await flush();
-  assert(harness.elements.botBaseUrl.value === 'http://updated.example', 'updates the address when the field still matches the last saved value');
-}
-
-async function testConnectionUsesSavedSettings() {
-  console.log('  Test: connection test waits until the form is saved');
-  const harness = createHarness();
-  await harness.open();
-  await flush();
-  function tests() {
-    return harness.calls.filter(function (call) { return call.path === '/api/admin/bots/connection/test'; });
-  }
-  harness.elements.botBaseUrl.value = 'http://other.example';
-  harness.elements.botTest.listeners.click[0]();
-  harness.elements.botBaseUrl.value = 'http://maclaw.example';
-  harness.elements.botAdminSecret.value = 'new-secret';
-  harness.elements.botTest.listeners.click[0]();
-  assert(tests().length === 0, 'does not test an address or secret that is not saved');
-  assert(harness.toasts.filter(function (toast) { return toast.msg.indexOf('\u8fd8\u6ca1\u4fdd\u5b58') !== -1; }).length === 2, 'asks to save before testing');
-  harness.elements.botAdminSecret.value = '';
-  harness.elements.botTest.listeners.click[0]();
-  await flush();
-  assert(tests().length === 1, 'tests the saved connection');
-  assertIncludes(harness.elements.botConnStatus.textContent, '3', 'reports the instance count');
-}
-
-async function testConnectionFailureIsExplainedInChinese() {
-  console.log('  Test: a rejected MaClawSrv request explains the fix and keeps the upstream reason');
-  const harness = createHarness({
-    testError: 'MaClawSrv rejected the instance request (HTTP 401; the access token was rejected, re-save it in bot settings): unauthorized'
-  });
-  await harness.open();
-  await flush();
-  harness.elements.botTest.listeners.click[0]();
-  await flush();
-  const shown = harness.elements.botConnStatus.textContent;
-  assertIncludes(shown, 'HTTP 401', 'names the status code');
-  assertIncludes(shown, '\u51ed\u8bc1', 'explains it in Chinese');
-  assertIncludes(shown, 'unauthorized', 'keeps what MaClawSrv said');
-  assertNotIncludes(shown, 'the access token was rejected', 'drops the English hint');
-
-  const missing = createHarness({
-    testError: 'MaClawSrv rejected the instance request (HTTP 404; endpoint not found, check the service URL): not found'
-  });
-  await missing.open();
-  await flush();
-  missing.elements.botTest.listeners.click[0]();
-  await flush();
-  assertIncludes(missing.elements.botConnStatus.textContent, 'HTTP 404', 'explains a wrong URL in Chinese');
+  const html = harness.elements['tab-bots']._html;
+  assertNotIncludes(html, 'botBaseUrl', 'does not host the maclawsrv address field');
+  assertNotIncludes(html, 'botAdminSecret', 'does not host the admin secret field');
+  assertNotIncludes(html, 'id="botSave"', 'does not host the connection save button');
+  assertNotIncludes(html, 'id="botTest"', 'does not host the connection test button');
+  assert(harness.elements.botStatConn.textContent === '\u5df2\u914d\u7f6e', 'still shows that maclawsrv is configured');
 }
 
 async function testDesktopCheckNamesTheService() {
@@ -1349,10 +1276,7 @@ Promise.resolve()
   .then(testAssignmentLabelFollowsDirectory)
   .then(testConnectionAndDockerUrls)
   .then(testDockerServiceGuards)
-  .then(testTypedUrlSurvivesFirstLoad)
-  .then(testUnsavedUrlSurvivesReload)
-  .then(testConnectionUsesSavedSettings)
-  .then(testConnectionFailureIsExplainedInChinese)
+  .then(testBotPageLeavesMaclawsrvToSystemSettings)
   .then(testDesktopCheckNamesTheService)
   .then(testDesktopCheckKeepsTheError)
   .then(testDesktopQuotaColumnAndGrantLimit)

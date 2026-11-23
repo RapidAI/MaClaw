@@ -221,6 +221,19 @@ func TestBestAppFrameDoesNotRaiseAnExecutablePathConsole(t *testing.T) {
 	}
 }
 
+func TestDesktopAppSingleInstanceActivationIsExplicit(t *testing.T) {
+	for _, hint := range []string{"蓝信", "lanxin", "蓝信 - 张三"} {
+		if !DesktopAppSupportsSingleInstanceActivation(hint) {
+			t.Errorf("verified single-instance app %q was not enabled", hint)
+		}
+	}
+	for _, hint := range []string{"微信", "记事本", "Chrome", "unknown"} {
+		if DesktopAppSupportsSingleInstanceActivation(hint) {
+			t.Errorf("undeclared app %q can start another process", hint)
+		}
+	}
+}
+
 func TestChooseAppLaunchNameUsesTheInstalledShortcut(t *testing.T) {
 	names := []string{"卸载微信", "微信", "蓝信卸载", "蓝信"}
 	got, ok := ChooseAppLaunchName("蓝信", names)

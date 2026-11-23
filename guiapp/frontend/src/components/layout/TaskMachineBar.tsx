@@ -179,10 +179,21 @@ export function TaskMachineBar({
     lang,
     remote,
     onCloseGrant,
+    cloudSelected = false,
+    cloudAvailable = false,
+    onSelectCloud,
+    onLeaveCloud,
 }: {
     lang: string;
     remote: RemoteControl;
     onCloseGrant: (grantId: string, name: string) => void;
+    /** 云端页签选中：管理浮层开着，或主面板正在看一个云端任务。 */
+    cloudSelected?: boolean;
+    /** Hub 已开通云端 Agent。没开通时新建任务旁边不出现「云端」。 */
+    cloudAvailable?: boolean;
+    onSelectCloud?: () => void;
+    /** 回到本机或一台远程机器时收起云端管理，并离开当前云端任务。 */
+    onLeaveCloud?: () => void;
 }) {
     const [adding, setAdding] = useState(false);
     const [permission, setPermission] = useState<RemotePermission>('view');
@@ -368,13 +379,31 @@ export function TaskMachineBar({
                 <button
                     type="button"
                     role="tab"
-                    aria-selected={!selected}
-                    className={`mc-task-machine-tab${!selected ? ' is-active' : ''}`}
+                    aria-selected={!selected && !cloudSelected}
+                    className={`mc-task-machine-tab${!selected && !cloudSelected ? ' is-active' : ''}`}
                     data-testid="task-machine-tab-local"
-                    onClick={remote.selectLocal}
+                    onClick={() => {
+                        onLeaveCloud?.();
+                        remote.selectLocal();
+                    }}
                 >
                     {localizeText(lang, 'MyPC', '本机', '本機')}
                 </button>
+                {cloudAvailable ? (
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={!selected && cloudSelected}
+                        className={`mc-task-machine-tab${!selected && cloudSelected ? ' is-active' : ''}`}
+                        data-testid="task-machine-tab-cloud"
+                        onClick={() => {
+                            if (selected) remote.selectLocal();
+                            onSelectCloud?.();
+                        }}
+                    >
+                        {localizeText(lang, 'Cloud', '云端', '雲端')}
+                    </button>
+                ) : null}
                 {tabFades.overflow ? (
                     <button
                         type="button"
@@ -410,7 +439,10 @@ export function TaskMachineBar({
                                 data-offline={grant.online === false ? 'true' : undefined}
                                 title={fullName ? `${fullName} · ${tabStatus}` : tabStatus}
                                 ref={selected?.id === grant.id ? activeTabRef : undefined}
-                                onClick={() => remote.selectGrant(grant.id)}
+                                onClick={() => {
+                                    onLeaveCloud?.();
+                                    remote.selectGrant(grant.id);
+                                }}
                             >
                                 <span
                                     className="mc-task-machine-tab-dot"

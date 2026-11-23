@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // ---------------------------------------------------------------------------
@@ -98,6 +100,9 @@ type SubAgentCompactor struct {
 	filesCreatedFn  func() []string
 	filesReadFn     func() []string
 	commandsRunFn   func() []CodingSubAgentCommandResult
+	lossless        bool
+	sessionKey      string
+	onSpill         func(string)
 }
 
 // NewSubAgentCompactor creates a compactor for a coding task.
@@ -371,7 +376,82 @@ func (c *SubAgentCompactor) Compact(conversation []interface{}) []interface{} {
 	compacted = append(compacted, systemMsg)
 	compacted = append(compacted, mergedTask)
 	compacted = append(compacted, recentWindow...)
-	return c.finishCompact(beforeFit, compacted, len(middleSection))
+	return c.finishLosslessCompact(beforeFit, compacted)
+}
+
+func (c *SubAgentCompactor) finishLosslessCompact(before, after []interface{}) []interface{} {
+	projected, dropped, ok := c.preserveSubAgentCompaction(before, after)
+	if !ok {
+		return c.finishCompact(before, before, 0)
+	}
+	return c.finishCompact(before, projected, dropped)
+}
+
+func (c *SubAgentCompactor) preserveSubAgentCompaction(before, after []interface{}) ([]interface{}, int, bool) {
+	dropped := removedSubAgentMessages(before, after)
+	if c == nil || !c.lossless || len(dropped) == 0 {
+		return after, len(dropped), true
+	}
+	if len(after) < 2 {
+		return before, 0, false
+	}
+	task, ok := after[1].(map[string]interface{})
+	if !ok {
+		return before, 0, false
+	}
+	preview, _ := task["content"].(string)
+	if index := strings.Index(preview, toolresult.HandleFooterMarker); index >= 0 {
+		preview = strings.TrimRight(preview[:index], "\n")
+		task["content"] = preview
+	}
+	raw, err := json.Marshal(dropped)
+	if err != nil {
+		log.Printf("[coding-subagent-compaction] keep original: marshal failed: %v", err)
+		return before, 0, false
+	}
+	projection, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   "context_checkpoint",
+		SessionKey: c.sessionKey,
+		Content:    string(raw),
+		Preview:    preview,
+		Limit:      len(preview) + 1024,
+		ForceSpill: true,
+		Encrypt:    true,
+	})
+	if err != nil || projection.Handle == nil || !projection.Spilled {
+		log.Printf("[coding-subagent-compaction] keep original: spill failed: %v", err)
+		return before, 0, false
+	}
+	task["content"] = projection.Preview
+	if c.onSpill != nil {
+		c.onSpill(projection.Preview)
+	}
+	return after, len(dropped), true
+}
+
+func removedSubAgentMessages(original, kept []interface{}) []interface{} {
+	remaining := make(map[string]int, len(kept))
+	for _, message := range kept {
+		data, err := json.Marshal(message)
+		if err == nil {
+			remaining[string(data)]++
+		}
+	}
+	var dropped []interface{}
+	for _, message := range original {
+		data, err := json.Marshal(message)
+		if err != nil {
+			dropped = append(dropped, message)
+			continue
+		}
+		key := string(data)
+		if remaining[key] > 0 {
+			remaining[key]--
+			continue
+		}
+		dropped = append(dropped, message)
+	}
+	return dropped
 }
 
 // finishCompact applies a shorter rewrite, and seals a rewrite that did not
@@ -513,13 +593,21 @@ func (c *SubAgentCompactor) collapsePerRound(conversation []interface{}) []inter
 	}
 	agent.NoteHandoffFallback()
 	log.Printf("[coding-subagent-compaction] per-round memo %s", memo.LengthNote())
-	return []interface{}{
+	collapsed := []interface{}{
 		conversation[0],
 		map[string]interface{}{
 			"role":    "user",
 			"content": agent.ReplaceHandoffBlock(taskContent, memo.Render()),
 		},
 	}
+	if c.lossless {
+		projected, _, ok := c.preserveSubAgentCompaction(conversation, collapsed)
+		if !ok {
+			return conversation
+		}
+		return projected
+	}
+	return collapsed
 }
 
 // sameConversationHead reports that b is a, returned unchanged.
@@ -788,6 +876,15 @@ func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubA
 		func() []string { return cb.getFilesRead() },
 		func() []CodingSubAgentCommandResult { return cb.getCommandsRun() },
 	)
+	compactor.lossless = true
+	if s != nil && s.handler != nil {
+		compactor.sessionKey = s.handler.currentRuntimeOrLegacyPolicyOwnerID()
+	}
+	if cb != nil {
+		compactor.onSpill = func(preview string) {
+			noteSpilledCodingToolResult(&cb.spilledToolResultReader, preview)
+		}
+	}
 	// RouteTurn can replace cfg after these hooks are built. Read the window
 	// at compaction time so the stall ceiling is the model that just ran.
 	if s != nil {
@@ -827,10 +924,34 @@ func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks(cb *remoteCodingCallba
 		handler = r.handler
 		loopCtx = r.loopCtx
 	}
+	var compactor *SubAgentCompactor
+	if cb != nil {
+		compactor = NewSubAgentCompactor(
+			0,
+			func() []string { return append([]string(nil), cb.filesModified...) },
+			func() []string { return append([]string(nil), cb.filesCreated...) },
+			func() []string { return append([]string(nil), cb.filesRead...) },
+			func() []CodingSubAgentCommandResult {
+				return append([]CodingSubAgentCommandResult(nil), cb.commandsRun...)
+			},
+		)
+		compactor.lossless = true
+		compactor.onSpill = func(preview string) {
+			noteSpilledCodingToolResult(&cb.spilledToolResultReader, preview)
+		}
+		if r != nil {
+			compactor.windowFn = func() int { return r.cfg.EffectiveContextTokens() }
+			if r.handler != nil {
+				compactor.sessionKey = r.handler.currentRuntimeOrLegacyPolicyOwnerID()
+			}
+		}
+		cb.compactor = compactor
+	}
 	return &codingSubAgentHooks{
-		handler: handler,
-		userID:  codingSubAgentOwnerUserID(loopCtx),
-		loopCtx: loopCtx,
+		compactor: compactor,
+		handler:   handler,
+		userID:    codingSubAgentOwnerUserID(loopCtx),
+		loopCtx:   loopCtx,
 		replanRevision: func() *atomic.Int64 {
 			if cb == nil {
 				return nil

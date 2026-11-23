@@ -2246,6 +2246,7 @@ type remoteCodingCallbacks struct {
 	// spilled. The next request renders read_tool_result so the model can page
 	// the original.
 	spilledToolResultReader atomic.Bool
+	compactor               *SubAgentCompactor
 
 	// Remote maintains a separate S0 compatibility belt: SSH/workdir names
 	// must never be admitted from local request-surface state or vice versa.
@@ -6525,6 +6526,31 @@ func remoteKnowledgeSnippet(r knowledge.SearchResult) string {
 		text = string([]rune(text)[:300]) + "..."
 	}
 	return text
+}
+
+func (c *remoteCodingCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.compactor == nil {
+		return
+	}
+	if !c.compactor.notePromptTokens(inputTokens) {
+		return
+	}
+	if c.agent == nil || c.agent.handler == nil {
+		return
+	}
+	c.agent.handler.noteCodingContextFill(codingSubAgentOwnerUserID(c.agent.loopCtx), inputTokens, outputTokens)
+}
+
+func (c *remoteCodingCallbacks) PromptFillsContextWindow(promptTokens int) bool {
+	return c != nil && c.compactor != nil && c.compactor.promptFillsWindow(promptTokens)
+}
+
+func (c *remoteCodingCallbacks) AbsorbContextOverflow(promptTokens int) bool {
+	return c != nil && c.compactor != nil && c.compactor.absorbOverflow(promptTokens)
+}
+
+func (c *remoteCodingCallbacks) ContextCompactStalled() bool {
+	return c != nil && c.compactor != nil && c.compactor.stalled
 }
 
 func (c *remoteCodingCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {

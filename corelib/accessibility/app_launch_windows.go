@@ -50,9 +50,17 @@ func launchDesktopApp(hint string) error {
 }
 
 func waitForAppFrame(hint string) (visibleWindow, bool) {
+	return waitForAppFrameMatching(hint, func(visibleWindow) bool { return true })
+}
+
+func waitForVisibleAppFrame(hint string) (visibleWindow, bool) {
+	return waitForAppFrameMatching(hint, func(frame visibleWindow) bool { return frame.visible })
+}
+
+func waitForAppFrameMatching(hint string, accept func(visibleWindow) bool) (visibleWindow, bool) {
 	deadline := time.Now().Add(appLaunchWait)
 	for {
-		if picked, ok := pickBestVisible(hint); ok {
+		if picked, ok := pickBestVisible(hint); ok && accept(picked) {
 			return picked, true
 		}
 		if appLaunchWait <= 0 || time.Now().After(deadline) {

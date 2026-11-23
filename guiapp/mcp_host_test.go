@@ -1176,6 +1176,203 @@ func TestMCPHostLanConfigToggle(t *testing.T) {
 	}
 }
 
+// Opening the MCP switch has to finish aligning the apikey file, the listener,
+// and the status payload before it returns. The tools page reloads status
+// immediately, and the stdio proxy sends whatever is in the file.
+func TestMCPSwitchOnSyncsAPIKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	base := filepath.Join(tmpHome, ".maclaw")
+	prevBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	const fileKey = "mck_file_key_for_switch_on"
+	const staleKey = "mck_stale_listener_key_xx"
+	if err := writeMCPAPIKey(fileKey); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: tmpHome, ctx: context.Background()}
+	t.Cleanup(func() {
+		app.stopMCPHost()
+		corelib.SetMaclawBaseDir(prevBase)
+	})
+
+	stalePort := freeLoopbackPort(t)
+	stale := newMCPHost(app)
+	if err := stale.Start(stalePort, false); err != nil {
+		t.Fatal(err)
+	}
+	stale.setToken(staleKey)
+	app.mcpHostMu.Lock()
+	app.mcpHost = stale
+	app.mcpHostMu.Unlock()
+
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	port := freeLoopbackPort(t)
+	app.mcpHostSyncMu.Lock()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			app.mcpHostSyncMu.Unlock()
+		}
+	}
+	defer release()
+
+	var patchErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, patchErr = app.PatchConfigFields(map[string]interface{}{
+			"mcp_host_enabled": true,
+			"mcp_host_port":    port,
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cfg, err := app.LoadConfig()
+		if err == nil && cfg.IsMcpHostEnabled() {
+			break
+		}
+		select {
+		case <-done:
+			release()
+			if patchErr != nil {
+				t.Fatal(patchErr)
+			}
+			t.Fatal("mcp switch returned before the api key was synced")
+		case <-time.After(20 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("mcp switch did not publish the enabled config")
+		}
+	}
+	select {
+	case <-done:
+		release()
+		if patchErr != nil {
+			t.Fatal(patchErr)
+		}
+		t.Fatal("mcp switch returned before the api key was synced")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	<-done
+	if patchErr != nil {
+		t.Fatal(patchErr)
+	}
+
+	stored, err := readMCPAPIKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != fileKey {
+		t.Fatalf("switch on replaced the api key: %q", stored)
+	}
+	status := app.GetMCPHostStatus()
+	gotPort, _ := status["port"].(int)
+	if status["running"] != true || status["apiKey"] != fileKey || gotPort != port {
+		t.Fatalf("status %+v", status)
+	}
+	httpCfg, _ := status["httpConfig"].(string)
+	stdioCfg, _ := status["stdioConfig"].(string)
+	if !strings.Contains(httpCfg, "Bearer "+fileKey) || strings.Contains(httpCfg, staleKey) {
+		t.Fatalf("http config %s", httpCfg)
+	}
+	if strings.Contains(stdioCfg, fileKey) || strings.Contains(stdioCfg, staleKey) {
+		t.Fatalf("stdio config leaked a key: %s", stdioCfg)
+	}
+	ep, discovered, ok := readMCPHostDiscovery()
+	if !ok || discovered != fileKey || ep.Port != port {
+		t.Fatalf("discovery ok=%v port=%d key=%q", ok, ep.Port, discovered)
+	}
+
+	endpoint, _ := status["url"].(string)
+	ping := `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	if resp := mcpPost(t, endpoint, fileKey, ping, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("file key %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp := mcpPost(t, endpoint, staleKey, ping, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stale key %d %s", resp.StatusCode, resp.Body)
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	app.mcpHostMu.Lock()
+	live := app.mcpHost
+	app.mcpHostMu.Unlock()
+	live.setToken(staleKey)
+	app.syncMCPHostFromConfig()
+	if got, err := readMCPAPIKey(); err != nil || got != fileKey {
+		t.Fatalf("drift sync key %q err %v", got, err)
+	}
+	if resp := mcpPost(t, endpoint, fileKey, ping, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("file key after drift %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp := mcpPost(t, endpoint, staleKey, ping, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("drifted key still accepted %d", resp.StatusCode)
+	}
+	if !mcpConnHeld(conn) {
+		t.Fatal("key sync restarted the listener")
+	}
+
+	if err := os.Remove(filepath.Join(mcpDiscoveryDir(), "apikey")); err != nil {
+		t.Fatal(err)
+	}
+	app.syncMCPHostFromConfig()
+	if got, err := readMCPAPIKey(); err != nil || got != fileKey {
+		t.Fatalf("restored key %q err %v", got, err)
+	}
+	if resp := mcpPost(t, endpoint, fileKey, ping, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("restored file key %d %s", resp.StatusCode, resp.Body)
+	}
+	if !mcpConnHeld(conn) {
+		t.Fatal("restoring the api key restarted the listener")
+	}
+
+	const graceKey = "mck_grace_key_still_ok"
+	live.setToken(graceKey)
+	live.setToken(fileKey)
+	app.syncMCPHostFromConfig()
+	if resp := mcpPost(t, endpoint, fileKey, ping, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("file key with grace %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp := mcpPost(t, endpoint, graceKey, ping, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("grace key %d %s", resp.StatusCode, resp.Body)
+	}
+	if !mcpConnHeld(conn) {
+		t.Fatal("matching sync restarted the listener")
+	}
+}
+
+func mcpConnHeld(conn net.Conn) bool {
+	_ = conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	_, err := conn.Read(make([]byte, 1))
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
 // The LAN flag rides config, not the host snapshot: a nil host (listener
 // never started) must not report lanEnabled=false and flip the panel's LAN
 // switch back to Off after a GenerateMCPHostAPIKey response.
@@ -4133,7 +4330,7 @@ func TestInboundMCPStallWatchdogIsNotAWallClock(t *testing.T) {
 	app.mcpStoreRun(&mcpRunRecord{
 		ProjectPath: "quiet", Status: mcpStatusRunning, RequestID: "mcp-quiet", RunID: "run-quiet",
 		StartedAt: quietSince, progressAt: quietSince,
-		Steps:     []mcpStepView{{ID: "T1", Status: "running"}},
+		Steps: []mcpStepView{{ID: "T1", Status: "running"}},
 	})
 	app.mcpNoteRunStalled("quiet", "mcp-quiet")
 	status, _, errText, _, steps := mcpRunOutcomeCause(nil, errMCPRunStalled, nil)

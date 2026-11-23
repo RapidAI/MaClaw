@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudAgentEntryButton, CloudAgentManage } from '../CloudAgentManage';
+import { CloudAgentManage } from '../CloudAgentManage';
 import { applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, expireCloudAgentCards, resetCloudAgentRounds } from '../cloudAgentSession';
 
 const streamHandlers: Array<(payload: unknown) => void> = [];
@@ -67,23 +67,27 @@ describe('cloud agent page', () => {
         expect(op.mock.calls.some((call) => call[1] === 'cloud_list_tasks')).toBe(true);
     });
 
-    it('the task-list entry is 云端管理 and the page does not use the desktop live key', () => {
-        render(<CloudAgentEntryButton lang="zh" onOpen={() => {}} />);
-        const entry = screen.getByTestId('task-pane-cloud-agents');
-        expect(entry.textContent).toContain('云端管理');
-        expect(entry.textContent).not.toContain('云端工作区');
+    it('the cloud place is the machine tab after this computer, not a toolbar button', () => {
         const root = resolve(__dirname, '..');
         const page = readFileSync(resolve(root, 'CloudAgentManage.tsx'), 'utf8');
         const fold = readFileSync(resolve(root, 'cloudAgentSession.ts'), 'utf8');
         const sidebar = readFileSync(resolve(root, 'SidebarTaskManagement.tsx'), 'utf8');
+        const bar = readFileSync(resolve(root, 'TaskMachineBar.tsx'), 'utf8');
         expect(page.includes('liveKey') || page.includes('bindRemoteStreamEvents') || page.includes('applyRemoteStreamPayload') || page.includes('applyRemoteWatchSnapshot')).toBe(false);
         expect(fold.includes('liveKey') || fold.includes('bindRemoteStreamEvents') || fold.includes('applyRemoteStreamPayload') || fold.includes('applyRemoteWatchSnapshot')).toBe(false);
-        expect(page).toContain('data-testid="task-pane-cloud-agents"');
-        const wizardAt = sidebar.indexOf('data-testid="task-pane-new-task-wizard"');
-        const entryAt = sidebar.indexOf('<CloudAgentEntryButton');
-        expect(wizardAt).toBeGreaterThan(-1);
-        expect(entryAt).toBeGreaterThan(wizardAt);
+        expect(sidebar.includes('CloudAgentEntryButton')).toBe(false);
         expect(sidebar).toContain('data-testid="task-pane-new-task-wizard"');
+        const localAt = bar.indexOf('data-testid="task-machine-tab-local"');
+        const cloudAt = bar.indexOf('data-testid="task-machine-tab-cloud"');
+        const grantAt = bar.indexOf('remote.state.grants.map');
+        expect(localAt).toBeGreaterThan(-1);
+        expect(cloudAt).toBeGreaterThan(localAt);
+        expect(grantAt).toBeGreaterThan(cloudAt);
+        expect(bar.slice(localAt, cloudAt)).toContain('cloudAvailable ?');
+        expect(sidebar).toContain('cloudAvailable={cloudAgentsEnabled}');
+        expect(sidebar).toContain('catalog.enabled');
+        expect(bar.slice(cloudAt, cloudAt + 400)).toContain('云端');
+        expect(bar.slice(cloudAt, cloudAt + 400)).not.toContain('云端工作区');
     });
 
     it('creates, steers, and stops a task when none is selected, and folds the watch snapshot', async () => {

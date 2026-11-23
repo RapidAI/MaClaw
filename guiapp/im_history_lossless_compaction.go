@@ -38,6 +38,9 @@ func (h *IMMessageHandler) preserveAutoCompactionHistory(userID string, original
 			preview = text
 		}
 	}
+	if index := strings.Index(preview, toolresult.HandleFooterMarker); index >= 0 {
+		preview = strings.TrimRight(preview[:index], "\n")
+	}
 	sessionKey := userID
 	if h != nil {
 		sessionKey = h.workflowPolicyOwnerID(userID, nil)

@@ -4,9 +4,9 @@
   var copy = {
     zh: {
       title: 'Bot \u7ba1\u7406',
-      subtitle: '\u5bf9\u63a5 MaClawSrv\uff0c\u5e76\u8bbe\u7f6e Bot \u4f7f\u7528\u7684 Docker \u670d\u52a1\u4e0e LLM\u3002Bot \u7531\u7528\u6237\u5728 MaClaw \u5ba2\u6237\u7aef\u521b\u5efa\u3002',
+      subtitle: '\u8bbe\u7f6e Bot \u4f7f\u7528\u7684 Docker \u670d\u52a1\u4e0e LLM\uff0c\u5e76\u6309\u90e8\u95e8\u6216\u7528\u6237\u5f00\u901a\u3002MaClawSrv \u63a5\u5165\u5728\u7cfb\u7edf\u8bbe\u7f6e\u3002Bot \u7531\u7528\u6237\u5728 MaClaw \u5ba2\u6237\u7aef\u521b\u5efa\u3002',
       nav: 'Bot \u7ba1\u7406',
-      navDesc: '\u5bf9\u63a5 MaClawSrv\u3001Docker \u670d\u52a1\u4e0e LLM',
+      navDesc: 'Docker \u670d\u52a1\u3001LLM \u4e0e\u5f00\u901a\u8303\u56f4',
       connection: '\u5bf9\u63a5 MaClawSrv',
       url: 'MaClawSrv \u5730\u5740',
       adminSecret: '\u7ba1\u7406\u5bc6\u94a5',
@@ -70,7 +70,7 @@
       configured: '\u5df2\u914d\u7f6e',
       unconfigured: '\u672a\u914d\u7f6e',
       online: '\u5df2\u8fde\u901a',
-      connectionHint: '\u4e0e\u7cfb\u7edf\u8bbe\u7f6e\u91cc\u7684 maclawsrv \u63a5\u5165\u662f\u540c\u4e00\u4efd\u914d\u7f6e\uff0cBot \u548c\u4e91\u7aef\u4efb\u52a1\u5171\u7528\u3002\u4e91\u7aef\u4efb\u52a1\u8fd8\u8981\u6c42\u5730\u5740\u662f\u672c\u673a\u56de\u73af\u3002',
+      connectionHint: 'MaClawSrv \u63a5\u5165\u5728\u7cfb\u7edf\u8bbe\u7f6e\u91cc\u4fee\u6539\u3002\u8fd9\u91cc\u53ea\u663e\u793a\u662f\u5426\u5df2\u914d\u7f6e\u3002',
       globalHint: '\u5168\u4f53\u6210\u5458\u90fd\u80fd\u4f7f\u7528 Bot',
       enableList: '\u5f00\u901a\u6e05\u5355',
       everyoneNote: '\u5df2\u5bf9\u5168\u4f53\u6210\u5458\u5f00\u653e\u3002\u5173\u95ed\u4e0a\u65b9\u5f00\u5173\uff0c\u5373\u53ef\u6309\u90e8\u95e8\u6216\u7528\u6237\u5f00\u901a\u3002',
@@ -158,9 +158,9 @@
     },
     en: {
       title: 'Bot management',
-      subtitle: 'Connect MaClawSrv and set the Docker service and LLM bots use. Users create bots in the MaClaw app.',
+      subtitle: 'Set the Docker service and LLM bots use, and who can use them. The MaClawSrv connection is in System settings. Users create bots in the MaClaw app.',
       nav: 'Bot management',
-      navDesc: 'MaClawSrv connection, Docker service, and LLM',
+      navDesc: 'Docker service, LLM, and access',
       connection: 'MaClawSrv connection',
       url: 'MaClawSrv URL',
       adminSecret: 'Admin secret',
@@ -224,7 +224,7 @@
       configured: 'Configured',
       unconfigured: 'Not configured',
       online: 'Connected',
-      connectionHint: 'This is the same maclawsrv record as System settings. Bots and cloud tasks share it. Cloud tasks also need a loopback address.',
+      connectionHint: 'Edit the MaClawSrv connection in System settings. This page only shows whether it is configured.',
       globalHint: 'Everyone in this tenant can use bots',
       enableList: 'Enabled',
       everyoneNote: 'Everyone already has access. Turn the switch off to enable specific departments or users.',
@@ -394,13 +394,6 @@
     if (desc) desc.textContent = t.navDesc;
     var panel = byID('tab-bots');
     if (!panel || panel.dataset.ready !== '1') return;
-    setLabel('botConnectionTitle', t.connection);
-    setLabel('botConnectionHint', t.connectionHint);
-    setLabel('botUrlLabel', t.url);
-    setLabel('botAdminLabel', t.adminSecret);
-    setLabel('botAdminHint', t.adminHint);
-    setLabel('botSave', t.save);
-    setLabel('botTest', t.test);
     setLabel('botLLMTitle', t.llmTitle);
     setLabel('botLLMHint', t.llmHint);
     setLabel('botLLMAdd', t.llmAdd);
@@ -646,22 +639,6 @@
       + '</div>'
       + '<p class="bot-group" id="botGroupRuntime"></p>'
       + '<section class="item bot-section">'
-      + '<div class="item-head">' + secIcon('conn') + '<div><h3 class="item-title" id="botConnectionTitle"></h3>'
-      + '<p class="item-meta" id="botConnectionHint"></p></div><span class="badge" id="botConnBadge"></span></div>'
-      + '<div class="bot-form">'
-      + '<div class="bot-field bot-field-wide"><label id="botUrlLabel" for="botBaseUrl"></label>'
-      + '<input id="botBaseUrl" autocomplete="off" spellcheck="false"></div>'
-      + '<div class="bot-field"><div class="bot-field-head"><label id="botAdminLabel" for="botAdminSecret"></label>'
-      + '<span class="badge" id="botAdminState"></span></div>'
-      + '<input id="botAdminSecret" type="password" autocomplete="new-password">'
-      + '<p class="bot-field-note" id="botAdminHint"></p></div>'
-      + '</div>'
-      + '<div class="bot-foot"><div class="bot-actions">'
-      + '<button type="button" class="btn-primary" id="botSave"></button>'
-      + '<button type="button" class="btn-secondary" id="botTest"></button></div>'
-      + '<p class="bot-status" id="botConnStatus"></p></div>'
-      + '</section>'
-      + '<section class="item bot-section">'
       + '<div class="item-head">' + secIcon('llm') + '<div><h3 class="item-title" id="botLLMTitle"></h3>'
       + '<p class="item-meta" id="botLLMHint"></p></div><span class="badge" id="botLLMBadge"></span></div>'
       + '<div id="botLLMList" class="bot-llm-list"></div>'
@@ -725,8 +702,6 @@
       + '<p class="item-meta" id="botListHint"></p></div><span class="badge" id="botListBadge"></span></div>'
       + '<div id="botList" class="bot-table"></div></section>'
       + '</div>';
-    byID('botSave').addEventListener('click', saveConnection);
-    byID('botTest').addEventListener('click', testConnection);
     byID('botLLMAdd').addEventListener('click', addLLMProvider);
     byID('botLLMSave').addEventListener('click', saveLLM);
     byID('botLLMList').addEventListener('click', onLLMListClick);
@@ -779,22 +754,9 @@
     return pending;
   }
 
-  function showServerUrl(url, next) {
-    if (!url) return;
-    var incoming = next || '';
-    var dirty = url._serverValue != null ? url.value !== url._serverValue : url.value !== '' && url.value !== incoming;
-    if (dirty) {
-      if (url._serverValue == null) url._serverValue = incoming;
-      return;
-    }
-    url.value = incoming;
-    url._serverValue = url.value;
-  }
-
   function render(view) {
     var panel = byID('tab-bots');
     if (panel) panel._botView = view;
-    showServerUrl(byID('botBaseUrl'), view.base_url || '');
     setCredState(byID('botAdminState'), !!view.admin_secret_set, text().adminSet, text().adminMissing);
     var access = grantSummary(view);
     renderConnBadge(view);
@@ -2854,75 +2816,6 @@
     var host = String(parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
     if (host === 'node.invalid' || host.endsWith('.node.invalid')) return false;
     return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
-  }
-
-  function saveConnection() {
-    var panel = byID('tab-bots');
-    if (panel && panel._connSaving) return;
-    var base = (byID('botBaseUrl').value || '').trim();
-    if (!base) {
-      showToast(text().needUrl, 'error');
-      return;
-    }
-    if (!validServiceUrl(base)) {
-      showToast(text().badUrl, 'error');
-      return;
-    }
-    var body = { base_url: base };
-    var adminSecret = byID('botAdminSecret').value || '';
-    if (adminSecret !== '') body.admin_secret = adminSecret;
-    if (panel) panel._connSaving = true;
-    var button = byID('botSave');
-    if (button) button.disabled = true;
-    return api('/api/admin/bots/settings', { method: 'PUT', body: JSON.stringify(body) }).then(function (view) {
-      byID('botAdminSecret').value = '';
-      var urlInput = byID('botBaseUrl');
-      if (urlInput) urlInput._serverValue = urlInput.value;
-      if (panel) panel._botConnOk = false;
-      /* The last test result describes the settings that were just replaced. */
-      setLabel('botConnStatus', '');
-      render(view || {});
-      showToast(text().saved, 'success');
-    }).catch(function (err) {
-      showToast(messageOf(err), 'error');
-    }).then(function () {
-      if (panel) panel._connSaving = false;
-      if (button) button.disabled = false;
-    });
-  }
-
-  function testConnection() {
-    var panel = byID('tab-bots');
-    if (panel && panel._connTesting) return;
-    var view = panel && panel._botView || {};
-    var typedUrl = (byID('botBaseUrl').value || '').trim().replace(/\/+$/, '');
-    var savedUrl = String(view.base_url || '').trim().replace(/\/+$/, '');
-    if (typedUrl !== savedUrl || (byID('botAdminSecret').value || '') !== '') {
-      showToast(text().saveBeforeTest, 'error');
-      return;
-    }
-    if (panel) panel._connTesting = true;
-    var button = byID('botTest');
-    if (button) button.disabled = true;
-    var status = byID('botConnStatus');
-    if (status) status.textContent = text().testing;
-    return api('/api/admin/bots/connection/test', { method: 'POST', body: '{}' }).then(function (result) {
-      var count = result && result.instance_count != null ? result.instance_count : 0;
-      var msg = text().connected.replace('{count}', String(count));
-      if (panel) panel._botConnOk = true;
-      byID('botConnStatus').textContent = msg;
-      renderConnBadge(panel && panel._botView);
-      showToast(msg, 'success');
-      if (panel && !panel._llmDirty) load();
-    }).catch(function (err) {
-      if (panel) panel._botConnOk = false;
-      byID('botConnStatus').textContent = messageOf(err);
-      renderConnBadge(panel && panel._botView);
-      showToast(messageOf(err), 'error');
-    }).then(function () {
-      if (panel) panel._connTesting = false;
-      if (button) button.disabled = false;
-    });
   }
 
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.registerTab === 'function') {

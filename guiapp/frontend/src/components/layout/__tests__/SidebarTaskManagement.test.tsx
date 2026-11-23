@@ -1349,6 +1349,7 @@ describe('SidebarTaskManagement', () => {
         expect(within(recent).getAllByTestId('task-place-icon-local').length).toBeGreaterThan(0);
         expect(within(recent).getAllByTestId('task-place-icon-cloud').length).toBeGreaterThan(0);
         expect(within(cloudFolder).getByText('云端演示')).toBeTruthy();
+        expect(screen.queryByTestId('task-machine-tab-cloud')).toBeNull();
         expect(screen.getAllByTestId('cloud-agent-task-row')).toHaveLength(2);
         for (const icon of screen.getAllByTestId('task-cloud-workspace-icon')) {
             expect(icon.closest('[data-testid="task-folder-cloud"]')).toBeNull();
@@ -1363,6 +1364,30 @@ describe('SidebarTaskManagement', () => {
             expect(session?.canSend).toBe(true);
         });
         expect(resumeTask).not.toHaveBeenCalled();
+    });
+
+    it('shows the cloud machine tab only when Hub has enabled cloud agents', async () => {
+        (window as unknown as { go?: unknown }).go = {
+            main: { App: { ListCloudAgents: async () => ({ instances: [], enabled: false }) } },
+        };
+        renderTaskManagement({ lang: 'zh', tasks: [] });
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.queryByTestId('task-machine-tab-cloud')).toBeNull();
+        cleanup();
+        (window as unknown as { go?: unknown }).go = {
+            main: { App: { ListCloudAgents: async () => ({ instances: [], enabled: true }) } },
+        };
+        renderTaskManagement({ lang: 'zh', tasks: [] });
+        await waitFor(() => {
+            expect(screen.getByTestId('task-machine-tab-cloud').textContent).toContain('云端');
+        });
+        expect(screen.queryByTestId('task-folder-cloud')).toBeNull();
+        const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'));
+        expect(tabs[0]).toBe('task-machine-tab-local');
+        expect(tabs[1]).toBe('task-machine-tab-cloud');
     });
 
     it('keeps the 最近任务 band count at the configured entry cap', () => {

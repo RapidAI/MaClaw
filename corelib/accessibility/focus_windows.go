@@ -172,6 +172,19 @@ func focusWindow(titleSubstring string) error {
 		}
 	}
 	found := picked.hwnd
+	iconic := windowIconic(found)
+	if hiddenFrameNeedsAppActivation(titleSubstring, picked.visible, iconic) {
+		if err := launchDesktopApp(titleSubstring); err != nil {
+			return fmt.Errorf("could not activate hidden application %q: %w", titleSubstring, err)
+		}
+		if restored, ok := waitForVisibleAppFrame(titleSubstring); ok {
+			picked = restored
+			found = picked.hwnd
+			iconic = windowIconic(found)
+		} else {
+			return fmt.Errorf("application did not restore its hidden window %q", titleSubstring)
+		}
+	}
 
 	// A visible window is activated with SW_SHOW and keeps its size, including
 	// maximized. SW_RESTORE is only for a minimized window, and one that was
@@ -179,7 +192,6 @@ func focusWindow(titleSubstring string) error {
 	if foregroundIs(found) {
 		return nil
 	}
-	iconic := windowIconic(found)
 	if cmd, ok := focusShowCommand(iconic, iconic && windowRestoreToMaximized(found)); ok {
 		procShowWindow.Call(found, cmd)
 		if foregroundIs(found) {
@@ -201,6 +213,10 @@ func focusWindow(titleSubstring string) error {
 		return nil
 	}
 	return fmt.Errorf("window stayed in the background")
+}
+
+func hiddenFrameNeedsAppActivation(hint string, visible, iconic bool) bool {
+	return !visible && !iconic && computeruse.DesktopAppSupportsSingleInstanceActivation(hint)
 }
 
 // focusShowCommand chooses a ShowWindow command that does not turn a

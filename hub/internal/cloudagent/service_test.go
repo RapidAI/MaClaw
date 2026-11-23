@@ -116,20 +116,58 @@ func TestDefaultsStayOffWithoutDesktopBotLimit(t *testing.T) {
 	if instances != 3 || turns != 1 || enabled {
 		t.Fatalf("limits = %d %d enabled=%v", instances, turns, enabled)
 	}
-	_, err = svc.db.Exec(`INSERT INTO cloud_agent_limits (tenant_id, user_id, max_instances, max_concurrent_turns, enabled, updated_at) VALUES ('tenant-a', 'user-1', NULL, NULL, 1, 't')`)
+	closed := call(userMux(svc, nil), http.MethodGet, "/api/v1/cloud-agents", nil)
+	if closed.Code != http.StatusOK {
+		t.Fatalf("list while off: %d %s", closed.Code, closed.Body.String())
+	}
+	closedBody := decodeMap(t, closed)
+	if closedBody["enabled"] != false {
+		t.Fatalf("enabled while off: %+v", closedBody)
+	}
+	if rows, ok := closedBody["instances"].([]any); !ok || len(rows) != 0 {
+		t.Fatalf("instances while off: %+v", closedBody["instances"])
+	}
+	_, err = svc.db.Exec(`INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, updated_at) VALUES ('tenant-a', 'user', 'user-1', NULL, NULL, 1, 't')`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if on, err := svc.FeatureEnabled(context.Background(), "tenant-a"); err != nil || on {
-		t.Fatalf("user row enabled the feature: %v %v", on, err)
+		t.Fatalf("user row changed the global switch: %v %v", on, err)
+	}
+	opened, turns, on, err := svc.EffectiveLimits(context.Background(), "tenant-a", "user-1")
+	if err != nil || !on || opened != 3 || turns != 1 {
+		t.Fatalf("explicit user on = %d %d %v %v", opened, turns, on, err)
 	}
 	rec := call(userMux(svc, nil), http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "甲", Kind: KindSession})
-	if rec.Code != http.StatusForbidden || !strings.Contains(decodeMap(t, rec)["message"].(string), DisabledMessage) {
-		t.Fatalf("create while off: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("user explicit on should create: %d %s", rec.Code, rec.Body.String())
+	}
+	other := UserHandler{Svc: svc, Viewer: viewer("tenant-a", "user-2")}
+	otherMux := http.NewServeMux()
+	otherMux.HandleFunc("POST /api/v1/cloud-agents", other.Create)
+	blocked := call(otherMux, http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "乙", Kind: KindSession})
+	if blocked.Code != http.StatusForbidden || !strings.Contains(decodeMap(t, blocked)["message"].(string), DisabledMessage) {
+		t.Fatalf("other user while global off: %d %s", blocked.Code, blocked.Body.String())
 	}
 	var n int
-	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM cloud_agents`).Scan(&n); err != nil || n != 0 {
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM cloud_agents`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("rows = %d err=%v", n, err)
+	}
+	listed := call(userMux(svc, nil), http.MethodGet, "/api/v1/cloud-agents", nil)
+	listedBody := decodeMap(t, listed)
+	if listed.Code != http.StatusOK || listedBody["enabled"] != true {
+		t.Fatalf("opened user list: %d %+v", listed.Code, listedBody)
+	}
+	if rows, ok := listedBody["instances"].([]any); !ok || len(rows) != 1 {
+		t.Fatalf("opened user instances: %+v", listedBody["instances"])
+	}
+	otherList := UserHandler{Svc: svc, Viewer: viewer("tenant-a", "user-2")}
+	otherListMux := http.NewServeMux()
+	otherListMux.HandleFunc("GET /api/v1/cloud-agents", otherList.List)
+	hidden := call(otherListMux, http.MethodGet, "/api/v1/cloud-agents", nil)
+	hiddenBody := decodeMap(t, hidden)
+	if hidden.Code != http.StatusOK || hiddenBody["enabled"] != false {
+		t.Fatalf("other user list: %d %+v", hidden.Code, hiddenBody)
 	}
 }
 
@@ -137,6 +175,14 @@ func TestQuotaAndKindImmutability(t *testing.T) {
 	db := openTestDB(t)
 	svc := New(db, memSettings{})
 	enable(t, svc, "tenant-a", 3, 1)
+	opened := call(userMux(svc, nil), http.MethodGet, "/api/v1/cloud-agents", nil)
+	openedBody := decodeMap(t, opened)
+	if opened.Code != http.StatusOK || openedBody["enabled"] != true {
+		t.Fatalf("list while on: %d %+v", opened.Code, openedBody)
+	}
+	if rows, ok := openedBody["instances"].([]any); !ok || len(rows) != 0 {
+		t.Fatalf("empty enabled list: %+v", openedBody["instances"])
+	}
 	one := 1
 	if err := svc.SaveUserLimits(context.Background(), "tenant-a", "user-1", UserLimits{MaxInstances: &one}); err != nil {
 		t.Fatal(err)

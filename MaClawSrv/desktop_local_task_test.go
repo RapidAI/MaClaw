@@ -584,8 +584,11 @@ func TestLocalTaskMapsTaskIdentityAndStepObjects(t *testing.T) {
 		},
 	})
 	ids, _ := args["step_ids"].([]any)
-	if got["tool"] != "retry_steps" || len(ids) != 2 || ids[0] != "T5" || ids[1] != "T6" {
+	if got["tool"] != "retry_steps" || len(ids) != 1 || ids[0] != "T5" {
 		t.Fatalf("step objects = %v %+v", got["tool"], args)
+	}
+	if strings.Contains(got["args"].(string), "收尾") {
+		t.Fatalf("passed step forwarded: %s", got["args"])
 	}
 	if _, ok := args["steps"]; ok {
 		t.Fatalf("steps still forwarded: %+v", args)
@@ -684,11 +687,30 @@ func TestLocalTaskUsesOneListedCommandAndLiftsTheResultEnvelope(t *testing.T) {
 		t.Fatalf("commands text = %+v", args)
 	}
 	args = call(map[string]any{
-		"tool": "send_command", "project_path": `D:\work`, "text": "继续",
+		"tool": "send_command", "project_path": `D:\work`, "text": "previous answer",
 		"commands": []any{"/plan approve"},
+	})
+	if args["command"] != "/plan approve" {
+		t.Fatalf("confirmation command = %+v", args)
+	}
+	if _, ok := args["text"]; ok || strings.Contains(got["args"].(string), "previous answer") {
+		t.Fatalf("answer sent as the command: %s", got["args"])
+	}
+	args = call(map[string]any{
+		"tool": "send_command", "project_path": `D:\work`, "text": "继续",
 	})
 	if args["command"] != "继续" {
 		t.Fatalf("text command = %+v", args)
+	}
+	args = call(map[string]any{
+		"tool": "send_command", "project_path": `D:\work`, "prompt": "继续处理",
+		"text": "previous answer", "commands": []any{"/plan approve"},
+	})
+	if args["command"] != "继续处理" {
+		t.Fatalf("prompt command = %+v", args)
+	}
+	if strings.Contains(got["args"].(string), "previous answer") {
+		t.Fatalf("prompt call forwarded the answer: %s", got["args"])
 	}
 	args = call(map[string]any{
 		"tool": "send_command", "project_path": `D:\work`, "command": "继续",
@@ -705,6 +727,10 @@ func TestLocalTaskUsesOneListedCommandAndLiftsTheResultEnvelope(t *testing.T) {
 	}
 	reject(map[string]any{
 		"tool": "send_command", "project_path": `D:\work`, "commands": []any{"是", "否"},
+	})
+	reject(map[string]any{
+		"tool": "send_command", "project_path": `D:\work`, "text": "previous answer",
+		"commands": []any{"是", "否"},
 	})
 	reject(map[string]any{
 		"tool": "send_command", "project_path": `D:\work`, "command": []any{"是", "否"},
@@ -947,16 +973,210 @@ func TestLocalTaskUsesOneListedTaskAndDropsResultNoise(t *testing.T) {
 		"checks":       []any{map[string]any{"detail": "check marker"}},
 		"children":     []any{map[string]any{"project_path": `D:\child`}},
 		"conflicts":    []any{map[string]any{"detail": "conflict marker"}},
+		"text":         "previous answer",
+		"error":        "failure detail",
+		"end_detail":   "end detail marker",
 	})
 	if got["tool"] != "read_log" || args["cursor"] != float64(40) || args["project_path"] != `D:\work` {
 		t.Fatalf("log page = %v %+v", got["tool"], args)
 	}
-	absent(args, "events", "checks", "children", "conflicts", "next_cursor")
+	absent(args, "events", "checks", "children", "conflicts", "next_cursor", "text", "error", "end_detail")
 	body := got["args"].(string)
-	for _, marker := range []string{"previous log line", "check marker", "conflict marker", `D:\\child`} {
+	for _, marker := range []string{"previous log line", "check marker", "conflict marker", "previous answer", "failure detail", "end detail marker", `D:\\child`} {
 		if strings.Contains(body, marker) {
 			t.Fatalf("result noise %q in %s", marker, body)
 		}
+	}
+}
+
+func TestLocalTaskSendKeepsTheCurrentModel(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	var got map[string]any
+	localRelayPost = func(_ context.Context, body map[string]any) (localRelayReply, error) {
+		got = body
+		return localRelayReply{OK: true, Text: "ok"}, nil
+	}
+	call := func(args map[string]any) map[string]any {
+		t.Helper()
+		_, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("execute"), localTaskToolName, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(got["args"].(string)), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	absent := func(args map[string]any, keys ...string) {
+		t.Helper()
+		for _, key := range keys {
+			if _, ok := args[key]; ok {
+				t.Fatalf("%s still forwarded: %+v", key, args)
+			}
+		}
+	}
+	args := call(map[string]any{
+		"tool":               "send_command",
+		"project_path":       `D:\work`,
+		"confirmation_id":    "mcf_1",
+		"commands":           []any{"__scope_approval__ allow"},
+		"provider":           "echo-provider",
+		"provider_effective": "echo-provider",
+		"model":              "echo-model",
+		"model_effective":    "echo-model",
+		"provider_requested": "asked-provider",
+		"model_requested":    "asked-model",
+	})
+	if args["command"] != "__scope_approval__ allow" || args["confirmation_id"] != "mcf_1" {
+		t.Fatalf("confirmation = %+v", args)
+	}
+	absent(args, "provider", "model", "provider_effective", "model_effective", "provider_requested", "model_requested")
+	body := got["args"].(string)
+	for _, marker := range []string{"echo-provider", "echo-model", "asked-provider", "asked-model"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("echoed model %q in %s", marker, body)
+		}
+	}
+	args = call(map[string]any{
+		"tool":         "send_command",
+		"project_path": `D:\work`,
+		"command":      "继续",
+		"provider":     "Next-provider",
+		"model":        "next-model",
+	})
+	if args["provider"] != "Next-provider" || args["model"] != "next-model" || args["command"] != "继续" {
+		t.Fatalf("explicit model = %+v", args)
+	}
+	args = call(map[string]any{
+		"tool":               "send_command",
+		"project_path":       `D:\work`,
+		"command":            "继续",
+		"provider":           "Next-provider",
+		"provider_effective": "echo-provider",
+		"model":              "echo-model",
+		"model_effective":    "echo-model",
+	})
+	if args["provider"] != "Next-provider" || args["model"] != "echo-model" || args["command"] != "继续" {
+		t.Fatalf("provider change = %+v", args)
+	}
+	absent(args, "provider_effective", "model_effective")
+	args = call(map[string]any{
+		"tool":               "send_command",
+		"project_path":       `D:\work`,
+		"command":            "继续",
+		"provider":           "echo-provider",
+		"provider_effective": "echo-provider",
+		"model":              "echo-model",
+		"model_effective":    "echo-model",
+		"arguments":          map[string]any{"provider": "Next-provider", "model": "next-model"},
+	})
+	if args["provider"] != "Next-provider" || args["model"] != "next-model" {
+		t.Fatalf("arguments model = %+v", args)
+	}
+	args = call(map[string]any{
+		"tool":               "send_command",
+		"project_path":       `D:\work`,
+		"command":            "继续",
+		"provider_effective": "echo-provider",
+		"model":              "next-model",
+		"model_effective":    "echo-model",
+	})
+	if args["provider"] != "echo-provider" || args["model"] != "next-model" {
+		t.Fatalf("model change keeps provider = %+v", args)
+	}
+	args = call(map[string]any{
+		"tool":               "send_command",
+		"project_path":       `D:\work`,
+		"command":            "继续",
+		"provider":           "Echo-Provider",
+		"provider_effective": "echo-provider",
+		"model":              "Echo-Model",
+		"model_effective":    "echo-model",
+	})
+	absent(args, "provider", "model", "provider_effective", "model_effective")
+	args = call(map[string]any{
+		"tool":               "create_task",
+		"prompt":             "实现登录",
+		"provider":           "echo-provider",
+		"provider_effective": "echo-provider",
+		"model":              "echo-model",
+	})
+	if args["prompt"] != "实现登录" || args["provider"] != "echo-provider" || args["model"] != "echo-model" {
+		t.Fatalf("create model = %+v", args)
+	}
+}
+
+func TestLocalTaskRetryKeepsOpenSteps(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	var got map[string]any
+	calls := 0
+	localRelayPost = func(_ context.Context, body map[string]any) (localRelayReply, error) {
+		calls++
+		got = body
+		return localRelayReply{OK: true, Text: "ok"}, nil
+	}
+	call := func(args map[string]any) map[string]any {
+		t.Helper()
+		before := calls
+		_, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("execute"), localTaskToolName, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != before+1 {
+			t.Fatalf("posted %d", calls-before)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(got["args"].(string)), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	idsOf := func(args map[string]any) []any {
+		t.Helper()
+		ids, _ := args["step_ids"].([]any)
+		return ids
+	}
+	args := call(map[string]any{
+		"tool": "retry_steps", "project_path": `D:\work`, "confirmation_id": "mcf_3",
+		"steps": []any{
+			map[string]any{"id": "T1", "status": "passed", "retryable": false, "title": "已通过"},
+			map[string]any{"id": "T2", "status": "failed", "retryable": true, "error": "disk full"},
+			map[string]any{"id": "T3", "status": "skipped", "retryable": false, "error": "skipped: prior step failed"},
+			map[string]any{"id": "T4", "status": "blocked", "retryable": true},
+			map[string]any{"id": "T8", "status": "waiting", "retryable": false, "error": "子任务结果待审阅"},
+			map[string]any{"id": "T9", "status": "skipped", "retryable": true},
+		},
+	})
+	ids := idsOf(args)
+	if len(ids) != 3 || ids[0] != "T2" || ids[1] != "T4" || ids[2] != "T9" || args["confirmation_id"] != "mcf_3" {
+		t.Fatalf("open steps = %+v", args)
+	}
+	body := got["args"].(string)
+	for _, marker := range []string{"已通过", "disk full", "prior step", "子任务结果待审阅", "T1", "T3", "T8"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("closed step %q in %s", marker, body)
+		}
+	}
+	args = call(map[string]any{
+		"tool": "retry_steps", "project_path": `D:\work`, "step_ids": []any{"T5", "T6"},
+	})
+	ids = idsOf(args)
+	if len(ids) != 2 || ids[0] != "T5" || ids[1] != "T6" {
+		t.Fatalf("explicit ids = %+v", args)
+	}
+	before := calls
+	_, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("execute"), localTaskToolName, map[string]any{
+		"tool": "retry_steps", "project_path": `D:\work`,
+		"steps": []any{
+			map[string]any{"id": "T1", "status": "passed"},
+			map[string]any{"id": "T3", "status": "skipped"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "step") || calls != before {
+		t.Fatalf("err=%v posted=%d", err, calls-before)
 	}
 }
 
