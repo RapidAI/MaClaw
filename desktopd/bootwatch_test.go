@@ -2,9 +2,11 @@ package desktopd
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSupervisorBootRestoresOwnerAndRecentBots(t *testing.T) {
@@ -39,9 +41,10 @@ print("secret" in json.dumps(res), res["restored"] == [owner, recent])
 }
 
 type bootDocker struct {
-	mu      sync.Mutex
-	started map[string]string
-	calls   []string
+	mu        sync.Mutex
+	started   map[string]string
+	calls     []string
+	bootFails map[string]int
 }
 
 func (d *bootDocker) run(_ context.Context, args ...string) (string, error) {
@@ -62,6 +65,10 @@ func (d *bootDocker) run(_ context.Context, args ...string) (string, error) {
 		}
 		return strings.Join(lines, "\n"), nil
 	case "exec":
+		if d.bootFails[args[1]] > 0 {
+			d.bootFails[args[1]]--
+			return "", errors.New("temporary exec failure")
+		}
 		return `{"restored": ["k"]}`, nil
 	}
 	return "", nil
@@ -77,6 +84,51 @@ func (d *bootDocker) execs() int {
 		}
 	}
 	return n
+}
+
+func TestBootWatcherRetriesTemporaryFailure(t *testing.T) {
+	d := &bootDocker{started: map[string]string{"maclaw-desktop-a": "t1"}, bootFails: map[string]int{"maclaw-desktop-a": 1}}
+	svc := &Service{Run: d.run}
+	w := &bootWatcher{seen: map[string]string{}}
+	if got := w.once(context.Background(), svc); len(got) != 0 || d.execs() != 1 {
+		t.Fatalf("first pass booted=%v execs=%d", got, d.execs())
+	}
+	if got := w.once(context.Background(), svc); len(got) != 0 || d.execs() != 1 {
+		t.Fatalf("retry ignored backoff booted=%v execs=%d", got, d.execs())
+	}
+	w.mu.Lock()
+	retry := w.retries["maclaw-desktop-a"]
+	retry.next = time.Now().Add(-time.Second)
+	w.retries["maclaw-desktop-a"] = retry
+	w.mu.Unlock()
+	if got := w.once(context.Background(), svc); len(got) != 1 || d.execs() != 2 {
+		t.Fatalf("retry booted=%v execs=%d", got, d.execs())
+	}
+	if got := w.once(context.Background(), svc); len(got) != 0 || d.execs() != 2 {
+		t.Fatalf("successful boot repeated=%v execs=%d", got, d.execs())
+	}
+}
+
+func TestBootWatcherSkipsUnsupportedBoot(t *testing.T) {
+	calls := 0
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		switch args[0] {
+		case "ps":
+			return "maclaw-desktop-a", nil
+		case "inspect":
+			return "/maclaw-desktop-a t1", nil
+		case "exec":
+			calls++
+			return "", errors.New("usage: desktop_supervisor.py ensure <user-key>")
+		}
+		return "", nil
+	}}
+	w := &bootWatcher{seen: map[string]string{}}
+	w.once(context.Background(), svc)
+	w.once(context.Background(), svc)
+	if calls != 1 {
+		t.Fatalf("unsupported boot calls=%d", calls)
+	}
 }
 
 func TestBootWatcherBootsEachContainerStartOnce(t *testing.T) {

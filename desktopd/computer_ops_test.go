@@ -19,6 +19,7 @@ type fakeComputer struct {
 	exists  bool
 	running bool
 	busy    bool
+	busyErr error
 	calls   []string
 	mounts  string
 }
@@ -51,6 +52,9 @@ func (f *fakeComputer) run(_ context.Context, args ...string) (string, error) {
 		}
 		return r + "|" + DefaultShmSize + "|" + f.mounts + "|" + DefaultImage + "|" + DefaultImage + "|", nil
 	case strings.Contains(line, "bots-busy"):
+		if f.busyErr != nil {
+			return "", f.busyErr
+		}
 		if f.busy {
 			return `{"busy":["k"]}`, nil
 		}
@@ -117,6 +121,21 @@ func TestRestartRefusesWhileBotsBusyUnlessForced(t *testing.T) {
 	}
 	if _, err := svc.Restart(context.Background(), Spec{TenantID: "tenant", UserID: "alice"}, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRestartRefusesWhenBotBusyStateIsUnknown(t *testing.T) {
+	f := newFakeComputer(t)
+	f.busyErr = errors.New("docker exec timeout")
+	svc := &Service{Run: f.run, ComputerDir: t.TempDir()}
+	if _, err := svc.Restart(context.Background(), Spec{TenantID: "tenant", UserID: "alice"}, false); !errors.Is(err, ErrDocker) {
+		t.Fatalf("err=%v", err)
+	}
+	if f.has("stop ") >= 0 {
+		t.Fatal("restart stopped the container with unknown bot state")
+	}
+	if _, err := svc.Restart(context.Background(), Spec{TenantID: "tenant", UserID: "alice"}, true); err != nil {
+		t.Fatalf("explicit force did not override unknown state: %v", err)
 	}
 }
 

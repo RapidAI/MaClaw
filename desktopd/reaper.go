@@ -127,7 +127,12 @@ func (r *reaper) stopOne(ctx context.Context, s *Service, container, tenantID, u
 	if r.stage2 {
 		// A busy bot display, a failed flush, or a failed sync does not reach
 		// docker stop. Sleep does not commit an image or delete a volume.
-		if s.containerHasBusyBot(stopCtx, container) {
+		busy, busyErr := s.containerHasBusyBot(stopCtx, container)
+		if busyErr != nil {
+			log.Printf("[desktopd] idle desktop container=%s tenant=%s user=%s left running because bot state is unknown: %v", container, tenantID, userID, busyErr)
+			return nil
+		}
+		if busy {
 			log.Printf("[desktopd] idle desktop container=%s tenant=%s user=%s left running because a bot display is busy", container, tenantID, userID)
 			return nil
 		}
@@ -154,7 +159,11 @@ func (r *reaper) stopOne(ctx context.Context, s *Service, container, tenantID, u
 		log.Printf("[desktopd] reaped idle desktop container=%s tenant=%s user=%s via=container-already-stopped", container, tenantID, userID)
 		return nil
 	}
-	if s.containerHasBusyBot(stopCtx, container) {
+	busy, busyErr := s.containerHasBusyBot(stopCtx, container)
+	if busyErr != nil {
+		return fmt.Errorf("bot display state is unknown: %w", busyErr)
+	}
+	if busy {
 		sessionUp, sessionErr := s.desktopSessionRunning(stopCtx, container, key)
 		if sessionErr != nil {
 			return fmt.Errorf("bot display is busy and desktop state is unknown: %w", sessionErr)
@@ -207,25 +216,10 @@ func (s *Service) containerRunning(ctx context.Context, name string) (bool, erro
 
 // containerHasBusyBot reports whether an isolated bot display in this
 // container is in use. docker stop would end that bot's task, so the reaper
-// leaves the container up. A supervisor that has no bots-busy command, or an
-// empty answer, is treated as not busy: that is the historical single-desktop
-// container.
-func (s *Service) containerHasBusyBot(ctx context.Context, name string) bool {
-	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "bots-busy")
-	if err != nil {
-		return false
-	}
-	line := statusLine(out)
-	if line == "" {
-		return false
-	}
-	var status struct {
-		Busy []string `json:"busy"`
-	}
-	if json.Unmarshal([]byte(line), &status) != nil {
-		return false
-	}
-	return len(status.Busy) > 0
+// leaves the container up when bots are busy or their state cannot be read.
+func (s *Service) containerHasBusyBot(ctx context.Context, name string) (bool, error) {
+	busy, err := s.busyBots(ctx, name)
+	return len(busy) > 0, err
 }
 
 // desktopSessionRunning re-reads the supervisor idle status. An unreadable

@@ -18,9 +18,15 @@ import (
 // idempotent and takes the desktop lock, so racing pid 1's own boot or a
 // restart-computer ensure is harmless.
 
+type bootRetry struct {
+	attempts int
+	next     time.Time
+}
+
 type bootWatcher struct {
-	mu   sync.Mutex
-	seen map[string]string // container name -> StartedAt already booted
+	mu      sync.Mutex
+	seen    map[string]string // container name -> StartedAt already booted
+	retries map[string]bootRetry
 }
 
 // StartBootWatcher runs the watcher until ctx ends.
@@ -89,13 +95,27 @@ func (w *bootWatcher) once(ctx context.Context, s *Service) []string {
 		if done {
 			continue
 		}
+		w.mu.Lock()
+		retry := w.retries[name]
+		w.mu.Unlock()
+		if !retry.next.IsZero() && time.Now().Before(retry.next) {
+			continue
+		}
 		bctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 		res, err := s.docker(bctx, "exec", name, "python3", "/desktop_supervisor.py", "boot")
 		cancel()
-		// Once per start either way: an old image without boot would fail
-		// every pass, and opening the desktop still runs ensure.
 		w.mu.Lock()
-		w.seen[name] = started
+		if err == nil || bootUnsupported(err.Error()+res) {
+			w.seen[name] = started
+			delete(w.retries, name)
+		} else {
+			retry.attempts++
+			retry.next = time.Now().Add(bootRetryDelay(retry.attempts))
+			if w.retries == nil {
+				w.retries = map[string]bootRetry{}
+			}
+			w.retries[name] = retry
+		}
 		w.mu.Unlock()
 		if err != nil {
 			log.Printf("[desktopd] boot watch: %s boot failed: %v", name, err)
@@ -110,8 +130,29 @@ func (w *bootWatcher) once(ctx context.Context, s *Service) []string {
 			delete(w.seen, name)
 		}
 	}
+	for name := range w.retries {
+		if !alive[name] {
+			delete(w.retries, name)
+		}
+	}
 	w.mu.Unlock()
 	return booted
+}
+
+func bootRetryDelay(attempts int) time.Duration {
+	delay := 20 * time.Second
+	for i := 1; i < attempts && delay < 5*time.Minute; i++ {
+		delay *= 2
+	}
+	if delay > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return delay
+}
+
+func bootUnsupported(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "usage: desktop_supervisor.py ensure") || strings.Contains(text, "unrecognized arguments") || strings.Contains(text, "invalid choice")
 }
 
 func lastLine(text string) string {

@@ -76,19 +76,27 @@ func (s *Service) computerOp(ctx context.Context, spec Spec, force bool, action 
 }
 
 // busyBots asks the supervisor which bot screens are working or taken over.
-// A stopped container or an older supervisor reports none.
-func (s *Service) busyBots(ctx context.Context, name string) []string {
+func (s *Service) busyBots(ctx context.Context, name string) ([]string, error) {
 	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "bots-busy")
 	if err != nil {
-		return nil
+		if botsBusyUnsupported(err.Error() + out) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: bot busy status: %v", ErrDocker, err)
 	}
 	var status struct {
 		Busy []string `json:"busy"`
 	}
-	if line := statusLine(out); line == "" || json.Unmarshal([]byte(line), &status) != nil {
-		return nil
+	line := statusLine(out)
+	if line == "" || json.Unmarshal([]byte(line), &status) != nil {
+		return nil, fmt.Errorf("%w: bot busy status is unreadable", ErrDocker)
 	}
-	return status.Busy
+	return status.Busy, nil
+}
+
+func botsBusyUnsupported(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "usage: desktop_supervisor.py ensure") || strings.Contains(text, "unrecognized arguments") || strings.Contains(text, "invalid choice")
 }
 
 // flushAllScreens writes every screen's website login back using the
@@ -118,8 +126,14 @@ func (s *Service) quiesce(ctx context.Context, name string, spec Spec, current c
 	if !current.Running {
 		return nil
 	}
-	if busy := s.busyBots(ctx, name); len(busy) > 0 && !force {
-		return fmt.Errorf("%w: %d bot screen(s) are working", ErrDesktopBusy, len(busy))
+	if !force {
+		busy, err := s.busyBots(ctx, name)
+		if err != nil {
+			return err
+		}
+		if len(busy) > 0 {
+			return fmt.Errorf("%w: %d bot screen(s) are working", ErrDesktopBusy, len(busy))
+		}
 	}
 	desktopGates.forget(spec.TenantID, spec.UserID)
 	s.flushAllScreens(ctx, name, spec)

@@ -78,6 +78,9 @@ func TestDesktopBotCommandCases(t *testing.T) {
 				if strings.Contains(joined, " display ") {
 					return `{"display":":21","running":true}`, nil
 				}
+				if strings.Contains(joined, " ensure ") {
+					return `{"display":":21","cdp_port":19020,"token":"0123456789abcdef0123456789abcdef"}`, nil
+				}
 				t.Fatalf("bot docker %v", args)
 				return "", nil
 			},
@@ -90,8 +93,8 @@ func TestDesktopBotCommandCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		botReq := commandPayload(t, botShells[0])
-		if botReq.Display != "" || strings.Contains(strings.Join(botShells[0], " "), "DISPLAY=") {
-			t.Fatalf("plain bash must not take a display: %+v %v", botReq, botShells[0])
+		if botReq.Display != ":21" || botReq.Sentinel != "" || strings.Contains(strings.Join(botShells[0], " "), "DISPLAY=") {
+			t.Fatalf("plain bash must inherit an open display without the sentinel: %+v %v", botReq, botShells[0])
 		}
 		if _, err := bot.bash(context.Background(), "tenant", "alice::desk::bot_1", "firefox", true); err != nil {
 			t.Fatal(err)

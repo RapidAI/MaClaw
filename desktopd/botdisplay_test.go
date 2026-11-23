@@ -146,6 +146,25 @@ func TestDesktopBodyIsNotReadBeforeAuthentication(t *testing.T) {
 	}
 }
 
+func TestOwnerStopRefusesWhenBotBusyStateIsUnknown(t *testing.T) {
+	var calls []string
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		line := strings.Join(args, " ")
+		calls = append(calls, line)
+		if strings.Contains(line, "bots-busy") {
+			return "", errors.New("exec timeout")
+		}
+		return "", nil
+	}}
+	svc.noteBotOwner(Spec{TenantID: "tenant", UserID: "alice"})
+	if _, err := svc.Stop(context.Background(), "tenant", "alice"); !errors.Is(err, ErrDocker) {
+		t.Fatalf("err=%v", err)
+	}
+	if strings.Contains(strings.Join(calls, "\n"), "stop --time") {
+		t.Fatal("owner stop stopped the container with unknown bot state")
+	}
+}
+
 func TestOwnerStopKeepsTheContainerWhileABotIsBusy(t *testing.T) {
 	var calls []string
 	svc := &Service{AdvertiseHost: "docker.example", Run: fakeBotDocker(&calls)}

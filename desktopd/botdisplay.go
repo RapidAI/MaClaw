@@ -140,28 +140,30 @@ func ownerID(spec Spec) string { return spec.TenantID + "\x00" + spec.UserID }
 
 func (s *Service) noteBotOwner(spec Spec) { s.botOwners.Store(ownerID(spec), true) }
 
-func (s *Service) stopOwnerOnlyWhileBotsBusy(ctx context.Context, name string, spec Spec) bool {
+func (s *Service) stopOwnerOnlyWhileBotsBusy(ctx context.Context, name string, spec Spec) (bool, error) {
 	if _, ok := s.botOwners.Load(ownerID(spec)); !ok {
-		return false
+		return false, nil
 	}
-	out, err := s.docker(ctx, "exec", name, "python3", "/desktop_supervisor.py", "bots-busy")
+	busy, err := s.busyBots(ctx, name)
 	if err != nil {
-		return false // stopped container or a supervisor without bots
+		if missingObject(err) || strings.Contains(strings.ToLower(err.Error()), "is not running") {
+			return false, nil
+		}
+		return false, err
 	}
-	var status struct {
-		Busy []string `json:"busy"`
-	}
-	if line := statusLine(out); line == "" || json.Unmarshal([]byte(line), &status) != nil || len(status.Busy) == 0 {
-		return false
+	if len(busy) == 0 {
+		return false, nil
 	}
 	key, err := desktop.UserKey(spec.TenantID, spec.UserID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	writeCtx, cancel := loginWriteContext(ctx)
 	defer cancel()
-	_, _ = s.docker(writeCtx, "exec", name, "python3", "/desktop_supervisor.py", "stop", key)
-	return true
+	if _, err := s.docker(writeCtx, "exec", name, "python3", "/desktop_supervisor.py", "stop", key); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // withBotID lets every /v1/desktops/* request name an isolated bot with a

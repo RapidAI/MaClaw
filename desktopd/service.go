@@ -426,7 +426,11 @@ func (s *Service) stopUnlocked(ctx context.Context, spec Spec) (Desktop, error) 
 		out.Image, out.Memory, out.CPUs, out.ShmSize = "", "", "", ""
 		return out, nil
 	}
-	if s.stopOwnerOnlyWhileBotsBusy(ctx, name, spec) {
+	ownerOnly, err := s.stopOwnerOnlyWhileBotsBusy(ctx, name, spec)
+	if err != nil {
+		return Desktop{}, err
+	}
+	if ownerOnly {
 		out := desktopOf(spec, name, "stopped")
 		out.Image, out.Memory, out.CPUs, out.ShmSize = "", "", "", ""
 		return out, nil
