@@ -397,12 +397,15 @@
   "vsTts": "Дуут уншлага (TTS)",
   "vsTtsSystem": "Системийн дуу хоолой",
   "vsDownloadKokoro": "Kokoro модель, дуу хоолойн багц татах",
+  "vsKokoroDownloading": "Kokoro модель болон хоолойн баг арын дэвсгэрт татаж байна…",
   "vsVoices": "Дуу хоолой",
   "vsAsr": "Дуун танилт",
   "vsAsrSystem": "Системийн танилт",
   "vsAsrLocal": "Локал SenseVoice",
   "vsDownloadSenseVoice": "SenseVoice танилтын модель татах",
+  "vsSenseVoiceDownloading": "SenseVoice модель арын дэвсгэрт татаж байна…",
   "vsSenseVoiceReady": "Модель бэлэн боллоо — системийн танилт боломжгүй үед автоматаар ашиглагдана",
+  "vsModelsReady": "Локал модель бэлэн — сүлжээгүй ч таних, унших ажиллана",
   "vsLocalNote": "Локал модель нь десктоп MaClaw-ынхтай ижил (Kokoro-82M / SenseVoice-small) тул татсаны дараа бүрэн офлайн ажиллана.",
   "rcTitle": "Алсын удирдлага",
   "rcManageDevices": "Төхөөрөмж, зөвшөөрөл",
@@ -607,6 +610,14 @@
   "chatAsrUnavailableDownloading": "Дуун танилт боломжгүй: локал модель татагдаж байна (~250MB). Дараа дахин оролдох эсвэл «Миний → Дуу хоолой»-с явцыг харна уу",
   "chatNotHeard": "Сонсож чадсангүй — дахин хэлнэ үү",
   "chatAsrFailed": "Дуун танилт амжилтгүй боллоо — дахин оролдоно уу",
+  "chatAsrFailedWith": "Дуу танихад алдаа гарлаа: {reason}",
+  "@chatAsrFailedWith": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
   "chatSupplementHint": "Жишээ нь: зөвхөн эхний 5 үр дүн авах",
   "chatSupplementAppend": "Нэмэх",
   "chatSupplementFailed": "Нэмж чадсангүй",

@@ -94,6 +94,10 @@ class VoiceAssets {
 
   static const ggufMagic = 0x46554747; // "GGUF" little-endian
 
+  /// Kokoro weight + every voice, or the SenseVoice GGUF. The sheet shows one
+  /// progress line for this, the way the launch task downloads it.
+  static Future<bool> modelsReady() async => await ttsReady() && await asrReady();
+
   static bool _validGguf(String path) {
     final f = File(path);
     RandomAccessFile? raf;

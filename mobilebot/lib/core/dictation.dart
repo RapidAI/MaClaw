@@ -409,7 +409,10 @@ class ComposerDictation {
       } else {
         toast(messages().notHeard);
       }
-    } on Object {
+    } on Object catch (error) {
+      // Say what the engine said: "识别失败" alone left a downloaded model
+      // that fails to load indistinguishable from a silent microphone.
+      final reason = '$error'.trim();
       if (!await engine.localAsrReady()) {
         // Weights were dropped by a failed verification. Retry the system
         // path only when the user chose local and we came from system.
@@ -424,7 +427,11 @@ class ComposerDictation {
         toast(messages().downloading);
         return;
       }
-      toast(messages().transcribeFailed);
+      toast(
+        reason.isEmpty
+            ? messages().transcribeFailed
+            : messages().transcribeFailedWith(reason),
+      );
     }
   }
 
@@ -533,6 +540,10 @@ class DictationMessages {
   final String downloading;
   final String notHeard;
   final String transcribeFailed;
+
+  /// Same failure, with the engine's own words so a broken model load is not
+  /// reported as a silent microphone.
+  final String Function(String reason) transcribeFailedWith;
   final String micPermission;
   final String micOpenFailed;
 
@@ -541,6 +552,7 @@ class DictationMessages {
     required this.downloading,
     required this.notHeard,
     required this.transcribeFailed,
+    required this.transcribeFailedWith,
     required this.micPermission,
     required this.micOpenFailed,
   });

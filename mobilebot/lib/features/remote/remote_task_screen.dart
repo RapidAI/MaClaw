@@ -144,6 +144,7 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
           downloading: S.chatAsrUnavailableDownloading,
           notHeard: S.chatNotHeard,
           transcribeFailed: S.chatAsrFailed,
+          transcribeFailedWith: S.chatAsrFailedWith,
           micPermission: S.chatMicPermissionDenied,
           micOpenFailed: S.chatMicOpenFailed,
         );

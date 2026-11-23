@@ -206,12 +206,15 @@
   "vsTts": "朗讀（TTS）",
   "vsTtsSystem": "系統音色",
   "vsDownloadKokoro": "下載 Kokoro 模型與音色包",
+  "vsKokoroDownloading": "Kokoro 模型與音色包背景下載中…",
   "vsVoices": "音色",
   "vsAsr": "語音識別",
   "vsAsrSystem": "系統識別",
   "vsAsrLocal": "本地 SenseVoice",
   "vsDownloadSenseVoice": "下載 SenseVoice 識別模型",
+  "vsSenseVoiceDownloading": "SenseVoice 辨識模型背景下載中…",
   "vsSenseVoiceReady": "模型已就緒——系統識別不可用時自動用它",
+  "vsModelsReady": "本地模型已就緒，斷網也能辨識和朗讀",
   "vsLocalNote": "本地模型與桌面端 MaClaw 相同（Kokoro-82M / SenseVoice-small），下載後完全離線可用。",
   "rcTitle": "遠程控制",
   "rcManageDevices": "設備與授權",
@@ -351,6 +354,14 @@
   "chatAsrUnavailableDownloading": "語音識別不可用：本地模型還在下載（約 250MB）。稍後再試，或到「我的 → 語音」看下載進度",
   "chatNotHeard": "沒聽清，請再試",
   "chatAsrFailed": "語音識別失敗，請重試",
+  "chatAsrFailedWith": "語音辨識失敗：{reason}",
+  "@chatAsrFailedWith": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
   "chatSupplementHint": "例如：只要前 5 條結果",
   "chatSupplementAppend": "追加",
   "chatSupplementFailed": "追加失敗",

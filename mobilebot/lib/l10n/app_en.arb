@@ -397,12 +397,15 @@
   "vsTts": "Read-out (TTS)",
   "vsTtsSystem": "System voices",
   "vsDownloadKokoro": "Download the Kokoro model and voice pack",
+  "vsKokoroDownloading": "Downloading Kokoro model and voices in the background…",
   "vsVoices": "Voice",
   "vsAsr": "Speech recognition",
   "vsAsrSystem": "System recognition",
   "vsAsrLocal": "Local SenseVoice",
   "vsDownloadSenseVoice": "Download the SenseVoice model",
+  "vsSenseVoiceDownloading": "Downloading the SenseVoice model in the background…",
   "vsSenseVoiceReady": "Model ready — used automatically when system recognition is unavailable",
+  "vsModelsReady": "Local models are ready — recognition and readback work offline",
   "vsLocalNote": "The local models are the same as the desktop MaClaw ones (Kokoro-82M / SenseVoice-small) and work fully offline once downloaded.",
   "rcTitle": "Remote control",
   "rcManageDevices": "Devices and grants",
@@ -607,6 +610,14 @@
   "chatAsrUnavailableDownloading": "Speech recognition unavailable: the local model is still downloading (~250 MB). Try again later, or check progress in Me -> Voice",
   "chatNotHeard": "Didn't catch that, please try again",
   "chatAsrFailed": "Speech recognition failed, please retry",
+  "chatAsrFailedWith": "Speech recognition failed: {reason}",
+  "@chatAsrFailedWith": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
   "chatSupplementHint": "e.g. only the first 5 results",
   "chatSupplementAppend": "Append",
   "chatSupplementFailed": "Failed to append",

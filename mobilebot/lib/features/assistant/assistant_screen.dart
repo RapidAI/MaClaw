@@ -749,7 +749,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       } else {
         _toast(S.chatNotHeard);
       }
-    } on Object {
+    } on Object catch (error) {
       if (!await engine.localAsrReady()) {
         // 权重校验/加载失败：文件已丢弃。选了本地才再试系统，和 Bot 输入框
         // 同一条件。系统路径失败后进来的调用方不再开麦。
@@ -766,7 +766,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         _toast(S.chatAsrUnavailableDownloading);
         return;
       }
-      _toast(S.chatAsrFailed);
+      // 带上引擎原话：模型已下载却加载失败时，「识别失败」和「没听清」分不清。
+      final reason = '$error'.trim();
+      _toast(
+        reason.isEmpty ? S.chatAsrFailed : S.chatAsrFailedWith(reason),
+      );
     }
   }
 

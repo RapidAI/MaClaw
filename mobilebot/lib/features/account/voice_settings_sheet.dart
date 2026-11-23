@@ -1,6 +1,8 @@
 /// 语音设置 — 朗读音色，以及一段「语音识别」（系统识别 / 本地 SenseVoice）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -23,6 +25,7 @@ class VoiceSettingsSheet extends ConsumerStatefulWidget {
 class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
   bool _ttsReady = false;
   bool _asrReady = false;
+  bool _modelsReady = false;
   String _stage = '';
   double _progress = -1;
   String _error = '';
@@ -46,6 +49,17 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
     super.initState();
     _load();
     _engine.downloadProgress.addListener(_onEngineProgress);
+    // Models are a background job, not a button: a missing set starts here
+    // too, in case the launch task has not run yet.
+    unawaited(_ensureModels());
+  }
+
+  /// Idempotent: the engine dedupes with the launch task, so opening the
+  /// sheet never starts a second download of the same files.
+  Future<void> _ensureModels() async {
+    if (!NativeVoice.usable) return;
+    await _engine.autoEnsure(hubBase: _hubBase);
+    if (mounted) await _load();
   }
 
   @override
@@ -86,6 +100,7 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
     setState(() {
       _ttsReady = t;
       _asrReady = a;
+      _modelsReady = t && a;
       _ttsEngine = e.ttsEngine;
       _asrEngine = e.asrEngine;
       _voice = e.ttsVoice;
@@ -93,6 +108,35 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
   }
 
   String? get _hubBase => ref.read(sessionProvider).active?.hubUrl;
+
+  /// One line for a model that is still coming: the download runs in the
+  /// background, so the sheet shows progress and nothing to press.
+  Widget _modelStatus(
+    ThemeData theme, {
+    required bool ready,
+    required String label,
+  }) {
+    final scheme = theme.colorScheme;
+    return Row(
+      children: [
+        Icon(
+          ready ? Icons.check_circle_outline : Icons.download_outlined,
+          size: 14,
+          color: ready ? scheme.primary : scheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: AppSpacing.xs + 2),
+        Expanded(
+          child: Text(
+            label,
+            key: ValueKey(ready ? 'vs-model-ready' : 'vs-model-downloading'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   /// The local engine is a native library, not a downloadable asset. When it
   /// is absent from the build, say so instead of offering a download that
@@ -109,64 +153,6 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
         color: theme.colorScheme.onSurfaceVariant,
       ),
     );
-  }
-
-  Future<void> _downloadTts() async {
-    setState(() {
-      _stage = '';
-      _progress = 0;
-      _error = '';
-    });
-    try {
-      await _engine.assets.ensureAll(
-        hubBase: _hubBase,
-        onProgress: (s, p) {
-          if (mounted) {
-            setState(() {
-              _stage = s;
-              _progress = p;
-            });
-          }
-        },
-      );
-      await _load();
-    } on Object catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = '$e';
-          _progress = -1;
-        });
-      }
-    }
-  }
-
-  Future<void> _downloadAsr() async {
-    setState(() {
-      _stage = '';
-      _progress = 0;
-      _error = '';
-    });
-    try {
-      await _engine.assets.ensureAll(
-        hubBase: _hubBase,
-        onProgress: (s, p) {
-          if (mounted) {
-            setState(() {
-              _stage = s;
-              _progress = p;
-            });
-          }
-        },
-      );
-      await _load();
-    } on Object catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = '$e';
-          _progress = -1;
-        });
-      }
-    }
   }
 
   @override
@@ -228,10 +214,10 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
             if (!NativeVoice.usable)
               _engineMissingNote(theme)
             else if (!_ttsReady)
-              OutlinedButton.icon(
-                onPressed: busy ? null : _downloadTts,
-                icon: const Icon(Icons.download, size: 16),
-                label: Text(context.S.vsDownloadKokoro),
+              _modelStatus(
+                theme,
+                ready: false,
+                label: context.S.vsKokoroDownloading,
               )
             else if (NativeVoice.usable) ...[
               Text(context.S.vsVoices, style: theme.textTheme.labelMedium),
@@ -298,10 +284,10 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
               // local model, try again later" forever).
               _engineMissingNote(theme)
             else if (!_asrReady)
-              OutlinedButton.icon(
-                onPressed: busy ? null : _downloadAsr,
-                icon: const Icon(Icons.download, size: 16),
-                label: Text(context.S.vsDownloadSenseVoice),
+              _modelStatus(
+                theme,
+                ready: false,
+                label: context.S.vsSenseVoiceDownloading,
               )
             else if (NativeVoice.usable)
               Text(
@@ -315,6 +301,19 @@ class _VoiceSheetState extends ConsumerState<VoiceSettingsSheet> {
               ),
             ),
           ],
+          // Downloads run in the background; this is the only progress the
+          // sheet shows, plus one line when everything is ready.
+          if (_progress < 0 && _modelsReady)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: _modelStatus(
+                  theme,
+                  ready: true,
+                  label: context.S.vsModelsReady,
+                ),
+              ),
+            ),
           if (_progress >= 0 && _progress < 1)
             Card(
               child: Padding(
