@@ -647,3 +647,35 @@ func TestResponsesStreamBackfillDoesNotBorrowNeighbourWhenCallIDMisses(t *testin
 		t.Fatalf("blank call id borrowed a named neighbour: %q", items[1].name)
 	}
 }
+
+func TestResponsesStreamArgumentDeltaWithoutIndexDoesNotClobberNeighbour(t *testing.T) {
+	items := map[int]*responsesStreamItem{
+		0: {itemType: "function_call", itemID: "fc_named", callID: "call_named", name: "read_file"},
+	}
+	item := responsesStreamItemForEvent(items, 0, false, "fc_other")
+	item.args.WriteString(`{"path":"b.go"}`)
+	if items[0].name != "read_file" || items[0].args.Len() != 0 {
+		t.Fatalf("missing output_index wrote onto the neighbour: %#v args=%q", items[0], items[0].args.String())
+	}
+	if item.itemID != "fc_other" || item.args.String() != `{"path":"b.go"}` {
+		t.Fatalf("unindexed delta was not parked on its own item: %#v", item)
+	}
+}
+
+func TestResponsesStreamCompletedWithoutIndexKeepsSingleCallName(t *testing.T) {
+	items := map[int]*responsesStreamItem{
+		3: {itemType: "function_call", itemID: "fc_1"},
+	}
+	items[3].args.WriteString(`{"path":"a.go"}`)
+	snapshot := map[int]*responsesStreamItem{
+		-1: {itemType: "function_call", itemID: "fc_1", callID: "call_1", name: "read_file"},
+	}
+	slot := responsesStreamSnapshotSlot(items, -1, snapshot[-1], 1)
+	items[slot] = mergeResponsesStreamToolItem(items[slot], snapshot[-1])
+	if items[3].name != "read_file" || items[3].callID != "call_1" {
+		t.Fatalf("single call was not named from the id-matched snapshot: %#v", items[3])
+	}
+	if _, collided := items[-1]; collided {
+		t.Fatal("snapshot occupied a second slot")
+	}
+}

@@ -26,6 +26,9 @@ type responsesAPIOutputItem struct {
 	CallID    string                    `json:"call_id,omitempty"`
 	Name      string                    `json:"name,omitempty"`
 	Arguments string                    `json:"arguments,omitempty"`
+	// ID is the provider item identity (fc_...), distinct from call_id. Stream
+	// argument events address the item by this id when output_index is omitted.
+	ID string `json:"id,omitempty"`
 	// OutputIndex is the position the provider gave this item in the stream.
 	// Stream events address items by output_index, but response.output can
 	// interleave reasoning and message items, so slice position is not that

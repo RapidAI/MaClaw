@@ -23,6 +23,7 @@ const responsesStreamMaxEventBytes = 256 * 1024
 
 type responsesStreamItem struct {
 	itemType string
+	itemID   string
 	callID   string
 	name     string
 	args     strings.Builder
@@ -165,13 +166,16 @@ func DoResponsesAPIRequestStreamWithOptions(
 		case "response.output_item.added":
 			var added struct {
 				OutputIndex int                    `json:"output_index"`
+				ItemID      string                 `json:"item_id"`
 				Item        map[string]interface{} `json:"item"`
 			}
-			if json.Unmarshal([]byte(payload), &added) != nil {
+			rawAdded := map[string]json.RawMessage{}
+			if json.Unmarshal([]byte(payload), &added) != nil || json.Unmarshal([]byte(payload), &rawAdded) != nil {
 				continue
 			}
 			item := &responsesStreamItem{}
 			item.itemType, _ = added.Item["type"].(string)
+			item.itemID = firstResponsesStreamText(added.ItemID, stringField(added.Item, "id"))
 			item.callID, _ = added.Item["call_id"].(string)
 			item.name, _ = added.Item["name"].(string)
 			if args, _ := added.Item["arguments"].(string); args != "" {
@@ -180,7 +184,11 @@ func DoResponsesAPIRequestStreamWithOptions(
 				}
 				item.args.WriteString(args)
 			}
-			items[added.OutputIndex] = mergeResponsesStreamToolItem(items[added.OutputIndex], item)
+			// A later added event can reuse output_index 0 when the provider
+			// omitted it. Do not write that name onto the neighbour that
+			// already lives at 0 unless the item id says they are the same call.
+			_, indexPresent := rawAdded["output_index"]
+			placeResponsesStreamItem(items, added.OutputIndex, indexPresent, item)
 
 		case "response.output_text.delta":
 			var delta struct {
@@ -232,16 +240,17 @@ func DoResponsesAPIRequestStreamWithOptions(
 		case "response.function_call_arguments.delta":
 			var delta struct {
 				Delta       string `json:"delta"`
+				ItemID      string `json:"item_id"`
 				OutputIndex int    `json:"output_index"`
 			}
-			if json.Unmarshal([]byte(payload), &delta) != nil || delta.Delta == "" {
+			rawDelta := map[string]json.RawMessage{}
+			if json.Unmarshal([]byte(payload), &delta) != nil || json.Unmarshal([]byte(payload), &rawDelta) != nil || delta.Delta == "" {
 				continue
 			}
-			item := items[delta.OutputIndex]
-			if item == nil {
-				item = &responsesStreamItem{itemType: "function_call"}
-				items[delta.OutputIndex] = item
-			}
+			_, indexPresent := rawDelta["output_index"]
+			item := responsesStreamItemForEvent(items, delta.OutputIndex, indexPresent, delta.ItemID)
+			item.itemType = firstResponsesStreamText(item.itemType, "function_call")
+			item.itemID = firstResponsesStreamText(item.itemID, delta.ItemID)
 			item.args.WriteString(delta.Delta)
 			if item.args.Len() > MaxToolArgumentsBytes {
 				return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", item.name, item.args.Len(), MaxToolArgumentsBytes)
@@ -250,14 +259,15 @@ func DoResponsesAPIRequestStreamWithOptions(
 		case "response.function_call_arguments.done":
 			var done struct {
 				Arguments   string `json:"arguments"`
+				ItemID      string `json:"item_id"`
 				OutputIndex int    `json:"output_index"`
 			}
-			if json.Unmarshal([]byte(payload), &done) == nil && done.Arguments != "" {
-				item := items[done.OutputIndex]
-				if item == nil {
-					item = &responsesStreamItem{itemType: "function_call"}
-					items[done.OutputIndex] = item
-				}
+			rawDone := map[string]json.RawMessage{}
+			if json.Unmarshal([]byte(payload), &done) == nil && json.Unmarshal([]byte(payload), &rawDone) == nil && done.Arguments != "" {
+				_, indexPresent := rawDone["output_index"]
+				item := responsesStreamItemForEvent(items, done.OutputIndex, indexPresent, done.ItemID)
+				item.itemType = firstResponsesStreamText(item.itemType, "function_call")
+				item.itemID = firstResponsesStreamText(item.itemID, done.ItemID)
 				if len(done.Arguments) > MaxToolArgumentsBytes {
 					return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, len(done.Arguments))
 				}
@@ -267,20 +277,21 @@ func DoResponsesAPIRequestStreamWithOptions(
 		case "response.output_item.done":
 			var done struct {
 				OutputIndex int                    `json:"output_index"`
+				ItemID      string                 `json:"item_id"`
 				Item        responsesAPIOutputItem `json:"item"`
 			}
-			if json.Unmarshal([]byte(payload), &done) == nil {
+			rawItemDone := map[string]json.RawMessage{}
+			if json.Unmarshal([]byte(payload), &done) == nil && json.Unmarshal([]byte(payload), &rawItemDone) == nil {
 				emitReasoningSummary(responsesStreamDisplaySummary(done.Item))
 				if done.Item.Type == "message" {
 					emitTextSummary(responsesStreamMessageText(done.Item))
 				}
 				if done.Item.Type == "function_call" {
-					item := items[done.OutputIndex]
-					if item == nil {
-						item = &responsesStreamItem{}
-						items[done.OutputIndex] = item
-					}
+					_, indexPresent := rawItemDone["output_index"]
+					itemID := firstResponsesStreamText(done.ItemID, done.Item.ID)
+					item := responsesStreamItemForEvent(items, done.OutputIndex, indexPresent, itemID)
 					item.itemType = firstResponsesStreamText(item.itemType, done.Item.Type)
+					item.itemID = firstResponsesStreamText(item.itemID, itemID)
 					item.callID = firstResponsesStreamText(item.callID, done.Item.CallID)
 					item.name = firstResponsesStreamText(item.name, done.Item.Name)
 					if done.Item.Arguments != "" {
@@ -308,10 +319,12 @@ func DoResponsesAPIRequestStreamWithOptions(
 			for _, text := range responsesCompletedStreamText(payload) {
 				emitTextSummary(text)
 			}
-			for outputIndex, item := range responsesCompletedStreamToolCalls(payload) {
+			snapshot := responsesCompletedStreamToolCalls(payload)
+			for outputIndex, item := range snapshot {
 				if item.args.Len() > MaxToolArgumentsBytes {
 					return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, item.args.Len())
 				}
+				outputIndex = responsesStreamSnapshotSlot(items, outputIndex, item, len(snapshot))
 				items[outputIndex] = mergeResponsesStreamToolItem(items[outputIndex], item)
 			}
 			// A provider can send function_call_arguments.* without the matching
@@ -319,7 +332,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 			// arguments but no name, and every such item reaches the loop as a
 			// nameless tool call, which the loop drops as a broken batch. The
 			// final snapshot still names them, so fill those names back in.
-			backfillResponsesStreamToolNames(items, responsesCompletedStreamToolCalls(payload))
+			backfillResponsesStreamToolNames(items, snapshot)
 			goto completed
 		case "response.failed", "error":
 			// Keep whatever text/reasoning/tool calls were accumulated before
@@ -455,7 +468,7 @@ func responsesCompletedStreamToolCalls(payload string) map[int]*responsesStreamI
 		if !strings.EqualFold(strings.TrimSpace(item.Type), "function_call") {
 			continue
 		}
-		streamItem := &responsesStreamItem{itemType: item.Type, callID: item.CallID, name: item.Name}
+		streamItem := &responsesStreamItem{itemType: item.Type, itemID: item.ID, callID: item.CallID, name: item.Name}
 		streamItem.args.WriteString(item.Arguments)
 		// The provider's own output_index is the index the delta events used.
 		// Without it, slice position is the only candidate, but every reasoning
@@ -463,6 +476,10 @@ func responsesCompletedStreamToolCalls(payload string) map[int]*responsesStreamI
 		index := position
 		if item.OutputIndex != nil {
 			index = *item.OutputIndex
+		} else if strings.TrimSpace(item.ID) != "" {
+			// A missing output_index must not occupy a sibling's provider index.
+			// The merge step relocates this item by id.
+			index = -1 - position
 		}
 		items[index] = streamItem
 	}
@@ -470,17 +487,18 @@ func responsesCompletedStreamToolCalls(payload string) map[int]*responsesStreamI
 }
 
 // backfillResponsesStreamToolNames gives a tool item the name the final
-// snapshot carries when the stream never named it. It matches on call id
-// first because that is the provider's own identity for the call. Position is
-// only a fallback when both sides omit call ids: a known id that the snapshot
-// does not contain must not borrow the neighbour sitting at the same index.
-// An item that already has a name keeps it, and a snapshot without a name
-// never clears one.
+// snapshot carries when the stream never named it. It matches on item id,
+// then call id, because those are the provider's own identities. Position is
+// only a fallback when both sides have exactly one item and both omit ids:
+// a known id that the snapshot does not contain must not borrow the neighbour
+// sitting at the same index. An item that already has a name keeps it, and a
+// snapshot without a name never clears one.
 func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapshot map[int]*responsesStreamItem) {
 	if len(items) == 0 || len(snapshot) == 0 {
 		return
 	}
 	byCallID := make(map[string]*responsesStreamItem, len(snapshot))
+	byItemID := make(map[string]*responsesStreamItem, len(snapshot))
 	for _, item := range snapshot {
 		if item == nil {
 			continue
@@ -488,17 +506,29 @@ func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapsh
 		if id := strings.TrimSpace(item.callID); id != "" {
 			byCallID[id] = item
 		}
+		if id := strings.TrimSpace(item.itemID); id != "" {
+			byItemID[id] = item
+		}
 	}
 	for index, item := range items {
 		if item == nil || strings.TrimSpace(item.name) != "" {
 			continue
 		}
 		var named *responsesStreamItem
-		id := strings.TrimSpace(item.callID)
-		if id != "" {
-			named = byCallID[id]
-		} else if candidate := snapshot[index]; candidate != nil && strings.TrimSpace(candidate.callID) == "" {
-			named = candidate
+		if id := strings.TrimSpace(item.itemID); id != "" {
+			named = byItemID[id]
+		}
+		if named == nil {
+			if id := strings.TrimSpace(item.callID); id != "" {
+				named = byCallID[id]
+			}
+		}
+		// Position is only safe when both sides have exactly one unnamed item.
+		// Several nameless calls must not borrow the neighbour at the same index.
+		if named == nil && strings.TrimSpace(item.callID) == "" && strings.TrimSpace(item.itemID) == "" && responsesStreamUnnamedCount(items) == 1 && responsesStreamUnnamedCount(snapshot) == 1 {
+			if candidate := snapshot[index]; candidate != nil && strings.TrimSpace(candidate.callID) == "" && strings.TrimSpace(candidate.itemID) == "" {
+				named = candidate
+			}
 		}
 		if named == nil {
 			continue
@@ -509,8 +539,12 @@ func backfillResponsesStreamToolNames(items map[int]*responsesStreamItem, snapsh
 		if item.callID == "" {
 			item.callID = named.callID
 		}
+		if item.itemID == "" {
+			item.itemID = named.itemID
+		}
 	}
 }
+
 // compatible provider omitted from earlier stream events. It must not replace
 // already-received delta arguments with an incomplete final snapshot.
 func mergeResponsesStreamToolItem(existing, completed *responsesStreamItem) *responsesStreamItem {
@@ -521,10 +555,194 @@ func mergeResponsesStreamToolItem(existing, completed *responsesStreamItem) *res
 		return existing
 	}
 	existing.itemType = firstResponsesStreamText(existing.itemType, completed.itemType)
+	existing.itemID = firstResponsesStreamText(existing.itemID, completed.itemID)
 	existing.callID = firstResponsesStreamText(existing.callID, completed.callID)
 	existing.name = firstResponsesStreamText(existing.name, completed.name)
 	mergeResponsesStreamToolArguments(existing, completed.args.String())
 	return existing
+}
+
+// placeResponsesStreamItem stores an added item without letting a missing
+// output_index (the zero value) overwrite a different call already at 0.
+func placeResponsesStreamItem(items map[int]*responsesStreamItem, outputIndex int, indexPresent bool, incoming *responsesStreamItem) {
+	if incoming == nil {
+		return
+	}
+	if idx, existing := responsesStreamFindByItemID(items, incoming.itemID); existing != nil {
+		items[idx] = mergeResponsesStreamToolItem(existing, incoming)
+		return
+	}
+	if !indexPresent {
+		if idx, existing := responsesStreamUniqueUnkeyed(items); existing != nil {
+			items[idx] = mergeResponsesStreamToolItem(existing, incoming)
+			return
+		}
+		items[responsesStreamUnusedIndex(items)] = incoming
+		return
+	}
+	current := items[outputIndex]
+	if current != nil && !responsesStreamSameIdentity(current, incoming) {
+		items[responsesStreamUnusedIndex(items)] = incoming
+		return
+	}
+	items[outputIndex] = mergeResponsesStreamToolItem(current, incoming)
+}
+
+// responsesStreamItemForEvent returns the accumulator for an argument event.
+// A missing output_index must not create or extend the item at index 0 when
+// that slot already belongs to another call. Events that also omit item_id
+// share the single unkeyed accumulator; they cannot be demultiplexed.
+func responsesStreamItemForEvent(items map[int]*responsesStreamItem, outputIndex int, indexPresent bool, itemID string) *responsesStreamItem {
+	if _, existing := responsesStreamFindByItemID(items, itemID); existing != nil {
+		existing.itemID = firstResponsesStreamText(existing.itemID, itemID)
+		return existing
+	}
+	if indexPresent {
+		current := items[outputIndex]
+		if current != nil && strings.TrimSpace(itemID) != "" && strings.TrimSpace(current.itemID) != "" && strings.TrimSpace(current.itemID) != strings.TrimSpace(itemID) {
+			created := &responsesStreamItem{itemID: strings.TrimSpace(itemID)}
+			items[responsesStreamUnusedIndex(items)] = created
+			return created
+		}
+		if current == nil {
+			current = &responsesStreamItem{}
+			items[outputIndex] = current
+		}
+		return current
+	}
+	if _, existing := responsesStreamUniqueUnkeyed(items); existing != nil {
+		return existing
+	}
+	created := &responsesStreamItem{itemID: strings.TrimSpace(itemID)}
+	items[responsesStreamUnusedIndex(items)] = created
+	return created
+}
+
+// responsesStreamSnapshotSlot is the live slot a completed item belongs to.
+// Item id wins over a slice position that only coincides with another call.
+func responsesStreamSnapshotSlot(items map[int]*responsesStreamItem, index int, incoming *responsesStreamItem, snapshotCalls int) int {
+	if incoming == nil {
+		return index
+	}
+	if idx, existing := responsesStreamFindByItemID(items, incoming.itemID); existing != nil {
+		return idx
+	}
+	if idx, existing := responsesStreamFindByCallID(items, incoming.callID); existing != nil {
+		return idx
+	}
+	// One live call and one snapshot call are the same call even when the
+	// provider omitted both indexes. Two calls must not share that guess.
+	if snapshotCalls == 1 {
+		if count, idx, _ := responsesStreamFunctionCalls(items); count == 1 {
+			return idx
+		}
+	}
+	current := items[index]
+	if current == nil {
+		return index
+	}
+	if id := strings.TrimSpace(incoming.itemID); id != "" && strings.TrimSpace(current.itemID) == id {
+		return index
+	}
+	if id := strings.TrimSpace(incoming.callID); id != "" && strings.TrimSpace(current.callID) == id {
+		return index
+	}
+	// Two id-less items share a slot only when the stream has a single call.
+	if strings.TrimSpace(incoming.itemID) == "" && strings.TrimSpace(incoming.callID) == "" && strings.TrimSpace(current.itemID) == "" && strings.TrimSpace(current.callID) == "" && len(items) == 1 {
+		return index
+	}
+	return responsesStreamUnusedIndex(items)
+}
+
+func responsesStreamFindByItemID(items map[int]*responsesStreamItem, itemID string) (int, *responsesStreamItem) {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return 0, nil
+	}
+	for index, item := range items {
+		if item != nil && strings.TrimSpace(item.itemID) == itemID {
+			return index, item
+		}
+	}
+	return 0, nil
+}
+
+func responsesStreamFindByCallID(items map[int]*responsesStreamItem, callID string) (int, *responsesStreamItem) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return 0, nil
+	}
+	for index, item := range items {
+		if item != nil && strings.TrimSpace(item.callID) == callID {
+			return index, item
+		}
+	}
+	return 0, nil
+}
+
+func responsesStreamSameIdentity(current, incoming *responsesStreamItem) bool {
+	if current == nil || incoming == nil {
+		return false
+	}
+	if id := strings.TrimSpace(incoming.itemID); id != "" && strings.TrimSpace(current.itemID) != "" {
+		return strings.TrimSpace(current.itemID) == id
+	}
+	if id := strings.TrimSpace(incoming.callID); id != "" && strings.TrimSpace(current.callID) != "" {
+		return strings.TrimSpace(current.callID) == id
+	}
+	return strings.TrimSpace(current.itemID) == "" && strings.TrimSpace(incoming.itemID) == "" && strings.TrimSpace(current.callID) == "" && strings.TrimSpace(incoming.callID) == ""
+}
+
+func responsesStreamUniqueUnkeyed(items map[int]*responsesStreamItem) (int, *responsesStreamItem) {
+	foundIndex := 0
+	var found *responsesStreamItem
+	for index, item := range items {
+		if item == nil || strings.TrimSpace(item.itemID) != "" || strings.TrimSpace(item.callID) != "" {
+			continue
+		}
+		if found != nil {
+			return 0, nil
+		}
+		foundIndex = index
+		found = item
+	}
+	return foundIndex, found
+}
+
+func responsesStreamFunctionCalls(items map[int]*responsesStreamItem) (int, int, *responsesStreamItem) {
+	count := 0
+	index := 0
+	var found *responsesStreamItem
+	for i, item := range items {
+		itemType := strings.TrimSpace(item.itemType)
+		if item == nil || (itemType != "" && !strings.EqualFold(itemType, "function_call")) {
+			continue
+		}
+		count++
+		index = i
+		found = item
+	}
+	return count, index, found
+}
+
+func responsesStreamUnnamedCount(items map[int]*responsesStreamItem) int {
+	count := 0
+	for _, item := range items {
+		if item != nil && strings.TrimSpace(item.name) == "" {
+			count++
+		}
+	}
+	return count
+}
+
+func responsesStreamUnusedIndex(items map[int]*responsesStreamItem) int {
+	index := 0
+	for {
+		if _, taken := items[index]; !taken {
+			return index
+		}
+		index++
+	}
 }
 
 // mergeResponsesStreamToolArguments accepts a final provider snapshot only

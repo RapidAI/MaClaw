@@ -871,7 +871,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		}
 		if result.HardExit {
 			status = TaskExecFailed
-			errMsg = "模型连续返回空响应，任务中断"
+			errMsg = hardExitSubAgentError(errMsg, result.Text)
 		}
 	}
 
@@ -7395,6 +7395,20 @@ func codingSubAgentStopFailure(result agent.LoopResult, openItems []codingAgentT
 		msg += "\n" + note
 	}
 	return true, TaskExecFailed, msg
+}
+
+// hardExitSubAgentError keeps a cause the loop already named. The empty
+// sentence is only for a hard exit that carried neither an error nor text,
+// which is the consecutive-empty stop. Other hard exits (same-tool failure,
+// no-progress) must not be rewritten as that sentence.
+func hardExitSubAgentError(errMsg, text string) string {
+	if strings.TrimSpace(errMsg) != "" {
+		return errMsg
+	}
+	if text = strings.TrimSpace(text); text != "" {
+		return compactSubAgentErrorSummary(text)
+	}
+	return "模型连续返回空响应，任务中断"
 }
 
 func compactSubAgentErrorSummary(errMsg string) string {
@@ -18604,7 +18618,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		}
 		if result.HardExit {
 			status = TaskExecFailed
-			errMsg = "模型连续返回空响应，任务中断"
+			errMsg = hardExitSubAgentError(errMsg, result.Text)
 		}
 	}
 	summary := compactSubAgentModelSummary(result.Text)

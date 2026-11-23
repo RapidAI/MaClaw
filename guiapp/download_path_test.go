@@ -61,6 +61,9 @@ func TestIsImportantLogLineKeepsDownloadWorkdirDiagnostics(t *testing.T) {
 		`[embedding] head asset fetch failed kind=intent_head file=head_mlp_qwen3go_r7.json err=timeout`,
 		`[embedding] head asset ready path=C:\Users\me\.maclaw\models\intent_heads\head_mlp_qwen3go_r7.json`,
 		`[heads] diagnostics-cleared: intent_head pinned=head.json@abc disk=missing attached=no`,
+		`[agent-loop] empty response #1 (iteration=9, lastTool=web_fetch, outcome=1, snippet_len=0)`,
+		`[agent-loop] hard exit: 2 consecutive empty responses nameless=true`,
+		`[agent-loop] dropped 1 tool call(s) with an empty function name; remaining=0`,
 	}
 	for _, line := range must {
 		if !isImportantLogLine(line) {

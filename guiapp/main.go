@@ -857,6 +857,10 @@ func isImportantLogLine(line string) bool {
 	// only cause record is this log line. Dropping it leaves a rejected turn
 	// with no on-disk explanation.
 	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning",
+		// Empty-response and nameless-tool exits are the only record of
+		// BR-20261123-600B21AFE72D. log_detail off used to drop every
+		// [agent-loop] line, so the user-facing "连续空响应" had no cause.
+		"[agent-loop]",
 		"[semantic-routing] plan rejected",
 		"[bug-report]",
 		"[skill-runner]", "[skill-scanner]", "[lansenger]",
