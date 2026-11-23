@@ -92,14 +92,34 @@ class NativeVoice {
     }
     final lib = _tryOpen();
     if (lib == null) {
-      _probeError = lastOpenError.trim().isEmpty
-          ? 'library not found'
-          : lastOpenError.trim();
+      final message = lastOpenError.trim();
+      // The c-shared build also links libc++_shared.so, which a plain APK
+      // does not carry unless the build script copied it in. A .so installed
+      // later into the app's lib dir makes the next open work, so retry once
+      // and say plainly what is missing when it still fails.
+      final missing = RegExp(r'library "([^"]+)" not found').firstMatch(message);
+      if (missing != null) {
+        _openTried = false;
+        _lib = null;
+        if (_tryOpen() == null) {
+          _probeError =
+              'dlopen failed: ${missing.group(1)} not found '
+              '(bundled runtime library missing from the APK)';
+          return _probeError;
+        }
+      } else {
+        _probeError = message.isEmpty ? 'library not found' : message;
+        return _probeError;
+      }
+    }
+    final opened = _lib;
+    if (opened == null) {
+      _probeError = 'library not found';
       return _probeError;
     }
     for (final name in _requiredExports) {
       try {
-        lib.lookup(name);
+        opened.lookup(name);
       } on Object catch (e) {
         _probeError = 'missing export $name: $e';
         return _probeError;

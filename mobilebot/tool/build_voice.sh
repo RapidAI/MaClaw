@@ -28,4 +28,16 @@ GOOS=android GOARCH=amd64 \
   CC="$BIN/x86_64-linux-android21-clang" CXX="$BIN/x86_64-linux-android21-clang++" \
   go build -buildmode=c-shared -o "$OUT/x86_64/libmaclaw_voice.so" ./mobilebot/native/voiceffi/
 echo "  x86_64 ok"
+
+# The c-shared build links libc++_shared.so; a plain APK does not ship it, so
+# dlopen fails and the app reports "no local engine". Copy it beside each ABI.
+for abi in arm64-v8a x86_64; do
+  src=$(find "$NDK/toolchains/llvm/prebuilt" -name libc++_shared.so -path "*$abi*" | head -1)
+  if [ -z "$src" ]; then
+    echo "libc++_shared.so for $abi not found in NDK $NDK" >&2
+    exit 1
+  fi
+  cp "$src" "$OUT/$abi/libc++_shared.so"
+  echo "  $abi libc++_shared.so"
+done
 echo "Built libmaclaw_voice.so for arm64-v8a x86_64"

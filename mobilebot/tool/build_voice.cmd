@@ -56,6 +56,16 @@ if "%1"=="arm" (set GOARCH=arm& set GOARM=7) else (set GOARCH=%1& set GOARM=)
 set "CC=%BIN%\%2" & set "CXX=%BIN%\%2++"
 go build -buildmode=c-shared -o "%OUT%\%3\libmaclaw_voice.so" ./mobilebot/native/voiceffi/ || exit /b 1
 echo   %3 ok
+REM The c-shared build links libc++_shared.so. A plain APK does not ship it,
+REM so dlopen fails and the app reports no local engine. Copy it beside the lib.
+set "CXXSRC="
+for /f "delims=" %%f in ('dir /b /s "%NDK%\toolchains\llvm\prebuilt\*\sysroot\usr\lib\%3\libc++_shared.so" 2^>nul') do if not defined CXXSRC set "CXXSRC=%%f"
+if not defined CXXSRC (
+  echo libc++_shared.so for %3 not found in %NDK%
+  exit /b 1
+)
+copy /y "%CXXSRC%" "%OUT%\%3\libc++_shared.so" >nul || exit /b 1
+echo   %3 libc++_shared.so
 goto :eof
 
 :fail
