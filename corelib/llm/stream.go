@@ -653,16 +653,21 @@ func mergeSSEUsage(prev, next *Usage) *Usage {
 	return &out
 }
 
-// sseStreamMaxLineBytes bounds one SSE line for the Chat Completions and
-// Anthropic readers, which scan physical lines rather than whole events.
-// A single provider line is not bounded by MaxToolArgumentsBytes: a tool call's
-// 	arguments are streamed as many deltas, but a gateway may also resend the
-// whole tool_calls array (or one complete arguments string) in a single data
-// line, and a reasoning snapshot can be large too. With 256 KiB those lines
-// failed the entire turn with "bufio.Scanner: token too long" and the agent
-// loop saw an empty response (BR-20261123-9FD249AF31B3). The Google and
-// Responses readers already allow 4 MiB per frame for the same reason.
-const sseStreamMaxLineBytes = 4 << 20
+// sseStreamMaxLineBytes bounds one SSE line the Chat Completions and
+// Anthropic readers keep. A gateway may resend a whole tool_calls array, or
+// a reasoning snapshot, in one physical line, so 256 KiB was too small.
+// 4 MiB matches the Google and Responses frame cap and covers about twenty
+// MaxToolArgumentsBytes (180 KiB) payloads plus JSON framing. It is a scan
+// window, not a turn limit: a longer line is skipped and later lines are
+// kept. Raising the window again would only move the failure, and a zero
+// advance on a full buffer is ErrTooLong, which drops every line still
+// waiting. The scanner grows this buffer only for a line that needs it.
+// Tests shrink it before the scanner is created.
+var sseStreamMaxLineBytes = 4 << 20
+
+// sseStreamLineTooLarge is the token Scan returns for a skipped physical
+// line. It is not a provider payload.
+const sseStreamLineTooLarge = "maclaw.sse_line_too_large"
 
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
@@ -696,11 +701,20 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	legacyFunctionCallSeen := false
 
 	scanner := bufio.NewScanner(body)
+	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
 	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
 	var lastPayload string
+	var skippedLine bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		if line == sseStreamLineTooLarge {
+			// One line that cannot fit is a cut, not a transport failure.
+			// Returning the prefix with an error makes the agent loop discard
+			// the deltas this scan already kept. Later lines may close the turn.
+			skippedLine = true
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -812,7 +826,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		}
 	}
 	streamErr := scanner.Err()
-	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !legacyFunctionCallSeen {
+	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !legacyFunctionCallSeen && !skippedLine {
 		return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
 	thinkFilter.Flush()
@@ -874,6 +888,9 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
 		finishReason = finish
 	}
+	if skippedLine {
+		finishReason = sseFinishAfterSkippedLine(finishReason, &msg)
+	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	response := &Response{
@@ -924,10 +941,16 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	var currentToolIdx int = -1
 
 	scanner := bufio.NewScanner(body)
+	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
 	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
+	var skippedLine bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		if line == sseStreamLineTooLarge {
+			skippedLine = true
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -1036,7 +1059,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 		}
 	}
 	streamErr := scanner.Err()
-	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 {
+	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !skippedLine {
 		return nil, fmt.Errorf("Anthropic SSE stream read: %w", streamErr)
 	}
 	contentFilter.Flush()
@@ -1068,6 +1091,9 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
 		finishReason = finish
 	}
+	if skippedLine {
+		finishReason = sseFinishAfterSkippedLine(finishReason, &msg)
+	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	response := &Response{
@@ -1079,6 +1105,116 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 		return response, fmt.Errorf("Anthropic SSE stream read: %w", streamErr)
 	}
 	return response, nil
+}
+
+
+// sseFinishAfterSkippedLine marks a cut only when a skipped line may have
+// removed part of a tool call. A provider finish_reason already says how the
+// turn ended. Complete JSON arguments must still execute: treating every
+// empty-argument call as truncated drops a call the provider closed.
+func sseFinishAfterSkippedLine(finishReason string, msg *Message) string {
+	if finishReason != "" || msg == nil {
+		return finishReason
+	}
+	for _, call := range msg.ToolCalls {
+		if !json.Valid([]byte(call.Function.Arguments)) {
+			return "length"
+		}
+	}
+	return finishReason
+}
+
+// sseLineSplitter skips one physical SSE line that does not fit in the scan
+// window, then resumes at the next line. A stateless split cannot: taking the
+// whole buffer drops every later line, and a zero advance on a full buffer is
+// ErrTooLong. One splitter per request, so concurrent streams do not share
+// the skip flag. The window is the largest token this splitter returns.
+type sseLineSplitter struct {
+	maxLine  int
+	skipping bool
+}
+
+func newSSELineSplitter(maxLine int) bufio.SplitFunc {
+	if maxLine < 1 {
+		maxLine = sseStreamMaxLineBytes
+	}
+	return (&sseLineSplitter{maxLine: maxLine}).split
+}
+
+func (s *sseLineSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
+	if s.skipping {
+		return s.skipOversized(data, atEOF)
+	}
+	return s.nextLine(data, atEOF)
+}
+
+func (s *sseLineSplitter) nextLine(data []byte, atEOF bool) (int, []byte, error) {
+	if advance, token, ok := sseDelimitedLine(data); ok {
+		return advance, token, nil
+	}
+	if len(data) >= s.maxLine {
+		s.skipping = true
+		advance, token, err := s.skipOversized(data, atEOF)
+		if token == nil && err == nil {
+			return advance, []byte(sseStreamLineTooLarge), nil
+		}
+		return advance, token, err
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), bytes.TrimRight(data, "\r\n"), nil
+	}
+	return 0, nil, nil
+}
+
+func (s *sseLineSplitter) skipOversized(data []byte, atEOF bool) (int, []byte, error) {
+	if advance, ok := sseLineEnd(data); ok {
+		s.skipping = false
+		return advance, nil, nil
+	}
+	if atEOF {
+		s.skipping = false
+		return len(data), nil, nil
+	}
+	if len(data) >= s.maxLine {
+		return sseDiscardKeepingBreak(data), nil, nil
+	}
+	return 0, nil, nil
+}
+
+func sseDelimitedLine(data []byte) (advance int, token []byte, ok bool) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, bytes.TrimRight(data[:i], "\r"), true
+	}
+	return 0, nil, false
+}
+
+func sseLineEnd(data []byte) (int, bool) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, true
+	}
+	return 0, false
+}
+
+// sseDiscardKeepingBreak drops a full window of an oversized line but keeps a
+// trailing CR/LF. The newline that ends the line can be split across two
+// reads; discarding that byte would miss it.
+func sseDiscardKeepingBreak(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	advance := len(data)
+	if data[advance-1] == '\n' {
+		advance--
+		if advance > 0 && data[advance-1] == '\r' {
+			advance--
+		}
+	} else if data[advance-1] == '\r' {
+		advance--
+	}
+	if advance == 0 {
+		return 1
+	}
+	return advance
 }
 
 func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string, map[string]string) {

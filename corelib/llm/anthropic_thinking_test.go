@@ -147,7 +147,8 @@ func TestBuildAnthropicMessagesRequestBodyFitsMemberMaxTokens(t *testing.T) {
 
 // parseAnthropicSSEStream shares the Chat Completions line scanner, so the same
 // old 256 KiB limit aborted an Anthropic turn with "token too long"
-// (BR-20261123-9FD249AF31B3). A large thinking delta must still stream.
+// (BR-20261123-9FD249AF31B3). A large thinking delta inside the 4 MiB window
+// must still stream.
 func TestParseAnthropicSSEStreamAcceptsLinePastOldScanLimit(t *testing.T) {
 	pad := strings.Repeat("h", 400*1024)
 	body := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + pad + "\"}}\n\n" +
@@ -172,5 +173,27 @@ func TestParseAnthropicSSEStreamAcceptsLinePastOldScanLimit(t *testing.T) {
 	}
 	if text.String() != "done" {
 		t.Fatalf("text = %q", text.String())
+	}
+}
+
+// A thinking line past the scan window must not erase the text that follows.
+// Pairing the prefix with a read error makes the agent loop drop the turn.
+func TestParseAnthropicSSEStreamKeepsTextWhenThinkingLineExceedsScanLimit(t *testing.T) {
+	const maxLine = 8 * 1024
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"" + strings.Repeat("h", maxLine) + "\"}}\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"kept\"}}\n\n"
+	var text strings.Builder
+	resp, err := parseAnthropicSSEStreamWithReasoning(strings.NewReader(body), func(d string) {
+		text.WriteString(d)
+	}, nil)
+	if err != nil {
+		t.Fatalf("later text must not fail the turn: %v", err)
+	}
+	if resp == nil || text.String() != "kept" {
+		t.Fatalf("text = %q resp = %#v", text.String(), resp)
 	}
 }

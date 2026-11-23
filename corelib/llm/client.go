@@ -3286,10 +3286,16 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	legacyFunctionCallSeen := false
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
+	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes)
+	var skippedLine bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		if line == sseStreamLineTooLarge {
+			skippedLine = true
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -3377,7 +3383,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		}
 
 	}
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && !skippedLine {
 		return nil, fmt.Errorf("SSE stream read error: %w", err)
 	}
 
@@ -3431,6 +3437,9 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	}
 	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
 		finishReason = finish
+	}
+	if skippedLine {
+		finishReason = sseFinishAfterSkippedLine(finishReason, &msg)
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 

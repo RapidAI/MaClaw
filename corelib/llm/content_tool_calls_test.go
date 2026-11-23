@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1754,7 +1755,8 @@ func TestParseSSEToResponse_DoesNotDropNormalAnglePrefix(t *testing.T) {
 // delta can be large too. At the old 256 KiB scan limit such a line aborted the
 // entire turn with "bufio.Scanner: token too long", the agent loop saw an empty
 // response, and the user was shown "模型连续返回空响应"
-// (BR-20261123-9FD249AF31B3). The reader now allows 4 MiB per line.
+// (BR-20261123-9FD249AF31B3). The reader now keeps a 4 MiB line, and a longer
+// line is skipped instead of failing the turn.
 func TestParseSSEStreamWithReasoningAcceptsLinePastOldScanLimit(t *testing.T) {
 	const padLen = 400 * 1024
 	chunk, err := json.Marshal(map[string]any{
@@ -1781,5 +1783,90 @@ func TestParseSSEStreamWithReasoningAcceptsLinePastOldScanLimit(t *testing.T) {
 	}
 	if got := len(response.Choices[0].Message.Content); got < padLen {
 		t.Fatalf("content length = %d, want at least %d", got, padLen)
+	}
+}
+
+// A line past the scan window must not fail the turn. The agent loop drops a
+// response paired with a read error, which is how "token too long" became
+// "模型连续返回空响应". Later lines are the rest of the turn.
+func TestParseSSEStreamWithReasoningKeepsLaterLinesWhenOneExceedsScanLimit(t *testing.T) {
+	const maxLine = 64 * 1024
+	splitter := newSSELineSplitter(maxLine)
+	oversized := append([]byte("data: {"), bytes.Repeat([]byte("x"), maxLine)...)
+	body := append(append([]byte(nil), oversized...), []byte("\ndata: {\"id\":\"resp-after\",\"choices\":[{\"delta\":{\"content\":\"kept\"},\"finish_reason\":\"stop\"}]}\n\n")...)
+
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(splitter)
+	scanner.Buffer(make([]byte, 0, 1024), maxLine)
+	if !scanner.Scan() || scanner.Text() != sseStreamLineTooLarge {
+		t.Fatalf("scanner dropped the oversized line as a hard error: %v", scanner.Err())
+	}
+	if !scanner.Scan() || !strings.Contains(scanner.Text(), "kept") {
+		t.Fatalf("scanner dropped the line after the oversized one: %q err=%v", scanner.Text(), scanner.Err())
+	}
+
+	response, err := parseSSEStreamWithReasoning(bytes.NewReader(body), nil, nil)
+	if err != nil {
+		t.Fatalf("usable prefix must not fail the turn: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	if got := response.Choices[0].Message.Content; got != "kept" {
+		t.Fatalf("content = %q, want the line after the skipped one", got)
+	}
+	if response.Choices[0].FinishReason == "length" {
+		t.Fatalf("a closed text turn was marked truncated: %#v", response.Choices[0])
+	}
+}
+
+func TestParseSSEStreamWithReasoningMarksCutArgumentsWhenLineExceedsScanLimit(t *testing.T) {
+	const maxLine = 8 * 1024
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]}}]}\n" +
+		strings.Repeat("x", maxLine+1) + "\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+	response, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
+	if err != nil {
+		t.Fatalf("cut arguments must not fail the turn: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	choice := response.Choices[0]
+	// The later provider stop stays. The skipped line cut the arguments, so
+	// the call is recovered as truncated instead of executed or failing the turn.
+	if len(choice.TruncatedToolNames) == 0 {
+		t.Fatalf("cut call was not marked truncated: %#v", choice)
+	}
+	if len(choice.Message.ToolCalls) != 0 {
+		t.Fatalf("incomplete call was kept executable: %#v", choice.Message.ToolCalls)
+	}
+}
+
+func TestParseSSEToResponseKeepsLaterLinesWhenOneExceedsOldScanLimit(t *testing.T) {
+	chunk, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"delta": map[string]any{"content": strings.Repeat("c", 300*1024)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	body := append([]byte("data: "), chunk...)
+	body = append(body, []byte("\ndata: {\"choices\":[{\"delta\":{\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\n")...)
+	response, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse: %v", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	got := response.Choices[0].Message.Content
+	if !strings.Contains(got, "after") {
+		t.Fatalf("content = %q, want the line after the oversized one", got)
 	}
 }
