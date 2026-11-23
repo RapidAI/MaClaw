@@ -1793,7 +1793,7 @@ func TestParseSSEStreamWithReasoningKeepsLaterLinesWhenOneExceedsScanLimit(t *te
 	const maxLine = 64 * 1024
 	splitter := newSSELineSplitter(maxLine)
 	oversized := append([]byte("data: {"), bytes.Repeat([]byte("x"), maxLine)...)
-	body := append(append([]byte(nil), oversized...), []byte("\ndata: {\"id\":\"resp-after\",\"choices\":[{\"delta\":{\"content\":\"kept\"},\"finish_reason\":\"stop\"}]}\n\n")...)
+	body := append(append([]byte(nil), oversized...), []byte("\n\ndata: {\"id\":\"resp-after\",\"choices\":[{\"delta\":{\"content\":\"kept\"},\"finish_reason\":\"stop\"}]}\n\n")...)
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Split(splitter)
@@ -1826,8 +1826,8 @@ func TestParseSSEStreamWithReasoningMarksCutArgumentsWhenLineExceedsScanLimit(t 
 	sseStreamMaxLineBytes = maxLine
 	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
 
-	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]}}]}\n" +
-		strings.Repeat("x", maxLine+1) + "\n" +
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_cut\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]}}]}\n\n" +
+		strings.Repeat("x", maxLine+1) + "\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
 	response, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)
 	if err != nil {
@@ -1857,7 +1857,7 @@ func TestParseSSEToResponseKeepsLaterLinesWhenOneExceedsOldScanLimit(t *testing.
 		t.Fatalf("marshal chunk: %v", err)
 	}
 	body := append([]byte("data: "), chunk...)
-	body = append(body, []byte("\ndata: {\"choices\":[{\"delta\":{\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\n")...)
+	body = append(body, []byte("\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\n")...)
 	response, err := ParseSSEToResponse(body)
 	if err != nil {
 		t.Fatalf("ParseSSEToResponse: %v", err)
@@ -1879,9 +1879,9 @@ func TestParseSSEToResponseKeepsLaterLinesWhenOneExceedsOldScanLimit(t *testing.
 // the dropped line, and the comment between them is not payload.
 func TestSSELineSplitterDoesNotJoinNextDataOntoSkippedLine(t *testing.T) {
 	const maxLine = 32
-	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n" +
-		": " + strings.Repeat("x", maxLine) + "\n" +
-		"data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n")
+	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"before\"}}]}\n\n" +
+		": " + strings.Repeat("x", maxLine) + "\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n\n")
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Split(newSSELineSplitter(maxLine))
 	scanner.Buffer(make([]byte, 0, 16), maxLine+1)
@@ -1901,6 +1901,44 @@ func TestSSELineSplitterDoesNotJoinNextDataOntoSkippedLine(t *testing.T) {
 	}
 	if strings.Contains(lines[2], "x") {
 		t.Fatalf("comment tail leaked into the next data line: %q", lines[2])
+	}
+}
+
+// A newline inside an oversized data field is not a new event. The tail must
+// stay inside the skipped event, or the next JSON would be parsed as a chunk.
+func TestSSELineSplitterKeepsFoldedTailInsideSkippedEvent(t *testing.T) {
+	const maxLine = 128
+	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("x", maxLine) + "\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"poison\"}}]}\"}}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n\n")
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(newSSELineSplitter(maxLine))
+	scanner.Buffer(make([]byte, 0, 16), maxLine+1)
+
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var kept string
+	skipped := 0
+	for _, line := range lines {
+		if line == sseStreamLineTooLarge {
+			skipped++
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.Contains(line, "poison") {
+			t.Fatalf("folded tail was parsed as its own event: %#v", lines)
+		}
+		kept += line
+	}
+	if skipped != 1 || !strings.Contains(kept, "after") {
+		t.Fatalf("lines = %#v, want one skip marker then the next event", lines)
 	}
 }
 
@@ -1958,12 +1996,88 @@ func TestParseSSEStreamWithReasoningFailsAfterTooManySkippedLines(t *testing.T) 
 	for i := 0; i <= sseStreamMaxSkippedLines; i++ {
 		body.WriteString("data: ")
 		body.WriteString(strings.Repeat("x", maxLine+1))
-		body.WriteByte('\n')
+		body.WriteString("\n\n")
 	}
-	body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n")
+	body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n\n")
 	_, err := parseSSEStreamWithReasoning(strings.NewReader(body.String()), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "skipped") {
 		t.Fatalf("err = %v, want skipped-line cap", err)
+	}
+}
+
+
+// Eight skipped events are still a recoverable cut. The ninth is the fuse.
+func TestParseSSEStreamWithReasoningSkippedEventBoundary(t *testing.T) {
+	const maxLine = 128
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	oversized := "data: " + strings.Repeat("x", maxLine+1) + "\n\n"
+	var eight strings.Builder
+	for i := 0; i < sseStreamMaxSkippedLines; i++ {
+		eight.WriteString(oversized)
+	}
+	eight.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n\n")
+	resp, err := parseSSEStreamWithReasoning(strings.NewReader(eight.String()), nil, nil)
+	if err != nil {
+		t.Fatalf("%d skipped events must still succeed: %v", sseStreamMaxSkippedLines, err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "after" {
+		t.Fatalf("response = %#v, want the event after %d skips", resp, sseStreamMaxSkippedLines)
+	}
+
+	var nine strings.Builder
+	for i := 0; i <= sseStreamMaxSkippedLines; i++ {
+		nine.WriteString(oversized)
+	}
+	_, err = parseSSEStreamWithReasoning(strings.NewReader(nine.String()), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Fatalf("err = %v, want skipped-event cap", err)
+	}
+}
+
+func TestParseSSEToResponseFailsAfterTooManySkippedEvents(t *testing.T) {
+	const maxLine = 128
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	var body strings.Builder
+	for i := 0; i <= sseStreamMaxSkippedLines; i++ {
+		body.WriteString("data: ")
+		body.WriteString(strings.Repeat("x", maxLine+1))
+		body.WriteString("\n\n")
+	}
+	body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"}}]}\n\n")
+	_, err := ParseSSEToResponse([]byte(body.String()))
+	if err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Fatalf("err = %v, want skipped-event cap", err)
+	}
+}
+
+func TestParseSSEToResponseAllowsEightSkippedEvents(t *testing.T) {
+	const maxLine = 128
+	saved := sseStreamMaxLineBytes
+	sseStreamMaxLineBytes = maxLine
+	t.Cleanup(func() { sseStreamMaxLineBytes = saved })
+
+	var body strings.Builder
+	for i := 0; i < sseStreamMaxSkippedLines; i++ {
+		body.WriteString("data: ")
+		body.WriteString(strings.Repeat("x", maxLine+1))
+		body.WriteString("\n\n")
+	}
+	body.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\n")
+	resp, err := ParseSSEToResponse([]byte(body.String()))
+	if err != nil {
+		t.Fatalf("%d skipped events must still succeed: %v", sseStreamMaxSkippedLines, err)
+	}
+	if resp == nil || len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "after" {
+		t.Fatalf("response = %#v, want the event after %d skips", resp, sseStreamMaxSkippedLines)
+	}
+	if resp.Choices[0].FinishReason == "length" {
+		t.Fatalf("a closed text turn was marked truncated: %#v", resp.Choices[0])
 	}
 }
 

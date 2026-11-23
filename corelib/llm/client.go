@@ -3299,10 +3299,10 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			}
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		payload, ok := sseEventData(line)
+		if !ok {
 			continue
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}

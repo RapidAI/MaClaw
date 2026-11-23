@@ -653,24 +653,26 @@ func mergeSSEUsage(prev, next *Usage) *Usage {
 	return &out
 }
 
-// sseStreamMaxLineBytes bounds one SSE line the Chat Completions and
+// sseStreamMaxLineBytes bounds one SSE event the Chat Completions and
 // Anthropic readers keep. A gateway may resend a whole tool_calls array, or
-// a reasoning snapshot, in one physical line, so 256 KiB was too small.
+// a reasoning snapshot, in one data field, so 256 KiB was too small.
 // 4 MiB matches the Google and Responses frame cap and covers about twenty
 // MaxToolArgumentsBytes (180 KiB) payloads plus JSON framing. It is a scan
-// window, not a turn limit: a longer line is skipped and later lines are
-// kept. Raising the window again would only move the failure, and a zero
-// advance on a full buffer is ErrTooLong, which drops every line still
-// waiting. The scanner grows this buffer only for a line that needs it.
-// Tests shrink it before the scanner is created.
+// window, not a turn limit: a longer event is skipped and later events are
+// kept. A newline inside that event is not a new event; the blank line is.
+// Raising the window again would only move the failure, and a zero advance
+// on a full buffer is ErrTooLong, which drops every event still waiting.
+// The scanner grows this buffer only for an event that needs it. Tests
+// shrink it before the scanner is created.
 var sseStreamMaxLineBytes = 4 << 20
 
-// sseStreamLineTooLarge is the token Scan returns for a skipped physical
-// line. It is not a provider payload.
+// sseStreamLineTooLarge is the token Scan returns for a skipped SSE event.
+// It is not a provider payload. The name is kept so existing readers that
+// compare the token do not have to change.
 const sseStreamLineTooLarge = "maclaw.sse_line_too_large"
 
-// sseStreamMaxSkippedLines bounds how many physical lines one scan may drop.
-// One oversized line is a cut the caller can recover from. A stream of them
+// sseStreamMaxSkippedLines bounds how many SSE events one scan may drop.
+// One oversized event is a cut the caller can recover from. A stream of them
 // is not a usable turn: continuing to skip would return a silently incomplete
 // response with no error.
 const sseStreamMaxSkippedLines = 8
@@ -709,8 +711,8 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	scanner := bufio.NewScanner(body)
 	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
 	// Scanner reports ErrTooLong when its buffer is full and the split
-	// function has not advanced. The extra byte lets the splitter see a line
-	// past its window and skip to the next newline instead.
+	// function has not advanced. The extra byte lets the splitter see an
+	// event past its window and skip to the blank line that ends it.
 	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes+1)
 	var lastPayload string
 	var skippedLines int
@@ -718,19 +720,19 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == sseStreamLineTooLarge {
-			// One line that cannot fit is a cut, not a transport failure.
+			// One event that cannot fit is a cut, not a transport failure.
 			// Returning the prefix with an error makes the agent loop discard
-			// the deltas this scan already kept. Later lines may close the turn.
+			// the deltas this scan already kept. Later events may close the turn.
 			skippedLines++
 			if err := noteSkippedSSELine("OpenAI", skippedLines); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		payload, ok := sseEventData(line)
+		if !ok {
 			continue
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
@@ -955,6 +957,9 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 
 	scanner := bufio.NewScanner(body)
 	scanner.Split(newSSELineSplitter(sseStreamMaxLineBytes))
+	// Scanner reports ErrTooLong when its buffer is full and the split
+	// function has not advanced. The extra byte lets the splitter see an
+	// event past its window and skip to the blank line that ends it.
 	scanner.Buffer(make([]byte, 0, 64*1024), sseStreamMaxLineBytes+1)
 	var skippedLines int
 
@@ -967,10 +972,10 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 			}
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		payload, ok := sseEventData(line)
+		if !ok {
 			continue
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
@@ -1102,14 +1107,16 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 		})
 	}
 
-	if finishReason == "" {
-		finishReason = "stop"
-	}
 	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
 		finishReason = finish
 	}
+	// A missing provider stop is not a close. Apply the skip mark first, or
+	// the default "stop" hides a cut tool call from truncation recovery.
 	if skippedLine {
 		finishReason = sseFinishAfterSkippedLine(finishReason, &msg)
+	}
+	if finishReason == "" {
+		finishReason = "stop"
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
@@ -1125,7 +1132,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 }
 
 
-// noteSkippedSSELine records one dropped physical line. Past the cap the
+// noteSkippedSSELine records one dropped SSE event. Past the cap the
 // scan stops: further skipping would hide a turn that is mostly missing.
 func noteSkippedSSELine(wire string, skipped int) error {
 	log.Printf("[LLM-stream] skipped oversized %s SSE line (%d/%d)", wire, skipped, sseStreamMaxSkippedLines)
@@ -1135,7 +1142,7 @@ func noteSkippedSSELine(wire string, skipped int) error {
 	return nil
 }
 
-// sseFinishAfterSkippedLine marks a cut only when a skipped line may have
+// sseFinishAfterSkippedLine marks a cut only when a skipped event may have
 // removed part of the turn and the provider did not already close it.
 // A provider finish_reason stays: a later stop means the turn closed after
 // the gap. Complete JSON arguments must still execute: treating every
@@ -1162,11 +1169,14 @@ func sseFinishAfterSkippedLine(finishReason string, msg *Message) string {
 	return finishReason
 }
 
-// sseLineSplitter skips one physical SSE line that does not fit in the scan
-// window, then resumes at the next line. A stateless split cannot: taking the
-// whole buffer drops every later line, and a zero advance on a full buffer is
-// ErrTooLong. One splitter per request, so concurrent streams do not share
-// the skip flag. The window is the largest token this splitter returns.
+// sseLineSplitter skips one SSE event that does not fit in the scan window,
+// then resumes after its blank line. A newline inside the event is not a
+// boundary: pretty-printed JSON, or a data field split across lines, would
+// otherwise be parsed as the next event. A stateless split cannot: taking
+// the whole buffer drops every later event, and a zero advance on a full
+// buffer is ErrTooLong. One splitter per request, so concurrent streams do
+// not share the skip flag. The window is the largest token this splitter
+// returns. The historical name is kept; the unit is the event.
 type sseLineSplitter struct {
 	maxLine  int
 	skipping bool
@@ -1187,17 +1197,15 @@ func (s *sseLineSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
 }
 
 func (s *sseLineSplitter) nextLine(data []byte, atEOF bool) (int, []byte, error) {
-	if advance, token, ok := sseDelimitedLine(data); ok {
-		// A newline inside the scanner buffer is not proof the line fits.
-		// The buffer starts at 64 KiB and grows to the window, so an
-		// oversized line can still be delimited. Returning it would splice
-		// its tail into the next event. Skip the whole physical line.
-		if len(token) <= s.maxLine {
-			return advance, token, nil
-		}
-		return advance, []byte(sseStreamLineTooLarge), nil
+	// A physical line that fits is one token. Chat Completions and Anthropic
+	// gateways often send one data field per line and omit the blank line.
+	if advance, token, ok := sseDelimitedLine(data); ok && len(token) <= s.maxLine {
+		return advance, token, nil
 	}
-	if len(data) >= s.maxLine {
+	// Past the window, that newline is not an event boundary. A folded data
+	// field, or pretty-printed JSON, would otherwise be parsed as the next
+	// event. Skip through the blank line that ends this SSE event.
+	if ok, _ := sseLinePastWindow(data, s.maxLine); ok || len(data) >= s.maxLine {
 		s.skipping = true
 		advance, token, err := s.skipOversized(data, atEOF)
 		if token == nil && err == nil {
@@ -1212,7 +1220,7 @@ func (s *sseLineSplitter) nextLine(data []byte, atEOF bool) (int, []byte, error)
 }
 
 func (s *sseLineSplitter) skipOversized(data []byte, atEOF bool) (int, []byte, error) {
-	if advance, ok := sseLineEnd(data); ok {
+	if advance, ok := sseEventEnd(data); ok {
 		s.skipping = false
 		return advance, nil, nil
 	}
@@ -1233,15 +1241,46 @@ func sseDelimitedLine(data []byte) (advance int, token []byte, ok bool) {
 	return 0, nil, false
 }
 
-func sseLineEnd(data []byte) (int, bool) {
-	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		return i + 1, true
+// sseLinePastWindow reports a delimited physical line that does not fit.
+// The newline is kept in the buffer so the skip can still see the blank
+// line that actually ends the event.
+func sseLinePastWindow(data []byte, maxLine int) (bool, int) {
+	advance, token, ok := sseDelimitedLine(data)
+	if !ok || len(token) <= maxLine {
+		return false, 0
+	}
+	return true, advance
+}
+
+// sseEventData joins every data field in one event. A folded payload is
+// still one JSON value; an event: line is not payload. Comment and id
+// fields are ignored. ok is false when the event carries no data field.
+func sseEventData(event string) (string, bool) {
+	var lines []string
+	for _, line := range strings.Split(event, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "data:") {
+			lines = append(lines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(lines) == 0 {
+		return "", false
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+func sseEventEnd(data []byte) (int, bool) {
+	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
+		return i + 4, true
+	}
+	if i := bytes.Index(data, []byte("\n\n")); i >= 0 {
+		return i + 2, true
 	}
 	return 0, false
 }
 
-// sseDiscardKeepingBreak drops a full window of an oversized line but keeps a
-// trailing CR/LF. The newline that ends the line can be split across two
+// sseDiscardKeepingBreak drops a full window of an oversized event but keeps a
+// trailing CR/LF. The blank line that ends the event can be split across two
 // reads; discarding that byte would miss it.
 func sseDiscardKeepingBreak(data []byte) int {
 	if len(data) == 0 {
