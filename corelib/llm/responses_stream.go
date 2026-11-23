@@ -26,9 +26,10 @@ import (
 // bufio.Scanner then fails the whole turn with "token too long". Google's
 // stream reader already allows 4 MiB for the same reason. 4 MiB covers about
 // twenty max-sized calls in one snapshot; a larger event is not scanned into
-// one token. The split function returns what it already has, and the loop
-// below keeps those deltas instead of dropping the turn.
-const responsesStreamMaxEventBytes = 4 << 20
+// one token. The split function emits every complete event already in the
+// buffer before it reports that limit, so a later oversized event cannot
+// erase them. Tests shrink this before the scanner is created.
+var responsesStreamMaxEventBytes = 4 << 20
 
 type responsesStreamItem struct {
 	itemType string
@@ -158,10 +159,10 @@ func DoResponsesAPIRequestStreamWithOptions(
 			continue
 		}
 		if eventType == responsesStreamEventTooLarge {
-			// The split function already returned every complete event before
-			// this one. Keep those deltas; do not fail the turn as if nothing
-			// arrived. An empty buffer still fails, so a lone oversized event
-			// is not reported as a successful empty response.
+			// Complete events already in the scanner buffer were returned on
+			// earlier Scan calls. Keep those deltas; do not fail the turn as
+			// if nothing arrived. An empty buffer still fails, so a lone
+			// oversized event is not a successful empty response.
 			oversizedEvent = fmt.Errorf("Responses API SSE event exceeds %d bytes", responsesStreamMaxEventBytes)
 			break
 		}
@@ -895,6 +896,21 @@ func responsesStreamEventError(payload string) error {
 const responsesStreamEventTooLarge = "maclaw.responses_stream_event_too_large"
 
 func scanResponsesAPIStreamEvent(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF {
+		return scanResponsesAPIStreamTail(data, true)
+	}
+	return scanResponsesAPIStreamTail(data, false)
+}
+
+// responsesStreamTooLargeToken is the frame Scan returns once the unread tail
+// cannot fit. It is not a provider event.
+var responsesStreamTooLargeToken = []byte("event: " + responsesStreamEventTooLarge + "\ndata: {}")
+
+// scanResponsesAPIStreamTail returns one complete SSE event. A full buffer
+// that still holds an earlier event must return that event first: Scanner
+// stops with ErrTooLong, and drops the buffer, when a full buffer makes no
+// progress. The oversized tail is reported only after those events are out.
+func scanResponsesAPIStreamTail(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if i := bytes.Index(data, []byte("\r\n\r\n")); i >= 0 {
 		return i + 4, bytes.TrimRight(data[:i], "\r\n"), nil
 	}
@@ -915,12 +931,11 @@ func scanResponsesAPIStreamEvent(data []byte, atEOF bool) (advance int, token []
 		}
 	}
 	if len(data) >= responsesStreamMaxEventBytes {
-		// The buffer is full and this tail is not one event. Returning an
-		// error here drops the tail and, with it, every event Scanner has not
-		// delivered yet. A sentinel lets the caller stop after the events it
-		// already accepted. This also covers EOF: a truncated tail at the cap
-		// is not a usable event.
-		return len(data), []byte("event: " + responsesStreamEventTooLarge + "\ndata: {}"), nil
+		// No delimiter in a full buffer. The tail is one event that cannot
+		// fit, not a pile of earlier events: those returned above. Advance
+		// the buffer so Scanner can deliver the sentinel and stop. At EOF the
+		// same tail is still not a usable event.
+		return len(data), append([]byte(nil), responsesStreamTooLargeToken...), nil
 	}
 	if atEOF && len(data) > 0 {
 		return len(data), bytes.TrimRight(data, "\r\n"), nil

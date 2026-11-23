@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -848,8 +849,12 @@ func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t 
 		nil,
 		nil,
 	)
+	got := ""
+	if response != nil && len(response.Choices) > 0 {
+		got = response.Choices[0].Message.Content
+	}
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("error = %v, want scan-limit failure", err)
+		t.Fatalf("error=%v body=%d content=%q", err, len(body), got)
 	}
 	if response == nil || len(response.Choices) != 1 {
 		t.Fatalf("partial response = %#v", response)
@@ -859,3 +864,60 @@ func TestDoResponsesAPIRequestStreamKeepsDeltasWhenLaterEventExceedsScanLimit(t 
 		t.Fatalf("kept arguments = %#v", calls)
 	}
 }
+
+// A complete event can sit in the same full scanner buffer as the oversized
+// tail. Scanner asks the split function for a token before it reports
+// ErrTooLong, and a zero advance drops that event. The kept call must
+// survive; only the tail that cannot fit is the failure.
+func TestDoResponsesAPIRequestStreamKeepsCompletedEventBeforeOversizedTail(t *testing.T) {
+	const maxEvent = 64 * 1024
+	saved := responsesStreamMaxEventBytes
+	responsesStreamMaxEventBytes = maxEvent
+	t.Cleanup(func() { responsesStreamMaxEventBytes = saved })
+
+	prefix := []byte("event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.go\\\"}\"}}\n\nevent: response.function_call_arguments.delta\ndata: {\"pad\":\"")
+	pad := maxEvent - len(prefix) - len("\"}\n\n")
+	if pad < 1 {
+		t.Fatalf("kept frame does not fill the scan buffer")
+	}
+	kept := append(append(append([]byte(nil), prefix...), bytes.Repeat([]byte("q"), pad)...), []byte("\"}\n\n")...)
+	if len(kept) != maxEvent {
+		t.Fatalf("kept frame len=%d, want %d", len(kept), maxEvent)
+	}
+	body := append(append([]byte(nil), kept...), []byte("event: response.output_text.delta\ndata: {\"delta\":\"")...)
+	body = append(body, bytes.Repeat([]byte("y"), maxEvent)...)
+
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(scanResponsesAPIStreamEvent)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEvent)
+	if !scanner.Scan() || !bytes.Contains(scanner.Bytes(), []byte("response.output_item.added")) {
+		t.Fatalf("scanner dropped the kept event: %v", scanner.Err())
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]any{map[string]any{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error=%v body=%d", err, len(body))
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	calls := response.Choices[0].Message.ToolCalls
+	if len(calls) != 1 || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.go"}` {
+		t.Fatalf("kept call was dropped with the oversized tail: %#v", calls)
+	}
+}
+
