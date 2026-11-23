@@ -59,7 +59,14 @@ echo   %3 ok
 REM The c-shared build links libc++_shared.so. A plain APK does not ship it,
 REM so dlopen fails and the app reports no local engine. Copy it beside the lib.
 set "CXXSRC="
-for /f "delims=" %%f in ('dir /b /s "%NDK%\toolchains\llvm\prebuilt\*\sysroot\usr\lib\%3\libc++_shared.so" 2^>nul') do if not defined CXXSRC set "CXXSRC=%%f"
+REM libc++_shared.so sits under the NDK sysroot, named by the LLVM target
+REM triple (aarch64-linux-android), not by the APK ABI folder.
+set "ABIDIR=%3"
+if "%3"=="arm64-v8a" set "ABIDIR=aarch64-linux-android"
+if "%3"=="x86_64" set "ABIDIR=x86_64-linux-android"
+for /d %%h in ("%NDK%\toolchains\llvm\prebuilt\*") do (
+  if not defined CXXSRC if exist "%%~fh\sysroot\usr\lib\%ABIDIR%\libc++_shared.so" set "CXXSRC=%%~fh\sysroot\usr\lib\%ABIDIR%\libc++_shared.so"
+)
 if not defined CXXSRC (
   echo libc++_shared.so for %3 not found in %NDK%
   exit /b 1
