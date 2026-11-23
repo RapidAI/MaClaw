@@ -154,9 +154,9 @@ func TestTargetAssetNameForPlatforms(t *testing.T) {
 		{name: "metastaff windows", productName: "MetaStaff", goos: "windows", goarch: "amd64", want: "MetaStaff-Setup.exe"},
 		{name: "metastaff darwin", productName: "MetaStaff", goos: "darwin", goarch: "arm64", want: "MetaStaff-Universal.pkg"},
 		{name: "linux amd64", productName: "MaClaw", goos: "linux", goarch: "amd64", ubuntuLabel: "u2404", want: "MaClaw-x86_64-u2404.AppImage"},
-		{name: "linux arm64", productName: "TigerClaw", goos: "linux", goarch: "arm64", ubuntuLabel: "u2204", want: "TigerClaw-aarch64-u2204.AppImage"},
+		{name: "linux arm64", productName: "TigerClaw", goos: "linux", goarch: "arm64", ubuntuLabel: "u2604", want: "TigerClaw-aarch64-u2604.AppImage"},
 		{name: "metastaff linux amd64", productName: "MetaStaff", goos: "linux", goarch: "amd64", ubuntuLabel: "u2404", want: "MetaStaff-x86_64-u2404.AppImage"},
-		{name: "metastaff linux arm64", productName: "MetaStaff", goos: "linux", goarch: "arm64", ubuntuLabel: "u2204", want: "MetaStaff-aarch64-u2204.AppImage"},
+		{name: "metastaff linux arm64", productName: "MetaStaff", goos: "linux", goarch: "arm64", ubuntuLabel: "u2604", want: "MetaStaff-aarch64-u2604.AppImage"},
 		{name: "linux unsupported arch", productName: "MaClaw", goos: "linux", goarch: "386", ubuntuLabel: "u2404", wantErr: true},
 		{name: "unsupported os", productName: "MaClaw", goos: "freebsd", goarch: "amd64", wantErr: true},
 	}
@@ -307,5 +307,27 @@ func TestGUIResultMessage(t *testing.T) {
 	result.Skipped = true
 	if got := guiResultMessage(result, false, false); !strings.Contains(got, "Already up to date") {
 		t.Fatalf("skipped message = %q", got)
+	}
+}
+
+func TestParseUbuntuLabelFromOSRelease(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "empty", text: "", want: "u2404"},
+		{name: "ubuntu 24.04", text: "NAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nID=ubuntu", want: "u2404"},
+		{name: "ubuntu 26.04", text: "NAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\nID=ubuntu", want: "u2604"},
+		{name: "ubuntu 26.04.1", text: "NAME=\"Ubuntu\"\nVERSION_ID=\"26.04.1\"\nID=ubuntu", want: "u2604"},
+		{name: "ubuntu unquoted", text: "NAME=Ubuntu\nVERSION_ID=26.04\nID=ubuntu", want: "u2604"},
+		{name: "debian 12", text: "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"12\"", want: "u2404"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseUbuntuLabelFromOSRelease(tt.text); got != tt.want {
+				t.Fatalf("parseUbuntuLabelFromOSRelease(%q) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
 	}
 }

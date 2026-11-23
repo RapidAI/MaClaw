@@ -104,6 +104,13 @@ type chatTaskRecord struct {
 	cancelOnce   sync.Once
 	Computer     bool
 	Screen       string
+
+	// remoteWatch is the host poll for an unregistered remote job.
+	// A restart reloads the task as interrupted and does not restore it.
+	remoteWatch *chatTaskRemoteWatch
+	// watchWake is signaled when a supplement arrives while the host is
+	// waiting between waves. The wave loop is already sealed then.
+	watchWake chan struct{}
 }
 
 type chatTaskRunResult struct {
@@ -521,16 +528,69 @@ func (r *chatTaskRegistry) deliverSteer(loop *LoopContext, memoryKey, text strin
 	}
 	note := "[用户补充] " + text
 	if loop == nil {
+		if r.wakeArmedRemoteWatch(memoryKey, note) {
+			return true
+		}
 		r.handler.accumulateInjection(memoryKey, note)
 		return true
 	}
 	if loop.IsCancelled() {
 		return false
 	}
-	_, accepted := loop.TryRequestReplan(func() {
-		r.handler.accumulateInjection(memoryKey, note)
-	})
-	return accepted
+	// A live wave still takes the note on its next iteration. A sealed or
+	// finished wave will not. A remote watch is parked between those waves,
+	// and dropping the note there starts a second task for the same job.
+	if !loop.IsDone() {
+		_, accepted := loop.TryRequestReplan(func() {
+			r.handler.accumulateInjection(memoryKey, note)
+		})
+		if accepted {
+			return true
+		}
+	}
+	return r.wakeArmedRemoteWatch(memoryKey, note)
+}
+
+// wakeArmedRemoteWatch keeps a supplement for a watch that is between waves.
+// The note is stored for the next wave and the park wait returns.
+func (r *chatTaskRegistry) wakeArmedRemoteWatch(memoryKey, note string) bool {
+	if r == nil || r.handler == nil {
+		return false
+	}
+	ch := r.signalArmedRemoteWatch(memoryKey)
+	if ch == nil {
+		return false
+	}
+	r.handler.accumulateInjection(memoryKey, note)
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// signalArmedRemoteWatch returns the wake channel of a running watch.
+// The channel is created once. A nil result means there is nothing to wake.
+func (r *chatTaskRegistry) signalArmedRemoteWatch(memoryKey string) chan struct{} {
+	if r == nil {
+		return nil
+	}
+	memoryKey = strings.TrimSpace(memoryKey)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, task := range r.tasks {
+		if task == nil || task.MemoryKey != memoryKey || task.Status.terminal() {
+			continue
+		}
+		if task.remoteWatch == nil || !task.remoteWatch.armed {
+			continue
+		}
+		if task.watchWake == nil {
+			task.watchWake = make(chan struct{}, 1)
+		}
+		return task.watchWake
+	}
+	return nil
 }
 
 func (r *chatTaskRegistry) requestInput(taskID, question string) (string, error) {
@@ -670,74 +730,58 @@ func (r *chatTaskRegistry) abandonQueuedSlot(waitC <-chan *LoopContext) *LoopCon
 	return nil
 }
 
+// executeChatTaskAgentLoop runs the background worker. A remote watch stays
+// open across waves: a no-tool reply does not finish the task while the host
+// is still polling, and a quiet poll does not spend another model turn.
 func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTaskRunResult {
 	if h == nil || task == nil {
 		return chatTaskRunResult{Err: fmt.Errorf("chat task handler is missing")}
 	}
 	h.openHelperMemory(task, false)
-	text := task.Prompt
-	if strings.TrimSpace(task.resumePrompt) != "" {
-		text = task.resumePrompt
+	return h.driveChatTaskWaves(task, h.runChatTaskWave)
+}
+
+func (h *IMMessageHandler) runChatTaskWave(task *chatTaskRecord, wave int, text string) chatTaskWaveOutcome {
+	maxIter := h.getMaclawAgentMaxIterations()
+	if maxIter <= 0 {
+		maxIter = 30
 	}
-	var lastLoop *LoopContext
-	var lastResp *IMAgentResponse
-	for wave := 0; wave < sessionRoundContinuationMaxWaves; wave++ {
-		if wave > 0 {
-			h.bindPendingMaxRoundsSlot(task.MemoryKey)
-			text = sessionRoundContinuationPrompt(task.Prompt)
-		}
-		maxIter := h.getMaclawAgentMaxIterations()
-		if maxIter <= 0 {
-			maxIter = 30
-		}
-		loop := NewLoopContext(fmt.Sprintf("chat-task-%s-%d", task.ID, wave), maxIter, h.taskClient)
-		loop.LLMCaller = chatTaskLLMCaller
-		loop.ChatTaskID = task.ID
-		if task.Computer {
-			loop.ComputerHelper = true
-			loop.ComputerUseActive = true
-			loop.ComputerUseGateSettled = true
-			loop.ComputerUseFresh = true
-			loop.ComputerUseRoutingText = task.Prompt
-		}
-		loop.UserID = task.MemoryKey
-		loop.Platform = desktopPlatform
-		loop.Description = task.Title
-		h.bindChatTaskLoop(task.ID, loop)
-		lastLoop = loop
-		lastResp = h.HandleIMMessageWithExistingLoop(IMUserMessage{
-			RequestID: fmt.Sprintf("chat-task-%s-%d", task.ID, wave),
-			UserID:    task.MemoryKey,
-			Platform:  desktopPlatform,
-			Text:      text,
-		}, loop, func(progress string) {
-			milestone, ok := chatTaskProgressMilestone(progress)
-			if !ok {
-				// A filtered line (heartbeat, "still working", identical
-				// poll output) carries no new step, but it is still proof
-				// the loop is alive. Refresh the liveness timestamp and
-				// re-emit so a quiet poll cannot freeze the running card.
-				if reg := h.ensureChatTasks(); reg != nil {
-					reg.noteLiveness(task.ID, progress)
-				}
-				return
-			}
+	loop := NewLoopContext(fmt.Sprintf("chat-task-%s-%d", task.ID, wave), maxIter, h.taskClient)
+	loop.LLMCaller = chatTaskLLMCaller
+	loop.ChatTaskID = task.ID
+	if task.Computer {
+		loop.ComputerHelper = true
+		loop.ComputerUseActive = true
+		loop.ComputerUseGateSettled = true
+		loop.ComputerUseFresh = true
+		loop.ComputerUseRoutingText = task.Prompt
+	}
+	loop.UserID = task.MemoryKey
+	loop.Platform = desktopPlatform
+	loop.Description = task.Title
+	h.bindChatTaskLoop(task.ID, loop)
+	resp := h.HandleIMMessageWithExistingLoop(IMUserMessage{
+		RequestID: fmt.Sprintf("chat-task-%s-%d", task.ID, wave),
+		UserID:    task.MemoryKey,
+		Platform:  desktopPlatform,
+		Text:      text,
+	}, loop, func(progress string) {
+		milestone, ok := chatTaskProgressMilestone(progress)
+		if !ok {
+			// A filtered line (heartbeat, "still working", identical
+			// poll output) carries no new step, but it is still proof
+			// the loop is alive. Refresh the liveness timestamp and
+			// re-emit so a quiet poll cannot freeze the running card.
 			if reg := h.ensureChatTasks(); reg != nil {
-				reg.noteProgress(task.ID, milestone)
+				reg.noteLiveness(task.ID, progress)
 			}
-		}, nil, nil, nil)
-		if loop.IsCancelled() {
-			return chatTaskRunResult{Err: fmt.Errorf("canceled")}
+			return
 		}
-		if lastResp == nil || !lastResp.sessionRoundContinue {
-			return chatTaskResultFromAgentResponse(lastResp, loop)
+		if reg := h.ensureChatTasks(); reg != nil {
+			reg.noteProgress(task.ID, milestone)
 		}
-	}
-	if lastResp != nil {
-		lastResp.sessionRoundContinue = false
-		lastResp.Text = sessionRoundManualContinueText
-	}
-	return chatTaskResultFromAgentResponse(lastResp, lastLoop)
+	}, nil, nil, nil)
+	return chatTaskWaveOutcome{resp: resp, loop: loop, cancelled: loop.IsCancelled()}
 }
 
 // chatTaskResultFromAgentResponse finishes a background task.
@@ -974,6 +1018,7 @@ func (r *chatTaskRegistry) finishLocked(id string, status chatTaskStatus, text s
 		task.ArtifactPaths = chatTaskUniquePaths(artifacts)
 	}
 	task.Question = ""
+	task.remoteWatch = nil
 	task.UpdatedAt = time.Now()
 	return task, task.loop, task.snapshotLocked(), true
 }

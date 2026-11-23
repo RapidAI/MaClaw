@@ -1251,8 +1251,9 @@ type codingSubAgentCallbacks struct {
 	// already present.
 	workspaceWasEmptyAtStart bool
 
-	// spilledToolResultReader is set when a tool result was spilled. The next
-	// request renders read_tool_result so the model can page the original.
+	// spilledToolResultReader is set when a tool result or call arguments were
+	// spilled. The next request renders read_tool_result so the model can page
+	// the original.
 	spilledToolResultReader atomic.Bool
 
 	// qualityGateEnabled is resolved once per task. Nil means the prompt and
@@ -2663,6 +2664,16 @@ func (c *codingSubAgentCallbacks) executeToolStructuredCanonical(name, argsJSON 
 	}
 
 	return agent.ToolExecutionResult{Result: result.Text, Outcome: outcome}
+}
+
+func (c *codingSubAgentCallbacks) ProjectToolCallArguments(conversation []interface{}, history []agent.ConversationEntry, call llm.ToolCall) ([]interface{}, []agent.ConversationEntry) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return conversation, history
+	}
+	handler := c.subagent.handler
+	conversation, history = handler.projectOversizedToolCallArguments(conversation, history, call, handler.currentRuntimeOrLegacyPolicyOwnerID(), call.ID, nil)
+	noteSpilledCodingToolResult(&c.spilledToolResultReader, projectedToolCallArguments(history, call.ID))
+	return conversation, history
 }
 
 // ProjectToolResult implements agent.ToolResultProjector. RunLoop calls it only

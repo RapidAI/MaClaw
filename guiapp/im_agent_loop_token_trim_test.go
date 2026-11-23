@@ -668,7 +668,7 @@ func TestFirstRequestCompactionLimitFitsWindowKeepsNormalLimit(t *testing.T) {
 func TestFirstRequestCompactionLimitOverWindowAppliesBudget(t *testing.T) {
 	conversation := []interface{}{
 		map[string]string{"role": "system", "content": strings.Repeat("policy ", 2_000)},
-		map[string]string{"role": "user", "content": strings.Repeat("context ", 32_000)},
+		map[string]string{"role": "user", "content": strings.Repeat("context ", 40_000)},
 	}
 	beforeTokens := estimateConversationTokens(conversation)
 	if beforeTokens <= 80_000 {

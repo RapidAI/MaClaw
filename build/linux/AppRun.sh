@@ -5,8 +5,8 @@
 # CI bundles WebKitGTK + GTK into usr/lib so this AppImage can start on a
 # remote host that does not have the GitHub runner's libwebkit2gtk package.
 # Pick the build that matches the host glibc/Ubuntu:
-#   Ubuntu 22.04  -> *-u2204.AppImage (WebKit 4.0)
-#   Ubuntu 24.04+ -> *-u2404.AppImage (WebKit 4.1)
+#   Ubuntu 24.04  -> *-u2404.AppImage (WebKit 4.1)
+#   Ubuntu 26.04  -> *-u2604.AppImage (WebKit 4.1)
 set -u
 
 HERE="$(dirname "$(readlink -f "${0}")")"
@@ -99,8 +99,8 @@ if [ -z "$bundled_webkit" ] && [ -z "$host_webkit" ]; then
   echo ""
   echo "  sudo apt install __WEBKIT_PKG__"
   echo ""
-  echo "  Ubuntu 22.04           -> *-u2204.AppImage (webkit2gtk-4.0)"
-  echo "  Ubuntu 24.04 / 26.04   -> *-u2404.AppImage (webkit2gtk-4.1)"
+  echo "  Ubuntu 24.04           -> *-u2404.AppImage (webkit2gtk-4.1)"
+  echo "  Ubuntu 26.04           -> *-u2604.AppImage (webkit2gtk-4.1)"
   echo ""
   if command -v zenity >/dev/null 2>&1; then
     zenity --error --title="Missing Dependency" \

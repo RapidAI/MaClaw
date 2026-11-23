@@ -635,10 +635,10 @@ func releaseFalseComputerUseClassification(ctx *LoopContext) {
 	log.Printf("[computer-use] demoted computer_use classification: no desktop operation request")
 }
 
-// classifyComputerUseGate is the embedding decision for this gate. A nil
-// handler or a classifier that is not ready is degraded, and a degraded
-// result does not open a desktop message. The call does not wait on the
-// tree-reasoning model.
+// classifyComputerUseGate uses the cheap embedding pass first. Only a
+// desktop_message candidate that is strong but not separated enough for an
+// early exit pays for the full classifier. A Layer 3 or fused verdict is the
+// authority for that ambiguous case; a failure still fails closed.
 func (h *IMMessageHandler) classifyComputerUseGate(userText string) intent.ClassificationResult {
 	text := strings.TrimSpace(computerUseGateText(userText))
 	if h == nil || text == "" {
@@ -654,7 +654,17 @@ func (h *IMMessageHandler) classifyComputerUseGate(userText string) intent.Class
 			Reason: "computer-use gate has no classifier",
 		}
 	}
-	return uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
+	res := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
+	if !desktopMessageNeedsFullReview(res) {
+		return res
+	}
+	reviewed := uic.Classify(intent.MessageContext{Text: text})
+	log.Printf("[computer-use] desktop_message full review layer=%d primary=%s confidence=%.3f degraded=%v", reviewed.Layer, reviewed.Primary, reviewed.Confidence, reviewed.Degraded)
+	return reviewed
+}
+
+func desktopMessageNeedsFullReview(res intent.ClassificationResult) bool {
+	return !res.Degraded && !res.ControlPlaneFailure && res.Primary == intent.LabelDesktopMessage && !res.EmbeddingEarlyExit && res.Confidence >= computerUseIntentMinConfidence
 }
 
 // desktopMessageReadingUnconfirmed is a desktop_message primary that did
@@ -668,14 +678,16 @@ func desktopMessageReadingUnconfirmed(res intent.ClassificationResult) bool {
 	return !desktopMessageIntentActivated(res)
 }
 
-// desktopMessageIntentActivated opens the helper only when Layer 2 has
-// finished a desktop_message reading. EmbeddingEarlyExit is that bit:
-// anchor identity and a separated cosine both set it, and a narrow gap
-// leaves it false. A raw score above the old 0.65 floor is not a grant.
+// desktopMessageIntentActivated opens the helper after either a confident
+// Layer 2 early exit or a completed Layer 3/fused review of that ambiguous
+// candidate. A raw score above the old 0.65 floor is not a grant by itself.
 // A generic computer_use primary stays closed. A competing secondary still
 // needs the clearer win.
 func desktopMessageIntentActivated(res intent.ClassificationResult) bool {
-	if res.Degraded || !res.EmbeddingEarlyExit || res.Primary != intent.LabelDesktopMessage {
+	if res.Degraded || res.ControlPlaneFailure || res.Primary != intent.LabelDesktopMessage {
+		return false
+	}
+	if res.Layer < 3 && !res.EmbeddingEarlyExit {
 		return false
 	}
 	if res.Confidence < computerUseIntentMinConfidence {

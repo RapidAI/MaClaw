@@ -1,0 +1,871 @@
+package cloudagent
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"log"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+)
+
+const timeLayout = "2006-01-02T15:04:05.000000000Z"
+
+func formatTS(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(timeLayout)
+}
+
+func parseTS(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(timeLayout, value); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// SrvSettingsKey is the system-settings key of the tenant maclawsrv record.
+// It matches botmgmt's storage key. Cloud code reads the JSON itself.
+func SrvSettingsKey(tenantID string) string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return botmgmt.SettingsKey
+	}
+	return "tenant:" + tenantID + ":" + botmgmt.SettingsKey
+}
+
+// Service is the Hub-side cloud-agent record.
+type Service struct {
+	db       *sql.DB
+	settings Settings
+	disp     *Dispatcher
+	now      func() time.Time
+	miss     time.Duration
+
+	startOnce sync.Once
+}
+
+// New opens the cloud-agent tables. A nil database disables the feature.
+func New(db *sql.DB, settings Settings) *Service {
+	if db == nil {
+		return nil
+	}
+	svc := &Service{
+		db:       db,
+		settings: settings,
+		now:      time.Now,
+		miss:     HeartbeatMiss,
+	}
+	svc.disp = newDispatcher(svc)
+	if err := svc.ensureSchema(context.Background()); err != nil {
+		log.Printf("[cloud-agent] schema: %v", err)
+		return nil
+	}
+	return svc
+}
+
+// Dispatcher is the remote-control cloud target.
+func (s *Service) Dispatcher() *Dispatcher {
+	if s == nil {
+		return nil
+	}
+	return s.disp
+}
+
+// Start interrupts stale turns every minute. Tests call InterruptStale directly.
+func (s *Service) Start(ctx context.Context) {
+	if s == nil || ctx == nil {
+		return
+	}
+	s.startOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-ticker.C:
+					_ = s.InterruptStale(context.Background(), now)
+				}
+			}
+		}()
+	})
+}
+
+func (s *Service) ensureSchema(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS cloud_agents (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			owner_user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			llm_mode TEXT NOT NULL DEFAULT 'official',
+			llm_label TEXT NOT NULL DEFAULT '',
+			llm_model TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			cloud_workspace_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_agents_owner ON cloud_agents(tenant_id, owner_user_id, deleted_at)`,
+		`CREATE TABLE IF NOT EXISTS cloud_agent_limits (
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			max_instances INTEGER,
+			max_concurrent_turns INTEGER,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, user_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS cloud_agent_turns (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			owner_user_id TEXT NOT NULL,
+			instance_id TEXT NOT NULL,
+			task_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			finished_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cloud_agent_turns_owner ON cloud_agent_turns(tenant_id, owner_user_id, status)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cloud_agent_turns_request ON cloud_agent_turns(instance_id, request_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func newID(prefix string) string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return prefix + formatTS(time.Now())
+	}
+	return prefix + hex.EncodeToString(buf[:])
+}
+
+type limitRow struct {
+	present   bool
+	enabled   bool
+	instances sql.NullInt64
+	turns     sql.NullInt64
+}
+
+func (s *Service) loadLimit(ctx context.Context, tenantID, userID string) (limitRow, error) {
+	var row limitRow
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `SELECT max_instances, max_concurrent_turns, enabled FROM cloud_agent_limits WHERE tenant_id = ? AND user_id = ?`,
+		store.NormalizeTenantID(tenantID), userID).Scan(&row.instances, &row.turns, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return limitRow{}, nil
+	}
+	if err != nil {
+		return limitRow{}, err
+	}
+	row.present = true
+	row.enabled = enabled != 0
+	return row, nil
+}
+
+// EffectiveLimits resolves the tenant default plus an optional user override.
+// A missing tenant row is off, with 3 instances and 1 concurrent turn.
+// A user row cannot turn the feature on. Null user limits inherit the tenant.
+func (s *Service) EffectiveLimits(ctx context.Context, tenantID, userID string) (instances, turns int, enabled bool, err error) {
+	if s == nil || s.db == nil {
+		return 0, 0, false, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	tenant, err := s.loadLimit(ctx, tenantID, "")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	instances = DefaultMaxInstances
+	turns = DefaultMaxConcurrentTurns
+	if tenant.present {
+		enabled = tenant.enabled
+		if tenant.instances.Valid {
+			instances = int(tenant.instances.Int64)
+		}
+		if tenant.turns.Valid {
+			turns = int(tenant.turns.Int64)
+		}
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return instances, turns, enabled, nil
+	}
+	user, err := s.loadLimit(ctx, tenantID, userID)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if user.present {
+		if user.instances.Valid {
+			instances = int(user.instances.Int64)
+		}
+		if user.turns.Valid {
+			turns = int(user.turns.Int64)
+		}
+	}
+	return instances, turns, enabled, nil
+}
+
+// FeatureEnabled reports the tenant switch. A missing row is off.
+func (s *Service) FeatureEnabled(ctx context.Context, tenantID string) (bool, error) {
+	_, _, enabled, err := s.EffectiveLimits(ctx, tenantID, "")
+	return enabled, err
+}
+
+// AdminView returns the tenant card values. Missing numbers use the defaults.
+func (s *Service) AdminView(ctx context.Context, tenantID string) (AdminView, error) {
+	instances, turns, enabled, err := s.EffectiveLimits(ctx, tenantID, "")
+	if err != nil {
+		return AdminView{}, err
+	}
+	return AdminView{CloudAgentsEnabled: enabled, MaxInstances: instances, MaxConcurrentTurns: turns}, nil
+}
+
+// SaveAdminSettings writes the tenant default row.
+func (s *Service) SaveAdminSettings(ctx context.Context, tenantID string, in AdminSettings) (AdminView, error) {
+	if s == nil || s.db == nil {
+		return AdminView{}, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	if in.CloudAgentsEnabled == nil || in.MaxInstances == nil || in.MaxConcurrentTurns == nil {
+		return AdminView{}, failInvalid("请同时填写开关和两个上限")
+	}
+	if *in.MaxInstances < 0 || *in.MaxConcurrentTurns < 0 {
+		return AdminView{}, failInvalid("上限不能是负数")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	enabled := 0
+	if *in.CloudAgentsEnabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, user_id, max_instances, max_concurrent_turns, enabled, updated_at)
+		VALUES (?, '', ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+			max_instances = excluded.max_instances,
+			max_concurrent_turns = excluded.max_concurrent_turns,
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at`,
+		tenantID, *in.MaxInstances, *in.MaxConcurrentTurns, enabled, formatTS(s.now()))
+	if err != nil {
+		return AdminView{}, err
+	}
+	return s.AdminView(ctx, tenantID)
+}
+
+// SaveUserLimits writes one user's override. Null fields inherit the tenant.
+// The user row's enabled column stays 0.
+func (s *Service) SaveUserLimits(ctx context.Context, tenantID, userID string, in UserLimits) error {
+	if s == nil || s.db == nil {
+		return fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return failInvalid("缺少用户")
+	}
+	if in.MaxInstances != nil && *in.MaxInstances < 0 {
+		return failInvalid("上限不能是负数")
+	}
+	if in.MaxConcurrentTurns != nil && *in.MaxConcurrentTurns < 0 {
+		return failInvalid("上限不能是负数")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, user_id, max_instances, max_concurrent_turns, enabled, updated_at)
+		VALUES (?, ?, ?, ?, 0, ?)
+		ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+			max_instances = excluded.max_instances,
+			max_concurrent_turns = excluded.max_concurrent_turns,
+			updated_at = excluded.updated_at`,
+		tenantID, userID, nullInt(in.MaxInstances), nullInt(in.MaxConcurrentTurns), formatTS(s.now()))
+	return err
+}
+
+func nullInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// Create inserts one instance. Kind cannot be changed later. The feature
+// switch gates creation. A runtime miss still keeps the row as provision_failed.
+func (s *Service) Create(ctx context.Context, tenantID, userID string, in CreateInput) (Instance, error) {
+	if s == nil || s.db == nil {
+		return Instance{}, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	name := strings.TrimSpace(in.Name)
+	kind := strings.TrimSpace(in.Kind)
+	mode := strings.TrimSpace(in.LLMMode)
+	if mode == "" {
+		mode = LLMOfficial
+	}
+	if userID == "" {
+		return Instance{}, failInvalid("缺少用户")
+	}
+	if name == "" || len([]rune(name)) > 80 {
+		return Instance{}, failInvalid("请填写实例名称")
+	}
+	if kind != KindSession && kind != KindCoding {
+		return Instance{}, failInvalid("请选择会话或编程")
+	}
+	if mode != LLMOfficial {
+		return Instance{}, failInvalid("新建实例使用官方模型，自定义模型请在创建后设置")
+	}
+	instances, _, enabled, err := s.EffectiveLimits(ctx, tenantID, userID)
+	if err != nil {
+		return Instance{}, err
+	}
+	if !enabled {
+		return Instance{}, failDisabled()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Instance{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_agents WHERE tenant_id = ? AND owner_user_id = ? AND deleted_at = ''`, tenantID, userID).Scan(&n); err != nil {
+		return Instance{}, err
+	}
+	if instances <= 0 || n >= instances {
+		return Instance{}, failQuotaInstances()
+	}
+	now := formatTS(s.now())
+	inst := Instance{
+		ID:               newID("cag_"),
+		TenantID:         tenantID,
+		OwnerUserID:      userID,
+		Name:             name,
+		Kind:             kind,
+		LLMMode:          mode,
+		Status:           StatusProvisioning,
+		CloudWorkspaceID: "",
+		CreatedAt:        s.now(),
+		UpdatedAt:        s.now(),
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO cloud_agents (
+		id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at
+	) VALUES (?, ?, ?, ?, ?, ?, '', '', ?, '', ?, ?, '')`,
+		inst.ID, tenantID, userID, name, kind, mode, StatusProvisioning, now, now)
+	if err != nil {
+		return Instance{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Instance{}, err
+	}
+	if err := s.disp.provision(ctx, inst); err != nil {
+		_ = s.setStatus(ctx, inst.ID, StatusProvisionFailed)
+		inst.Status = StatusProvisionFailed
+	} else {
+		_ = s.setStatus(ctx, inst.ID, StatusIdle)
+		inst.Status = StatusIdle
+	}
+	inst.RuntimeStatus = s.runtimeStatus(ctx, tenantID, userID)
+	return inst, nil
+}
+
+func (s *Service) setStatus(ctx context.Context, id, status string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`,
+		status, formatTS(s.now()), id)
+	return err
+}
+
+// MarkProvisionFailed records that maclawsrv could not be used for this instance.
+func (s *Service) MarkProvisionFailed(ctx context.Context, id string) error {
+	if s == nil {
+		return nil
+	}
+	return s.setStatus(ctx, id, StatusProvisionFailed)
+}
+
+func (s *Service) runtimeStatus(ctx context.Context, tenantID, userID string) string {
+	conn, err := s.srvConn(ctx, tenantID, userID)
+	if err != nil || !dialReachable(ctx, conn.BaseURL) {
+		return "unreachable"
+	}
+	return "ready"
+}
+
+// List returns the caller's live instances. Stale turns are interrupted first.
+func (s *Service) List(ctx context.Context, tenantID, userID string) ([]Instance, error) {
+	if s == nil || s.db == nil {
+		return nil, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	_ = s.InterruptStale(ctx, s.now())
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	rows, err := s.db.QueryContext(ctx, instanceSelect+` WHERE tenant_id = ? AND owner_user_id = ? AND deleted_at = '' ORDER BY created_at ASC`, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	var out []Instance
+	for rows.Next() {
+		inst, err := scanInstance(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		out = append(out, inst)
+	}
+	scanErr := rows.Err()
+	_ = rows.Close()
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	if out == nil {
+		out = []Instance{}
+	}
+	// Close the list query before the settings read. Tests use one connection.
+	status := s.runtimeStatus(ctx, tenantID, userID)
+	for i := range out {
+		out[i].RuntimeStatus = status
+	}
+	return out, nil
+}
+
+// Get returns one live instance owned by the caller, including a coding git view.
+func (s *Service) Get(ctx context.Context, tenantID, userID, id string) (Instance, error) {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return Instance{}, err
+	}
+	inst.RuntimeStatus = s.runtimeStatus(ctx, inst.TenantID, inst.OwnerUserID)
+	if inst.Kind == KindCoding {
+		view := s.gitPublic(ctx, inst)
+		inst.Git = &view
+	}
+	return inst, nil
+}
+
+func (s *Service) getOwned(ctx context.Context, tenantID, userID, id string) (Instance, error) {
+	if s == nil || s.db == nil {
+		return Instance{}, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	id = strings.TrimSpace(id)
+	row := s.db.QueryRowContext(ctx, instanceSelect+` WHERE id = ? AND tenant_id = ? AND owner_user_id = ? AND deleted_at = ''`, id, tenantID, userID)
+	inst, err := scanInstance(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Instance{}, failNotFound()
+	}
+	return inst, err
+}
+
+func (s *Service) getByID(ctx context.Context, id string) (Instance, error) {
+	row := s.db.QueryRowContext(ctx, instanceSelect+` WHERE id = ? AND deleted_at = ''`, strings.TrimSpace(id))
+	inst, err := scanInstance(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Instance{}, failNotFound()
+	}
+	return inst, err
+}
+
+// InstanceOwner is the tenant and user that own one live instance.
+// The official LLM route uses this so the caller cannot name a different user.
+func (s *Service) InstanceOwner(ctx context.Context, id string) (tenantID, userID string, err error) {
+	inst, err := s.getByID(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	return inst.TenantID, inst.OwnerUserID, nil
+}
+
+// Patch renames an instance or changes its saved LLM label. A different kind is rejected and nothing is written.
+func (s *Service) Patch(ctx context.Context, tenantID, userID, id string, in PatchInput) (Instance, error) {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return Instance{}, err
+	}
+	if in.Kind != nil && strings.TrimSpace(*in.Kind) != inst.Kind {
+		return Instance{}, failKind()
+	}
+	name := inst.Name
+	if in.Name != nil {
+		name = strings.TrimSpace(*in.Name)
+		if name == "" || len([]rune(name)) > 80 {
+			return Instance{}, failInvalid("请填写实例名称")
+		}
+	}
+	mode := inst.LLMMode
+	if in.LLMMode != nil {
+		mode = strings.TrimSpace(*in.LLMMode)
+		if mode == LLMCustom {
+			return Instance{}, failInvalid("自定义模型请通过模型接口保存")
+		}
+		if mode != LLMOfficial {
+			return Instance{}, failInvalid("LLM 模式无效")
+		}
+	}
+	label := inst.LLMLabel
+	if in.LLMLabel != nil {
+		label = strings.TrimSpace(*in.LLMLabel)
+	}
+	model := inst.LLMModel
+	if in.LLMModel != nil {
+		model = strings.TrimSpace(*in.LLMModel)
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agents SET name = ?, llm_mode = ?, llm_label = ?, llm_model = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`,
+		name, mode, label, model, formatTS(s.now()), inst.ID)
+	if err != nil {
+		return Instance{}, err
+	}
+	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
+}
+
+// Delete soft-deletes the Hub row and asks maclawsrv to tombstone the directory.
+func (s *Service) Delete(ctx context.Context, tenantID, userID, id string) error {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return err
+	}
+	now := formatTS(s.now())
+	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`,
+		StatusDeleted, now, now, inst.ID)
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
+		TurnInterrupted, now, now, inst.ID, TurnRunning)
+	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+		_, _ = s.disp.call(ctx, "DELETE", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), nil)
+	}
+	return nil
+}
+
+// Stop hard-stops the instance. The workspace is left in place.
+func (s *Service) Stop(ctx context.Context, tenantID, userID, id string) (Instance, error) {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return Instance{}, err
+	}
+	now := formatTS(s.now())
+	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`, StatusStopped, now, inst.ID)
+	if err != nil {
+		return Instance{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
+		TurnCancelled, now, now, inst.ID, TurnRunning)
+	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/stop", map[string]any{"owner_user_id": inst.OwnerUserID})
+	}
+	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
+}
+
+// Resume moves a stopped instance back to idle.
+func (s *Service) Resume(ctx context.Context, tenantID, userID, id string) (Instance, error) {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return Instance{}, err
+	}
+	if inst.Status != StatusStopped {
+		return Instance{}, failInvalid("实例不在停止状态")
+	}
+	if err := s.setStatus(ctx, inst.ID, StatusIdle); err != nil {
+		return Instance{}, err
+	}
+	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/resume", map[string]any{"owner_user_id": inst.OwnerUserID})
+	}
+	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
+}
+
+const instanceSelect = `SELECT id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at FROM cloud_agents`
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanInstance(row scanner) (Instance, error) {
+	var inst Instance
+	var created, updated, deleted string
+	err := row.Scan(
+		&inst.ID, &inst.TenantID, &inst.OwnerUserID, &inst.Name, &inst.Kind,
+		&inst.LLMMode, &inst.LLMLabel, &inst.LLMModel, &inst.Status, &inst.CloudWorkspaceID,
+		&created, &updated, &deleted,
+	)
+	if err != nil {
+		return Instance{}, err
+	}
+	inst.CreatedAt = parseTS(created)
+	inst.UpdatedAt = parseTS(updated)
+	inst.DeletedAt = parseTS(deleted)
+	return inst, nil
+}
+
+func (s *Service) instanceBusy(ctx context.Context, instanceID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_agent_turns WHERE instance_id = ? AND status = ?`, instanceID, TurnRunning).Scan(&n)
+	return n > 0, err
+}
+
+// ensureTurnRoom rejects a send that would exceed the user cap or the one-turn-per-instance rule.
+func (s *Service) ensureTurnRoom(ctx context.Context, tenantID, userID, instanceID string) error {
+	_, turns, enabled, err := s.EffectiveLimits(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return failDisabled()
+	}
+	if turns <= 0 {
+		return failQuotaTurns()
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_agent_turns WHERE tenant_id = ? AND owner_user_id = ? AND status = ?`,
+		store.NormalizeTenantID(tenantID), userID, TurnRunning).Scan(&n); err != nil {
+		return err
+	}
+	if n >= turns {
+		return failQuotaTurns()
+	}
+	var own int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_agent_turns WHERE instance_id = ? AND status = ?`, instanceID, TurnRunning).Scan(&own); err != nil {
+		return err
+	}
+	if own > 0 {
+		return fail(409, "BUSY", "这个实例正在跑一轮")
+	}
+	return nil
+}
+
+// NoteAcceptedTurn records a turn only after maclawsrv has accepted it.
+// The same request id does not open a second row.
+func (s *Service) NoteAcceptedTurn(ctx context.Context, tenantID, userID, instanceID, taskID, requestID string) error {
+	if s == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(taskID) == "" {
+		return nil
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	instanceID = strings.TrimSpace(instanceID)
+	requestID = strings.TrimSpace(requestID)
+	now := formatTS(s.now())
+	var existing string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM cloud_agent_turns WHERE instance_id = ? AND request_id = ?`, instanceID, requestID).Scan(&existing)
+	inserted := int64(0)
+	if errors.Is(err, sql.ErrNoRows) {
+		var res sql.Result
+		res, err = s.db.ExecContext(ctx, `INSERT INTO cloud_agent_turns (
+			id, tenant_id, owner_user_id, instance_id, task_id, request_id, status, started_at, updated_at, finished_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+		ON CONFLICT(instance_id, request_id) DO NOTHING`,
+			newID("ctu_"), tenantID, userID, instanceID, taskID, requestID, TurnRunning, now, now)
+		if err != nil {
+			return err
+		}
+		inserted, _ = res.RowsAffected()
+	} else if err != nil {
+		return err
+	}
+	// A new request is accepted only when this instance has no running turn.
+	// Retire older rows even when the finish notice arrived before this accept.
+	if err := s.retireOtherRunning(ctx, instanceID, requestID, now); err != nil {
+		return err
+	}
+	if inserted > 0 {
+		return s.setStatus(ctx, instanceID, StatusRunning)
+	}
+	return s.releaseIdle(ctx, instanceID, now)
+}
+
+func (s *Service) retireOtherRunning(ctx context.Context, instanceID, requestID, stamp string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ? AND request_id <> ?`,
+		TurnFinished, stamp, stamp, instanceID, TurnRunning, requestID)
+	return err
+}
+
+func (s *Service) releaseIdle(ctx context.Context, instanceID, stamp string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND id NOT IN (
+		SELECT instance_id FROM cloud_agent_turns WHERE instance_id = ? AND status = ?
+	)`, StatusIdle, stamp, instanceID, StatusRunning, instanceID, TurnRunning)
+	return err
+}
+
+// FinishTurn records that maclawsrv completed this request. A notice that
+// arrives before the accept row exists still occupies the request id, so a
+// later accept cannot turn the finished request back into a running one.
+func (s *Service) FinishTurn(ctx context.Context, instanceID, taskID, requestID string, now time.Time) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	taskID = strings.TrimSpace(taskID)
+	requestID = strings.TrimSpace(requestID)
+	if instanceID == "" || taskID == "" || requestID == "" {
+		return failInvalid("心跳无效")
+	}
+	inst, err := s.getByID(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	stamp := formatTS(now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO cloud_agent_turns (
+		id, tenant_id, owner_user_id, instance_id, task_id, request_id, status, started_at, updated_at, finished_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(instance_id, request_id) DO UPDATE SET
+		status = excluded.status,
+		finished_at = excluded.finished_at,
+		updated_at = excluded.updated_at
+	WHERE cloud_agent_turns.status = ?`,
+		newID("ctu_"), inst.TenantID, inst.OwnerUserID, inst.ID, taskID, requestID, TurnFinished, stamp, stamp, stamp, TurnRunning)
+	if err != nil {
+		return err
+	}
+	return s.releaseIdle(ctx, inst.ID, stamp)
+}
+
+// TouchHeartbeat refreshes one running turn and reports whether the feature is still on.
+func (s *Service) TouchHeartbeat(ctx context.Context, instanceID, taskID, requestID string, now time.Time) (enabled bool, err error) {
+	inst, err := s.getByID(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	enabled, err = s.FeatureEnabled(ctx, inst.TenantID)
+	if err != nil {
+		return false, err
+	}
+	stamp := formatTS(now)
+	if !enabled {
+		_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
+			TurnInterrupted, stamp, stamp, inst.ID, TurnRunning)
+		if inst.Status == StatusRunning {
+			_ = s.setStatus(ctx, inst.ID, StatusIdle)
+		}
+		return false, nil
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET updated_at = ? WHERE instance_id = ? AND task_id = ? AND request_id = ? AND status = ?`,
+		stamp, inst.ID, taskID, requestID, TurnRunning)
+	return enabled, err
+}
+
+// InterruptStale marks running turns with no heartbeat inside the miss window,
+// and turns whose tenant switch is off.
+func (s *Service) InterruptStale(ctx context.Context, now time.Time) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	miss := s.miss
+	if miss <= 0 {
+		miss = HeartbeatMiss
+	}
+	cutoff := formatTS(now.Add(-miss))
+	stamp := formatTS(now)
+	if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE status = ? AND updated_at < ? AND updated_at <> ''`,
+		TurnInterrupted, stamp, stamp, TurnRunning, cutoff); err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id FROM cloud_agent_turns WHERE status = ?`, TurnRunning)
+	if err != nil {
+		return err
+	}
+	var tenants []string
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		tenants = append(tenants, tenantID)
+	}
+	scanErr := rows.Err()
+	_ = rows.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+	var off []string
+	for _, tenantID := range tenants {
+		enabled, err := s.FeatureEnabled(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			off = append(off, tenantID)
+		}
+	}
+	for _, tenantID := range off {
+		if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE tenant_id = ? AND status = ?`,
+			TurnInterrupted, stamp, stamp, tenantID, TurnRunning); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, updated_at = ? WHERE status = ? AND deleted_at = '' AND id NOT IN (
+		SELECT instance_id FROM cloud_agent_turns WHERE status = ?
+	)`, StatusIdle, stamp, StatusRunning, TurnRunning)
+	return err
+}
+
+// AdminSecretMatches compares the header with the tenant maclawsrv admin secret.
+func (s *Service) AdminSecretMatches(ctx context.Context, tenantID, got string) bool {
+	conn, err := s.srvConn(ctx, tenantID, "")
+	if err != nil {
+		return false
+	}
+	want := conn.AdminSecret
+	if want == "" || got == "" || len(want) != len(got) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+
+type srvConn struct {
+	BaseURL     string
+	AdminSecret string
+}
+
+func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvConn, error) {
+	if s == nil || s.settings == nil {
+		return srvConn{}, failOffline()
+	}
+	raw, err := s.settings.Get(ctx, SrvSettingsKey(tenantID))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return srvConn{}, failOffline()
+	}
+	var rec struct {
+		BaseURL     string            `json:"base_url"`
+		AdminSecret string            `json:"admin_secret"`
+		DialNode    string            `json:"dial_node"`
+		OwnerNode   map[string]string `json:"owner_node"`
+	}
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+		return srvConn{}, failOffline()
+	}
+	if strings.TrimSpace(rec.DialNode) != "" {
+		return srvConn{}, failOffline()
+	}
+	if ownerID != "" && strings.TrimSpace(rec.OwnerNode[ownerID]) != "" {
+		return srvConn{}, failOffline()
+	}
+	if !loopbackBaseURL(rec.BaseURL) {
+		return srvConn{}, failOffline()
+	}
+	if strings.TrimSpace(rec.AdminSecret) == "" {
+		return srvConn{}, failOffline()
+	}
+	return srvConn{BaseURL: strings.TrimRight(strings.TrimSpace(rec.BaseURL), "/"), AdminSecret: rec.AdminSecret}, nil
+}

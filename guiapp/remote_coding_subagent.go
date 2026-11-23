@@ -2242,8 +2242,9 @@ type remoteCodingCallbacks struct {
 	// share this host-owned watermark so steering retires predecessor surfaces.
 	llmReplanRevision atomic.Int64
 
-	// spilledToolResultReader is set when a tool result was spilled. The next
-	// request renders read_tool_result so the model can page the original.
+	// spilledToolResultReader is set when a tool result or call arguments were
+	// spilled. The next request renders read_tool_result so the model can page
+	// the original.
 	spilledToolResultReader atomic.Bool
 
 	// Remote maintains a separate S0 compatibility belt: SSH/workdir names
@@ -2893,6 +2894,16 @@ func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, itera
 
 func (c *remoteCodingCallbacks) ContainToolSurfaceAmbiguousDelivery() bool {
 	return true
+}
+
+func (c *remoteCodingCallbacks) ProjectToolCallArguments(conversation []interface{}, history []agent.ConversationEntry, call llm.ToolCall) ([]interface{}, []agent.ConversationEntry) {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return conversation, history
+	}
+	handler := c.agent.handler
+	conversation, history = handler.projectOversizedToolCallArguments(conversation, history, call, handler.currentRuntimeOrLegacyPolicyOwnerID(), call.ID, nil)
+	noteSpilledCodingToolResult(&c.spilledToolResultReader, projectedToolCallArguments(history, call.ID))
+	return conversation, history
 }
 
 // ProjectToolResult implements agent.ToolResultProjector. Remote coding

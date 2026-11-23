@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -360,11 +361,69 @@ func yamlQuote(s string) string {
 	return string(b)
 }
 
-// localRelayMCP runs one stdio MCP tool for a cloud bot. The server id is the
-// one stored on the account; the command and env stay in this app's config.
+// mcpHostRelayServer is the GUI's own MCP task service, as opposed to a
+// stdio server configured on the account. The bot names this server; the
+// call stays inside this process and never opens the MCP port.
+const mcpHostRelayServer = "maclaw"
+
+// errMCPHostRelayOff is what the bot hears when the person has not turned
+// the MCP service on. The call does not start the listener for them.
+var errMCPHostRelayOff = errors.New("MCP is turned off in the person's MaClaw app. Ask them to turn the MCP service on; this call does not open a port or start the service")
+
+// errLocalRelayStdioOff is what the bot hears for a stdio MCP server when
+// the person turned on the task service only. Those servers run local
+// commands, so they stay behind file or network access.
+var errLocalRelayStdioOff = errors.New("only the task service on this computer (server maclaw) is open to the bot. Other MCP servers stay unavailable until file or network access is turned on in the MaClaw app")
+
+// localRelayStdioAllowed is file or network access for bots. Tests replace it.
+var localRelayStdioAllowed = func() bool {
+	s := loadLocalRelaySettings()
+	return s.FilesEnabled || s.NetworkEnabled
+}
+
+// mcpHostEnabledForRelay reports the MCP service switch. Tests replace it.
+var mcpHostEnabledForRelay = func(a *App) bool {
+	if a == nil {
+		return false
+	}
+	cfg, err := a.LoadConfig()
+	return err == nil && cfg.IsMcpHostEnabled()
+}
+
+func mcpHostRelayServerID(id string) bool {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case mcpHostRelayServer, "maclaw-gui":
+		return true
+	}
+	return false
+}
+
+// mcpHostRelayTools is the task surface a bot may drive. Browser checks and
+// artifact downloads stay on a local MCP client; the bot schedules tasks.
+func mcpHostRelayTool(name string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "tools":
+		return "", true
+	case "list_models", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "cancel_task", "get_request", "retry_steps", "read_log":
+		return strings.ToLower(strings.TrimSpace(name)), true
+	default:
+		return "", false
+	}
+}
+
+// localRelayMCP runs one MCP tool for a cloud bot.
+// Server "maclaw" is this app's task MCP (create a programming task here)
+// and runs only when that service is switched on. Any other id is a stdio
+// server stored on the account; its command and env stay in this app.
 func (a *App) localRelayMCP(ctx context.Context, serverID, toolName, argsJSON string) (string, error) {
+	if mcpHostRelayServerID(serverID) {
+		return a.localRelayMCPHost(ctx, toolName, argsJSON)
+	}
 	if a == nil || a.imHandler == nil {
 		return "", fmt.Errorf("MCP is not running in this app")
+	}
+	if !localRelayStdioAllowed() {
+		return "", errLocalRelayStdioOff
 	}
 	mgr := a.imHandler.getLocalMCPManager()
 	if mgr == nil {
@@ -400,6 +459,125 @@ func (a *App) localRelayMCP(ctx context.Context, serverID, toolName, argsJSON st
 	case got := <-ch:
 		return got.text, got.err
 	}
+}
+
+func (a *App) localRelayMCPHost(ctx context.Context, toolName, argsJSON string) (string, error) {
+	if !mcpHostEnabledForRelay(a) {
+		return "", errMCPHostRelayOff
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The access log shows who started the task. No bearer key crosses Hub.
+	ctx = context.WithValue(ctx, mcpClientInfoContextKey{}, mcpClientInfo{IP: "desktop-bot"})
+	return mcpCallHostTool(ctx, a, toolName, argsJSON)
+}
+
+// mcpCallHostTool runs one MCP task tool in-process, the same dispatcher the
+// HTTP listener uses. The bot reaches it through the app's outbound Hub link,
+// so the MCP port can stay on loopback.
+func mcpCallHostTool(ctx context.Context, api mcpTaskAPI, toolName, argsJSON string) (string, error) {
+	if api == nil {
+		return "", fmt.Errorf("MCP is not running in this app")
+	}
+	canonical, ok := mcpHostRelayTool(toolName)
+	if !ok {
+		return "", fmt.Errorf("this computer's MCP service does not expose %s to a bot. Use list_models, create_task, get_task, list_tasks, send_command, stop_task, get_request, retry_steps, or read_log", strings.TrimSpace(toolName))
+	}
+	if canonical == "" {
+		return mcpHostRelayCatalog(), nil
+	}
+	argsJSON = strings.TrimSpace(argsJSON)
+	if argsJSON == "" || argsJSON == "null" {
+		argsJSON = "{}"
+	}
+	var probe any
+	if err := json.Unmarshal([]byte(argsJSON), &probe); err != nil {
+		return "", fmt.Errorf("arguments must be a JSON object")
+	}
+	if _, isObj := probe.(map[string]any); !isObj && probe != nil {
+		return "", fmt.Errorf("arguments must be a JSON object")
+	}
+	params, err := json.Marshal(map[string]any{
+		"name":      canonical,
+		"arguments": json.RawMessage(argsJSON),
+	})
+	if err != nil {
+		return "", err
+	}
+	result, rpcErr := (&mcpHTTP{api: api}).callTool(ctx, params)
+	if rpcErr != nil {
+		return "", errors.New(rpcErr.Message)
+	}
+	if err := mcpHostRelayFailure(result); err != nil {
+		return "", err
+	}
+	return mcpToolResultText(result), nil
+}
+
+// mcpHostRelayFailure turns a failed MCP result into an error when no task
+// was created. A failed view that already has a project_path stays as text,
+// so the bot can correct that task instead of starting another.
+func mcpHostRelayFailure(result any) error {
+	body, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+	failed, _ := body["isError"].(bool)
+	if !failed {
+		return nil
+	}
+	text := strings.TrimSpace(mcpToolResultText(result))
+	var parsed map[string]any
+	if json.Unmarshal([]byte(text), &parsed) == nil {
+		if path, _ := parsed["project_path"].(string); strings.TrimSpace(path) != "" {
+			return nil
+		}
+		if msg, _ := parsed["error"].(string); strings.TrimSpace(msg) != "" {
+			return errors.New(strings.TrimSpace(msg))
+		}
+	}
+	if text == "" {
+		return errors.New("the MCP call failed")
+	}
+	return errors.New(text)
+}
+
+func mcpHostRelayCatalog() string {
+	var b strings.Builder
+	b.WriteString("MCP tools on this computer:\n")
+	for _, name := range []string{"list_models", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "get_request", "retry_steps", "read_log"} {
+		fmt.Fprintf(&b, "- %s\n", name)
+	}
+	return b.String()
+}
+
+func mcpToolResultText(result any) string {
+	body, ok := result.(map[string]any)
+	if !ok {
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+	var b strings.Builder
+	switch items := body["content"].(type) {
+	case []map[string]any:
+		for _, item := range items {
+			if text, ok := item["text"].(string); ok {
+				b.WriteString(text)
+			}
+		}
+	}
+	if b.Len() == 0 {
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+	return b.String()
 }
 
 func localRelayMCPList(ctx context.Context, mgr *LocalMCPManager, serverID string) (string, error) {

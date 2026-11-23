@@ -25,6 +25,7 @@ const expectedScripts = [
   'invitation-tab.js',
 	'user-referrals-tab.js',
   'system-tab.js',
+  'cloud-agent-quota.js',
   'cloud-workspace-tab.js',
   'bot-tab.js',
   'desktop-tab.js',
@@ -273,7 +274,7 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js must guard direct registration verification calls.');
     }
   });
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle', 'id="tenantCloudWorkspaceSettingsCard"', 'tenantCloudWorkspaceQuota', 'tenantCloudWorkspaceMaxMiB', 'tenantCloudWorkspaceTenantGiB', 'tenantCloudWorkspaceModeOff', 'tenantCloudWorkspaceModeAllUsers', 'tenantCloudWorkspaceModeDepartments'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle', 'id="tenantCloudWorkspaceSettingsCard"', 'tenantCloudWorkspaceQuota', 'tenantCloudWorkspaceMaxMiB', 'tenantCloudWorkspaceTenantGiB', 'tenantCloudWorkspaceModeOff', 'tenantCloudWorkspaceModeAllUsers', 'tenantCloudWorkspaceModeDepartments', 'id="maclawsrvConnectionCard"', 'maclawsrvBaseUrl', 'maclawsrvAdminSecret', 'maclawsrvAccessToken', 'id="cloudAgentQuotaCard"', 'cloudAgentQuotaEnabled', 'cloudAgentQuotaInstances', 'cloudAgentQuotaTurns', 'cloudAgentQuotaSaveBtn'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
@@ -1569,7 +1570,7 @@ assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
 // modules (Chinese copy must be expressed with \u escapes).
-['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js', 'bot-tab.js', 'desktop-tab.js'].forEach(assertAscii);
+['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js', 'cloud-agent-quota.js', 'bot-tab.js', 'desktop-tab.js'].forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();

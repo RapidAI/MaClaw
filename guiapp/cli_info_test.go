@@ -30,7 +30,10 @@ func TestHandleCLIInfoRecognizesVersionAndHelp(t *testing.T) {
 }
 
 func TestCLIHelpMentionsRemoteLinuxAppImage(t *testing.T) {
-	if !strings.Contains(cliHelpText, "u2404") || !strings.Contains(cliHelpText, "WebKit") {
+	if !strings.Contains(cliHelpText, "u2404") || !strings.Contains(cliHelpText, "u2604") || !strings.Contains(cliHelpText, "WebKit") {
 		t.Fatalf("cli help should tell remote Linux hosts which AppImage to download:\n%s", cliHelpText)
+	}
+	if strings.Contains(cliHelpText, "u2204") {
+		t.Fatalf("cli help should not contain retired u2204:\n%s", cliHelpText)
 	}
 }

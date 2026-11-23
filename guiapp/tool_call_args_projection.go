@@ -61,3 +61,18 @@ func (h *IMMessageHandler) projectOversizedToolCallArguments(conversation []inte
 	log.Printf("[tool-args] projected oversized arguments tool=%s call=%s bytes=%d handle=%s", tc.Function.Name, recordToolCallID, len(tc.Function.Arguments), projection.Handle.ID)
 	return conversation, history
 }
+
+func projectedToolCallArguments(history []agent.ConversationEntry, toolCallID string) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		calls, ok := history[i].ToolCalls.([]llm.ToolCall)
+		if !ok {
+			continue
+		}
+		for _, call := range calls {
+			if call.ID == toolCallID {
+				return call.Function.Arguments
+			}
+		}
+	}
+	return ""
+}

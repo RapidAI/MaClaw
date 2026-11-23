@@ -66,6 +66,9 @@ func (a *App) syncMCPHostFromConfig() {
 	if a == nil {
 		return
 	}
+	// The bot's task calls use the outbound link, which should come up as
+	// soon as the service is switched on instead of after the idle sleep.
+	defer nudgeLocalRelay()
 	a.mcpHostSyncMu.Lock()
 	defer a.mcpHostSyncMu.Unlock()
 	cfg, err := a.LoadConfig()

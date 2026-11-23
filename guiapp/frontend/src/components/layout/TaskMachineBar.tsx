@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { localizeText } from '../../i18n';
 import type { RemotePermission, useTaskRemoteControl } from './useTaskRemoteControl';
+import { cloudAssistantActive, releaseCloudAssistant } from './cloudAgentAssistant';
 import { bindRemoteAssistantActions, publishRemoteAssistantSession, bindRemoteTaskOpener } from './remoteAssistantSession';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { useModalFocusTrap } from '../../hooks/useModalFocusTrap';
@@ -208,10 +209,15 @@ export function TaskMachineBar({
     useEffect(() => {
         if (!selected || !detailPath) {
             busySinceRef.current = { path: '', at: 0 };
-            publishRemoteAssistantSession(null);
-            bindRemoteAssistantActions(null);
+            // A cloud task uses this same panel. Clearing here would close it
+            // whenever no remote computer is selected.
+            if (!cloudAssistantActive()) {
+                publishRemoteAssistantSession(null);
+                bindRemoteAssistantActions(null);
+            }
             return;
         }
+        releaseCloudAssistant();
         if (detailBusy) {
             if (busySinceRef.current.path !== detailPath) {
                 busySinceRef.current = { path: detailPath, at: Date.now() };
@@ -263,6 +269,7 @@ export function TaskMachineBar({
         });
     }, [awaitingReply, awaitingStop, chatError, closeDetail, detail, detailBusy, detailLoading, detailPath, operate, remoteTasks, selected, sendMessage, stopTask]);
     useEffect(() => () => {
+        if (cloudAssistantActive()) return;
         publishRemoteAssistantSession(null);
         bindRemoteAssistantActions(null);
     }, []);

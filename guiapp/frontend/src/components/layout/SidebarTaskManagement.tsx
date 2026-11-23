@@ -11,6 +11,9 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { closeCloudAssistant, cloudAgentsFromList, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
+import { CloudAgentEntryButton, CloudAgentManage } from './CloudAgentManage';
+import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
@@ -2806,6 +2809,23 @@ export const SidebarTaskManagement = ({
         setRenamingTaskPath(null);
     };
     const [creatingTask, setCreatingTask] = useState(false);
+    const [cloudAgentsOpen, setCloudAgentsOpen] = useState(false);
+    const [cloudAgents, setCloudAgents] = useState<CloudAgentListItem[]>([]);
+    const [cloudListEpoch, setCloudListEpoch] = useState(0);
+    const [cloudFolderCollapsed, setCloudFolderCollapsed] = useState(false);
+    const cloudOpenRevision = useCloudOpenRevision();
+    const openCloudId = useCloudAssistantId();
+    useEffect(() => {
+        let cancelled = false;
+        const list = (window as unknown as { go?: { main?: { App?: { ListCloudAgents?: () => Promise<unknown> } } } }).go?.main?.App?.ListCloudAgents;
+        if (typeof list !== 'function') return;
+        void list().then((rows) => {
+            if (!cancelled) setCloudAgents(cloudAgentsFromList(rows));
+        }).catch(() => {
+            if (!cancelled) setCloudAgents([]);
+        });
+        return () => { cancelled = true; };
+    }, [cloudListEpoch]);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
@@ -3505,9 +3525,15 @@ export const SidebarTaskManagement = ({
     // The band is a second listing of the rows below, so it shares the real
     // folders' grouping: a recent task inside a same-directory group brings
     // the whole group, and its position is the newest member's last_activity.
-    const recentTaskEntries = useMemo((): SidebarRecentEntry<TaskManagementItem>[] => {
-        if (remote.selected || recentTaskCount <= 0) return [];
-        const scored: Array<{ entry: TaskWorkdirEntry<TaskManagementItem>; kind: TaskListFolderKind; recency: number }> = [];
+    // Cloud instances share that band. The cap counts both, newest first.
+    const recentView = useMemo(() => {
+        const empty = {
+            entries: [] as SidebarRecentEntry<TaskManagementItem>[],
+            cloud: [] as CloudAgentListItem[],
+            order: {} as Record<string, number>,
+        };
+        if (remote.selected || recentTaskCount <= 0) return empty;
+        const scored: Array<{ key: string; entry: TaskWorkdirEntry<TaskManagementItem>; kind: TaskListFolderKind; recency: number }> = [];
         for (const folder of taskFolders) {
             if (folder.kind === 'archive') continue;
             for (const entry of folder.entries) {
@@ -3519,12 +3545,30 @@ export const SidebarTaskManagement = ({
                     const stamp = Date.parse(task.last_activity || '');
                     return Number.isFinite(stamp) && stamp > latest ? stamp : latest;
                 }, 0);
-                if (recency > 0) scored.push({ entry, kind: folder.kind, recency });
+                if (recency > 0) {
+                    const key = entry.kind === 'folder' ? `dir:${entry.folder.key}` : taskOrderKey(entry.task);
+                    scored.push({ key, entry, kind: folder.kind, recency });
+                }
             }
         }
-        scored.sort((a, b) => b.recency - a.recency);
-        return scored.slice(0, recentTaskCount).map(({ entry, kind }) => ({ ...entry, sourceKind: kind }));
-    }, [taskFolders, recentTaskCount, remote.selected]);
+        const stamps = readCloudOpenStamps();
+        const cloudScored = cloudAgents.map(item => ({ id: item.id, at: cloudAgentRecency(item, stamps) }));
+        const mixed = mixRecentEntries(
+            scored.map(item => ({ key: item.key, at: item.recency })),
+            cloudScored,
+            recentTaskCount,
+        );
+        const entries = scored
+            .filter(item => mixed.order[item.key] != null)
+            .sort((a, b) => (mixed.order[a.key] ?? 0) - (mixed.order[b.key] ?? 0))
+            .map(({ entry, kind }) => ({ ...entry, sourceKind: kind }));
+        const cloud = cloudAgents
+            .filter(item => mixed.order[`cloud:${item.id}`] != null)
+            .sort((a, b) => (mixed.order[`cloud:${a.id}`] ?? 0) - (mixed.order[`cloud:${b.id}`] ?? 0));
+        return { entries, cloud, order: mixed.order };
+        // cloudOpenRevision rereads the open stamps after a cloud row is opened.
+    }, [cloudAgents, cloudOpenRevision, recentTaskCount, remote.selected, taskFolders]);
+    const recentTaskEntries = recentView.entries;
     const [recentFolderCollapsed, setRecentFolderCollapsed] = useState<boolean>(readRecentTaskFolderCollapsed);
     const toggleRecentFolder = useCallback(() => {
         setRecentFolderCollapsed(prev => {
@@ -3534,15 +3578,24 @@ export const SidebarTaskManagement = ({
         });
     }, []);
     const displayTaskFolders = useMemo((): SidebarTaskFolderView<TaskManagementItem>[] => {
-        if (!recentTaskEntries.length || remote.selected || taskSearchQuery.trim()) return taskFolders;
+        if (remote.selected || taskSearchQuery.trim() || (!recentView.entries.length && !recentView.cloud.length)) return taskFolders;
         const recentFolder: SidebarTaskFolderView<TaskManagementItem> = {
             kind: 'recent',
-            tasks: recentTaskEntries.flatMap(entry => (entry.kind === 'folder' ? entry.folder.tasks : [entry.task])),
-            entries: recentTaskEntries,
-            count: recentTaskEntries.length,
+            tasks: recentView.entries.flatMap(entry => (entry.kind === 'folder' ? entry.folder.tasks : [entry.task])),
+            entries: recentView.entries,
+            count: recentView.entries.length + recentView.cloud.length,
         };
         return [recentFolder, ...taskFolders];
-    }, [taskFolders, recentTaskEntries, remote.selected, taskSearchQuery]);
+    }, [recentView, remote.selected, taskFolders, taskSearchQuery]);
+    const visibleCloudAgents = remote.selected ? [] : cloudAgents.filter(item => {
+        const query = taskSearchQuery.trim().toLowerCase();
+        if (!query) return true;
+        return (item.name || item.id).toLowerCase().includes(query);
+    });
+    const openCloudRow = (item: CloudAgentListItem) => {
+        remote.closeDetail();
+        void openCloudAgent(item, lang);
+    };
     const taskDragKeyRef = useRef<string | null>(null);
     const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
     const taskDragPinnedRef = useRef<boolean | null>(null);
@@ -5255,6 +5308,8 @@ export const SidebarTaskManagement = ({
             if (remoteRef.current.selected.online !== false) remoteRef.current.openTask(task.project_path);
             return;
         }
+        // A cloud task occupies the same panel. Opening a local task leaves it.
+        closeCloudAssistant();
         // The click that leaves the field is the same gesture. The path state
         // is still set until the blur's render, so focus decides, not that state.
         if (renameFieldHasFocus() || removingTaskPaths.has(task.project_path)) return;
@@ -5297,6 +5352,7 @@ export const SidebarTaskManagement = ({
             if (remoteRef.current.selected.online !== false) remoteRef.current.openTask(task.project_path);
             return;
         }
+        closeCloudAssistant();
         const projectPath = task.project_path;
         if (renameFieldHasFocus() || removingTaskPaths.has(projectPath)) return;
         if (openingTaskPathRef.current === projectPath) return;
@@ -5897,6 +5953,24 @@ export const SidebarTaskManagement = ({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
                 <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
             </button>
+            <CloudAgentEntryButton lang={lang} onOpen={() => setCloudAgentsOpen(true)} />
+            {cloudAgentsOpen ? (
+                <CloudAgentManage
+                    lang={lang}
+                    onClose={() => {
+                        setCloudAgentsOpen(false);
+                        setCloudListEpoch(epoch => epoch + 1);
+                    }}
+                    onCreated={(row) => {
+                        setCloudListEpoch(epoch => epoch + 1);
+                        const item = cloudAgentsFromList([row])[0];
+                        if (!item) return;
+                        remote.closeDetail();
+                        void openCloudAgent(item, lang);
+                        if (item.kind !== 'coding') setCloudAgentsOpen(false);
+                    }}
+                />
+            ) : null}
             <span className="mc-task-pane__toolbar-end">
                 <span className="mc-task-pane__tool-group">
                     <button
@@ -6051,7 +6125,7 @@ export const SidebarTaskManagement = ({
                 label={textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}
             />
         ) : null}
-            {filteredTasks.length === 0 && !suppressEmptyState ? (
+            {filteredTasks.length === 0 && visibleCloudAgents.length === 0 && !suppressEmptyState ? (
             <div className="stsm-empty">
                 {remote.selected
                     ? (remote.selected.online === false
@@ -6065,7 +6139,7 @@ export const SidebarTaskManagement = ({
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
-        ) : displayTaskFolders.map(folder => {
+        ) : <>{displayTaskFolders.map((folder, folderIndex) => {
             const folderCollapsed = remote.selected ? remoteCollapsedTaskFolders : collapsedTaskFolders;
             const folderExpanded = remoteTaskQuery || (folder.kind === 'archive' && showArchivedMatches)
                 ? true
@@ -6084,7 +6158,19 @@ export const SidebarTaskManagement = ({
             const folderCanDrag = !remote.selected && folder.kind !== 'archive' && folder.kind !== 'recent' && movableFolderCount > 1;
             const folderDragLabel = textForLang(lang, 'Drag to reorder folders', '拖动调整文件夹顺序', '拖動調整資料夾順序');
             const folderTitle = folderCanDrag ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
-            return (
+            const localPlace = !remote.selected && folder.kind !== 'recent' && (folderIndex === 0 || displayTaskFolders[folderIndex - 1]?.kind === 'recent')
+                ? (
+                    <div key="task-place-local" className="stsm-task-place" data-testid="task-place-local">
+                        <div className="stsm-task-folder__head" style={{ padding: '5px 8px', gap: 6 }}>
+                            <TaskPlaceIcon place="local" lang={lang} />
+                            <span className="stsm-task-folder__label">{textForLang(lang, 'Local', '本地', '本地')}</span>
+                        </div>
+                    </div>
+                )
+                : null;
+            return [
+            localPlace,
+            (
             <section
                 key={folder.kind}
                 className="stsm-task-folder"
@@ -6189,7 +6275,9 @@ export const SidebarTaskManagement = ({
             const removalError = remote.selected ? '' : (removeErrors.get(proj.project_path) || '');
             const isActive = remote.selected
                 ? remote.detailPath === proj.project_path
-                : (activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false);
+                : openCloudId
+                    ? false
+                    : (activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false);
             const isOpen = !remote.selected && isTaskInstanceOpen(proj);
             const remoteOpening = !!remote.selected && remote.detailLoading && remote.detailPath === proj.project_path;
             const isBusy = (!remote.selected && (openingTaskPath === proj.project_path || isRemoving)) || remoteOpening;
@@ -6280,7 +6368,8 @@ export const SidebarTaskManagement = ({
             const rowProgress = isBusy ? (
                 <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : 'progressbar'} aria-label={rowProgressLabel} className={`sidebar-task-progress__track${progressOnWorkspaceLine ? '' : ' stsm-row-progress'}`}><span className="sidebar-task-progress__bar" /></span>
             ) : null;
-            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey}>
+            const recentOrder = folder.kind === 'recent' && entry.kind !== 'folder' ? recentView.order[orderKey] : undefined;
+            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey} style={recentOrder == null ? undefined : { order: recentOrder }}>
                 <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, storedName: String(proj.name || '').trim(), listAnchor: taskListRenameAnchor(folder.kind, orderKey), archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     {remote.selected || folder.kind === 'recent' ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
@@ -6340,7 +6429,7 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path && renameAnchor === taskListRenameAnchor(folder.kind, orderKey) ? <input data-testid="task-rename-input" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={e => { void commitTaskRenameBlur(e, renameSession, proj.project_path, storedTaskName || taskTitleText); }} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path && renameAnchor === taskListRenameAnchor(folder.kind, orderKey) ? <input data-testid="task-rename-input" autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={e => { void commitTaskRenameBlur(e, renameSession, proj.project_path, storedTaskName || taskTitleText); }} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') { if (e.nativeEvent.isComposing || e.keyCode === 229) return; (e.target as HTMLInputElement).blur(); } if (e.key === 'Escape') { e.preventDefault(); renameCancelRef.current = true; setRenamingTaskPath(null); } }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row">{folder.kind === 'recent' ? <TaskPlaceIcon place="local" lang={lang} /> : null}<span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText && !showWorkspaceLine ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
@@ -6412,6 +6501,7 @@ export const SidebarTaskManagement = ({
                 data-expanded={workdirExpanded ? 'true' : 'false'}
                 data-pinned={folderPinned ? 'true' : 'false'}
                 aria-label={workdirTitle}
+                style={folder.kind === 'recent' ? { order: recentView.order[`dir:${entry.folder.key}`] ?? 0 } : undefined}
             >
             <div
                 className="stsm-task-workdir__head"
@@ -6474,11 +6564,64 @@ export const SidebarTaskManagement = ({
             </section>
             );
             })}
+            {folder.kind === 'recent' ? recentView.cloud.map(item => (
+                <CloudAgentListRow
+                    key={item.id}
+                    item={item}
+                    lang={lang}
+                    active={openCloudId === item.id}
+                    order={recentView.order[`cloud:${item.id}`]}
+                    timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
+                    onOpen={() => openCloudRow(item)}
+                />
+            )) : null}
             </div>
             ) : null}
             </section>
-            );
+            )];
         })}
+        {visibleCloudAgents.length > 0 ? (
+            <section
+                className="stsm-task-folder"
+                data-testid="task-folder-cloud"
+                data-expanded={cloudFolderCollapsed ? 'false' : 'true'}
+                aria-label={textForLang(lang, 'Cloud', '云端', '雲端')}
+            >
+                <div
+                    role="button"
+                    tabIndex={0}
+                    className="stsm-task-folder__head stsm-task-folder__toggle"
+                    data-testid="task-folder-toggle-cloud"
+                    aria-expanded={!cloudFolderCollapsed}
+                    onClick={() => setCloudFolderCollapsed(collapsed => !collapsed)}
+                    onKeyDown={event => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        setCloudFolderCollapsed(collapsed => !collapsed);
+                    }}
+                >
+                    <TaskFolderChevron />
+                    <TaskPlaceIcon place="cloud" lang={lang} />
+                    <span className="stsm-task-folder__label">{textForLang(lang, 'Cloud', '云端', '雲端')}</span>
+                    <span className="stsm-task-folder__count">{visibleCloudAgents.length}</span>
+                </div>
+                {cloudFolderCollapsed ? null : (
+                    <div className="stsm-task-folder__items">
+                        {visibleCloudAgents.map(item => (
+                            <CloudAgentListRow
+                                key={item.id}
+                                item={item}
+                                lang={lang}
+                                active={openCloudId === item.id}
+                                timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
+                                onOpen={() => openCloudRow(item)}
+                            />
+                        ))}
+                    </div>
+                )}
+            </section>
+        ) : null}
+        </>}
         </div>
 
         <CloudWorkspaceShareDialog

@@ -686,6 +686,37 @@
           </div>
           <div class="system-routing-footer"><div class="hint" id="systemCorporateEmailDomainsHint"></div><div class="actions"><button class="btn-primary" onclick="saveSystemRoutingConfig()" id="systemRoutingSaveBtn"></button></div></div>
         </div>
+        <div class="item" id="maclawsrvConnectionCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" data-icon="cloud" id="maclawsrvConnectionTitle"></div><div class="item-meta" id="maclawsrvConnectionHint"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadMaclawsrvConnection()" id="maclawsrvConnectionReloadBtn"></button>
+          </div>
+          <div class="grid3">
+            <div><label for="maclawsrvBaseUrl" id="maclawsrvBaseUrlLabel"></label><input id="maclawsrvBaseUrl" autocomplete="off" spellcheck="false"></div>
+            <div><label for="maclawsrvAdminSecret" id="maclawsrvAdminSecretLabel"></label><input id="maclawsrvAdminSecret" type="password" autocomplete="new-password"></div>
+            <div><label for="maclawsrvAccessToken" id="maclawsrvAccessTokenLabel"></label><input id="maclawsrvAccessToken" type="password" autocomplete="new-password"></div>
+          </div>
+          <div class="item-meta" id="maclawsrvConnectionStatus" style="margin-top:8px"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMaclawsrvConnection()" id="maclawsrvConnectionSaveBtn"></button></div>
+        </div>
+        <div class="item" id="cloudAgentQuotaCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" data-icon="sliders" id="cloudAgentQuotaTitle"></div><div class="item-meta" id="cloudAgentQuotaHint"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadCloudAgentQuota()" id="cloudAgentQuotaReloadBtn"></button>
+          </div>
+          <label class="user-referral-toggle" style="margin:0"><input id="cloudAgentQuotaEnabled" type="checkbox"><span id="cloudAgentQuotaEnabledLabel"></span></label>
+          <div class="grid3" style="margin-top:10px">
+            <div><label for="cloudAgentQuotaInstances" id="cloudAgentQuotaInstancesLabel"></label><input id="cloudAgentQuotaInstances" type="number" min="0" step="1"></div>
+            <div><label for="cloudAgentQuotaTurns" id="cloudAgentQuotaTurnsLabel"></label><input id="cloudAgentQuotaTurns" type="number" min="0" step="1"></div>
+            <div><label for="cloudAgentQuotaUser" id="cloudAgentQuotaUserLabel"></label><input id="cloudAgentQuotaUser" autocomplete="off" spellcheck="false"></div>
+          </div>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="cloudAgentQuotaUserInstances" id="cloudAgentQuotaUserInstancesLabel"></label><input id="cloudAgentQuotaUserInstances" type="number" min="0" step="1"></div>
+            <div><label for="cloudAgentQuotaUserTurns" id="cloudAgentQuotaUserTurnsLabel"></label><input id="cloudAgentQuotaUserTurns" type="number" min="0" step="1"></div>
+          </div>
+          <div class="item-meta" id="cloudAgentQuotaStatus" style="margin-top:8px"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCloudAgentQuota()" id="cloudAgentQuotaSaveBtn"></button></div>
+        </div>
         <div class="item registration-auth-card" id="registrationAuthCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
             <div><div class="item-title" data-icon="key" id="registrationAuthTitle"></div><div class="item-meta" id="registrationAuthDesc"></div></div>
@@ -1670,6 +1701,7 @@
 <script defer src="/admin/invitation-tab.js"></script>
 <script defer src="/admin/user-referrals-tab.js"></script>
 <script defer src="/admin/system-tab.js"></script>
+<script defer src="/admin/cloud-agent-quota.js"></script>
 <script defer src="/admin/cloud-workspace-tab.js?v=cws-preview-20260828-1"></script>
 <script defer src="/admin/bot-tab.js?v=bot-admin-20261116-default-open"></script>
 <script defer src="/admin/desktop-tab.js?v=enroll-code-3h-20261116"></script>

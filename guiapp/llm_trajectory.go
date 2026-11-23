@@ -746,9 +746,9 @@ func (r *TrajectoryRecorder) hasToolResultID(toolCallID string) bool {
 	return false
 }
 
-// TruncateToolCallArguments shortens oversized tool-call argument strings on
-// the matching role=tool entry and nested assistant tool_calls. Used when the
-// live loop truncates failed oversized args so trajectory does not retain multi-KB blobs.
+// TruncateToolCallArguments replaces oversized tool-call argument strings on
+// the matching role=tool entry and nested assistant tool_calls with the same
+// recoverable projection used by the live loop and durable history.
 func (r *TrajectoryRecorder) TruncateToolCallArguments(toolCallID, summary string) {
 	if r == nil {
 		return

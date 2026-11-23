@@ -123,14 +123,14 @@ type remoteControlHandler struct {
 // Production leaves it nil. A full buffer still closes the socket inside Send.
 var remoteControlSendHook func(machineID string, msg any) error
 
-func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.IdentityService, devices *device.Service, notifSvc *notification.Service, uploads *botmgmt.Service) {
+func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.IdentityService, devices *device.Service, notifSvc *notification.Service, uploads *botmgmt.Service) *remotecontrol.Service {
 	if db == nil || identity == nil {
-		return
+		return nil
 	}
 	adapter := remoteControlMachines{devices: devices}
 	svc := remotecontrol.New(db, remoteControlAccounts{identity: identity}, adapter, adapter, remoteControlNotifier{svc: notifSvc})
 	if svc == nil {
-		return
+		return nil
 	}
 	ws.OnRemoteControlResult = svc.Complete
 	h := remoteControlHandler{svc: svc, devices: devices, identity: identity, streams: newAccountStreamBroker()}
@@ -159,6 +159,7 @@ func registerRemoteControl(mux *http.ServeMux, db *sql.DB, identity *auth.Identi
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/op", h.federationOp)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/stream", h.federationStream)
 	mux.HandleFunc("POST /api/remote-control/federation/grants/{id}/status", h.federationStatus)
+	return svc
 }
 
 func (h remoteControlHandler) state(w http.ResponseWriter, r *http.Request) {

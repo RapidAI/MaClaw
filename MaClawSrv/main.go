@@ -216,6 +216,7 @@ func runServer(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create HTTP server: %w", err)
 	}
+	server.StartCloudAgents(context.Background())
 	server.enterpriseSync = enterpriseSync
 	// Wire the admin database profile configuration API to the runtime executor
 	// so profile CRUD/rotation hot-refreshes cached per-user managers.

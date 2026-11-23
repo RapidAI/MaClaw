@@ -1770,10 +1770,23 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		startedAt := time.Now()
 		requestID := newLLMEndpointRequestID()
 		w.Header().Set("X-MaClaw-Request-ID", requestID)
-		principal, err := authenticateLLMEndpointRequest(r, identity, system)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
-			return
+		var principal *auth.ViewerPrincipal
+		var err error
+		if forced := cloudAgentOwnerPrincipal(r); forced != nil {
+			// The loopback cloud-agent route already resolved the owner.
+			// Skip the viewer API key so this is the owner's account, not
+			// the system LLM user.
+			if forced.IsLLMEndpointAPIKey() || strings.TrimSpace(forced.UserID) == "" || strings.TrimSpace(forced.Email) == "" {
+				writeError(w, http.StatusForbidden, "FORBIDDEN", "云端实例主人无效")
+				return
+			}
+			principal = forced
+		} else {
+			principal, err = authenticateLLMEndpointRequest(r, identity, system)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+				return
+			}
 		}
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")

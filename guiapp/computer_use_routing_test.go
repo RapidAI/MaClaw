@@ -469,6 +469,33 @@ func TestDesktopMessageIntentActivation(t *testing.T) {
 	if desktopMessageIntentActivated(unseparated) {
 		t.Fatal("a narrow-gap cosine must stay closed")
 	}
+	if !desktopMessageNeedsFullReview(unseparated) {
+		t.Fatal("a strong but ambiguous desktop_message must enter full review")
+	}
+	for _, layer := range []int{3, 23} {
+		reviewed := unseparated
+		reviewed.Layer = layer
+		if !desktopMessageIntentActivated(reviewed) {
+			t.Fatalf("a completed layer %d review did not open", layer)
+		}
+	}
+	embeddingOnly := unseparated
+	embeddingOnly.Layer = 2
+	if desktopMessageIntentActivated(embeddingOnly) {
+		t.Fatal("an unreviewed layer 2 result must stay closed")
+	}
+	protocolFailure := unseparated
+	protocolFailure.Layer = 3
+	protocolFailure.ControlPlaneFailure = true
+	if desktopMessageIntentActivated(protocolFailure) {
+		t.Fatal("a failed classification protocol must not open")
+	}
+	if desktopMessageNeedsFullReview(protocolFailure) {
+		t.Fatal("a failed classification protocol must not be retried as a new candidate")
+	}
+	if desktopMessageNeedsFullReview(open) {
+		t.Fatal("an early-exit result must not pay for full review")
+	}
 	competing := intent.ClassificationResult{
 		Primary: intent.LabelDesktopMessage, Confidence: 0.70, EmbeddingEarlyExit: true,
 		Secondary: []intent.IntentLabel{intent.LabelNonCoding},

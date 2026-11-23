@@ -39,6 +39,19 @@ const (
 	// the Hub writes the file itself into the returned directory.
 	OpAttachBegin = "attach_begin"
 
+	OpCloudListTasks   = "cloud_list_tasks"
+	OpCloudGetTask     = "cloud_get_task"
+	OpCloudCreateTask  = "cloud_create_task"
+	OpCloudSendMessage = "cloud_send_message"
+	OpCloudStopTask    = "cloud_stop_task"
+	OpCloudRenameTask  = "cloud_rename_task"
+	OpCloudWatchTask   = "cloud_watch_task"
+	OpCloudUnwatchTask = "cloud_unwatch_task"
+	OpCloudFetchFile   = "cloud_fetch_file"
+
+	TargetKindDesktop    = "desktop"
+	TargetKindCloudAgent = "cloud_agent"
+
 	inviteTTL = 7 * 24 * time.Hour
 	callWait  = 20 * time.Second
 )
@@ -94,6 +107,8 @@ type Grant struct {
 	TargetAccount         string
 	TargetMachineID       string
 	TargetMachineName     string
+	TargetKind            string
+	TargetAgentID         string
 	ControllerHub         string
 	TargetHub             string
 	FederationSecret      string
@@ -192,6 +207,10 @@ type Service struct {
 	// cross-Hub calls live outside this package.
 	RelayFederatedRevoke func(ctx context.Context, grant Grant)
 
+	// Cloud dispatches a cloud_agent grant to maclawsrv. Desktop grants
+	// never call it. A nil dispatcher is offline, not a local GUI exec.
+	Cloud CloudDispatcher
+
 	mu            sync.Mutex
 	waiters       map[string]waiter
 	activateMu    sync.Mutex
@@ -271,7 +290,25 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_rc_grant_target_machine ON remote_control_grants(target_machine_id, status)`)
+	if err != nil {
+		return err
+	}
+	for _, alter := range []string{
+		`ALTER TABLE remote_control_grants ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'desktop'`,
+		`ALTER TABLE remote_control_grants ADD COLUMN target_agent_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.ExecContext(ctx, alter); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_rc_grant_cloud_agent ON remote_control_grants(tenant_id, controller_machine_id, target_agent_id, status)`)
 	return err
+}
+
+// CloudDispatcher runs one cloud-agent op. The Hub remote-control service
+// does not know maclawsrv; the HTTP layer supplies this.
+type CloudDispatcher interface {
+	DispatchCloud(ctx context.Context, grant Grant, op string, body json.RawMessage) (json.RawMessage, error)
 }
 
 // GrantSameAccount authorizes another desktop of the same user immediately.
@@ -628,6 +665,11 @@ func (s *Service) Snapshot(ctx context.Context, tenantID, userID, machineID stri
 		return state, err
 	}
 	for _, grant := range rows {
+		// Cloud grants share an empty target machine id. They are not desktops
+		// and must not enter retireStaleController or the four desktop lists.
+		if grant.TargetKind == TargetKindCloudAgent {
+			continue
+		}
 		// A stale second-active row must never read as "controlling": retire
 		// it so both sides' views converge without waiting for the next op.
 		if grant.Status == StatusActive && s.retireStaleController(ctx, grant) {
@@ -707,6 +749,15 @@ func (s *Service) Exec(ctx context.Context, tenantID, userID, controllerMachineI
 	if grant.ControllerUserID != userID || grant.ControllerMachineID != strings.TrimSpace(controllerMachineID) {
 		return nil, denied("不能把远控转给其它机器")
 	}
+	if grant.TargetKind == TargetKindCloudAgent {
+		if !permissionAllows(grant.Permission, op) {
+			return nil, denied("当前权限只能查看")
+		}
+		if s.Cloud == nil {
+			return nil, &StatusError{Code: "OFFLINE", Message: "云端运行时不可用"}
+		}
+		return s.Cloud.DispatchCloud(ctx, grant, op, body)
+	}
 	if s.retireStaleController(ctx, grant) {
 		return nil, ErrNotFound
 	}
@@ -717,6 +768,65 @@ func (s *Service) Exec(ctx context.Context, tenantID, userID, controllerMachineI
 		return nil, &StatusError{Code: "OFFLINE", Message: ErrOffline.Error()}
 	}
 	return s.call(ctx, grant.TargetMachineID, grant.ID, op, body)
+}
+
+// EnsureCloudGrant writes one active same-account grant for a cloud agent.
+// A second GUI of the same user may hold its own row. An empty target
+// machine id is not a desktop, so this does not call findActivePair.
+func (s *Service) EnsureCloudGrant(ctx context.Context, tenantID, userID, controllerMachineID, agentID, ownerUserID string) (Grant, error) {
+	if err := s.ready(); err != nil {
+		return Grant{}, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	controllerMachineID = strings.TrimSpace(controllerMachineID)
+	agentID = strings.TrimSpace(agentID)
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if tenantID == "" || userID == "" || controllerMachineID == "" || agentID == "" || ownerUserID == "" {
+		return Grant{}, invalid("云端控制需要登录这台电脑")
+	}
+	if userID != ownerUserID {
+		return Grant{}, denied("不能控制别人的云端实例")
+	}
+	machine, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	if err != nil {
+		return Grant{}, err
+	}
+	if existing, ok := s.findActiveCloud(ctx, tenantID, controllerMachineID, agentID); ok {
+		return existing, nil
+	}
+	now := time.Now().UTC()
+	grant := Grant{
+		ID:                    newID(),
+		TenantID:              tenantID,
+		ControllerUserID:      userID,
+		ControllerMachineID:   controllerMachineID,
+		ControllerMachineName: displayMachine(machine),
+		TargetUserID:          ownerUserID,
+		TargetMachineID:       "",
+		TargetKind:            TargetKindCloudAgent,
+		TargetAgentID:         agentID,
+		Permission:            PermOperate,
+		Status:                StatusActive,
+		SameAccount:           true,
+		CreatedAt:             now,
+		DecidedAt:             now,
+		UpdatedAt:             now,
+	}
+	if err := s.insert(ctx, grant); err != nil {
+		return Grant{}, err
+	}
+	return grant, nil
+}
+
+func (s *Service) findActiveCloud(ctx context.Context, tenantID, controllerMachineID, agentID string) (Grant, bool) {
+	row := s.db.QueryRowContext(ctx, grantSelect+` WHERE tenant_id = ? AND controller_machine_id = ? AND target_agent_id = ? AND target_kind = ? AND status = ?`,
+		tenantID, controllerMachineID, agentID, TargetKindCloudAgent, StatusActive)
+	grant, err := scanGrant(row)
+	if err != nil {
+		return Grant{}, false
+	}
+	return grant, true
 }
 
 // StreamGrant validates one remote_control.stream envelope sent by a target
@@ -776,6 +886,34 @@ func (s *Service) dropStreamBucket(grantID string) {
 	s.streamMu.Lock()
 	delete(s.streamBuckets, strings.TrimSpace(grantID))
 	s.streamMu.Unlock()
+}
+
+// ActiveCloudGrant loads one still-active cloud grant. Desktop rows and
+// grants with a target machine are not cloud streams.
+func (s *Service) ActiveCloudGrant(ctx context.Context, id string) (Grant, error) {
+	if err := s.ready(); err != nil {
+		return Grant{}, err
+	}
+	grant, err := s.load(ctx, id)
+	if err != nil {
+		return Grant{}, err
+	}
+	if grant.TargetKind != TargetKindCloudAgent || grant.Status != StatusActive {
+		return Grant{}, ErrNotFound
+	}
+	if strings.TrimSpace(grant.TargetAgentID) == "" || strings.TrimSpace(grant.TargetMachineID) != "" {
+		return Grant{}, ErrNotFound
+	}
+	return grant, nil
+}
+
+// SendController delivers one envelope to the controlling desktop.
+// Cloud stream publishing uses this so it does not call StreamGrant or call.
+func (s *Service) SendController(machineID string, msg any) error {
+	if s == nil || s.sender == nil || strings.TrimSpace(machineID) == "" {
+		return ErrOffline
+	}
+	return s.sender.Send(strings.TrimSpace(machineID), msg)
 }
 
 type streamBucket struct {
@@ -1153,9 +1291,11 @@ func normalizePermission(permission string) (string, error) {
 
 func permissionAllows(permission, op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask:
+	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask,
+		OpCloudListTasks, OpCloudGetTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile:
 		return permission == PermView || permission == PermOperate
-	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin:
+	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin,
+		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask:
 		return permission == PermOperate
 	default:
 		return false
@@ -1164,7 +1304,8 @@ func permissionAllows(permission, op string) bool {
 
 func allowedOp(op string) bool {
 	switch op {
-	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin:
+	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin,
+		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile:
 		return true
 	default:
 		return false
@@ -1195,18 +1336,23 @@ func newID() string {
 }
 
 func (s *Service) insert(ctx context.Context, grant Grant) error {
+	kind := strings.TrimSpace(grant.TargetKind)
+	if kind == "" {
+		kind = TargetKindDesktop
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO remote_control_grants (
 		id, tenant_id, controller_user_id, controller_machine_id, controller_machine_name,
 		target_user_id, target_account, target_machine_id, target_machine_name,
 		controller_hub, target_hub, federation_secret,
 		permission, status, same_account, target_ignored, invite_notification_id, notice_notification_id,
-		created_at, decided_at, expires_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, decided_at, expires_at, updated_at, target_kind, target_agent_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		grant.ID, grant.TenantID, grant.ControllerUserID, grant.ControllerMachineID, grant.ControllerMachineName,
 		grant.TargetUserID, grant.TargetAccount, grant.TargetMachineID, grant.TargetMachineName,
 		grant.ControllerHub, grant.TargetHub, grant.FederationSecret,
 		grant.Permission, grant.Status, boolInt(grant.SameAccount), boolInt(grant.TargetIgnored), grant.InviteNotificationID, grant.NoticeNotificationID,
 		formatTime(grant.CreatedAt), formatTime(grant.DecidedAt), formatTime(grant.ExpiresAt), formatTime(grant.UpdatedAt),
+		kind, grant.TargetAgentID,
 	)
 	return err
 }
@@ -1295,7 +1441,7 @@ const grantSelect = `SELECT id, tenant_id, controller_user_id, controller_machin
 	target_user_id, target_account, target_machine_id, target_machine_name,
 	controller_hub, target_hub, federation_secret,
 	permission, status, same_account, target_ignored, invite_notification_id, notice_notification_id,
-	created_at, decided_at, expires_at, updated_at FROM remote_control_grants`
+	created_at, decided_at, expires_at, updated_at, target_kind, target_agent_id FROM remote_control_grants`
 
 type grantScanner interface {
 	Scan(dest ...any) error
@@ -1310,7 +1456,7 @@ func scanGrant(row grantScanner) (Grant, error) {
 		&grant.TargetUserID, &grant.TargetAccount, &grant.TargetMachineID, &grant.TargetMachineName,
 		&grant.ControllerHub, &grant.TargetHub, &grant.FederationSecret,
 		&grant.Permission, &grant.Status, &same, &ignored, &grant.InviteNotificationID, &grant.NoticeNotificationID,
-		&created, &decided, &expires, &updated,
+		&created, &decided, &expires, &updated, &grant.TargetKind, &grant.TargetAgentID,
 	)
 	if err != nil {
 		return Grant{}, err

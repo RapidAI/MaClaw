@@ -21,8 +21,8 @@ Commands and flags:
   mcp              MCP stdio proxy for the running GUI (专业功能 → 工具 → MCP服务器)
 
 Linux AppImage: pick the Ubuntu ABI that matches the host.
-  Ubuntu 22.04           -> *-u2204.AppImage (WebKit 4.0)
-  Ubuntu 24.04 / 26.04   -> *-u2404.AppImage (WebKit 4.1)
+  Ubuntu 24.04           -> *-u2404.AppImage (WebKit 4.1)
+  Ubuntu 26.04           -> *-u2604.AppImage (WebKit 4.1)
 CI AppImages bundle WebKitGTK so a typical remote host can run the
 matching artifact without installing libwebkit2gtk.
 `

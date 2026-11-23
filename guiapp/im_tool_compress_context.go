@@ -9,16 +9,12 @@ package guiapp
 // history with a concise summary when it determines that intermediate
 // details are no longer needed for future decisions.
 //
-// Design: compression operates on `history` (the single source of truth
-// for persistence). `conversation` (the LLM-facing array) is NOT directly
-// modified — it will be naturally trimmed by `trimConversation` on the
-// next iteration based on the reduced token budget. This avoids the
-// dual-array desync problem: `conversation` contains injected system
-// messages (GoalAnchor, ProgressTracker, recover prompts) that `history`
-// doesn't have, so index-based compression on both arrays would produce
-// inconsistent boundaries. Before the summary replaces any entries, their
-// exact JSON is persisted as an encrypted read_tool_result handle; failure
-// to persist leaves the original history untouched.
+// Design: compression replaces both the persisted `history` and the live
+// LLM-facing `conversation` at the same boundary. Before any entries are
+// dropped, their exact JSON is persisted as an encrypted read_tool_result
+// handle; failure to persist leaves both views untouched. Keeping the two
+// projections in sync prevents the compacted durable history from being
+// undone by a later save of the uncompacted live request.
 
 import (
 	"fmt"
@@ -68,10 +64,9 @@ type contextCompressionRequest struct {
 	Timestamp     time.Time
 }
 
-// applyHistoryCompression replaces intermediate entries in the history
-// array with a compact summary. This is the ONLY compression function —
-// conversation is NOT directly compressed. trimConversation handles
-// conversation naturally on the next iteration.
+// applyHistoryCompression returns the history-only plan for an active
+// compression request. The lifecycle caller applies the same summary and
+// recovery handle to the live conversation so the two views commit together.
 //
 // Preserves:
 // - The first user message (the original task)

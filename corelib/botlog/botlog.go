@@ -33,7 +33,7 @@ var (
 
 	bearerRE     = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]{6,}`)
 	skRE         = regexp.MustCompile(`\bsk-[A-Za-z0-9]{8,}\b`)
-	jsonSecretRE = regexp.MustCompile(`(?i)"(access_token|api_key|api_secret|password|authorization|admin_secret)"\s*:\s*"[^"]*"`)
+	jsonSecretRE = regexp.MustCompile(`(?i)"(access_token|api_key|api_secret|ssh_password|password|authorization|admin_secret)"\s*:\s*"[^"]*"`)
 	handoffRE    = regexp.MustCompile(`/api/v1/desktop-handoff/[A-Za-z0-9._~-]+`)
 	secretKeyRE  = regexp.MustCompile(`(?i)(token|secret|password|authorization|api[_-]?key|credential|bearer)`)
 )

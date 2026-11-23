@@ -181,10 +181,18 @@ var localRelayTestEnabled bool
 var localRelayActions = []string{"status", "list", "upload", "download", "transfer_status", "tunnel_open", "socks_open", "tunnel_close", "tunnel_list"}
 
 func (localRelayModule) Tools(_ context.Context, request agentruntime.TurnRequest) ([]agentruntime.ToolDefinition, error) {
-	if !localRelayAvailable(request) {
-		return nil, nil
+	var tools []agentruntime.ToolDefinition
+	if localRelayAvailable(request) {
+		tools = append(tools, localComputerTool())
 	}
-	return []agentruntime.ToolDefinition{{
+	if localTaskAvailable(request) {
+		tools = append(tools, localTaskTool())
+	}
+	return tools, nil
+}
+
+func localComputerTool() agentruntime.ToolDefinition {
+	return agentruntime.ToolDefinition{
 		Name: localRelayToolName,
 		Description: "Reach the person's OWN computer (where their MaClaw app runs) and the network it sits on, relayed through that app. " +
 			"Use it when the person mentions a file on their computer, wants a result saved to their computer, or wants you to work on a machine in their office/home network (an intranet GPU server, a NAS, a lab web page) that this cloud desktop cannot reach directly. " +
@@ -210,11 +218,15 @@ func (localRelayModule) Tools(_ context.Context, request agentruntime.TurnReques
 			},
 			"required": []string{"action"},
 		},
-	}}, nil
+	}
 }
 
 func (m localRelayModule) InvokeTool(ctx context.Context, request agentruntime.TurnRequest, name string, args map[string]any) (string, error) {
-	if strings.TrimSpace(name) != localRelayToolName {
+	switch strings.TrimSpace(name) {
+	case localTaskToolName:
+		return m.invokeLocalTask(ctx, request, args)
+	case localRelayToolName:
+	default:
 		return "", fmt.Errorf("unknown tool %s", name)
 	}
 	if ctx == nil {

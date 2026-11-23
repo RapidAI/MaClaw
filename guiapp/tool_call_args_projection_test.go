@@ -86,6 +86,70 @@ func TestCommitAgentLoopToolResultProjectsOversizedArguments(t *testing.T) {
 	}
 }
 
+func TestSharedLoopProjectsOversizedArgumentsBeforeExecution(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+
+	original := `{"path":"D:/work/shared.go","content":"` + strings.Repeat("package shared\n", 200) + `"}`
+	call := llm.ToolCall{ID: "shared-call", Type: "function", Function: llm.ToolCallFunction{Name: "write_file", Arguments: original}}
+	conversation := []interface{}{map[string]interface{}{"role": "assistant", "tool_calls": []llm.ToolCall{call}}}
+	history := []agent.ConversationEntry{{Role: "assistant", ToolCalls: []llm.ToolCall{call}}}
+	cb := &sharedAgentLoopCallbacks{handler: &IMMessageHandler{}, userID: "desktop-user"}
+	conversation, history = cb.ProjectToolCallArguments(conversation, history, call)
+
+	wireCalls := conversation[0].(map[string]interface{})["tool_calls"].([]llm.ToolCall)
+	if wireCalls[0].Function.Arguments == original || len(wireCalls[0].Function.Arguments) >= len(original) {
+		t.Fatal("shared live conversation retained oversized arguments")
+	}
+	if got := history[0].ToolCalls.([]llm.ToolCall)[0].Function.Arguments; got != wireCalls[0].Function.Arguments {
+		t.Fatal("shared durable history diverged from the live argument projection")
+	}
+	if call.Function.Arguments != original {
+		t.Fatal("projection must not mutate the original execution input")
+	}
+}
+
+func TestCodingLoopsProjectOversizedArgumentsAndExposeReader(t *testing.T) {
+	oldBase := maclawpath.BaseDir()
+	maclawpath.SetBaseDir(t.TempDir())
+	t.Cleanup(func() { maclawpath.SetBaseDir(oldBase) })
+
+	original := `{"path":"D:/work/coding.go","content":"` + strings.Repeat("package coding\n", 200) + `"}`
+	call := llm.ToolCall{ID: "coding-call", Type: "function", Function: llm.ToolCallFunction{Name: "write_file", Arguments: original}}
+	h := &IMMessageHandler{}
+	local := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: h}}
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{handler: h}}
+	tests := []struct {
+		name       string
+		project    func([]interface{}, []agent.ConversationEntry, llm.ToolCall) ([]interface{}, []agent.ConversationEntry)
+		readerOpen func() bool
+	}{
+		{name: "local", project: local.ProjectToolCallArguments, readerOpen: local.spilledToolResultReader.Load},
+		{name: "remote", project: remote.ProjectToolCallArguments, readerOpen: remote.spilledToolResultReader.Load},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conversation := []interface{}{map[string]interface{}{"role": "assistant", "tool_calls": []llm.ToolCall{call}}}
+			history := []agent.ConversationEntry{{Role: "assistant", ToolCalls: []llm.ToolCall{call}}}
+			conversation, history = test.project(conversation, history, call)
+			wireCalls := conversation[0].(map[string]interface{})["tool_calls"].([]llm.ToolCall)
+			if wireCalls[0].Function.Arguments == original || len(wireCalls[0].Function.Arguments) >= len(original) {
+				t.Fatal("coding conversation retained oversized arguments")
+			}
+			if got := history[0].ToolCalls.([]llm.ToolCall)[0].Function.Arguments; got != wireCalls[0].Function.Arguments {
+				t.Fatal("coding history diverged from the live argument projection")
+			}
+			if !test.readerOpen() {
+				t.Fatal("argument spill did not expose read_tool_result")
+			}
+			if call.Function.Arguments != original {
+				t.Fatal("projection mutated the original coding execution input")
+			}
+		})
+	}
+}
+
 func TestProjectOversizedToolCallArgumentsLeavesSmallArgumentsUnchanged(t *testing.T) {
 	h := &IMMessageHandler{}
 	tc := llm.ToolCall{ID: "small", Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{"path":"demo.go"}`}}

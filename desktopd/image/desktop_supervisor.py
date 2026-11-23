@@ -4284,6 +4284,26 @@ def note_gate_activity():
         touch_bot_file(key, "activity")
 
 
+GATE_MAX_CONNECTIONS = 64
+_gate_connections = threading.BoundedSemaphore(GATE_MAX_CONNECTIONS)
+
+
+def start_gate_connection(client, listen_port, target_port, token):
+    if not _gate_connections.acquire(blocking=False):
+        return False
+    def run():
+        try:
+            gate_connection(client, listen_port, target_port, token)
+        finally:
+            _gate_connections.release()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except RuntimeError:
+        _gate_connections.release()
+        return False
+    return True
+
+
 def serve_gate(listen_port, target_port, token):
     """Token-checked TCP gate for the container's published browser ports.
 
@@ -4306,8 +4326,10 @@ def serve_gate(listen_port, target_port, token):
             continue
         # One thread per connection: the header read (10s), a bot's first
         # noVNC start and the upstream connect retry (10s) must not hold up
-        # every other CDP or noVNC client on this gate.
-        threading.Thread(target=gate_connection, args=(client, listen_port, target_port, token), daemon=True).start()
+        # every other CDP or noVNC client on this gate. The global bound keeps
+        # unauthenticated peers from exhausting the container's threads.
+        if not start_gate_connection(client, listen_port, target_port, token):
+            client.close()
 
 
 def gate_connection(client, listen_port, target_port, token):
@@ -5160,8 +5182,8 @@ function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift(
 function connect(){const qs=[];if(USE_MSE)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
  ws.onopen=()=>noteStream("connect");
- ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{gotFrame=true;fails=0;mq.push(e.data);pump()}};
- ws.onclose=()=>{noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
+ ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{if(mq.length>=8){mq=[];ws.close();return}gotFrame=true;fails=0;mq.push(e.data);pump()}};
+ ws.onclose=()=>{mq=[];noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
 function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
  else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}
@@ -5434,6 +5456,19 @@ class H264Viewer:
             self.queue.append((self.sequence, frame, key))
             self.cond.notify()
 
+    def offer_mse(self, chunk):
+        with self.cond:
+            if self.closed.is_set():
+                return False
+            if len(self.queue) >= H264_MAX_QUEUED:
+                self.close_reason = "slow_viewer"
+                self.closed.set()
+                self.cond.notify_all()
+                return False
+            self.queue.append((0, chunk, True))
+            self.cond.notify()
+            return True
+
     def _want_idr(self):
         if not self.need_idr:
             self.need_idr = True
@@ -5486,9 +5521,8 @@ class H264Viewer:
                     if not chunk:
                         break
                     if self.mse:
-                        with self.cond:
-                            self.queue.append((0, chunk, True))
-                            self.cond.notify()
+                        if not self.offer_mse(chunk):
+                            break
                         continue
                     for frame, key in splitter.feed(chunk):
                         self.offer(frame, key)

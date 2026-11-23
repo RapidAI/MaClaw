@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
@@ -59,6 +60,42 @@ func TestSpilledToolResultHandleOverlaysReaderOnSemanticSurface(t *testing.T) {
 	}
 	if !cb.IsToolAllowed("read_tool_result") {
 		t.Fatal("overlaid reader must be executable on this turn")
+	}
+}
+
+func TestSpilledToolCallArgumentsHandleOverlaysReaderOnSemanticSurface(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "read_tool_result",
+		Description: "read spilled tool output",
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"id": map[string]interface{}{"type": "string"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: &IMMessageHandler{registry: registry},
+		semanticSurface: &semanticCallSurface{
+			grants:   map[string]tool.InvocationGrant{},
+			registry: tool.NewCapabilityRegistry("test"),
+		},
+		checkpointHistory: []agent.ConversationEntry{{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID: "call-large-write",
+				Function: llm.ToolCallFunction{
+					Name:      "write_file",
+					Arguments: `{"_context_compressed":true,"preview":"preview\n\n` + toolresult.HandleFooterMarker + `\nid: args-handle\ntool: tool_call_arguments\n"}`,
+				},
+			}},
+		}},
+	}
+	tools := cb.BuildToolsForModelRequest("继续", 2)
+	if !strings.Contains(toolNamesForTest(tools), "read_tool_result") {
+		t.Fatalf("argument handle must expose its reader on the next request: %s", toolNamesForTest(tools))
+	}
+	if !cb.IsToolAllowed("read_tool_result") {
+		t.Fatal("argument handle reader must also pass execution admission")
 	}
 }
 

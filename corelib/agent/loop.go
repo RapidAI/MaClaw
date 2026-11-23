@@ -696,6 +696,13 @@ type ToolResultProjector interface {
 	ProjectToolResult(name string, result ToolExecutionResult) string
 }
 
+// ToolCallArgumentsProjector lets a host replace large model-generated arguments
+// with a recoverable preview in both the live request and durable history. The
+// original call remains the execution input; only its context representation changes.
+type ToolCallArgumentsProjector interface {
+	ProjectToolCallArguments(conversation []interface{}, history []ConversationEntry, call llm.ToolCall) ([]interface{}, []ConversationEntry)
+}
+
 // ToolExecutionEscalator lets a host replace a lightweight turn route after a
 // successfully completed tool execution. RunLoop invokes it only after an
 // actual successful dispatch, never for an argument, policy, failed, or
@@ -3477,6 +3484,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			ThoughtSignature: strings.TrimSpace(choice.Message.ThoughtSignature),
 			FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, hasToolCalls),
 		})
+		if hasToolCalls {
+			conversation, historyDelta = projectLoopToolCallArguments(cb, conversation, historyDelta, choice.Message.ToolCalls)
+		}
 
 		// No tool calls → final answer.
 		if !hasToolCalls {
@@ -5197,6 +5207,17 @@ func committedCheckpointToolName(calls []llm.ToolCall, entries []ConversationEnt
 		return strings.TrimSpace(calls[0].Function.Name)
 	}
 	return ""
+}
+
+func projectLoopToolCallArguments(cb LoopCallbacks, conversation []interface{}, history []ConversationEntry, calls []llm.ToolCall) ([]interface{}, []ConversationEntry) {
+	projector, ok := cb.(ToolCallArgumentsProjector)
+	if !ok {
+		return conversation, history
+	}
+	for _, call := range calls {
+		conversation, history = projector.ProjectToolCallArguments(conversation, history, call)
+	}
+	return conversation, history
 }
 
 func projectLoopToolResult(cb LoopCallbacks, name string, result ToolExecutionResult) string {

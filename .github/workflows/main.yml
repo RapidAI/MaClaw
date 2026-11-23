@@ -66,8 +66,8 @@ jobs:
           -count=1 -race
 
       # guiapp's linux pet/floating files are cgo with pkg-config gtk+-3.0, and
-      # the wails v2 runtime needs webkit2gtk: install them (4.0 on 22.04, or
-      # 4.1 + build tag on 24.04/26.04) or the compile step dies on pkg-config.
+      # the wails v2 runtime needs webkit2gtk: install them (4.1 + build tag
+      # on 24.04/26.04) or the compile step dies on pkg-config.
       - name: Install GTK for GUI host compile
         run: |
           # Ubuntu mirrors occasionally accept the connection and never
@@ -81,11 +81,12 @@ jobs:
           # The GTK dev packages pull ~200MB of dependencies; on a slow mirror
           # 420s was not enough (exit 124). Allow 15 minutes, and give the 4.1
           # variant its own budget rather than sharing a spent deadline.
-          if sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
-            echo "GUIHOST_TAGS=" >> $GITHUB_ENV
-          else
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
             sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             echo "GUIHOST_TAGS=webkit2_41" >> $GITHUB_ENV
+          else
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+            echo "GUIHOST_TAGS=" >> $GITHUB_ENV
           fi
 
       - name: Compile GUI host package
@@ -826,7 +827,7 @@ jobs:
             goos: windows
           - os: macos-latest
             goos: darwin
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             goos: linux
     steps:
       - uses: actions/checkout@v5
@@ -1067,14 +1068,20 @@ jobs:
             sleep 10
           done
           sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+            echo "TP_WAILS_TAGS=desktop,production,oem_qianxin,webkit2_41" >> $GITHUB_ENV
+          else
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+            echo "TP_WAILS_TAGS=desktop,production,oem_qianxin" >> $GITHUB_ENV
+          fi
 
       - name: Build TigerProxy Linux
         if: matrix.goos == 'linux'
         run: |
           mkdir -p dist
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "dist/TigerProxy_linux_amd64" ./TigerProxy/
+            go build -tags "${TP_WAILS_TAGS}" -ldflags "-s -w" -o "dist/TigerProxy_linux_amd64" ./TigerProxy/
 
       - name: Create TigerProxy AppImage (Linux)
         if: matrix.goos == 'linux'
@@ -1654,15 +1661,12 @@ jobs:
   # ============================================================
   # Linux: GUI (amd64, CGO native) + TUI/tool + AppImage
   # Build on multiple Ubuntu versions to produce binaries for:
-  #   - Ubuntu 22.04 (webkit2gtk-4.0)
   #   - Ubuntu 24.04 (webkit2gtk-4.1)
-  #   - Ubuntu 26.04 (webkit2gtk-4.1, same binary as 24.04)
-  # When ubuntu-26.04 runner becomes available, add it to the
-  # os_version matrix to build natively on that platform.
+  #   - Ubuntu 26.04 (webkit2gtk-4.1)
   #
   # AppImages bundle WebKit/GTK (see build/linux/package_appimage.sh) so a
-  # remote host — especially a typical Ubuntu 24.04 hub/VPS — can run the
-  # matching *-u2404.AppImage without installing the runner's libwebkit2gtk.
+  # remote host — especially a typical Ubuntu 24.04/26.04 hub/VPS — can run the
+  # matching *-u2404.AppImage / *-u2604.AppImage without installing the runner's libwebkit2gtk.
   # Each job smokes --version and an xvfb window start after packaging.
   # ============================================================
   build-linux:
@@ -1671,7 +1675,7 @@ jobs:
       fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
-        os_version: [ubuntu-22.04, ubuntu-24.04]
+        os_version: [ubuntu-24.04, ubuntu-26.04]
     runs-on: ${{ matrix.os_version }}
     steps:
       - uses: actions/checkout@v5
@@ -1700,15 +1704,15 @@ jobs:
 
       - name: Compute OS suffix for artifact naming
         run: |
-          # Extract Ubuntu version number (e.g. "22.04" from "ubuntu-22.04")
+          # Extract Ubuntu version number (e.g. "24.04" from "ubuntu-24.04")
           OS_VER="${{ matrix.os_version }}"
           UBUNTU_VER="${OS_VER#ubuntu-}"
-          # Short label for filenames: "u2204", "u2404", etc.
+          # Short label for filenames: "u2404", "u2604", etc.
           UBUNTU_LABEL="u${UBUNTU_VER/./}"
           echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
           echo "UBUNTU_LABEL=${UBUNTU_LABEL}" >> $GITHUB_ENV
           # Only build TUI/tool/maclawsrv on the newest runner (avoid duplicate pure-Go artifacts)
-          if [ "${{ matrix.os_version }}" = "ubuntu-24.04" ]; then
+          if [ "${{ matrix.os_version }}" = "ubuntu-26.04" ]; then
             echo "BUILD_PURE_GO=true" >> $GITHUB_ENV
           else
             echo "BUILD_PURE_GO=false" >> $GITHUB_ENV
@@ -1738,18 +1742,19 @@ jobs:
             sleep 10
           done
           sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
-          # Try 4.0 first (Ubuntu 22.04), fall back to 4.1 (Ubuntu 24.04/26.04)
-          if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
-            TAGS="desktop,production"
-            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
-            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
-            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
-          else
-            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          # Prefer 4.1 (Ubuntu 24.04/26.04), fall back to 4.0 (legacy)
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             TAGS="desktop,production,webkit2_41"
             echo "WEBKIT_API=4.1" >> $GITHUB_ENV
             echo "WEBKIT_SONAME=libwebkit2gtk-4.1.so.0" >> $GITHUB_ENV
             echo "WEBKIT_PKG=libwebkit2gtk-4.1-0" >> $GITHUB_ENV
+          else
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+            TAGS="desktop,production"
+            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -1843,7 +1848,7 @@ jobs:
       - name: Create AppImage (amd64)
         run: |
           # Bundle WebKit/GTK into the AppImage so a remote host can run it.
-          # Artifact names stay MaClaw|TigerClaw|MetaStaff-x86_64-u2204|u2404.AppImage.
+          # Artifact names stay MaClaw|TigerClaw|MetaStaff-x86_64-u2404|u2604.AppImage.
           mkdir -p dist
           cp "build/bin/${BRAND_APP_NAME}_amd64_linux" \
             "dist/${BRAND_APP_NAME}_amd64_linux_${UBUNTU_LABEL}"
@@ -1921,7 +1926,7 @@ jobs:
       fail-fast: false
       matrix:
         brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || inputs.BRAND == 'metastaff' && fromJSON('["metastaff"]') || fromJSON('["", "qianxin", "metastaff"]') }}
-        os_version: [ubuntu-22.04-arm, ubuntu-24.04-arm]
+        os_version: [ubuntu-24.04-arm, ubuntu-26.04-arm]
     runs-on: ${{ matrix.os_version }}
     steps:
       - uses: actions/checkout@v5
@@ -1950,14 +1955,14 @@ jobs:
 
       - name: Compute OS suffix for artifact naming
         run: |
-          # Extract Ubuntu version number (e.g. "22.04" from "ubuntu-22.04-arm")
+          # Extract Ubuntu version number (e.g. "24.04" from "ubuntu-24.04-arm")
           OS_VER="${{ matrix.os_version }}"
           UBUNTU_VER=$(echo "$OS_VER" | sed 's/ubuntu-//;s/-arm//')
           UBUNTU_LABEL="u${UBUNTU_VER/./}"
           echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
           echo "UBUNTU_LABEL=${UBUNTU_LABEL}" >> $GITHUB_ENV
           # Only build srvdemo on the newest runner (avoid duplicate artifacts)
-          if [ "${{ matrix.os_version }}" = "ubuntu-24.04-arm" ]; then
+          if [ "${{ matrix.os_version }}" = "ubuntu-26.04-arm" ]; then
             echo "BUILD_SRVDEMO=true" >> $GITHUB_ENV
           else
             echo "BUILD_SRVDEMO=false" >> $GITHUB_ENV
@@ -1987,17 +1992,19 @@ jobs:
             sleep 10
           done
           sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
-          if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
-            TAGS="desktop,production"
-            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
-            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
-            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
-          else
-            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          # Prefer 4.1 (Ubuntu 24.04/26.04), fall back to 4.0 (legacy)
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
             TAGS="desktop,production,webkit2_41"
             echo "WEBKIT_SONAME=libwebkit2gtk-4.1.so.0" >> $GITHUB_ENV
             echo "WEBKIT_PKG=libwebkit2gtk-4.1-0" >> $GITHUB_ENV
             echo "WEBKIT_API=4.1" >> $GITHUB_ENV
+          else
+            sudo timeout 900 apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+            TAGS="desktop,production"
+            echo "WEBKIT_SONAME=libwebkit2gtk-4.0.so.37" >> $GITHUB_ENV
+            echo "WEBKIT_PKG=libwebkit2gtk-4.0-37" >> $GITHUB_ENV
+            echo "WEBKIT_API=4.0" >> $GITHUB_ENV
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -2406,16 +2413,17 @@ jobs:
             sleep 10
           done
           sudo timeout 300 apt-get install -y --no-install-recommends ca-certificates curl 2>/dev/null || true
-          # Wails v2 defaults to WebKitGTK 4.0, but current Ubuntu runners may
-          # expose only 4.1. Keep the installed development package and Wails
+          # Wails v2 defaults to WebKitGTK 4.0, but current Ubuntu runners (24.04/26.04)
+          # expose 4.1. Keep the installed development package and Wails
           # build tag in lockstep so CGO asks pkg-config for the right API.
-          if sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev; then
-            webkit_pkg=webkit2gtk-4.0
-            wails_tags=""
-          else
-            sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
+            sudo timeout 900 apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
             webkit_pkg=webkit2gtk-4.1
             wails_tags=webkit2_41
+          else
+            sudo timeout 900 apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.0-dev
+            webkit_pkg=webkit2gtk-4.0
+            wails_tags=""
           fi
           pkg-config --modversion gtk+-3.0 gio-unix-2.0 "$webkit_pkg"
           echo "CLAWMATE_WAILS_BUILD_TAGS=$wails_tags" >> "$GITHUB_ENV"
@@ -2809,10 +2817,10 @@ jobs:
           assets = []
           if wants("maclaw"):
               assets += [
-                  "MaClaw-aarch64-u2204.AppImage",
                   "MaClaw-aarch64-u2404.AppImage",
-                  "MaClaw-x86_64-u2204.AppImage",
+                  "MaClaw-aarch64-u2604.AppImage",
                   "MaClaw-x86_64-u2404.AppImage",
+                  "MaClaw-x86_64-u2604.AppImage",
                   "MaClaw-Setup.exe",
                   "MaClawGo.apk",
                   "MaClaw-Universal.pkg",
@@ -2823,19 +2831,19 @@ jobs:
               ]
           if wants("qianxin"):
               assets += [
-                  "TigerClaw-aarch64-u2204.AppImage",
                   "TigerClaw-aarch64-u2404.AppImage",
-                  "TigerClaw-x86_64-u2204.AppImage",
+                  "TigerClaw-aarch64-u2604.AppImage",
                   "TigerClaw-x86_64-u2404.AppImage",
+                  "TigerClaw-x86_64-u2604.AppImage",
                   "TigerClaw-Setup.exe",
                   "TigerClaw-Universal.pkg",
               ]
           if wants("metastaff"):
               assets += [
-                  "MetaStaff-aarch64-u2204.AppImage",
                   "MetaStaff-aarch64-u2404.AppImage",
-                  "MetaStaff-x86_64-u2204.AppImage",
+                  "MetaStaff-aarch64-u2604.AppImage",
                   "MetaStaff-x86_64-u2404.AppImage",
+                  "MetaStaff-x86_64-u2604.AppImage",
                   "MetaStaff-Setup.exe",
                   "MetaStaff-Universal.pkg",
               ]

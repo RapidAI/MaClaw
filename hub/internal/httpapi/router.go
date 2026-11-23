@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
+	"github.com/RapidAI/CodeClaw/hub/internal/cloudagent"
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
@@ -1565,7 +1566,31 @@ func NewRouter(
 		// Reading-group invitations ride this notification system so an invitee
 		// who is offline still receives them on the next connect.
 		ConfigureCompanionGroupInviteNotifier(identity, notifSvc)
-		registerRemoteControl(mux, hubDB, identity, deviceSvc, notifSvc, botSvc)
+		rc := registerRemoteControl(mux, hubDB, identity, deviceSvc, notifSvc, botSvc)
+		if cloudSvc := cloudagent.New(hubDB, system); cloudSvc != nil {
+			cloudSvc.Start(context.Background())
+			if rc != nil {
+				rc.Cloud = cloudSvc.Dispatcher()
+			}
+			users := cloudagent.UserHandler{Svc: cloudSvc, RC: rc, Viewer: cloudAgentViewer(identity)}
+			mux.HandleFunc("GET /api/v1/cloud-agents", users.List)
+			mux.HandleFunc("POST /api/v1/cloud-agents", users.Create)
+			mux.HandleFunc("GET /api/v1/cloud-agents/{id}", users.Get)
+			mux.HandleFunc("PATCH /api/v1/cloud-agents/{id}", users.Patch)
+			mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}", users.Delete)
+			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/llm", users.SetLLM)
+			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/git", users.ConnectGit)
+			mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}/git", users.DisconnectGit)
+			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/stop", users.Stop)
+			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/resume", users.Resume)
+			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/control-grant", users.ControlGrant)
+			mux.HandleFunc("GET /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettingsGet(cloudSvc)))
+			mux.HandleFunc("PATCH /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettings(cloudSvc, adminAudit)))
+			mux.HandleFunc("PATCH /api/admin/cloud-agents/users/{id}/limits", requireTenantAdmin(cloudAgentAdminUserLimits(cloudSvc, adminAudit)))
+			mux.HandleFunc("POST /api/internal/cloud-agents/heartbeat", cloudSvc.ServeHeartbeat)
+			mux.HandleFunc("POST /api/internal/cloud-agents/stream", cloudAgentStream(rc, cloudSvc))
+			mux.HandleFunc("POST /api/internal/cloud-agents/llm/chat", cloudAgentLLMChat(hubDB, cloudSvc, identity, system, securitySvc, llmPromptCache))
+		}
 
 		// Admin routes (requireAdmin)
 		mux.HandleFunc("POST /api/v1/admin/notifications", requireAdmin(notifHandler.HandleCreateNotification))

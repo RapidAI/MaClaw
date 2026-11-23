@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/MaClawSrv/cloudagent"
 	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -115,6 +116,7 @@ type HTTPServer struct {
 	closeOnce                   sync.Once
 	// platformBindingCache avoids scanning every tenant on each chat turn.
 	platformBindingCache sync.Map
+	cloudRuntime         *cloudagent.Runtime
 }
 
 func newWeixinQRTokenStore() *weixinQRTokenStore {
@@ -205,6 +207,11 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
+	cloudRT, cloudErr := cloudagent.Open(svc.DataRoot(), adminSecret)
+	if cloudErr != nil {
+		return nil, fmt.Errorf("cloud agents: %w", cloudErr)
+	}
+	s.cloudRuntime = cloudRT
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s, nil
@@ -236,6 +243,9 @@ func (s *HTTPServer) Close() {
 		}
 		if s.codingRuntimeStore != nil {
 			_ = s.codingRuntimeStore.Close()
+		}
+		if s.cloudRuntime != nil {
+			_ = s.cloudRuntime.Close()
 		}
 	})
 }
@@ -298,6 +308,7 @@ func (s *HTTPServer) routes() {
 	s.registerAdminRoutes()
 	s.registerPlatformRoutes()
 	s.registerUserAPIRoutes()
+	s.registerCloudAgentRoutes()
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {

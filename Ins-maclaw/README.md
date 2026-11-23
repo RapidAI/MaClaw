@@ -13,7 +13,7 @@ Supported targets:
 
 - Windows: downloads `<Brand>-Setup.exe`; release includes GUI-subsystem and console-subsystem bootstrap variants
 - macOS: downloads `<Brand>-Universal.pkg`
-- Linux: downloads the matching AppImage for `amd64`/`arm64` and Ubuntu 22.04/24.04 WebKit ABI
+- Linux: downloads the matching AppImage for `amd64`/`arm64` and Ubuntu 24.04/26.04 WebKit ABI
 
 Default brand is `maclaw`, displayed as `MaClaw (原厂品牌)` in Chinese and `MaClaw (Original Brand)` in English.
 Optional OEM brands are `tigerclaw`, displayed as `TigerClaw (奇安信 OEM 版)` / `TigerClaw (QiAnXin OEM Edition)`, and `metastaff`, displayed as `智员 MetaStaff (OEM 版)` / `MetaStaff (OEM Edition)`.

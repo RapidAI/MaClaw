@@ -1345,3 +1345,127 @@ if (typeof window !== 'undefined') {
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function changeAdminPassword() { const currentPassword = document.getElementById('currentPasswordInput').value; const newPassword = document.getElementById('newPasswordInput').value; const confirmPassword = document.getElementById('confirmPasswordInput').value; if (!currentPassword || !newPassword) { const msg = tr('requestFailed'); setOutput(msg); showToast(msg, 'error'); return; } if (newPassword !== confirmPassword) { const msg = ptr('mismatch'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); document.getElementById('currentPasswordInput').value = ''; document.getElementById('newPasswordInput').value = ''; document.getElementById('confirmPasswordInput').value = ''; refreshAdminHeader(); const msg = ptr('changed'); setOutput(msg); showToast(msg, 'success'); } catch (err) { setOutput(err.message); showToast(err.message, 'error'); } }
 async function updateAdminProfile() { const email = document.getElementById('adminEmailInput').value.trim(); if (!email) { const msg = prf('required'); setOutput(msg); showToast(msg, 'error'); return; } try { const data = await api('/api/admin/profile', { method: 'POST', body: JSON.stringify({ email }) }); if (data.access_token) localStorage.setItem(adminTokenKey, data.access_token); if (data.admin) setAdminProfile(data.admin); refreshAdminHeader(); const msg = prf('saved'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = prf('failed').replace('{error}', err.message); setOutput(msg); showToast(msg, 'error'); } }
+
+const MACLAWSRV_I18N = {
+  en: {
+    title: 'maclawsrv connection',
+    hint: 'Bots and cloud tasks share this maclawsrv. Cloud tasks have no host unless the address is loopback (127.0.0.1 or ::1) and the admin secret is set.',
+    url: 'maclawsrv URL',
+    admin: 'Admin secret',
+    token: 'Access token',
+    save: 'Save',
+    reload: 'Reload',
+    blank: 'Leave a secret or token blank to keep the saved value.',
+    needUrl: 'Enter the maclawsrv URL',
+    badUrl: 'The URL must start with http:// or https:// and must not include a username',
+    saved: 'Saved',
+    adminSet: 'Admin secret saved',
+    adminMissing: 'No admin secret saved',
+    tokenSet: 'Access token saved',
+    tokenMissing: 'No access token saved',
+    loadFailed: 'Load maclawsrv connection failed: {error}',
+    saveFailed: 'Save maclawsrv connection failed: {error}'
+  },
+  zh: {
+    title: 'maclawsrv \u63a5\u5165',
+    hint: 'Bot \u548c\u4e91\u7aef\u4efb\u52a1\u5171\u7528\u8fd9\u4e00\u4efd\u914d\u7f6e\u3002\u4e91\u7aef\u4efb\u52a1\u53ea\u6709\u5728\u5730\u5740\u662f\u672c\u673a\u56de\u73af\uff08127.0.0.1 \u6216 ::1\uff09\u5e76\u4e14\u4fdd\u5b58\u4e86\u7ba1\u7406\u5bc6\u94a5\u65f6\u624d\u6709\u4efb\u52a1\u5bbf\u4e3b\u3002',
+    url: 'maclawsrv \u5730\u5740',
+    admin: '\u7ba1\u7406\u5bc6\u94a5',
+    token: '\u8bbf\u95ee\u4ee4\u724c',
+    save: '\u4fdd\u5b58',
+    reload: '\u91cd\u65b0\u52a0\u8f7d',
+    blank: '\u5bc6\u94a5\u6216\u4ee4\u724c\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u503c\u3002',
+    needUrl: '\u8bf7\u586b\u5199 maclawsrv \u5730\u5740',
+    badUrl: '\u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934\uff0c\u4e14\u4e0d\u80fd\u5e26\u8d26\u53f7',
+    saved: '\u5df2\u4fdd\u5b58',
+    adminSet: '\u7ba1\u7406\u5bc6\u94a5\u5df2\u4fdd\u5b58',
+    adminMissing: '\u5c1a\u672a\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5',
+    tokenSet: '\u8bbf\u95ee\u4ee4\u724c\u5df2\u4fdd\u5b58',
+    tokenMissing: '\u5c1a\u672a\u4fdd\u5b58\u8bbf\u95ee\u4ee4\u724c',
+    loadFailed: '\u8bfb\u53d6 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}',
+    saveFailed: '\u4fdd\u5b58 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}'
+  }
+};
+
+function maclawsrvText() {
+  const lang = (typeof getCurrentLanguage === 'function' && getCurrentLanguage() === 'en') ? 'en' : 'zh';
+  return MACLAWSRV_I18N[lang] || MACLAWSRV_I18N.zh;
+}
+
+function applyMaclawsrvI18n() {
+  const t = maclawsrvText();
+  const set = function(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  set('maclawsrvConnectionTitle', t.title);
+  set('maclawsrvConnectionHint', t.hint);
+  set('maclawsrvBaseUrlLabel', t.url);
+  set('maclawsrvAdminSecretLabel', t.admin);
+  set('maclawsrvAccessTokenLabel', t.token);
+  set('maclawsrvConnectionSaveBtn', t.save);
+  set('maclawsrvConnectionReloadBtn', t.reload);
+}
+
+function maclawsrvUrlOk(value) {
+  var raw = String(value || '').trim();
+  var parsed;
+  try { parsed = new URL(raw); } catch (err) { return false; }
+  return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.host && !parsed.username && !parsed.password;
+}
+
+async function loadMaclawsrvConnection() {
+  applyMaclawsrvI18n();
+  const status = document.getElementById('maclawsrvConnectionStatus');
+  try {
+    const data = await api('/api/admin/bots/settings');
+    const url = document.getElementById('maclawsrvBaseUrl');
+    if (url) url.value = data && data.base_url || '';
+    const admin = document.getElementById('maclawsrvAdminSecret');
+    const token = document.getElementById('maclawsrvAccessToken');
+    if (admin) admin.value = '';
+    if (token) token.value = '';
+    const t = maclawsrvText();
+    if (status) {
+      const adminLine = data && data.admin_secret_set ? t.adminSet : t.adminMissing;
+      const tokenLine = data && data.token_set ? t.tokenSet : t.tokenMissing;
+      status.textContent = adminLine + ' \u00b7 ' + tokenLine + ' \u00b7 ' + t.blank;
+    }
+    return data;
+  } catch (err) {
+    const msg = maclawsrvText().loadFailed.replace('{error}', err.message);
+    if (status) status.textContent = msg;
+    if (typeof showToast === 'function') showToast(msg, 'error');
+    return null;
+  }
+}
+
+async function saveMaclawsrvConnection() {
+  const t = maclawsrvText();
+  const base = (document.getElementById('maclawsrvBaseUrl').value || '').trim();
+  if (!base) {
+    showToast(t.needUrl, 'error');
+    return;
+  }
+  if (!maclawsrvUrlOk(base)) {
+    showToast(t.badUrl, 'error');
+    return;
+  }
+  const body = { base_url: base };
+  const admin = document.getElementById('maclawsrvAdminSecret').value || '';
+  const token = document.getElementById('maclawsrvAccessToken').value || '';
+  if (admin !== '') body.admin_secret = admin;
+  if (token !== '') body.access_token = token;
+  const button = document.getElementById('maclawsrvConnectionSaveBtn');
+  if (button) button.disabled = true;
+  try {
+    await api('/api/admin/bots/settings', { method: 'PUT', body: JSON.stringify(body) });
+    await loadMaclawsrvConnection();
+    if (typeof showToast === 'function') showToast(t.saved, 'success');
+  } catch (err) {
+    const msg = t.saveFailed.replace('{error}', err.message);
+    if (typeof showToast === 'function') showToast(msg, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}

@@ -475,18 +475,21 @@ func linuxUbuntuLabel() string {
 	if err != nil {
 		return "u2404"
 	}
-	text := string(data)
+	return parseUbuntuLabelFromOSRelease(string(data))
+}
+
+func parseUbuntuLabelFromOSRelease(text string) string {
 	versionID := ""
 	for _, line := range strings.Split(text, "\n") {
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || key != "VERSION_ID" {
+		if !ok || strings.TrimSpace(key) != "VERSION_ID" {
 			continue
 		}
-		versionID = strings.Trim(value, `"'`)
+		versionID = strings.Trim(strings.TrimSpace(value), `"'`)
 		break
 	}
-	if strings.HasPrefix(versionID, "22.") {
-		return "u2204"
+	if strings.HasPrefix(versionID, "26.") {
+		return "u2604"
 	}
 	return "u2404"
 }

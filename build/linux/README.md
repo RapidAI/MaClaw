@@ -4,8 +4,8 @@ GitHub Actions builds one AppImage per Ubuntu/WebKit ABI. Download the file that
 
 | Host | Artifact | WebKit ABI |
 | --- | --- | --- |
-| Ubuntu 22.04 | `*-u2204.AppImage` | webkit2gtk 4.0 |
-| Ubuntu 24.04 / 26.04 (hub/VPS class) | `*-u2404.AppImage` | webkit2gtk 4.1 |
+| Ubuntu 24.04 | `*-u2404.AppImage` | webkit2gtk 4.1 |
+| Ubuntu 26.04 | `*-u2604.AppImage` | webkit2gtk 4.1 |
 
 Brand prefixes stay `MaClaw-`, `TigerClaw-`, `MetaStaff-`. Architecture is `x86_64` or `aarch64`.
 
@@ -31,7 +31,7 @@ FUSE is optional. If the kernel blocks FUSE, extract and run:
 ./squashfs-root/AppRun
 ```
 
-The standalone `*_linux_u2404` binary in the same workflow artifact is dynamically linked. On a host without the matching WebKit package it will not start; use the AppImage, or `sudo apt install libwebkit2gtk-4.1-0` (4.0-37 on Ubuntu 22.04).
+The standalone `*_linux_u2404` / `*_linux_u2604` binary in the same workflow artifact is dynamically linked. On a host without the matching WebKit package it will not start; use the AppImage, or `sudo apt install libwebkit2gtk-4.1-0`.
 
 ## What was wrong before
 

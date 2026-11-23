@@ -8,6 +8,26 @@ import (
 
 // The H.264 view stream is on unless MACLAW_DESKTOP_H264 is off/0/false/no, and
 // only answers /h264 and /h264.html on the noVNC gate.
+func TestSupervisorGateBoundsConnectionThreads(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket, threading, time
+sup._gate_connections = threading.BoundedSemaphore(1)
+release = threading.Event()
+sup.gate_connection = lambda *args: release.wait(1)
+a, b = socket.socketpair()
+print(sup.start_gate_connection(a, 6080, 6081, "token"))
+print(sup.start_gate_connection(b, 6080, 6081, "token"))
+release.set()
+time.sleep(0.1)
+print(sup.start_gate_connection(b, 6080, 6081, "token"))
+a.close()
+b.close()
+`)
+	if out != "True\nFalse\nTrue" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestSupervisorH264IsBehindItsFlag(t *testing.T) {
 	out := runSupervisorPython(t, `
 head = b"GET /h264 HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -130,6 +150,28 @@ print(msg.hex())
 
 // A viewer that falls behind drops deltas until the next IDR, and an IDR
 // clears whatever was still queued.
+func TestSupervisorH264MSEClientBoundsQueue(t *testing.T) {
+	out := runSupervisorPython(t, `
+print("mq.length>=8" in sup.H264_PLAYER, "ws.onclose=()=>{mq=[];" in sup.H264_PLAYER)
+`)
+	if out != "True True" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestSupervisorH264MSEBoundsSlowViewerQueue(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+v = sup.H264Viewer(socket.socketpair()[0], 20, "", True, mse=True)
+for i in range(sup.H264_MAX_QUEUED):
+    print(v.offer_mse(b"x"))
+print(len(v.queue), v.offer_mse(b"overflow"), len(v.queue), v.closed.is_set(), v.close_reason)
+`)
+	if out != "True\nTrue\nTrue\n3 False 3 True slow_viewer" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestSupervisorH264DropsToNextKeyframe(t *testing.T) {
 	out := runSupervisorPython(t, `
 import socket

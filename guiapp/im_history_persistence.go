@@ -99,6 +99,13 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// placeholder for dropped entries. memorySinkCollector only collects
 	// texts into a slice (no I/O, no locks) — actual persistence is async.
 	trimmed := trimHistoryWithSummaryPrecomputed(history, nil, memorySinkCollector, dynamicLimit, dynamicTokenLimit, estimatedTokens, confirmationOriginalTexts(h, userID))
+	compacted := false
+	if willCompact || historyMayHaveCompacted(history, trimmed) {
+		trimmed, compacted = h.preserveAutoCompactionHistory(userID, history, trimmed)
+	}
+	if !compacted {
+		droppedTexts = nil
+	}
 	// A file-companion /clear or a synced transcript bumps a generation the
 	// live turn captured with the history it loaded. The loop still tries
 	// to save on the way out. That save must not put the previous chat back.
@@ -116,7 +123,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Index compacted entries for cross-page recall (Requirement 7).
 	// When entries are removed by trimming, index them in the PageIndex so
 	// the Recall Engine can still find file paths, decisions, etc.
-	if len(trimmed) < len(history) && h.currentMemoryStore() != nil && !isIsolatedAssistantSessionUserID(userID) {
+	if compacted && h.currentMemoryStore() != nil && !isIsolatedAssistantSessionUserID(userID) {
 		if pi := h.currentMemoryStore().PageIdx(); pi != nil {
 			var removedEntries []memory.Entry
 			if agent.HandoffMemoAll() {
@@ -146,7 +153,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	}
 
 	// --- Post-compaction actions (inspired by Codex CLI) ---
-	if willCompact && len(trimmed) < beforeCount {
+	if compacted {
 		elapsed := time.Since(startedAt)
 
 		// Improvement 9: Compaction analytics - log compaction stats for
@@ -288,6 +295,7 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 				store.FinishHandoffCompaction(userID, compactionID)
 				return
 			}
+			block = preserveContextCheckpointFooter(block, priorText)
 			if parsed, parsedOK := agent.ParseHandoffMemo(block); parsedOK {
 				log.Printf("[handoff-memo] async %s", parsed.LengthNote())
 			}
@@ -306,6 +314,7 @@ func (h *IMMessageHandler) scheduleCompactionHandoff(userID string, trimmed []ag
 		content := ""
 		if summary != "" {
 			content = compactionHandoffContent(summary, fileBlock)
+			content = preserveContextCheckpointFooter(content, priorText)
 		}
 		store.ReplaceCompactionPlaceholder(userID, compactionID, content)
 	}()
@@ -938,37 +947,28 @@ func extractToolCallMeta(raw interface{}) []session.ToolCallMeta {
 	return metas
 }
 
-// computeRemovedEntries returns entries from original that are not present in
-// trimmed. Uses a simple heuristic: entries in original[:len(original)-len(trimmed)]
-// that are not found in trimmed (by content identity) are considered removed.
-// This is an approximation suitable for IndexCompactedPage — exact tracking
-// is not needed because the PageIndex does its own content-level deduplication.
+// computeRemovedEntries returns searchable text whose exact role and projected
+// content no longer occur in trimmed. Tool-call declarations and text blocks
+// remain searchable; binary image payloads are deliberately not indexed.
 func computeRemovedEntries(original, trimmed []agent.ConversationEntry) []memory.Entry {
-	// Build a set of content fingerprints from trimmed entries.
-	kept := make(map[string]struct{}, len(trimmed))
+	type textIdentity struct {
+		role    string
+		content string
+	}
+	kept := make(map[textIdentity]struct{}, len(trimmed))
 	for _, e := range trimmed {
-		if text, ok := e.Content.(string); ok && text != "" {
-			// Use first 100 runes as fingerprint to avoid huge map keys.
-			r := []rune(text)
-			if len(r) > 100 {
-				r = r[:100]
-			}
-			kept[string(r)] = struct{}{}
+		if text := pageIndexConversationText(e); text != "" {
+			kept[textIdentity{role: e.Role, content: text}] = struct{}{}
 		}
 	}
 
 	var removed []memory.Entry
 	for _, e := range original {
-		text, ok := e.Content.(string)
-		if !ok || text == "" {
+		text := pageIndexConversationText(e)
+		if text == "" {
 			continue
 		}
-		r := []rune(text)
-		fp := r
-		if len(fp) > 100 {
-			fp = fp[:100]
-		}
-		if _, found := kept[string(fp)]; !found {
+		if _, found := kept[textIdentity{role: e.Role, content: text}]; !found {
 			removed = append(removed, memory.Entry{
 				Content:  text,
 				Category: memory.Category("conversation_" + e.Role),
@@ -976,4 +976,25 @@ func computeRemovedEntries(original, trimmed []agent.ConversationEntry) []memory
 		}
 	}
 	return removed
+}
+
+func pageIndexConversationText(entry agent.ConversationEntry) string {
+	var text string
+	switch content := entry.Content.(type) {
+	case string:
+		text = content
+	case []interface{}:
+		text = conversationEntryText(content)
+	}
+	if entry.ToolCalls == nil {
+		return text
+	}
+	data, err := json.Marshal(entry.ToolCalls)
+	if err != nil || string(data) == "null" {
+		return text
+	}
+	if text == "" {
+		return string(data)
+	}
+	return text + "\n" + string(data)
 }

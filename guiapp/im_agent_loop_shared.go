@@ -4681,9 +4681,9 @@ func bareContinuationUtterance(text string) bool {
 }
 
 // maybeOverlaySpilledToolResultReader lists read_tool_result on the next
-// request after a tool preview was spilled. The handle footer tells the model
-// to page the full payload with that tool; a closed semantic surface otherwise
-// rejects the call as unrendered, so the spill cannot be read back.
+// request after a tool result or argument preview was spilled. The handle
+// footer tells the model to page the full payload with that tool; a closed
+// semantic surface otherwise rejects the call as unrendered.
 func (c *sharedAgentLoopCallbacks) maybeOverlaySpilledToolResultReader() {
 	if c == nil || c.semanticSurface == nil {
 		return
@@ -4762,11 +4762,19 @@ func (c *sharedAgentLoopCallbacks) activateSpilledToolResultReader() bool {
 
 func historyHasToolResultHandle(entries []agent.ConversationEntry) bool {
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Role != "tool" {
-			continue
-		}
-		if strings.Contains(conversationEntryText(entries[i].Content), toolresult.HandleFooterMarker) {
-			return true
+		switch entries[i].Role {
+		case "tool":
+			if strings.Contains(conversationEntryText(entries[i].Content), toolresult.HandleFooterMarker) {
+				return true
+			}
+		case "assistant":
+			if entries[i].ToolCalls == nil {
+				continue
+			}
+			data, err := json.Marshal(entries[i].ToolCalls)
+			if err == nil && strings.Contains(string(data), toolresult.HandleFooterMarker) {
+				return true
+			}
 		}
 	}
 	return false
@@ -10066,7 +10074,8 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		if err != nil {
 			return semanticUnexecutedRejection(err)
 		}
-		principalID := c.semanticPrincipalID()
+		// A background chat task reuses the parent conversation's SSH session.
+		principalID := c.trustedSSHPrincipal()
 		connectArgs[registeredToolPolicyOwnerIDField] = principalID
 		result := c.handler.sshConnect(connectArgs)
 		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
@@ -10083,12 +10092,22 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 					// The dial already opened a session. A path check that
 					// refused the copy has to stay a recorded failure, or the
 					// admission is retracted after that session exists.
+					// The copy never started, so an open remote watch stays.
 					download = recordedSSHRefusalAfterEffect(download)
+				} else {
+					c.disarmOwnRemoteWatchAfterEffect(download)
 				}
 				return semanticSSHConnectDownloadResult(result, download)
 			}
 			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
-				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, semanticTrustedSSHCommandTimeout)
+				if body, handled := c.maybeHostRemoteSleepPoll(principalID, command, semanticTrustedSSHCommandTimeout); handled {
+					if strings.HasPrefix(body, "[system rejected]") || strings.HasPrefix(body, "[system unknown]") {
+						return sshConnectResultForFollowUpCommand(result) + "\n\n[命令执行失败] " + body
+					}
+					return sshConnectResultForFollowUpCommand(result) + "\n\n" + toolresult.CommandOutputMarker + "\n" + body
+				}
+				out, err := c.handler.executeTrustedSSH(principalID, command, semanticTrustedSSHCommandTimeout)
+				c.noteOrDisarmRemoteWatch(command, out, err)
 				if err != nil {
 					msg := err.Error()
 					if strings.Contains(msg, "trusted_ssh_timeout") {
@@ -10113,45 +10132,27 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if err != nil {
 		return semanticUnexecutedRejection(err)
 	}
+	principalID := c.trustedSSHPrincipal()
 	if remotePath != "" || localPath != "" {
-		session := trustedSSHSingleBoundSession(c.handler, c.semanticPrincipalID())
+		session := trustedSSHSingleBoundSession(c.handler, principalID)
 		if session == nil {
 			// The copy rides the pooled connection keyed by the session's
 			// HostConfig, not the PTY; a dead session's record is enough.
-			session = trustedSSHRecoverableBoundSession(c.handler, c.semanticPrincipalID())
+			session = trustedSSHRecoverableBoundSession(c.handler, principalID)
 		}
 		if session == nil {
 			return semanticUnexecutedRejection(fmt.Errorf("trusted_ssh_session_unavailable"))
 		}
-		return c.trustedSSHDownload(session.ID, remotePath, localPath)
+		download := c.trustedSSHDownload(session.ID, remotePath, localPath)
+		c.disarmOwnRemoteWatchAfterEffect(download)
+		return download
 	}
-	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, timeout)
-	if err != nil {
-		// No session, or a session that was already gone, means the command
-		// was not written. Recording that as unknown freezes the selection
-		// as if the command might have run.
-		var idle semanticEffectNotStarted
-		if errors.As(err, &idle) {
-			return semanticUnexecutedRejection(err)
-		}
-		// A timeout means the host stopped waiting and interrupted the
-		// command. The command was already written, so the attempt is a
-		// settled failure. A dropped session or an unobserved outcome after
-		// that write stays unknown: another call would not be a continuation
-		// of the same task.
-		if strings.Contains(err.Error(), "trusted_ssh_timeout") {
-			return semanticPrefixedRejection(err) + remoteSSHTimeoutHint(timeout)
-		}
-		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
-			return "[system unknown] " + err.Error()
-		}
-		return semanticPrefixedRejection(err)
+	if body, handled := c.maybeHostRemoteSleepPoll(principalID, command, timeout); handled {
+		return body
 	}
-	out, err := semanticTrustedSSHResultProjection(text)
-	if err != nil {
-		return "[system unknown] " + err.Error()
-	}
-	return out
+	text, err := c.handler.executeTrustedSSH(principalID, command, timeout)
+	c.noteOrDisarmRemoteWatch(command, text, err)
+	return trustedSSHCommandResult(text, err, timeout)
 }
 
 func (c *sharedAgentLoopCallbacks) trustedSSHDownload(sessionID, remotePath, localPath string) string {
@@ -11164,6 +11165,13 @@ func classifySharedLoopToolResult(name, text string) agent.ToolExecutionResult {
 	return agentruntime.ToolTextResult(text)
 }
 
+func (c *sharedAgentLoopCallbacks) ProjectToolCallArguments(conversation []interface{}, history []agent.ConversationEntry, call llm.ToolCall) ([]interface{}, []agent.ConversationEntry) {
+	if c == nil || c.handler == nil {
+		return conversation, history
+	}
+	return c.handler.projectOversizedToolCallArguments(conversation, history, call, c.userID, call.ID, nil)
+}
+
 // ProjectToolResult implements agent.ToolResultProjector. It deliberately uses
 // the same dual-view projector as the legacy GUI loop.
 func (c *sharedAgentLoopCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
@@ -11951,7 +11959,9 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 		model = c.llmCfg.Model
 	}
 	c.handler.recordLLMCost(model, inputTokens, outputTokens)
-	c.handler.publishContextWindowUsage(c.userID, inputTokens, c.llmCfg.EffectiveContextTokens())
+	if inputTokens > 0 {
+		c.handler.publishContextWindowUsage(c.userID, inputTokens, c.llmCfg.EffectiveContextTokens())
+	}
 }
 
 func (c *sharedAgentLoopCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {

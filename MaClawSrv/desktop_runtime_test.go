@@ -73,7 +73,7 @@ func TestNoneDesktopTurnOmitsDesktopAndLocalComputer(t *testing.T) {
 	localRelayTestEnabled = true
 	t.Cleanup(func() { localRelayTestEnabled = previous })
 	relay, err := localRelayModule{}.Tools(context.Background(), none)
-	if err != nil || len(relay) != 0 {
+	if err != nil || len(relay) != 1 || relay[0].Name != localTaskToolName {
 		t.Fatalf("relay tools=%v err=%v", relay, err)
 	}
 	normal := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
@@ -84,7 +84,7 @@ func TestNoneDesktopTurnOmitsDesktopAndLocalComputer(t *testing.T) {
 		t.Fatalf("ordinary turn tools=%v err=%v", got, err)
 	}
 	relay, err = localRelayModule{}.Tools(context.Background(), normal)
-	if err != nil || len(relay) != 1 || relay[0].Name != localRelayToolName {
+	if err != nil || len(relay) != 2 || relay[0].Name != localRelayToolName || relay[1].Name != localTaskToolName {
 		t.Fatalf("ordinary relay tools=%v err=%v", relay, err)
 	}
 }

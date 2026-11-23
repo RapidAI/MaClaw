@@ -170,13 +170,34 @@ func (e *localRelayDialError) Error() string {
 	return e.err.Error()
 }
 
+// localRelayWake lets a settings change reconnect without waiting out the
+// idle sleep. One buffered signal is enough; a live link is not dropped.
+var localRelayWake = make(chan struct{}, 1)
+
+func nudgeLocalRelay() {
+	select {
+	case localRelayWake <- struct{}{}:
+	default:
+	}
+}
+
+// localRelayWanted keeps the outbound link up when the person allows files
+// or network, or when the MCP service is on. The bot's task calls ride this
+// link, so MCP does not require the file/network switches or an open port.
+func (a *App) localRelayWanted() bool {
+	s := loadLocalRelaySettings()
+	if s.FilesEnabled || s.NetworkEnabled {
+		return true
+	}
+	return mcpHostEnabledForRelay(a)
+}
+
 func (a *App) localRelayLoop(ctx context.Context, agent *localrelay.Agent) {
 	failures := 0
 	for ctx.Err() == nil {
-		s := loadLocalRelaySettings()
-		if !s.FilesEnabled && !s.NetworkEnabled {
+		if !a.localRelayWanted() {
 			setLocalRelayLink(a, false, "")
-			if sleepCtx(ctx, 30*time.Second) != nil {
+			if sleepRelay(ctx, 30*time.Second) != nil {
 				return
 			}
 			continue
@@ -202,9 +223,22 @@ func (a *App) localRelayLoop(ctx context.Context, agent *localrelay.Agent) {
 			failures++
 			wait = time.Duration(1<<min(failures, 5)) * time.Second
 		}
-		if sleepCtx(ctx, wait) != nil {
+		if sleepRelay(ctx, wait) != nil {
 			return
 		}
+	}
+}
+
+func sleepRelay(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-localRelayWake:
+		return nil
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -376,6 +410,7 @@ func (a *App) SaveBotLocalAccess(in localrelay.Settings) (*BotLocalAccessState, 
 		settleLocalRelayPrompts(localrelay.AnswerOnce)
 	}
 	a.startLocalRelay()
+	nudgeLocalRelay()
 	return localRelaySnapshot(s), nil
 }
 

@@ -884,6 +884,30 @@ func semanticSSHConnectDownloadResult(connectResult, downloadResult string) stri
 	return downloadResult + "\n\n" + header
 }
 
+// trustedSSHCommandResult is the model-facing text for one SSH command.
+// A command that was never written stays retractable. A timeout is a settled
+// failure. A lost session stays unknown.
+func trustedSSHCommandResult(text string, err error, timeout time.Duration) string {
+	if err != nil {
+		var idle semanticEffectNotStarted
+		if errors.As(err, &idle) {
+			return semanticUnexecutedRejection(err)
+		}
+		if strings.Contains(err.Error(), "trusted_ssh_timeout") {
+			return semanticPrefixedRejection(err) + remoteSSHTimeoutHint(timeout)
+		}
+		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
+			return "[system unknown] " + err.Error()
+		}
+		return semanticPrefixedRejection(err)
+	}
+	out, projErr := semanticTrustedSSHResultProjection(text)
+	if projErr != nil {
+		return "[system unknown] " + projErr.Error()
+	}
+	return out
+}
+
 func semanticTrustedSSHResultProjection(text string) (string, error) {
 	if strings.Contains(text, "[voice_base64") || strings.Contains(text, "[file_base64") {
 		return "", fmt.Errorf("trusted_ssh_delivery_token")

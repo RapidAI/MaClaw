@@ -20,8 +20,8 @@ Optional:
   --display-name TEXT     Desktop Name= (defaults to --app-name)
   --icon PATH             PNG icon
   --arch ARCH             x86_64 | aarch64 (auto)
-  --ubuntu-ver VER        22.04 | 24.04
-  --ubuntu-label LABEL    u2204 | u2404
+  --ubuntu-ver VER        24.04 | 26.04
+  --ubuntu-label LABEL    u2404 | u2604
   --webkit-api VER        4.0 | 4.1 (auto from linked binary)
   --webkit-soname NAME    libwebkit2gtk-4.1.so.0
   --webkit-pkg DEB        libwebkit2gtk-4.1-0
@@ -93,32 +93,34 @@ if [ "$ARCH" = "aarch64" ]; then
 fi
 
 if [ -z "$WEBKIT_API" ]; then
-  if ldd "$BINARY" 2>/dev/null | grep -q 'libwebkit2gtk-4.1'; then
-    WEBKIT_API=4.1
-  else
+  if ldd "$BINARY" 2>/dev/null | grep -q 'libwebkit2gtk-4.0'; then
     WEBKIT_API=4.0
+  else
+    WEBKIT_API=4.1
   fi
 fi
 if [ -z "$WEBKIT_SONAME" ]; then
-  if [ "$WEBKIT_API" = "4.1" ]; then
-    WEBKIT_SONAME="libwebkit2gtk-4.1.so.0"
-  else
+  if [ "$WEBKIT_API" = "4.0" ]; then
     WEBKIT_SONAME="libwebkit2gtk-4.0.so.37"
+  else
+    WEBKIT_SONAME="libwebkit2gtk-4.1.so.0"
   fi
 fi
 if [ -z "$WEBKIT_PKG" ]; then
-  if [ "$WEBKIT_API" = "4.1" ]; then
-    WEBKIT_PKG="libwebkit2gtk-4.1-0"
-  else
+  if [ "$WEBKIT_API" = "4.0" ]; then
     WEBKIT_PKG="libwebkit2gtk-4.0-37"
+  else
+    WEBKIT_PKG="libwebkit2gtk-4.1-0"
   fi
 fi
 if [ -z "$UBUNTU_VER" ]; then
-  if [ "$WEBKIT_API" = "4.1" ]; then
-    UBUNTU_VER=24.04
-  else
-    UBUNTU_VER=22.04
+  if [ -f /etc/os-release ]; then
+    ver=$(grep -E '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" | cut -d. -f1,2)
+    if [ -n "$ver" ]; then
+      UBUNTU_VER="$ver"
+    fi
   fi
+  UBUNTU_VER="${UBUNTU_VER:-24.04}"
 fi
 if [ -z "$UBUNTU_LABEL" ]; then
   UBUNTU_LABEL="u${UBUNTU_VER/./}"

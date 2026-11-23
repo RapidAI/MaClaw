@@ -13,6 +13,8 @@ import { EventsEmit } from '../../../../wailsjs/runtime';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_OPEN_NEW_TASK_WIZARD } from '../../../constants/events';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 import { DialogProvider } from '../../CustomDialog';
+import { resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { remoteAssistantSessionSnapshot } from '../remoteAssistantSession';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
 import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
 
@@ -258,8 +260,11 @@ function openCreateDialog() {
 }
 
 afterEach(async () => {
+    localStorage.removeItem('maclaw.cloud-agent-opened.v1');
+    delete (window as unknown as { go?: unknown }).go;
     // Flush pending openEditRemoteDialog / save / test microtasks so unmount is quiet.
     await act(async () => {
+        resetCloudAssistantForTests();
         await Promise.resolve();
     });
     eventsEmitMock.mockClear();
@@ -1292,6 +1297,72 @@ describe('SidebarTaskManagement', () => {
         expect(rows.some(text => text.includes('Untouched task'))).toBe(false);
         const bandGroup = within(band).getByTestId('task-workdir-folder');
         expect(within(bandGroup).getAllByTestId('sidebar-task-row')).toHaveLength(2);
+    });
+
+    it('puts cloud agents in the 云端 section and mixes both places into 最近任务', async () => {
+        const resumeTask = vi.fn();
+        const openGrant = vi.fn(async () => 'grant-1');
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    ListCloudAgents: async () => [{
+                        id: 'cag_1',
+                        name: '云端演示',
+                        kind: 'session',
+                        status: 'idle',
+                        updated_at: '2026-11-23T12:00:00Z',
+                    }],
+                    OpenCloudAgentGrant: openGrant,
+                    RemoteControlOp: vi.fn(async (_grant: string, name: string) => {
+                        if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+                        if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\nhello'] });
+                        return '{}';
+                    }),
+                },
+            },
+        };
+        renderTaskManagement({
+            lang: 'zh',
+            resumeTask,
+            tasks: [
+                { ...baseProject, name: '本地演示', last_activity: '2026-11-23T11:00:00Z' },
+                {
+                    ...baseProject,
+                    id: 'ws',
+                    name: '工作区',
+                    project_path: 'D:/tasks/ws',
+                    tags: ['task_management', 'cloud_workspace:cws_a'],
+                    last_activity: '2026-11-23T10:00:00Z',
+                },
+            ],
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(screen.getByTestId('task-folder-cloud')).toBeTruthy();
+        const localPlace = screen.getByTestId('task-place-local');
+        const cloudFolder = screen.getByTestId('task-folder-cloud');
+        expect(localPlace.textContent).toContain('本地');
+        expect(cloudFolder.textContent).toContain('云端');
+        expect(localPlace.compareDocumentPosition(cloudFolder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        const recent = screen.getByTestId('task-folder-recent');
+        expect(within(recent).getAllByTestId('task-place-icon-local').length).toBeGreaterThan(0);
+        expect(within(recent).getAllByTestId('task-place-icon-cloud').length).toBeGreaterThan(0);
+        expect(within(cloudFolder).getByText('云端演示')).toBeTruthy();
+        expect(screen.getAllByTestId('cloud-agent-task-row')).toHaveLength(2);
+        for (const icon of screen.getAllByTestId('task-cloud-workspace-icon')) {
+            expect(icon.closest('[data-testid="task-folder-cloud"]')).toBeNull();
+        }
+        fireEvent.click(within(cloudFolder).getByText('云端演示'));
+        await waitFor(() => {
+            expect(openGrant).toHaveBeenCalledWith('cag_1');
+            const session = remoteAssistantSessionSnapshot();
+            expect(session?.taskName).toBe('云端演示');
+            expect(session?.projectPath).toBe('cloud-agent:cag_1');
+            expect(session?.offline).toBe(false);
+            expect(session?.canSend).toBe(true);
+        });
+        expect(resumeTask).not.toHaveBeenCalled();
     });
 
     it('keeps the 最近任务 band count at the configured entry cap', () => {

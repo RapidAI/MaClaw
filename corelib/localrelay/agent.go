@@ -226,6 +226,11 @@ func (a *Agent) ServeStream(ctx context.Context, stream net.Conn) {
 	if req.Host != "" {
 		fields = append(fields, "target", net.JoinHostPort(req.Host, strconv.Itoa(req.Port)))
 	}
+	if req.Op == OpMCP {
+		// Args can carry an SSH password. The server and tool are enough
+		// to see which call failed on the way across Hub.
+		fields = append(fields, "server", req.Server, "tool", req.Tool)
+	}
 	if req.Op != OpPing {
 		botlog.Write(firstNonEmpty(req.BotID, "localrelay"), "localrelay."+req.Op, err, fields...)
 	}
