@@ -871,7 +871,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		}
 		if result.HardExit {
 			status = TaskExecFailed
-			errMsg = hardExitSubAgentError(errMsg, result.Text)
+			errMsg = hardExitSubAgentError(errMsg)
 		}
 	}
 
@@ -7397,16 +7397,14 @@ func codingSubAgentStopFailure(result agent.LoopResult, openItems []codingAgentT
 	return true, TaskExecFailed, msg
 }
 
-// hardExitSubAgentError keeps a cause the loop already named. The empty
-// sentence is only for a hard exit that carried neither an error nor text,
-// which is the consecutive-empty stop. Other hard exits (same-tool failure,
-// no-progress) must not be rewritten as that sentence.
-func hardExitSubAgentError(errMsg, text string) string {
+// hardExitSubAgentError keeps a cause the loop already named. A hard exit
+// with no Error is the consecutive-empty stop: its Text is the last model
+// sentence, not the failure. Using that sentence as the task error reports
+// a success claim for a turn that produced no usable response. Other hard
+// exits (same-tool failure, no-progress) already put the cause in Error.
+func hardExitSubAgentError(errMsg string) string {
 	if strings.TrimSpace(errMsg) != "" {
 		return errMsg
-	}
-	if text = strings.TrimSpace(text); text != "" {
-		return compactSubAgentErrorSummary(text)
 	}
 	return "模型连续返回空响应，任务中断"
 }
@@ -18618,7 +18616,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		}
 		if result.HardExit {
 			status = TaskExecFailed
-			errMsg = hardExitSubAgentError(errMsg, result.Text)
+			errMsg = hardExitSubAgentError(errMsg)
 		}
 	}
 	summary := compactSubAgentModelSummary(result.Text)

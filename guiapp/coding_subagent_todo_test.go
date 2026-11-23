@@ -883,6 +883,16 @@ func TestCodingSubAgentStopFailureLeavesOtherHardExits(t *testing.T) {
 	}
 }
 
+func TestHardExitSubAgentErrorDoesNotUseModelProseAsCause(t *testing.T) {
+	prose := "已完成修复，测试通过。"
+	if got := hardExitSubAgentError(""); got != "模型连续返回空响应，任务中断" {
+		t.Fatalf("empty-response hard exit = %q, prose %q must not be the cause", got, prose)
+	}
+	if got := hardExitSubAgentError("工具 bash 连续失败 3 次，已停止执行。"); !strings.Contains(got, "连续失败") {
+		t.Fatalf("named cause was replaced: %q", got)
+	}
+}
+
 func TestAppendCodingAgentTodoTurnNote(t *testing.T) {
 	items := []codingAgentTodoItem{
 		{ID: "1", Content: "A", Status: codingAgentTodoCompleted},
