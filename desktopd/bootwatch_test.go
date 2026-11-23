@@ -109,6 +109,21 @@ func TestBootWatcherRetriesTemporaryFailure(t *testing.T) {
 	}
 }
 
+func TestBootWatcherRestartResetsOldBackoff(t *testing.T) {
+	d := &bootDocker{started: map[string]string{"maclaw-desktop-a": "t1"}, bootFails: map[string]int{"maclaw-desktop-a": 1}}
+	svc := &Service{Run: d.run}
+	w := &bootWatcher{seen: map[string]string{}}
+	if got := w.once(context.Background(), svc); len(got) != 0 {
+		t.Fatalf("first pass booted=%v", got)
+	}
+	d.mu.Lock()
+	d.started["maclaw-desktop-a"] = "t2"
+	d.mu.Unlock()
+	if got := w.once(context.Background(), svc); len(got) != 1 || d.execs() != 2 {
+		t.Fatalf("new start inherited old backoff booted=%v execs=%d", got, d.execs())
+	}
+}
+
 func TestBootWatcherSkipsUnsupportedBoot(t *testing.T) {
 	calls := 0
 	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
@@ -128,6 +143,15 @@ func TestBootWatcherSkipsUnsupportedBoot(t *testing.T) {
 	w.once(context.Background(), svc)
 	if calls != 1 {
 		t.Fatalf("unsupported boot calls=%d", calls)
+	}
+}
+
+func TestBootWatcherClearsStateWhenNoDesktopsRemain(t *testing.T) {
+	w := &bootWatcher{seen: map[string]string{"maclaw-desktop-a": "t1"}, retries: map[string]bootRetry{"maclaw-desktop-b": {started: "t2", attempts: 2}}}
+	svc := &Service{Run: func(context.Context, ...string) (string, error) { return "", nil }}
+	w.once(context.Background(), svc)
+	if len(w.seen) != 0 || len(w.retries) != 0 {
+		t.Fatalf("stale state seen=%v retries=%v", w.seen, w.retries)
 	}
 }
 

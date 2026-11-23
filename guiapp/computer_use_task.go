@@ -113,6 +113,57 @@ func computerUseStopKindFor(loopCtx *LoopContext, fallbackUserID string) compute
 	return computerUseStopNone
 }
 
+func computerUseTerminalToolRefusal(loopCtx *LoopContext, fallbackUserID, tool string) string {
+	if tool == "computer_done" || tool == "computer_playbook" {
+		return ""
+	}
+	if computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopInject {
+		return ""
+	}
+	_, reason := cuAttemptTerminal(cuSessionForOwner(computerUseOwnerFromLoop(loopCtx, fallbackUserID)))
+	return tool + ": " + reason + " Call computer_done."
+}
+
+func computerUseTerminalFailure(loopCtx *LoopContext, fallbackUserID, userText string) (text, errorText string, ok bool) {
+	if computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopInject {
+		return "", "", false
+	}
+	sess := cuSessionForOwner(computerUseOwnerFromLoop(loopCtx, fallbackUserID))
+	_, reason := cuAttemptTerminal(sess)
+	text = "Desktop operation did not finish: " + reason
+	if sessionRoundTextHasHan(userText) {
+		switch {
+		case sess != nil && sess.WindowHung():
+			text = "桌面操作未完成：目标窗口无响应。"
+		case sess != nil && sess.InputDenied():
+			text = "桌面操作未完成：目标窗口拒绝输入。"
+		default:
+			text = "桌面操作未完成：已达到桌面操作步数上限。"
+		}
+	}
+	return text, "computer_use_terminal: " + reason, true
+}
+
+func retireTerminalComputerUseAttempt(loopCtx *LoopContext, fallbackUserID string) {
+	if computerUseStopKindFor(loopCtx, fallbackUserID) != computerUseStopInject {
+		return
+	}
+	owner := computerUseOwnerFromLoop(loopCtx, fallbackUserID)
+	epoch, released := releaseComputerUseSessionForOwner(owner)
+	if !released {
+		return
+	}
+	steps := 0
+	if sess := cuSessionForOwner(owner); sess != nil {
+		if p := sess.Policy(); p != nil {
+			steps = p.StepCount()
+		}
+	}
+	if computerUseClearedEpochCurrent(epoch) {
+		emitComputerUseDoneControl(steps)
+	}
+}
+
 func computerUseTaskCompleted(owner string) bool {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
@@ -249,6 +300,7 @@ func beginComputerUseTask(owner, requestID, goal string, acceptance []string) {
 	// Pause and stop stay: those are the person's controls.
 	if sess := cuSessionForOwner(owner); sess != nil {
 		sess.ClearInputDenied()
+		sess.ClearWindowHung()
 		sess.ResetSteps()
 	}
 	clearComputerUseExplicitFocus()

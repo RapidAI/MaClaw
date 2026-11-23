@@ -77,18 +77,7 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 		opts.InFlightLifecycle.SetOnce()
 	}
 
-	if opts.Execution.IsFailure() && len(tc.Function.Arguments) > 2000 {
-		// Keep trajectory args aligned with conversation truncation (avoid multi-KB blobs).
-		summary := tc.Function.Arguments
-		if runes := []rune(summary); len(runes) > 200 {
-			summary = string(runes[:200]) + fmt.Sprintf("... [截断，原始 %d 字符]", len(runes))
-		}
-		if opts.Recorder != nil {
-			// Prefer redacted id if we already rewrote the trajectory tool call id.
-			opts.Recorder.TruncateToolCallArguments(recordToolResultID, summary)
-		}
-	}
-	conversation = handleOversizedFailedToolArguments(conversation, tc, opts.Execution)
+	conversation, history = h.projectOversizedToolCallArguments(conversation, history, tc, opts.UserID, recordToolResultID, opts.Recorder)
 	writeHintStart := len(conversation)
 	conversation = updateWriteFileRecoveryHint(conversation, opts.Execution, opts.ConsecutiveWriteFileErrors)
 	if len(conversation) > writeHintStart && opts.RecordSystemMessages != nil {
@@ -242,16 +231,6 @@ func (h *IMMessageHandler) recordAgentLoopToolTrace(ctx *LoopContext, tc llm.Too
 	}
 	h.appendTraceEvent(ctx, "tool.executed", "info", tc.Function.Name, truncateTraceText(traceResult, 220), "", tc.Function.Name)
 	h.appendTraceEvidence(ctx, traceSourceKindAITool.String(), traceCategoryForToolExecution(execResult).String(), tc.Function.Name, truncateTraceText(traceResult, 400), "", tc.Function.Name)
-}
-
-func handleOversizedFailedToolArguments(conversation []interface{}, tc llm.ToolCall, execResult toolExecutionResult) []interface{} {
-	if !execResult.IsFailure() || len(tc.Function.Arguments) <= 2000 {
-		return conversation
-	}
-	truncateToolCallArgsInConversation(conversation, tc.ID, tc.Function.Arguments)
-	log.Printf("[agent-loop] truncated oversized args (%d chars) for failed tool call %s/%s",
-		len(tc.Function.Arguments), tc.Function.Name, tc.ID)
-	return conversation
 }
 
 func updateWriteFileRecoveryHint(conversation []interface{}, execResult toolExecutionResult, consecutiveErrors *int) []interface{} {

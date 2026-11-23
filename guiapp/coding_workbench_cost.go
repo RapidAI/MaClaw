@@ -115,6 +115,10 @@ func (h *IMMessageHandler) noteCodingContextFill(userID string, promptTokens, ou
 }
 
 func (h *IMMessageHandler) publishContextWindowUsage(userID string, usedTokens, maxTokens int) {
+	h.publishContextWindowUsageEstimate(userID, usedTokens, maxTokens, false)
+}
+
+func (h *IMMessageHandler) publishContextWindowUsageEstimate(userID string, usedTokens, maxTokens int, estimated bool) {
 	if h == nil || h.app == nil || userID == "" || maxTokens <= 0 {
 		return
 	}
@@ -122,9 +126,10 @@ func (h *IMMessageHandler) publishContextWindowUsage(userID string, usedTokens, 
 		usedTokens = 0
 	}
 	h.app.emitAIAssistantStreamEvent("ai-assistant-context-usage", AIAssistantStreamEvent{
-		SessionKey:        userID,
-		ContextUsedTokens: usedTokens,
-		ContextMaxTokens:  maxTokens,
+		SessionKey:            userID,
+		ContextUsedTokens:     usedTokens,
+		ContextMaxTokens:      maxTokens,
+		ContextUsageEstimated: estimated,
 	})
 }
 

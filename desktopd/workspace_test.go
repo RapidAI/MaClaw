@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +93,101 @@ func (h *fakeHost) service(t *testing.T) *Service {
 			h.execs = append(h.execs, strings.Join(a, " "))
 			return "ok", 0, nil
 		},
+	}
+}
+
+func TestWorkspaceInitializationIsSerialized(t *testing.T) {
+	mounts, err := desktop.PackageMounts("tenant", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mountText strings.Builder
+	for _, mount := range mounts {
+		mountText.WriteString(mount.Volume + "=" + mount.Target + " ")
+	}
+	work := workspaceName("tenant", "alice")
+	desk := containerName("tenant", "alice")
+	var mu sync.Mutex
+	workExists := false
+	active, copies, maxActive := 0, 0, 0
+	run := func(_ context.Context, args ...string) (string, error) {
+		line := strings.Join(args, " ")
+		if args[0] == "image" && strings.Contains(line, "maclaw-desktop-user-") {
+			return "", errors.New("no such image")
+		}
+		if args[0] == "image" {
+			return "sha256:base", nil
+		}
+		if args[0] == "inspect" && args[len(args)-1] == desk {
+			return "", errors.New("no such object")
+		}
+		if args[0] == "inspect" && args[len(args)-1] == work {
+			mu.Lock()
+			exists := workExists
+			mu.Unlock()
+			if !exists {
+				return "", errors.New("no such object")
+			}
+			return "true|" + DefaultImage + "|" + mountText.String(), nil
+		}
+		if args[0] == "run" && strings.Contains(line, "--name "+work) {
+			mu.Lock()
+			workExists = true
+			mu.Unlock()
+			return "id", nil
+		}
+		if args[0] == "run" && strings.Contains(line, "cp -a") {
+			mu.Lock()
+			active++
+			copies++
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			mu.Lock()
+			active--
+			mu.Unlock()
+			return "", nil
+		}
+		if args[0] == "run" && strings.Contains(line, "echo EMPTY") {
+			return "EMPTY", nil
+		}
+		return "", nil
+	}
+	svc := &Service{Run: run}
+	spec := Spec{TenantID: "tenant", UserID: "alice", Image: DefaultImage, Memory: "3g", CPUs: "1.5", ShmSize: "1g"}
+	start := make(chan struct{})
+	errs := make(chan error, 6)
+	for i := 0; i < 6; i++ {
+		go func() {
+			<-start
+			_, err := svc.ensureWorkspace(context.Background(), spec)
+			errs <- err
+		}()
+	}
+	close(start)
+	for i := 0; i < 6; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if copies != len(mounts) || maxActive != 1 {
+		t.Fatalf("copies=%d want=%d maxActive=%d", copies, len(mounts), maxActive)
+	}
+}
+
+func TestToolContainerDoesNotUseWorkspaceWhenDesktopStateIsUnknown(t *testing.T) {
+	var calls []string
+	svc := &Service{ToolWorkspace: true, Run: func(_ context.Context, args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return "", errors.New("docker daemon unavailable")
+	}}
+	if _, _, err := svc.toolContainer(context.Background(), Spec{TenantID: "tenant", UserID: "alice"}); err == nil {
+		t.Fatal("workspace fallback hid the desktop inspect failure")
+	}
+	if len(calls) != 1 || !strings.Contains(calls[0], containerName("tenant", "alice")) {
+		t.Fatalf("unexpected fallback calls=%v", calls)
 	}
 }
 

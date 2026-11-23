@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +111,24 @@ func TestProxyModePersistsAcrossRestart(t *testing.T) {
 	}
 	if len(modeStoreWith(t, dir, nil).Snapshot()) != 0 {
 		t.Fatal("default mode should not be stored")
+	}
+}
+
+func TestProxyModeSaveFailureRollsBackMemory(t *testing.T) {
+	store := modeStoreWith(t, "", nil)
+	if _, err := store.Set(context.Background(), "t1", "alice", ProxyModeProxy); err != nil {
+		t.Fatal(err)
+	}
+	store.path = filepath.Join(t.TempDir(), "proxy_modes.json")
+	if err := os.Mkdir(store.path+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.Set(context.Background(), "t1", "alice", ProxyModeDirect)
+	if err == nil || changed {
+		t.Fatalf("Set = %v, %v", changed, err)
+	}
+	if got := store.Mode("t1", "alice"); got != ProxyModeProxy {
+		t.Fatalf("failed save changed live mode to %q", got)
 	}
 }
 

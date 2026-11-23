@@ -730,18 +730,27 @@ func (h *IMMessageHandler) executeSharedTurn(
 	// model's request for another user message.
 	handedOff := false
 	if loopResult.Error == "max iterations reached" {
-		// Refills already ran inside this loop. The ceiling is a pause, not a
-		// failed task and not a new loop. A computer_done that already
-		// succeeded is the report, not a request to continue the desktop.
-		if strings.TrimSpace(loopResult.Text) == "" {
-			if summary := computerUseFinishedReply(ctx, userID, ""); summary != "" {
-				loopResult.Text = summary
-			} else {
-				loopResult.Text = sessionRoundManualContinueText
+		// A terminal desktop attempt has failed; it must not become a manual
+		// continuation or a successful background-task result.
+		if text, errText, terminal := computerUseTerminalFailure(ctx, userID, userText); terminal {
+			loopResult.Text = text
+			loopResult.Error = errText
+			loopResult.HardExit = false
+			retireTerminalComputerUseAttempt(ctx, userID)
+		} else {
+			// Refills already ran inside this loop. The ceiling is a pause, not a
+			// failed task and not a new loop. A computer_done that already
+			// succeeded is the report, not a request to continue the desktop.
+			if strings.TrimSpace(loopResult.Text) == "" {
+				if summary := computerUseFinishedReply(ctx, userID, ""); summary != "" {
+					loopResult.Text = summary
+				} else {
+					loopResult.Text = sessionRoundManualContinueText
+				}
 			}
+			loopResult.Error = ""
+			loopResult.HardExit = false
 		}
-		loopResult.Error = ""
-		loopResult.HardExit = false
 	}
 	if cb == nil || !cb.hasPendingToolBatch {
 		if note, ok := h.continueSpentForegroundChat(ctx, userID, userText, loopResult); ok {
@@ -11943,6 +11952,13 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 	}
 	c.handler.recordLLMCost(model, inputTokens, outputTokens)
 	c.handler.publishContextWindowUsage(c.userID, inputTokens, c.llmCfg.EffectiveContextTokens())
+}
+
+func (c *sharedAgentLoopCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	c.handler.publishContextWindowUsageEstimate(c.userID, usedTokens, maxTokens, estimated)
 }
 
 func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {

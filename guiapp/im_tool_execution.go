@@ -272,6 +272,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		log.Printf("[agent-loop] rejected unsolicited set_nickname tool call (iter=%d user=%s)", opts.Iteration, opts.UserID)
 	}
 	if result.Text == "" {
+		if msg := computerUseTerminalToolRefusal(opts.Context, opts.UserID, tc.Function.Name); msg != "" {
+			result = toolExecutionResult{Text: msg, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+	}
+	if result.Text == "" {
 		if errResult := preCheckAgentLoopInlinePayloadLimit(tc.Function.Name, tc.Function.Arguments, opts.Iteration); errResult != nil {
 			result = *errResult
 		}

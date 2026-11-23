@@ -53,6 +53,35 @@ func TestExhaustedIterationExitDoesNotStartANewTask(t *testing.T) {
 	}
 }
 
+func TestTerminalComputerUseMaxRoundsReturnsFailure(t *testing.T) {
+	h := newSessionRoundHandler(t)
+	resetComputerUseRuntimeForTest(t)
+	resetComputerUseSessionForTest(t)
+	const owner = "desktop-user"
+	ctx := NewLoopContext("chat-terminal", 30, nil)
+	ctx.ComputerHelper = true
+	ctx.ComputerUseActive = true
+	ctx.UserID = owner
+	ctx.Runtime.Conversation.SessionKey = owner
+	beginComputerUseTask(owner, "req-terminal", "给蓝信中的马勇发消息", nil)
+	setComputerUseOwner(owner)
+	markComputerUseSessionActive()
+	noteComputerUseOperatedWindow(42)
+	cuSession().NoteInputDenied()
+
+	resp := h.maxRoundsAgentLoopExit(ctx, sessionRoundExitOptions("给蓝信中的马勇发消息", 17))
+	if resp == nil || resp.Error == "" || !strings.Contains(resp.Error, "computer_use_terminal") || resp.Text == sessionRoundManualContinueText || !strings.Contains(resp.Text, "拒绝输入") {
+		t.Fatalf("response=%#v", resp)
+	}
+	if resp.sessionRoundContinue || computerUseSessionActive() || computerUseHaloTarget() != 0 {
+		t.Fatalf("terminal state active=%v halo=%d response=%#v", computerUseSessionActive(), computerUseHaloTarget(), resp)
+	}
+	result := chatTaskResultFromAgentResponse(resp, ctx)
+	if result.Err == nil {
+		t.Fatalf("terminal helper became a successful task: %#v", result)
+	}
+}
+
 func TestSessionRoundContinuationStopsWithoutToolProgress(t *testing.T) {
 	h := newSessionRoundHandler(t)
 	ctx := NewLoopContext("chat", 30, nil)

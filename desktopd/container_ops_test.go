@@ -26,10 +26,23 @@ func TestDockerOutputIsBoundedByOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dockerOutputLimit(shell); got != desktop.BashOutputMax {
+	if got := dockerOutputLimit(shell); got != desktop.BashOutputMax+1 {
 		t.Fatalf("shell limit=%d", got)
 	}
-	if got := dockerOutputLimit(fileServiceArgs("container", "read", "/tmp/a", desktop.FileReadMax+1)); got <= desktop.FileReadMax {
+	out = newDockerOutput(shell)
+	_, _ = out.Write([]byte(strings.Repeat("x", desktop.BashOutputMax+100)))
+	if got := desktop.ProgramOutput(out.String(), 0, false); !strings.HasPrefix(got, "[truncated]\n") {
+		t.Fatalf("shell truncation marker missing: %q", got[:40])
+	}
+	readArgs := fileServiceArgs("container", "read", "/tmp/a", desktop.FileReadMax+1)
+	readOut := newDockerOutput(readArgs)
+	_, _ = readOut.Write([]byte("0123456789"))
+	_, _ = readOut.Write([]byte(strings.Repeat("x", readOut.limit)))
+	_, _ = readOut.Write([]byte("tail"))
+	if got := readOut.String(); len(got) != readOut.limit || got[:10] != "0123456789" || got[len(got)-1] != 'x' {
+		t.Fatalf("file read did not retain its head: len=%d", len(got))
+	}
+	if got := dockerOutputLimit(readArgs); got <= desktop.FileReadMax {
 		t.Fatalf("read limit=%d", got)
 	}
 }

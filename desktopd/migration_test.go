@@ -19,6 +19,34 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
+func TestMigrationCleanupSurvivesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleaned := false
+	svc := &Service{Run: func(cmdCtx context.Context, args ...string) (string, error) {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(line, "run ") && strings.Contains(line, "maclaw-migrate-"):
+			cancel()
+			return "id", nil
+		case strings.HasPrefix(line, "exec maclaw-migrate-"):
+			return "", context.Canceled
+		case strings.HasPrefix(line, "rm -f maclaw-migrate-"):
+			_, hasDeadline := cmdCtx.Deadline()
+			cleaned = cmdCtx.Err() == nil && hasDeadline
+			return "", nil
+		default:
+			return "", nil
+		}
+	}}
+	if err := svc.migrateLiveFiles(ctx, containerName("tenant", "alice"), Spec{TenantID: "tenant", UserID: "alice"}); err == nil {
+		t.Fatal("migration error was hidden")
+	}
+	if !cleaned {
+		t.Fatal("migration temporary container cleanup was canceled or unbounded")
+	}
+}
+
 func readyMounts(t *testing.T, tenantID, userID string) string {
 	t.Helper()
 	mounts, err := desktop.UserMounts(tenantID, userID)

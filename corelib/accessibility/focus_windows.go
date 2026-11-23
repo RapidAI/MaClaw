@@ -27,6 +27,7 @@ var (
 	procGetForegroundWindow      = user32Enum.NewProc("GetForegroundWindow")
 	procKeybdEvent               = user32Enum.NewProc("keybd_event")
 	procIsIconic                 = user32Enum.NewProc("IsIconic")
+	procIsHungAppWindow          = user32Enum.NewProc("IsHungAppWindow")
 	procGetWindowPlacement       = user32Enum.NewProc("GetWindowPlacement")
 	procSetWindowPos             = user32Enum.NewProc("SetWindowPos")
 	procGetWindowRect            = user32Enum.NewProc("GetWindowRect")
@@ -342,6 +343,14 @@ func foregroundWindowTitle() string {
 func foregroundWindowID() uint64 {
 	hwnd, _, _ := procGetForegroundWindow.Call()
 	return uint64(hwnd)
+}
+
+func windowIsHung(id uint64) bool {
+	if id == 0 {
+		return false
+	}
+	r, _, _ := procIsHungAppWindow.Call(uintptr(id))
+	return r != 0
 }
 
 // winGUIThreadInfo is GUITHREADINFO. On amd64 the first HWND is 8-aligned,

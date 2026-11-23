@@ -2198,7 +2198,7 @@
     border: none;
     border-radius: 8px;
     background: transparent;
-    color: var(--theme-text-muted, #8a94a6);
+    color: var(--mc-taskcfg-muted, var(--theme-text-muted, #8a94a6));
     font-size: 12.5px;
     font-weight: 500;
     font-family: system-ui, -apple-system, sans-serif;
@@ -2215,24 +2215,24 @@
     top: 7px;
     bottom: 7px;
     width: 1px;
-    background: color-mix(in srgb, var(--theme-text-muted, #8a94a6) 45%, transparent);
+    background: color-mix(in srgb, var(--mc-taskcfg-muted, var(--theme-text-muted, #8a94a6)) 45%, transparent);
 }
 .mc-taskcfg-more [data-icon="chevronsRight"] {
     transition: transform 140ms ease;
 }
 .mc-taskcfg-more[aria-expanded="true"],
 .mc-taskcfg-more[data-customized="true"] {
-    color: var(--theme-primary, #2e75cb);
+    color: var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb));
 }
 .mc-taskcfg-more[aria-expanded="true"] [data-icon="chevronsRight"] {
     transform: rotate(90deg);
 }
 .mc-taskcfg-more:hover {
-    color: var(--theme-primary, #2e75cb);
-    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+    color: var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb));
+    background: color-mix(in srgb, var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb)) 8%, transparent);
 }
 .mc-taskcfg-more:focus-visible {
-    outline: 2px solid var(--theme-primary, #2e75cb);
+    outline: 2px solid var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb));
     outline-offset: 1px;
 }
 .mc-taskcfg-more:disabled {
@@ -2242,7 +2242,7 @@
 .mc-taskcfg-bar--chip .mc-taskcfg-more {
     height: 30px;
     padding: 0 12px;
-    border: 1px dashed var(--theme-border, #dde5f0);
+    border: 1px dashed var(--mc-taskcfg-border, var(--theme-border, #dde5f0));
     border-radius: 15px;
 }
 .mc-taskcfg-bar--chip .mc-taskcfg-more::before {
@@ -2250,8 +2250,8 @@
 }
 .mc-taskcfg-bar--chip .mc-taskcfg-more[aria-expanded="true"],
 .mc-taskcfg-bar--chip .mc-taskcfg-more[data-customized="true"] {
-    border-color: var(--theme-primary, #2e75cb);
-    background: color-mix(in srgb, var(--theme-primary, #2e75cb) 8%, transparent);
+    border-color: var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb));
+    background: color-mix(in srgb, var(--mc-taskcfg-accent, var(--theme-primary, #2e75cb)) 8%, transparent);
 }
 
 /* ===== 新任务配置条弹层（src/components/ai/task-config）===== */

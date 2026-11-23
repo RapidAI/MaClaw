@@ -47,6 +47,7 @@ const defaultDockerOutputMax = 32 << 20
 type tailOutput struct {
 	mu    sync.Mutex
 	limit int
+	head  bool
 	data  []byte
 }
 
@@ -54,6 +55,15 @@ func (b *tailOutput) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
+	if b.head {
+		if remaining := b.limit - len(b.data); remaining > 0 {
+			if len(p) > remaining {
+				p = p[:remaining]
+			}
+			b.data = append(b.data, p...)
+		}
+		return n, nil
+	}
 	if n >= b.limit {
 		b.data = append(b.data[:0], p[n-b.limit:]...)
 		return n, nil
@@ -100,7 +110,7 @@ func dockerOutputLimit(args []string) int {
 		}
 		switch req.Op {
 		case "shell":
-			return desktop.BashOutputMax
+			return desktop.BashOutputMax + 1
 		case "shot":
 			return 64 << 20
 		case "ctl":
@@ -108,6 +118,17 @@ func dockerOutputLimit(args []string) int {
 		}
 	}
 	return defaultDockerOutputMax
+}
+
+func newDockerOutput(args []string) *tailOutput {
+	out := &tailOutput{limit: dockerOutputLimit(args)}
+	for i, arg := range args {
+		if arg == "file" && i+1 < len(args) && args[i+1] == "read" {
+			out.head = true
+			break
+		}
+	}
+	return out
 }
 
 func defaultRunCommand(ctx context.Context, stdin io.Reader, args ...string) (string, int, error) {
@@ -118,7 +139,7 @@ func defaultRunCommand(ctx context.Context, stdin io.Reader, args ...string) (st
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
-	out := &tailOutput{limit: dockerOutputLimit(args)}
+	out := newDockerOutput(args)
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	text := out.String()
@@ -624,8 +645,9 @@ const materialPublishTimeout = 60 * time.Second
 // The running image's file write truncates the path it is given before the
 // body arrives, and it has no rename operation. A fifth supervisor argument
 // is rejected by that image, so this writes a sibling .partial and then
-// mv's it onto filePath. A short body deletes the partial and leaves the
-// previous file in place. mv, rm, and chown stay inside the write's withUser
+// mv's it onto filePath. The .partial suffix is reserved to keep two target
+// paths from sharing one temporary file. A short body deletes the partial
+// and leaves the previous file in place. mv, rm, and chown stay inside the
 // callback: that lock is not re-entrant. Once the byte count matches, mv and
 // chown finish even if the caller has canceled.
 func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath string, body io.Reader, size int64) (string, error) {
@@ -635,6 +657,9 @@ func (s *Service) UploadFile(ctx context.Context, tenantID, userID, filePath str
 	}
 	if !strings.HasPrefix(filePath, desktop.MaterialsRoot+"/") {
 		return "", fmt.Errorf("%w: uploads go under %s", ErrInvalid, desktop.MaterialsRoot)
+	}
+	if strings.HasSuffix(filePath, ".partial") {
+		return "", fmt.Errorf("%w: .partial is reserved for upload temporary files", ErrInvalid)
 	}
 	partial, err := desktop.ContainerPath(filePath + ".partial")
 	if err != nil || !strings.HasPrefix(partial, desktop.MaterialsRoot+"/") {
@@ -724,7 +749,9 @@ func (s *Service) removeMaterialPartial(ctx context.Context, spec Spec, containe
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = s.runtime().Exec(context.WithoutCancel(ctx), spec, ExecRequest{
+	cleanupCtx, cancel := cleanupContext(ctx)
+	defer cancel()
+	_, _ = s.runtime().Exec(cleanupCtx, spec, ExecRequest{
 		Kind: ExecFile,
 		Args: []string{"exec", container, "rm", "-f", "--", partial},
 	})
@@ -737,10 +764,19 @@ func (s *Service) chownMaterialDirs(ctx context.Context, spec Spec, container, f
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = s.runtime().Exec(context.WithoutCancel(ctx), spec, ExecRequest{
+	cleanupCtx, cancel := cleanupContext(ctx)
+	defer cancel()
+	_, _ = s.runtime().Exec(cleanupCtx, spec, ExecRequest{
 		Kind: ExecFile,
 		Args: materialChownArgs(container, filePath, false),
 	})
+}
+
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), materialPublishTimeout)
 }
 
 type countingReader struct {

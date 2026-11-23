@@ -208,4 +208,6 @@ func namedWindowID(titleSubstring string) uint64 { return 0 }
 
 func windowOwnedBySelf(id uint64) bool { return false }
 
+func windowIsHung(id uint64) bool { return false }
+
 func foregroundAcceptsText() bool { return true }

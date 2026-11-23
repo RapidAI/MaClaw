@@ -1168,9 +1168,13 @@ describe('machine (位置) chip', () => {
         await waitFor(() => {
             expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('B机');
         });
-        // 远程目标：工作空间/运行时段锁定且不再开弹层
+        // 远程目标仍保持默认一行：模型/运行时段不自动展开。
+        expect(screen.queryByTestId('task-config-chip-window')).toBeNull();
+        expect(screen.getByTestId('task-config-more').getAttribute('data-customized')).toBe('false');
+        // 工作空间锁定且不再开弹层；运行时段点开「更多」后同样锁定。
         fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
         expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+        openMoreSettings();
         fireEvent.click(screen.getByTestId('task-config-chip-window'));
         expect(screen.queryByTestId('task-config-popover-window')).toBeNull();
         // 专家 chip 也不可开
@@ -1382,6 +1386,8 @@ describe('TaskConfigBar model chip', () => {
             modelCatalog: catalog,
             remoteMachines: [{ grantId: 'g1', machineName: 'office', online: true, operate: true }],
         });
+        expect(screen.queryByTestId('task-config-chip-model')).toBeNull();
+        openMoreSettings();
         const chip = screen.getByTestId('task-config-chip-model');
         expect(chip.textContent).toContain('对方电脑');
         expect(chip.getAttribute('title')).toContain('不可配置');

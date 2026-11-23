@@ -66,6 +66,39 @@ func TestD98GateWaitHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestD98CancelledGateDoesNotRunWhenFree(t *testing.T) {
+	svc := &Service{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ran := false
+	err := svc.withUserContext(ctx, "t", "u", func() error { ran = true; return nil })
+	if !errors.Is(err, context.Canceled) || ran {
+		t.Fatalf("err=%v ran=%v", err, ran)
+	}
+}
+
+func TestD98CancelAndReleaseNeverRunsCallback(t *testing.T) {
+	svc := &Service{}
+	release := make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		_ = svc.withUserRead("t", "u", func() error { close(held); <-release; return nil })
+	}()
+	<-held
+	ctx, cancel := context.WithCancel(context.Background())
+	ran := false
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.withUserContext(ctx, "t", "u", func() error { ran = true; return nil })
+	}()
+	time.Sleep(time.Millisecond)
+	cancel()
+	close(release)
+	if err := <-done; !errors.Is(err, context.Canceled) || ran {
+		t.Fatalf("err=%v ran=%v", err, ran)
+	}
+}
+
 func TestD98LongWaitingWriterEventuallyBlocksNewReaders(t *testing.T) {
 	svc := &Service{}
 	release := make(chan struct{})

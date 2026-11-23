@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -119,6 +120,10 @@ func TestDesktopBotFileCases(t *testing.T) {
 			t.Fatalf("meta file=%q err=%v", raw, err)
 		}
 
+		if runtime.GOOS == "windows" {
+			// The remainder creates a symlink and an AF_UNIX X socket under /tmp.
+			return
+		}
 		out := runSupervisorPython(t, `
 dest = (tmp / "desk" / "sub" / "a.c").as_posix()
 sup.file_write(dest, b"int main(){}\n")

@@ -691,6 +691,13 @@ func (c *codingSubAgentCallbacks) OnLLMUsage(model string, inputTokens, outputTo
 	c.subagent.handler.noteCodingContextFill(codingSubAgentOwnerUserID(c.subagent.loopCtx), inputTokens, outputTokens)
 }
 
+func (c *codingSubAgentCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return
+	}
+	c.subagent.handler.publishContextWindowUsageEstimate(codingSubAgentOwnerUserID(c.subagent.loopCtx), usedTokens, maxTokens, estimated)
+}
+
 // PromptFillsContextWindow reports that promptTokens leaves no output room
 // inside this attempt's effective window.
 func (c *codingSubAgentCallbacks) PromptFillsContextWindow(promptTokens int) bool {

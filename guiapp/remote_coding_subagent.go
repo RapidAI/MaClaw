@@ -6515,3 +6515,10 @@ func remoteKnowledgeSnippet(r knowledge.SearchResult) string {
 	}
 	return text
 }
+
+func (c *remoteCodingCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return
+	}
+	c.agent.handler.publishContextWindowUsageEstimate(codingSubAgentOwnerUserID(c.agent.loopCtx), usedTokens, maxTokens, estimated)
+}

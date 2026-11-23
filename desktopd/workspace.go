@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
@@ -51,7 +52,11 @@ func (s *Service) toolContainer(ctx context.Context, spec Spec) (string, bool, e
 		// A machine runtime has no Docker sibling; it keeps its own wake.
 		return desktopName, true, nil
 	}
-	if running, err := s.containerRunning(ctx, desktopName); err == nil && running {
+	running, err := s.containerRunning(ctx, desktopName)
+	if err != nil {
+		return "", false, err
+	}
+	if running {
 		return desktopName, true, nil
 	}
 	name, err := s.ensureWorkspace(ctx, spec)
@@ -74,6 +79,19 @@ func (s *Service) workspaceImage(ctx context.Context, spec Spec) (image string, 
 }
 
 func (s *Service) ensureWorkspace(ctx context.Context, spec Spec) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gate, _ := s.workspaceGates.LoadOrStore(spec.TenantID+"\x00"+spec.UserID, &sync.Mutex{})
+	mutex := gate.(*sync.Mutex)
+	if err := lockMutexContext(ctx, mutex); err != nil {
+		return "", err
+	}
+	defer mutex.Unlock()
+	return s.ensureWorkspaceLocked(ctx, spec)
+}
+
+func (s *Service) ensureWorkspaceLocked(ctx context.Context, spec Spec) (string, error) {
 	name := workspaceName(spec.TenantID, spec.UserID)
 	if name == "" {
 		return "", ErrInvalid

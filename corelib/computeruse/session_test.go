@@ -106,6 +106,23 @@ func TestSession_MaxSteps(t *testing.T) {
 	}
 }
 
+func TestWindowHungLatchClearsForAnotherAttempt(t *testing.T) {
+	s := NewSession(DefaultConfig())
+	s.NoteWindowHung()
+	if !s.WindowHung() {
+		t.Fatal("window health failure did not latch")
+	}
+	s.ClearWindowHung()
+	if s.WindowHung() {
+		t.Fatal("a new attempt kept the old window failure")
+	}
+	s.NoteWindowHung()
+	s.ResetControl()
+	if s.WindowHung() {
+		t.Fatal("reset kept the window failure")
+	}
+}
+
 func TestPolicy_BlockedWindow(t *testing.T) {
 	p := NewPolicy(DefaultConfig())
 	if err := p.AllowClickAt(1, 1, "User Account Control"); err == nil {

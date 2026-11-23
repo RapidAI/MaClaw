@@ -1143,6 +1143,13 @@ type LLMUsageRecorder interface {
 	OnLLMUsage(model string, inputTokens, outputTokens int)
 }
 
+// ContextWindowUsageReporter receives the actual outbound conversation and tool
+// definitions immediately before each request. estimated distinguishes this
+// host-side estimate from provider-reported usage returned after the response.
+type ContextWindowUsageReporter interface {
+	ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool)
+}
+
 // ErrContextWindowFull stops a turn whose latest prompt already fills the
 // effective context window and whose compaction pass could not shrink it.
 // Appending a continuation would make the next request larger.
@@ -2228,6 +2235,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// aliases, so sampling before this line reports a ghost surface and makes
 		// routing/cost telemetry disagree with the model's actual definitions.
 		observeLoopInputBreakdown(cb, reqConversation, tools)
+		if reporter, ok := cb.(ContextWindowUsageReporter); ok {
+			reporter.ReportContextWindowUsage(
+				EstimateConversationTokens(reqConversation)+EstimateToolsTokens(tools),
+				aggCFG.EffectiveContextTokens(),
+				true,
+			)
+		}
 
 		// Capture the epoch at the actual request boundary. A retry below is a
 		// distinct model request and therefore receives a distinct epoch too.

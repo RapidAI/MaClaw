@@ -245,6 +245,9 @@ func TestDesktopBotRuntimeCases(t *testing.T) {
 				if strings.Contains(joined, " idle ") {
 					return `{"running":true,"idle_seconds":600,"known":true}`, nil
 				}
+				if strings.Contains(joined, " bots-busy") {
+					return `{"busy":[]}`, nil
+				}
 				return "", errors.New("no bots")
 			default:
 				t.Fatalf("reaper docker %s", joined)

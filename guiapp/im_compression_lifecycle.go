@@ -27,26 +27,31 @@ func (h *IMMessageHandler) persistCompressionSummaryOnExit(userID string, summar
 }
 
 func (h *IMMessageHandler) applyPendingContextCompression(userID string, history []agent.ConversationEntry, lastSummary *string) []agent.ConversationEntry {
+	compressed, _ := h.applyPendingContextCompressionWithConversation(userID, history, nil, lastSummary)
+	return compressed
+}
+
+func (h *IMMessageHandler) applyPendingContextCompressionWithConversation(userID string, history []agent.ConversationEntry, conversation []interface{}, lastSummary *string) ([]agent.ConversationEntry, []interface{}) {
 	if h == nil {
-		return history
+		return history, conversation
 	}
 	req, ok := h.pendingContextCompression.LoadAndDelete(userID)
 	if !ok {
-		return history
+		return history, conversation
 	}
 	ccReq, ok := req.(*contextCompressionRequest)
 	if !ok {
-		return history
+		return history, conversation
 	}
 
 	compressed, dropped, summaryIndex := planHistoryCompression(history, ccReq)
 	if summaryIndex < 0 || len(dropped) == 0 {
-		return history
+		return history, conversation
 	}
 	raw, err := json.Marshal(dropped)
 	if err != nil {
 		log.Printf("[compress_context] keep original history: marshal dropped entries failed: %v", err)
-		return history
+		return history, conversation
 	}
 	projection, err := toolresult.Project(toolresult.ProjectOptions{
 		ToolName:   "context_checkpoint",
@@ -58,12 +63,23 @@ func (h *IMMessageHandler) applyPendingContextCompression(userID string, history
 	})
 	if err != nil || projection.Handle == nil || !projection.Spilled {
 		log.Printf("[compress_context] keep original history: persist dropped entries failed: %v", err)
-		return history
+		return history, conversation
 	}
 	compressed[summaryIndex].Content = projection.Preview
+	if conversation != nil {
+		live, _, liveSummaryIndex := planHistoryCompression(loopMessagesToEntries(conversation), ccReq)
+		if liveSummaryIndex >= 0 {
+			live[liveSummaryIndex].Content = compressed[summaryIndex].Content
+			next := make([]interface{}, 0, len(live))
+			for _, entry := range live {
+				next = append(next, entry.ToMessage())
+			}
+			conversation = next
+		}
+	}
 	if lastSummary != nil {
 		*lastSummary = ccReq.Summary
 	}
-	log.Printf("[compress_context] applied lossless history compression for user=%s summary_len=%d handle=%s", userID, len(ccReq.Summary), projection.Handle.ID)
-	return compressed
+	log.Printf("[compress_context] applied lossless history+live compression for user=%s summary_len=%d handle=%s", userID, len(ccReq.Summary), projection.Handle.ID)
+	return compressed, conversation
 }

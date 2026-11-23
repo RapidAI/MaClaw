@@ -604,6 +604,9 @@ func cuAttemptTerminal(sess *computeruse.Session) (bool, string) {
 	if sess == nil {
 		return false, ""
 	}
+	if sess.WindowHung() {
+		return true, "the target window is not responding."
+	}
 	if sess.InputDenied() {
 		return true, "the foreground window refused input."
 	}
@@ -622,6 +625,9 @@ func cuAttemptFinished(tool string) string {
 	sess := cuSession()
 	if sess == nil {
 		return ""
+	}
+	if sess.WindowHung() {
+		return fmt.Sprintf("%s: %s", tool, computerUseWindowHungText)
 	}
 	if sess.InputDenied() {
 		return fmt.Sprintf("%s: the foreground window refused input. Call computer_done.", tool)
@@ -2778,6 +2784,25 @@ func cuPointerWindowTitles(end cuDragEnd) []string {
 // pointer will use. Either window being blocked refuses the action.
 func cuPointerWindowRefusal(sess *computeruse.Session, tool, action, detail string, ends ...cuDragEnd) string {
 	for _, end := range ends {
+		title := ""
+		id := uint64(0)
+		if end.mark != nil {
+			title = strings.TrimSpace(end.mark.Window)
+			id = end.mark.WindowID
+		}
+		if title == "" {
+			title = cuPolicyWindowTitle(end.x, end.y)
+		}
+		if id == 0 {
+			id = cuPolicyWindowID(end.x, end.y)
+		}
+		if cuWindowHungTarget(sess, title, id) {
+			if strings.TrimSpace(detail) == "" {
+				detail = fmt.Sprintf("(%d,%d)", end.x, end.y)
+			}
+			emitComputerUseActionUI(action, detail, false, "window not responding")
+			return tool + ": " + computerUseWindowHungText
+		}
 		for _, title := range cuPointerWindowTitles(end) {
 			if err := sess.CheckClickPolicy(end.x, end.y, title); err != nil {
 				if strings.TrimSpace(detail) == "" {

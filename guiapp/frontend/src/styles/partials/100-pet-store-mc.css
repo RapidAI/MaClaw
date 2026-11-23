@@ -1681,7 +1681,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .awv-news-inner { width: 100%; max-width: 520px; }
 .awv-main { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; padding: 16px 16px 16px; gap: 14px; margin: auto 0; flex-shrink: 0; }
 .awv-toolbar { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; padding-top: 8px; }
-.awv-task-config { width: 100%; box-sizing: border-box; padding: 2px 4px 0; }
+.awv-task-config { width: 100%; box-sizing: border-box; padding: 4px 4px 0; }
 /* Four quick-task fills on an even grid: 4-up on desktop, 2×2 below 1280px
    (the old flex-wrap left a 3+1 row with one stretched orphan card). */
 .awv-quick-tasks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

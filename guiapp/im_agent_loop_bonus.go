@@ -277,6 +277,9 @@ func (h *IMMessageHandler) executeBonusRoundToolWithConfig(tc llm.ToolCall, onPr
 	if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, -1); errResult != nil {
 		return *errResult
 	}
+	if msg := computerUseTerminalToolRefusal(ctx, userID, tc.Function.Name); msg != "" {
+		return toolExecutionResult{Text: msg, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	execCtx := context.Background()
 	if ctx != nil {
 		var cancel context.CancelFunc

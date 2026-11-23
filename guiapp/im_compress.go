@@ -108,6 +108,12 @@ func loopMessagesToEntries(msgs []interface{}) []agent.ConversationEntry {
 			if calls, ok := m["tool_calls"]; ok {
 				entry.ToolCalls = calls
 			}
+			if reasoning, ok := m["reasoning_content"].(string); ok {
+				entry.ReasoningContent = reasoning
+			}
+			if signature, ok := m["thought_signature"].(string); ok {
+				entry.ThoughtSignature = signature
+			}
 			out = append(out, entry)
 		}
 	}

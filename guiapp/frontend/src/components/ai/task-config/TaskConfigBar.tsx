@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { Theme } from "../aiAssistantPanelTheme";
 import { DEFAULT_EXPERT_ICON } from "../expertTypes";
 import { TaskConfigIcon, type TaskConfigIconName } from "./taskConfigIcons";
@@ -143,7 +143,8 @@ function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boole
 /**
  * 新任务引导页配置条：折叠态一枚「⚙ 默认」chip；展开态默认一行
  * （类型 · 专家 · 工作流 · 工作空间 · 更多）。模型与运行时段收在「更多」里，
- * 点开后在下一行展开。已指定模型、已定时或选了远程机器时，这一行直接展开。
+ * 点开后在下一行展开。已指定模型或已定时时这一行直接展开；
+ * 用户收起后，同一次设置不会被草稿刷新重新打开。
  * 互斥 / 类型联动全部由 taskDraft.ts 的纯函数保证，UI 只反映状态。
  */
 export function TaskConfigBar({
@@ -198,13 +199,20 @@ export function TaskConfigBar({
     const scheduledWindow = isRunWindowScheduled(draft);
     const modelPinned = taskModelPinned(draft);
     // 远控机器目标：专家/工作流/工作空间/定时在对方电脑上不可配——锁定。
+    // 锁定本身不是「已设置」，不把模型/运行时段挤出默认那一行。
     const remoteMachineLocked = draft.machine != null;
-    // 模型 / 运行时段默认收起。已偏离默认（指定模型、定时、远程机器）时直接展开，
-    // 避免把已经做出的选择藏起来；用户仍可再点「收起」。
-    const advancedCustomized = modelPinned || scheduledWindow || remoteMachineLocked;
+    const advancedCustomized = modelPinned || scheduledWindow;
+    const advancedId = useId();
+    const moreDismissed = useRef(false);
     const [moreOpen, setMoreOpen] = useState(advancedCustomized);
+    const moreOpenRef = useRef(moreOpen);
+    moreOpenRef.current = moreOpen;
     useEffect(() => {
-        if (advancedCustomized) setMoreOpen(true);
+        if (!advancedCustomized) {
+            moreDismissed.current = false;
+            return;
+        }
+        if (!moreDismissed.current) setMoreOpen(true);
     }, [advancedCustomized]);
     const expanded = userExpanded || !isDraftDefault(draft) || scheduledWindow;
     const expertSpecified = isExpertSpecified(draft);
@@ -212,9 +220,12 @@ export function TaskConfigBar({
     const expertLocked = !canSpecifyExpert(draft);
     const localPathMissing = needsLocalPath(draft);
     const toggleMore = useCallback(() => {
-        setMoreOpen((open) => !open);
-        setMenu((current) => (current === "model" || current === "window" ? null : current));
-    }, []);
+        const next = !moreOpenRef.current;
+        // 收起一次已有的模型/定时后，草稿原样刷新不能再把它弹开。
+        moreDismissed.current = !next && advancedCustomized;
+        if (!next) setMenu((current) => (current === "model" || current === "window" ? null : current));
+        setMoreOpen(next);
+    }, [advancedCustomized]);
     const showMachineChip = remoteMachines != null && remoteMachines.length > 0;
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
@@ -343,7 +354,7 @@ export function TaskConfigBar({
                     style={{
                         color: valueColor,
                         fontWeight: options.active || options.warning ? 600 : 400,
-                        maxWidth: options.valueMaxWidth ?? 160,
+                        maxWidth: options.valueMaxWidth ?? 200,
                         minWidth: 0,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -388,6 +399,11 @@ export function TaskConfigBar({
         <div
             data-testid="task-config-bar"
             className={bare ? "mc-taskcfg-bar mc-taskcfg-bar--bare" : "mc-taskcfg-bar mc-taskcfg-bar--chip"}
+            style={{
+                ["--mc-taskcfg-accent" as string]: accent,
+                ["--mc-taskcfg-muted" as string]: t.textMuted,
+                ["--mc-taskcfg-border" as string]: t.fieldBorder,
+            }}
         >
             {!expanded ? (
                 <button
@@ -479,7 +495,7 @@ export function TaskConfigBar({
                         data-customized={advancedCustomized ? "true" : "false"}
                         disabled={disabled}
                         aria-expanded={moreOpen}
-                        aria-controls="task-config-advanced"
+                        aria-controls={advancedId}
                         title={moreOpen
                             ? tailText(lang ?? "", "Hide model and run window", "收起模型与运行时段")
                             : advancedCustomized
@@ -492,7 +508,7 @@ export function TaskConfigBar({
                     </button>
                     </div>
                     {moreOpen && (
-                        <div className="mc-taskcfg-row mc-taskcfg-row--more" id="task-config-advanced" data-testid="task-config-advanced">
+                        <div className="mc-taskcfg-row mc-taskcfg-row--more" id={advancedId} data-testid="task-config-advanced">
                             {renderChip('model', "task-config-chip-model", tailText(lang ?? "", "Model", "模型"), modelChipText, {
                                 active: modelChip.pinned,
                                 locked: modelChip.remote,

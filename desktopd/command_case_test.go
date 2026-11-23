@@ -30,6 +30,29 @@ print(code, 0.8 <= time.monotonic() - started < 5)
 	}
 }
 
+func TestOpenAndInstallRefreshDesktopActivity(t *testing.T) {
+	t.Run("open", func(t *testing.T) {
+		svc := &Service{ComputerDir: t.TempDir(), Run: func(context.Context, ...string) (string, error) { return "", nil }}
+		if _, err := svc.Open(context.Background(), "tenant", "alice", ":20", "xterm", nil); err != nil {
+			t.Fatal(err)
+		}
+		meta, err := svc.ReadComputerMeta("tenant", "alice")
+		if err != nil || meta.LastActivity == "" || len(meta.Screens) != 1 {
+			t.Fatalf("meta=%+v err=%v", meta, err)
+		}
+	})
+	t.Run("install", func(t *testing.T) {
+		svc := &Service{ComputerDir: t.TempDir(), Run: func(context.Context, ...string) (string, error) { return "", nil }}
+		if _, err := svc.Install(context.Background(), "tenant", "alice", []string{"curl"}); err != nil {
+			t.Fatal(err)
+		}
+		meta, err := svc.ReadComputerMeta("tenant", "alice")
+		if err != nil || meta.LastActivity == "" {
+			t.Fatalf("meta=%+v err=%v", meta, err)
+		}
+	})
+}
+
 func TestDesktopBotCommandCases(t *testing.T) {
 	t.Run("command_service_inside_the_container", func(t *testing.T) {
 		supervisor, err := os.ReadFile("image/desktop_supervisor.py")

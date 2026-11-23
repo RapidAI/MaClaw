@@ -79,6 +79,9 @@ func TestDesktopBotMetaCases(t *testing.T) {
 					}
 					return "container", nil
 				case "exec":
+					if strings.Contains(joined, " bots-busy") {
+						return `{"busy":[]}`, nil
+					}
 					if strings.Contains(joined, " ensure ") && strings.Contains(joined, botKey) {
 						return `{"display":":21","cdp_port":19020,"token":"` + token + `"}`, nil
 					}

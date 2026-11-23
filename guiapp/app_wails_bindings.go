@@ -2447,8 +2447,9 @@ type AIAssistantStreamEvent struct {
 	// snapshot still trims. Text stays the join for callers that concatenate.
 	Deltas []string `json:"deltas,omitempty"`
 	// Context usage is the latest single model request, never a session sum.
-	ContextUsedTokens int `json:"context_used_tokens,omitempty"`
-	ContextMaxTokens  int `json:"context_max_tokens,omitempty"`
+	ContextUsedTokens     int  `json:"context_used_tokens,omitempty"`
+	ContextMaxTokens      int  `json:"context_max_tokens,omitempty"`
+	ContextUsageEstimated bool `json:"context_usage_estimated,omitempty"`
 }
 
 // assistantTokenCoalesceWindow merges a same-lane token run onto one Wails

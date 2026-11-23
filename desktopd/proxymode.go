@@ -141,7 +141,8 @@ func (s *ProxyModeStore) Set(ctx context.Context, tenantID, userID, mode string)
 		return false, fmt.Errorf("%w: tenant_id and user_id are required", ErrInvalid)
 	}
 	s.mu.Lock()
-	previous := s.modes[name]
+	stored := s.modes[name]
+	previous := stored
 	if previous == "" {
 		previous = DefaultProxyMode
 	}
@@ -151,10 +152,16 @@ func (s *ProxyModeStore) Set(ctx context.Context, tenantID, userID, mode string)
 		s.modes[name] = mode
 	}
 	err = s.persistLocked()
-	s.mu.Unlock()
 	if err != nil {
+		if stored == "" {
+			delete(s.modes, name)
+		} else {
+			s.modes[name] = stored
+		}
+		s.mu.Unlock()
 		return false, err
 	}
+	s.mu.Unlock()
 	if previous == mode {
 		return false, nil
 	}

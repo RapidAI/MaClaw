@@ -13,22 +13,26 @@ export function ContextWindowMeter({
     usedTokens,
     maxTokens,
     mutedColor,
+    estimated = false,
 }: {
     lang: string;
     usedTokens: number;
     maxTokens: number;
     mutedColor: string;
+    estimated?: boolean;
 }): React.ReactElement | null {
     if (!(maxTokens > 0)) return null;
     const used = Math.max(0, usedTokens || 0);
     const pct = Math.max(0, Math.round((used / maxTokens) * 100));
     const label = localizeText(lang, "Context", "上下文", "上下文");
-    const title = localizeText(
-        lang,
-        "Latest model request input / usable context window (output space reserved)",
-        "最近一次模型请求输入 / 可用上下文窗口（已预留输出空间）",
-        "最近一次模型請求輸入 / 可用上下文視窗（已預留輸出空間）",
-    );
+    const title = estimated
+        ? localizeText(lang, "Current outbound request estimate / usable context window", "当前待发送请求估算 / 可用上下文窗口", "目前待發送請求估算 / 可用上下文視窗")
+        : localizeText(
+            lang,
+            "Latest model request input / usable context window (output space reserved)",
+            "最近一次模型请求输入 / 可用上下文窗口（已预留输出空间）",
+            "最近一次模型請求輸入 / 可用上下文視窗（已預留輸出空間）",
+        );
     return (
         <div
             data-testid="context-window-meter"
@@ -50,7 +54,7 @@ export function ContextWindowMeter({
         >
             <span>{label}</span>
             <span data-testid="context-window-meter-value">
-                {formatContextWindowTokens(used)} / {formatContextWindowTokens(maxTokens)} · {pct}%
+                {estimated ? "≈" : ""}{formatContextWindowTokens(used)} / {formatContextWindowTokens(maxTokens)} · {pct}%
             </span>
             <span
                 aria-hidden="true"

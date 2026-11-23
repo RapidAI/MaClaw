@@ -3,7 +3,7 @@ import { EventsOn } from "../../../wailsjs/runtime";
 import { normalizeAssistantSessionKey } from "./aiAssistantPanelSessionUtils";
 import { parseWailsEventObject } from "./codingTaskMode";
 
-export type ContextWindowUsage = { used: number; max: number };
+export type ContextWindowUsage = { used: number; max: number; estimated?: boolean };
 
 export function useContextWindowUsage(): Record<string, ContextWindowUsage> {
     const [usageBySession, setUsageBySession] = useState<Record<string, ContextWindowUsage>>({});
@@ -14,7 +14,8 @@ export function useContextWindowUsage(): Record<string, ContextWindowUsage> {
             const max = Number(event.context_max_tokens) || 0;
             if (!sessionKey || max <= 0) return;
             const used = Math.max(0, Number(event.context_used_tokens) || 0);
-            setUsageBySession(prev => ({ ...prev, [sessionKey]: { used, max } }));
+            const estimated = event.context_usage_estimated === true;
+            setUsageBySession(prev => ({ ...prev, [sessionKey]: { used, max, estimated } }));
         });
         return () => { if (typeof off === "function") off(); };
     }, []);

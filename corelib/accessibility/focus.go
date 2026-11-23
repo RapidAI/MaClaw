@@ -67,6 +67,12 @@ func WindowOwnedBySelf(id uint64) bool {
 	return windowOwnedBySelf(id)
 }
 
+// WindowIsHung reports the OS's not-responding verdict for a top-level window.
+// Unsupported platforms and a zero id return false.
+func WindowIsHung(id uint64) bool {
+	return windowIsHung(id)
+}
+
 // KeyboardTextTarget is the foreground thread's keyboard focus.
 // Focus and Caret are platform window ids. On Windows they are HWNDs.
 type KeyboardTextTarget struct {

@@ -19,6 +19,7 @@ import (
 // restart-computer ensure is harmless.
 
 type bootRetry struct {
+	started  string
 	attempts int
 	next     time.Time
 }
@@ -70,6 +71,10 @@ func (w *bootWatcher) once(ctx context.Context, s *Service) []string {
 		}
 	}
 	if len(names) == 0 {
+		w.mu.Lock()
+		w.seen = map[string]string{}
+		w.retries = nil
+		w.mu.Unlock()
 		return nil
 	}
 	args := append([]string{"inspect", "-f", "{{.Name}} {{.State.StartedAt}}"}, names...)
@@ -98,6 +103,9 @@ func (w *bootWatcher) once(ctx context.Context, s *Service) []string {
 		w.mu.Lock()
 		retry := w.retries[name]
 		w.mu.Unlock()
+		if retry.started != started {
+			retry = bootRetry{started: started}
+		}
 		if !retry.next.IsZero() && time.Now().Before(retry.next) {
 			continue
 		}

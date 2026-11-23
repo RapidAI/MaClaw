@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"log"
 	"runtime"
 	"strings"
 	"sync"
@@ -304,7 +305,63 @@ func computerUseStitchRefusalNote(w, h int, captured bool, cap computerUseCaptur
 	return b.String()
 }
 
+const computerUseWindowHungText = "the target window is not responding. Call computer_done."
+
+var computerUseWindowHungFn func(id uint64) bool
+
+func cuWindowHung(sess *computeruse.Session) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.WindowHung() {
+		return true
+	}
+	last := sess.LastObserve()
+	if last == nil {
+		return false
+	}
+	title := strings.TrimSpace(last.Meta.CropTitle)
+	if title == "" {
+		return false
+	}
+	var id uint64
+	if computeruse.CropIsForeground(title, cuForegroundTitle()) {
+		id = cuForegroundID()
+	}
+	if id == 0 {
+		id = accessibility.NamedWindowID(title)
+	}
+	return cuWindowHungTarget(sess, title, id)
+}
+
+func cuWindowHungTarget(sess *computeruse.Session, title string, id uint64) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.WindowHung() {
+		return true
+	}
+	if id == 0 {
+		return false
+	}
+	fn := computerUseWindowHungFn
+	if fn == nil {
+		fn = accessibility.WindowIsHung
+	}
+	if !fn(id) {
+		return false
+	}
+	sess.NoteWindowHung()
+	sess.InvalidateRefs()
+	sess.RecordAction("window_hung", fmt.Sprintf("window=%q id=%d", title, id), false, "window not responding", false)
+	log.Printf("[computer-use] target window is not responding %q id=%d", title, id)
+	return true
+}
+
 func cuRequireSameWindow(sess *computeruse.Session) string {
+	if cuWindowHung(sess) {
+		return computerUseWindowHungText
+	}
 	return cuSameWindow(sess, true)
 }
 
@@ -313,6 +370,9 @@ func cuRequireSameWindow(sess *computeruse.Session) string {
 // come back during that work. A raise note from the first check stays when
 // this window is still in front.
 func cuReassertOperatedWindow(sess *computeruse.Session) string {
+	if cuWindowHung(sess) {
+		return computerUseWindowHungText
+	}
 	return cuSameWindow(sess, false)
 }
 

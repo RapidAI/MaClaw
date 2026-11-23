@@ -96,10 +96,11 @@ type Service struct {
 	// pulls tracks in-flight registry pulls by image: concurrent desktop
 	// requests join one pull and a failed registry is not re-hit on every
 	// request (imagePullRetryAfter backoff, see image_source.go).
-	pulls        imagePulls
-	userGates    sync.Map
-	fileGates    sync.Map // per-file locks under the shared user gate (withUserFile)
-	installGates sync.Map
+	pulls          imagePulls
+	userGates      sync.Map
+	fileGates      sync.Map // per-file locks under the shared user gate (withUserFile)
+	installGates   sync.Map
+	workspaceGates sync.Map
 	// activity counts apt and bash still inside this process. Sleep and the
 	// historical reaper both leave that user running.
 	activity sync.Map
@@ -398,6 +399,13 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 	if err != nil {
 		return Desktop{}, err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Stop must finish the login write after its caller disconnects.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loginWriteTimeout)
+	defer cancel()
+	ctx = stopCtx
 	if spec.BotID != "" && s.dockerRuntime() {
 		// A bot display is never stopped here (stopUnlocked returns "idle"
 		// without touching the container), so it must not wait for — or
@@ -693,6 +701,8 @@ func (s *Service) Open(ctx context.Context, tenantID, userID, display, program s
 	if err != nil {
 		return out, err
 	}
+	s.noteComputerScreen(spec, display)
+	s.noteComputerActivity(spec.TenantID, spec.UserID)
 	if strings.TrimSpace(out) == "" {
 		return desktop.OpenedText(program), nil
 	}
@@ -716,14 +726,17 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 	ctx, cancel := desktop.BoundInstall(ctx)
 	defer cancel()
 	var output string
+	var container string
+	var onDesktop bool
 	release := s.holdWork(spec.TenantID, spec.UserID)
 	defer release()
 	err = s.withUserInstallContext(ctx, spec.TenantID, spec.UserID, func() error {
 		return s.withUserReadContext(ctx, spec.TenantID, spec.UserID, func() error {
-			container, _, cErr := s.toolContainer(ctx, spec)
+			c, desk, cErr := s.toolContainer(ctx, spec)
 			if cErr != nil {
 				return cErr
 			}
+			container, onDesktop = c, desk
 			// ensure() starts apt-mirror in the background and returns before
 			// that process takes the lock. The wait either blocks until the
 			// probe has written the sources, or holds the lock and writes
@@ -748,6 +761,7 @@ func (s *Service) Install(ctx context.Context, tenantID, userID string, packages
 		}
 		return tailInstall(output), err
 	}
+	s.noteToolUse(spec, container, onDesktop)
 	return "installed: " + strings.Join(names, " ") + "\n" + tailInstall(output), nil
 }
 
@@ -893,6 +907,12 @@ func (g *userGate) Lock(ctx context.Context) error {
 	started := time.Now()
 	hard := false
 	for {
+		if err := ctx.Err(); err != nil {
+			if hard {
+				g.setHardWriter(false)
+			}
+			return err
+		}
 		if g.rw.TryLock() {
 			if hard {
 				g.setHardWriter(false)
@@ -914,6 +934,9 @@ func (g *userGate) Lock(ctx context.Context) error {
 
 func (g *userGate) RLock(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if g.readersAllowed() && g.rw.TryRLock() {
 			return nil
 		}
@@ -924,12 +947,17 @@ func (g *userGate) RLock(ctx context.Context) error {
 }
 
 func lockMutexContext(ctx context.Context, lock *sync.Mutex) error {
-	for !lock.TryLock() {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if lock.TryLock() {
+			return nil
+		}
 		if err := waitGateRetry(ctx); err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
 func (s *Service) userGate(tenantID, userID string) *userGate {
@@ -984,6 +1012,9 @@ func (s *Service) withUserFileContext(ctx context.Context, tenantID, userID, fil
 	if s == nil {
 		return fn()
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.withUserReadContext(ctx, tenantID, userID, func() error {
 		lock, _ := s.fileGates.LoadOrStore(tenantID+"\x00"+userID+"\x00"+filePath, &sync.Mutex{})
 		mutex := lock.(*sync.Mutex)
@@ -1002,6 +1033,9 @@ func (s *Service) withUserInstall(tenantID, userID string, fn func() error) erro
 func (s *Service) withUserInstallContext(ctx context.Context, tenantID, userID string, fn func() error) error {
 	if s == nil {
 		return fn()
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	gate, _ := s.installGates.LoadOrStore(tenantID+"\x00"+userID, &sync.Mutex{})
 	mutex := gate.(*sync.Mutex)
@@ -1091,7 +1125,7 @@ func (s *Service) retireStateImage(ctx context.Context, state, from, requested s
 // migrateLiveFiles copies this user's files out of the running container
 // before a private volume is mounted over them. Only this user's browser
 // profile is copied, so a previously shared /desktops tree does not come along.
-func (s *Service) migrateLiveFiles(ctx context.Context, name string, spec Spec) error {
+func (s *Service) migrateLiveFiles(ctx context.Context, name string, spec Spec) (retErr error) {
 	mounts, err := desktop.PrivateMounts(spec.TenantID, spec.UserID)
 	if err != nil {
 		return err
@@ -1118,11 +1152,20 @@ func (s *Service) migrateLiveFiles(ctx context.Context, name string, spec Spec) 
 		fmt.Fprintf(&mkdir, "mkdir -p %s; ", side)
 	}
 	args = append(args, state, "60")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	defer func() {
+		if _, cleanupErr := s.docker(cleanupCtx, "rm", "-f", tmp); retErr == nil && cleanupErr != nil && !missingObject(cleanupErr) {
+			retErr = cleanupErr
+		}
+	}()
 	if _, err := s.docker(ctx, args...); err != nil {
 		return err
 	}
 	if _, err := s.docker(ctx, "exec", tmp, "sh", "-c", mkdir.String()); err != nil {
-		_, _ = s.docker(ctx, "rm", "-f", tmp)
 		return err
 	}
 	for _, mount := range mounts {
@@ -1132,17 +1175,14 @@ func (s *Service) migrateLiveFiles(ctx context.Context, name string, spec Spec) 
 			src = "/desktops/" + key
 			dest = "/mnt/desktops/" + key
 			if _, err := s.docker(ctx, "exec", tmp, "mkdir", "-p", dest); err != nil {
-				_, _ = s.docker(ctx, "rm", "-f", tmp)
 				return err
 			}
 		}
 		if err := s.copyContainerPath(ctx, name+":"+src, tmp+":"+dest); err != nil {
-			_, _ = s.docker(ctx, "rm", "-f", tmp)
 			return err
 		}
 	}
-	_, err = s.docker(ctx, "rm", "-f", tmp)
-	return err
+	return nil
 }
 
 // refreshSupervisor puts the requested image's desktop_supervisor.py into a
@@ -1379,7 +1419,7 @@ func defaultRun(ctx context.Context, args ...string) (string, error) {
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	out := &tailOutput{limit: dockerOutputLimit(args)}
+	out := newDockerOutput(args)
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	text := strings.TrimSpace(out.String())

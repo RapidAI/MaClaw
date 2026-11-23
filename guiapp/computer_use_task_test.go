@@ -2012,3 +2012,79 @@ func TestDesktopMessageSendClickLatchesAndHidesHalo(t *testing.T) {
 		t.Fatalf("clicks=%d msg=%s", in.clicks, again)
 	}
 }
+
+func TestHungWindowStopsBeforeInputAndRecoversNextTask(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	in := installCountingComputerUse(t, sess)
+	computerUseForegroundTitleFn = func() string { return "蓝信" }
+	computerUseForegroundIDFn = func() uint64 { return 42 }
+	computerUseWindowAtPointFn = func(int, int) (uint64, string) { return 42, "蓝信" }
+	computerUsePolicyWindowHook = func(int, int) string { return "蓝信" }
+	computerUseWindowHungFn = func(uint64) bool { return true }
+	t.Cleanup(func() { computerUseWindowHungFn = nil })
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+
+	msg := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 0 || !sess.WindowHung() || sess.RefsValid() || !strings.Contains(msg, "not responding") {
+		t.Fatalf("clicks=%d hung=%v refs=%v msg=%s", in.clicks, sess.WindowHung(), sess.RefsValid(), msg)
+	}
+	loop := &LoopContext{ComputerUseActive: true, UserID: computerUseDefaultOwner}
+	loop.Runtime.Conversation.SessionKey = computerUseDefaultOwner
+	if kind := computerUseStopKindFor(loop, computerUseDefaultOwner); kind != computerUseStopInject {
+		t.Fatalf("stop kind=%v", kind)
+	}
+	if text, errText, ok := computerUseTerminalFailure(loop, computerUseDefaultOwner, "蓝信操作"); !ok || !strings.Contains(text, "无响应") || !strings.Contains(errText, "not responding") {
+		t.Fatalf("failure text=%q err=%q ok=%v", text, errText, ok)
+	}
+	if again := cuHandleClick(map[string]interface{}{"ref": "e0"}); in.clicks != 0 || !strings.Contains(again, "not responding") {
+		t.Fatalf("second click=%s clicks=%d", again, in.clicks)
+	}
+
+	beginComputerUseTask(computerUseDefaultOwner, "req-hung-recovery", "打开蓝信", nil)
+	computerUseWindowHungFn = func(uint64) bool { return false }
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1, CropTitle: "蓝信"}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "yolo"},
+	}, nil, "")
+	if ok := cuHandleClick(map[string]interface{}{"ref": "e0"}); in.clicks != 1 || sess.WindowHung() || strings.Contains(ok, "not responding") {
+		t.Fatalf("recovery click=%s clicks=%d hung=%v", ok, in.clicks, sess.WindowHung())
+	}
+}
+
+func TestHungTargetDetectedAfterFullMonitorObserve(t *testing.T) {
+	sess := computeruse.NewSession(computeruse.DefaultConfig())
+	in := installCountingComputerUse(t, sess)
+	computerUseWindowHungFn = func(uint64) bool { return true }
+	t.Cleanup(func() { computerUseWindowHungFn = nil })
+	sess.CommitObserve(computeruse.ScreenMeta{Width: 200, Height: 80, ScaleFactor: 1}, nil, []taskengine.UIElement{
+		{Name: "搜索", BBox: [4]int{10, 10, 40, 20}, Source: "accessibility"},
+	}, nil, "")
+	last := sess.LastObserve()
+	last.Elements[0].Window = "蓝信"
+	last.Elements[0].WindowID = 42
+
+	msg := cuHandleClick(map[string]interface{}{"ref": "e0"})
+	if in.clicks != 0 || !sess.WindowHung() || !strings.Contains(msg, "not responding") {
+		t.Fatalf("clicks=%d hung=%v msg=%s", in.clicks, sess.WindowHung(), msg)
+	}
+}
+
+func TestTerminalComputerUseRefusesEveryNonFinalTool(t *testing.T) {
+	loop, sess := openDrivingComputerUse(t, "terminal-tools", "给蓝信中的马勇发消息")
+	sess.NoteInputDenied()
+	for _, tool := range []string{"computer_click", "computer_key", "computer_observe", "bash", "goal", "write_file"} {
+		if msg := computerUseTerminalToolRefusal(loop, "terminal-tools", tool); !strings.Contains(msg, "refused input") || !strings.Contains(msg, "computer_done") {
+			t.Fatalf("%s was allowed: %q", tool, msg)
+		}
+	}
+	for _, tool := range []string{"computer_done", "computer_playbook"} {
+		if msg := computerUseTerminalToolRefusal(loop, "terminal-tools", tool); msg != "" {
+			t.Fatalf("%s was blocked: %q", tool, msg)
+		}
+	}
+	plain := NewLoopContext("plain-terminal-tools", 10, nil)
+	if msg := computerUseTerminalToolRefusal(plain, "terminal-tools", "bash"); msg != "" {
+		t.Fatalf("a non-CU loop was blocked: %q", msg)
+	}
+}

@@ -3,6 +3,7 @@ package desktopd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,9 @@ func TestUploadFileStreamsBytesUnderMaterials(t *testing.T) {
 	if _, err := svc.UploadFile(context.Background(), "tenant", "alice", "~/素材/a/b.bin", bytes.NewReader(payload), desktop.UploadMax+1); err == nil || len(calls) != committed {
 		t.Fatal("oversize accepted")
 	}
+	if _, err := svc.UploadFile(context.Background(), "tenant", "alice", "~/素材/a.partial", bytes.NewReader(payload), int64(len(payload))); err == nil || len(calls) != committed {
+		t.Fatal("upload target collided with the internal partial namespace")
+	}
 	shortFinal := "/home/desktop/素材/a/b.bin"
 	if _, err := svc.UploadFile(context.Background(), "tenant", "alice", "~/素材/a/b.bin", bytes.NewReader(payload[:3]), int64(len(payload))); err == nil {
 		t.Fatal("short body accepted")
@@ -99,6 +103,28 @@ func TestWithBotIDLeavesUploadBodyAlone(t *testing.T) {
 	}
 	if user == "alice" || !strings.Contains(user, "b1") {
 		t.Fatalf("bot not folded into user: %q", user)
+	}
+}
+
+func TestUploadFileCleanupHasDeadlineAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cleanupDeadlines []bool
+	svc := &Service{RunCommand: func(cmdCtx context.Context, in io.Reader, args ...string) (string, int, error) {
+		if in != nil {
+			_, _ = io.ReadAll(in)
+			cancel()
+			return "", 0, errors.New("write connection lost")
+		}
+		_, hasDeadline := cmdCtx.Deadline()
+		cleanupDeadlines = append(cleanupDeadlines, hasDeadline && cmdCtx.Err() == nil)
+		return "", 0, nil
+	}}
+	if _, err := svc.UploadFile(ctx, "tenant", "alice", "~/素材/a.bin", bytes.NewReader([]byte("x")), 1); err == nil {
+		t.Fatal("failed write was hidden")
+	}
+	if len(cleanupDeadlines) != 2 || !cleanupDeadlines[0] || !cleanupDeadlines[1] {
+		t.Fatalf("cleanup deadlines=%v", cleanupDeadlines)
 	}
 }
 

@@ -122,7 +122,7 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 	}
 
 	stageStartedAt = time.Now()
-	result.History = h.applyPendingContextCompression(opts.UserID, result.History, opts.LastCompressionSummary)
+	result.History, result.Conversation = h.applyPendingContextCompressionWithConversation(opts.UserID, result.History, result.Conversation, opts.LastCompressionSummary)
 	logSlow("pending_compression", stageStartedAt)
 	// After tool execution (including compress_context), the loop always continues.
 	// The only valid termination signal is the LLM producing a pure-text response

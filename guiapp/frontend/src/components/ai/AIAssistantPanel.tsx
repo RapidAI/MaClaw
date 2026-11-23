@@ -7262,6 +7262,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const liveContextUsage = contextUsageBySession[normalizeAssistantSessionKey(activeSessionKey)];
     const contextUsedTokens = liveContextUsage?.used ?? (isPureCodingEnvironment ? codingContextUsedTokens : 0);
     const contextMaxTokens = liveContextUsage?.max ?? (isPureCodingEnvironment ? codingContextMaxTokens : 0);
+    const contextUsageEstimated = liveContextUsage?.estimated ?? false;
     return (
         <MarkdownImagePreviewProvider onPreviewImage={previewChatImage}>
         <div data-testid="ai-panel-root" data-ai-view={newTaskHome ? "welcome" : "execution"} style={containerStyle}>
@@ -8027,6 +8028,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         usedTokens={contextUsedTokens}
                         maxTokens={contextMaxTokens}
                         mutedColor={t.promptColor}
+                        estimated={contextUsageEstimated}
                     />
                 )}
                 {goalChecklistFloatActive ? (

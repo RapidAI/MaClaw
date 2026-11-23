@@ -13,8 +13,9 @@ import (
 type Session struct {
 	mu sync.Mutex
 
-	cfg    Config
-	policy *Policy
+	cfg        Config
+	policy     *Policy
+	windowHung bool
 
 	// windowResolver attributes elements to their owning window title at
 	// observe time (injected by the host; nil disables attribution).
@@ -193,6 +194,36 @@ func (s *Session) InputDenied() bool {
 	return s.policy.InputDenied()
 }
 
+// NoteWindowHung latches the OS's not-responding verdict for this attempt.
+func (s *Session) NoteWindowHung() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.windowHung = true
+	s.mu.Unlock()
+}
+
+// WindowHung reports the latched window-health failure.
+func (s *Session) WindowHung() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.windowHung
+}
+
+// ClearWindowHung lets a new task on the reused session inspect a fresh window.
+func (s *Session) ClearWindowHung() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.windowHung = false
+	s.mu.Unlock()
+}
+
 // StepsExhausted reports that this attempt already passed its step budget.
 // The query does not spend a step.
 func (s *Session) StepsExhausted() (max int, exhausted bool) {
@@ -250,6 +281,7 @@ func (s *Session) ResetControl() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.policy.Reset(false)
+	s.windowHung = false
 	s.actuated = ""
 	s.actuatedWindow = ""
 	s.actuatedWindowID = 0
