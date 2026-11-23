@@ -216,8 +216,10 @@ func TestCodingWorkbenchStatusContextTokensUsesLastPromptNotSessionSum(t *testin
 }
 
 func TestCodingWorkbenchStatusContextTokensDegrade(t *testing.T) {
-	// No turn yet → session input total stands in for the fill level; no
-	// resolvable model → the cap is 0 rather than an invented number.
+	// No turn yet and no resolvable model → the cap is 0 rather than an
+	// invented number. The session sum must not stand in for the window fill:
+	// it is a lifetime total and paints "used" far above the window
+	// (BR-20261122-4FFF37BF12F7).
 	h := &IMMessageHandler{}
 	path := t.TempDir()
 	userID := projectSessionOwnerID(path)
@@ -226,11 +228,35 @@ func TestCodingWorkbenchStatusContextTokensDegrade(t *testing.T) {
 		mem.SessionInputTokens = 42000
 	})
 	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
-	if st.ContextUsedTokens != 42000 {
-		t.Fatalf("ContextUsedTokens=%d", st.ContextUsedTokens)
+	if st.ContextUsedTokens != 0 {
+		t.Fatalf("ContextUsedTokens=%d, session sum must not fill the meter", st.ContextUsedTokens)
 	}
 	if st.ContextMaxTokens != 0 {
 		t.Fatalf("ContextMaxTokens=%d, want 0 when no model resolves", st.ContextMaxTokens)
+	}
+}
+
+func TestCodingWorkbenchStatusContextTokensIgnoresSessionSumWhenWindowKnown(t *testing.T) {
+	h := &IMMessageHandler{standaloneConfig: &StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{Model: "coding-model", URL: "https://llm.example/v1", Key: "k", ContextLength: 256000}
+		},
+	}}
+	path := t.TempDir()
+	userID := projectSessionOwnerID(path)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.SessionInputTokens = 30_213_603
+	})
+	st := (&App{}).codingWorkbenchStatusFromHandler(path, h)
+	if st.ContextUsedTokens != 0 {
+		t.Fatalf("ContextUsedTokens=%d, want 0 until a prompt is recorded", st.ContextUsedTokens)
+	}
+	if st.ContextMaxTokens != 204800 {
+		t.Fatalf("ContextMaxTokens=%d", st.ContextMaxTokens)
+	}
+	if st.SessionInputTokens != 30_213_603 {
+		t.Fatalf("session=%d", st.SessionInputTokens)
 	}
 }
 

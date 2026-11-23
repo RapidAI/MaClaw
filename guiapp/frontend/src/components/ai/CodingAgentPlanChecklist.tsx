@@ -50,9 +50,10 @@ export type CodingAgentPlanChecklistProps = {
     hideFileChanges?: boolean;
     /**
      * Context-window usage next to the progress track: `used` is the last
-     * request's input size (or the session input total before any turn), `max`
-     * is the resolved window cap. Both optional — old payloads omit them and
-     * `max` is 0 when the host cannot resolve a model cap.
+     * request's input size, `max` is the resolved window cap. Both optional —
+     * old payloads omit them, `used` is 0 until a prompt is recorded, and
+     * `max` is 0 when the host cannot resolve a model cap. The session input
+     * total is a lifetime sum and must not be shown as the fill.
      */
     contextUsedTokens?: number;
     contextMaxTokens?: number;
