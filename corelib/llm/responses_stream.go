@@ -860,19 +860,30 @@ func appendResponsesStreamText(buf *strings.Builder, text string) string {
 }
 
 // responsesStreamArgsCut reports a function call whose arguments are not a
-// complete JSON object. An oversized tail may have cut that object; a call
-// that already closed is not evidence the scan limit ate its arguments.
+// complete JSON object. An oversized tail may have cut that object. json.Valid
+// is not enough: an array, number, or string is valid JSON but not a call's
+// argument object, and treating it as closed lets the agent execute a cut
+// call. Empty arguments stay unmarked here so a finished no-arg call is not
+// forced through length truncation.
 func responsesStreamArgsCut(items map[int]*responsesStreamItem) bool {
 	for _, item := range items {
 		if item == nil || !strings.EqualFold(strings.TrimSpace(item.itemType), "function_call") {
 			continue
 		}
-		args := strings.TrimSpace(item.args.String())
-		if args == "" || !json.Valid([]byte(args)) {
+		if !responsesStreamArgsObject(item.args.String()) {
 			return true
 		}
 	}
 	return false
+}
+
+func responsesStreamArgsObject(args string) bool {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return true
+	}
+	var object map[string]json.RawMessage
+	return json.Unmarshal([]byte(args), &object) == nil
 }
 
 func responsesStreamToolArgumentsTooLarge(name string, size int) error {

@@ -980,3 +980,71 @@ func TestDoResponsesAPIRequestStreamMarksCutArgumentsWhenTailExceedsScanLimit(t 
 		t.Fatalf("incomplete JSON must not execute: %#v", choice.Message.ToolCalls)
 	}
 }
+
+func TestDoResponsesAPIRequestStreamMarksNonObjectArgumentsCut(t *testing.T) {
+	body := responsesStreamEvents(
+		responsesStreamEvent("response.output_item.added", map[string]any{
+			"output_index": 0,
+			"item":         map[string]any{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file"},
+		}),
+		responsesStreamEvent("response.function_call_arguments.delta", map[string]any{
+			"output_index": 0, "item_id": "fc_a", "delta": `[1,2`,
+		}),
+	)
+	body = append(body, []byte("event: response.completed\ndata: {\"pad\":\"")...)
+	body = append(body, bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	response, err := DoResponsesAPIRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+		[]any{map[string]any{"role": "user", "content": "test"}},
+		nil, srv.Client(), nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("cut prefix must not fail the turn: %v", err)
+	}
+	choice := response.Choices[0]
+	if choice.FinishReason != "length" || len(choice.Message.ToolCalls) != 0 || choice.TruncatedToolNames[0] != "read_file" {
+		t.Fatalf("non-object arguments executed: %#v", choice)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamKeepsEmptyObjectWhenTailExceedsScanLimit(t *testing.T) {
+	for _, delta := range []string{"{}", ""} {
+		body := responsesStreamEvents(
+			responsesStreamEvent("response.output_item.added", map[string]any{
+				"output_index": 0,
+				"item":         map[string]any{"type": "function_call", "id": "fc_a", "call_id": "call_a", "name": "read_file"},
+			}),
+		)
+		if delta != "" {
+			body = append(body, responsesStreamEvent("response.function_call_arguments.delta", map[string]any{
+				"output_index": 0, "item_id": "fc_a", "delta": delta,
+			})...)
+		}
+		body = append(body, []byte("event: response.completed\ndata: {\"pad\":\"")...)
+		body = append(body, bytes.Repeat([]byte("y"), responsesStreamMaxEventBytes)...)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write(body)
+		}))
+		t.Cleanup(srv.Close)
+		response, err := DoResponsesAPIRequestStream(
+			context.Background(),
+			corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"},
+			[]any{map[string]any{"role": "user", "content": "test"}},
+			nil, srv.Client(), nil, nil,
+		)
+		if err != nil || response == nil || len(response.Choices) != 1 {
+			t.Fatalf("delta %q: response=%#v err=%v", delta, response, err)
+		}
+		choice := response.Choices[0]
+		if choice.FinishReason == "length" || len(choice.TruncatedToolNames) != 0 || len(choice.Message.ToolCalls) != 1 {
+			t.Fatalf("delta %q was treated as cut: %#v", delta, choice)
+		}
+	}
+}
