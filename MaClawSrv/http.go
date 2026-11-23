@@ -1512,7 +1512,7 @@ func (s *HTTPServer) saveWeixinQRLoginConfig(ctx context.Context, p agentservice
 		local := true
 		cfg.WeixinLocalMode = &local
 	}
-	_, err = s.svc.UpdateUserConfig(ctx, p, cfg)
+	_, err = s.svc.UpdateUserVisibleConfig(ctx, p, cfg)
 	return err
 }
 

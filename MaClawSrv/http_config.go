@@ -52,7 +52,10 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
+	// Ordinary settings were merged above. The managed capability document is
+	// not taken from that snapshot: UpdateUserVisibleConfig commits whatever
+	// is stored when the config lock is held.
+	out, err := s.svc.UpdateUserVisibleConfig(r.Context(), p, next)
 	if err != nil {
 		writeRedactedError(w, err, s.svc.DataRoot())
 		return

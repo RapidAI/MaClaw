@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -100,14 +101,69 @@ func (s *Service) ListStartupUserConfigs(ctx context.Context) ([]StartupUserConf
 	return out, nil
 }
 
+// userVisibleConfigBeforeCommit runs only for a user-visible save, before
+// that save takes userConfigMu. Tests use it to land a Hub/admin write in
+// the window after the caller's earlier snapshot and before the commit read.
+var userVisibleConfigBeforeCommit atomic.Pointer[func()]
+
+// SetUserVisibleConfigBeforeCommitForTest installs that barrier. Production
+// leaves it unset. The hook must not call UpdateUserVisibleConfig.
+func SetUserVisibleConfigBeforeCommitForTest(fn func()) {
+	if fn == nil {
+		userVisibleConfigBeforeCommit.Store(nil)
+		return
+	}
+	userVisibleConfigBeforeCommit.Store(&fn)
+}
+
+// rawManagedSaveBeforeLock runs after a raw MCP, mailbox, skill-market, or
+// Hub-center save has its snapshot and before that save takes userConfigMu.
+// Tests use it to land a Hub/admin write in that window. Production leaves
+// it unset. The hook must not call those raw saves.
+var rawManagedSaveBeforeLock atomic.Pointer[func()]
+
+// SetRawManagedSaveBeforeLockForTest installs that barrier.
+func SetRawManagedSaveBeforeLockForTest(fn func()) {
+	if fn == nil {
+		rawManagedSaveBeforeLock.Store(nil)
+		return
+	}
+	rawManagedSaveBeforeLock.Store(&fn)
+}
+
+func runRawManagedSaveBeforeLock() {
+	if hook := rawManagedSaveBeforeLock.Load(); hook != nil && *hook != nil {
+		(*hook)()
+	}
+}
+
 func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
+	return s.commitUserConfig(ctx, p, next, true)
+}
+
+// UpdateUserVisibleConfig saves ordinary user settings. desktop_bot_capabilities
+// is copied from the row read under userConfigMu, not from next. A Hub/admin
+// replacement or clear that commits before this lock is the value that stays.
+func (s *Service) UpdateUserVisibleConfig(ctx context.Context, p Principal, next corelib.AppConfig) (*UserConfig, error) {
+	if hook := userVisibleConfigBeforeCommit.Load(); hook != nil && *hook != nil {
+		(*hook)()
+	}
+	return s.commitUserConfig(ctx, p, next, false)
+}
+
+func (s *Service) commitUserConfig(ctx context.Context, p Principal, next corelib.AppConfig, ownManaged bool) (*UserConfig, error) {
 	_ = ctx
+	s.userConfigMu.Lock()
+	defer s.userConfigMu.Unlock()
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
 	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
 	if err != nil && err != ErrUserConfigNotFound {
 		return nil, err
+	}
+	if !ownManaged {
+		next.DesktopBotCapabilities = append([]byte(nil), current.AppConfig.DesktopBotCapabilities...)
 	}
 	merged := normalizeLLMConfigForSave(current.AppConfig, mergeSecretPreserving(current.AppConfig, next))
 	cfg := UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: merged, UpdatedAt: s.now()}
@@ -130,6 +186,41 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	cfg.AppConfig = effectiveLLMFlatConfig(cfg.AppConfig)
 	cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
 	return &cfg, nil
+}
+
+// keepStoredManagedCapabilitiesLocked copies the managed document from the
+// row read under userConfigMu. Callers that saved an earlier full snapshot
+// use it so a Hub or admin replacement or clear is not rolled back.
+func (s *Service) keepStoredManagedCapabilitiesLocked(p Principal, next *corelib.AppConfig) error {
+	current, err := s.getOrLoadRawUserConfig(p.TenantID, p.UserID)
+	if err != nil && err != ErrUserConfigNotFound {
+		return err
+	}
+	var raw []byte
+	if err == nil {
+		raw = current.AppConfig.DesktopBotCapabilities
+	}
+	next.DesktopBotCapabilities = append([]byte(nil), raw...)
+	return nil
+}
+
+func (s *Service) saveConfigKeepingManaged(p Principal, cfg UserConfig) error {
+	runRawManagedSaveBeforeLock()
+	s.userConfigMu.Lock()
+	defer s.userConfigMu.Unlock()
+	if err := s.keepStoredManagedCapabilitiesLocked(p, &cfg.AppConfig); err != nil {
+		return err
+	}
+	if cfg.TenantID == "" {
+		cfg.TenantID = p.TenantID
+	}
+	if cfg.UserID == "" {
+		cfg.UserID = p.UserID
+	}
+	if err := s.store.SaveUserConfig(cfg); err != nil {
+		return err
+	}
+	return saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
 }
 
 func (s *Service) defaultClientConfigPath() string {

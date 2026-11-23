@@ -164,6 +164,6 @@ func (s *HTTPServer) saveQQBotQRLoginConfig(ctx context.Context, p agentservice.
 		local := true
 		cfg.QQBotLocalMode = &local
 	}
-	_, err = s.svc.UpdateUserConfig(ctx, p, cfg)
+	_, err = s.svc.UpdateUserVisibleConfig(ctx, p, cfg)
 	return err
 }

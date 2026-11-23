@@ -549,7 +549,7 @@ func (s *HTTPServer) handleAdminDatabaseProfileDelete(w http.ResponseWriter, r *
 // successful write so the runtime never diverges ahead of durable config.
 func (s *HTTPServer) persistDatabaseProfiles(w http.ResponseWriter, r *http.Request, p agentservice.Principal, appConfig corelib.AppConfig, profiles []database.Profile) error {
 	appConfig.DatabaseProfiles = profiles
-	if _, err := s.svc.UpdateUserConfig(r.Context(), p, appConfig); err != nil {
+	if _, err := s.svc.UpdateUserVisibleConfig(r.Context(), p, appConfig); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return err
 	}
