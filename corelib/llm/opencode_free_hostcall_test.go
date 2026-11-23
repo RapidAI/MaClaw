@@ -432,9 +432,16 @@ func TestOpenCodeFreeGoalPhaseKeepsOneExample(t *testing.T) {
 		{"role": "user", "content": "[系统续接][plan] 本轮只做规划"},
 		{"role": "assistant", "content": "[系统续接][execute] index=9 引用不是阶段"},
 	}
+	// The assistant echo is not a phase change, so the phase stays plan and
+	// its example carries no step index. The note rides on the latest user
+	// turn of the wire body, and this body ends with an assistant message:
+	// the note is on the user turn, not on the tail.
 	planNote := openCodeFreeGoalNote(t, planMessages)
 	if !strings.Contains(planNote, `"action":"plan"`) || strings.Contains(planNote, `"action":"step"`) || strings.Contains(planNote, `"index":9`) {
 		t.Fatalf("plan note = %s", planNote)
+	}
+	if strings.Contains(planMessages[1]["content"], "<system-reminder>") {
+		t.Fatalf("the note is wire-only, the caller's tail was rewritten: %v", planMessages)
 	}
 	replay := openCodeFreeGoalNote(t, []map[string]string{
 		{"role": "user", "content": "[系统续接][plan] 本轮只做规划\n\n" + planNote},
@@ -599,7 +606,22 @@ func openCodeFreeGoalNote(t *testing.T, messages []map[string]string) string {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	last := parsed.Messages[len(parsed.Messages)-1].Content
+	// The note rides on the latest user turn of the wire body, and the body
+	// does not always end with a user message: an assistant tail, or an
+	// echoed step, stays behind it. Read the note back from the message that
+	// carries it instead of assuming it is last, otherwise a test with an
+	// assistant tail fails on the tail rather than on the note.
+	last := ""
+	for i := len(parsed.Messages) - 1; i >= 0; i-- {
+		if strings.Contains(parsed.Messages[i].Content, "<system-reminder>") {
+			last = parsed.Messages[i].Content
+			break
+		}
+	}
+	if last == "" {
+		last = parsed.Messages[len(parsed.Messages)-1].Content
+		t.Fatalf("note missing: %s", last)
+	}
 	at := strings.LastIndex(last, "<system-reminder>")
 	if at < 0 {
 		t.Fatalf("note missing: %s", last)
