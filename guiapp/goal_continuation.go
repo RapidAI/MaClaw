@@ -2623,19 +2623,15 @@ func codingGoalTurnIncomplete(s *CodingSubAgent, task *TaskItem, reqCtx string, 
 	}
 	g := codingGoalForSubAgent(s)
 	if g == nil {
-		if codingLoopIterationExhausted(result.Error) {
-			return true, "max iterations reached；目标尚未达成"
-		}
-		return true, "目标尚未达成"
+		return true, "max iterations reached；目标尚未达成"
 	}
 	if g.IsTerminal() {
 		return false, ""
 	}
 	if _, open := g.CurrentStep(); open || !g.ReadyToComplete() || g.Status == goal.StatusActive || g.Status == goal.StatusPaused {
-		if codingLoopIterationExhausted(result.Error) {
-			return true, "max iterations reached；目标尚未达成"
-		}
-		return true, "目标尚未达成"
+		// Prefix matches codingLoopIterationExhausted so the host keeps this
+		// step and schedules the next turn. A plain failure closes the goal.
+		return true, "max iterations reached；目标尚未达成"
 	}
 	if codingLoopIterationExhausted(result.Error) {
 		return true, "max iterations reached"
@@ -2677,5 +2673,5 @@ func remoteGoalTurnIncomplete(c *remoteCodingCallbacks) (bool, string) {
 	if g != nil && g.IsTerminal() {
 		return false, ""
 	}
-	return true, "目标尚未达成"
+	return true, "max iterations reached；目标尚未达成"
 }

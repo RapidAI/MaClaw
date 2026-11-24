@@ -500,7 +500,7 @@ func TestCodingGoalTurnIncompleteRefusesPassed(t *testing.T) {
 		t.Fatalf("complete refusal = %q", refused)
 	}
 	blocked, why := codingGoalTurnIncomplete(s, task, "", agent.LoopResult{Text: "已完成", Iterations: 242, ToolCalls: 254})
-	if !blocked || !strings.Contains(why, "目标尚未达成") || strings.HasPrefix(why, "max iterations reached") {
+	if !blocked || !strings.HasPrefix(why, "max iterations reached") || !strings.Contains(why, "目标尚未达成") {
 		t.Fatalf("open goal prose stop blocked=%v why=%q", blocked, why)
 	}
 	blocked, why = codingGoalTurnIncomplete(s, task, "", agent.LoopResult{Error: "max iterations reached", Iterations: 300})
