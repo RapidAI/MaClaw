@@ -66,6 +66,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         authorName: '',
         authorEmail: '',
         token: '',
+        source: '',
     });
     const selected = useRef({ grant: '', instance: '', task: '', kind: '' });
     const openGeneration = useRef(0);
@@ -265,13 +266,45 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 author_name: git.authorName.trim(),
                 author_email: git.authorEmail.trim(),
                 token: git.token,
+                source: git.source || undefined,
             }) as { repo?: string; token?: string };
             if (view && view.token) {
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
                 return;
             }
             setGitNote(String(view?.repo || ''));
-            setGit((prev) => ({ ...prev, token: '' }));
+            setGit((prev) => ({ ...prev, token: '', source: '' }));
+        } catch (err) {
+            fail(err);
+        }
+    };
+
+    const fillGitFromAccount = async () => {
+        const account = appBinding('CloudAgentGitHubAccount');
+        if (!account) return;
+        try {
+            const view = await account() as {
+                connected?: boolean; login?: string; name?: string;
+                email?: string; token?: string; repo_scope?: boolean;
+            };
+            if (!view?.connected || !view.token) {
+                setGitNote(text('Connect GitHub in Settings first', '请先在设置中登录 GitHub', '請先在設定中登入 GitHub'));
+                return;
+            }
+            if (!view.repo_scope) {
+                setGitNote(text('This token has no repo permission', '该令牌没有仓库权限', '該權杖沒有倉庫權限'));
+                return;
+            }
+            setGit((prev) => ({
+                ...prev,
+                service: 'github',
+                origin: 'https://github.com',
+                authorName: String(view.name || view.login || ''),
+                authorEmail: String(view.email || ''),
+                token: String(view.token),
+                source: 'account',
+            }));
+            setGitNote(text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`));
         } catch (err) {
             fail(err);
         }
@@ -372,7 +405,8 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                     <input aria-label={text('Repository', '代码库', '程式庫')} value={git.repo} onChange={(event) => setGit((prev) => ({ ...prev, repo: event.target.value }))} />
                     <input aria-label={text('Author name', '作者', '作者')} value={git.authorName} onChange={(event) => setGit((prev) => ({ ...prev, authorName: event.target.value }))} />
                     <input aria-label={text('Author email', '邮箱', '郵箱')} value={git.authorEmail} onChange={(event) => setGit((prev) => ({ ...prev, authorEmail: event.target.value }))} />
-                    <input aria-label={text('Token', '令牌', '權杖')} type="password" value={git.token} onChange={(event) => setGit((prev) => ({ ...prev, token: event.target.value }))} />
+                    <input aria-label={text('Token', '令牌', '權杖')} type="password" value={git.token} onChange={(event) => setGit((prev) => ({ ...prev, token: event.target.value, source: '' }))} />
+                    <button type="button" onClick={() => void fillGitFromAccount()}>{text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}</button>
                     <button type="submit">{text('Connect', '连接', '連接')}</button>
                     {gitNote ? <span>{gitNote}</span> : null}
                 </form>

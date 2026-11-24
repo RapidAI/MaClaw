@@ -156,6 +156,19 @@ func (h UserHandler) ConnectGit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+func (h UserHandler) ReadGit(w http.ResponseWriter, r *http.Request) {
+	principal, _, ok := h.open(w, r)
+	if !ok {
+		return
+	}
+	view, err := h.Svc.ReadGit(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"))
+	if err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 func (h UserHandler) DisconnectGit(w http.ResponseWriter, r *http.Request) {
 	principal, _, ok := h.open(w, r)
 	if !ok {

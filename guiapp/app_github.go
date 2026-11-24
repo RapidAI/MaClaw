@@ -298,6 +298,7 @@ func (a *App) WaitGitHubOAuth() (GitHubConnectionStatus, error) {
 
 	a.setGitHubTokenCache(token)
 	a.resyncRepoMaintAfterLogin()
+	go a.syncCloudAgentGitCredentials()
 	log.Printf("[github] connected account=%s scopes=%s", user.Login, scopes)
 	return a.githubConnectionStatus(), nil
 }

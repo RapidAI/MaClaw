@@ -40,6 +40,10 @@ type GitConnect struct {
 	Token       string `json:"token,omitempty"`
 	AuthorName  string `json:"author_name"`
 	AuthorEmail string `json:"author_email"`
+	// Source marks how the token was provided. "account" means it came from
+	// the signed-in GitHub account and may be refreshed by the client when
+	// that account re-logs in; empty is a manually pasted token.
+	Source string `json:"source,omitempty"`
 }
 
 // GitPublic is the git view without a token.
@@ -51,6 +55,7 @@ type GitPublic struct {
 	Ref         string `json:"ref,omitempty"`
 	AuthorName  string `json:"author_name,omitempty"`
 	AuthorEmail string `json:"author_email,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 type gitSecret struct {
@@ -62,6 +67,7 @@ type gitSecret struct {
 	Token       string `json:"token"`
 	AuthorName  string `json:"author_name"`
 	AuthorEmail string `json:"author_email"`
+	Source      string `json:"source,omitempty"`
 }
 
 func (rt *Runtime) ServeGitGet(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +193,10 @@ func parseGitConnect(in GitConnect) (gitSecret, error) {
 	if in.Origin != "" && parsed.Service == gitforge.GitHub {
 		origin = "https://github.com"
 	}
+	source := ""
+	if strings.EqualFold(strings.TrimSpace(in.Source), "account") {
+		source = "account"
+	}
 	return gitSecret{
 		Service:     parsed.Service,
 		Origin:      origin,
@@ -196,6 +206,7 @@ func parseGitConnect(in GitConnect) (gitSecret, error) {
 		Token:       in.Token,
 		AuthorName:  in.AuthorName,
 		AuthorEmail: in.AuthorEmail,
+		Source:      source,
 	}, nil
 }
 
@@ -234,6 +245,7 @@ func (s gitSecret) public() GitPublic {
 		Ref:         s.Ref,
 		AuthorName:  s.AuthorName,
 		AuthorEmail: s.AuthorEmail,
+		Source:      s.Source,
 	}
 }
 

@@ -132,6 +132,9 @@ type CloudGitConnect struct {
 	Token       string `json:"token,omitempty"`
 	AuthorName  string `json:"author_name"`
 	AuthorEmail string `json:"author_email"`
+	// Source "account" binds the instance to the signed-in GitHub account so
+	// syncCloudAgentGitCredentials can refresh the token after re-login.
+	Source string `json:"source,omitempty"`
 }
 
 // CloudGitPublic is the repository view without a token.
@@ -143,6 +146,7 @@ type CloudGitPublic struct {
 	Ref         string `json:"ref,omitempty"`
 	AuthorName  string `json:"author_name,omitempty"`
 	AuthorEmail string `json:"author_email,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 // ConnectCloudAgentGit posts the coding credential to the user's cloud instance.
@@ -153,6 +157,18 @@ func (a *App) ConnectCloudAgentGit(instanceID string, body CloudGitConnect) (Clo
 	}
 	var view CloudGitPublic
 	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/git", body, &view)
+	return view, err
+}
+
+// GetCloudAgentGit reads the instance's git view (no token) — which repo is
+// bound and whether the credential came from the signed-in account.
+func (a *App) GetCloudAgentGit(instanceID string) (CloudGitPublic, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudGitPublic{}, errors.New("缺少云端实例")
+	}
+	var view CloudGitPublic
+	err := a.remoteControlJSON(http.MethodGet, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/git", nil, &view)
 	return view, err
 }
 

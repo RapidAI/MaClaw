@@ -114,25 +114,25 @@ func logDetail(err error) string {
 
 // Instance is one user's cloud agent. Kind is fixed at creation.
 type Instance struct {
-	ID               string     `json:"id"`
-	TenantID         string     `json:"tenant_id"`
-	OwnerUserID      string     `json:"owner_user_id"`
-	Name             string     `json:"name"`
-	Kind             string     `json:"kind"`
-	LLMMode          string     `json:"llm_mode"`
-	LLMLabel         string     `json:"llm_label"`
-	LLMModel         string     `json:"llm_model"`
-	Status           string     `json:"status"`
-	CloudWorkspaceID string     `json:"cloud_workspace_id"`
+	ID               string `json:"id"`
+	TenantID         string `json:"tenant_id"`
+	OwnerUserID      string `json:"owner_user_id"`
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	LLMMode          string `json:"llm_mode"`
+	LLMLabel         string `json:"llm_label"`
+	LLMModel         string `json:"llm_model"`
+	Status           string `json:"status"`
+	CloudWorkspaceID string `json:"cloud_workspace_id"`
 	// SrvNodeID is the private node srv this instance was provisioned on.
 	// Empty means the public connection. The pin that created it may move;
 	// the instance keeps running where it was provisioned.
-	SrvNodeID string `json:"srv_node_id,omitempty"`
-	RuntimeStatus    string     `json:"runtime_status,omitempty"`
-	Git              *GitPublic `json:"git,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	DeletedAt        time.Time  `json:"-"`
+	SrvNodeID     string     `json:"srv_node_id,omitempty"`
+	RuntimeStatus string     `json:"runtime_status,omitempty"`
+	Git           *GitPublic `json:"git,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	DeletedAt     time.Time  `json:"-"`
 }
 
 // AdminView is the tenant default the limits card reads and writes.
@@ -198,6 +198,9 @@ type GitConnect struct {
 	Token       string `json:"token,omitempty"`
 	AuthorName  string `json:"author_name"`
 	AuthorEmail string `json:"author_email"`
+	// Source "account" marks a token pushed from the signed-in GitHub
+	// account; clients refresh it after re-login. Hub forwards, never stores.
+	Source string `json:"source,omitempty"`
 }
 
 // GitPublic is the git view returned to the GUI. It has no token field.
@@ -209,6 +212,7 @@ type GitPublic struct {
 	Ref         string `json:"ref,omitempty"`
 	AuthorName  string `json:"author_name,omitempty"`
 	AuthorEmail string `json:"author_email,omitempty"`
+	Source      string `json:"source,omitempty"`
 	Status      string `json:"status,omitempty"`
 }
 

@@ -347,3 +347,37 @@ func treeContains(root, needle string) bool {
 	})
 	return found
 }
+
+func TestGitConnectSourceRoundTrip(t *testing.T) {
+	account, err := parseGitConnect(GitConnect{
+		Service: "github", Origin: "https://github.com", Repo: "acme/demo",
+		Token: "tok", AuthorName: "Ada", AuthorEmail: "ada@example.com", Source: "account",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.Source != "account" || account.public().Source != "account" {
+		t.Fatalf("account source = %q", account.Source)
+	}
+	manual, err := parseGitConnect(GitConnect{
+		Service: "github", Repo: "acme/demo",
+		Token: "tok", AuthorName: "Ada", AuthorEmail: "ada@example.com", Source: "anything-else",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.Source != "" || manual.public().Source != "" {
+		t.Fatalf("manual source = %q", manual.Source)
+	}
+	dir := t.TempDir()
+	if err := writeGit(dir, account); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Source != "account" {
+		t.Fatalf("git.json source = %q", loaded.Source)
+	}
+}

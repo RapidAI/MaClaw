@@ -163,7 +163,7 @@ func TestSrvConnForNodeResolvesRegisteredLink(t *testing.T) {
 
 // With exactly one usable endpoint — a registered link and no usable
 // public connection — that link is the implicit default for every
-// unpinned scope and for an explicit '' pin. Two usable endpoints keep
+// unpinned scope and for an explicit ” pin. Two usable endpoints keep
 // the public connection: ambiguity needs an explicit pin.
 func TestSrvConnSingleUsableSrvIsTheDefault(t *testing.T) {
 	settings := memSettings{kv: map[string]string{

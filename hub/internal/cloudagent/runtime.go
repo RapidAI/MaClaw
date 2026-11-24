@@ -422,6 +422,32 @@ func (s *Service) ConnectGit(ctx context.Context, tenantID, userID, id string, i
 	return view, nil
 }
 
+// ReadGit forwards the git view (no token) so clients can see which
+// credential source the instance uses and refresh account-bound tokens.
+func (s *Service) ReadGit(ctx context.Context, tenantID, userID, id string) (GitPublic, error) {
+	inst, err := s.getOwned(ctx, tenantID, userID, id)
+	if err != nil {
+		return GitPublic{}, err
+	}
+	if inst.Kind != KindCoding {
+		return GitPublic{}, failSessionGit()
+	}
+	conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
+	if err != nil {
+		return GitPublic{}, failOffline()
+	}
+	raw, err := s.disp.call(ctx, http.MethodGet, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/git", nil)
+	if err != nil {
+		return GitPublic{}, failOffline()
+	}
+	var view GitPublic
+	if err := json.Unmarshal(raw, &view); err != nil {
+		return GitPublic{}, failOffline()
+	}
+	view.Status = ""
+	return view, nil
+}
+
 // DisconnectGit removes maclawsrv's git.json. The checkout stays.
 func (s *Service) DisconnectGit(ctx context.Context, tenantID, userID, id string) error {
 	inst, err := s.getOwned(ctx, tenantID, userID, id)

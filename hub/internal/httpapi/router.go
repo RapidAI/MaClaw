@@ -1597,6 +1597,7 @@ func NewRouter(
 			mux.HandleFunc("PATCH /api/v1/cloud-agents/{id}", users.Patch)
 			mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}", users.Delete)
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/llm", users.SetLLM)
+			mux.HandleFunc("GET /api/v1/cloud-agents/{id}/git", users.ReadGit)
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/git", users.ConnectGit)
 			mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}/git", users.DisconnectGit)
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/stop", users.Stop)
