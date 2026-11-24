@@ -59,6 +59,9 @@ type Service struct {
 	now      func() time.Time
 	miss     time.Duration
 
+	// Directory resolves departments for the opening scope. Nil skips that step.
+	Directory Directory
+
 	startOnce sync.Once
 }
 
@@ -128,15 +131,6 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 			deleted_at TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cloud_agents_owner ON cloud_agents(tenant_id, owner_user_id, deleted_at)`,
-		`CREATE TABLE IF NOT EXISTS cloud_agent_limits (
-			tenant_id TEXT NOT NULL,
-			user_id TEXT NOT NULL DEFAULT '',
-			max_instances INTEGER,
-			max_concurrent_turns INTEGER,
-			enabled INTEGER NOT NULL DEFAULT 0,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (tenant_id, user_id)
-		)`,
 		`CREATE TABLE IF NOT EXISTS cloud_agent_turns (
 			id TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL,
@@ -157,7 +151,7 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return s.ensureLimits(ctx)
 }
 
 func newID(prefix string) string {
@@ -168,72 +162,8 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(buf[:])
 }
 
-type limitRow struct {
-	present   bool
-	enabled   bool
-	instances sql.NullInt64
-	turns     sql.NullInt64
-}
-
-func (s *Service) loadLimit(ctx context.Context, tenantID, userID string) (limitRow, error) {
-	var row limitRow
-	var enabled int
-	err := s.db.QueryRowContext(ctx, `SELECT max_instances, max_concurrent_turns, enabled FROM cloud_agent_limits WHERE tenant_id = ? AND user_id = ?`,
-		store.NormalizeTenantID(tenantID), userID).Scan(&row.instances, &row.turns, &enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return limitRow{}, nil
-	}
-	if err != nil {
-		return limitRow{}, err
-	}
-	row.present = true
-	row.enabled = enabled != 0
-	return row, nil
-}
-
-// EffectiveLimits resolves the tenant default plus an optional user override.
-// A missing tenant row is off, with 3 instances and 1 concurrent turn.
-// A user row cannot turn the feature on. Null user limits inherit the tenant.
-func (s *Service) EffectiveLimits(ctx context.Context, tenantID, userID string) (instances, turns int, enabled bool, err error) {
-	if s == nil || s.db == nil {
-		return 0, 0, false, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
-	}
-	tenantID = store.NormalizeTenantID(tenantID)
-	tenant, err := s.loadLimit(ctx, tenantID, "")
-	if err != nil {
-		return 0, 0, false, err
-	}
-	instances = DefaultMaxInstances
-	turns = DefaultMaxConcurrentTurns
-	if tenant.present {
-		enabled = tenant.enabled
-		if tenant.instances.Valid {
-			instances = int(tenant.instances.Int64)
-		}
-		if tenant.turns.Valid {
-			turns = int(tenant.turns.Int64)
-		}
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return instances, turns, enabled, nil
-	}
-	user, err := s.loadLimit(ctx, tenantID, userID)
-	if err != nil {
-		return 0, 0, false, err
-	}
-	if user.present {
-		if user.instances.Valid {
-			instances = int(user.instances.Int64)
-		}
-		if user.turns.Valid {
-			turns = int(user.turns.Int64)
-		}
-	}
-	return instances, turns, enabled, nil
-}
-
-// FeatureEnabled reports the tenant switch. A missing row is off.
+// FeatureEnabled reports the global switch. A missing global row is off.
+// A department or user row does not change this result.
 func (s *Service) FeatureEnabled(ctx context.Context, tenantID string) (bool, error) {
 	_, _, enabled, err := s.EffectiveLimits(ctx, tenantID, "")
 	return enabled, err
@@ -264,9 +194,9 @@ func (s *Service) SaveAdminSettings(ctx context.Context, tenantID string, in Adm
 	if *in.CloudAgentsEnabled {
 		enabled = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, user_id, max_instances, max_concurrent_turns, enabled, updated_at)
-		VALUES (?, '', ?, ?, ?, ?)
-		ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, updated_at)
+		VALUES (?, 'global', '', ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, scope, target_id) DO UPDATE SET
 			max_instances = excluded.max_instances,
 			max_concurrent_turns = excluded.max_concurrent_turns,
 			enabled = excluded.enabled,
@@ -278,8 +208,9 @@ func (s *Service) SaveAdminSettings(ctx context.Context, tenantID string, in Adm
 	return s.AdminView(ctx, tenantID)
 }
 
-// SaveUserLimits writes one user's override. Null fields inherit the tenant.
-// The user row's enabled column stays 0.
+// SaveUserLimits writes one user's numeric override. Null fields inherit.
+// It does not write the switch: enabled stays whatever the scope row already
+// says, and a new row inherits.
 func (s *Service) SaveUserLimits(ctx context.Context, tenantID, userID string, in UserLimits) error {
 	if s == nil || s.db == nil {
 		return fail(503, "UNAVAILABLE", "云端管理暂时不可用")
@@ -295,9 +226,9 @@ func (s *Service) SaveUserLimits(ctx context.Context, tenantID, userID string, i
 		return failInvalid("上限不能是负数")
 	}
 	tenantID = store.NormalizeTenantID(tenantID)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, user_id, max_instances, max_concurrent_turns, enabled, updated_at)
-		VALUES (?, ?, ?, ?, 0, ?)
-		ON CONFLICT(tenant_id, user_id) DO UPDATE SET
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, updated_at)
+		VALUES (?, 'user', ?, ?, ?, NULL, ?)
+		ON CONFLICT(tenant_id, scope, target_id) DO UPDATE SET
 			max_instances = excluded.max_instances,
 			max_concurrent_turns = excluded.max_concurrent_turns,
 			updated_at = excluded.updated_at`,
@@ -746,7 +677,7 @@ func (s *Service) TouchHeartbeat(ctx context.Context, instanceID, taskID, reques
 	if err != nil {
 		return false, err
 	}
-	enabled, err = s.FeatureEnabled(ctx, inst.TenantID)
+	_, _, enabled, err = s.EffectiveLimits(ctx, inst.TenantID, inst.OwnerUserID)
 	if err != nil {
 		return false, err
 	}
@@ -765,7 +696,7 @@ func (s *Service) TouchHeartbeat(ctx context.Context, instanceID, taskID, reques
 }
 
 // InterruptStale marks running turns with no heartbeat inside the miss window,
-// and turns whose tenant switch is off.
+// and turns whose owner is outside the opening scope.
 func (s *Service) InterruptStale(ctx context.Context, now time.Time) error {
 	if s == nil || s.db == nil {
 		return nil
@@ -780,37 +711,38 @@ func (s *Service) InterruptStale(ctx context.Context, now time.Time) error {
 		TurnInterrupted, stamp, stamp, TurnRunning, cutoff); err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id FROM cloud_agent_turns WHERE status = ?`, TurnRunning)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id, owner_user_id FROM cloud_agent_turns WHERE status = ?`, TurnRunning)
 	if err != nil {
 		return err
 	}
-	var tenants []string
+	type ownerRef struct {
+		tenant string
+		owner  string
+	}
+	var owners []ownerRef
 	for rows.Next() {
-		var tenantID string
-		if err := rows.Scan(&tenantID); err != nil {
+		var owner ownerRef
+		if err := rows.Scan(&owner.tenant, &owner.owner); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		tenants = append(tenants, tenantID)
+		owners = append(owners, owner)
 	}
 	scanErr := rows.Err()
 	_ = rows.Close()
 	if scanErr != nil {
 		return scanErr
 	}
-	var off []string
-	for _, tenantID := range tenants {
-		enabled, err := s.FeatureEnabled(ctx, tenantID)
+	for _, owner := range owners {
+		_, _, enabled, err := s.EffectiveLimits(ctx, owner.tenant, owner.owner)
 		if err != nil {
 			return err
 		}
-		if !enabled {
-			off = append(off, tenantID)
+		if enabled {
+			continue
 		}
-	}
-	for _, tenantID := range off {
-		if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE tenant_id = ? AND status = ?`,
-			TurnInterrupted, stamp, stamp, tenantID, TurnRunning); err != nil {
+		if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE tenant_id = ? AND owner_user_id = ? AND status = ?`,
+			TurnInterrupted, stamp, stamp, owner.tenant, owner.owner, TurnRunning); err != nil {
 			return err
 		}
 	}

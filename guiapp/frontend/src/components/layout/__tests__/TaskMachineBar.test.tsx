@@ -54,12 +54,28 @@ describe('TaskMachineBar', () => {
 
     it('puts this computer, granted machines, and add on the task-list row', () => {
         render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
+        const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'));
+        expect(tabs.slice(0, 2)).toEqual(['task-machine-tab-local', 'task-machine-tab-g1']);
+        expect(screen.queryByTestId('task-machine-tab-cloud')).toBeNull();
         expect(screen.getByTestId('task-machine-tab-local').textContent).toContain('本机');
         const grantTab = screen.getByTestId('task-machine-tab-g1');
         expect(grantTab.textContent).toContain('机器1');
         expect(grantTab.getAttribute('title')).toBe('家里 · 仅查看');
         expect(grantTab.getAttribute('aria-label')).toBe('家里');
         expect(screen.getByTestId('task-machine-add').textContent).toBe('+');
+    });
+
+    it('puts cloud between this computer and a remote machine only when Hub has enabled it', () => {
+        const { rerender } = render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} cloudAvailable />);
+        const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'));
+        expect(tabs.slice(0, 3)).toEqual(['task-machine-tab-local', 'task-machine-tab-cloud', 'task-machine-tab-g1']);
+        expect(screen.getByTestId('task-machine-tab-cloud').textContent).toContain('云端');
+        rerender(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} cloudAvailable={false} />);
+        expect(screen.queryByTestId('task-machine-tab-cloud')).toBeNull();
+        expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid')).slice(0, 2)).toEqual([
+            'task-machine-tab-local',
+            'task-machine-tab-g1',
+        ]);
     });
 
     it('names the account on a granted tab tooltip', () => {
@@ -99,11 +115,14 @@ describe('TaskMachineBar', () => {
     });
 
     it('moves focus across machine tabs with arrow keys', () => {
-        render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} />);
+        render(<TaskMachineBar lang="zh-CN" remote={remote()} onCloseGrant={vi.fn()} cloudAvailable />);
         const local = screen.getByTestId('task-machine-tab-local');
+        const cloud = screen.getByTestId('task-machine-tab-cloud');
         const grant = screen.getByTestId('task-machine-tab-g1');
         local.focus();
         fireEvent.keyDown(local, { key: 'ArrowRight' });
+        expect(document.activeElement).toBe(cloud);
+        fireEvent.keyDown(cloud, { key: 'ArrowRight' });
         expect(document.activeElement).toBe(grant);
         fireEvent.keyDown(grant, { key: 'ArrowRight' });
         expect(document.activeElement).toBe(local);

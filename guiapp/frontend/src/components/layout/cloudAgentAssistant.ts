@@ -586,3 +586,14 @@ export function cloudAgentsFromList(value: unknown): CloudAgentListItem[] {
     if (!Array.isArray(value)) return [];
     return value.map(asCloudAgentListItem).filter((item): item is CloudAgentListItem => item != null);
 }
+
+/** Hub list. enabled is the tenant switch. A bare array has no switch, so the place stays hidden. */
+export function cloudAgentCatalog(value: unknown): { instances: unknown[]; enabled: boolean } {
+    if (Array.isArray(value)) return { instances: value, enabled: false };
+    if (!value || typeof value !== 'object') return { instances: [], enabled: false };
+    const body = value as { instances?: unknown; enabled?: unknown };
+    return {
+        instances: Array.isArray(body.instances) ? body.instances : [],
+        enabled: body.enabled === true,
+    };
+}

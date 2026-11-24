@@ -30,7 +30,7 @@ const (
 	DefaultMaxConcurrentTurns = 1
 
 	// DisabledMessage is the closed-feature failure. Create and cloud ops
-	// both return it while the tenant switch is off.
+	// both return it while this account's opening scope is off.
 	DisabledMessage = "云端管理尚未打开"
 )
 
@@ -121,8 +121,8 @@ type AdminSettings struct {
 	MaxConcurrentTurns *int  `json:"max_concurrent_turns"`
 }
 
-// UserLimits is an optional per-user override. A null field inherits the
-// tenant default. It cannot turn the feature on.
+// UserLimits is an optional per-user numeric override. A null field inherits.
+// It does not change the opening switch.
 type UserLimits struct {
 	MaxInstances       *int `json:"max_instances"`
 	MaxConcurrentTurns *int `json:"max_concurrent_turns"`

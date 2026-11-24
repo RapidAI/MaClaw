@@ -53,7 +53,14 @@ func (h UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeServiceErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instances": items})
+	// The list query is already closed. EffectiveLimits must not run while a
+	// cursor is open: tests share one connection.
+	_, _, enabled, err := h.Svc.EffectiveLimits(r.Context(), principal.TenantID, principal.UserID)
+	if err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"instances": items, "enabled": enabled})
 }
 
 func (h UserHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +199,7 @@ func (h UserHandler) ControlGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	enabled, err := h.Svc.FeatureEnabled(r.Context(), principal.TenantID)
+	_, _, enabled, err := h.Svc.EffectiveLimits(r.Context(), principal.TenantID, principal.UserID)
 	if err != nil {
 		writeServiceErr(w, err)
 		return
@@ -261,7 +268,7 @@ func (s *Service) ServeHeartbeat(w http.ResponseWriter, r *http.Request) {
 			writeServiceErr(w, err)
 			return
 		}
-		enabled, err := s.FeatureEnabled(r.Context(), inst.TenantID)
+		_, _, enabled, err := s.EffectiveLimits(r.Context(), inst.TenantID, inst.OwnerUserID)
 		if err != nil {
 			writeServiceErr(w, err)
 			return

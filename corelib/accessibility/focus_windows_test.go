@@ -43,6 +43,22 @@ func TestAppFrameEligibleSkipsToolAndCloakedWindows(t *testing.T) {
 	}
 }
 
+func TestHiddenFrameNeedsAppActivation(t *testing.T) {
+	if !hiddenFrameNeedsAppActivation("蓝信", false, false) {
+		t.Fatal("a declared single-instance tray app must use application activation")
+	}
+	for _, hint := range []string{"记事本", "微信", "unknown application"} {
+		if hiddenFrameNeedsAppActivation(hint, false, false) {
+			t.Fatalf("undeclared app %q would start another process", hint)
+		}
+	}
+	for _, state := range [][2]bool{{true, false}, {false, true}, {true, true}} {
+		if hiddenFrameNeedsAppActivation("蓝信", state[0], state[1]) {
+			t.Fatalf("visible/iconic state %v must not start another activation", state)
+		}
+	}
+}
+
 func TestPickFrameUsesAHiddenFrame(t *testing.T) {
 	hits := []visibleWindow{
 		{title: "Program Manager", visible: true},

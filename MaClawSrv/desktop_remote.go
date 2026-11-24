@@ -79,6 +79,9 @@ func (c *desktopHubClient) Session(ctx context.Context, tenantID, userID string)
 	}, &out); err != nil {
 		return desktopEndpoint{}, err
 	}
+	if strings.TrimSpace(out.CDP) == "" || !desktop.ValidDisplay(out.Display) {
+		return desktopEndpoint{}, desktopInvalidBodyError{}
+	}
 	return desktopEndpoint{CDP: out.CDP, Display: out.Display}, nil
 }
 
@@ -127,13 +130,16 @@ func (c *desktopHubClient) Stop(ctx context.Context, tenantID, userID string) er
 	if err := c.post(ctx, "/api/v1/desktop-services/stop", body, &out); err != nil {
 		return err
 	}
-	switch out.Status {
+	switch strings.TrimSpace(out.Status) {
+	case "stopped":
+		return nil
 	case "kept":
 		return errDesktopKept
 	case "idle":
 		return errDesktopIdle
+	default:
+		return desktopInvalidBodyError{}
 	}
-	return nil
 }
 
 func (c *desktopHubClient) Hold(ctx context.Context, tenantID, userID, instanceID string) error {

@@ -81,6 +81,28 @@ func TestAutoCompactionDetectsSameLengthReplacement(t *testing.T) {
 	if err != nil || !strings.Contains(result.Content, "SAME_LENGTH_UNIQUE") {
 		t.Fatalf("same-length replacement lost tool arguments: result=%+v err=%v", result, err)
 	}
+
+	secondOriginal := append(got, agent.ConversationEntry{Role: "assistant", Content: "new work"})
+	second, ok := h.preserveAutoCompactionHistory("desktop-user", secondOriginal, got[:1])
+	if !ok || len(second) != 2 {
+		t.Fatalf("second automatic compaction was not preserved: ok=%v entries=%#v", ok, second)
+	}
+	secondCheckpoint := ""
+	for _, entry := range second {
+		text, _ := entry.Content.(string)
+		if strings.Contains(text, toolresult.HandleFooterMarker) {
+			secondCheckpoint = text
+			break
+		}
+	}
+	if strings.Count(secondCheckpoint, toolresult.HandleFooterMarker) != 1 {
+		t.Fatalf("automatic checkpoint handles accumulated: %s", secondCheckpoint)
+	}
+	secondID := spilledHandleID(secondCheckpoint)
+	chain, err := toolresult.Read(toolresult.ReadOptions{ID: secondID, SessionKey: "desktop-user", Query: id})
+	if err != nil || !strings.Contains(chain.Content, id) {
+		t.Fatalf("automatic checkpoint lost its previous recovery link: result=%+v err=%v", chain, err)
+	}
 }
 
 func TestAutoCompactionDetectsEarlyHandoffTrim(t *testing.T) {

@@ -10272,7 +10272,11 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		go a.syncACPHostFromConfig()
 	}
 	if mcpHostChanged && a.ctx != nil {
-		go a.syncMCPHostFromConfig()
+		// The tools page reloads MCP status as soon as this call returns.
+		// The apikey file, the listener token, and endpoint.json have to
+		// name the same key before that reload, or a client keeps a missing
+		// or stale key and the next call is rejected.
+		a.syncMCPHostFromConfig()
 	}
 	if floatingChanged {
 		go func(cfg corelib.AppConfig) {

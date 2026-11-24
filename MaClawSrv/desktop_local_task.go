@@ -89,15 +89,15 @@ func localTaskTool() agentruntime.ToolDefinition {
 				"ssh_user":                map[string]any{"type": "string", "description": "create_task: SSH user."},
 				"ssh_password":            map[string]any{"type": "string", "description": "create_task: SSH password for this connection only. It is not written into the task result."},
 				"ssh_port":                map[string]any{"type": "integer", "description": "create_task: SSH port. Omit for 22."},
-				"provider":                map[string]any{"type": "string", "description": "create_task or send_command: provider id or name on that computer."},
-				"model":                   map[string]any{"type": "string", "description": "create_task or send_command: model id. Naming a model requires provider."},
+				"provider":                map[string]any{"type": "string", "description": "create_task: provider id or name on that computer. send_command: a different value changes the model for the new round. The same value as provider_effective keeps the current model."},
+				"model":                   map[string]any{"type": "string", "description": "create_task or send_command: model id. Naming a model requires provider. The same value as model_effective keeps the current model."},
 				"project_path":            map[string]any{"type": "string", "description": "get_task, send_command, stop_task, read_log, retry_steps: project_path from create_task. One entry in tasks, the list_tasks field, is used when this is empty."},
 				"run_id":                  map[string]any{"type": "string", "description": "get_task or read_log: one round. Omit for the current round."},
-				"command":                 map[string]any{"type": "string", "description": "send_command: the command text, including a confirmation from get_task. When command is empty, one entry in commands is used."},
+				"command":                 map[string]any{"type": "string", "description": "send_command: the command text. prompt is a follow-up you write. When command and prompt are empty, one entry in commands is used."},
 				"confirmation_id":         map[string]any{"type": "string", "description": "send_command or retry_steps: confirmation_id from the latest get_task."},
 				"client_request_id":       map[string]any{"type": "string", "description": "create_task, send_command, retry_steps: caller id. The same id is not run twice. get_request looks it up."},
 				"wait":                    map[string]any{"type": "boolean", "description": "Ignored. The Hub link cannot wait out a coding run. The call returns when the task has started; poll get_task."},
-				"step_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "retry_steps: step ids such as T5, 5, or 步骤 5. A JSON array string is accepted."},
+				"step_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "retry_steps: step ids such as T5, 5, or 步骤 5. A get_task steps list keeps failed, unfinished, and blocked steps. A JSON array string is accepted."},
 				"cursor":                  map[string]any{"type": "integer", "description": "read_log: next_cursor from the previous page. Omit on the first page."},
 				"expected_status_version": map[string]any{"type": "integer", "description": "send_command or retry_steps: status_version from get_task. A mismatch does not run."},
 				"dry_run":                 map[string]any{"type": "boolean", "description": "send_command or retry_steps: check only. The round does not start."},
@@ -220,8 +220,8 @@ func localTaskPayload(args map[string]any) (string, string, []string, error) {
 		return "", "", nil, err
 	}
 	dropped = append(dropped, more...)
-	// A get_task commands list is the confirmation text. Folding text into
-	// command runs first, so an explicit command or text stays in place.
+	// commands that survived the fold are several choices, or a list that
+	// arrived after command was chosen. One entry was already taken.
 	if err := localTaskUseListedCommands(merged, tool); err != nil {
 		return "", "", nil, err
 	}
@@ -245,6 +245,10 @@ func localTaskPayload(args map[string]any) (string, string, []string, error) {
 		delete(merged, "wait")
 	}
 	localTaskExpandStepIDs(merged)
+	if err := localTaskRejectEmptyRetry(merged, tool); err != nil {
+		return "", "", nil, err
+	}
+	localTaskDropEchoedModel(merged, tool)
 	localTaskDropResultNoise(merged)
 	raw, err := json.Marshal(merged)
 	if err != nil {
@@ -313,15 +317,15 @@ func localTaskFold(merged map[string]any, tool string) ([]string, error) {
 	// read_log's next page is next_cursor in the result and cursor in the call.
 	localTaskAdopt(merged, "cursor", "next_cursor", "nextCursor")
 	localTaskAdopt(merged, "dry_run", "dryRun")
-	// send_command reads command, then text, prompt, and message. Folding
-	// those into command keeps the arguments value. create_task reads prompt
-	// on its own, so this fold stays on send. An array in command is one
-	// choice or a request to pick one, before text can be dropped.
+	// send_command: command, then prompt, then one commands entry, then text.
+	// get_task's text is the previous answer, so a pasted view must not send
+	// that answer when a confirmation or a written follow-up is present.
+	// create_task reads prompt on its own. An array in command is one choice
+	// or a request to pick one, before text can be dropped.
 	if tool == "send_command" {
-		if err := localTaskCoerceCommand(merged); err != nil {
+		if err := localTaskFoldSendCommand(merged); err != nil {
 			return nil, err
 		}
-		localTaskAdopt(merged, "command", "text", "prompt", "message")
 	}
 	// A project_path chosen in this same body retires the task list.
 	if localTaskFilled(merged, "project_path") {
@@ -456,13 +460,58 @@ func localTaskRejectAmbiguousTasks(merged map[string]any, tool string) error {
 	return fmt.Errorf("tasks lists more than one task; set project_path to the one to use")
 }
 
+// localTaskDropEchoedModel leaves a send on the task's current model.
+// get_task reports that model twice: provider with provider_effective, and
+// model with model_effective. send_command treats any provider or model as
+// a change, and a live confirmation is refused while a change is attached.
+// Matching pairs are the current model. A different provider or model is
+// the caller's choice, and both values stay so the pair is complete.
+func localTaskDropEchoedModel(merged map[string]any, tool string) {
+	if tool != "send_command" || merged == nil {
+		return
+	}
+	provider, hasProvider := localTaskFieldString(merged, "provider")
+	model, hasModel := localTaskFieldString(merged, "model")
+	effProvider, hasEffProvider := localTaskFieldString(merged, "provider_effective")
+	effModel, hasEffModel := localTaskFieldString(merged, "model_effective")
+	delete(merged, "provider_effective")
+	delete(merged, "model_effective")
+	delete(merged, "provider_requested")
+	delete(merged, "model_requested")
+	if !hasEffProvider && !hasEffModel {
+		return
+	}
+	providerSame := !hasProvider || (hasEffProvider && strings.EqualFold(provider, effProvider))
+	modelSame := !hasModel || (hasEffModel && strings.EqualFold(model, effModel))
+	if providerSame && modelSame {
+		delete(merged, "provider")
+		delete(merged, "model")
+		return
+	}
+	if !hasProvider && hasEffProvider {
+		merged["provider"] = effProvider
+	}
+}
+
+func localTaskFieldString(merged map[string]any, key string) (string, bool) {
+	text, ok := merged[key].(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
 // localTaskDropResultNoise removes pages and nested lists the GUI does not
 // read as arguments. A copied read_log page can be larger than the Hub body.
 func localTaskDropResultNoise(merged map[string]any) {
 	if merged == nil {
 		return
 	}
-	for _, key := range []string{"events", "checks", "children", "conflicts"} {
+	for _, key := range []string{"events", "checks", "children", "conflicts", "text", "message", "error", "end_detail", "end_reason", "outcome", "dirty_note"} {
 		delete(merged, key)
 	}
 }
@@ -506,6 +555,48 @@ func localTaskFillFrom(dst map[string]any, canonical string, src map[string]any,
 		dst[canonical] = value
 		return
 	}
+}
+
+// localTaskFoldSendCommand picks the text send_command will run.
+// prompt is a follow-up written for this call. One commands entry is the
+// confirmation from get_task. text is used when neither of those is present,
+// so a pasted answer does not replace the confirmation.
+func localTaskFoldSendCommand(merged map[string]any) error {
+	if err := localTaskCoerceCommand(merged); err != nil {
+		return err
+	}
+	if strings.TrimSpace(localTaskCommandText(merged["command"])) == "" {
+		localTaskAdopt(merged, "command", "prompt")
+	}
+	if strings.TrimSpace(localTaskCommandText(merged["command"])) == "" {
+		switch localTaskListedCommandCount(merged["commands"]) {
+		case 1:
+			if err := localTaskUseListedCommands(merged, "send_command"); err != nil {
+				return err
+			}
+		default:
+			if localTaskListedCommandCount(merged["commands"]) > 1 {
+				return nil
+			}
+			localTaskAdopt(merged, "command", "text", "message")
+		}
+	}
+	if strings.TrimSpace(localTaskCommandText(merged["command"])) != "" {
+		delete(merged, "text")
+		delete(merged, "message")
+	}
+	return nil
+}
+
+func localTaskListedCommandCount(value any) int {
+	if value == nil {
+		return 0
+	}
+	choices, recognized := localTaskCommandChoices(value)
+	if !recognized {
+		return 0
+	}
+	return len(choices)
 }
 
 func localTaskCoerceCommand(merged map[string]any) error {
@@ -718,6 +809,8 @@ func localTaskExpandStepIDs(merged map[string]any) {
 
 // localTaskStepItems reads id from a get_task step object. The app accepts
 // id strings, and an object would be rejected as an unrecognized step.
+// A passed step in that list makes the app refuse the whole retry, so those
+// ids stay out. An id with no status is an explicit choice and stays.
 func localTaskStepItems(items []any) []any {
 	out := make([]any, 0, len(items))
 	changed := false
@@ -732,13 +825,62 @@ func localTaskStepItems(items []any) []any {
 			out = append(out, item)
 			continue
 		}
-		out = append(out, id)
 		changed = true
+		if !localTaskStepCanRetry(obj) {
+			continue
+		}
+		out = append(out, id)
 	}
 	if !changed {
 		return items
 	}
 	return out
+}
+
+// localTaskStepCanRetry reports whether a step object can be retried.
+// passed always stays out: the app rejects the call if one is included.
+// retryable is the app's own flag. Without that flag, failed, unfinished,
+// and blocked steps are kept, and skipped or waiting steps stay out.
+func localTaskStepCanRetry(obj map[string]any) bool {
+	if status, ok := obj["status"].(string); ok && strings.EqualFold(strings.TrimSpace(status), "passed") {
+		return false
+	}
+	if value, ok := obj["retryable"].(bool); ok {
+		return value
+	}
+	status, ok := obj["status"].(string)
+	if !ok {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "skipped", "waiting", "needs_confirmation":
+		return false
+	default:
+		return true
+	}
+}
+
+func localTaskRejectEmptyRetry(merged map[string]any, tool string) error {
+	if tool != "retry_steps" || merged == nil {
+		return nil
+	}
+	raw, ok := merged["step_ids"]
+	if !ok || raw == nil {
+		return nil
+	}
+	empty := false
+	switch typed := raw.(type) {
+	case []any:
+		empty = len(typed) == 0
+	case []string:
+		empty = len(typed) == 0
+	case string:
+		empty = strings.TrimSpace(typed) == ""
+	}
+	if !empty {
+		return nil
+	}
+	return fmt.Errorf("retry_steps needs a failed, unfinished, or blocked step")
 }
 
 func localTaskStepID(obj map[string]any) string {

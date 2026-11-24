@@ -1354,8 +1354,16 @@ const MACLAWSRV_I18N = {
     admin: 'Admin secret',
     token: 'Access token',
     save: 'Save',
+    test: 'Test connection',
     reload: 'Reload',
     blank: 'Leave a secret or token blank to keep the saved value.',
+    testing: 'Testing...',
+    connected: 'Connected. {count} instances.',
+    saveBeforeTest: 'Save the address or secret before testing',
+    rejected: 'MaClawSrv rejected this request',
+    tokenRejected: 'MaClawSrv rejected the credential (HTTP 401). Save the admin secret, then test again to renew it',
+    tokenForbidden: 'The credential cannot perform this operation (HTTP 403). Check the admin secret',
+    notFound: 'Instance or API not found (HTTP 404). Check that the address forwards /api',
     needUrl: 'Enter the maclawsrv URL',
     badUrl: 'The URL must start with http:// or https:// and must not include a username',
     saved: 'Saved',
@@ -1373,8 +1381,16 @@ const MACLAWSRV_I18N = {
     admin: '\u7ba1\u7406\u5bc6\u94a5',
     token: '\u8bbf\u95ee\u4ee4\u724c',
     save: '\u4fdd\u5b58',
+    test: '\u6d4b\u8bd5\u8fde\u63a5',
     reload: '\u91cd\u65b0\u52a0\u8f7d',
     blank: '\u5bc6\u94a5\u6216\u4ee4\u724c\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u503c\u3002',
+    testing: '\u6b63\u5728\u6d4b\u8bd5...',
+    connected: '\u8fde\u63a5\u6210\u529f\uff0c\u5f53\u524d\u5b9e\u4f8b {count} \u4e2a',
+    saveBeforeTest: '\u5730\u5740\u6216\u7ba1\u7406\u5bc6\u94a5\u8fd8\u6ca1\u4fdd\u5b58\uff0c\u8bf7\u5148\u4fdd\u5b58\u518d\u6d4b\u8bd5',
+    rejected: 'MaClawSrv \u62d2\u7edd\u4e86\u672c\u6b21\u8bf7\u6c42',
+    tokenRejected: '\u51ed\u8bc1\u88ab MaClawSrv \u62d2\u7edd\uff08HTTP 401\uff09\u3002\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5\u540e\u6d4b\u8bd5\u8fde\u63a5\u53ef\u81ea\u52a8\u7eed\u671f',
+    tokenForbidden: '\u51ed\u8bc1\u65e0\u6743\u6267\u884c\u8be5\u64cd\u4f5c\uff08HTTP 403\uff09\uff0c\u8bf7\u68c0\u67e5\u7ba1\u7406\u5bc6\u94a5\u662f\u5426\u6b63\u786e',
+    notFound: '\u627e\u4e0d\u5230\u5b9e\u4f8b\u6216\u63a5\u53e3\uff08HTTP 404\uff09\uff0c\u8bf7\u68c0\u67e5\u5730\u5740\u662f\u5426\u6b63\u786e\u8f6c\u53d1 /api',
     needUrl: '\u8bf7\u586b\u5199 maclawsrv \u5730\u5740',
     badUrl: '\u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934\uff0c\u4e14\u4e0d\u80fd\u5e26\u8d26\u53f7',
     saved: '\u5df2\u4fdd\u5b58',
@@ -1404,6 +1420,7 @@ function applyMaclawsrvI18n() {
   set('maclawsrvAdminSecretLabel', t.admin);
   set('maclawsrvAccessTokenLabel', t.token);
   set('maclawsrvConnectionSaveBtn', t.save);
+  set('maclawsrvConnectionTestBtn', t.test);
   set('maclawsrvConnectionReloadBtn', t.reload);
 }
 
@@ -1420,7 +1437,10 @@ async function loadMaclawsrvConnection() {
   try {
     const data = await api('/api/admin/bots/settings');
     const url = document.getElementById('maclawsrvBaseUrl');
-    if (url) url.value = data && data.base_url || '';
+    if (url) {
+      url.value = data && data.base_url || '';
+      url._loaded = url.value;
+    }
     const admin = document.getElementById('maclawsrvAdminSecret');
     const token = document.getElementById('maclawsrvAccessToken');
     if (admin) admin.value = '';
@@ -1464,6 +1484,61 @@ async function saveMaclawsrvConnection() {
     if (typeof showToast === 'function') showToast(t.saved, 'success');
   } catch (err) {
     const msg = t.saveFailed.replace('{error}', err.message);
+    if (typeof showToast === 'function') showToast(msg, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function maclawsrvStoredUrl() {
+  const url = document.getElementById('maclawsrvBaseUrl');
+  return String(url && url._loaded || '').trim().replace(/\/+$/, '');
+}
+
+function maclawsrvUnsaved() {
+  const url = document.getElementById('maclawsrvBaseUrl');
+  const typed = String(url && url.value || '').trim().replace(/\/+$/, '');
+  const admin = document.getElementById('maclawsrvAdminSecret');
+  const token = document.getElementById('maclawsrvAccessToken');
+  return typed !== maclawsrvStoredUrl() || String(admin && admin.value || '') !== '' || String(token && token.value || '') !== '';
+}
+
+function maclawsrvReason(raw) {
+  const text = String(raw || '');
+  const idx = text.lastIndexOf('): ');
+  return idx < 0 ? '' : ' [' + text.slice(idx + 3) + ']';
+}
+
+function maclawsrvTestMessage(raw) {
+  const text = String(raw || '');
+  const t = maclawsrvText();
+  if (text.indexOf('HTTP 401') !== -1) return t.tokenRejected + maclawsrvReason(text);
+  if (text.indexOf('HTTP 403') !== -1) return t.tokenForbidden + maclawsrvReason(text);
+  if (text.indexOf('HTTP 404') !== -1 || text.indexOf('check the MaClawSrv URL') !== -1) return t.notFound + maclawsrvReason(text);
+  if (text.indexOf('MaClawSrv rejected the instance request') !== -1) return t.rejected + maclawsrvReason(text);
+  return text || t.saveFailed.replace('{error}', '');
+}
+
+async function testMaclawsrvConnection() {
+  applyMaclawsrvI18n();
+  const t = maclawsrvText();
+  if (maclawsrvUnsaved()) {
+    if (typeof showToast === 'function') showToast(t.saveBeforeTest, 'error');
+    return;
+  }
+  const button = document.getElementById('maclawsrvConnectionTestBtn');
+  const status = document.getElementById('maclawsrvConnectionStatus');
+  if (button) button.disabled = true;
+  if (status) status.textContent = t.testing;
+  try {
+    const result = await api('/api/admin/bots/connection/test', { method: 'POST', body: '{}' });
+    const count = result && result.instance_count != null ? result.instance_count : 0;
+    const msg = t.connected.replace('{count}', String(count));
+    if (status) status.textContent = msg;
+    if (typeof showToast === 'function') showToast(msg, 'success');
+  } catch (err) {
+    const msg = maclawsrvTestMessage(err && err.message);
+    if (status) status.textContent = msg;
     if (typeof showToast === 'function') showToast(msg, 'error');
   } finally {
     if (button) button.disabled = false;

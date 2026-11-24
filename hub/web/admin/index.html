@@ -281,6 +281,7 @@
           <button data-tab="machines" onclick="openTab('machines')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 19h8"></path><path d="M12 16v3"></path></svg></span><div class="nav-copy"><span data-i18n="navMachines"></span><small data-i18n="navMachinesDesc"></small></div></div></button>
           <button data-tab="virtualemployees" onclick="openTab('virtualemployees')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><div class="nav-copy"><span id="navVirtualEmployees"></span><small id="navVirtualEmployeesDesc"></small></div></div></button>
           <button data-tab="bots" onclick="openTab('bots')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="10" rx="2"></rect><path d="M12 8V5"></path><circle cx="12" cy="4" r="1"></circle><path d="M9 13h.01"></path><path d="M15 13h.01"></path></svg></span><div class="nav-copy"><span id="navBots"></span><small id="navBotsDesc"></small></div></div></button>
+          <button data-tab="cloud-agents" onclick="openTab('cloud-agents')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 0-8 5 5 0 0 0-9.6-1.5A3.5 3.5 0 0 0 7 18z"></path></svg></span><div class="nav-copy"><span id="navCloudAgents" data-i18n="cloudAgentsTabTitle"></span><small id="navCloudAgentsDesc" data-i18n="cloudAgentsTabSubtitle"></small></div></div></button>
         </div>
         <div class="nav-group" data-nav-group="capabilities" role="group" aria-labelledby="nav-group-label-capabilities">
           <div class="nav-group-label" id="nav-group-label-capabilities" data-i18n="navGroupCapabilities">Capabilities</div>
@@ -697,25 +698,7 @@
             <div><label for="maclawsrvAccessToken" id="maclawsrvAccessTokenLabel"></label><input id="maclawsrvAccessToken" type="password" autocomplete="new-password"></div>
           </div>
           <div class="item-meta" id="maclawsrvConnectionStatus" style="margin-top:8px"></div>
-          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMaclawsrvConnection()" id="maclawsrvConnectionSaveBtn"></button></div>
-        </div>
-        <div class="item" id="cloudAgentQuotaCard" style="margin-top:10px">
-          <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" data-icon="sliders" id="cloudAgentQuotaTitle"></div><div class="item-meta" id="cloudAgentQuotaHint"></div></div>
-            <button class="btn-ghost" type="button" onclick="loadCloudAgentQuota()" id="cloudAgentQuotaReloadBtn"></button>
-          </div>
-          <label class="user-referral-toggle" style="margin:0"><input id="cloudAgentQuotaEnabled" type="checkbox"><span id="cloudAgentQuotaEnabledLabel"></span></label>
-          <div class="grid3" style="margin-top:10px">
-            <div><label for="cloudAgentQuotaInstances" id="cloudAgentQuotaInstancesLabel"></label><input id="cloudAgentQuotaInstances" type="number" min="0" step="1"></div>
-            <div><label for="cloudAgentQuotaTurns" id="cloudAgentQuotaTurnsLabel"></label><input id="cloudAgentQuotaTurns" type="number" min="0" step="1"></div>
-            <div><label for="cloudAgentQuotaUser" id="cloudAgentQuotaUserLabel"></label><input id="cloudAgentQuotaUser" autocomplete="off" spellcheck="false"></div>
-          </div>
-          <div class="grid2" style="margin-top:10px">
-            <div><label for="cloudAgentQuotaUserInstances" id="cloudAgentQuotaUserInstancesLabel"></label><input id="cloudAgentQuotaUserInstances" type="number" min="0" step="1"></div>
-            <div><label for="cloudAgentQuotaUserTurns" id="cloudAgentQuotaUserTurnsLabel"></label><input id="cloudAgentQuotaUserTurns" type="number" min="0" step="1"></div>
-          </div>
-          <div class="item-meta" id="cloudAgentQuotaStatus" style="margin-top:8px"></div>
-          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCloudAgentQuota()" id="cloudAgentQuotaSaveBtn"></button></div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMaclawsrvConnection()" id="maclawsrvConnectionSaveBtn"></button><button class="btn-secondary" type="button" onclick="testMaclawsrvConnection()" id="maclawsrvConnectionTestBtn"></button></div>
         </div>
         <div class="item registration-auth-card" id="registrationAuthCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
@@ -1671,6 +1654,30 @@
       </section>
       <!-- Tab: Notifications -->
       <section id="tab-bots" class="panel card"></section>
+      <section id="tab-cloud-agents" class="panel card">
+        <div class="item" id="cloudAgentQuotaCard">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" data-icon="sliders" id="cloudAgentQuotaTitle"></div><div class="item-meta" id="cloudAgentQuotaHint"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadCloudAgentQuota()" id="cloudAgentQuotaReloadBtn"></button>
+          </div>
+          <label class="user-referral-toggle" style="margin:0"><input id="cloudAgentQuotaEnabled" type="checkbox"><span id="cloudAgentQuotaEnabledLabel"></span></label>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="cloudAgentQuotaInstances" id="cloudAgentQuotaInstancesLabel"></label><input id="cloudAgentQuotaInstances" type="number" min="0" step="1"></div>
+            <div><label for="cloudAgentQuotaTurns" id="cloudAgentQuotaTurnsLabel"></label><input id="cloudAgentQuotaTurns" type="number" min="0" step="1"></div>
+          </div>
+          <div class="item-meta" id="cloudAgentQuotaStatus" style="margin-top:8px"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCloudAgentQuota()" id="cloudAgentQuotaSaveBtn"></button></div>
+        </div>
+        <div class="item" id="cloudAgentAccessCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" id="cloudAgentAccessTitle"></div><div class="item-meta" id="cloudAgentAccessHint"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadCloudAgentAccess(true)" id="cloudAgentAccessReloadBtn"></button>
+          </div>
+          <input id="cloudAgentAccessFilter" autocomplete="off" spellcheck="false" oninput="renderCloudAgentAccessTree()">
+          <div id="cloudAgentAccessTree" class="cag-org-tree"></div>
+          <div class="item-meta" id="cloudAgentAccessStatus" style="margin-top:8px"></div>
+        </div>
+      </section>
       <section id="tab-notifications" class="panel card"></section>
       <!-- Tab: Console -->
       <section id="tab-console" class="panel card">

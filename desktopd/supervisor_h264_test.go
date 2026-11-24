@@ -28,6 +28,21 @@ b.close()
 	}
 }
 
+func TestSupervisorInputRejectsNonFiniteCoordinates(t *testing.T) {
+	out := runSupervisorPython(t, `
+s = object.__new__(sup.ScreenInput)
+class Conn:
+    width = 1280
+    height = 800
+print(s._point(Conn(), {"x": float("nan"), "y": 0.5}))
+print(s._point(Conn(), {"x": float("inf"), "y": 0.5}))
+print(s._point(Conn(), {"x": 0.5, "y": float("-nan")}))
+`)
+	if out != "None\nNone\nNone" {
+		t.Fatalf("got %q", out)
+	}
+}
+
 func TestSupervisorH264IsBehindItsFlag(t *testing.T) {
 	out := runSupervisorPython(t, `
 head = b"GET /h264 HTTP/1.1\r\nHost: x\r\n\r\n"

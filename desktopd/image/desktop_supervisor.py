@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import math
 import os
 import posixpath
 import re
@@ -5030,6 +5031,8 @@ class ScreenInput:
             x = float(event.get("x"))
             y = float(event.get("y"))
         except (TypeError, ValueError):
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
             return None
         x = min(max(x, 0.0), 1.0)
         y = min(max(y, 0.0), 1.0)

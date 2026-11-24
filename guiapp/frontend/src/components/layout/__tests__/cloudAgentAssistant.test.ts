@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds } from '../cloudAgentSession';
-import { openCloudAgent, resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests } from '../cloudAgentAssistant';
 import { remoteAssistantSend, remoteAssistantSessionSnapshot, remoteAssistantStop } from '../remoteAssistantSession';
 import { cloudTurnRunning, noteCloudTurn, resetCloudTurnNotes, type CloudAgentListItem } from '../taskPlace';
 
@@ -36,6 +36,16 @@ afterEach(() => {
 });
 
 describe('cloud agent assistant', () => {
+    it('treats a missing Hub switch as closed, and an empty enabled list as open', () => {
+        expect(cloudAgentCatalog([{ id: 'cag_1', name: '演示', kind: 'session', status: 'idle' }])).toEqual({
+            instances: [{ id: 'cag_1', name: '演示', kind: 'session', status: 'idle' }],
+            enabled: false,
+        });
+        expect(cloudAgentCatalog({ instances: [], enabled: false }).enabled).toBe(false);
+        expect(cloudAgentCatalog({ instances: [], enabled: true })).toEqual({ instances: [], enabled: true });
+        expect(cloudAgentCatalog(null)).toEqual({ instances: [], enabled: false });
+    });
+
     it('opens in the same panel as a remote task and does not mark the computer offline', async () => {
         const op = vi.fn(async (_grant: string, name: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });

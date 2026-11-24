@@ -1568,6 +1568,10 @@ func NewRouter(
 		ConfigureCompanionGroupInviteNotifier(identity, notifSvc)
 		rc := registerRemoteControl(mux, hubDB, identity, deviceSvc, notifSvc, botSvc)
 		if cloudSvc := cloudagent.New(hubDB, system); cloudSvc != nil {
+			// Same security directory bot management uses. cloudagent does not call botmgmt.
+			if directory, ok := desktopDirectory.(cloudagent.Directory); ok {
+				cloudSvc.Directory = directory
+			}
 			cloudSvc.Start(context.Background())
 			if rc != nil {
 				rc.Cloud = cloudSvc.Dispatcher()
@@ -1587,6 +1591,8 @@ func NewRouter(
 			mux.HandleFunc("GET /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettingsGet(cloudSvc)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettings(cloudSvc, adminAudit)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/users/{id}/limits", requireTenantAdmin(cloudAgentAdminUserLimits(cloudSvc, adminAudit)))
+			mux.HandleFunc("GET /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessGet(cloudSvc)))
+			mux.HandleFunc("PUT /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessPut(cloudSvc, adminAudit)))
 			mux.HandleFunc("POST /api/internal/cloud-agents/heartbeat", cloudSvc.ServeHeartbeat)
 			mux.HandleFunc("POST /api/internal/cloud-agents/stream", cloudAgentStream(rc, cloudSvc))
 			mux.HandleFunc("POST /api/internal/cloud-agents/llm/chat", cloudAgentLLMChat(hubDB, cloudSvc, identity, system, securitySvc, llmPromptCache))

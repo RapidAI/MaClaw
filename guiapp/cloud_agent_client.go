@@ -21,18 +21,23 @@ type CloudAgentRow struct {
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
 
-// ListCloudAgents reads the signed-in user's cloud instances.
-func (a *App) ListCloudAgents() ([]CloudAgentRow, error) {
-	var payload struct {
-		Instances []CloudAgentRow `json:"instances"`
-	}
+// CloudAgentList is the signed-in user's cloud place.
+// Enabled is the Hub switch. False means the new-task place does not offer 云端.
+type CloudAgentList struct {
+	Instances []CloudAgentRow `json:"instances"`
+	Enabled   bool            `json:"enabled"`
+}
+
+// ListCloudAgents reads the signed-in user's cloud instances and the Hub switch.
+func (a *App) ListCloudAgents() (CloudAgentList, error) {
+	var payload CloudAgentList
 	if err := a.remoteControlJSON(http.MethodGet, "/api/v1/cloud-agents", nil, &payload); err != nil {
-		return nil, err
+		return CloudAgentList{}, err
 	}
 	if payload.Instances == nil {
-		return []CloudAgentRow{}, nil
+		payload.Instances = []CloudAgentRow{}
 	}
-	return payload.Instances, nil
+	return payload, nil
 }
 
 // CreateCloudAgent creates one session or coding instance.
