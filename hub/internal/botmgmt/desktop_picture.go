@@ -92,6 +92,11 @@ func (s *Service) DesktopPicture(ctx context.Context, tenantID, userID, botID st
 		return url, control && url != "", state, nil
 	}
 	desktopUser := s.desktopUserForWatch(ctx, tenantID, userID, botID)
+	// Hold already dropped a rejected gate and is waiting out the recover
+	// gap. Asking again here would retry on every poll.
+	if strings.TrimSpace(url) == "" && s.desktopRecoverCooling(tenantID, desktopUser) {
+		return "", false, DesktopStateUnavailable, nil
+	}
 	reported, live, known := s.askDesktopViewState(ctx, tenantID, desktopUser)
 	if !known {
 		if strings.TrimSpace(url) == "" {
