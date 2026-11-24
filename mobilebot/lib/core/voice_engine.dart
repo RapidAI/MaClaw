@@ -189,9 +189,7 @@ class VoiceEngine {
     final voiceDir = _voiceDirSnapshot!;
     final future = () async {
       try {
-        final err = await Isolate.run(
-          () => NativeVoice.loadTts(model, voiceDir, voice),
-        );
+        final err = await _runTtsLoad(model, voiceDir, voice);
         // A voice switch mid-load must not mark the new voice as loaded.
         if (err == null && gen == _ttsVoiceGen) _ttsLoaded = true;
         return err;
@@ -202,6 +200,15 @@ class VoiceEngine {
     _ttsLoading = future;
     return future;
   }
+
+  // Static so the Isolate.run closure cannot pick up an implicit `this`
+  // context — an instance method touching fields would send the engine (and
+  // its AudioPlayer) to the worker, and the send fails as unsendable.
+  static Future<String?> _runTtsLoad(
+    String model,
+    String voiceDir,
+    String voice,
+  ) => Isolate.run(() => NativeVoice.loadTts(model, voiceDir, voice));
 
   // Paths are looked up once and snapshotted for the worker isolate (the
   // isolate can't call path_provider).
@@ -255,13 +262,18 @@ class VoiceEngine {
     if (inFlight != null) return inFlight;
     final future = () async {
       try {
+        // Snapshot into a local FIRST: the `_asrPathSnapshot = null` branches
+        // below are writes to a field of `this`, so a later read of the same
+        // field inside an Isolate.run closure forces the compiler to send the
+        // enclosing instance as the closure context — and VoiceEngine holds an
+        // AudioPlayer, which is unsendable ("object is unsendable" on every
+        // local transcription). Reading the field once before, with no capture
+        // of `this` in the closure, keeps the message to the plain path.
+        final model = _asrPathSnapshot!;
         if (!await VoiceAssets.asrReady()) {
           _asrPathSnapshot = null;
           return 'asr model missing or failed validation';
         }
-        // Local snapshot: the Isolate.run closure must not capture `this`
-        // (the engine holds an AudioPlayer, which is not sendable).
-        final model = _asrPathSnapshot!;
         final err = await Isolate.run(() => NativeVoice.loadAsr(model));
         if (err == null) {
           _asrLoaded = true;
