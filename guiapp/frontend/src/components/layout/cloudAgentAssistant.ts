@@ -286,13 +286,16 @@ function publishOwner() {
             toolCalls: folded.toolCalls,
         });
     }
-    // Sends the srv parked wait for the running turn; the next round_started
-    // drops the oldest parked line, so mark exactly the still-waiting ones.
+    // Sends the srv parked wait for the running turn; a round_started drops
+    // the drained entries, so mark exactly the still-waiting ones. The live
+    // round's own line is never one of them — its drain could have raced
+    // ahead of the send ack that would have removed it here.
     if (current.queued.length) {
         const parked = current.queued.slice();
         for (let i = messages.length - 1, qi = parked.length - 1; i >= 0 && qi >= 0; i--) {
             const row = messages[i];
             if (row.role !== 'user') continue;
+            if (row.content.trim() === prompt) continue;
             if (row.content.trim() === parked[qi]) {
                 row.queued = true;
                 qi--;
@@ -368,12 +371,13 @@ function ensureStream() {
             }
             return;
         }
-        // A fresh round means the srv started the oldest parked send — but
-        // only clear our badge when it is OUR line: another client's parked
-        // send drains first and must not clear ours.
+        // A fresh round means the srv drained a parked send. Drop every entry
+        // up to it — the queue is FIFO, so anything older started as well
+        // (its frame may have raced past the send ack).
         const started = streamStarted(payload);
-        if (started && current.queued.length && current.queued[0] === started) {
-            current.queued = current.queued.slice(1);
+        const drained = started ? current.queued.indexOf(started) : -1;
+        if (drained >= 0) {
+            current.queued = current.queued.slice(drained + 1);
         }
         if (current.error) current.error = '';
         publishOwner();
