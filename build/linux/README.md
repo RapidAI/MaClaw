@@ -40,14 +40,13 @@ The standalone `*_linux_u2404` / `*_linux_u2604` binary in the same workflow art
 ## Rebuild locally (same as CI)
 
 ```bash
-# Ubuntu 24.04
+# Ubuntu 24.04 / 26.04
 sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev patchelf xvfb
 CGO_ENABLED=1 go build -tags desktop,production,webkit2_41 \
   -ldflags "-s -w -X main.version=dev" -o build/bin/MaClaw_amd64_linux ./cmd/maclaw-gui/
 build/linux/package_appimage.sh \
   --binary build/bin/MaClaw_amd64_linux \
-  --app-name MaClaw \
-  --ubuntu-label u2404
+  --app-name MaClaw
 MACLAW_GUI_SMOKE_REQUIRE_XVFB=1 build/linux/smoke_gui.sh \
   --appimage dist/MaClaw-x86_64-u2404.AppImage \
   --binary build/bin/MaClaw_amd64_linux

@@ -84,7 +84,13 @@ do
 done
 
 host_webkit=""
-if ldconfig -p 2>/dev/null | grep -q "__WEBKIT_SONAME__"; then
+LDCONFIG_BIN="$(command -v ldconfig 2>/dev/null || true)"
+if [ -z "$LDCONFIG_BIN" ] && [ -x /sbin/ldconfig ]; then
+  LDCONFIG_BIN="/sbin/ldconfig"
+elif [ -z "$LDCONFIG_BIN" ] && [ -x /usr/sbin/ldconfig ]; then
+  LDCONFIG_BIN="/usr/sbin/ldconfig"
+fi
+if [ -n "$LDCONFIG_BIN" ] && "$LDCONFIG_BIN" -p 2>/dev/null | grep -q "__WEBKIT_SONAME__"; then
   host_webkit="yes"
 fi
 
