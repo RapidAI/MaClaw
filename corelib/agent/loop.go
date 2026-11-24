@@ -5391,9 +5391,14 @@ func repeatedStalledContinuousCall(calls []toolCallRecord) (id string, seen int)
 	if !ok {
 		canonical = last.args
 	}
-	id = last.name + "\n" + canonical + "\n" + last.result
+	id = last.name + "\n" + canonical + "\n" + continuousRepeatResultIdentity(last.result)
+	if continuousRepeatResultTruncated(last.result) {
+		// The preview is not the observation. Count this call so the window
+		// still sees a live poll, and do not match it to any earlier cut.
+		return id, 1
+	}
 	for _, call := range calls {
-		if !call.success || call.name != last.name || !sameCallArgs(call.args, last.args) || call.result != last.result {
+		if !call.success || call.name != last.name || !sameCallArgs(call.args, last.args) || !sameContinuousRepeatResult(call.result, last.result) {
 			continue
 		}
 		seen++
@@ -5407,11 +5412,52 @@ func repeatedStalledContinuousCall(calls []toolCallRecord) (id string, seen int)
 // move it. Other polls (a local status check of a running job) stay out.
 func continuousRepeatTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ssh", "ssh_exec", "browser", "computer_use", "desktop":
+	case "ssh", "ssh_exec", "ssh_bash", "browser", "computer_use", "desktop":
 		return true
 	default:
 		return false
 	}
+}
+
+// sameContinuousRepeatResult reports that two successes observed the same
+// state. A preview cut is not that state: the spilled page still holds the
+// rest, and two cuts of a growing log share the same truncation marker.
+// Comparing the marker would stop a remote command whose output is still
+// changing, which is a call-count stop in disguise.
+func sameContinuousRepeatResult(a, b string) bool {
+	if continuousRepeatResultTruncated(a) || continuousRepeatResultTruncated(b) {
+		return false
+	}
+	return a == b
+}
+
+func continuousRepeatResultIdentity(result string) string {
+	if continuousRepeatResultTruncated(result) {
+		return ""
+	}
+	return result
+}
+
+func continuousRepeatResultTruncated(result string) bool {
+	return strings.Contains(result, "[tool_result_handle]") || toolResultSizeCut(result)
+}
+
+// toolResultSizeCut reports the preview marker written by the tool-result
+// projection. A command whose own output says "已截断" is not that marker:
+// matching the word alone would hide a finished, identical observation.
+func toolResultSizeCut(result string) bool {
+	const prefix = "... (已截断，共 "
+	const suffix = " 字节)"
+	start := strings.Index(result, prefix)
+	if start < 0 {
+		return false
+	}
+	rest := result[start+len(prefix):]
+	rel := strings.Index(rest, suffix)
+	if rel <= 0 {
+		return false
+	}
+	return strings.Trim(rest[:rel], "0123456789") == ""
 }
 
 // driftFailureHint reports a window of identical calls that made no progress.
@@ -5425,7 +5471,7 @@ func driftFailureHint(tail []toolCallRecord) bool {
 		return false
 	}
 	for i := 1; i < len(tail); i++ {
-		if tail[i].name != tail[0].name || !sameCallArgs(tail[i].args, tail[0].args) || tail[i].result != tail[0].result {
+		if tail[i].name != tail[0].name || !sameCallArgs(tail[i].args, tail[0].args) || !sameDriftResult(tail[0], tail[i]) {
 			return false
 		}
 	}
@@ -5446,12 +5492,17 @@ func driftFailureHint(tail []toolCallRecord) bool {
 // is the stop, not another invocation. The match is the rendered name, not
 // an inferred capability.
 func continuousCapabilityDeadLoop(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ssh", "ssh_exec", "browser", "computer_use", "desktop":
-		return true
-	default:
-		return false
+	return continuousRepeatTool(name)
+}
+
+// sameDriftResult compares two calls in a drift window. A failed window still
+// matches the raw result: the error text is the outcome. A continuous success
+// ignores a truncated preview, because that preview is not the observation.
+func sameDriftResult(a, b toolCallRecord) bool {
+	if !a.success || !b.success || !continuousRepeatTool(a.name) {
+		return a.result == b.result
 	}
+	return sameContinuousRepeatResult(a.result, b.result)
 }
 
 // mostRepeatedImmutableRead reports the spilled page that this batch read

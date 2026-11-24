@@ -177,6 +177,71 @@ func TestCodingWorkbenchWorktreeRejectsUndeclaredChangedFile(t *testing.T) {
 	}
 }
 
+// Regression for BR-20261124-D9DCBA72D95D: pruneCodingWorkbenchWorktrees runs
+// `git worktree list` against the shared git common dir, which enumerates every
+// worktree of the repo — not just the ones belonging to the session being
+// reset. The old prefix-only sweep removed a *live* checkout another task was
+// still executing in, orphaning its guardrail working dir. A prune must leave
+// any checkout still inside its create→cleanup lifetime intact while still
+// removing true orphans.
+func TestPruneSkipsLiveWorktreeAndRemovesOrphan(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	run := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(root, "init")
+	run(root, "config", "user.email", "test@example.com")
+	run(root, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(root, "add", ".")
+	run(root, "commit", "-m", "init")
+
+	// Live checkout: task A created a worktree and has not finished with it.
+	live, err := createCodingWorkbenchWorktree(root, 1, "live-task")
+	if err != nil || live == nil {
+		t.Fatalf("create live worktree=%+v err=%v", live, err)
+	}
+	defer live.cleanup(false)
+
+	// Orphan checkout: a worktree that exists in git metadata + on disk but is
+	// not part of any create→cleanup lifetime (created directly, so it never
+	// entered codingWorkbenchLiveWorktrees). Prune must still reclaim these.
+	wtRoot := filepath.Join(os.TempDir(), "maclaw-coding-worktrees")
+	if err := os.MkdirAll(wtRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orphanPath := filepath.Join(wtRoot, "0-orphan-branch")
+	_ = os.RemoveAll(orphanPath)
+	run(root, "worktree", "add", "-b", "maclaw/coding-0-orphan-branch", orphanPath, "HEAD")
+	t.Cleanup(func() {
+		// Best-effort: the prune under test is expected to have removed it.
+		_ = exec.Command("git", "-C", root, "worktree", "remove", "--force", orphanPath).Run()
+		_ = exec.Command("git", "-C", root, "branch", "-D", "maclaw/coding-0-orphan-branch").Run()
+	})
+
+	// Prune triggered by a *different* session's reset. Before the fix this
+	// deleted live.Path while task A was still writing into it.
+	if _, err := pruneCodingWorkbenchWorktrees(root); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	if _, err := os.Stat(live.Path); err != nil {
+		t.Fatalf("live worktree was pruned while still in use: %v", err)
+	}
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("orphan worktree was not pruned: stat err=%v", err)
+	}
+}
+
 func TestIsCodingWorkbenchSlashWorktree(t *testing.T) {
 	if !isCodingWorkbenchSlash("/worktree mode always") {
 		t.Fatal("expected worktree slash")

@@ -21,6 +21,34 @@ func lockedCodingControlPlaneRevision(mu *sync.RWMutex, surface *map[string]stru
 	return *revision
 }
 
+// restoreResumedControlPlaneToken binds the generation the resumed transcript
+// already showed the model before this callback renders its first surface.
+// Restoring only the checklist leaves the surface counter at zero, so the
+// first render mints revision 1 and the replayed todo_write is stale.
+func (c *codingSubAgentCallbacks) restoreResumedControlPlaneToken(revision, version uint64) {
+	if c == nil || revision == 0 {
+		return
+	}
+	c.todos.restoreControlPlaneToken(revision, version)
+	c.staticCompatibilitySurfaceMu.Lock()
+	if c.staticCompatibilitySurface == nil && c.staticCompatibilityRevision == 0 {
+		c.staticCompatibilityRevision = revision
+	}
+	c.staticCompatibilitySurfaceMu.Unlock()
+}
+
+func (c *remoteCodingCallbacks) restoreResumedControlPlaneToken(revision, version uint64) {
+	if c == nil || revision == 0 {
+		return
+	}
+	c.todos.restoreControlPlaneToken(revision, version)
+	c.staticCompatibilitySurfaceMu.Lock()
+	if c.staticCompatibilitySurface == nil && c.staticCompatibilityRevision == 0 {
+		c.staticCompatibilityRevision = revision
+	}
+	c.staticCompatibilitySurfaceMu.Unlock()
+}
+
 func (c *codingSubAgentCallbacks) currentControlPlaneRevision() uint64 {
 	if c == nil {
 		return 0

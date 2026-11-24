@@ -66,6 +66,37 @@ type codingWorkbenchWorktree struct {
 
 var codingWorkbenchWorktreeMu sync.Mutex
 
+// codingWorkbenchLiveWorktrees records every worktree checkout created by
+// createCodingWorkbenchWorktree that has not yet been released by cleanup.
+// Membership begins while create still holds codingWorkbenchWorktreeMu — so a
+// path is live before the checkout is observable to a concurrent prune — and
+// ends in cleanup under the same mutex. pruneCodingWorkbenchWorktrees consults
+// this set (under that mutex) so it can never remove a checkout another task
+// is still executing in, regardless of which session triggered the prune.
+var codingWorkbenchLiveWorktrees sync.Map // normalizeCodingRuntimeRef(path) -> struct{}
+
+func codingWorkbenchMarkLive(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	codingWorkbenchLiveWorktrees.Store(normalizeCodingRuntimeRef(path), struct{}{})
+}
+
+func codingWorkbenchMarkDead(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	codingWorkbenchLiveWorktrees.Delete(normalizeCodingRuntimeRef(path))
+}
+
+func codingWorkbenchIsLive(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, ok := codingWorkbenchLiveWorktrees.Load(normalizeCodingRuntimeRef(path))
+	return ok
+}
+
 func normalizeCodingWorktreeMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case codingWorktreeModeAlways, "on", "yes", "true":
@@ -270,6 +301,10 @@ func createCodingWorkbenchWorktree(projectPath string, stepIndex int, label stri
 		}
 	}
 
+	// Mark the checkout live before the create mutex releases so a concurrent
+	// prune can never observe the worktree entry on disk without also seeing
+	// it in codingWorkbenchLiveWorktrees.
+	codingWorkbenchMarkLive(wtPath)
 	log.Printf("[coding-worktree] created step=%d branch=%s path=%s", stepIndex, branch, prepared)
 	return &codingWorkbenchWorktree{
 		GitRoot:     gitRoot,
@@ -440,6 +475,7 @@ func (w *codingWorkbenchWorktree) cleanup(keepOnDisk bool) {
 			_ = remote.RunGit(w.GitRoot, "branch", "-D", w.Branch)
 		}
 		_ = remote.RunGit(w.GitRoot, "worktree", "prune")
+		codingWorkbenchMarkDead(w.Path)
 	}
 	w.created = false
 	log.Printf("[coding-worktree] cleaned step=%d branch=%s", w.StepIndex, w.Branch)
@@ -524,7 +560,14 @@ func pruneCodingWorkbenchWorktrees(projectPath string) (string, error) {
 		}
 		isCoding := strings.Contains(curBranch, "maclaw/coding-") ||
 			strings.Contains(filepath.ToSlash(curPath), "maclaw-coding-worktrees")
-		if isCoding {
+		if isCoding && codingWorkbenchIsLive(curPath) {
+			// The checkout is still owned by a create→cleanup lifetime that has
+			// not ended. Removing it mid-run orphans the guardrail's working
+			// dir and blocks every subsequent tool call, so leave the entry
+			// (and its branch) intact even when a different session's reset is
+			// what triggered this prune.
+			log.Printf("[coding-worktree] prune skips live checkout: %s", curPath)
+		} else if isCoding {
 			_ = remote.RunGit(gitRoot, "worktree", "remove", "--force", curPath)
 			_ = os.RemoveAll(curPath)
 			if curBranch != "" {

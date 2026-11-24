@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,14 +24,22 @@ type codingAgentResume struct {
 	History   []agent.ConversationEntry
 	Snapshots map[string]codingFileSnapshot
 	Memo      string
+	// ChecklistRevision and ChecklistVersion are the CAS token the restored
+	// transcript already showed the model. A new callback starts at 1/0, so
+	// replaying that transcript without this token makes the next todo_write
+	// control_plane_stale (BR-20261123-9BDD354BCE62).
+	ChecklistRevision uint64
+	ChecklistVersion  uint64
 }
 
 type codingAgentResumeDisk struct {
-	ProjectPath   string                      `json:"project_path"`
-	UpdatedAtUnix int64                       `json:"updated_at_unix"`
-	History       []agent.ConversationEntry   `json:"history,omitempty"`
-	Snapshots     []codingAgentResumeSnapDisk `json:"snapshots,omitempty"`
-	Memo          string                      `json:"memo,omitempty"`
+	ProjectPath       string                      `json:"project_path"`
+	UpdatedAtUnix     int64                       `json:"updated_at_unix"`
+	History           []agent.ConversationEntry   `json:"history,omitempty"`
+	Snapshots         []codingAgentResumeSnapDisk `json:"snapshots,omitempty"`
+	Memo              string                      `json:"memo,omitempty"`
+	ChecklistRevision uint64                      `json:"checklist_revision,omitempty"`
+	ChecklistVersion  uint64                      `json:"checklist_version,omitempty"`
 }
 
 type codingAgentResumeSnapDisk struct {
@@ -180,7 +189,19 @@ func loadCodingAgentResume(userID, projectPath string) codingAgentResume {
 	if len(snaps) == 0 {
 		snaps = nil
 	}
-	return codingAgentResume{History: history, Snapshots: snaps, Memo: disk.Memo}
+	revision, version := disk.ChecklistRevision, disk.ChecklistVersion
+	if revision == 0 {
+		if foundRevision, foundVersion, found := codingChecklistTokenFromHistory(history); found {
+			revision, version = foundRevision, foundVersion
+		}
+	}
+	return codingAgentResume{
+		History:           history,
+		Snapshots:         snaps,
+		Memo:              disk.Memo,
+		ChecklistRevision: revision,
+		ChecklistVersion:  version,
+	}
 }
 
 // codingAgentResumeForTurn loads the transcript a user coding call continues.
@@ -302,11 +323,25 @@ func recordCodingAgentResume(userID, projectPath string, delta []agent.Conversat
 		if sameProject && freshEnough {
 			memo = prior.Memo
 		}
+		revision, version := prior.ChecklistRevision, prior.ChecklistVersion
+		if !sameProject || !freshEnough {
+			revision, version = 0, 0
+		}
+		// Trim may drop the receipt the model already used. Keep that token
+		// even when the row itself no longer fits the resumed window.
+		if nextRevision, nextVersion, ok := codingChecklistTokenFromHistory(append(append([]agent.ConversationEntry{}, base...), delta...)); ok {
+			revision, version = nextRevision, nextVersion
+		}
+		if nextRevision, nextVersion, ok := codingChecklistTokenFromHistory(history); ok {
+			revision, version = nextRevision, nextVersion
+		}
 		disk := codingAgentResumeDisk{
-			ProjectPath:   codingAgentResumePersistPath(userID, prior.ProjectPath, projectPath, sameProject && freshEnough),
-			UpdatedAtUnix: time.Now().Unix(),
-			History:       history,
-			Memo:          memo,
+			ProjectPath:       codingAgentResumePersistPath(userID, prior.ProjectPath, projectPath, sameProject && freshEnough),
+			UpdatedAtUnix:     time.Now().Unix(),
+			History:           history,
+			Memo:              memo,
+			ChecklistRevision: revision,
+			ChecklistVersion:  version,
 		}
 		for key, snap := range storedSnaps {
 			key = canonicalCodingPath(key)
@@ -367,6 +402,52 @@ func recordCodingAgentResumeMemo(userID, projectPath, memo string) {
 			log.Printf("[coding-env] persist coding agent memo failed path=%s err=%v", path, err)
 		}
 	})
+}
+
+// codingChecklistTokenFromHistory reads the newest todo_write receipt in the
+// transcript the next turn will replay. That receipt is the token the model
+// already holds. A later tool result that is not a checklist receipt does not
+// retire it. Parsing the receipt here keeps the resume file and the visible
+// history on the same transaction.
+func codingChecklistTokenFromHistory(entries []agent.ConversationEntry) (revision, version uint64, ok bool) {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if strings.ToLower(strings.TrimSpace(entry.Role)) != "tool" || strings.TrimSpace(entry.ToolName) != codingAgentTodoToolName {
+			continue
+		}
+		text, _ := entry.Content.(string)
+		foundRevision, foundVersion, found := codingChecklistTokenFromReceipt(text)
+		if found {
+			return foundRevision, foundVersion, true
+		}
+	}
+	return 0, 0, false
+}
+
+func codingChecklistTokenFromReceipt(text string) (revision, version uint64, ok bool) {
+	const marker = "control_plane_revision="
+	idx := strings.LastIndex(text, marker)
+	if idx < 0 {
+		return 0, 0, false
+	}
+	rest := text[idx+len(marker):]
+	revText, verText, found := strings.Cut(rest, " control_plane_version=")
+	if !found {
+		return 0, 0, false
+	}
+	revText = strings.TrimSpace(strings.Split(revText, "\n")[0])
+	verText = strings.TrimSpace(strings.Split(verText, "\n")[0])
+	revFields := strings.Fields(revText)
+	verFields := strings.Fields(verText)
+	if len(revFields) == 0 || len(verFields) == 0 {
+		return 0, 0, false
+	}
+	revision, revErr := strconv.ParseUint(revFields[0], 10, 64)
+	version, verErr := strconv.ParseUint(verFields[0], 10, 64)
+	if revErr != nil || verErr != nil || revision == 0 {
+		return 0, 0, false
+	}
+	return revision, version, true
 }
 
 func codingAgentResumeSnapMap(snaps []codingAgentResumeSnapDisk) map[string]codingFileSnapshot {

@@ -257,6 +257,42 @@ func TestCodingAgentTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.T
 	}
 }
 
+// BR-20261123-9BDD354BCE62: the resumed transcript still shows
+// control_plane_revision=2 control_plane_version=5, but a new callback used
+// to render revision=1 version=0. The next todo_write was control_plane_stale
+// and the hard exit was reported as consecutive empty responses.
+func TestCodingTodoCASFollowsResumedTranscript(t *testing.T) {
+	dir := t.TempDir()
+	userID := projectSessionOwnerID(dir)
+	receipt := "执行步骤：\n1. inspect\ncontrol_plane_revision=2 control_plane_version=5"
+	recordCodingAgentResume(userID, dir, []agent.ConversationEntry{
+		{Role: "user", Content: "fix the call chain"},
+		{Role: "assistant", Content: "updating the checklist"},
+		{Role: "tool", ToolName: codingAgentTodoToolName, Content: receipt},
+	}, nil)
+	resume := loadCodingAgentResume(userID, dir)
+	if resume.ChecklistRevision != 2 || resume.ChecklistVersion != 5 {
+		t.Fatalf("resume token = %d/%d", resume.ChecklistRevision, resume.ChecklistVersion)
+	}
+	cb := newCodingSubAgentCallbacks(&CodingSubAgent{projectPath: dir, loopCtx: &LoopContext{UserID: userID}}, &TaskItem{Title: "fix the call chain"}, "", "", nil)
+	cb.restoreResumedControlPlaneToken(resume.ChecklistRevision, resume.ChecklistVersion)
+	definitions := cb.BuildToolsForModelRequest("fix the call chain", 0)
+	assertCodingTodoDefinitionTokenForTest(t, definitions, 2, 5)
+	kept := cb.executeTodoWrite(`{
+		"expected_revision":2,
+		"expected_version":5,
+		"merge":false,
+		"todos":[{"id":"1","content":"inspect","status":"in_progress"}]
+	}`)
+	if kept.Outcome != codingToolOutcomeSuccess || !strings.Contains(kept.Text, "control_plane_revision=2 control_plane_version=6") {
+		t.Fatalf("resumed token must apply, got %#v", kept)
+	}
+	fresh := newCodingSubAgentCallbacks(&CodingSubAgent{projectPath: dir}, &TaskItem{Title: "other"}, "", "", nil)
+	if rev, ver := fresh.todos.revisionVersion(); rev != 0 || ver != 0 {
+		t.Fatalf("unrestored callback token = %d/%d", rev, ver)
+	}
+}
+
 func assertCodingTodoDefinitionTokenForTest(t *testing.T, definitions []map[string]interface{}, revision, version uint64) {
 	t.Helper()
 	for _, definition := range definitions {
@@ -304,6 +340,11 @@ func TestRemoteCodingTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.
 	snapshot := cb.todos.controlPlaneSnapshot()
 	if snapshot.Revision != 2 || snapshot.Version != 2 || len(snapshot.Items) != 1 || snapshot.Items[0].Content != "inspect" {
 		t.Fatalf("remote stale mutation changed checklist: %+v", snapshot)
+	}
+	held := snapshot
+	cb.quarantineStaticCompatibilitySurface()
+	if got := cb.todos.controlPlaneSnapshot(); got.Version != held.Version+1 || got.Revision == held.Revision {
+		t.Fatalf("remote quarantine must advance CAS: before=%+v after=%+v", held, got)
 	}
 }
 
@@ -888,8 +929,11 @@ func TestHardExitSubAgentErrorDoesNotUseModelProseAsCause(t *testing.T) {
 	if got := hardExitSubAgentError(""); got != "模型连续返回空响应，任务中断" {
 		t.Fatalf("empty-response hard exit = %q, prose %q must not be the cause", got, prose)
 	}
-	if got := hardExitSubAgentError("工具 bash 连续失败 3 次，已停止执行。"); !strings.Contains(got, "连续失败") {
+	if got := hardExitSubAgentError("工具 bash 连续失败 3 次，已停止执行。"); !strings.Contains(got, "连续失败") || strings.Contains(got, "空响应") {
 		t.Fatalf("named cause was replaced: %q", got)
+	}
+	if got := hardExitSubAgentError("同一页结果已经返回，停止重复读取。"); strings.Contains(got, "空响应") {
+		t.Fatalf("repeated-page stop was reported as an empty response: %q", got)
 	}
 }
 
