@@ -715,6 +715,17 @@ func (s *Service) retireOtherRunning(ctx context.Context, instanceID, requestID,
 	return err
 }
 
+// settleRunning finishes every running turn of one instance. The runtime
+// already confirmed nothing is running — these rows are shadow state left by
+// a lost finish beat.
+func (s *Service) settleRunning(ctx context.Context, instanceID, stamp string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
+		TurnFinished, stamp, stamp, instanceID, TurnRunning); err != nil {
+		return err
+	}
+	return s.releaseIdle(ctx, instanceID, stamp)
+}
+
 func (s *Service) releaseIdle(ctx context.Context, instanceID, stamp string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agents SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND id NOT IN (
 		SELECT instance_id FROM cloud_agent_turns WHERE instance_id = ? AND status = ?

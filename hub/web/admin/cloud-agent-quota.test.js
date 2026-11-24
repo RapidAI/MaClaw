@@ -297,15 +297,16 @@ async function main() {
   var previousToast = context.showToast;
   context.showToast = function (msg, kind) { toasts.push(kind); };
   context.api = async function (url, opts) {
-    if (opts && opts.method === 'PUT') return { ok: true };
-    if (url === '/api/admin/cloud-agents/access') throw new Error('reload down');
+    if (opts && opts.method === 'PUT') throw new Error('save down');
+    if (url === '/api/admin/cloud-agents/access') return { items: [] };
     if (url === '/api/admin/security/groups') return { tree: [] };
     if (url === '/api/admin/users') return { users: [] };
     return {};
   };
   await context.saveCloudAgentAccessRow('department', 'dept-1', 'on', 1, 1);
-  assert(toasts.indexOf('error') !== -1, 'a failed reload reports the error');
-  assert(toasts.indexOf('success') === -1, 'a failed reload does not claim the scope was saved');
+  assert(toasts.indexOf('error') !== -1, 'a failed save reports the error');
+  assert(toasts.indexOf('success') === -1, 'a failed save does not claim the scope was saved');
+  assert(!elements.cloudAgentGrantList.innerHTML.includes('data-target='), 'a failed save leaves the granted card unchanged');
   context.showToast = previousToast;
 
   resetOrg();

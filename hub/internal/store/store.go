@@ -1093,6 +1093,11 @@ type LLMBillingLedgerRepository interface {
 	// their own (currently reservation releases). Inserts are idempotent on
 	// (tenant_id, request_id, event_type).
 	RecordBillingEvents(ctx context.Context, events ...LLMBillingOutboxEvent) error
+	// PruneOutbox deletes outbox events older than the cutoff and returns the
+	// number of rows removed. Retention bounds the queue while no consumer is
+	// attached; a future consumer reconciles from the ledger, not from months
+	// of stale events.
+	PruneOutbox(ctx context.Context, before time.Time) (int64, error)
 }
 
 type Store struct {

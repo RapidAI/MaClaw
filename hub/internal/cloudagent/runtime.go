@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,7 +79,15 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: "云端管理暂时不可用"}
 		}
 		if !busy {
-			if err := d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID); err != nil {
+			err := d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID)
+			if err != nil && d.settleStaleTurns(ctx, &inst, grant.TargetUserID) {
+				// Shadow state can lag the runtime: a lost finish beat pins a
+				// stale running row for the whole miss window. If the srv book
+				// says nothing is running, retire the rows and re-check now
+				// instead of making the caller wait for the sweep.
+				err = d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID)
+			}
+			if err != nil {
 				return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: err.Error()}
 			}
 		}
@@ -109,6 +118,7 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 		if errors.As(err, &client) && client.HTTP >= 400 && client.HTTP < 500 && client.Code != "OFFLINE" {
 			return nil, &remotecontrol.StatusError{Code: client.Code, Message: client.Message}
 		}
+		log.Printf("[cloud-agent] instance %s op %s: %s", inst.ID, op, logDetail(err))
 		return nil, offlineStatus()
 	}
 	if op == remotecontrol.OpCloudSendMessage {
@@ -117,10 +127,32 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			_ = d.svc.NoteAcceptedTurn(ctx, grant.TenantID, grant.TargetUserID, instanceID, taskID, requestID)
 		}
 	}
-	if inst.Status == StatusProvisionFailed || inst.Status == StatusProvisioning {
-		_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
-	}
 	return raw, nil
+}
+
+// settleStaleTurns asks the runtime whether a turn is actually running and,
+// when it is not, finishes this instance's stale running rows so the slot
+// frees on demand instead of at the next sweep tick. Returns false whenever
+// the runtime is unreachable or still busy, leaving the original failure.
+func (d *Dispatcher) settleStaleTurns(ctx context.Context, inst *Instance, owner string) bool {
+	raw, err := d.control(ctx, inst, map[string]any{
+		"op":            "cloud_instance_state",
+		"body":          json.RawMessage(`{}`),
+		"owner_user_id": owner,
+	})
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Running bool `json:"running"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil || state.Running {
+		return false
+	}
+	if err := d.svc.settleRunning(ctx, inst.ID, formatTS(d.svc.now())); err != nil {
+		return false
+	}
+	return true
 }
 
 // control resolves the conn the instance's recorded srv binding points at
@@ -235,24 +267,27 @@ func (d *Dispatcher) call(ctx context.Context, method string, conn srvConn, path
 	client := d.client
 	if conn.NodeID != "" {
 		if d.svc.NodeHTTP == nil {
-			return nil, failOffline()
+			return nil, failOfflineDetail("no edge tunnel resolver for node " + conn.NodeID)
 		}
 		client = d.svc.NodeHTTP(conn.NodeID)
 		if client == nil {
-			return nil, failOffline()
+			return nil, failOfflineDetail("no edge tunnel client for node " + conn.NodeID)
 		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, failOfflineDetail("runtime call failed: " + err.Error())
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, failOfflineDetail("runtime response read failed: " + err.Error())
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode >= 500 {
-		return nil, failOffline()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, failOfflineDetail("runtime rejected the admin secret (401)")
+	}
+	if resp.StatusCode >= 500 {
+		return nil, failOfflineDetail("runtime returned HTTP " + strconv.Itoa(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := strings.TrimSpace(runtimeErrorMessage(body))

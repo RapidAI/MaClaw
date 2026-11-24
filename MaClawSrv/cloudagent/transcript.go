@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS commit_pending (
 	task_id TEXT PRIMARY KEY,
 	fingerprint TEXT NOT NULL,
 	nonce TEXT NOT NULL
-);`)
+);
+CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
+CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
+CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';`)
 	return err
 }
 
@@ -164,7 +167,9 @@ func (b *book) History(taskID string) ([]string, error) {
 // Callers that feed the model or the desktop split on the first newline, so
 // the line stays role, newline, content. The flag is a separate value.
 func (b *book) history(taskID string) ([]string, []bool, error) {
-	rows, err := b.db.Query(`SELECT role, content, as_error FROM messages WHERE task_id = ? ORDER BY created_at ASC`, taskID)
+	// rowid breaks created_at ties: messages written inside one transaction
+	// share a stamp, and the transcript order is the insertion order.
+	rows, err := b.db.Query(`SELECT role, content, as_error FROM messages WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`, taskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -328,7 +333,7 @@ type taskRow struct {
 }
 
 func (b *book) Tasks() ([]taskRow, error) {
-	rows, err := b.db.Query(`SELECT id, title FROM tasks ORDER BY created_at ASC`)
+	rows, err := b.db.Query(`SELECT id, title FROM tasks ORDER BY created_at ASC, rowid ASC`)
 	if err != nil {
 		return nil, err
 	}

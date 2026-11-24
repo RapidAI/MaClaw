@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,7 @@ type Runtime struct {
 	streamMu    sync.Mutex
 	grants      map[string]map[string]struct{}
 	stream      map[string]*streamLane
+	streamLogAt time.Time
 }
 
 // Open prepares cloud-agents under dataRoot and marks leftover running turns
@@ -178,12 +180,19 @@ func (rt *Runtime) loop(ctx context.Context) {
 
 // finishTurn stores the reply and tells Hub the request is done, so the
 // concurrent-turn slot is released without waiting out the heartbeat window.
+// The finish beat retries: one lost POST must not pin the slot for the whole
+// miss window — that is how a finished turn still blocks the next send.
 func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string, asError bool, now time.Time) {
 	wrote, err := inst.book.Finish(requestID, content, asError, now)
 	if err != nil || !wrote {
 		return
 	}
-	_, _ = rt.postHeartbeat(context.Background(), inst, taskID, requestID, true)
+	for attempt := 0; attempt < 4; attempt++ {
+		if _, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, true); ok {
+			return
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
 }
 
 func (rt *Runtime) pulse(ctx context.Context, now time.Time) {
@@ -276,7 +285,7 @@ func (rt *Runtime) Put(spec Spec) error {
 		existing.meta = spec
 		return nil
 	}
-	dir := filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), spec.ID)
+	dir := filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), slug(spec.ID))
 	if err := os.MkdirAll(filepath.Join(dir, "workspace"), 0o755); err != nil {
 		return err
 	}
@@ -321,12 +330,21 @@ func (rt *Runtime) Delete(id string) error {
 	if inst == nil {
 		return errNotFound
 	}
+	// The tombstone must be unique: a re-provisioned instance reuses the same
+	// id, so a second delete would otherwise fail on the existing directory.
+	dest := filepath.Join(filepath.Dir(inst.dir), ".deleted-"+id+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	// Windows refuses to rename a directory while its sqlite handle is open,
+	// so the book closes first; a failed rename reopens it so the instance is
+	// not left broken in the map.
 	_ = inst.book.Close()
-	dest := filepath.Join(filepath.Dir(inst.dir), ".deleted-"+id)
 	if err := os.Rename(inst.dir, dest); err != nil {
+		if bk, openErr := openBook(inst.dir); openErr == nil {
+			inst.book = bk
+		}
 		return err
 	}
 	delete(rt.instances, id)
+	rt.dropInstance(id)
 	return nil
 }
 

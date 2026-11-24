@@ -47,10 +47,14 @@ func (rt *Runtime) ServeControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if payload.Op == "cloud_unwatch_task" {
-		rt.dropGrant(id, payload.GrantID)
-	} else {
-		rt.noteGrant(id, payload.GrantID)
+	// Only a real instance may register a viewer grant — Control rejects the
+	// op anyway, but noting a grant for a bogus id leaks a grants entry.
+	if _, err := rt.instance(id); err == nil {
+		if payload.Op == "cloud_unwatch_task" {
+			rt.dropGrant(id, payload.GrantID)
+		} else {
+			rt.noteGrant(id, payload.GrantID)
+		}
 	}
 	raw, err := rt.Control(r.Context(), id, payload.OwnerUserID, payload.Op, payload.Body)
 	if err != nil {

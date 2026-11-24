@@ -252,6 +252,12 @@ func (s *Service) ServeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	inst, err := s.getByID(r.Context(), body.InstanceID)
 	if err != nil {
+		// A remote caller gets no 404-vs-401 distinction: probing whether
+		// an instance id exists is not information it should have.
+		if !LoopbackAddr(r.RemoteAddr) {
+			writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "管理凭证无效")
+			return
+		}
 		writeServiceErr(w, err)
 		return
 	}

@@ -133,6 +133,20 @@ func insertLLMBillingOutboxEvents(ctx context.Context, tx *sql.Tx, defaultTenant
 	return nil
 }
 
+// PruneOutbox drops outbox rows older than the cutoff. No consumer reads
+// this queue yet, and when one lands it reconciles from the ledger — stale
+// retained events only cost disk.
+func (r *llmBillingLedgerRepo) PruneOutbox(ctx context.Context, before time.Time) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, `DELETE FROM llm_billing_outbox WHERE created_at < ?`, before.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {

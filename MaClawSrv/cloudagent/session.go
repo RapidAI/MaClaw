@@ -6,11 +6,9 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -106,6 +104,16 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 			return nil, err
 		}
 		return json.Marshal(map[string]any{"ok": true, "cancelled": ids})
+	case "cloud_instance_state":
+		// Hub-side ground truth reconcile: a lost finish beat leaves a stale
+		// running row that pins the send slot for the whole miss window. The
+		// book is authoritative — a send blocked by shadow state asks here.
+		taskID, requestID := inst.book.Running()
+		return json.Marshal(map[string]any{
+			"running":    requestID != "",
+			"task_id":    taskID,
+			"request_id": requestID,
+		})
 	case "cloud_watch_task":
 		return rt.watchSnapshot(inst, payload.TaskID)
 	case "cloud_unwatch_task":
@@ -162,75 +170,76 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 		return
 	}
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
-	content, asError := rt.sessionResult(ctx, inst, taskID, text)
+	content, asError := rt.sessionResult(ctx, inst, taskID, requestID, text)
 	if ctx.Err() != nil {
 		return
 	}
-	rt.publish(inst, taskID, requestID, "response", content, map[string]any{
-		"terminal": map[string]any{"text": content},
-	})
+	// sessionResult owns the terminal response frame — publishing another
+	// here would give viewers two "response" events for one turn.
 	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
 }
 
-func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, text string) (string, bool) {
-	cfg, err := rt.llmConfig(inst)
-	if err != nil {
-		return err.Error(), true
+// sessionResult runs the session turn through the same agent kernel the
+// coding kind uses — one shared host, one tool-routing implementation, real
+// token streaming — instead of the bare executor that had no workspace
+// tools at all.
+func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool) {
+	fail := func(msg string) (string, bool) {
+		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
+			"terminal": map[string]any{"text": msg},
+		})
+		return msg, true
 	}
 	if inst.meta.LLMMode != llmCustom {
 		if err := officialReady(inst.meta); err != nil {
-			return err.Error(), true
+			return fail(err.Error())
 		}
 	}
-	ctx = withInstance(ctx, inst.meta.ID)
+	cfg := rt.maclawCfg(inst)
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return fail("云端官方模型未接通")
+	}
+	root, err := jailRoot(inst.dir, inst.meta.Kind)
+	if err != nil {
+		return fail(err.Error())
+	}
 	history, err := inst.book.History(taskID)
 	if err != nil {
-		return err.Error(), true
+		return fail(err.Error())
 	}
-	result, err := rt.executor().Execute(ctx, sessionRequest(inst, taskID, text, cfg, history))
+	host := &agentHost{
+		rt:      rt,
+		inst:    inst,
+		task:    taskID,
+		request: requestID,
+		root:    root,
+		turn:    ctx,
+		cfg:     cfg,
+	}
+	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
 		return "", true
 	}
-	if err != nil {
-		if result != nil && strings.TrimSpace(result.Content) != "" {
-			return result.Content, true
+	if result.AskUser != nil {
+		question := strings.TrimSpace(result.AskUser.Question)
+		if strings.TrimSpace(result.Text) != "" {
+			question = strings.TrimSpace(result.Text) + "\n" + question
 		}
-		return err.Error(), true
+		rt.publish(inst, taskID, requestID, "response", question, map[string]any{
+			"terminal": map[string]any{"text": question},
+		})
+		return question, false
 	}
-	if result == nil {
-		return "", false
+	if strings.TrimSpace(result.Error) != "" {
+		rt.publish(inst, taskID, requestID, "response", result.Error, map[string]any{
+			"terminal": map[string]any{"text": result.Error},
+		})
+		return result.Error, true
 	}
-	return result.Content, false
-}
-
-func sessionRequest(inst *instance, taskID, text string, cfg corelib.AppConfig, history []string) agentservice.ExecuteRequest {
-	// The memory store is keyed by tenant and user. Using the instance id
-	// keeps two instances of one owner from sharing a store.
-	userID := inst.meta.ID
-	return agentservice.ExecuteRequest{
-		Principal: agentservice.Principal{TenantID: inst.meta.TenantID, UserID: userID},
-		Tenant:    agentservice.Tenant{ID: inst.meta.TenantID},
-		User:      agentservice.User{ID: userID, TenantID: inst.meta.TenantID},
-		Instance: agentservice.Instance{
-			ID:        inst.meta.ID,
-			TenantID:  inst.meta.TenantID,
-			UserID:    userID,
-			Name:      inst.meta.Name,
-			DataDir:   inst.dir,
-			Workspace: filepath.Join(inst.dir, "workspace"),
-		},
-		Session: agentservice.Session{
-			ID:         taskID,
-			TenantID:   inst.meta.TenantID,
-			UserID:     userID,
-			InstanceID: inst.meta.ID,
-		},
-		Message: agentservice.Message{Role: agentservice.MessageRoleUser, Content: text},
-		History: priorHistory(history),
-		DataDir: inst.dir,
-		Config:  cfg,
-		Host:    agentruntime.HeadlessHostCapabilities{},
-	}
+	rt.publish(inst, taskID, requestID, "response", result.Text, map[string]any{
+		"terminal": map[string]any{"text": result.Text},
+	})
+	return result.Text, false
 }
 
 func priorHistory(rows []string) []agentservice.Message {

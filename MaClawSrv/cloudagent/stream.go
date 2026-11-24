@@ -3,6 +3,7 @@ package cloudagent
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -78,6 +79,29 @@ func (rt *Runtime) dropGrant(instanceID, grantID string) {
 	rt.streamMu.Lock()
 	defer rt.streamMu.Unlock()
 	delete(rt.grants[instanceID], grantID)
+	if len(rt.grants[instanceID]) == 0 {
+		delete(rt.grants, instanceID)
+	}
+}
+
+// dropInstance removes every watcher grant and stream lane of a deleted
+// instance — otherwise each delete leaks the maps for the life of the process.
+func (rt *Runtime) dropInstance(instanceID string) {
+	if rt == nil {
+		return
+	}
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+	delete(rt.grants, instanceID)
+	prefix := instanceID + "\n"
+	for key, lane := range rt.stream {
+		if strings.HasPrefix(key, prefix) {
+			if lane.timer != nil {
+				lane.timer.Stop()
+			}
+			delete(rt.stream, key)
+		}
+	}
 }
 
 func (rt *Runtime) grantIDs(instanceID string) []string {
@@ -352,8 +376,25 @@ func (rt *Runtime) postStream(inst *instance, grants []string, frame []byte) {
 		req.Header.Set("X-MaClaw-Admin-Secret", rt.adminSecret)
 		resp, err := streamHTTP.Do(req)
 		if err != nil {
+			rt.noteHubPostFailure(inst.meta.ID, "stream", err.Error())
 			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			rt.noteHubPostFailure(inst.meta.ID, "stream", resp.Status)
 		}
 		_ = resp.Body.Close()
 	}
+}
+
+// noteHubPostFailure logs a hub-post failure at most once a minute. Stream
+// frames and heartbeats ride over different paths, so a dead feed must not
+// stay invisible — but token bursts must not flood the log either.
+func (rt *Runtime) noteHubPostFailure(instanceID, path, detail string) {
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+	if time.Since(rt.streamLogAt) < time.Minute {
+		return
+	}
+	rt.streamLogAt = time.Now()
+	log.Printf("cloud-agent %s post to hub failed for %s: %s", path, instanceID, detail)
 }

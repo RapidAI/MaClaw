@@ -3059,6 +3059,23 @@ func ReserveBillingCreditsForUserID(reg *Registry, userID, email string, service
 	return credits, true
 }
 
+// LiveBillingReservationForRequest returns a copy of the request's unfinished
+// hold. Terminal evidence rows are skipped: they no longer hold Credits and a
+// retried requestID may carry a fresh live hold next to them.
+func LiveBillingReservationForRequest(reg *Registry, requestID string) (BillingReservation, bool) {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return BillingReservation{}, false
+	}
+	for _, reservation := range reg.BillingReservations {
+		if reservation.Status == "" && strings.EqualFold(strings.TrimSpace(reservation.RequestID), strings.TrimSpace(requestID)) {
+			copyReservation := reservation
+			copyReservation.ServiceGroupIDs = append([]string(nil), reservation.ServiceGroupIDs...)
+			return copyReservation, true
+		}
+	}
+	return BillingReservation{}, false
+}
+
 // ReleaseBillingReservation removes an unfinished hold. Final settlement also
 // calls it in the same registry write before applying actual usage.
 func ReleaseBillingReservation(reg *Registry, requestID string, now time.Time) bool {

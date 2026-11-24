@@ -792,6 +792,10 @@ func (s *Service) EnsureCloudGrant(ctx context.Context, tenantID, userID, contro
 	if err != nil {
 		return Grant{}, err
 	}
+	// find+insert under activateMu so two concurrent opens cannot both pass
+	// the lookup and write duplicate active grants for the same instance.
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
 	if existing, ok := s.findActiveCloud(ctx, tenantID, controllerMachineID, agentID); ok {
 		return existing, nil
 	}

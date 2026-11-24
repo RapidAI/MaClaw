@@ -2821,17 +2821,32 @@ export const SidebarTaskManagement = ({
         let cancelled = false;
         const list = (window as unknown as { go?: { main?: { App?: { ListCloudAgents?: () => Promise<unknown> } } } }).go?.main?.App?.ListCloudAgents;
         if (typeof list !== 'function') return;
-        void list().then((rows) => {
-            if (cancelled) return;
-            const catalog = cloudAgentCatalog(rows);
-            setCloudAgents(cloudAgentsFromList(catalog.instances));
-            setCloudAgentsEnabled(catalog.enabled);
-            if (!catalog.enabled) setCloudPlaceSelected(false);
-        }).catch(() => {
-            // Hub answers with enabled. A rejected call is not that answer,
-            // so the last catalog stays until a list actually returns.
-        });
-        return () => { cancelled = true; };
+        const load = () => {
+            void list().then((rows) => {
+                if (cancelled) return;
+                const catalog = cloudAgentCatalog(rows);
+                setCloudAgents(cloudAgentsFromList(catalog.instances));
+                setCloudAgentsEnabled(catalog.enabled);
+                if (!catalog.enabled) setCloudPlaceSelected(false);
+            }).catch(() => {
+                // Hub answers with enabled. A rejected call is not that answer,
+                // so the last catalog stays until a list actually returns.
+            });
+        };
+        load();
+        // The first fetch can race Hub login or hit a restart; one rejection
+        // used to hide the 云端 place for the whole session. Poll like the
+        // remote-control bar so a transient miss self-heals.
+        const timer = window.setInterval(() => {
+            if (!document.hidden) load();
+        }, 30000);
+        const onVisible = () => { if (!document.hidden) load(); };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
     }, [cloudListEpoch]);
     useEffect(() => onCloudAgentListRefresh(() => {
         setCloudListEpoch(epoch => epoch + 1);

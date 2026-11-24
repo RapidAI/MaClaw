@@ -685,7 +685,8 @@ func TestStopInterruptsRunningTurnAndDeleteTombstones(t *testing.T) {
 	if _, err := rt.instance(spec.ID); !errors.Is(err, errNotFound) {
 		t.Fatalf("instance after delete: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), ".deleted-"+spec.ID)); err != nil {
-		t.Fatalf("tombstone dir: %v", err)
+	tombs, err := filepath.Glob(filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), ".deleted-"+spec.ID+"-*"))
+	if err != nil || len(tombs) == 0 {
+		t.Fatalf("tombstone dir: %v %d", err, len(tombs))
 	}
 }

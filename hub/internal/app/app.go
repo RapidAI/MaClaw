@@ -37,6 +37,7 @@ type App struct {
 	WSGateway       *ws.Gateway
 	HTTPHandler     http.Handler
 	KnowledgeShares store.KnowledgeShareRepository
+	LLMBilling      store.LLMBillingLedgerRepository
 
 	// IM modules (Agent Passthrough)
 	MessageRouter  *im.MessageRouter
@@ -64,6 +65,9 @@ func (a *App) StartBackgroundTasks() {
 	if a.KnowledgeShares != nil {
 		go a.runKnowledgeShareExpiryCleanup()
 	}
+	if a.LLMBilling != nil {
+		go a.runBillingOutboxRetention()
+	}
 }
 
 func (a *App) runKnowledgeShareExpiryCleanup() {
@@ -84,5 +88,29 @@ func (a *App) runKnowledgeShareExpiryCleanup() {
 	defer ticker.Stop()
 	for range ticker.C {
 		cleanup()
+	}
+}
+
+// runBillingOutboxRetention keeps the transactional billing outbox bounded:
+// no consumer is attached yet, and 30 days of retained events is far beyond
+// any lag one could have when it lands.
+func (a *App) runBillingOutboxRetention() {
+	prune := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		deleted, err := a.LLMBilling.PruneOutbox(ctx, time.Now().UTC().Add(-30*24*time.Hour))
+		if err != nil {
+			log.Printf("[billing-outbox] retention prune failed: %v", err)
+			return
+		}
+		if deleted > 0 {
+			log.Printf("[billing-outbox] stale events pruned: %d", deleted)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		prune()
 	}
 }

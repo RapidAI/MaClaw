@@ -1447,11 +1447,16 @@ func releaseUnsettledLLMBillingReservation(ctx context.Context, system store.Sys
 	llmservice.LockServiceRegistryMutation()
 	defer llmservice.UnlockServiceRegistryMutation()
 	reg, err := loadCachedLLMServiceRegistryLocked(context.Background(), system)
-	if err != nil || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
+	if err != nil {
+		return
+	}
+	reservation, held := llmservice.LiveBillingReservationForRequest(reg, requestID)
+	if !held || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
 		return
 	}
 	if err := llmservice.SaveRegistry(context.Background(), system, reg); err == nil {
 		invalidateLLMRuntimeCaches(system)
+		emitBillingReservationReleased(system, reservation, "request_aborted")
 	}
 }
 
@@ -1476,13 +1481,18 @@ func releaseKnownUnbilledLLMBillingReservation(ctx context.Context, system store
 	llmservice.LockServiceRegistryMutation()
 	defer llmservice.UnlockServiceRegistryMutation()
 	reg, err := loadCachedLLMServiceRegistryLocked(context.Background(), system)
-	if err != nil || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
+	if err != nil {
+		return
+	}
+	reservation, held := llmservice.LiveBillingReservationForRequest(reg, requestID)
+	if !held || !llmservice.ReleaseBillingReservation(reg, requestID, time.Now().UTC()) {
 		return
 	}
 	if err := llmservice.SaveRegistry(context.Background(), system, reg); err != nil {
 		return
 	}
 	invalidateLLMRuntimeCaches(system)
+	emitBillingReservationReleased(system, reservation, "no_billable_dispatch")
 	state.mu.Lock()
 	state.reservationHeld = false
 	state.settlementQueued = true
@@ -1572,14 +1582,39 @@ func markReconciledNotFoundBillingReservation(ctx context.Context, system store.
 	if err != nil || llmservice.HasBillingRequest(reg, requestID) {
 		return false
 	}
-	if !llmservice.MarkBillingReservationUsageUnresolved(reg, requestID, time.Now().UTC()) {
+	reservation, held := llmservice.LiveBillingReservationForRequest(reg, requestID)
+	if !held || !llmservice.MarkBillingReservationUsageUnresolved(reg, requestID, time.Now().UTC()) {
 		return false
 	}
 	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
 		return false
 	}
 	invalidateLLMRuntimeCaches(system)
+	emitBillingReservationReleased(system, reservation, "attempt_not_found")
 	return true
+}
+
+// emitBillingReservationReleased records the §6.5 ReservationReleased outbox
+// fact for a hold whose balance release just became durable. The event is
+// best-effort audit: the balance mutation already committed, so a failed
+// outbox write is logged by the repository call and never retried here.
+func emitBillingReservationReleased(system store.SystemSettingsRepository, reservation llmservice.BillingReservation, reason string) {
+	payload, err := json.Marshal(map[string]any{
+		"request_id":            reservation.RequestID,
+		"user_id":               reservation.UserID,
+		"email":                 reservation.Email,
+		"provider_id":           reservation.ProviderID,
+		"reserved_microcredits": creditsToMicrocredits(reservation.Credits),
+		"reason":                reason,
+	})
+	if err != nil {
+		return
+	}
+	recordLLMBillingOutboxEvents(context.Background(), system, store.LLMBillingOutboxEvent{
+		RequestID: reservation.RequestID,
+		EventType: store.LLMBillingEventReservationReleased,
+		Payload:   string(payload),
+	})
 }
 
 // reconcileOfficialBillingReservations settles sent official requests whose
