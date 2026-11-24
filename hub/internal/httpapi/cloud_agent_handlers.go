@@ -48,6 +48,7 @@ func cloudAgentAdminSettings(svc *cloudagent.Service, audit store.AdminAuditRepo
 			"cloud_agents_enabled": view.CloudAgentsEnabled,
 			"max_instances":        view.MaxInstances,
 			"max_concurrent_turns": view.MaxConcurrentTurns,
+			"srv_id":               view.SrvID,
 		})
 		writeJSON(w, http.StatusOK, view)
 	}
@@ -122,10 +123,15 @@ func cloudAgentAdminAccessPut(svc *cloudagent.Service, audit store.AdminAuditRep
 			writeCloudAgentErr(w, err)
 			return
 		}
+		var srvID string
+		if saved.SrvID != nil {
+			srvID = *saved.SrvID
+		}
 		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "cloud_agent.access.update", map[string]any{
 			"scope":     saved.Scope,
 			"target_id": saved.TargetID,
 			"enabled":   saved.Enabled,
+			"srv_id":    srvID,
 			"deleted":   deleted,
 		})
 		if deleted {

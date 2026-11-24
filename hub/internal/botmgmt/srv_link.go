@@ -36,12 +36,12 @@ type SrvLinkView struct {
 	AdminSecretSet bool   `json:"admin_secret_set"`
 }
 
-func newSrvLinkID() string {
+func newSrvLinkID() (string, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "srv_" + fmt.Sprint(len(buf))
+		return "", err
 	}
-	return "srv_" + hex.EncodeToString(buf[:])
+	return "srv_" + hex.EncodeToString(buf[:]), nil
 }
 
 func findSrvLink(links []srvLink, id string) *srvLink {
@@ -108,8 +108,15 @@ func (s *Service) SaveSrvLink(ctx context.Context, tenantID string, in SrvLinkIn
 		return SrvLinkView{}, err
 	}
 	if id == "" {
-		for id == "" || findSrvLink(rec.SrvLinks, id) != nil || findNodeLink(rec.NodeLinks, id) != nil {
-			id = newSrvLinkID()
+		for {
+			var genErr error
+			id, genErr = newSrvLinkID()
+			if genErr != nil {
+				return SrvLinkView{}, genErr
+			}
+			if findSrvLink(rec.SrvLinks, id) == nil && findNodeLink(rec.NodeLinks, id) == nil {
+				break
+			}
 		}
 	}
 	if findNodeLink(rec.NodeLinks, id) != nil {

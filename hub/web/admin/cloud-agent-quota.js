@@ -352,16 +352,22 @@ function cagSrvOptions(current) {
   return html;
 }
 
-/* The global picker has no inherit level: default means the public srv. */
+/* The global picker has no inherit level: default is the effective
+   system default - the only usable srv when there is one, else the
+   public connection. A pin naming a deleted srv stays visible so it
+   does not silently read as the default. */
 function cagSrvOptionsGlobal(current) {
   var t = cloudAgentQuotaText();
   var html = cagOption('', t.srvDefault, current);
+  var seen = current === '' || current == null;
   (cagOrg.srvs || []).forEach(function (item) {
     if (!item || !item.id) return;
     var label = String(item.name || item.id);
     if (item.kind === 'node' && item.online === false) label += ' (' + t.srvOffline + ')';
+    if (String(item.id) === String(current)) seen = true;
     html += cagOption(String(item.id), label, current);
   });
+  if (!seen) html += cagOption(String(current), String(current), current);
   return html;
 }
 
