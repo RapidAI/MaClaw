@@ -114,3 +114,40 @@ func TestWithSpentBudgetNoteListsSettledIterativeSiblings(t *testing.T) {
 		t.Fatalf("cancellation listed another command: %q selections=%d", got.Result, len(stale.plan.Selections))
 	}
 }
+
+// A counted SSH wave of 8, and the 32-node upfront cap, used to hide the
+// tool after the last published node. Settlement must keep listing the next
+// call past both numbers. Each settled node is marked issued before the
+// next note, which is what a real turn does.
+func TestSettledSSHListsPastCountedWaves(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	first := "selection:" + base
+	surface := &coreDynamicSemanticSurface{
+		plan: coretool.ToolPlan{Selections: []coretool.PlannedSelection{{
+			ID: first, NeedID: base,
+			FitProof: coretool.FitProof{MatchedCapability: coretool.CapabilityShellExecuteRemoteHost},
+		}}},
+		issued:    map[string]bool{first: true},
+		completed: map[string]bool{},
+		grants:    map[string]coretool.InvocationGrant{},
+	}
+	const calls = coretool.RepeatSiblingBudgetLimit + 8
+	current := first
+	for index := 0; index < calls; index++ {
+		before := len(surface.plan.Selections)
+		got := surface.withSpentBudgetNote(coretool.SelectionExecutionResult{
+			Result: "ok-" + strings.Repeat("x", index+1), Succeeded: true,
+		}, current)
+		if strings.Contains(got.Result, "quota") || strings.Contains(got.Result, coretool.RepeatWaveListedMarker) {
+			t.Fatalf("call %d narrated a quota: %q", index+1, got.Result)
+		}
+		if len(surface.plan.Selections) != before+1 {
+			t.Fatalf("call %d did not list the next command: selections %d -> %d", index+1, before, len(surface.plan.Selections))
+		}
+		current = surface.plan.Selections[len(surface.plan.Selections)-1].ID
+		surface.issued[current] = true
+	}
+	if len(surface.plan.Selections) != calls+1 {
+		t.Fatalf("settled ssh stopped at %d nodes, want %d", len(surface.plan.Selections), calls+1)
+	}
+}

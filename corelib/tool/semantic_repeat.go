@@ -23,18 +23,33 @@ import (
 // review and to audit.
 const repeatSiblingSeparator = "#"
 
-// RepeatSiblingBudgetLimit caps how many invocations one need publishes up
-// front. The bound exists because the budget materializes as real plan nodes:
-// a rule with a runaway count would inflate every plan, revision, and audit
-// record built from it.
+// RepeatSiblingBudgetLimit caps how many siblings one need may publish in a
+// single upfront wave. It is a plan-size guard, not a turn-wide call limit:
+// materializing a runaway count would inflate every plan, revision, and
+// audit record. A continuous capability does not spend this number. It
+// publishes one node, and the host appends the next sibling only after the
+// previous call settles. RepeatSiblingBudget still clamps a counted wave to
+// this limit; that clamp must not be read as "the turn may call this tool
+// at most 32 times."
 const RepeatSiblingBudgetLimit = 32
 
-// MaxRepeatFamilyInvocations is the old turn-wide node cap. It is not a stop.
-// A family grows one sibling per settled call. The agent loop stops a dead
-// loop (the same arguments and result, repeated failures, or no progress).
-// A fixed call count must not end an unfinished task or be told to the user
-// as a used-up quota. Companion-only families still stay at the wave they
-// were given: that is what kept a knowledge-save petition re-running bash.
+// ContinuousRepeatBudget is the upfront wave of a capability the same task
+// keeps calling until the work is done: remote shell, and any sibling that
+// IterativeRepeatCapability already grows one call at a time. One is not a
+// one-shot. AppendRepeatSibling opens the next node after the previous call
+// settles, so the plan stays auditable without a fixed call count. Silence
+// (zero) remains the historical single invocation and is still one-shot
+// unless the selection is itself iterative.
+const ContinuousRepeatBudget = 1
+
+// MaxRepeatFamilyInvocations is the old turn-wide node cap. It is not a stop
+// and must not be consulted when deciding whether another sibling may be
+// published. A family grows one sibling per settled call. The agent loop
+// stops a dead loop (the same arguments and result, repeated failures, or
+// no progress). A fixed call count must not end an unfinished task or be
+// told to the user as a used-up quota. Companion-only families still stay
+// at the wave they were given: that is what kept a knowledge-save petition
+// re-running bash.
 const MaxRepeatFamilyInvocations = 256
 
 // InstalledMCPRepeatCeiling matches the upfront published wave for one
@@ -398,11 +413,15 @@ func repeatSiblingSuffixNumber(id string) int {
 	return value
 }
 
-// RepeatSiblingBudget normalizes a declared budget. Zero and one both mean the
-// historical single-invocation need, so a rule that says nothing about repeats
-// plans exactly as it always has.
+// RepeatSiblingBudget normalizes a declared upfront wave. Zero and one both
+// mean the historical single-invocation need, so a rule that says nothing
+// about repeats plans exactly as it always has. ContinuousRepeatBudget is
+// also one: the next call is appended after the previous one settles, so
+// the declaration is not a counted quota and is not clamped down from a
+// larger number. Any other declaration above RepeatSiblingBudgetLimit is
+// an upfront wave and is clamped to that plan-size guard.
 func RepeatSiblingBudget(maxInvocations int) int {
-	if maxInvocations < 1 {
+	if maxInvocations < 1 || maxInvocations == ContinuousRepeatBudget {
 		return 1
 	}
 	if maxInvocations > RepeatSiblingBudgetLimit {

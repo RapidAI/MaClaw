@@ -587,6 +587,14 @@ func TestRepeatSiblingBudgetTreatsSilenceAsSingleInvocation(t *testing.T) {
 	if got := RepeatSiblingBudget(5000); got != RepeatSiblingBudgetLimit {
 		t.Fatalf("budget(5000) = %d, want the %d cap", got, RepeatSiblingBudgetLimit)
 	}
+	// Continuous work is not a counted wave. Clamping it to 32, or expanding
+	// it to 32 nodes, would make the plan-size guard a turn-wide call limit.
+	if got := RepeatSiblingBudget(ContinuousRepeatBudget); got != 1 {
+		t.Fatalf("continuous budget = %d, want 1 upfront node", got)
+	}
+	if ContinuousRepeatBudget != 1 {
+		t.Fatal("ContinuousRepeatBudget must stay 1: one upfront node, not a counted wave")
+	}
 }
 
 func TestInstalledMCPRepeatExtendsUntilItsCeiling(t *testing.T) {
@@ -691,5 +699,44 @@ func TestCommittedRepeatCapabilityIsTheWriteNotThePoll(t *testing.T) {
 		if CommittedRepeatCapability(capability) {
 			t.Fatalf("%s is a poll, not a commit", capability)
 		}
+	}
+}
+
+// A remote command used to stop at a counted wave (8, then the 32-node
+// upfront cap). Settlement must keep listing the next call past both
+// numbers. The plan-size guard still clamps a counted declaration.
+func TestRemoteCommandContinuesPastCountedWaves(t *testing.T) {
+	if RepeatSiblingBudget(8) >= 33 {
+		t.Fatal("the old counted wave of 8 must stay a counted wave, so this test fails before the mechanism change")
+	}
+	base := "need:shell.execute.remote_host:abc123def456"
+	plan := ToolPlan{Selections: []PlannedSelection{{
+		ID:       "selection:" + base,
+		NeedID:   base,
+		FitProof: FitProof{MatchedCapability: CapabilityShellExecuteRemoteHost},
+	}}}
+	const calls = RepeatSiblingBudgetLimit + 8
+	for index := 1; index <= calls; index++ {
+		updated, id, opened := AppendRepeatSibling(plan, plan.Selections[len(plan.Selections)-1].ID)
+		if !opened {
+			t.Fatalf("remote command stopped at call %d; a count must not be the stop", index+1)
+		}
+		plan = updated
+		if id == "" || !strings.Contains(id, "#") {
+			t.Fatalf("call %d id=%q", index+1, id)
+		}
+	}
+	if len(plan.Selections) != calls+1 {
+		t.Fatalf("selections=%d, want %d", len(plan.Selections), calls+1)
+	}
+	if len(plan.Selections) <= 8 || len(plan.Selections) <= RepeatSiblingBudgetLimit {
+		t.Fatal("the session never passed the old quotas")
+	}
+	materialized := map[string]bool{}
+	for _, selection := range plan.Selections {
+		materialized[selection.ID] = true
+	}
+	if note := RepeatFamilySpentBudgetNote(plan, plan.Selections[len(plan.Selections)-1].ID, materialized, nil); note != "" {
+		t.Fatalf("a continuous remote command narrated a quota: %q", note)
 	}
 }
