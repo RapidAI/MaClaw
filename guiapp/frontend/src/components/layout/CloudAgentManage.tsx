@@ -397,7 +397,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                     }}
                     style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}
                 >
-                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => setGit((prev) => ({ ...prev, service: event.target.value }))}>
+                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => setGit((prev) => ({ ...prev, service: event.target.value, source: '' }))}>
                         <option value="github">GitHub</option>
                         <option value="gitlab">GitLab</option>
                     </select>

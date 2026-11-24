@@ -32,6 +32,9 @@ func (a *App) CloudAgentGitHubAccount() (CloudAgentGitHubAccount, error) {
 	if token == "" {
 		return CloudAgentGitHubAccount{Connected: false}, nil
 	}
+	if cfg, err := a.LoadConfig(); err == nil {
+		oauth.ApplyProxyFromAppConfig(cfg)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	user, headerScopes, err := oauth.FetchGitHubUser(ctx, token)
