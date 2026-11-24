@@ -1429,7 +1429,6 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                       listenLocal: context.S.chatListenLocal,
                       recognizingSystem: context.S.chatRecognizingSystem,
                       recognizingLocal: context.S.chatRecognizingLocal,
-                      fallbackLocal: context.S.chatListenFallbackLocal,
                     ),
                   ),
               ],
