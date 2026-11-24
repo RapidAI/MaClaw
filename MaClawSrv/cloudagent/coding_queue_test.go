@@ -339,3 +339,37 @@ func TestWatchSnapshotCarriesThinking(t *testing.T) {
 		t.Fatalf("sealed parts=%+v", snap.Parts)
 	}
 }
+
+func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "stale.txt")
+	if err := os.WriteFile(stale, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stale, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fresh.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noise := filepath.Join(root, "node_modules")
+	if err := os.MkdirAll(noise, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noise, "x.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHost{root: root, started: time.Now()}
+	h.noteFile(filepath.Join(root, "written.md"))
+	got := h.producedFiles()
+	want := map[string]bool{"fresh.txt": true, "written.md": true}
+	if len(got) != len(want) {
+		t.Fatalf("files %v", got)
+	}
+	for _, rel := range got {
+		if !want[rel] {
+			t.Fatalf("unexpected artifact %q in %v", rel, got)
+		}
+	}
+}

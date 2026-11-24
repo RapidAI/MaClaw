@@ -283,16 +283,9 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	case "read_file":
 		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		out := h.rt.execWriteFile(h.inst, h.root, argsJSON)
-		var body struct {
-			Path string `json:"path"`
-		}
-		if json.Unmarshal([]byte(argsJSON), &body) == nil {
-			if path, err := resolveInJail(h.root, body.Path); err == nil {
-				if info, statErr := os.Lstat(path); statErr == nil && info.Mode().IsRegular() {
-					h.noteFile(path)
-				}
-			}
+		out, path := h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		if path != "" {
+			h.noteFile(path)
 		}
 		return out
 	case "git_commit":
@@ -460,22 +453,25 @@ func (rt *Runtime) execReadFile(inst *instance, argsJSON string) string {
 	return string(raw)
 }
 
-func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) string {
+// execWriteFile returns the tool result text and the resolved file path on
+// success — the host records that path as a produced artifact. A failed
+// write returns an empty path so pre-existing files are never counted.
+func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string) {
 	var body struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-		return "路径无效"
+		return "路径无效", ""
 	}
 	path, err := resolveInJail(root, body.Path)
 	if err != nil {
-		return err.Error()
+		return err.Error(), ""
 	}
 	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
-		return err.Error()
+		return err.Error(), ""
 	}
-	return "已写入 " + body.Path
+	return "已写入 " + body.Path, path
 }
 
 // cloudToolStatusLine renders one tool call as the "工具 · action (name)"
