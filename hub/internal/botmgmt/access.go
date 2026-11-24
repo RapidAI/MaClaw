@@ -1383,6 +1383,7 @@ func desktopFailureLine(cause error) string {
 	}
 	return "这条没做成：" + reason + "。你说一声我再试一次。"
 }
+
 // desktopIdentityMetadata is this Hub user on the instance, plus any
 // metadata the instance already had. The desktop key is the Hub user.
 // Other fields stay so this bot remains the same instance.
@@ -2080,7 +2081,7 @@ func (s *Service) openDesktop(ctx context.Context, tenantID, userID, instanceID,
 	ctx = WithDesktopWakeReason(ctx, DesktopWakeBot)
 	if owner, _ := desktop.SplitDesktopUser(userID); strings.TrimSpace(botID) != "" {
 		if bot, ok := s.findOwnedBot(ctx, tenantID, owner, botID); ok {
-			ctx = desktoppool.WithComputer(ctx, bot.NodeID)
+			ctx = desktoppool.WithComputer(ctx, desktopComputerForBot(bot))
 		}
 	}
 	novnc, err := s.Desktop.Open(ctx, tenantID, userID)
@@ -2199,10 +2200,14 @@ func (s *Service) rememberDesktopView(tenantID, userID, raw string) {
 	s.ensureDesktopHydrated(tenantID)
 	current := s.desktopView[key]
 	s.mu.Unlock()
+	// A restarted container keeps this desktop user but changes the gate
+	// bearer. Retarget tokens already in the browser even when this raw
+	// address was stored before those tokens existed.
+	s.refreshDesktopHandoff(key, raw)
 	if current.raw == raw && current.gated != "" {
 		return
 	}
-	gated := s.gateDesktopHandoff(raw)
+	gated := s.gateDesktopHandoff(raw, key)
 	if gated == "" {
 		return
 	}
@@ -2300,7 +2305,7 @@ func (s *Service) novncOnThisComputer(tenantID, desktopUser, botID, openedRaw st
 			return ""
 		}
 	}
-	return s.gateDesktopHandoff(openedRaw)
+	return s.gateDesktopHandoff(openedRaw, desktopViewKey(tenantID, desktopUser))
 }
 
 func (s *Service) desktopViewURL(tenantID, userID string) string {

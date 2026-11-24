@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -286,6 +287,12 @@ func writeGit(dir string, secret gitSecret) error {
 	return writeFile(gitPath(dir), raw, 0o600)
 }
 
+// noHooks pins hooks off for the srv's own git ops. File tools refuse .git
+// paths, but a shell-scripted write could still land a hook — the srv's
+// commit and push must never execute repo-authored code. The -c flag wins
+// over any include.path a scripted config edit might add.
+const noHooks = "core.hooksPath=" + os.DevNull
+
 // checkout clones the one primary repository into workspace/<name>.
 // A second repository is refused. The token is passed only through askpass.
 func (rt *Runtime) checkout(ctx context.Context, inst *instance, secret gitSecret) error {
@@ -305,15 +312,38 @@ func (rt *Runtime) checkout(ctx context.Context, inst *instance, secret gitSecre
 		secrets = append(secrets, token)
 	}
 	dest := filepath.Join(workspace, name)
-	if existing, ok := checkoutName(workspace); ok {
-		prev, readErr := readGit(inst.dir)
-		if existing != name || (readErr == nil && prev.Repo != "" && prev.Repo != secret.Repo) {
+	// The stored binding decides what "already connected" means. A scripted
+	// .git directory cannot forge git.json (it lives outside the jail), so
+	// fake checkouts demote to ordinary loose files and never block a
+	// connect; a bound instance still refuses a second repository.
+	if prev, err := readGit(inst.dir); err == nil {
+		if prev.Repo != secret.Repo {
 			return errors.New("这个实例已经有一个代码库")
 		}
-		return setLocalIdentity(ctx, dest, secret, secrets)
+		if info, statErr := os.Stat(filepath.Join(dest, ".git")); statErr == nil && info.IsDir() {
+			return setLocalIdentity(ctx, dest, secret, secrets)
+		}
+		// Bound but the checkout was lost — fall through and re-clone.
 	}
+	// A repo-less turn can leave a workspace directory named exactly like the
+	// repository. It is not a checkout (those were caught above), so park it
+	// aside and merge its contents back after the clone lands. The stash name
+	// is unique: a stale .pre-checkout leftover must not block the rename.
+	stash := ""
 	if _, err := os.Stat(dest); err == nil {
-		return errors.New("检出目录已经存在")
+		// A loose FILE named like the repo parks the same way — renaming
+		// works for files too, and the sweep below carries it into the
+		// clone instead of deleting it.
+		stash = dest + ".pre-checkout-" + newID("")
+		if err := os.Rename(dest, stash); err != nil {
+			return errors.New("检出目录已经存在")
+		}
+	}
+	restore := func() {
+		_ = os.RemoveAll(dest)
+		if stash != "" {
+			_ = os.Rename(stash, dest)
+		}
 	}
 	args := []string{"clone"}
 	if secret.Ref != "" {
@@ -327,14 +357,74 @@ func (rt *Runtime) checkout(ctx context.Context, inst *instance, secret gitSecre
 		}
 		return nil
 	}); err != nil {
-		_ = os.RemoveAll(dest)
+		restore()
 		return errors.New("检出代码库失败: " + err.Error())
 	}
 	if err := setLocalIdentity(ctx, dest, secret, secrets); err != nil {
-		_ = os.RemoveAll(dest)
+		restore()
 		return err
 	}
+	mergeWorkspaceLoose(workspace, dest, stash, inst.meta.ID)
 	return nil
+}
+
+// mergeWorkspaceLoose folds pre-checkout work into the fresh clone. While no
+// repository was connected the jail root was the workspace itself, so loose
+// files sit at its top level; once the checkout lands the root moves into it
+// and unmoved files would silently leave the jail. Entries move one by one;
+// when a loose entry collides with clone content the clone keeps the name
+// and the loose copy lands beside it as <name>.pre-checkout, so nothing the
+// agent wrote is ever deleted or stranded outside the jail.
+func mergeWorkspaceLoose(workspace, dest, stash, instanceID string) {
+	move := func(from string) {
+		// A bare gitdir never merges into the clone: at the top level it
+		// would land beside the real .git and `git add -A` would sweep its
+		// objects into the index as junk files. Left in place it instead
+		// rides into the repo inside its stash dir as an embedded repo.
+		if filepath.Base(from) == ".git" {
+			return
+		}
+		target := filepath.Join(dest, filepath.Base(from))
+		// os.Rename replaces an existing target on POSIX — check first so the
+		// clone's own files win collisions on every platform.
+		if _, err := os.Lstat(target); err == nil {
+			target += ".pre-checkout"
+			if _, err := os.Lstat(target); err == nil {
+				slog.Warn("cloudagent checkout merge kept clone entry",
+					slog.String("instance", instanceID), slog.String("path", filepath.Base(from)))
+				return
+			}
+		}
+		if err := os.Rename(from, target); err != nil {
+			slog.Warn("cloudagent checkout merge skipped entry",
+				slog.String("instance", instanceID), slog.String("path", filepath.Base(from)),
+				slog.String("reason", err.Error()))
+		}
+	}
+	if stash != "" {
+		// A parked file has no entries to merge — the sweep below moves it
+		// into the repo wholesale. Only directories get emptied by move.
+		if info, err := os.Stat(stash); err == nil && info.IsDir() {
+			if entries, err := os.ReadDir(stash); err == nil {
+				for _, entry := range entries {
+					move(filepath.Join(stash, entry.Name()))
+				}
+			}
+			// Remove only when empty: colliding leftovers stay put and the
+			// workspace sweep below carries them into the repo, not the void.
+			_ = os.Remove(stash)
+		}
+	}
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if filepath.Join(workspace, entry.Name()) == dest {
+			continue
+		}
+		move(filepath.Join(workspace, entry.Name()))
+	}
 }
 
 func setLocalIdentity(ctx context.Context, repo string, secret gitSecret, secrets []string) error {
@@ -383,7 +473,10 @@ func commitRepo(ctx context.Context, repo string, secret gitSecret, message stri
 	}
 	before, _ := gitRun(ctx, repo, env, commitTimeout, "rev-parse", "HEAD")
 	before = strings.TrimSpace(before)
-	if _, err := gitRun(ctx, repo, env, commitTimeout, "add", "-u"); err != nil {
+	// -A, not -u: files scaffolded before the repo was connected land in the
+	// clone untracked, and the scaffold→connect→commit flow is the whole
+	// point. rejectSecretIndex below un-stages anything secret-shaped.
+	if _, err := gitRun(ctx, repo, env, commitTimeout, "add", "-A"); err != nil {
 		return "", err
 	}
 	if err := rejectSecretIndex(ctx, repo, env); err != nil {
@@ -396,7 +489,7 @@ func commitRepo(ctx context.Context, repo string, secret gitSecret, message stri
 	if strings.TrimSpace(staged) == "" {
 		return "", errors.New("host_repo_mutate_nothing_to_commit")
 	}
-	if _, err := gitRun(ctx, repo, env, commitTimeout, "-c", "user.name="+secret.AuthorName, "-c", "user.email="+secret.AuthorEmail, "commit", "-m", message); err != nil {
+	if _, err := gitRun(ctx, repo, env, commitTimeout, "-c", "user.name="+secret.AuthorName, "-c", "user.email="+secret.AuthorEmail, "-c", noHooks, "commit", "-m", message); err != nil {
 		return "", err
 	}
 	digest, err := gitRun(ctx, repo, env, commitTimeout, "rev-parse", "HEAD")
@@ -506,9 +599,12 @@ func pushRepo(ctx context.Context, repo string, secret gitSecret, secrets []stri
 	if upstreamErr != nil || !ok {
 		return "", errors.New("host_repo_mutate_upstream_unset")
 	}
+	// Push to the stored clone URL, never the configured remote name: a
+	// shell `git remote set-url` must not be able to redirect the askpass
+	// token to an arbitrary host.
 	var pushErr error
 	err = withAskpass(filepath.Dir(filepath.Dir(repo)), secret, secrets, func(authEnv []string) error {
-		_, pushErr = gitRun(ctx, repo, authEnv, pushTimeout, "push")
+		_, pushErr = gitRun(ctx, repo, authEnv, pushTimeout, "-c", noHooks, "push", "--", secret.Clone, "HEAD:refs/heads/"+remoteBranch)
 		return nil
 	})
 	if err != nil {
@@ -517,7 +613,7 @@ func pushRepo(ctx context.Context, repo string, secret gitSecret, secrets []stri
 	var observed string
 	var observeErr error
 	err = withAskpass(filepath.Dir(filepath.Dir(repo)), secret, secrets, func(authEnv []string) error {
-		observed, observeErr = gitRun(ctx, repo, authEnv, receiptTimeout, "ls-remote", "--exit-code", remote, "refs/heads/"+remoteBranch)
+		observed, observeErr = gitRun(ctx, repo, authEnv, receiptTimeout, "ls-remote", "--exit-code", secret.Clone, "refs/heads/"+remoteBranch)
 		return nil
 	})
 	if err != nil {

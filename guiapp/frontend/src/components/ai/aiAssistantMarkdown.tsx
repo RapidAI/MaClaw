@@ -2121,7 +2121,7 @@ export function renderMessage(
                             />
                         )}
                         {savedPaths.length > 0 && msg.remoteFileFetch && (
-                            <RemoteTaskArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onFetch={msg.remoteFileFetch} />
+                            <RemoteTaskArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onFetch={msg.remoteFileFetch} autoFetch={!!msg.remoteArtifactsAutoFetch} />
                         )}
                         {savedPaths.length > 0 && !msg.remoteFileFetch && (
                             <TaskResultArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onOpen={openFileInFolder} latexSourceBundle={latexSourceBundle} />

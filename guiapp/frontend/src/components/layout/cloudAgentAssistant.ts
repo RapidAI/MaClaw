@@ -58,6 +58,10 @@ type Owner = {
     stopping: boolean;
     /** Sends the srv parked while a turn was running, in FIFO order. */
     queued: string[];
+    /** Coding-instance repository binding shown by the repo banner. `checked`
+     *  stays false until GetCloudAgentGit answers, so the banner never flashes
+     *  "not connected" on a bound instance while the read is in flight. */
+    git: { connected: boolean; repo: string; checked: boolean };
 };
 
 let generation = 0;
@@ -384,6 +388,7 @@ function publishOwner() {
         canSend: !!current.grant,
         offline: false,
         error: current.error,
+        cloudGit: current.item.kind === 'coding' && current.git.checked ? { connected: current.git.connected, repo: current.git.repo || undefined } : undefined,
         loading: !current.grant && !current.error,
         busy: observeTurn(current, round),
         activity: current.stopping ? { stopping: true } : undefined,
@@ -651,7 +656,7 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [] };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [], git: { connected: false, repo: '', checked: false } };
     notify();
     ensureStream();
     publishOwner();
@@ -672,6 +677,7 @@ export async function openCloudAgent(item: CloudAgentListItem, lang: string): Pr
             return;
         }
         owner.grant = grant;
+        void refreshCloudGit();
         const listed = parseJSON<{ tasks?: Array<{ id?: string }> }>(
             await op(grant, 'cloud_list_tasks', ''),
             {},
@@ -735,6 +741,31 @@ export async function startCloudAgentFromNewTask(name: string, kind: 'session' |
         };
     }
     return { id: item.id };
+}
+
+/**
+ * Re-read the open instance's repository binding. The connect dialog calls
+ * this after ConnectCloudAgentGit so the banner flips without a reopen.
+ */
+export async function refreshCloudGit(): Promise<void> {
+    const current = owner;
+    if (!current || current.item.kind !== 'coding') return;
+    const get = binding('GetCloudAgentGit');
+    if (!get) return;
+    try {
+        const view = await get(current.item.id) as { connected?: boolean; repo?: string };
+        if (!owner || owner.generation !== current.generation) return;
+        owner.git = { connected: view?.connected === true, repo: String(view?.repo || ''), checked: true };
+        publishOwner();
+    } catch {
+        // A failed read still opens the entry: a wrong banner on a bound
+        // instance only leads to a clear "already connected" error, while
+        // hiding it on a repo-less instance removes the only connect path.
+        if (owner && owner.generation === current.generation) {
+            owner.git.checked = true;
+            publishOwner();
+        }
+    }
 }
 
 /** Send through the open panel when it is already on this instance and task. */

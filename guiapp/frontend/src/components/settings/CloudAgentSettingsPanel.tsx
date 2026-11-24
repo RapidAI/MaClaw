@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    DeleteCloudSrvNode,
     DeployDesktopNode,
     GetCloudSrvChoice,
     GetMaclawLLMProviders,
     ListCloudAgents,
+    ListCloudSrvNodes,
     PatchConfigFields,
     ProbeCloudSrvSSH,
     ResetCloudAgentLLM,
     SetCloudAgentLLM,
     SetCloudSrvChoice,
+    UpgradeCloudSrvNode,
 } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { useDialog } from '../CustomDialog';
 
 type CloudSrvNode = {
     node_id: string;
@@ -67,6 +71,17 @@ type CloudSrvProbe = {
     message: string;
 };
 
+type CloudSrvNodeView = {
+    node_id?: string;
+    name: string;
+    host: string;
+    port?: number;
+    user: string;
+    registered?: boolean;
+    online?: boolean;
+    busy?: boolean;
+};
+
 type CloudAgentSettingsPanelProps = {
     lang: string;
     showToastMessage: (message: string) => void;
@@ -105,6 +120,7 @@ const ServerIcon = () => (
 
 export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setConfig }: CloudAgentSettingsPanelProps) => {
     const t = useCallback((en: string, zhHans: string, zhHant?: string) => textForLang(lang, en, zhHans, zhHant || zhHans), [lang]);
+    const { showConfirm } = useDialog();
 
     const [state, setState] = useState<CloudSrvState>({ node_id: '', nodes: [] });
     const [choice, setChoice] = useState<'public' | 'private'>('public');
@@ -120,6 +136,10 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     const [probing, setProbing] = useState(false);
     const [probe, setProbe] = useState<CloudSrvProbe | null>(null);
     const [installing, setInstalling] = useState(false);
+    // deploying = the install agent is running on the server. It ends when a
+    // NEW node registers on the Hub (refresh detects it) or after a timeout —
+    // until then the install button must not allow a duplicate install.
+    const [deploying, setDeploying] = useState(false);
     const [installNote, setInstallNote] = useState('');
     const [installOpen, setInstallOpen] = useState(false);
 
@@ -131,8 +151,18 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     const [defaultModel, setDefaultModel] = useState('');
     const [savingDefault, setSavingDefault] = useState(false);
 
+    // Installed srv-only nodes (私有云端服务) with update/delete actions.
+    const [srvNodes, setSrvNodes] = useState<CloudSrvNodeView[]>([]);
+    const [upgradeTarget, setUpgradeTarget] = useState('');
+    const [upgradePassword, setUpgradePassword] = useState('');
+    const [upgrading, setUpgrading] = useState(false);
+
     const choiceInitialized = useRef(false);
     const defaultSeeded = useRef(false);
+    // Deploy watch: the node ids that existed BEFORE the install started. A
+    // refresh that surfaces an id outside this set means the new node has
+    // registered and the install is done. Null = not watching.
+    const deployWatchRef = useRef<Set<string> | null>(null);
     // Install-start schedules delayed node-list refreshes; clear them on
     // unmount so a closed settings panel never sets state afterwards.
     const refreshTimersRef = useRef<number[]>([]);
@@ -141,10 +171,36 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
         refreshTimersRef.current = [];
     }, []);
     const refresh = useCallback(async () => {
-        try {
-            const next = await GetCloudSrvChoice() as CloudSrvState;
+        // All four reads in flight at once — a refresh is issued on every
+        // mount, save, and install watch tick, so serial roundtrips add up.
+        const [choiceRes, listRes, llmRes, srvRes] = await Promise.allSettled([
+            GetCloudSrvChoice(),
+            ListCloudAgents(),
+            GetMaclawLLMProviders(),
+            ListCloudSrvNodes(),
+        ]);
+        if (choiceRes.status === 'fulfilled') {
+            const next = choiceRes.value as CloudSrvState;
             const st: CloudSrvState = { node_id: String(next?.node_id || ''), nodes: Array.isArray(next?.nodes) ? next.nodes : [] };
             setState(st);
+            // A deploy watch that finds a fresh node id: the install agent
+            // finished registering. Release the install button and preselect
+            // the new node (the user still confirms with 保存 to switch).
+            const watch = deployWatchRef.current;
+            if (watch) {
+                const fresh = st.nodes.find((node) => !watch.has(node.node_id));
+                if (fresh) {
+                    deployWatchRef.current = null;
+                    setDeploying(false);
+                    setInstallNote(t(
+                        'Install finished: ' + (fresh.name || fresh.node_id) + ' has registered on the Hub.',
+                        '安装完成：' + (fresh.name || fresh.node_id) + ' 已注册到 Hub。',
+                    ));
+                    choiceInitialized.current = true;
+                    setChoice('private');
+                    setNodeID(fresh.node_id);
+                }
+            }
             // Seed the form once from the saved choice; later refreshes must
             // not clobber what the user is currently picking.
             if (!choiceInitialized.current) {
@@ -153,24 +209,23 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                 setNodeID(st.node_id);
             }
             setLoadError('');
-        } catch (err) {
-            setLoadError(errorText(err));
-        } finally {
-            setLoading(false);
+        } else {
+            setLoadError(errorText(choiceRes.reason));
         }
-        try {
-            const list = await ListCloudAgents() as CloudAgentList;
+        setLoading(false);
+        if (listRes.status === 'fulfilled') {
+            const list = listRes.value as CloudAgentList;
             setInstances(Array.isArray(list?.instances) ? list.instances : []);
-        } catch (err) {
-            void err;
         }
-        try {
-            const llm = await GetMaclawLLMProviders() as MaclawLLMProviderList;
+        if (llmRes.status === 'fulfilled') {
+            const llm = llmRes.value as MaclawLLMProviderList;
             setProviders(Array.isArray(llm?.providers) ? llm.providers : []);
-        } catch (err) {
-            void err;
         }
-    }, []);
+        if (srvRes.status === 'fulfilled') {
+            const nodes = srvRes.value as CloudSrvNodeView[];
+            setSrvNodes(Array.isArray(nodes) ? nodes : []);
+        }
+    }, [t]);
 
     useEffect(() => { void refresh(); }, [refresh]);
 
@@ -343,15 +398,31 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                 user: user.trim(),
                 password,
                 with_srv: true,
+                srv_only: true,
             });
+            // Watch for the new node so the install button stays in its
+            // spinner state (no duplicate installs) until registration lands.
+            deployWatchRef.current = new Set(state.nodes.map((node) => node.node_id));
+            setDeploying(true);
             setInstallNote(t(
-                'Install started on ' + host.trim() + '. The node shows up here once it registers on the Hub.',
-                '已开始安装 ' + host.trim() + '，注册到 Hub 后会出现在节点列表里。',
+                'Install agent started on ' + host.trim() + '. Waiting for it to register on the Hub…',
+                '安装 agent 已在 ' + host.trim() + ' 上启动，等待注册到 Hub…',
             ));
             showToastMessage(t('Private maclawsrv install started.', '私有 maclawsrv 安装已开始。'));
-            for (const delay of [5000, 15000, 30000, 60000]) {
+            for (const delay of [5000, 15000, 30000, 60000, 90000, 120000, 150000]) {
                 refreshTimersRef.current.push(window.setTimeout(() => { void refresh(); }, delay));
             }
+            // Failsafe: if the node never registers (server install failed
+            // silently), release the button instead of spinning forever.
+            refreshTimersRef.current.push(window.setTimeout(() => {
+                if (!deployWatchRef.current) return;
+                deployWatchRef.current = null;
+                setDeploying(false);
+                setInstallNote(t(
+                    'The node has not registered yet. The install may still be running on the server — use Refresh to check, or try installing again.',
+                    '节点尚未注册。安装可能仍在服务器后台进行——可点「刷新」查看，或稍后重试安装。',
+                ));
+            }, 180000));
             void rec;
         } catch (err) {
             showToastMessage(errorText(err) || t('Install failed.', '安装失败。'));
@@ -361,7 +432,52 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
     };
 
     const installFormValid = host.trim() !== '' && user.trim() !== '' && password !== '';
-    const installBusy = probing || installing;
+    const installBusy = probing || installing || deploying;
+
+    const startUpgrade = async (node: CloudSrvNodeView) => {
+        if (!upgradePassword) {
+            showToastMessage(t('Enter the SSH password first.', '请先输入 SSH 密码。'));
+            return;
+        }
+        setUpgrading(true);
+        try {
+            await UpgradeCloudSrvNode(node.node_id || node.host, upgradePassword);
+            showToastMessage(t(
+                'Upgrade started for ' + (node.name || node.host) + '. Watch the task list for progress.',
+                (node.name || node.host) + ' 的升级已开始，可在任务列表查看进度。',
+            ));
+            setUpgradeTarget('');
+            setUpgradePassword('');
+            // Poll the row status while the upgrade agent works on the server.
+            for (const delay of [30000, 90000, 180000, 300000, 420000]) {
+                refreshTimersRef.current.push(window.setTimeout(() => { void refresh(); }, delay));
+            }
+            await refresh();
+        } catch (err) {
+            showToastMessage(errorText(err) || t('Upgrade failed to start.', '升级启动失败。'));
+        } finally {
+            setUpgrading(false);
+        }
+    };
+
+    const removeNode = async (node: CloudSrvNodeView) => {
+        const label = node.name || node.host;
+        const ok = await showConfirm(
+            t(
+                'Delete ' + label + '? The node unregisters on the Hub and the saved SSH target is forgotten. The software on the server keeps running and can be installed again.',
+                '删除 ' + label + '？该节点将在 Hub 上取消注册，本机保存的 SSH 配置会被清除。服务器上的软件不会卸载，之后可以重新安装。',
+            ),
+            t('Delete private node', '删除私有节点'),
+        );
+        if (!ok) return;
+        try {
+            await DeleteCloudSrvNode(node.node_id || node.host);
+            showToastMessage(t(label + ' deleted.', label + ' 已删除。'));
+            await refresh();
+        } catch (err) {
+            showToastMessage(errorText(err) || t('Delete failed.', '删除失败。'));
+        }
+    };
 
     // Editing any SSH field invalidates the previous probe result and install
     // note: they describe the connection that was checked, not the edited one.
@@ -592,8 +708,8 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                         <h3 className="cloud-agent-section-title">{t('Private cloud service', '私有云端服务')}</h3>
                         <p className="cloud-agent-section-sub">
                             {t(
-                                'Install your own maclawsrv on a Linux server over SSH. The account must be root or able to sudo; use Check to verify before installing. The server registers on this Hub automatically when done.',
-                                '通过 SSH 把私有 maclawsrv 一键装到你的 Linux 服务器。账号需要是 root 或能 sudo，建议先用「检测」确认；装完会自动注册到当前连接的 Hub。',
+                                'Install your own maclawsrv on a Linux server over SSH — MaClawSrv only, no desktop (desktopd). The account must be root or able to sudo; use Check to verify before installing. The server registers on this Hub automatically when done.',
+                                '通过 SSH 把私有 maclawsrv 一键装到你的 Linux 服务器。只安装 MaClawSrv 和隧道，不部署桌面（desktopd）。账号需要是 root 或能 sudo，建议先用「检测」确认；装完会自动注册到当前连接的 Hub。',
                             )}
                         </p>
                     </div>
@@ -619,6 +735,91 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                 </div>
                 {installNote && !installOpen && (
                     <p role="status" className="cloud-agent-banner cloud-agent-banner--info">{installNote}</p>
+                )}
+                {srvNodes.length > 0 && (
+                    <div className="cloud-agent-srv-list">
+                        {srvNodes.map((node) => {
+                            const rowKey = node.node_id || node.host;
+                            return (
+                                <div key={rowKey} className="cloud-agent-srv-row">
+                                    <div className="cloud-agent-srv-row__meta">
+                                        <span className="cloud-agent-srv-row__name">{node.name || node.host}</span>
+                                        <span className="cloud-agent-srv-row__addr">
+                                            {node.user}@{node.host}{node.port && node.port !== 22 ? ':' + node.port : ''}
+                                        </span>
+                                    </div>
+                                    <span className="cloud-agent-status" data-online={!!node.registered && !!node.online}>
+                                        <span className="cloud-agent-status__dot" />
+                                        {node.busy
+                                            ? t('Working…', '任务进行中…')
+                                            : node.online
+                                                ? t('Online', '在线')
+                                                : node.registered
+                                                    ? t('Offline', '离线')
+                                                    : t('Not registered', '未注册')}
+                                    </span>
+                                    <div className="cloud-agent-srv-row__actions">
+                                        {upgradeTarget === rowKey ? (
+                                            <>
+                                                <input
+                                                    type="password"
+                                                    className="form-input cloud-agent-pw"
+                                                    placeholder={t('SSH password', 'SSH 密码')}
+                                                    value={upgradePassword}
+                                                    autoComplete="new-password"
+                                                    disabled={upgrading}
+                                                    onChange={(event) => setUpgradePassword(event.target.value)}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="im-settings-button im-settings-button--accent"
+                                                    disabled={upgrading || !upgradePassword}
+                                                    onClick={() => void startUpgrade(node)}
+                                                >
+                                                    {upgrading && <span className="cloud-agent-spinner" aria-hidden="true" />}
+                                                    {upgrading ? t('Upgrading…', '升级中…') : t('Confirm upgrade', '确认升级')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="im-settings-button"
+                                                    disabled={upgrading}
+                                                    onClick={() => {
+                                                        setUpgradeTarget('');
+                                                        setUpgradePassword('');
+                                                    }}
+                                                >
+                                                    {t('Cancel', '取消')}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    className="im-settings-button"
+                                                    disabled={node.busy || upgrading}
+                                                    onClick={() => {
+                                                        setUpgradeTarget(rowKey);
+                                                        setUpgradePassword('');
+                                                    }}
+                                                >
+                                                    {node.busy && <span className="cloud-agent-spinner" aria-hidden="true" />}
+                                                    {node.busy ? t('Working…', '任务进行中…') : t('Update', '更新')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="im-settings-button im-settings-button--danger"
+                                                    disabled={node.busy || upgrading}
+                                                    onClick={() => void removeNode(node)}
+                                                >
+                                                    {t('Delete', '删除')}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 )}
             </section>
 
@@ -710,7 +911,8 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                                 disabled={installBusy || !installFormValid}
                                 onClick={() => void install()}
                             >
-                                {installing ? t('Installing…', '安装中…') : t('Install', '安装')}
+                                {(installing || deploying) && <span className="cloud-agent-spinner" aria-hidden="true" />}
+                                {installing || deploying ? t('Installing…', '安装中…') : t('Install', '安装')}
                             </button>
                         </div>
                     </div>

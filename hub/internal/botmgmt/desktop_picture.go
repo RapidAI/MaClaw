@@ -2,10 +2,12 @@ package botmgmt
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 // Typed desktop picture. running is the only state with a frame. asleep is
@@ -90,6 +92,11 @@ func (s *Service) DesktopPicture(ctx context.Context, tenantID, userID, botID st
 		return url, control && url != "", state, nil
 	}
 	desktopUser := s.desktopUserForWatch(ctx, tenantID, userID, botID)
+	// Hold already dropped a rejected gate and is waiting out the recover
+	// gap. Asking again here would retry on every poll.
+	if strings.TrimSpace(url) == "" && s.desktopRecoverCooling(tenantID, desktopUser) {
+		return "", false, DesktopStateUnavailable, nil
+	}
 	reported, live, known := s.askDesktopViewState(ctx, tenantID, desktopUser)
 	if !known {
 		if strings.TrimSpace(url) == "" {
@@ -151,7 +158,13 @@ func (s *Service) readDesktopViewState(ctx context.Context, tenantID, desktopUse
 		if desktopbot.IsDesktopAsleep(err) {
 			return DesktopStateAsleep, "", true
 		}
-		return DesktopStateUnavailable, "", true
+		// A coded upstream rejection (the tunnel's 502 after a gate restart)
+		// is a definite miss, not a blink. Callers drop the cached page and
+		// wait out the existing recover gap instead of asking every poll.
+		if desktopViewRejected(err) {
+			return DesktopStateUnavailable, "", true
+		}
+		return "", "", false
 	}
 	if strings.TrimSpace(state) == "" {
 		if strings.TrimSpace(novnc) == "" {
@@ -161,6 +174,20 @@ func (s *Service) readDesktopViewState(ctx context.Context, tenantID, desktopUse
 		}
 	}
 	return state, novnc, true
+}
+
+// desktopViewRejected reports a definite upstream miss. A transport blink is
+// not one: only a typed status (the gate tunnel's 502) or a coded asleep
+// error means the cached bearer can no longer be served.
+func desktopViewRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	if desktopbot.IsDesktopAsleep(err) {
+		return true
+	}
+	var statusErr *upstream.StatusError
+	return errors.As(err, &statusErr)
 }
 
 // desktopPictureRunning reports whether a remembered page is still a live

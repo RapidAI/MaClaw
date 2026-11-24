@@ -23,6 +23,10 @@ type handoffView struct {
 	// bearer is the Docker-side noVNC gate token taken from the raw URL's
 	// userinfo. The proxy attaches it so the published port can require it.
 	bearer string
+	// desktopKey is the desktop user this token was issued for. A container
+	// restart changes the gate bearer but the browser still holds this token,
+	// so a later live address can retarget the same view.
+	desktopKey string
 }
 
 // gateDesktopHandoff hides the Docker host's noVNC port behind Hub.
@@ -30,7 +34,7 @@ type handoffView struct {
 // The token means the person is looking at the screen for two hours. Looking
 // it up does not extend that time, does not refresh last_used, and does not
 // stop or start the container. Sleep stays on the idle path.
-func (s *Service) gateDesktopHandoff(raw string) string {
+func (s *Service) gateDesktopHandoff(raw, desktopKey string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return ""
@@ -59,9 +63,48 @@ func (s *Service) gateDesktopHandoff(raw string) string {
 			delete(s.handoff, key)
 		}
 	}
-	s.handoff[token] = handoffView{origin: parsed.Scheme + "://" + parsed.Host, base: base, until: now.Add(2 * time.Hour), bearer: bearer}
+	s.handoff[token] = handoffView{origin: parsed.Scheme + "://" + parsed.Host, base: base, until: now.Add(2 * time.Hour), bearer: bearer, desktopKey: desktopKey}
 	socketPath := "api/v1/desktop-handoff/" + token + "/websockify"
 	return "/api/v1/desktop-handoff/" + token + "/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=1000&path=" + url.QueryEscape(socketPath)
+}
+
+// refreshDesktopHandoff retargets tokens already handed to the browser when
+// the same desktop user's live address changes its gate bearer. A container
+// restart keeps the viewer path but replaces the token inside the container;
+// leaving the old bearer on an issued token makes the tunnel answer 502.
+func (s *Service) refreshDesktopHandoff(desktopKey, raw string) {
+	if s == nil || strings.TrimSpace(desktopKey) == "" {
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return
+	}
+	base, ok := handoffBase(parsed.Path)
+	if !ok {
+		return
+	}
+	bearer := ""
+	if parsed.User != nil {
+		bearer, _ = parsed.User.Password()
+	}
+	origin := parsed.Scheme + "://" + parsed.Host
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, view := range s.handoff {
+		if view.desktopKey != desktopKey {
+			continue
+		}
+		if !now.Before(view.until) {
+			delete(s.handoff, token)
+			continue
+		}
+		view.origin = origin
+		view.base = base
+		view.bearer = bearer
+		s.handoff[token] = view
+	}
 }
 
 func (s *Service) handoffOrigin(token string) string {

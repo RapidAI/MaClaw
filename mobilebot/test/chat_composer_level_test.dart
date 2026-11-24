@@ -63,9 +63,7 @@ void main() {
     expect(find.byKey(const ValueKey('listen-level-bar')), findsNothing);
   });
 
-  testWidgets('listen status stays above the input and can name the fallback', (
-    tester,
-  ) async {
+  testWidgets('listen status stays above the input', (tester) async {
     await tester.pumpWidget(
       l10nApp(
         child: Scaffold(
@@ -76,13 +74,13 @@ void main() {
             onSend: () {},
             onMic: () {},
             listening: true,
-            listenStatus: '系统识别不可用，已转本地识别',
+            listenStatus: '使用本地识别…',
           ),
         ),
       ),
     );
     expect(find.byKey(const ValueKey('listen-status')), findsOneWidget);
-    expect(find.text('系统识别不可用，已转本地识别'), findsOneWidget);
+    expect(find.text('使用本地识别…'), findsOneWidget);
     final status = tester.getTopLeft(find.byKey(const ValueKey('listen-status')));
     final field = tester.getTopLeft(find.byType(TextField));
     expect(status.dy, lessThan(field.dy));

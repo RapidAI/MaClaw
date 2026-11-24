@@ -2697,7 +2697,7 @@ export function ListLocalDesktopJobs():Promise<Array<{ id: string; title: string
 
 export function UpgradeDesktopNode(arg1:string, arg2:string):Promise<{ id: string; status: string; message?: string }>;
 
-export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ id: string; status: string; message?: string }>;
+export function DeployDesktopNode(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean; srv_only?: boolean }):Promise<{ id: string; status: string; message?: string }>;
 
 export function DeployHub(arg1:{ host: string; port?: number; user: string; password: string; email: string }):Promise<{ id: string; host: string; port: number; user: string; email: string; public_url: string; admin_user: string; admin_password?: string; hub_id?: string; pending?: boolean; status: string; message?: string }>;
 
@@ -3374,6 +3374,12 @@ export function SetCloudSrvChoice(arg1:string):Promise<{ node_id: string; nodes:
 
 export function ProbeCloudSrvSSH(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ ok: boolean; method?: string; message: string; host_key?: string }>;
 
+export function ListCloudSrvNodes():Promise<Array<{ node_id?: string; name: string; host: string; port?: number; user: string; hub_url?: string; registered?: boolean; online?: boolean; busy?: boolean }>>;
+
+export function UpgradeCloudSrvNode(arg1:string,arg2:string):Promise<{ node_id?: string; name: string; host: string; user: string }>;
+
+export function DeleteCloudSrvNode(arg1:string):Promise<void>;
+
 export function DeleteCloudAgent(arg1:string):Promise<void>;
 
 export function ListCloudAgents():Promise<{ instances: Array<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>; enabled: boolean }>;
@@ -3387,3 +3393,8 @@ export function RenameCloudAgent(arg1:string, arg2:string):Promise<{ id: string;
 export function StopCloudAgent(arg1:string):Promise<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>;
 
 export function ResumeCloudAgent(arg1:string):Promise<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>;
+export function DownloadCloudAgentWorkspace(arg1:string, arg2:string):Promise<string>;
+
+export function UploadFilesToCloudAgent(arg1:string):Promise<{ files: number; dirs: number; bytes: number }>;
+
+export function UploadDirectoryToCloudAgent(arg1:string):Promise<{ files: number; dirs: number; bytes: number }>;

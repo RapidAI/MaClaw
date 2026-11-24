@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -21,35 +22,26 @@ var errJail = errors.New("路径超出工作区")
 
 func jailRoot(dir, kind string) (string, error) {
 	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return "", err
+	}
 	if kind != KindCoding {
-		if err := os.MkdirAll(workspace, 0o755); err != nil {
-			return "", err
-		}
 		return workspace, nil
 	}
-	name, ok := checkoutName(workspace)
-	if !ok {
-		return "", errors.New("还没有检出代码库")
-	}
-	return filepath.Join(workspace, name), nil
-}
-
-func checkoutName(workspace string) (string, bool) {
-	entries, err := os.ReadDir(workspace)
-	if err != nil {
-		return "", false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		gitPath := filepath.Join(workspace, entry.Name(), ".git")
-		info, err := os.Stat(gitPath)
-		if err == nil && info.IsDir() {
-			return entry.Name(), true
+	// git.json is the authority, not the directory scan: it is written by
+	// ConnectGit after a successful clone and lives OUTSIDE the jail, so a
+	// scripted .git directory (a fake HEAD is trivial to mint via an
+	// interpreter) can never shift the root or masquerade as the checkout.
+	// Without a binding the bare workspace is the root — repo-less coding
+	// is allowed; once bound, the checkout named by the binding is.
+	if secret, err := readGit(dir); err == nil {
+		if name, nameErr := repoDirName(secret.Repo); nameErr == nil {
+			if info, statErr := os.Stat(filepath.Join(workspace, name, ".git", "HEAD")); statErr == nil && !info.IsDir() {
+				return filepath.Join(workspace, name), nil
+			}
 		}
 	}
-	return "", false
+	return workspace, nil
 }
 
 func resolveInJail(root, raw string) (string, error) {
@@ -66,7 +58,7 @@ func resolveInJail(root, raw string) (string, error) {
 		joined = filepath.Join(root, raw)
 	}
 	cleaned := filepath.Clean(joined)
-	if !insideRoot(root, cleaned) || secretBase(cleaned) {
+	if !insideRoot(root, cleaned) || secretBase(cleaned) || gitComponent(root, cleaned) {
 		return "", errJail
 	}
 	resolved, err := followReparse(root, cleaned, 0)
@@ -74,7 +66,7 @@ func resolveInJail(root, raw string) (string, error) {
 		return "", errJail
 	}
 	resolved = filepath.Clean(resolved)
-	if !insideRoot(root, resolved) || secretBase(resolved) {
+	if !insideRoot(root, resolved) || secretBase(resolved) || gitComponent(root, resolved) {
 		return "", errJail
 	}
 	return resolved, nil
@@ -116,7 +108,7 @@ func followReparse(root, cleaned string, depth int) (string, error) {
 				target = filepath.Join(filepath.Dir(next), target)
 			}
 			target = filepath.Clean(target)
-			if !insideRoot(root, target) || secretBase(target) {
+			if !insideRoot(root, target) || secretBase(target) || gitComponent(root, target) {
 				return "", errJail
 			}
 			followed, ferr := followReparse(root, target, depth+1)
@@ -136,6 +128,31 @@ func secretBase(path string) bool {
 	return base == "git.json" || base == "llm.json"
 }
 
+// gitComponent reports whether the portion of path inside root holds a .git
+// element. File tools and bash path args may not touch the object database:
+// a written hook would execute inside the srv's own git ops, and the object
+// store itself must stay out of reach. Only the part inside root is scanned
+// so an ancestor named .git cannot brick the jail.
+func gitComponent(root, path string) bool {
+	rel, err := filepath.Rel(root, filepath.Clean(path))
+	if err != nil {
+		return true
+	}
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if strings.EqualFold(part, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
+// gitBase catches a bare ".git" argument — ".git/hooks" is a pathArg and
+// resolves through the jail, but a lone ".git" has no separator and would
+// otherwise reach the process (e.g. `env -C .git cat config`).
+func gitBase(arg string) bool {
+	return strings.EqualFold(filepath.Base(strings.Trim(arg, `"'`)), ".git")
+}
+
 func insideRoot(root, path string) bool {
 	rel, err := filepath.Rel(root, filepath.Clean(path))
 	if err != nil {
@@ -148,10 +165,20 @@ func pathArg(arg string) bool {
 	return strings.ContainsAny(arg, `/\`) || strings.Contains(arg, "..") || filepath.IsAbs(arg)
 }
 
-func rejectShellGit(argv []string) bool {
+// pathFlagValueRe pulls the value out of options that smuggle a path inside
+// the option text — `-C<path>` (the attached chdir flag shared by git, make
+// and tar) and git's `--git-dir=`/`--work-tree=`/`--exec-path=`. They match
+// anywhere in an argument, including inside `-Command` strings, where the
+// plain pathArg scan sees only one long token.
+var pathFlagValueRe = regexp.MustCompile(`(?:--git-dir=|--work-tree=|--exec-path=|-C)(\S+)`)
+
+func rejectShellGit(root string, argv []string) bool {
 	if encoded, ok := powershellEncoded(argv); ok {
 		text, err := decodePowerShell(encoded)
 		if err != nil || shellTextHasBannedGit(text) {
+			return true
+		}
+		if commandFieldsBlocked(root, text) {
 			return true
 		}
 	}
@@ -223,21 +250,40 @@ func isShellScriptFlag(arg string) bool {
 // gitSubcommandBanned reports whether the first git subcommand is one the
 // cloud shell is not allowed to run. Global options such as -c and -C are
 // skipped, so `git -c user.email=x push` is still a push.
+//
+// The allowlist holds subcommands that are read-only in every form; the
+// shell may inspect the repository but every write path belongs to the
+// srv's own tools (git_commit / git_push). A denylist kept leaking
+// plumbing bypasses — `git update-ref` + `git commit-tree` sidestep the
+// commit ban, `git remote set-url` repoints the askpass token at an
+// arbitrary host, `git send-pack` is push under another name, and
+// `git credential fill` can spill credentials stored on the host.
 func gitSubcommandBanned(args []string) bool {
 	takesValue := map[string]bool{
 		"-c": true, "-C": true, "--git-dir": true, "--work-tree": true,
 		"--namespace": true, "--config-env": true, "--exec-path": true,
 		"--super-prefix": true, "--list-cmds": true,
 	}
-	banned := map[string]bool{
-		"clone": true, "fetch": true, "pull": true, "push": true, "ls-remote": true,
-		"add": true, "commit": true, "checkout": true, "switch": true, "reset": true,
+	readOnly := map[string]bool{
+		"status": true, "diff": true, "diff-index": true, "diff-tree": true,
+		"diff-files": true, "log": true, "show": true, "show-branch": true,
+		"whatchanged": true, "blame": true, "annotate": true, "grep": true,
+		"rev-parse": true, "rev-list": true, "name-rev": true,
+		"merge-base": true, "cherry": true, "describe": true, "shortlog": true,
+		"range-diff": true, "ls-files": true, "ls-tree": true,
+		"cat-file": true, "for-each-ref": true, "show-ref": true,
+		"count-objects": true, "fsck": true, "verify-commit": true,
+		"verify-tag": true, "verify-pack": true, "check-ignore": true,
+		"check-attr": true, "check-mailmap": true, "check-ref-format": true,
+		"var": true, "help": true, "version": true, "format-patch": true,
+		"fast-export": true, "mailinfo": true, "mailsplit": true,
+		"stripspace": true, "interpret-trailers": true,
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
 			if i+1 < len(args) {
-				return banned[strings.ToLower(args[i+1])]
+				return !readOnly[strings.ToLower(args[i+1])]
 			}
 			return false
 		}
@@ -247,7 +293,7 @@ func gitSubcommandBanned(args []string) bool {
 			}
 			continue
 		}
-		return banned[strings.ToLower(arg)]
+		return !readOnly[strings.ToLower(arg)]
 	}
 	return false
 }
@@ -296,22 +342,59 @@ const bashTimeout = 5 * time.Minute
 // Paths that escape the root, or that name git.json or llm.json, are refused
 // before the process starts. Cancelling ctx, or hitting bashTimeout, kills
 // the whole process tree — a shell child must not outlive its turn.
+func flagValueOutsideJail(root, text string) bool {
+	for _, match := range pathFlagValueRe.FindAllStringSubmatch(text, -1) {
+		if _, err := resolveInJail(root, match[1]); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// fieldBlocked applies the jail checks to one whitespace-separated token —
+// an argv element or a word inside a command string. Quotes are trimmed for
+// the name checks since a shell would strip them, and the path check runs
+// on the trimmed field so `cat '/etc/passwd'` inside a -Command string
+// cannot hide behind quote characters.
+func fieldBlocked(root, field string) bool {
+	if flagValueOutsideJail(root, field) {
+		return true
+	}
+	trimmed := strings.Trim(field, `"'`)
+	if secretBase(trimmed) || gitBase(trimmed) || pathArg(field) {
+		_, err := resolveInJail(root, trimmed)
+		return err != nil
+	}
+	return false
+}
+
+// commandFieldsBlocked splits a command string the way the invoked shell
+// will and jails every token: `cd .. & type git.json` inside a single argv
+// element is otherwise one opaque blob the per-argument checks pass as a
+// harmless relative name.
+func commandFieldsBlocked(root, text string) bool {
+	for _, field := range strings.Fields(text) {
+		if fieldBlocked(root, field) {
+			return true
+		}
+	}
+	return false
+}
+
 func RunBash(ctx context.Context, root string, argv []string, secrets ...string) ([]byte, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("缺少命令")
 	}
-	if rejectShellGit(argv) {
-		return nil, errors.New("shell 不能执行 git")
+	if rejectShellGit(root, argv) {
+		return nil, errors.New("shell 只允许只读 git 命令(status/diff/log/show 等),提交推送请用工具")
 	}
 	encoded, hasEncoded := powershellEncoded(argv)
 	for _, arg := range argv {
 		if hasEncoded && encoded != "" && arg == encoded {
 			continue
 		}
-		if secretBase(arg) || pathArg(arg) {
-			if _, err := resolveInJail(root, arg); err != nil {
-				return nil, err
-			}
+		if commandFieldsBlocked(root, arg) {
+			return nil, errJail
 		}
 	}
 	if ctx == nil {

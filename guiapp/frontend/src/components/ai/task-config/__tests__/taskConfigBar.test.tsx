@@ -1230,6 +1230,29 @@ describe('machine (位置) chip', () => {
         expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('云端');
     });
 
+    it('cloud place: workspace chip shows 云端 read-only, tooltip carries the server info', () => {
+        publishCloudTaskPlace({ enabled: true, selected: false });
+        renderBar(withTaskPlace(defaultTaskDraft(), 'cloud'), vi.fn(), {
+            variant: 'bare',
+            defaultExpanded: true,
+            remoteMachines: [],
+            cloudServerLabel: '私有 maclawsrv · my-srv · 10.0.0.8',
+        });
+        const chip = screen.getByTestId('task-config-chip-workspace');
+        expect(screen.getByTestId('task-config-chip-workspace-value').textContent).toBe('云端');
+        expect(chip.getAttribute('title')).toBe('云端服务器：私有 maclawsrv · my-srv · 10.0.0.8');
+        // 只读展示：点击不开工作空间弹层
+        fireEvent.click(chip);
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+    });
+
+    it('cloud place without server info falls back to a generic cloud tooltip', () => {
+        publishCloudTaskPlace({ enabled: true, selected: false });
+        renderBar(withTaskPlace(defaultTaskDraft(), 'cloud'), vi.fn(), { variant: 'bare', defaultExpanded: true, remoteMachines: [] });
+        const chip = screen.getByTestId('task-config-chip-workspace');
+        expect(chip.getAttribute('title')).toBe('任务在云端服务器上执行');
+    });
+
     it('view-only machine cannot be picked', async () => {
         renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
         fireEvent.click(screen.getByTestId('task-config-chip-machine'));

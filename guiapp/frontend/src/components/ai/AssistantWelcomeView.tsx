@@ -495,6 +495,8 @@ export interface WelcomeTaskConfig {
     remoteMachines?: RemoteMachineOption[];
     /** 浏览对方电脑上的目录（remote_control list_dirs）。 */
     onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
+    /** 位置 = 云端时工作空间 chip 的服务器说明（maclawsrv 选择）。 */
+    cloudServerLabel?: string;
     modelCatalog?: TaskModelCatalog | null;
 }
 
@@ -1696,6 +1698,7 @@ export function AssistantWelcomeView({
                             defaultExpanded={taskConfig.defaultExpanded}
                             remoteMachines={taskConfig.remoteMachines}
                             onListRemoteDirs={taskConfig.onListRemoteDirs}
+                            cloudServerLabel={taskConfig.cloudServerLabel}
                             modelCatalog={taskConfig.modelCatalog}
                             variant="bare"
                         />

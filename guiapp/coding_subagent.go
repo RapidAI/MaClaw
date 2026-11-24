@@ -984,7 +984,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
 		// Prefer an ops-specific empty-loop diagnostic over the generic hard-exit text.
-		if result.HardExit && result.ToolCalls == 0 && status == TaskExecFailed {
+		// Only when the loop did not already name a specific cause (result.Error
+		// empty means the hard exit was a consecutive-empty stop, and the
+		// ops-specific message is more actionable for that case).
+		if result.HardExit && result.ToolCalls == 0 && status == TaskExecFailed && result.Error == "" {
 			if codingTaskOperationalAcceptance(task) == codingOperationalAcceptanceCommand {
 				errMsg = "模型未调用工具就结束了；主机操作任务需要 bash 执行该命令"
 			} else {

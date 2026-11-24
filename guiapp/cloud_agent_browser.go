@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,20 @@ import (
 // cross the Hub base64'd inside an exec result capped at 8MB, and a bigger
 // download would arrive truncated rather than complete.
 const cloudAgentDownloadMaxFileBytes int64 = 4 << 20
+
+// Upload goes the other way: every op body crosses two 1MB request readers
+// (desktop→hub /op, hub→srv control), so one write carries 512KiB — under the
+// srv's own 640KiB chunk cap with base64 headroom to spare. The batch limits
+// stop an accidental huge pick before thousands of round trips start.
+const (
+	cloudAgentUploadChunkBytes = 512 << 10
+	cloudAgentUploadMaxFiles   = 20000
+	cloudAgentUploadMaxBytes   = int64(1) << 30
+)
+
+// cloudAgentFilesChangedEvent tells an open files dialog to re-list after the
+// workspace mutated through a path it cannot see (the task context menu).
+const cloudAgentFilesChangedEvent = "cloud-agent-files-changed"
 
 // The control grant for an instance is stable (the Hub keeps the same-account
 // grant alive); cache it per instance so a tree walk is one round trip per
@@ -233,18 +249,26 @@ func (a *App) openCloudAgentWorkbenchFileLocally(instanceID, relativePath string
 }
 
 // downloadCloudAgentWorkbenchEntry mirrors DownloadCodingWorkbenchEntry: a
-// directory arrives as a .tar (srv-packed), a file as its raw bytes, both
-// through the same save dialog.
-func (a *App) downloadCloudAgentWorkbenchEntry(instanceID, relativePath string) (string, error) {
+// directory arrives as a .tar.gz (srv-packed), a file as its raw bytes, both
+// through the same save dialog. displayName replaces the generic root name
+// ("workspace") so a whole-workspace pack is named after its task.
+func (a *App) downloadCloudAgentWorkbenchEntry(instanceID, relativePath string, displayName ...string) (string, error) {
 	props, err := a.getCloudAgentWorkbenchEntryProperties(instanceID, relativePath)
 	if err != nil {
 		return "", err
 	}
 	name := sanitizeCodingWorkbenchDownloadName(props.Name)
+	if len(displayName) > 0 && props.IsDir && (relativePath == "" || relativePath == "/") {
+		// sanitize never returns "" (blank becomes "download"), so gate on the
+		// raw input instead — a whitespace name should keep "workspace".
+		if strings.TrimSpace(displayName[0]) != "" {
+			name = sanitizeCodingWorkbenchDownloadName(displayName[0])
+		}
+	}
 	var dest string
 	if props.IsDir {
-		dest, err = codingWorkbenchSaveDialog(a, "下载目录", name+".tar", []runtime.FileFilter{
-			{DisplayName: "Tar (*.tar)", Pattern: "*.tar"},
+		dest, err = codingWorkbenchSaveDialog(a, "下载目录", name+".tar.gz", []runtime.FileFilter{
+			{DisplayName: "Tar (*.tar.gz)", Pattern: "*.tar.gz"},
 			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
 		})
 	} else {
@@ -355,6 +379,204 @@ func (a *App) deleteCloudAgentWorkbenchEntry(instanceID, relativePath string) er
 	if strings.TrimSpace(relativePath) == "" || codingWorkbenchEntryProtected(relativePath) {
 		return fmt.Errorf("该路径不允许删除")
 	}
-	_, err := a.cloudAgentOp(instanceID, "cloud_delete_file", map[string]any{"path": relativePath})
+	if _, err := a.cloudAgentOp(instanceID, "cloud_delete_file", map[string]any{"path": relativePath}); err != nil {
+		return err
+	}
+	a.emitEvent(cloudAgentFilesChangedEvent, map[string]string{"instance_id": instanceID})
+	return nil
+}
+
+// DownloadCloudAgentWorkspace packs the whole workspace of one instance and
+// saves it as "<name>.tar.gz" — the context-menu "打包下载" entry.
+func (a *App) DownloadCloudAgentWorkspace(instanceID, displayName string) (string, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return "", fmt.Errorf("缺少云端任务")
+	}
+	return a.downloadCloudAgentWorkbenchEntry(instanceID, "/", displayName)
+}
+
+// CloudAgentUploadResult reports one upload batch picked in the dialog.
+type CloudAgentUploadResult struct {
+	Files int   `json:"files"`
+	Dirs  int   `json:"dirs"`
+	Bytes int64 `json:"bytes"`
+}
+
+// UploadFilesToCloudAgent copies picked files into the workspace root.
+func (a *App) UploadFilesToCloudAgent(instanceID string) (CloudAgentUploadResult, error) {
+	result := CloudAgentUploadResult{}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return result, fmt.Errorf("缺少云端任务")
+	}
+	picks, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "上传文件到云端任务",
+	})
+	if err != nil || len(picks) == 0 {
+		return result, err
+	}
+	err = a.uploadCloudAgentPicks(instanceID, picks, &result)
+	// Partial progress landed too — an open files dialog must re-list either way.
+	if result.Files+result.Dirs > 0 {
+		a.emitEvent(cloudAgentFilesChangedEvent, map[string]string{"instance_id": instanceID})
+	}
+	return result, err
+}
+
+// UploadDirectoryToCloudAgent copies a picked directory under the workspace
+// root as "<dirname>/", preserving its tree (empty directories included).
+func (a *App) UploadDirectoryToCloudAgent(instanceID string) (CloudAgentUploadResult, error) {
+	result := CloudAgentUploadResult{}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return result, fmt.Errorf("缺少云端任务")
+	}
+	pick, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "上传文件夹到云端任务",
+	})
+	if err != nil || strings.TrimSpace(pick) == "" {
+		return result, err
+	}
+	cleaned := filepath.Clean(pick)
+	base := filepath.Base(cleaned)
+	// A filesystem root has no usable name ("C:" or "\") and uploading a whole
+	// drive is never the intent; the file/dir caps would only trip after
+	// thousands of wasted ops.
+	isRoot := filepath.Dir(cleaned) == cleaned
+	if base == "" || base == "." || base == ".." || isRoot || strings.ContainsAny(base, `/\`) || codingWorkbenchEntryProtected(filepath.ToSlash(base)) {
+		return result, fmt.Errorf("这个目录不能上传")
+	}
+	if err := a.mkdirCloudAgent(instanceID, base); err != nil {
+		return result, err
+	}
+	result.Dirs++
+	err = a.uploadCloudAgentDir(instanceID, cleaned, base, &result)
+	if result.Files+result.Dirs > 0 {
+		a.emitEvent(cloudAgentFilesChangedEvent, map[string]string{"instance_id": instanceID})
+	}
+	return result, err
+}
+
+func (a *App) uploadCloudAgentPicks(instanceID string, picks []string, result *CloudAgentUploadResult) error {
+	for _, pick := range picks {
+		info, err := os.Stat(pick)
+		if err != nil {
+			return fmt.Errorf("无法读取 %s", filepath.Base(pick))
+		}
+		if info.IsDir() {
+			return fmt.Errorf("%s 是目录，请用上传文件夹", filepath.Base(pick))
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		target := filepath.Base(pick)
+		if codingWorkbenchEntryProtected(filepath.ToSlash(target)) {
+			return fmt.Errorf("%s 是保留路径，不能上传", target)
+		}
+		if err := a.uploadCloudAgentFile(instanceID, pick, target, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// uploadCloudAgentDir walks src and uploads every regular file under relBase.
+// Symlinks and special files are skipped — the channel has no way to carry them.
+func (a *App) uploadCloudAgentDir(instanceID, src, relBase string, result *CloudAgentUploadResult) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == src {
+			return nil
+		}
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.ToSlash(filepath.Join(relBase, rel))
+		if codingWorkbenchEntryProtected(target) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if err := a.mkdirCloudAgent(instanceID, target); err != nil {
+				return err
+			}
+			result.Dirs++
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return a.uploadCloudAgentFile(instanceID, path, target, result)
+	})
+}
+
+func (a *App) uploadCloudAgentFile(instanceID, localPath, relTarget string, result *CloudAgentUploadResult) error {
+	if result.Files >= cloudAgentUploadMaxFiles || result.Bytes >= cloudAgentUploadMaxBytes {
+		return fmt.Errorf("上传内容太大，已上传 %d 个文件后停止", result.Files)
+	}
+	file, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("无法读取 %s", filepath.Base(localPath))
+	}
+	defer file.Close()
+	if info, statErr := file.Stat(); statErr == nil && info.Size()+result.Bytes > cloudAgentUploadMaxBytes {
+		return fmt.Errorf("上传内容太大，已上传 %d 个文件后停止", result.Files)
+	}
+	buf := make([]byte, cloudAgentUploadChunkBytes)
+	offset := int64(0)
+	for {
+		n, readErr := file.Read(buf)
+		if n > 0 {
+			// A file that keeps growing while it is read must not stream past
+			// the batch budget — the upfront size check only saw the first stat.
+			if result.Bytes+offset+int64(n) > cloudAgentUploadMaxBytes {
+				return fmt.Errorf("上传内容太大，已上传 %d 个文件后停止", result.Files)
+			}
+			if err := a.writeCloudAgentChunk(instanceID, relTarget, buf[:n], offset); err != nil {
+				return fmt.Errorf("上传 %s 失败：%w", filepath.Base(localPath), err)
+			}
+			offset += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("无法读取 %s", filepath.Base(localPath))
+		}
+	}
+	if offset == 0 {
+		// An empty file still needs its create op or it never exists remotely.
+		if err := a.writeCloudAgentChunk(instanceID, relTarget, nil, 0); err != nil {
+			return fmt.Errorf("上传 %s 失败：%w", filepath.Base(localPath), err)
+		}
+	}
+	result.Files++
+	result.Bytes += offset
+	return nil
+}
+
+func (a *App) writeCloudAgentChunk(instanceID, relTarget string, data []byte, offset int64) error {
+	_, err := a.cloudAgentOp(instanceID, "cloud_write_file", map[string]any{
+		"path":        relTarget,
+		"data_base64": base64.StdEncoding.EncodeToString(data),
+		"offset":      offset,
+	})
+	return err
+}
+
+func (a *App) mkdirCloudAgent(instanceID, rel string) error {
+	_, err := a.cloudAgentOp(instanceID, "cloud_mkdir", map[string]any{"path": rel})
 	return err
 }

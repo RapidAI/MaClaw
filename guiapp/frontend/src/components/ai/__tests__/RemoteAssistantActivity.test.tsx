@@ -178,6 +178,99 @@ describe('RemoteAssistantActivity', () => {
         expect(screen.getByTestId('coding-agent-progress')).toBeTruthy();
     });
 
+    it('renders mirrored tool-status lines as flip cards instead of raw text', () => {
+        const live = (parts: Array<{ seq: number; text: string }>) => ({
+            requestId: 'r1',
+            displayText: '',
+            streamDone: false,
+            responded: false,
+            baseline: -1,
+            lastEventAt: Date.now(),
+            parts: parts.map(part => ({ kind: 'progress' as const, ...part })),
+        });
+        const first = session({
+            live: live([
+                { seq: 1, text: '工具 · 执行命令 (bash)\npip install --quiet reportlab' },
+                { seq: 2, text: '工具 · 执行命令 (bash)\napt-get --version' },
+            ]),
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        });
+        const view = renderActivity(first);
+        // The newest call rides the split-flap strip like the local bubble;
+        // earlier calls settle into tool rows. Neither renders the raw
+        // "工具 ·" status text.
+        const flip = screen.getByTestId('assistant-tool-flip');
+        expect(flip.getAttribute('aria-label')).toBe('bash (apt-get --version)');
+        const rows = screen.getAllByTestId('assistant-tool-call');
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain('pip install --quiet reportlab');
+        const panel = screen.getByTestId('remote-progress');
+        expect(panel.textContent).not.toContain('工具 ·');
+
+        // One mounted strip serves the whole run: the next call flips it in
+        // place (data-flipping) and the outgoing call settles into a row.
+        view.rerender(<RemoteAssistantActivity session={session({
+            live: live([
+                { seq: 1, text: '工具 · 执行命令 (bash)\npip install --quiet reportlab' },
+                { seq: 2, text: '工具 · 执行命令 (bash)\napt-get --version' },
+                { seq: 3, text: '工具 · 执行命令 (bash)\nfc-list :lang=zh' },
+            ]),
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        })} lang="zh-Hans" theme={overlayTheme} />);
+        const flipping = screen.getByTestId('assistant-tool-flip');
+        expect(flipping.getAttribute('aria-label')).toBe('bash (fc-list :lang=zh)');
+        expect(flipping.getAttribute('data-flipping')).toBe('true');
+        expect(screen.getAllByTestId('assistant-tool-call')).toHaveLength(2);
+    });
+
+    it('collapses an adjacent repeat of the same call but keeps one apart', () => {
+        renderActivity(session({
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                streamDone: false,
+                responded: false,
+                baseline: -1,
+                lastEventAt: Date.now(),
+                parts: [
+                    { kind: 'progress', seq: 1, text: '工具 · 执行命令 (bash)\napt-get --version' },
+                    { kind: 'progress', seq: 2, text: '工具 · 执行命令 (bash)\napt-get --version' },
+                    { kind: 'progress', seq: 3, text: '正在重试' },
+                    { kind: 'progress', seq: 4, text: '工具 · 执行命令 (bash)\napt-get --version' },
+                ],
+            },
+            activity: { workflow: { status: 'active', phase: 'execute' } },
+        }));
+        // The back-to-back duplicate folds; the retry separated by a status
+        // line is a distinct event and stays as the live flip call.
+        const flip = screen.getByTestId('assistant-tool-flip');
+        expect(flip.getAttribute('aria-label')).toBe('bash (apt-get --version)');
+        expect(screen.getAllByTestId('assistant-tool-call')).toHaveLength(1);
+        const panel = screen.getByTestId('remote-progress');
+        expect(panel.textContent).toContain('正在重试');
+    });
+
+    it('settles every call into a row once the round responds, even while the poll still says busy', () => {
+        renderActivity(session({
+            busy: true,
+            live: {
+                requestId: 'r1',
+                displayText: '',
+                streamDone: true,
+                responded: true,
+                baseline: -1,
+                lastEventAt: Date.now(),
+                parts: [
+                    { kind: 'progress', seq: 1, text: '工具 · 执行命令 (bash)\npip install --quiet reportlab' },
+                    { kind: 'progress', seq: 2, text: '工具 · 执行命令 (bash)\napt-get --version' },
+                ],
+            },
+            activity: { workflow: { status: 'paused', phase: 'execute' } },
+        }));
+        expect(screen.queryByTestId('assistant-tool-flip')).toBeNull();
+        expect(screen.getAllByTestId('assistant-tool-call')).toHaveLength(2);
+    });
+
     it('keeps non-coding progress lines as plain trail text', () => {
         renderActivity(session({
             live: {

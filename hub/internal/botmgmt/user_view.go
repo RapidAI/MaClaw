@@ -170,10 +170,10 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	_ = desktopWatchEpoch(ctx)
 	// A watch is how we notice the container has memory again. Parked runs
 	// start on that read; a still-high reading leaves them queued.
-	if !s.desktopMemoryPressured(desktoppool.WithComputer(ctx, rec.Bots[index].NodeID), tenantID, owner) {
+	if !s.desktopMemoryPressured(desktoppool.WithComputer(ctx, desktopComputerForBot(rec.Bots[index])), tenantID, owner) {
 		s.drainDesktopQueue(tenantID, owner, botID)
 	}
-	pictureCtx := desktoppool.WithComputer(ctx, rec.Bots[index].NodeID)
+	pictureCtx := desktoppool.WithComputer(ctx, desktopComputerForBot(rec.Bots[index]))
 	// The same per-user gate as Wake. A poll must not read or drop the
 	// picture while a wake is still deciding whether the screen is up.
 	gate := s.desktopUserGate(tenantID, userID)
@@ -202,7 +202,16 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		if !ok {
 			return "", false, nil
 		}
-		if s.desktopViewURL(tenantID, userID) == "" {
+		// A cached address is not proof the gate bearer is still the one
+		// inside the container. Refresh this same desktop user from the
+		// live page when desktopd still reports running.
+		if live, down := s.desktopPictureState(pictureCtx, tenantID, userID); live != "" {
+			s.rememberDesktopView(tenantID, userID, live)
+		} else if down && !s.desktopRecoverCooling(tenantID, userID) {
+			s.dropDesktopPicture(tenantID, userID)
+			s.noteDesktopRecover(tenantID, userID)
+			return "", false, nil
+		} else if s.desktopViewURL(tenantID, userID) == "" {
 			if raw == "" {
 				// A screen-touching step (screenshot, ctl, app, open) may
 				// have recorded use without a session wake, so the in-memory
@@ -220,6 +229,11 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	novnc := s.desktopViewURL(tenantID, userID)
 	awaiting := s.desktopLoginAwaiting(tenantID, userID)
 	if novnc == "" {
+		// A rejected gate was just dropped. Wait out the recover gap before
+		// asking desktopd again, so a poll does not retry every second.
+		if s.desktopRecoverCooling(tenantID, userID) {
+			return "", false, nil
+		}
 		// The address was dropped, or this pin never had one. Look once
 		// before starting: a look that blinked empty must not hide a screen
 		// that is up, and must not open a second desktop over it. A look
@@ -249,6 +263,8 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	}
 	live, down := s.desktopPictureState(pictureCtx, tenantID, userID)
 	if live != "" {
+		// Running with a cached address still needs the live page. A
+		// container restart changes the gate bearer under the same key.
 		s.rememberDesktopView(tenantID, userID, live)
 		novnc = s.desktopViewURL(tenantID, userID)
 		// The display can still be running after Xvfb has blanked it. Login
@@ -265,10 +281,14 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
 	if s.desktopRecoverCooling(tenantID, userID) {
-		// A start from the previous poll may still be coming up. Its first
-		// look answers empty; dropping the address here flips the page to
-		// asleep while that start is in flight.
-		return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+		// A rejected gate notes the recover gap inside the look-up, after
+		// this function already copied the cached URL. Read it again so
+		// that copy is not handed back after the drop. A start from the
+		// previous poll may still be coming up; its first look answers
+		// empty, and dropping again here would flip the page to asleep
+		// while that start is in flight.
+		current := s.desktopViewURL(tenantID, userID)
+		return current, current != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 	}
 	if awaiting {
 		releaseGate()
@@ -310,8 +330,17 @@ func (s *Service) desktopPictureState(ctx context.Context, tenantID, userID stri
 	}
 	if _, ok := s.Desktop.(DesktopViewState); ok && s.Desktop != nil {
 		state, novnc, known := s.askDesktopViewState(ctx, tenantID, userID)
-		if !known || state == DesktopStateUnavailable {
+		if !known {
 			return "", false
+		}
+		if state == DesktopStateUnavailable {
+			// The live read was rejected. Forget the cached gate address,
+			// but only once per recover gap so a poll does not hammer it.
+			if !s.desktopRecoverCooling(tenantID, userID) {
+				s.dropDesktopPicture(tenantID, userID)
+				s.noteDesktopRecover(tenantID, userID)
+			}
+			return "", true
 		}
 		switch state {
 		case DesktopStateRunning:
@@ -557,10 +586,11 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	gate := s.desktopUserGate(tenantID, userID)
 	gate.Lock()
 	defer gate.Unlock()
-	pictureCtx := desktoppool.WithComputer(ctx, rec.Bots[index].NodeID)
+	pictureCtx := desktoppool.WithComputer(ctx, desktopComputerForBot(rec.Bots[index]))
 	if novnc := s.desktopViewURL(tenantID, userID); novnc != "" {
 		live, down := s.desktopPictureState(pictureCtx, tenantID, userID)
 		if live != "" {
+			// Same desktop user, new gate bearer: replace the cached page.
 			s.rememberDesktopView(tenantID, userID, live)
 			novnc = s.desktopViewURL(tenantID, userID)
 			// 唤醒 of a screen that is still up. The picture may be blanked;
@@ -570,8 +600,14 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 		// A stopped screen keeps its old address. Returning it paints black
 		// and the next 唤醒 does the same thing, so the picture never comes back.
 		// A look-up that failed is not "stopped": leave the address alone.
-		if !down || s.desktopRecoverCooling(tenantID, userID) {
+		// A rejection notes the recover gap inside the look-up; read the
+		// cache again so the URL copied above is not returned after the drop.
+		if !down {
 			return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
+		}
+		if s.desktopRecoverCooling(tenantID, userID) {
+			current := s.desktopViewURL(tenantID, userID)
+			return current, current != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 		}
 		s.dropDesktopPicture(tenantID, userID)
 	}
@@ -585,7 +621,7 @@ func (s *Service) WakeDesktopView(ctx context.Context, tenantID, userID, botID s
 	openCtx, cancel := desktopViewOpenContext(ctx)
 	defer cancel()
 	openCtx = WithDesktopWakeReason(openCtx, DesktopWakeHuman)
-	openCtx = desktoppool.WithComputer(openCtx, rec.Bots[index].NodeID)
+	openCtx = desktoppool.WithComputer(openCtx, desktopComputerForBot(rec.Bots[index]))
 	novnc, openErr := s.Desktop.Open(openCtx, tenantID, userID)
 	if openErr != nil {
 		return "", false, explainDesktopErr(openErr)

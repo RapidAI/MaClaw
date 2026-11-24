@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
     setCloudAgentLLM: vi.fn(),
     resetCloudAgentLLM: vi.fn(),
     patchConfigFields: vi.fn(),
+    listCloudSrvNodes: vi.fn(),
+    upgradeCloudSrvNode: vi.fn(),
+    deleteCloudSrvNode: vi.fn(),
+    showConfirm: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -24,6 +28,13 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetCloudAgentLLM: (...args: unknown[]) => mocks.setCloudAgentLLM(...args),
     ResetCloudAgentLLM: (...args: unknown[]) => mocks.resetCloudAgentLLM(...args),
     PatchConfigFields: (...args: unknown[]) => mocks.patchConfigFields(...args),
+    ListCloudSrvNodes: (...args: unknown[]) => mocks.listCloudSrvNodes(...args),
+    UpgradeCloudSrvNode: (...args: unknown[]) => mocks.upgradeCloudSrvNode(...args),
+    DeleteCloudSrvNode: (...args: unknown[]) => mocks.deleteCloudSrvNode(...args),
+}));
+
+vi.mock('../../CustomDialog', () => ({
+    useDialog: () => ({ showConfirm: mocks.showConfirm }),
 }));
 
 import { CloudAgentSettingsPanel } from '../CloudAgentSettingsPanel';
@@ -67,6 +78,7 @@ beforeEach(() => {
     mocks.getCloudSrvChoice.mockResolvedValue({ node_id: '', nodes: baseNodes });
     mocks.listCloudAgents.mockResolvedValue({ enabled: true, instances: baseInstances });
     mocks.getMaclawLLMProviders.mockResolvedValue(providersPayload);
+    mocks.listCloudSrvNodes.mockResolvedValue([]);
     mocks.patchConfigFields.mockImplementation((patch: Record<string, unknown>) => {
         const cfg = new corelib.AppConfig({ projects: [] });
         cfg.cloud_agent_llm_provider = String(patch.cloud_agent_llm_provider ?? '');
@@ -193,6 +205,40 @@ describe('CloudAgentSettingsPanel', () => {
         expect(entry).toBe(document.activeElement);
     });
 
+    it('spins the install button while the agent runs and unlocks when the node registers', async () => {
+        mocks.deployDesktopNode.mockResolvedValue({ id: 'job-1', status: 'deploying' });
+        renderPanel();
+        fireEvent.click(await screen.findByText('安装私有云端服务'));
+        fireEvent.change(screen.getByLabelText('服务器 IP 或主机名'), { target: { value: '203.0.113.10' } });
+        fireEvent.change(screen.getByLabelText('SSH 用户名'), { target: { value: 'root' } });
+        fireEvent.change(screen.getByLabelText('SSH 密码'), { target: { value: 'secret' } });
+        expect(document.querySelector('.cloud-agent-spinner')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: '安装' }));
+        await waitFor(() => expect(mocks.deployDesktopNode).toHaveBeenCalled());
+        // Deploying: spinner + 安装中…, inputs and both actions disabled, so a
+        // second install cannot be fired while the agent runs on the server.
+        await waitFor(() => expect(screen.getByText(/安装 agent 已在 203.0.113.10 上启动/)).toBeTruthy());
+        expect(document.querySelector('.cloud-agent-spinner')).toBeTruthy();
+        const installButton = screen.getByRole('button', { name: '安装中…' }) as HTMLButtonElement;
+        expect(installButton.disabled).toBe(true);
+        expect((screen.getByRole('button', { name: '检测 sudo' }) as HTMLButtonElement).disabled).toBe(true);
+
+        // The node registers on the Hub: the next refresh ends the deploy and
+        // preselects the fresh node (still requiring 保存 to switch).
+        mocks.getCloudSrvChoice.mockResolvedValue({
+            node_id: '',
+            nodes: [...baseNodes, { node_id: 'node-new', name: 'fresh-srv', address: '203.0.113.10', online: true }],
+        });
+        fireEvent.click(screen.getAllByRole('button', { name: '刷新' })[0]);
+        await waitFor(() => expect(screen.getByText('安装完成：fresh-srv 已注册到 Hub。')).toBeTruthy());
+        expect(screen.queryByText(/安装 agent 已在/)).toBeNull();
+        expect(document.querySelector('.cloud-agent-spinner')).toBeNull();
+        expect((screen.getByRole('button', { name: '检测 sudo' }) as HTMLButtonElement).disabled).toBe(false);
+        // Display value matches the option text, not the node id.
+        await waitFor(() => expect(screen.getByDisplayValue(/fresh-srv/)).toBeTruthy());
+    });
+
     it('shows the offline status chip and warning when an offline node is selected', async () => {
         renderPanel();
         await waitFor(() => expect(mocks.getCloudSrvChoice).toHaveBeenCalled());
@@ -214,5 +260,45 @@ describe('CloudAgentSettingsPanel', () => {
         fireEvent.click(screen.getAllByRole('button', { name: '保存' })[0]);
         await waitFor(() => expect(mocks.setCloudSrvChoice).toHaveBeenCalledWith('node-1'));
         await waitFor(() => expect(screen.getByText('在线')).toBeTruthy());
+    });
+
+    it('lists installed srv nodes and supports upgrade and confirmed delete', async () => {
+        mocks.listCloudSrvNodes.mockResolvedValue([
+            { node_id: 'edge-1', name: 'cloud-1', host: '10.0.0.8', port: 22, user: 'root', registered: true, online: true },
+            { node_id: 'edge-2', name: 'cloud-2', host: '10.0.0.9', port: 22, user: 'root', registered: true, online: false, busy: true },
+        ]);
+        mocks.upgradeCloudSrvNode.mockResolvedValue({ node_id: 'edge-1', name: 'cloud-1', host: '10.0.0.8', user: 'root' });
+        mocks.showConfirm.mockResolvedValue(true);
+        renderPanel();
+        await waitFor(() => expect(mocks.getCloudSrvChoice).toHaveBeenCalled());
+        // The installed-node list lives in the deployment card, always visible.
+        // Rows show name, address, and live status.
+        await waitFor(() => expect(screen.getByText('cloud-1')).toBeTruthy());
+        expect(screen.getByText('cloud-2')).toBeTruthy();
+        expect(screen.getAllByText('任务进行中…').length).toBeGreaterThanOrEqual(1);
+
+        // 更新 expands the password field; the confirm call carries it.
+        fireEvent.click(screen.getAllByRole('button', { name: '更新' })[0]);
+        fireEvent.change(screen.getByPlaceholderText('SSH 密码'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: '确认升级' }));
+        await waitFor(() => expect(mocks.upgradeCloudSrvNode).toHaveBeenCalledWith('edge-1', 'secret'));
+
+        // 删除 goes through the confirm dialog, then unregisters.
+        fireEvent.click(screen.getAllByRole('button', { name: '删除' })[0]);
+        await waitFor(() => expect(mocks.showConfirm).toHaveBeenCalled());
+        await waitFor(() => expect(mocks.deleteCloudSrvNode).toHaveBeenCalledWith('edge-1'));
+    });
+
+    it('delete stops when the confirmation is dismissed', async () => {
+        mocks.listCloudSrvNodes.mockResolvedValue([
+            { node_id: 'edge-1', name: 'cloud-1', host: '10.0.0.8', port: 22, user: 'root', registered: true, online: true },
+        ]);
+        mocks.showConfirm.mockResolvedValue(false);
+        renderPanel();
+        await waitFor(() => expect(mocks.getCloudSrvChoice).toHaveBeenCalled());
+        await waitFor(() => expect(screen.getByText('cloud-1')).toBeTruthy());
+        fireEvent.click(screen.getByRole('button', { name: '删除' }));
+        await waitFor(() => expect(mocks.showConfirm).toHaveBeenCalled());
+        expect(mocks.deleteCloudSrvNode).not.toHaveBeenCalled();
     });
 });

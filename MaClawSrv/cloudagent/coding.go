@@ -17,7 +17,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 )
 
-// sendCoding starts a programming turn inside the checked-out jail.
+// sendCoding starts a programming turn inside the workspace jail — the
+// checked-out repo when one is connected, the bare workspace otherwise.
 // git push goes through Push, which is the same confirmation gate a direct
 // caller uses. The turn returns before the model finishes.
 func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnBody) (json.RawMessage, error) {
@@ -240,10 +241,15 @@ func (h *agentHost) BuildSystemPrompt(string, bool) string {
 		return "你是这个云端会话实例。读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
 			"运行命令用 bash，读文件用 read_file，写文件用 write_file。"
 	}
+	if _, err := readGit(h.inst.dir); err != nil {
+		return "你是这个云端编程实例。工作区还没有连接代码库，可以直接在里面创建和修改项目文件。" +
+			"读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
+			"连接代码库之后才能用 git_commit 和 git_push；不要在 shell 里执行 git。"
+	}
 	return "你是这个云端编程实例。工作区只有已检出的那一个代码库。" +
 		"读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
 		"提交用 git_commit。推送用 git_push，推送前必须等人确认。" +
-		"不要执行 git clone、fetch、pull、push、commit。"
+		"shell 里只允许只读 git 命令(status/diff/log 等)，其它 git 写操作不要执行。"
 }
 func (h *agentHost) BuildTools(string) []map[string]interface{} {
 	tools := []map[string]interface{}{
@@ -274,7 +280,7 @@ func (h *agentHost) BuildTools(string) []map[string]interface{} {
 		return tools
 	}
 	return append(tools,
-		fnTool("git_commit", "用仓库里保存的作者提交已跟踪的改动。这一步不会推送。", map[string]interface{}{
+		fnTool("git_commit", "用仓库里保存的作者提交仓库中的全部改动(含新文件)。这一步不会推送。", map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"message": map[string]interface{}{"type": "string"},

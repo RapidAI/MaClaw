@@ -72,7 +72,6 @@ class ComposerDictation {
   bool listening = false;
   bool recognizing = false;
   AsrEngine activeAsr = AsrEngine.system;
-  bool fellBack = false;
 
   int _gen = 0;
   Timer? _watchdog;
@@ -88,28 +87,42 @@ class ComposerDictation {
     onStateChanged?.call();
   }
 
+  /// The one line above the composer. It names the engine at work, never why
+  /// one was skipped: switching to the local engine is the normal path on a
+  /// phone whose system recognizer is unavailable, and announcing that on
+  /// every dictation reads like an error. Only a failure with no engine left
+  /// is reported, as a toast.
   String? statusText({
     required String listenSystem,
     required String listenLocal,
     required String recognizingSystem,
     required String recognizingLocal,
-    required String fallbackLocal,
   }) {
-    if (!listening && !recognizing && !fellBack) return null;
-    if (fellBack && activeAsr == AsrEngine.local) return fallbackLocal;
+    if (!listening && !recognizing) return null;
     if (recognizing) {
       return activeAsr == AsrEngine.local ? recognizingLocal : recognizingSystem;
     }
     return activeAsr == AsrEngine.local ? listenLocal : listenSystem;
   }
 
-  void _begin(AsrEngine value, {bool fellBackNow = false}) {
+  /// Test seam: puts the controller in the state a running dictation has,
+  /// without the platform recognizer.
+  @visibleForTesting
+  void debugSetState({
+    required bool listening,
+    required bool recognizing,
+    required bool local,
+  }) {
+    this.listening = listening;
+    this.recognizing = recognizing;
+    activeAsr = local ? AsrEngine.local : AsrEngine.system;
+  }
+
+  void _begin(AsrEngine value) {
     _uiReset = false;
     listening = true;
     recognizing = false;
     activeAsr = value;
-    if (fellBackNow) fellBack = true;
-    if (!fellBackNow && value == AsrEngine.system) fellBack = false;
     _notify();
   }
 
@@ -178,7 +191,6 @@ class ComposerDictation {
       return;
     }
     if (!voiceInputSupported) return;
-    fellBack = false;
     await engine.ensurePrefs();
     final choice = decideAsrFallback(
       systemStarted: false,
@@ -225,7 +237,6 @@ class ComposerDictation {
   }
 
   Future<void> _fallbackLocal({required bool localReady}) async {
-    fellBack = true;
     activeAsr = AsrEngine.local;
     _notify();
     if (!localReady) {
@@ -455,7 +466,7 @@ class ComposerDictation {
       return null;
     }
     if (!_disposed) {
-      _begin(AsrEngine.local, fellBackNow: fellBack);
+      _begin(AsrEngine.local);
       level.value = 0;
     }
     final buf = BytesBuilder(copy: false);

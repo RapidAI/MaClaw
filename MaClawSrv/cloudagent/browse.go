@@ -3,6 +3,7 @@ package cloudagent
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,20 +27,30 @@ const browseListLimit = 500
 // bytes through max_bytes; a download may take the full cap.
 const browseReadMaxBytes = 4 << 20
 
-// browsePack limits bound a directory download: the tar travels inside the
-// same channel as cloud_read_file, so its output is capped at the same 4MB
-// (counted on the encoded tar, not the summed file sizes — per-file headers
-// and padding inflate the archive well past the payload for many small files).
+// browsePack limits bound a directory download: the archive is a gzipped
+// tar travelling inside the same channel as cloud_read_file, so its output
+// is capped at the same 4MB — counted on the compressed stream, not the
+// summed file sizes.
 const (
 	browsePackMaxBytes = 4 << 20
 	browsePackMaxFiles = 20000
 )
 
-var errBrowsePackLimit = errors.New("目录太大，暂不支持打包下载")
+// browseWriteChunkMaxBytes bounds one cloud_write_file payload. The op body
+// crosses two 1MB request readers — desktop→hub /op and hub→srv control —
+// so 640KiB of raw bytes (~873KiB base64) stays comfortably under both.
+// Larger files upload as a sequence of chunked writes from the desktop.
+const browseWriteChunkMaxBytes = 640 << 10
+
+var (
+	errBrowsePackLimit   = errors.New("目录太大，暂不支持打包下载")
+	errBrowseWriteOffset = errors.New("写入位置与文件大小不一致，请重新上传")
+	errBrowseWriteTooBig = errors.New("单次写入的数据太大")
+)
 
 // browseJail resolves the instance jail root for file-browser ops. A coding
-// instance without a checkout has no browsable tree — the error reaches the
-// dialog instead of a fake empty listing.
+// instance without a checkout browses the bare workspace — the same root a
+// repo-less turn writes into.
 func (rt *Runtime) browseJail(inst *instance) (string, error) {
 	return jailRoot(inst.dir, inst.meta.Kind)
 }
@@ -257,14 +268,12 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 		return nil, errors.New("没有找到这个目录")
 	}
 	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
 	files := 0
 	walkErr := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if int64(buf.Len()) > browsePackMaxBytes {
-			return errBrowsePackLimit
 		}
 		if path != target && browseHidden(d.Name()) {
 			if d.IsDir() {
@@ -297,21 +306,136 @@ func (rt *Runtime) browsePackDir(inst *instance, rel string) (json.RawMessage, e
 		}
 		_, copyErr := io.Copy(tw, file)
 		file.Close()
-		return copyErr
+		if copyErr != nil {
+			// Mid-pack size changes surface raw archive/tar errors — translate.
+			return errors.New("打包时文件发生变化，请重试")
+		}
+		// Flush both writers so buf.Len() reflects the real compressed size —
+		// the cap must trip on what actually travels, not the uncompressed sum.
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if err := gz.Flush(); err != nil {
+			return err
+		}
+		if int64(buf.Len()) > browsePackMaxBytes {
+			return errBrowsePackLimit
+		}
+		return nil
 	})
 	if walkErr != nil {
 		_ = tw.Close()
+		_ = gz.Close()
 		return nil, walkErr
 	}
 	if err := tw.Close(); err != nil {
+		_ = gz.Close()
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
 		return nil, err
 	}
 	if int64(buf.Len()) > browsePackMaxBytes {
 		return nil, errBrowsePackLimit
 	}
 	return json.Marshal(map[string]any{
-		"name":        info.Name() + ".tar",
+		"name":        info.Name() + ".tar.gz",
+		"format":      "tar.gz",
 		"size":        int64(buf.Len()),
 		"data_base64": base64.StdEncoding.EncodeToString(buf.Bytes()),
 	})
+}
+
+// browseWriteFile appends one chunk to a file inside the jail. offset == 0
+// creates or truncates; a larger offset must match the current size so a
+// retried chunk cannot silently corrupt the file — the desktop resends from
+// scratch on mismatch. Missing parents are created inside the jail.
+func (rt *Runtime) browseWriteFile(inst *instance, rel, dataBase64 string, offset int64) (json.RawMessage, error) {
+	root, err := rt.browseJail(inst)
+	if err != nil {
+		return nil, err
+	}
+	rel = strings.TrimSpace(rel)
+	if rel == "" || rel == "/" {
+		return nil, errors.New("缺少文件路径")
+	}
+	if offset < 0 {
+		return nil, errBrowseWriteOffset
+	}
+	data, err := base64.StdEncoding.DecodeString(dataBase64)
+	if err != nil {
+		return nil, errors.New("上传数据无法解析")
+	}
+	if len(data) > browseWriteChunkMaxBytes {
+		return nil, errBrowseWriteTooBig
+	}
+	path, err := resolveInJail(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.IsDir() {
+			return nil, errors.New("这是一个目录，不能按文件写入")
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("该路径不能写入")
+		}
+		if offset > 0 && info.Size() != offset {
+			return nil, errBrowseWriteOffset
+		}
+	} else if offset > 0 {
+		return nil, errBrowseWriteOffset
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, errors.New("目录创建失败")
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if offset == 0 {
+		flags |= os.O_TRUNC
+	}
+	file, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		return nil, errors.New("这个文件暂时写入失败")
+	}
+	if offset > 0 {
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
+			file.Close()
+			return nil, errBrowseWriteOffset
+		}
+	}
+	written, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return nil, errors.New("这个文件暂时写入失败")
+	}
+	if closeErr != nil {
+		return nil, errors.New("这个文件暂时写入失败")
+	}
+	return json.Marshal(map[string]any{
+		"size":    offset + int64(written),
+		"written": written,
+	})
+}
+
+// browseMkdir creates a directory (and any missing parents) inside the jail.
+func (rt *Runtime) browseMkdir(inst *instance, rel string) (json.RawMessage, error) {
+	root, err := rt.browseJail(inst)
+	if err != nil {
+		return nil, err
+	}
+	rel = strings.TrimSpace(rel)
+	if rel == "" || rel == "/" {
+		return nil, errors.New("缺少目录路径")
+	}
+	path, err := resolveInJail(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	if info, statErr := os.Lstat(path); statErr == nil && !info.IsDir() {
+		return nil, errors.New("同名文件已存在")
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return nil, errors.New("目录创建失败")
+	}
+	return json.Marshal(map[string]any{"ok": true})
 }

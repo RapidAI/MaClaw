@@ -9155,6 +9155,61 @@ func TestRunLoopDriftGuidancePrecedesNoProgressHardStop(t *testing.T) {
 	}
 }
 
+func TestRunLoopSameToolHardStopNamesTheCause(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		respData := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "已完成修复，测试通过。",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   fmt.Sprintf("call_%d", callCount),
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "bash",
+									"arguments": fmt.Sprintf(`{"command":"echo %d"}`, callCount),
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(respData)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:   server.URL,
+			Model: "test",
+			Key:   "test-key",
+		},
+		maxIter:     20,
+		sysPrompt:   "test",
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
+		toolResult:  "[错误] working_dir missing",
+		// A plain business failure (test assertion, compile error, lint) no
+		// longer trips this breaker: the model is debugging, not stuck. The
+		// stop under test is the unrecoverable one, so use the timeout
+		// outcome that a hung call produces.
+		toolOutcome: ToolExecutionOutcomeTimeout,
+	}
+	result := RunLoop(cb, "fix the call chain", nil, nil)
+	if !result.HardExit || !strings.Contains(result.Error, "bash") || !strings.Contains(result.Error, "连续") {
+		t.Fatalf("same-tool stop lost its cause: %#v", result.Error)
+	}
+	if strings.Contains(result.Error, "空响应") {
+		t.Fatalf("same-tool stop reported as an empty response: %q", result.Error)
+	}
+}
+
 func TestRunLoop_NoDrift_WhenResultsChange(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

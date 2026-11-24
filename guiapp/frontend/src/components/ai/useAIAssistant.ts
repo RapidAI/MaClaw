@@ -627,6 +627,8 @@ export interface ChatMessage {
      * local path on this computer.
      */
     remoteFileFetch?: (filePath: string) => Promise<string>;
+    /** Cloud-transcript artifacts download to Downloads as soon as they are listed. */
+    remoteArtifactsAutoFetch?: boolean;
     thumbnailBase64?: string;
     imageKey?: string;
     /**

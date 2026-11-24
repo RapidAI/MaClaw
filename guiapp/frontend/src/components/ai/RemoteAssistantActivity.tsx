@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { AssistantToolCallRow } from "./assistantToolCallRow";
+import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
+import { isProgressOnlyToolAction, parseAssistantToolStatus, type AssistantToolCall } from "./assistantToolCall";
 import { localizeText } from "../../i18n";
 import { workflowStatusForTask } from "../layout/SidebarTaskManagement";
-import type { RemoteAssistantSession } from "../layout/remoteAssistantSession";
+import type { RemoteAssistantSession, RemoteLivePart } from "../layout/remoteAssistantSession";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { formatProjectSearchTime } from "./projectSearchTime";
 import { isCodingAgentProgressContent, renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
@@ -65,6 +68,49 @@ function remoteWorkbenchSteps(session: RemoteAssistantSession): CodingStepStatus
         workbench?.execution_plan,
         codingWorkbenchStepsFromPayload(workbench?.step_statuses),
     );
+}
+
+type RemoteTrailItem = { kind: "tool"; call: AssistantToolCall } | { kind: "line"; text: string };
+
+// The trail is a tail view — bound it like the plain-line cap it replaces.
+const REMOTE_TRAIL_KEPT = 8;
+
+/**
+ * One fold of the mirrored progress parts. Coding-agent lines go to the
+ * feed; styled tool-status lines (工具 · action (name)) fold into the same
+ * tool cards a local turn paints, collapsing adjacent identical calls like
+ * remoteLiveToolCalls; anything else stays a plain mono line. Position-based
+ * ids keep rows mounted while the stream appends: part.seq is position-
+ * derived on the reduced path and shifts when thinking/text parts appear,
+ * which would re-flip an unchanged call. Only the rare left-trim moves one.
+ */
+function remoteProgressTrail(parts: RemoteLivePart[]): {
+    codingFeedMessages: ChatMessage[];
+    shownTrail: RemoteTrailItem[];
+    lastToolIndex: number;
+} {
+    const codingFeedMessages: ChatMessage[] = [];
+    const trail: RemoteTrailItem[] = [];
+    parts.forEach((part, index) => {
+        if (isCodingAgentProgressContent(part.text)) {
+            codingFeedMessages.push({ id: `remote-live-${index}`, role: "progress", content: part.text, timestamp: index + 1 });
+            return;
+        }
+        const parsed = parseAssistantToolStatus(part.text);
+        if (parsed && !isProgressOnlyToolAction(parsed.action)) {
+            const tail = trail[trail.length - 1];
+            const repeated = tail?.kind === "tool"
+                && tail.call.name === parsed.name
+                && tail.call.action === parsed.action
+                && tail.call.detail === parsed.detail;
+            if (!repeated) trail.push({ kind: "tool", call: { id: `remote-trail-tool-${trail.length}`, ...parsed } });
+            return;
+        }
+        trail.push({ kind: "line", text: part.text });
+    });
+    const shownTrail = trail.slice(-REMOTE_TRAIL_KEPT);
+    const lastToolIndex = shownTrail.reduce((found, item, index) => (item.kind === "tool" ? index : found), -1);
+    return { codingFeedMessages, shownTrail, lastToolIndex };
 }
 
 /**
@@ -144,15 +190,11 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     // poll can report the run.
     const liveProgress = (session.live?.parts || []).filter(part => part.kind === "progress" && part.text);
     // Coding-agent progress lines render through the same feed the local
-    // panel uses; anything else stays a plain mono line. Seq-based ids keep
-    // feed rows mounted while the stream appends.
-    const codingFeedMessages: ChatMessage[] = liveProgress
-        .filter(part => isCodingAgentProgressContent(part.text))
-        .map((part, index) => ({ id: `remote-live-${part.seq || index}`, role: "progress", content: part.text, timestamp: index + 1 }));
-    const plainProgress = liveProgress
-        .filter(part => !isCodingAgentProgressContent(part.text))
-        .map(part => part.text)
-        .slice(-8);
+    // panel uses; styled tool-status lines fold into the same tool cards a
+    // local turn paints (settled calls as rows, the newest on the split-flap
+    // strip while the round streams so it flips like the local bubble);
+    // anything else stays a plain mono line.
+    const { codingFeedMessages, shownTrail, lastToolIndex } = remoteProgressTrail(liveProgress);
     const codingFeed = codingFeedMessages.length
         ? renderCodingAgentActivityFeed(codingFeedMessages, { text: t.text, fieldLabel: t.fieldLabel, isDark: t.isDark }, lang)
         : null;
@@ -234,11 +276,16 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
                 contentKey={`remote-live|${session.grantId}|${session.projectPath}`}
             >
                 {codingFeed}
-                {plainProgress.length ? (
+                {shownTrail.length ? (
                     <div className="aap-remote-progress" data-testid="remote-progress">
-                        {plainProgress.map((line, index) => (
-                            <div key={index} className="aap-remote-progress-line">{line}</div>
-                        ))}
+                        {shownTrail.map((item, index) => item.kind === "tool"
+                            ? (hasLive && index === lastToolIndex
+                                // A stable key keeps one mounted strip across
+                                // calls: a new call flips the same tile like
+                                // the local bubble instead of remounting.
+                                ? <AssistantToolFlipTicker key="remote-trail-live-flip" call={item.call} theme={t} />
+                                : <AssistantToolCallRow key={item.call.id} call={item.call} theme={t} />)
+                            : <div key={`line-${index}`} className="aap-remote-progress-line">{item.text}</div>)}
                     </div>
                 ) : null}
             </AssistantReasoningPanel>

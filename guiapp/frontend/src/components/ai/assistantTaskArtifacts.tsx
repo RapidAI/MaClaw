@@ -201,6 +201,30 @@ type RemoteArtifactState = {
     detail?: string;
 };
 
+// A fetched copy survives card remounts (tab switches re-render the
+// transcript), so a remote artifact is not re-downloaded on every revisit.
+// Insertion-ordered FIFO bound: eviction only loses the "already fetched"
+// memory — the card re-downloads on the next click.
+const remoteArtifactLocalCopies = new Map<string, string>();
+const REMOTE_ARTIFACT_CACHE_MAX = 200;
+
+// Auto-fetch fan-out bound: one hub op per artifact is already concurrent
+// enough at a handful per turn; beyond that the queue drains as slots free.
+const REMOTE_ARTIFACT_FETCH_PARALLEL = 3;
+
+function remoteArtifactCacheKey(messageId: string, filePath: string): string {
+    return `${messageId}|${artifactIdentity(filePath)}`;
+}
+
+function rememberRemoteArtifactCopy(cacheKey: string, savedPath: string) {
+    remoteArtifactLocalCopies.set(cacheKey, savedPath);
+    while (remoteArtifactLocalCopies.size > REMOTE_ARTIFACT_CACHE_MAX) {
+        const oldest = remoteArtifactLocalCopies.keys().next().value;
+        if (oldest === undefined) break;
+        remoteArtifactLocalCopies.delete(oldest);
+    }
+}
+
 // A missing binding throws synchronously — the saved file must not read as a
 // failed fetch just because the shell opener is unavailable.
 function openLocalArtifactPath(path: string) {
@@ -213,25 +237,46 @@ function openLocalArtifactPath(path: string) {
 
 /**
  * Remote-control transcript card: the listed files live on the controlled
- * machine. Opening one fetches the bytes through onFetch, saves them into
- * this computer's Downloads folder, and opens the local copy.
+ * machine (or the cloud instance). Opening one fetches the bytes through
+ * onFetch and saves them into this computer's Downloads folder. Once the
+ * local copy exists the card shows the same actions a local artifact has
+ * (preview / view / export / reveal / cloud-drive upload). With autoFetch
+ * the download starts as soon as the turn lists the file — without opening
+ * it — so the local copy is ready by the time the user clicks.
  */
 export function RemoteTaskArtifacts({
     paths,
     messageId,
     lang,
     onFetch,
+    autoFetch = false,
 }: {
     paths: string[];
     messageId: string;
     lang: string;
     /** Fetches the file from the controlled machine; resolves to the saved local path. */
     onFetch: (filePath: string) => Promise<string>;
+    /** Cloud artifacts download into Downloads as soon as they are listed. */
+    autoFetch?: boolean;
 }) {
-    const [states, setStates] = useState<Record<string, RemoteArtifactState>>({});
+    const [showAll, setShowAll] = useState(false);
+    const [states, setStates] = useState<Record<string, RemoteArtifactState>>(() => {
+        const restored: Record<string, RemoteArtifactState> = {};
+        for (const path of paths) {
+            const trimmed = path.trim();
+            if (!trimmed) continue;
+            const saved = remoteArtifactLocalCopies.get(remoteArtifactCacheKey(messageId, trimmed));
+            if (saved) restored[artifactIdentity(trimmed)] = { status: "saved", localPath: saved };
+        }
+        return restored;
+    });
     // A click races the state update: track in-flight fetches so a double
     // click cannot issue the same remote request twice.
     const inflight = useRef(new Set<string>());
+    // A click during a background (autoFetch) download still wants the file
+    // opened when it lands — remember the gesture instead of swallowing it.
+    // The value also replays a failed reveal after a self-heal refetch.
+    const pendingOpen = useRef(new Map<string, "open" | "reveal">());
     const files: string[] = [];
     const seen = new Set<string>();
     for (const path of paths) {
@@ -241,34 +286,106 @@ export function RemoteTaskArtifacts({
         seen.add(key);
         files.push(trimmed);
     }
-    if (!files.length) return null;
-    const open = (filePath: string) => {
+    // Preview-capable results first, same order the local card uses.
+    files.sort((left, right) => Number(!taskResultPreviewKindFromPath(left)) - Number(!taskResultPreviewKindFromPath(right)));
+    const fetchFile = useCallback((filePath: string, openAfter: boolean) => {
         const key = artifactIdentity(filePath);
-        const state = states[key];
-        if (state?.status === "busy" || inflight.current.has(key)) return;
-        if (state?.status === "saved" && state.localPath) {
-            openLocalArtifactPath(state.localPath);
-            return;
-        }
+        if (inflight.current.has(key)) return;
         inflight.current.add(key);
         setStates(prev => ({ ...prev, [key]: { status: "busy" } }));
         void onFetch(filePath).then(localPath => {
             const saved = String(localPath || "").trim();
             if (!saved) {
+                pendingOpen.current.delete(key);
                 setStates(prev => ({ ...prev, [key]: { status: "error", detail: chromeText(lang, "The file could not be fetched", "文件取回失败") } }));
                 return;
             }
+            rememberRemoteArtifactCopy(remoteArtifactCacheKey(messageId, filePath), saved);
             setStates(prev => ({ ...prev, [key]: { status: "saved", localPath: saved } }));
-            openLocalArtifactPath(saved);
+            // Consume a remembered gesture either way — otherwise an
+            // explicit fetch (openAfter short-circuits the delete) would
+            // leave it armed to fire on a later background download.
+            const remembered = pendingOpen.current.get(key);
+            pendingOpen.current.delete(key);
+            const land = openAfter ? "open" : remembered;
+            if (land === "reveal") void ShowItemInFolder(saved).catch(() => {});
+            else if (land) openLocalArtifactPath(saved);
         }).catch((err: unknown) => {
             const detail = err instanceof Error && err.message.trim()
                 ? err.message
                 : String(err || "").trim() || chromeText(lang, "The file could not be fetched", "文件取回失败");
+            pendingOpen.current.delete(key);
             setStates(prev => ({ ...prev, [key]: { status: "error", detail } }));
         }).finally(() => {
             inflight.current.delete(key);
         });
+    }, [onFetch, messageId, lang]);
+    const filesKey = files.join("\n");
+    useEffect(() => {
+        if (!autoFetch) return;
+        let active = 0;
+        for (const filePath of filesKey.split("\n").filter(Boolean)) {
+            const key = artifactIdentity(filePath);
+            const state = states[key];
+            if (state?.status === "busy") {
+                active += 1;
+                continue;
+            }
+            // Saved and error are settled — check them before inflight: the
+            // ref keeps its key until .finally runs, which can land after the
+            // saved state already rendered, so counting inflight first would
+            // pin a freed slot (and nothing re-renders when .finally clears).
+            if (state && state.status !== "idle") continue;
+            // The just-started gap: inflight has the key but the busy state
+            // has not committed yet — still occupies a slot.
+            if (inflight.current.has(key)) {
+                active += 1;
+                continue;
+            }
+            if (active >= REMOTE_ARTIFACT_FETCH_PARALLEL) break;
+            active += 1;
+            fetchFile(filePath, false);
+        }
+    }, [autoFetch, filesKey, states, fetchFile]);
+    if (!files.length) return null;
+    const runOnSavedCopy = (filePath: string, localPath: string, action: (p: string) => Promise<unknown>, reland: "open" | "reveal") => {
+        // The saved copy can disappear from Downloads between visits; a
+        // failed action drops the stale cache entry and re-fetches instead
+        // of failing silently, then replays the gesture on the fresh copy.
+        const key = artifactIdentity(filePath);
+        const cacheKey = remoteArtifactCacheKey(messageId, filePath);
+        const refetch = () => {
+            remoteArtifactLocalCopies.delete(cacheKey);
+            pendingOpen.current.set(key, reland);
+            fetchFile(filePath, false);
+        };
+        try {
+            void action(localPath).catch(refetch);
+        } catch {
+            // no-op: a missing binding is not a missing file — keep the
+            // saved card instead of downloading on every click.
+        }
     };
+    const openSaved = (filePath: string, localPath: string) => {
+        runOnSavedCopy(filePath, localPath, p => OpenFileOrShowInFolder(p), "open");
+    };
+    const revealSaved = (filePath: string, localPath: string) => {
+        runOnSavedCopy(filePath, localPath, p => ShowItemInFolder(p), "reveal");
+    };
+    const open = (filePath: string) => {
+        const key = artifactIdentity(filePath);
+        const state = states[key];
+        if (state?.status === "saved" && state.localPath) {
+            openSaved(filePath, state.localPath);
+            return;
+        }
+        if (state?.status === "busy" || inflight.current.has(key)) {
+            pendingOpen.current.set(key, "open");
+            return;
+        }
+        fetchFile(filePath, true);
+    };
+    const visible = showAll ? files : files.slice(0, VISIBLE_ARTIFACTS);
     return (
         <div className="mc-task-artifacts" data-testid={`remote-task-result-card-${messageId}`}>
             <div className="mc-task-artifacts__head">
@@ -277,22 +394,21 @@ export function RemoteTaskArtifacts({
                 <span className="mc-task-artifacts__count">{files.length}</span>
             </div>
             <div className="mc-task-artifacts__row">
-                {files.map((filePath, index) => {
+                {visible.map((filePath, index) => {
                     const file = artifactLabel(filePath, lang);
                     const state = states[artifactIdentity(filePath)];
                     const suffix = index > 0 ? `-${index}` : "";
                     const busy = state?.status === "busy";
+                    const savedPath = state?.status === "saved" ? String(state.localPath || "") : "";
                     const label = busy
                         ? chromeText(lang, "Fetching...", "取回中...", "取回中...")
-                        : state?.status === "saved"
-                            ? chromeText(lang, "Open", "打开", "打開")
-                            : state?.status === "error"
-                                ? chromeText(lang, "Retry", "重试", "重試")
-                                : chromeText(lang, "Fetch & open", "取回并打开", "取回並打開");
+                        : state?.status === "error"
+                            ? chromeText(lang, "Retry", "重试", "重試")
+                            : chromeText(lang, "Fetch & open", "取回并打开", "取回並打開");
                     const title = state?.status === "error" && state.detail
                         ? state.detail
-                        : state?.status === "saved" && state.localPath
-                            ? state.localPath
+                        : savedPath
+                            ? savedPath
                             : file.title;
                     return (
                         <div key={`${filePath}-${index}`} className="mc-task-artifact-item">
@@ -309,17 +425,27 @@ export function RemoteTaskArtifacts({
                                     <span className="mc-task-artifact__open" aria-hidden="true">{busy ? "…" : "↗"}</span>
                                 </a>
                             </div>
-                            <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
-                                <button
-                                    type="button"
-                                    data-testid={`remote-task-fetch-btn${suffix}`}
-                                    title={title}
-                                    disabled={busy}
-                                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); open(filePath); }}
-                                >
-                                    {label}
-                                </button>
-                            </div>
+                            {savedPath ? (
+                                <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
+                                    <button type="button" className="mc-artifact-btn--fill" data-testid={`remote-task-preview-btn${suffix}`} onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(savedPath, messageId); }}>{chromeText(lang, "Preview", "预览", "預覽")}</button>
+                                    <button type="button" data-testid={`remote-task-view-btn${suffix}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSaved(filePath, savedPath); }}>{chromeText(lang, "View document", "查看文档", "查看文件")}</button>
+                                    <TaskResultExportButton filePath={savedPath} lang={lang} testIdSuffix={`-remote${suffix}`} />
+                                    <button type="button" data-testid={`remote-task-reveal-btn${suffix}`} onClick={(event) => { event.stopPropagation(); revealSaved(filePath, savedPath); }}>{chromeText(lang, "Reveal", "定位", "定位")}</button>
+                                    {taskResultUploadSupported(savedPath) && <TaskResultUploadButton filePath={savedPath} lang={lang} />}
+                                </div>
+                            ) : (
+                                <div className="mc-task-result-card__actions mc-task-artifact-item__actions">
+                                    <button
+                                        type="button"
+                                        data-testid={`remote-task-fetch-btn${suffix}`}
+                                        title={title}
+                                        disabled={busy}
+                                        onClick={(event) => { event.preventDefault(); event.stopPropagation(); open(filePath); }}
+                                    >
+                                        {label}
+                                    </button>
+                                </div>
+                            )}
                             {state?.status === "error" && state.detail && (
                                 <div data-testid={`remote-task-fetch-error${suffix}`} style={{ color: "var(--maclaw-error, #c0392b)", fontSize: 12, marginTop: 4, wordBreak: "break-word" }}>
                                     {state.detail}
@@ -329,6 +455,19 @@ export function RemoteTaskArtifacts({
                     );
                 })}
             </div>
+            {files.length > VISIBLE_ARTIFACTS && (
+                <button
+                    type="button"
+                    className="mc-task-artifacts__more"
+                    data-testid="remote-task-artifacts-more"
+                    onClick={() => setShowAll((open) => !open)}
+                >
+                    {showAll
+                        ? chromeText(lang, "Show fewer artifacts", "收起产出物", "收起產出物")
+                        : chromeText(lang, `View all artifacts (${files.length})`, `查看所有产物 (${files.length})`, `查看所有產物 (${files.length})`)}
+                    <span aria-hidden="true">{showAll ? " ⌃" : " ›"}</span>
+                </button>
+            )}
         </div>
     );
 }

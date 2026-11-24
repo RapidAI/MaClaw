@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent } from 'react';
 import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudAgent, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudAgent, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudAgent, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, StopCloudAgent, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudAgent, DeleteCloudWorkspace, DownloadCloudAgentWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudAgent, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudAgent, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, StopCloudAgent, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta, UploadDirectoryToCloudAgent, UploadFilesToCloudAgent } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_MACLAW_CONFIG_CHANGED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
@@ -12,7 +12,7 @@ import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, requestCloudAgentListRefresh, useCloudAssistantId } from './cloudAgentAssistant';
-import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
+import { CloudAgentListRow, TaskPlaceIcon, TaskStatusMark, cloudAgentRecency, cloudTurnRunning, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem, type TaskListStatusKind } from './taskPlace';
 import { CloudAgentFilesDialog } from './CloudAgentFilesDialog';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
@@ -362,66 +362,6 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
     }
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-
-const STATUS_MARK_STROKE = {
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.8,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-};
-
-/** Row status glyph. In progress is a spinning ring; the other states keep
- * the same outer size but a different mark, so they stay distinct from the
- * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
- * user unit equals one CSS pixel — the previous 14px viewport scaled every
- * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
- * No title here: the row tooltip already carries the status plus the path. */
-const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
-    <span
-        className="mc-task-status"
-        data-status={kind}
-        data-testid="task-status-mark"
-        role="img"
-        aria-label={label}
-    >
-        {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                {kind === 'completed' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
-                    </>
-                )}
-                {kind === 'pending' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
-                    </>
-                )}
-                {kind === 'failed' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
-                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
-                    </>
-                )}
-                {kind === 'paused' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
-                    </>
-                )}
-                {kind === 'cancelled' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
-                    </>
-                )}
-            </svg>
-        )}
-    </span>
-);
 
 const TaskFolderChevron = () => (
     <svg className="stsm-task-folder__chevron" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -922,8 +862,10 @@ export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workf
 }
 
 /** Glyph shown beside a task-list row. Live execution wins over a stale
- * snapshot; a paused or pending bucket wins over a generic "in progress" tone. */
-export type TaskListStatusKind = 'running' | 'completed' | 'pending' | 'failed' | 'paused' | 'cancelled' | 'idle';
+ * snapshot; a paused or pending bucket wins over a generic "in progress" tone.
+ * TaskListStatusKind and the mark itself live in taskPlace so the cloud row
+ * can reuse them. */
+export type { TaskListStatusKind } from './taskPlace';
 
 export function taskListStatusKind(input: {
     liveRunning?: boolean;
@@ -1788,7 +1730,7 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
-type TaskContextMenuIconName = 'rename' | 'new' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove' | 'stop';
+type TaskContextMenuIconName = 'rename' | 'new' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove' | 'stop' | 'download' | 'upload';
 
 type TaskContextMenuItem = {
     label: string;
@@ -1891,6 +1833,20 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
         )}
         {name === 'stop' && (
             <rect {...TASK_ICON_PROPS} x="6" y="6" width="12" height="12" rx="2" />
+        )}
+        {name === 'download' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M12 4v10" />
+                <path {...TASK_ICON_PROPS} d="m8.2 10.8 3.8 3.8 3.8-3.8" />
+                <path {...TASK_ICON_PROPS} d="M4.5 15.5v3.2a1.6 1.6 0 0 0 1.6 1.6h11.8a1.6 1.6 0 0 0 1.6-1.6v-3.2" />
+            </>
+        )}
+        {name === 'upload' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M12 14V4.6" />
+                <path {...TASK_ICON_PROPS} d="m8.2 8.4 3.8-3.8 3.8 3.8" />
+                <path {...TASK_ICON_PROPS} d="M4.5 15.5v3.2a1.6 1.6 0 0 0 1.6 1.6h11.8a1.6 1.6 0 0 0 1.6-1.6v-3.2" />
+            </>
         )}
     </svg>
 );
@@ -3653,6 +3609,10 @@ export const SidebarTaskManagement = ({
             .map(entry => entry.item);
         // cloudOpenRevision rereads the open stamps after a cloud row is opened.
     }, [cloudAgents, cloudOpenRevision, recentTaskCount, taskSearchQuery]);
+    // The band earns its place only as a subset: when every cloud task is
+    // already recent it would repeat the whole list below, so the kind
+    // folders stand alone.
+    const showRecentCloudBand = recentCloudItems.length > 0 && recentCloudItems.length < visibleCloudAgents.length;
     // Opening a cloud row reveals its folder the way a local active task does —
     // one reveal per open, so collapsing it afterwards stays collapsed.
     const openCloudFolderKind: MovableTaskListFolderKind = openCloudId
@@ -3684,6 +3644,35 @@ export const SidebarTaskManagement = ({
     const stopOrResumeCloudAgent = async (item: CloudAgentListItem) => {
         const op = item.status === 'stopped' ? ResumeCloudAgent : StopCloudAgent;
         if (await runCloudAgentBinding(op, item.id)) requestCloudAgentListRefresh();
+    };
+    const downloadCloudAgentWorkspace = async (item: CloudAgentListItem) => {
+        try {
+            const dest = await DownloadCloudAgentWorkspace(item.id, (item.name || item.id || '').trim());
+            if (dest) setTaskListNotice(textForLang(lang, `Saved to ${dest}`, `已保存到 ${dest}`, `已儲存到 ${dest}`));
+        } catch (error) {
+            setTaskListNotice(extractErrorMessage(error) || textForLang(lang, 'Cloud operation failed', '云端操作失败', '雲端操作失敗'));
+        }
+    };
+    const uploadToCloudAgent = async (item: CloudAgentListItem, directory: boolean) => {
+        try {
+            const fn = directory ? UploadDirectoryToCloudAgent : UploadFilesToCloudAgent;
+            setTaskListNotice(textForLang(lang, 'Picking and uploading…', '正在选择并上传…', '正在選擇並上傳…'));
+            const result = await fn(item.id);
+            const files = Number(result?.files || 0);
+            const dirs = Number(result?.dirs || 0);
+            if (files + dirs === 0) {
+                setTaskListNotice(''); // picker cancelled — drop the in-flight notice
+                return;
+            }
+            setTaskListNotice(textForLang(
+                lang,
+                `Uploaded ${files} file(s)${dirs ? ` and ${dirs} folder(s)` : ''}`,
+                `已上传 ${files} 个文件${dirs ? `、${dirs} 个目录` : ''}`,
+                `已上傳 ${files} 個檔案${dirs ? `、${dirs} 個目錄` : ''}`,
+            ));
+        } catch (error) {
+            setTaskListNotice(extractErrorMessage(error) || textForLang(lang, 'Cloud operation failed', '云端操作失败', '雲端操作失敗'));
+        }
     };
     const confirmDeleteCloudAgent = async (item: CloudAgentListItem) => {
         setCloudContextMenu(null);
@@ -3732,6 +3721,26 @@ export const SidebarTaskManagement = ({
     };
     const buildCloudContextMenuItems = (item: CloudAgentListItem): TaskContextMenuItem[] => {
         const stopped = item.status === 'stopped';
+        // Only a running turn can be stopped; idle and failed instances have
+        // nothing to interrupt, so the menu omits the item entirely.
+        const running = cloudTurnRunning(item.id, item.status);
+        const stopOrResumeItem: TaskContextMenuItem | null = stopped
+            ? {
+                label: textForLang(lang, 'Resume', '恢复', '恢復'),
+                icon: 'restore',
+                testId: 'cloud-agent-context-resume',
+                title: textForLang(lang, 'Resume this stopped instance', '恢复已停止的实例', '恢復已停止的實例'),
+                action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+            }
+            : running
+                ? {
+                    label: textForLang(lang, 'Stop', '停止', '停止'),
+                    icon: 'stop',
+                    testId: 'cloud-agent-context-stop',
+                    title: textForLang(lang, 'Stop the instance. Its files stay browsable.', '停止实例；文件仍可浏览。', '停止實例；檔案仍可瀏覽。'),
+                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+                }
+                : null;
         const items: TaskContextMenuItem[] = [
             {
                 label: textForLang(lang, 'Open', '打开', '打開'),
@@ -3758,21 +3767,28 @@ export const SidebarTaskManagement = ({
                 title: textForLang(lang, 'View the files inside this cloud task', '查看这个云端任务里的文件', '查看這個雲端任務裡的檔案'),
                 action: () => { setCloudContextMenu(null); setCloudFilesItem(item); },
             },
-            stopped
-                ? {
-                    label: textForLang(lang, 'Resume', '恢复', '恢復'),
-                    icon: 'restore',
-                    testId: 'cloud-agent-context-resume',
-                    title: textForLang(lang, 'Resume this stopped instance', '恢复已停止的实例', '恢復已停止的實例'),
-                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
-                }
-                : {
-                    label: textForLang(lang, 'Stop', '停止', '停止'),
-                    icon: 'stop',
-                    testId: 'cloud-agent-context-stop',
-                    title: textForLang(lang, 'Stop the instance. Its files stay browsable.', '停止实例；文件仍可浏览。', '停止實例；檔案仍可瀏覽。'),
-                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
-                },
+            {
+                label: textForLang(lang, 'Download all (.tar.gz)', '打包下载', '打包下載'),
+                icon: 'download',
+                testId: 'cloud-agent-context-download',
+                title: textForLang(lang, 'Pack the whole workspace as .tar.gz and download it', '将整个工作目录打包为 .tar.gz 下载', '將整個工作目錄打包為 .tar.gz 下載'),
+                action: () => { setCloudContextMenu(null); void downloadCloudAgentWorkspace(item); },
+            },
+            {
+                label: textForLang(lang, 'Upload files', '上传文件', '上傳檔案'),
+                icon: 'upload',
+                testId: 'cloud-agent-context-upload-files',
+                title: textForLang(lang, 'Upload local files into the workspace', '选择本地文件上传到云端任务的工作目录', '選擇本機檔案上傳到雲端任務的工作目錄'),
+                action: () => { setCloudContextMenu(null); void uploadToCloudAgent(item, false); },
+            },
+            {
+                label: textForLang(lang, 'Upload folder', '上传文件夹', '上傳資料夾'),
+                icon: 'upload',
+                testId: 'cloud-agent-context-upload-dir',
+                title: textForLang(lang, 'Upload a local folder into the workspace', '选择本地文件夹上传到云端任务的工作目录', '選擇本機資料夾上傳到雲端任務的工作目錄'),
+                action: () => { setCloudContextMenu(null); void uploadToCloudAgent(item, true); },
+            },
+            ...(stopOrResumeItem ? [stopOrResumeItem] : []),
             {
                 label: textForLang(lang, 'Delete', '删除', '刪除'),
                 icon: 'remove',
@@ -3783,13 +3799,14 @@ export const SidebarTaskManagement = ({
         ];
         return items;
     };
-    const renderCloudRow = (item: CloudAgentListItem, order?: number) => (
+    const renderCloudRow = (item: CloudAgentListItem, opts?: { order?: number; subtitle?: 'kind' | 'status' }) => (
         <CloudAgentListRow
             key={item.id}
             item={item}
             lang={lang}
             active={openCloudId === item.id}
-            order={order}
+            order={opts?.order}
+            subtitle={opts?.subtitle}
             timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
             onOpen={() => openCloudRow(item)}
             onContextMenu={event => {
@@ -6279,7 +6296,9 @@ export const SidebarTaskManagement = ({
                 chips, and zero-count chips stay off it — the whole block reads
                 as one compact line (我的任务列表 · 全部 29 · 待处理 1 …). */}
             <div className="mc-task-filter-head">
-                <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
+                <div className="mc-task-filter-panel__title">{cloudTabSelected
+                    ? textForLang(lang, 'Cloud tasks', '云端任务', '雲端任務')
+                    : textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
                 {/* Filter rows are noise while the list is empty on the default
                     filters — same conditional-chip rule as zero-count chips
                     above; they return with the first task. */}
@@ -6353,7 +6372,7 @@ export const SidebarTaskManagement = ({
                     </div>
                 ) : (
                 <>
-                    {recentCloudItems.length > 0 ? (
+                    {showRecentCloudBand ? (
                         <section
                             className="stsm-task-folder"
                             data-testid="task-folder-recent"
@@ -6389,13 +6408,9 @@ export const SidebarTaskManagement = ({
                             ) : null}
                         </section>
                     ) : null}
+                {/* No 云端 place header here — the selected tab already names
+                    the place; the group wrapper only scopes the testid. */}
                 <div data-testid="task-folder-cloud" className="stsm-task-cloud-group">
-                    <div className="stsm-task-place" data-testid="task-place-cloud">
-                        <div className="stsm-task-folder__head" style={{ padding: '5px 8px', gap: 6 }}>
-                            <TaskPlaceIcon place="cloud" lang={lang} />
-                            <span className="stsm-task-folder__label">{textForLang(lang, 'Cloud', '云端', '雲端')}</span>
-                        </div>
-                    </div>
                     {cloudFolderGroups.map(group => {
                         const groupExpanded = !!taskSearchQuery.trim() || !collapsedTaskFolders.has(group.kind);
                         const groupLabel = taskListFolderLabel(group.kind, lang);
@@ -6432,7 +6447,7 @@ export const SidebarTaskManagement = ({
                             </div>
                             {groupExpanded ? (
                                 <div id={`task-folder-items-cloud-${group.kind}`} className="stsm-task-folder__items">
-                                    {group.items.map(item => renderCloudRow(item))}
+                                    {group.items.map(item => renderCloudRow(item, { subtitle: 'status' }))}
                                 </div>
                             ) : null}
                         </section>
@@ -6881,7 +6896,7 @@ export const SidebarTaskManagement = ({
             </section>
             );
             })}
-            {folder.kind === 'recent' ? recentView.cloud.map(item => renderCloudRow(item, recentView.order[`cloud:${item.id}`])) : null}
+            {folder.kind === 'recent' ? recentView.cloud.map(item => renderCloudRow(item, { order: recentView.order[`cloud:${item.id}`] })) : null}
             </div>
             ) : null}
             </section>

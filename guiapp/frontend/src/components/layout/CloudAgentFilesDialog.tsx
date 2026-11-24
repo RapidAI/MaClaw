@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { EventsOn } from '../../../wailsjs/runtime';
 import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 import { localizeText } from '../../i18n';
 import { CodePreviewWorkspace } from '../ai/CodePreviewWorkspace';
@@ -47,6 +48,23 @@ export function CloudAgentFilesDialog({
     useEffect(() => {
         const focusTimer = window.setTimeout(() => dialogRef.current?.focus(), 0);
         return () => window.clearTimeout(focusTimer);
+    }, [item.id]);
+
+    // Workspace mutations from the task context menu (upload, delete) reach
+    // the open dialog through this event; a missing payload id refreshes too.
+    useEffect(() => {
+        let off: (() => void) | undefined;
+        try {
+            off = EventsOn('cloud-agent-files-changed', (payload: unknown) => {
+                const id = typeof payload === 'object' && payload !== null
+                    ? String((payload as { instance_id?: string }).instance_id || '')
+                    : '';
+                if (!id || id === item.id) refreshRef.current?.();
+            });
+        } catch {
+            off = undefined;
+        }
+        return () => off?.();
     }, [item.id]);
 
     return createPortal(

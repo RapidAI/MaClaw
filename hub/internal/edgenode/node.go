@@ -368,10 +368,10 @@ func (r *Registry) Enroll(ctx context.Context, code, desktopdKey, srvAdmin, vers
 		IssuedBy:     item.IssuedBy,
 		CreatedAt:    r.now(),
 	}
-	if node.OwnerUserID != "" && !hasDesktopd {
-		r.restoreCode(item)
-		return EnrollResult{}, errors.New("a personal desktop code registers desktopd")
-	}
+	// A personal code registers a node for the issuing user. desktopd rides
+	// the code by default, but a srv-only node (botnode tunnel straight to
+	// maclawsrv, no desktop, 私有云端服务) is also valid: it carries a srv
+	// admin secret and gets a hub token for that srv.
 	if hasSrv && node.OwnerUserID != "" && strings.TrimSpace(srvAdmin) == "" {
 		r.restoreCode(item)
 		return EnrollResult{}, errors.New("srv admin secret is required")
