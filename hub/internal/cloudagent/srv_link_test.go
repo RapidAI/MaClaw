@@ -160,3 +160,71 @@ func TestSrvConnForNodeResolvesRegisteredLink(t *testing.T) {
 		t.Fatalf("public conn = %+v err=%v", conn, err)
 	}
 }
+
+// With exactly one usable endpoint — a registered link and no usable
+// public connection — that link is the implicit default for every
+// unpinned scope and for an explicit '' pin. Two usable endpoints keep
+// the public connection: ambiguity needs an explicit pin.
+func TestSrvConnSingleUsableSrvIsTheDefault(t *testing.T) {
+	settings := memSettings{kv: map[string]string{
+		SrvSettingsKey("tenant-a"): `{
+			"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
+		}`,
+	}}
+	svc := New(openTestDB(t), settings)
+	conn, err := svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.LinkID != "srv-a" || conn.AdminSecret != "a-sec" {
+		t.Fatalf("single-srv default = %+v err=%v", conn, err)
+	}
+
+	// An explicit '' pin asks for the effective default: the one srv.
+	empty := ""
+	if _, _, err := svc.SaveAccess(context.Background(), "tenant-a", AccessView{
+		Scope: ScopeUser, TargetID: "user-1", Enabled: AccessOn, SrvID: &empty,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.LinkID != "srv-a" {
+		t.Fatalf("'' pin conn = %+v err=%v", conn, err)
+	}
+
+	// A configured-but-unusable public connection does not count: the one
+	// usable link is still the default.
+	settings.kv[SrvSettingsKey("tenant-a")] = `{
+		"base_url": "http://10.0.0.9", "admin_secret": "x",
+		"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
+	}`
+	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.LinkID != "srv-a" {
+		t.Fatalf("unusable-public default = %+v err=%v", conn, err)
+	}
+
+	// A second usable endpoint reinstates the public default: the admin
+	// has to pin explicitly.
+	settings.kv[SrvSettingsKey("tenant-a")] = `{
+		"base_url": "http://127.0.0.1:9", "admin_secret": "pub-sec",
+		"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
+	}`
+	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.LinkID != "" || conn.BaseURL != "http://127.0.0.1:9" {
+		t.Fatalf("two-endpoint default = %+v err=%v", conn, err)
+	}
+}
+
+// An instance recorded on the public connection stays there even when the
+// effective default later becomes a registered link — pins resolve at
+// provision time, they do not move live instances.
+func TestSrvConnForNodeKeepsRecordedDefault(t *testing.T) {
+	settings := memSettings{kv: map[string]string{
+		SrvSettingsKey("tenant-a"): `{
+			"base_url": "http://127.0.0.1:9", "admin_secret": "pub-sec",
+			"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
+		}`,
+	}}
+	svc := New(openTestDB(t), settings)
+	conn, err := svc.srvConnForNode(context.Background(), "tenant-a", "")
+	if err != nil || conn.LinkID != "" || conn.BaseURL != "http://127.0.0.1:9" {
+		t.Fatalf("recorded-default conn = %+v err=%v", conn, err)
+	}
+}

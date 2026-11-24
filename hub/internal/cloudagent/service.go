@@ -980,7 +980,37 @@ func (r srvRecord) nodeConn(nodeID string) (srvConn, error) {
 	return conn, nil
 }
 
-// linkConn resolves one pin: an empty string is the public connection,
+// defaultConn resolves the tenant's system-default srv: when exactly one
+// endpoint is usable — the public connection counts alongside registered
+// srv links — it is the default; otherwise the public connection is.
+func (r srvRecord) defaultConn() (srvConn, error) {
+	var only srvConn
+	count := 0
+	if conn, err := r.publicConn(); err == nil {
+		only, count = conn, count+1
+	}
+	for _, conn := range r.srvLinks {
+		if strings.TrimSpace(conn.BaseURL) == "" || strings.TrimSpace(conn.AdminSecret) == "" {
+			continue
+		}
+		only, count = conn, count+1
+	}
+	if count == 1 {
+		return only, nil
+	}
+	return r.publicConn()
+}
+
+// pinConn resolves a scope pin: an empty string asks for the effective
+// system default (defaultConn), a named id resolves as linkConn.
+func (r srvRecord) pinConn(pin string) (srvConn, error) {
+	if strings.TrimSpace(pin) == "" {
+		return r.defaultConn()
+	}
+	return r.linkConn(pin)
+}
+
+// linkConn resolves one srv id: an empty string is the public connection,
 // then a registered srv link, then a node srv link. A named-but-missing
 // link fails closed.
 func (r srvRecord) linkConn(pin string) (srvConn, error) {
@@ -1063,7 +1093,8 @@ func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, er
 // srvConn resolves which maclawsrv a new instance provisions on. The chain
 // is: the admin's user-scope pin, then the owner's own private srv pin,
 // then the nearest department-scope pin, then the global-scope pin, then
-// the public connection. A named-but-missing link fails closed.
+// the system default — the one registered endpoint when there is exactly
+// one, else the public connection. A named-but-missing link fails closed.
 func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvConn, error) {
 	rec, err := s.srvRecord(ctx, tenantID)
 	if err != nil {
@@ -1074,7 +1105,7 @@ func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvCon
 		return srvConn{}, err
 	}
 	if pin != nil && userScoped {
-		return rec.linkConn(*pin)
+		return rec.pinConn(*pin)
 	}
 	if ownerID != "" {
 		if nodeID := rec.ownerCloudNode[ownerID]; nodeID != "" {
@@ -1082,19 +1113,23 @@ func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvCon
 		}
 	}
 	if pin != nil {
-		return rec.linkConn(*pin)
+		return rec.pinConn(*pin)
 	}
-	return rec.publicConn()
+	return rec.defaultConn()
 }
 
 // srvConnForNode resolves the conn an existing instance runs on: the srv
 // link recorded on it at provision — a node srv or a registered srv — or
-// the public connection when empty. Changing pins does not move live
-// instances.
+// the public connection when empty. An empty id stays the literal public
+// connection even if the effective default has since become a registered
+// link: changing pins does not move live instances.
 func (s *Service) srvConnForNode(ctx context.Context, tenantID, srvNodeID string) (srvConn, error) {
 	rec, err := s.srvRecord(ctx, tenantID)
 	if err != nil {
 		return srvConn{}, err
+	}
+	if strings.TrimSpace(srvNodeID) == "" {
+		return rec.publicConn()
 	}
 	return rec.linkConn(srvNodeID)
 }
