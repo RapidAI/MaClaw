@@ -164,6 +164,9 @@ const awaitingBaseline = new Map<string, string>();
 const gapRecoveryAt = new Map<string, number>();
 const GAP_RECOVERY_MIN_MS = 2000;
 
+/** publishOwner re-runs per frame; log a live row's artifacts once, not per paint. */
+let artifactLogKey = '';
+
 /** A lost stream frame leaves the reducer gapped; the watch snapshot is the
  * resync — the same recovery the local viewer's resync snapshot performs. */
 function recoverCloudStream(key: string) {
@@ -299,7 +302,11 @@ function publishOwner() {
     const produced = (round?.artifacts || []).map(path => String(path || '').trim()).filter(Boolean);
     const producedFiles = produced.length ? produced : undefined;
     if (producedFiles) {
-        console.debug('[cloud-agent] artifacts on live row', { taskId: current.taskId, requestId: round?.requestId, files: produced });
+        const logKey = `${current.taskId}|${round?.requestId}|${produced.join(',')}`;
+        if (logKey !== artifactLogKey) {
+            artifactLogKey = logKey;
+            console.debug('[cloud-agent] artifacts on live row', { taskId: current.taskId, requestId: round?.requestId, files: produced });
+        }
     }
     const previousRound = current.pending && !!round?.requestId && round.requestId === current.pendingBaseline;
     if (previousRound && last?.role === 'user') {

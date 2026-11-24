@@ -910,6 +910,19 @@ describe('cloud agent assistant', () => {
         });
         const row = remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths);
         expect(row?.localFilePaths).toEqual(['pics/a.png']);
+
+        // A new turn owns a new artifact list — the previous round's files
+        // stay on its history row, not on the next live row.
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'round_started',
+            request_id: 'req-2',
+            cursor: 3,
+            display_text: '再来一张',
+        });
+        const key = cloudAgentStoreKey('grant-1', session);
+        expect(cloudAgentRound(key).artifacts).toEqual([]);
     });
 });
 

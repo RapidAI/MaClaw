@@ -474,8 +474,12 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 	if snap.Parts == nil {
 		snap.Parts = []livePart{}
 	}
+	instID := ""
+	if inst != nil {
+		instID = inst.meta.ID
+	}
 	slog.Debug("cloudagent watch snapshot",
-		slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+		slog.String("instance", instID), slog.String("task", taskID),
 		slog.String("request", snap.RequestID), slog.Bool("responded", snap.Responded),
 		slog.Bool("stream_done", snap.StreamDone), slog.Int("parts", len(snap.Parts)),
 		slog.Int("artifacts", len(snap.LocalFilePaths)), slog.Int("cursor", int(snap.Cursor)))

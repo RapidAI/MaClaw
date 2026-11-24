@@ -195,6 +195,9 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
         state.responded = false;
         state.gap = false;
         state.displayText = text(event.display_text);
+        // Produced files belong to the turn: a new request must not inherit
+        // the previous round's artifact list onto its live row.
+        state.artifacts = [];
     } else if (requestId && !state.requestId) {
         state.requestId = requestId;
     }
