@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
@@ -2609,4 +2610,72 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 			h.app.cancelGoalBarTimers(goalKey)
 		}
 	}
+}
+
+// codingGoalTurnIncomplete reports a host goal turn that must not be recorded
+// as passed. A landed complete or fail closes the goal. A prose stop, a
+// refused complete, an open step, or a spent iteration budget does not.
+// The returned text is the task error the host already knows how to continue
+// from when it starts with "max iterations reached".
+func codingGoalTurnIncomplete(s *CodingSubAgent, task *TaskItem, reqCtx string, result agent.LoopResult) (bool, string) {
+	if goalContinuationPhase(goalContinuationSource(task, reqCtx)) == "" {
+		return false, ""
+	}
+	g := codingGoalForSubAgent(s)
+	if g == nil {
+		if codingLoopIterationExhausted(result.Error) {
+			return true, "max iterations reached；目标尚未达成"
+		}
+		return true, "目标尚未达成"
+	}
+	if g.IsTerminal() {
+		return false, ""
+	}
+	if _, open := g.CurrentStep(); open || !g.ReadyToComplete() || g.Status == goal.StatusActive || g.Status == goal.StatusPaused {
+		if codingLoopIterationExhausted(result.Error) {
+			return true, "max iterations reached；目标尚未达成"
+		}
+		return true, "目标尚未达成"
+	}
+	if codingLoopIterationExhausted(result.Error) {
+		return true, "max iterations reached"
+	}
+	return false, ""
+}
+
+func codingGoalForSubAgent(s *CodingSubAgent) *goal.Goal {
+	if s == nil || s.handler == nil || s.loopCtx == nil {
+		return nil
+	}
+	userID := strings.TrimSpace(s.loopCtx.UserID)
+	if userID == "" {
+		return nil
+	}
+	store := s.handler.getGoalStore()
+	if store == nil {
+		return nil
+	}
+	return store.Get(s.handler.resolveGoalUserID(userID))
+}
+
+// remoteGoalTurnIncomplete is the same contract for a remote goal turn. The
+// remote callback does not own the goal store, so an open host phase is enough
+// to refuse passed. A missing store still refuses: absence is not completion.
+func remoteGoalTurnIncomplete(c *remoteCodingCallbacks) (bool, string) {
+	if c == nil || (goalContinuationPhase(c.task) == "" && goalContinuationPhase(c.taskContext) == "") {
+		return false, ""
+	}
+	var g *goal.Goal
+	if c.agent != nil && c.agent.handler != nil && c.agent.loopCtx != nil {
+		userID := strings.TrimSpace(c.agent.loopCtx.UserID)
+		if userID != "" {
+			if store := c.agent.handler.getGoalStore(); store != nil {
+				g = store.Get(c.agent.handler.resolveGoalUserID(userID))
+			}
+		}
+	}
+	if g != nil && g.IsTerminal() {
+		return false, ""
+	}
+	return true, "目标尚未达成"
 }

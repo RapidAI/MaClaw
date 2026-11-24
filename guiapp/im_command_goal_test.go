@@ -463,3 +463,74 @@ func TestGoalPlanSuccessStaysSuccessWhenTheBodyMentionsFailure(t *testing.T) {
 		t.Fatalf("second pause = %s %q", pauseAgain.Outcome, pauseAgain.Text)
 	}
 }
+
+func openGoalForFinishTest(t *testing.T, userID string) *CodingSubAgent {
+	t.Helper()
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	created := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":    "create",
+		"objective": "提升推理性能",
+	})
+	if !strings.Contains(created, "目标已创建") {
+		t.Fatalf("create = %q", created)
+	}
+	planned := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":        "plan",
+		"understanding": "先测量再改 kernel",
+		"steps": []interface{}{
+			map[string]interface{}{"title": "复测并输出报告"},
+		},
+		"acceptance_criteria": []interface{}{"整帧中位时间下降"},
+	})
+	if !strings.Contains(planned, "计划已保存") {
+		t.Fatalf("plan = %q", planned)
+	}
+	return &CodingSubAgent{handler: h, loopCtx: &LoopContext{UserID: userID}}
+}
+
+func TestCodingGoalTurnIncompleteRefusesPassed(t *testing.T) {
+	const userID = "desktop-user:E:/goal-unfinished"
+	s := openGoalForFinishTest(t, userID)
+	task := &TaskItem{Description: "[系统续接][execute] 按步骤执行目标：提升推理性能"}
+	refused := s.handler.toolGoalForUser(userID, map[string]interface{}{
+		"action":  "complete",
+		"summary": "六步全部完成",
+	})
+	if !strings.Contains(refused, "不能完成目标") {
+		t.Fatalf("complete refusal = %q", refused)
+	}
+	blocked, why := codingGoalTurnIncomplete(s, task, "", agent.LoopResult{Text: "已完成", Iterations: 242, ToolCalls: 254})
+	if !blocked || !strings.Contains(why, "目标尚未达成") || strings.HasPrefix(why, "max iterations reached") {
+		t.Fatalf("open goal prose stop blocked=%v why=%q", blocked, why)
+	}
+	blocked, why = codingGoalTurnIncomplete(s, task, "", agent.LoopResult{Error: "max iterations reached", Iterations: 300})
+	if !blocked || !strings.HasPrefix(why, "max iterations reached") {
+		t.Fatalf("iteration cap must stay continuable: blocked=%v why=%q", blocked, why)
+	}
+	if handled, status, msg := codingSubAgentStopFailure(agent.LoopResult{Error: agent.ErrChecklistUnsettled, HardExit: true}, []codingAgentTodoItem{{ID: "3", Content: "复测", Status: codingAgentTodoInProgress}}); !handled || status != TaskExecFailed || !strings.Contains(msg, checklistUnsettledUserMessage) {
+		t.Fatalf("open checklist handled=%v status=%s msg=%q", handled, status, msg)
+	}
+	done := s.handler.toolGoalForUser(userID, map[string]interface{}{"action": "step", "index": 1, "status": "done", "result": "报告已写"})
+	if !strings.Contains(done, "步骤 1 已完成") {
+		t.Fatalf("step = %q", done)
+	}
+	finished := s.handler.toolGoalForUser(userID, map[string]interface{}{"action": "complete", "summary": "整帧中位时间下降"})
+	if !strings.Contains(finished, "目标已完成") {
+		t.Fatalf("complete = %q", finished)
+	}
+	blocked, why = codingGoalTurnIncomplete(s, task, "", agent.LoopResult{Text: "目标已完成"})
+	if blocked {
+		t.Fatalf("terminal goal must not block: %q", why)
+	}
+}
+
+func TestRemoteGoalIterationBudgetIsNotSuccess(t *testing.T) {
+	cb := &remoteCodingCallbacks{task: "[系统续接][execute] 按步骤执行目标：提升推理性能"}
+	got := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{Status: "success", Error: "max iterations reached", Iterations: 249, ToolCalls: 271})
+	if got.Status == "success" || got.Status == "passed" || !codingLoopIterationExhausted(got.Error) || !strings.Contains(got.Error, "目标尚未达成") {
+		t.Fatalf("remote budget rewritten as success: status=%s err=%q summary=%q", got.Status, got.Error, got.QualitySummary)
+	}
+	if got.QualitySummary == "goal continuation: iteration budget handed to the next turn" {
+		t.Fatalf("old success handoff summary still used: %q", got.QualitySummary)
+	}
+}

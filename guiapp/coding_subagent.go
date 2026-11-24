@@ -861,11 +861,11 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		log.Printf("[coding-subagent] task T%d stopped with an open checklist: %s", taskDisplayNumber(task), errMsg)
 	} else {
 		if result.Error != "" {
+			status = TaskExecFailed
+			errMsg = compactSubAgentErrorSummary(result.Error)
 			if goalTurn && codingLoopIterationExhausted(result.Error) {
-				log.Printf("[coding-subagent] task T%d goal turn reached the iteration budget; the next continuation keeps this step", taskDisplayNumber(task))
+				log.Printf("[coding-subagent] task T%d goal turn reached the iteration budget without finishing; status=failed", taskDisplayNumber(task))
 			} else {
-				status = TaskExecFailed
-				errMsg = compactSubAgentErrorSummary(result.Error)
 				log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
 			}
 		}
@@ -1062,6 +1062,15 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 	if result.Error == agent.ErrChecklistUnsettled {
 		summary = appendCodingAgentTodoTurnNote(summary, openTodos)
+	}
+	if goalTurn {
+		if blocked, why := codingGoalTurnIncomplete(s, task, reqCtx, result); blocked {
+			status = TaskExecFailed
+			if strings.TrimSpace(errMsg) == "" {
+				errMsg = why
+			}
+			log.Printf("[coding-subagent] task T%d goal still open: %s", taskDisplayNumber(task), errMsg)
+		}
 	}
 	// An unchecked diff is reported as a failed self-check once files changed.
 	// Skip that event while the gate is off, or a successful edit looks failed.

@@ -784,6 +784,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 	}
 	resume, resumeRemote := codingAgentResumeForTurn(r.loopCtx, r.nestDepth, false, userID, r.projectDir)
 	if resumeRemote {
+		cb.restoreResumedControlPlaneToken(resume.ChecklistRevision, resume.ChecklistVersion)
 		if len(resume.History) > 0 {
 			log.Printf("[coding-env] restored coding agent state user=%s history=%d snapshots=%d", userID, len(resume.History), 0)
 		}
@@ -1014,14 +1015,19 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
 
 	// A goal turn that spends the iteration budget still has its step open.
-	// Hand that turn back as a normal continuation instead of a failed task.
-	// The next fire stays on the same step.
+	// That is not success. Keep the loop error so the host retries the same
+	// step instead of recording the task as passed.
 	if c != nil && codingLoopIterationExhausted(result.Error) &&
 		(goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "") {
-		result.Status = "success"
-		result.Error = ""
+		result.Status = "failed"
+		if strings.TrimSpace(result.Error) == "" {
+			result.Error = "max iterations reached"
+		}
 		result.QualityStatus = codingSubAgentQualityNotNeeded
-		result.QualitySummary = "goal continuation: iteration budget handed to the next turn"
+		result.QualitySummary = "goal continuation: iteration budget keeps this step open"
+		if blocked, why := remoteGoalTurnIncomplete(c); blocked && !strings.Contains(result.Error, why) {
+			result.Error = strings.TrimSpace(result.Error + "；" + why)
+		}
 	}
 
 	// Programming settings leave the quality gate off unless the user opts in.
