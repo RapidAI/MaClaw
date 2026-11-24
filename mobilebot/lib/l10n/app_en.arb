@@ -317,6 +317,7 @@
   "aboutNever": "Never checked",
   "aboutLegal": "Legal",
   "aboutLicenses": "Open-source licenses",
+  "aboutWebsite": "Official website",
   "acCredits": "Bot credits",
   "acCreditsUsedRemain": "Used {used} / {total}, {remain} left",
   "@acCreditsUsedRemain": {

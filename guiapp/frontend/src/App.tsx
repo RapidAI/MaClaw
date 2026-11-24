@@ -6858,7 +6858,7 @@ ${instruction}`;
                             config={config}
                             lang={lang}
                             t={t}
-                            onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
+                            onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://www.maclaw.top")}
                             onCheckUpdate={() => {
                                 setStatus(t("checkingUpdate"));
                                 // A manual re-check is a fresh attempt: drop any

@@ -12,7 +12,7 @@ func init() {
 		Slogan:              "AI Native 组织操作系统",
 		Author:              "Dr. Daniel",
 		BusinessContact:     "联系信息：微信 znsoft",
-		WebsiteURL:          "https://maclaw.top",
+		WebsiteURL:          "https://www.maclaw.top",
 		GitHubURL:           "https://github.com/nicedoc/maclaw",
 		IconPath:            "build/appicon.png",
 		IcnsPath:            "build/AppIcon.icns",

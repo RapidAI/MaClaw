@@ -11,6 +11,10 @@ import '../../core/providers.dart';
 import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 
+/// The product's official website. One constant so the about sheet's link,
+/// its copyright line and any future surface cannot drift apart.
+const kOfficialWebsiteUrl = 'https://www.maclaw.top';
+
 /// 关于 MaclawGo — bottom sheet opened from 我的.
 ///
 /// Everything shown here is read from the installed package or the binary
@@ -158,6 +162,18 @@ class _AboutSheetState extends ConsumerState<_AboutSheet> {
             Card(
               child: ListTile(
                 leading: Icon(
+                  Icons.public_outlined,
+                  color: theme.colorScheme.primary,
+                ),
+                title: Text(s.aboutWebsite),
+                subtitle: Text(kOfficialWebsiteUrl),
+                trailing: const Icon(Icons.open_in_new, size: 18),
+                onTap: () => openExternalUrl(kOfficialWebsiteUrl),
+              ),
+            ),
+            Card(
+              child: ListTile(
+                leading: Icon(
                   Icons.description_outlined,
                   color: theme.colorScheme.primary,
                 ),
@@ -172,7 +188,7 @@ class _AboutSheetState extends ConsumerState<_AboutSheet> {
             ),
             const SizedBox(height: AppSpacing.lg),
             Text(
-              '© ${DateTime.now().year} MaclawGo',
+              '© ${DateTime.now().year} MaclawGo\n$kOfficialWebsiteUrl',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,

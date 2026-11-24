@@ -317,6 +317,7 @@
   "aboutNever": "还没有检查过",
   "aboutLegal": "法律信息",
   "aboutLicenses": "开源许可",
+  "aboutWebsite": "官方网站",
   "acCredits": "Bot 额度",
   "acCreditsUsedRemain": "已用 {used} / {total}，剩余 {remain}",
   "@acCreditsUsedRemain": {
