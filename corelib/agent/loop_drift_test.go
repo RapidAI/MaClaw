@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func repeatToolCalls(name, args, result string, success, poll bool, n int) []toolCallRecord {
 	tail := make([]toolCallRecord, n)
@@ -11,9 +14,21 @@ func repeatToolCalls(name, args, result string, success, poll bool, n int) []too
 }
 
 func TestDriftFailureHintLeavesSuccessfulPollAlone(t *testing.T) {
-	tail := repeatToolCalls("ssh", `{"command":"status"}`, "running", true, true, 4)
+	tail := repeatToolCalls("bash", `{"command":"status"}`, "running", true, true, 4)
 	if driftFailureHint(tail) {
 		t.Fatal("a successful status poll must stay quiet")
+	}
+}
+
+func TestDriftFailureHintStopsIdenticalRemoteCommand(t *testing.T) {
+	tail := repeatToolCalls("ssh", `{"command":"hostname"}`, "web-1\n", true, true, 4)
+	if !driftFailureHint(tail) {
+		t.Fatal("the same remote command and the same result must stop")
+	}
+	moved := repeatToolCalls("ssh", `{"command":"tail log"}`, "line-1", true, true, 3)
+	moved[2].result = "line-2"
+	if driftFailureHint(moved) {
+		t.Fatal("a remote command whose result changed is still a live poll")
 	}
 }
 
@@ -317,6 +332,53 @@ func TestOldSpilledPageDoesNotStopTheNextBatch(t *testing.T) {
 	if _, seen = mostRepeatedImmutableRead(calls, 1); seen != 2 {
 		t.Fatalf("the batch that repeated the page must count it, seen=%d", seen)
 	}
+}
+
+func TestRepeatedStalledRemoteCommandStopsWithoutACallCount(t *testing.T) {
+	progressing := make([]toolCallRecord, 0, 40)
+	for index := 0; index < 40; index++ {
+		progressing = append(progressing, toolCallRecord{
+			name: "ssh", args: `{"command":"tail -n 1 app.log"}`,
+			result: "line-" + strings.Repeat("x", index+1),
+			success: true, poll: true,
+		})
+	}
+	if _, seen := repeatedStalledContinuousCall(progressing); seen != 1 {
+		t.Fatalf("changing remote output must not look stalled, seen=%d", seen)
+	}
+	if driftFailureHint(progressing[len(progressing)-4:]) {
+		t.Fatal("a progressing remote session must not be hinted as a dead loop")
+	}
+	stalled := repeatToolCalls("ssh", `{"command":"hostname"}`, "web-1\n", true, true, 3)
+	id, seen := repeatedStalledContinuousCall(stalled)
+	if seen != 3 || id == "" {
+		t.Fatalf("identical remote command seen=%d id=%q", seen, id)
+	}
+	if !repeatedCommitStops(map[string]struct{}{id: {}}, id, 2) {
+		t.Fatal("a noted identical remote command must stop on the next repeat")
+	}
+	reordered := []toolCallRecord{
+		{name: "ssh", args: `{"command":"hostname","host":"web-1"}`, result: "web-1\n", success: true, poll: true},
+		{name: "ssh", args: `{"host":"web-1","command":"hostname"}`, result: "web-1\n", success: true, poll: true},
+		{name: "ssh", args: `{"command":"hostname","host":"web-1"}`, result: "web-1\n", success: true, poll: true},
+	}
+	if _, seen = repeatedStalledContinuousCall(reordered); seen != 3 {
+		t.Fatalf("key order hid the stalled remote command, seen=%d", seen)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits [16]byte
+	i := len(digits)
+	for n > 0 {
+		i--
+		digits[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(digits[i:])
 }
 
 func TestRepeatedCommitResetsWhenThePayloadChanges(t *testing.T) {

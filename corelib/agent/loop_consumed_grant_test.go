@@ -550,11 +550,10 @@ func TestRunLoopRemoteWavePublishesPastTheHandoffCap(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
-	cb := &renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
-		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
-		maxIter:    polls + 2,
-		sysPrompt:  "sys",
-		toolResult: "RUNNING\n\n[system] Planned invocations for shell.execute.remote_host in this turn (7) are complete. another call will be listed.",
+	cb := &progressingRemoteCallbacks{renewingSurfaceCallbacks: renewingSurfaceCallbacks{consumedGrantSurfaceCallbacks: consumedGrantSurfaceCallbacks{mockCallbacks: mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   polls + 2,
+		sysPrompt: "sys",
 		tools: []map[string]interface{}{{
 			"type": "function",
 			"function": map[string]interface{}{
@@ -563,7 +562,7 @@ func TestRunLoopRemoteWavePublishesPastTheHandoffCap(t *testing.T) {
 				"parameters":  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 			},
 		}},
-	}}}
+	}}}}
 	result := RunLoop(cb, "更新系统上的所有包", nil, nil)
 	if result.Error != "" || result.Text != "升级已完成，EXIT:0。" {
 		t.Fatalf("text=%q err=%s", result.Text, result.Error)
@@ -571,6 +570,22 @@ func TestRunLoopRemoteWavePublishesPastTheHandoffCap(t *testing.T) {
 	if cb.opens != polls {
 		t.Fatalf("opens=%d, want %d", cb.opens, polls)
 	}
+}
+
+// progressingRemoteCallbacks keeps a remote poll moving. An identical
+// success is a dead loop and stops the turn; this fixture changes the
+// observed line so the handoff-cap test still measures wave publishing.
+type progressingRemoteCallbacks struct {
+	renewingSurfaceCallbacks
+	n int
+}
+
+func (m *progressingRemoteCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	m.n++
+	result := fmt.Sprintf("RUNNING line %d\n\n[system] Planned invocations for shell.execute.remote_host in this turn (7) are complete. another call will be listed.", m.n)
+	m.toolCalls = append(m.toolCalls, name)
+	m.toolArgs = append(m.toolArgs, args)
+	return ToolExecutionResult{Result: result, Outcome: ToolExecutionOutcomeOK}
 }
 
 type scriptedWaveCallbacks struct {

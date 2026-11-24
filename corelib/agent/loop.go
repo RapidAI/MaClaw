@@ -4223,8 +4223,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						abandoner.OnToolBatchAbandoned(batchMeta)
 					}
 					disposeSurface(ToolSurfaceResponseAbandoned)
+					// The cause belongs in Error, not only Text. A hard exit
+					// with an empty Error is the consecutive-empty stop, and
+					// the coding finisher then reports that sentence even when
+					// this breaker already named the tool (BR-20261123-9BDD354BCE62).
+					cause := fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures)
 					return finish(LoopResult{
-						Text:       fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures),
+						Text:       cause,
+						Error:      cause,
 						Iterations: iteration + 1,
 						ToolCalls:  totalToolCalls,
 						HardExit:   true,
@@ -4516,6 +4522,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// step. The same commit again ends the turn. A user steer that arrived
 		// during the batch wins over that stop.
 		id, seen := repeatedSuccessfulCommit(recentCalls)
+		// A continuous capability is a poll for a changing world, so the
+		// commit detector ignores it. The same arguments and the same result
+		// are still a dead loop: nothing changed. Count that window here so
+		// the stop below applies. A different result stays a live poll.
+		if cid, cseen := repeatedStalledContinuousCall(recentCalls); cseen > seen {
+			id, seen = cid, cseen
+		}
 		// A rotating set of spilled pages never has to be the last call.
 		// Three handles read in turn used to hide every repeat behind whichever
 		// page happened to finish the batch.
@@ -4554,6 +4567,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				return finish(LoopResult{
 					Text:       text,
+					Error:      text,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
 					HardExit:   true,
@@ -5327,9 +5341,52 @@ func rememberFailedToolCall(prevFailed map[string]string, name, argsJSON string)
 	prevFailed[name] = argsJSON
 }
 
-// driftFailureHint reports a window of identical calls that did not succeed.
-// A successful poll is not a hint: the same output can be a job that is
-// still running.
+// repeatedStalledContinuousCall reports that the latest call is a continuous
+// capability whose arguments and result already occurred in this window.
+// A different result is a live poll and is not counted. The identity is the
+// tool name plus canonical arguments plus result, so key order cannot hide
+// the repeat.
+func repeatedStalledContinuousCall(calls []toolCallRecord) (id string, seen int) {
+	if len(calls) == 0 {
+		return "", 0
+	}
+	last := calls[len(calls)-1]
+	if !last.success || !continuousRepeatTool(last.name) {
+		return "", 0
+	}
+	canonical, ok := canonicalCallArgs(last.args)
+	if !ok {
+		canonical = last.args
+	}
+	id = last.name + "\n" + canonical + "\n" + last.result
+	for _, call := range calls {
+		if !call.success || call.name != last.name || !sameCallArgs(call.args, last.args) || call.result != last.result {
+			continue
+		}
+		seen++
+	}
+	return id, seen
+}
+
+// continuousRepeatTool reports a tool whose identical success is not progress.
+// Remote command, browser, and desktop control stay available for as long as
+// the task moves. Repeating the same arguments and the same result does not
+// move it. Other polls (a local status check of a running job) stay out.
+func continuousRepeatTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh", "ssh_exec", "browser", "computer_use", "desktop":
+		return true
+	default:
+		return false
+	}
+}
+
+// driftFailureHint reports a window of identical calls that made no progress.
+// A failed window is a dead retry. A successful window of a continuous
+// capability (remote command, browser, desktop) is a dead loop too: the same
+// arguments and the same result did not change the task. A live status poll
+// of any other tool stays quiet, because the same output can be a job that
+// is still running.
 func driftFailureHint(tail []toolCallRecord) bool {
 	if len(tail) < 2 {
 		return false
@@ -5339,12 +5396,29 @@ func driftFailureHint(tail []toolCallRecord) bool {
 			return false
 		}
 	}
+	if continuousCapabilityDeadLoop(tail[0].name) {
+		return true
+	}
 	for i := range tail {
 		if tail[i].success {
 			return false
 		}
 	}
 	return true
+}
+
+// continuousCapabilityDeadLoop reports a tool whose identical success is not
+// a status poll. Remote command, browser, and desktop control keep running
+// until the work is done; repeating the same arguments and the same result
+// is the stop, not another invocation. The match is the rendered name, not
+// an inferred capability.
+func continuousCapabilityDeadLoop(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh", "ssh_exec", "browser", "computer_use", "desktop":
+		return true
+	default:
+		return false
+	}
 }
 
 // mostRepeatedImmutableRead reports the spilled page that this batch read

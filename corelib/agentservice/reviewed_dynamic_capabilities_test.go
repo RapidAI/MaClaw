@@ -579,12 +579,11 @@ func TestReviewedDynamicIntentRulesResolveSSHWithoutLocalShell(t *testing.T) {
 	if err != nil || !resolution.Managed || len(resolution.Needs) == 0 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
-	// Server work is multi-command: the ssh family now expands to a bounded
-	// sibling budget (same mechanism as shell.execute.local's 8). The first
-	// sibling is required; the rest are one live invocation each after the
-	// previous success.
-	if len(resolution.Needs) != coretool.RepeatSiblingBudget(8) {
-		t.Fatalf("ssh sibling budget=%d, want %d", len(resolution.Needs), coretool.RepeatSiblingBudget(8))
+	// Server work is continuous. The plan publishes one node; the host appends
+	// the next call after the previous one settles. A counted wave of 8 is
+	// the quota this rule used to impose.
+	if len(resolution.Needs) != 1 {
+		t.Fatalf("ssh upfront wave=%d, want 1 on-demand node", len(resolution.Needs))
 	}
 	if resolution.Needs[0].Capability != CapabilitySSHExecute || !resolution.Needs[0].Required {
 		t.Fatalf("need=%#v", resolution.Needs[0])

@@ -74,10 +74,14 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 			{Capability: CapabilityArtifactDeliverSpecified, Qualifiers: map[string]string{QualifierArtifactFormat: ArtifactFormatFile}, Required: true},
 		},
 		intent.LabelSSH: {
-			// Server work is multi-command: one-shot per turn left the model
-			// unable to finish a scan after a single exec (production
-			// 2026-09-18: "SSH 工具配额用尽" after the first command).
-			{Capability: coretool.CapabilityShellExecuteRemoteHost, Required: true, MaxInvocations: 8},
+			// Server work is a continuous capability, not a counted quota.
+			// Production 2026-09-18 raised a missing budget from 1 to 8 after
+			// "SSH 工具配额用尽"; that count still ended an unfinished scan.
+			// Publish one node. The host lists the next call after the previous
+			// one settles. The agent loop stops a dead loop (same arguments
+			// and result, repeated failures, or no progress). A call count
+			// must not.
+			{Capability: coretool.CapabilityShellExecuteRemoteHost, Required: true, MaxInvocations: coretool.ContinuousRepeatBudget},
 		},
 		intent.LabelBrowser: {
 			// Browser work is multi-step. One call per turn dropped the tool

@@ -858,7 +858,7 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			Capability:     CapabilitySSHExecute,
 			Polarity:       coretool.NeedRequire,
 			Required:       true,
-			MaxInvocations: 8,
+			MaxInvocations: coretool.ContinuousRepeatBudget,
 		}},
 		intent.LabelBrowser: {{
 			Capability:     CapabilityBrowserControl,
