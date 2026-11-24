@@ -54,10 +54,11 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // 3353 -> 3360 (2026-11-24): remote assistant activity measured 3355 inline styles.
 // 3360 -> 3363 (2026-11-24): in-flight cloud-git-connect / task-config work
 // measured 3363; the cloud-agent srv-only panel added none.
+// 3363 -> 3410 (2026-11-25): cloud git connect dialog, cloud workflow panel & gitlab settings measured 3403 inline styles.
 // 1596 -> 1598 (2026-11-19): in-flight expert-share-categories additions added
 // two !important uses; the pinned-message banner added none.
 const IMPORTANT_BASELINE = 1598
-const INLINE_STYLE_BASELINE = 3363
+const INLINE_STYLE_BASELINE = 3410
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

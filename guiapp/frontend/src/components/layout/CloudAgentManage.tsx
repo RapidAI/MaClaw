@@ -280,15 +280,18 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
     };
 
     const fillGitFromAccount = async () => {
-        const account = appBinding('CloudAgentGitHubAccount');
+        const isGitLab = git.service === 'gitlab';
+        const account = appBinding(isGitLab ? 'CloudAgentGitLabAccount' : 'CloudAgentGitHubAccount');
         if (!account) return;
         try {
             const view = await account() as {
                 connected?: boolean; login?: string; name?: string;
-                email?: string; token?: string; repo_scope?: boolean;
+                email?: string; origin?: string; token?: string; repo_scope?: boolean;
             };
             if (!view?.connected || !view.token) {
-                setGitNote(text('Connect GitHub in Settings first', '请先在设置中登录 GitHub', '請先在設定中登入 GitHub'));
+                setGitNote(isGitLab
+                    ? text('Connect GitLab in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中连接 GitLab', '請先在 設定 → GitHub & GitLab 中連接 GitLab')
+                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub'));
                 return;
             }
             if (!view.repo_scope) {
@@ -297,8 +300,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
             }
             setGit((prev) => ({
                 ...prev,
-                service: 'github',
-                origin: 'https://github.com',
+                origin: isGitLab ? String(view.origin || 'https://gitlab.com') : 'https://github.com',
                 authorName: String(view.name || view.login || ''),
                 authorEmail: String(view.email || ''),
                 token: String(view.token),
@@ -397,7 +399,12 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                     }}
                     style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}
                 >
-                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => setGit((prev) => ({ ...prev, service: event.target.value, source: '' }))}>
+                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => setGit((prev) => {
+                        const service = event.target.value;
+                        const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
+                        const untouched = !prev.origin.trim() || prev.origin === prevDefault;
+                        return { ...prev, service, source: '', origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin };
+                    })}>
                         <option value="github">GitHub</option>
                         <option value="gitlab">GitLab</option>
                     </select>
@@ -406,7 +413,11 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                     <input aria-label={text('Author name', '作者', '作者')} value={git.authorName} onChange={(event) => setGit((prev) => ({ ...prev, authorName: event.target.value }))} />
                     <input aria-label={text('Author email', '邮箱', '郵箱')} value={git.authorEmail} onChange={(event) => setGit((prev) => ({ ...prev, authorEmail: event.target.value }))} />
                     <input aria-label={text('Token', '令牌', '權杖')} type="password" value={git.token} onChange={(event) => setGit((prev) => ({ ...prev, token: event.target.value, source: '' }))} />
-                    <button type="button" onClick={() => void fillGitFromAccount()}>{text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}</button>
+                    <button type="button" onClick={() => void fillGitFromAccount()}>
+                        {git.service === 'gitlab'
+                            ? text('Use GitLab account', '用 GitLab 账号', '用 GitLab 帳號')
+                            : text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}
+                    </button>
                     <button type="submit">{text('Connect', '连接', '連接')}</button>
                     {gitNote ? <span>{gitNote}</span> : null}
                 </form>

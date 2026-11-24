@@ -197,6 +197,11 @@ export interface TaskConfigSendBindings {
         name: string;
         kind: 'session' | 'coding';
         text: string;
+        /** 工作流模板 id + 首段参数（云端实例内运行同一套 v2 引擎）。 */
+        workflowTemplateId?: string;
+        workflowParams?: Record<string, string>;
+        /** AI 专家 id — 由绑定侧解析出 persona 后随 cloud_create_task 下发。 */
+        expertId?: string;
     }) => Promise<{ id?: string; warning?: string } | void>;
 }
 
@@ -267,6 +272,9 @@ export async function runTaskConfigSend(args: {
                 name: opts.name,
                 kind: draft.taskType === 'coding' ? 'coding' : 'session',
                 text: initialMessage,
+                workflowTemplateId: opts.workflowTemplateId,
+                workflowParams: opts.params,
+                expertId: opts.expertId,
             });
             return { ok: true, ...(created?.warning ? { warning: created.warning } : {}) };
         } catch (err) {

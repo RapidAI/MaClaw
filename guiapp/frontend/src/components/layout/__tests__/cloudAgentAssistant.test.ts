@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds } from '../cloudAgentSession';
-import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests, startCloudAgentFromNewTask } from '../cloudAgentAssistant';
+import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds, cloudAgentWorkflow as workflowForKey } from '../cloudAgentSession';
+import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests, startCloudAgentFromNewTask, submitCloudWorkflowForm } from '../cloudAgentAssistant';
 import { remoteAssistantSend, remoteAssistantSessionSnapshot, remoteAssistantStop } from '../remoteAssistantSession';
 import { cloudTurnRunning, noteCloudTurn, resetCloudTurnNotes, type CloudAgentListItem } from '../taskPlace';
 
@@ -56,7 +56,7 @@ describe('cloud agent assistant', () => {
     });
 
     it('opens in the same panel as a remote task and does not mark the computer offline', async () => {
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['user\n之前', 'assistant\nhello'] });
             return '{}';
@@ -125,7 +125,7 @@ describe('cloud agent assistant', () => {
 
     it('a finished watch is idle even when the list row still says running', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\ndone'] });
             if (name === 'cloud_watch_task') {
@@ -152,7 +152,7 @@ describe('cloud agent assistant', () => {
 
     it('a follow-up send stays busy and closes the previous ask', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\n请确认推送'] });
             if (name === 'cloud_watch_task') {
@@ -248,7 +248,7 @@ describe('cloud agent assistant', () => {
         });
         expect(cloudAgentRound(seeded).body).toContain('stale');
         expect(cloudAgentRound(seeded).last).toBe(9);
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\nfresh'] });
             if (name === 'cloud_watch_task') {
@@ -286,7 +286,7 @@ describe('cloud agent assistant', () => {
             parts: [{ kind: 'text', seq: 1, text: 'stale' }],
         });
         noteCloudTurn('cag_1', true);
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\nhistory'] });
             if (name === 'cloud_watch_task') return JSON.stringify({ session_key: session, cursor: 0, parts: [] });
@@ -305,7 +305,7 @@ describe('cloud agent assistant', () => {
     });
 
     it('a rejected send does not leave the task in progress', async () => {
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_send_message') throw new Error('发送失败');
@@ -325,7 +325,7 @@ describe('cloud agent assistant', () => {
     it('stop closes the turn because cancel does not stream a response', async () => {
         let releaseStop: (value: string) => void = () => {};
         const stopGate = new Promise<string>((resolve) => { releaseStop = resolve; });
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_stop_task') return stopGate;
@@ -368,7 +368,7 @@ describe('cloud agent assistant', () => {
         let historyCalls = 0;
         let releaseHistory: (value: string) => void = () => {};
         const historyGate = new Promise<string>((resolve) => { releaseHistory = resolve; });
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') {
                 historyCalls += 1;
@@ -404,7 +404,7 @@ describe('cloud agent assistant', () => {
         let releaseHistory: (value: string) => void = () => {};
         const historyGate = new Promise<string>((resolve) => { releaseHistory = resolve; });
         let sawHistory = false;
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') {
                 sawHistory = true;
@@ -444,7 +444,7 @@ describe('cloud agent assistant', () => {
         const openGate = new Promise<string>((resolve) => { releaseOpen = resolve; });
         const reloadGate = new Promise<string>((resolve) => { releaseReload = resolve; });
         let historyCalls = 0;
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') {
                 historyCalls += 1;
@@ -484,7 +484,7 @@ describe('cloud agent assistant', () => {
     it('a rejected send after opening another task clears the old in-progress mark', async () => {
         let rejectSend: (err: Error) => void = () => {};
         const sendGate = new Promise<string>((_resolve, reject) => { rejectSend = reject; });
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_send_message') return sendGate;
@@ -510,7 +510,7 @@ describe('cloud agent assistant', () => {
     it('a send accepted after opening another task stays on the task that sent it', async () => {
         let releaseSend: (value: string) => void = () => {};
         const sendGate = new Promise<string>((resolve) => { releaseSend = resolve; });
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_send_message') return sendGate;
@@ -538,7 +538,7 @@ describe('cloud agent assistant', () => {
         let releaseWatch: (value: string) => void = () => {};
         const watchGate = new Promise<string>((resolve) => { releaseWatch = resolve; });
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_watch_task') return watchGate;
@@ -573,7 +573,7 @@ describe('cloud agent assistant', () => {
         let releaseWatch: (value: string) => void = () => {};
         const watchGate = new Promise<string>((resolve) => { releaseWatch = resolve; });
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\n快照'] });
             if (name === 'cloud_watch_task') return watchGate;
@@ -613,7 +613,7 @@ describe('cloud agent assistant', () => {
         let releaseSend: (value: string) => void = () => {};
         const sendGate = new Promise<string>((resolve) => { releaseSend = resolve; });
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_send_message') return sendGate;
@@ -678,7 +678,7 @@ describe('cloud agent assistant', () => {
         let releaseReload: (value: string) => void = () => {};
         const reloadGate = new Promise<string>((resolve) => { releaseReload = resolve; });
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') {
                 historyCalls += 1;
@@ -719,7 +719,7 @@ describe('cloud agent assistant', () => {
 
     it('places the previous reply above the follow-up line once', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\n旧回复'] });
             if (name === 'cloud_watch_task') {
@@ -752,7 +752,7 @@ describe('cloud agent assistant', () => {
         let releaseSend: (value: string) => void = () => {};
         const sendGate = new Promise<string>((resolve) => { releaseSend = resolve; });
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_watch_task') {
@@ -791,7 +791,7 @@ describe('cloud agent assistant', () => {
 
     it('a parked send shows the queued badge until its round starts', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_send_message') {
@@ -824,7 +824,7 @@ describe('cloud agent assistant', () => {
 
     it('folds styled tool progress into the live row tool calls', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             return '{}';
@@ -861,7 +861,7 @@ describe('cloud agent assistant', () => {
     });
 
     it('carries produced files from history onto transcript rows', async () => {
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({
                 messages: ['user\n做个表', 'assistant\n报表已生成'],
@@ -881,7 +881,7 @@ describe('cloud agent assistant', () => {
 
     it('attaches a response terminal local_file_paths to the live row', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             return '{}';
@@ -931,7 +931,7 @@ describe('cloud stream resync', () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
         const key = cloudAgentStoreKey('grant-1', session);
         let watchCalls = 0;
-        const op = vi.fn(async (_grant: string, name: string) => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
             if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
             if (name === 'cloud_watch_task') {
@@ -976,5 +976,225 @@ describe('cloud stream resync', () => {
             expect(cloudAgentRound(key).gap).toBe(false);
             expect(cloudAgentRound(key).body).toContain('recovered body');
         });
+    });
+
+    it('labels the official cloud service when the instance has no private srv', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        const session = remoteAssistantSessionSnapshot();
+        expect(session?.machineName).toBe('云端');
+        expect(session?.serverLabel).toBe('官方云端服务');
+    });
+
+    it('labels the private maclawsrv node name and address of the instance', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            GetCloudSrvChoice: vi.fn(async () => ({
+                node_id: 'node-7',
+                nodes: [{ node_id: 'node-7', name: '我家服务器', address: 'http://10.0.0.7:8080', online: true }],
+            })),
+        });
+        await openCloudAgent({ ...item, srvNodeId: 'node-7' }, 'zh');
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.serverLabel).toBe('私有 maclawsrv · 我家服务器 · http://10.0.0.7:8080');
+        });
+    });
+
+    it('falls back to the node id when the srv choice cannot resolve it, and to the pin while unprovisioned', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            GetCloudSrvChoice: vi.fn(async () => ({ node_id: '', nodes: [] })),
+        });
+        await openCloudAgent({ ...item, srvNodeId: 'node-9' }, 'zh');
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.serverLabel).toBe('私有 maclawsrv · node-9');
+        });
+
+        await openCloudAgent({ ...item, id: 'cag_2', status: 'provision_failed' }, 'zh');
+        expect(remoteAssistantSessionSnapshot()?.serverLabel).toBe('官方云端服务');
+        resetCloudAssistantForTests();
+
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-2'),
+            RemoteControlOp: op,
+            GetCloudSrvChoice: vi.fn(async () => ({
+                node_id: 'node-7',
+                nodes: [{ node_id: 'node-7', name: '我家服务器', address: 'http://10.0.0.7:8080', online: true }],
+            })),
+        });
+        await openCloudAgent({ ...item, id: 'cag_3', status: 'provision_failed' }, 'zh');
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.serverLabel).toBe('私有 maclawsrv · 我家服务器 · http://10.0.0.7:8080');
+        });
+    });
+});
+describe('cloud workflow state', () => {
+    it('stores a workflow_state frame beside the round and publishes it on the session', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const key = cloudAgentStoreKey('grant-1', session);
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_watch_task') return JSON.stringify({ session_key: session, cursor: 0, parts: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(workflowForKey(key)).toBeNull();
+
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'workflow_state',
+            workflow: {
+                id: 'wf-1',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+                phases: [{ id: 'requirements', name: '需求文档', status: 'running' }],
+                awaiting_form: true,
+                form_schema: { title: '项目基本信息', fields: [{ name: 'project_name', label: '项目名称', type: 'text', required: true }] },
+            },
+        });
+        const stored = workflowForKey(key);
+        expect(stored?.awaiting_form).toBe(true);
+        expect(stored?.form_schema?.fields?.[0]?.name).toBe('project_name');
+        expect(remoteAssistantSessionSnapshot()?.cloudWorkflow?.current_phase).toBe('requirements');
+
+        // A snapshot without the field clears the workflow — the task's
+        // machine has no active flow any more.
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'workflow_state',
+            workflow: null,
+        });
+        expect(workflowForKey(key)).toBeNull();
+    });
+
+    it('rides the watch snapshot workflow field into the store', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const key = cloudAgentStoreKey('grant-1', session);
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_watch_task') {
+                return JSON.stringify({
+                    session_key: session,
+                    cursor: 0,
+                    parts: [],
+                    workflow: { id: 'wf-9', status: 'active', type: 'coding', pending_review: true, phases: [] },
+                });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(workflowForKey(key)?.pending_review).toBe(true);
+    });
+
+    it('creates the task with the wizard workflow and resolved expert persona', async () => {
+        const op = vi.fn(async (_grant: string, name: string, body?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [] });
+            if (name === 'cloud_create_task') return JSON.stringify({ accepted: true, task_id: 'task-9' });
+            if (name === 'cloud_send_message') return '{}';
+            return '{}';
+        });
+        setBindings({
+            CreateCloudAgent: vi.fn(async () => ({ id: 'cag_1', name: '演示', kind: 'session', status: 'idle' })),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            CloudAgentExpertProfile: vi.fn(async () => JSON.stringify({ id: 'expert-1', name: '论文评审', system_prompt: '你专门评审论文' })),
+        });
+        await startCloudAgentFromNewTask('演示', 'session', '评审这篇', 'zh', {
+            workflowTemplateId: 'coding',
+            workflowParams: { project_name: 'demo' },
+            expertId: 'expert-1',
+        });
+        await vi.waitFor(() => {
+            const created = op.mock.calls.find(call => call[1] === 'cloud_create_task');
+            expect(created).toBeTruthy();
+            const payload = JSON.parse(String(created?.[2]));
+            expect(payload.workflow_template_id).toBe('coding');
+            expect(payload.workflow_params).toEqual({ project_name: 'demo' });
+            expect(payload.expert_name).toBe('论文评审');
+            expect(payload.expert_prompt).toBe('你专门评审论文');
+        });
+    });
+
+    it('keeps the wizard setup on the first task only — later sends reuse it', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [] });
+            if (name === 'cloud_create_task') return JSON.stringify({ accepted: true, task_id: 'task-9' });
+            if (name === 'cloud_send_message') return '{}';
+            return '{}';
+        });
+        setBindings({
+            CreateCloudAgent: vi.fn(async () => ({ id: 'cag_1', name: '演示', kind: 'session', status: 'idle' })),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            CloudAgentExpertProfile: vi.fn(async () => JSON.stringify({ id: 'expert-1', name: '评审', system_prompt: 'prompt' })),
+        });
+        await startCloudAgentFromNewTask('演示', 'session', '第一条', 'zh', { workflowTemplateId: 'coding', expertId: 'expert-1' });
+        await vi.waitFor(() => expect(op.mock.calls.some(call => call[1] === 'cloud_send_message')).toBe(true));
+        await remoteAssistantSend('第二条');
+        // The instance keeps one open task: a second send must not mint a new
+        // task (and so must not re-ship the wizard's workflow/expert).
+        const creates = op.mock.calls.filter(call => call[1] === 'cloud_create_task');
+        expect(creates).toHaveLength(1);
+        const sends = op.mock.calls.filter(call => call[1] === 'cloud_send_message');
+        expect(sends).toHaveLength(2);
+        for (const send of sends) {
+            expect(JSON.parse(String(send[2])).task_id).toBe('task-9');
+        }
+    });
+
+    it('submitCloudWorkflowForm posts values through the submit op', async () => {
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_watch_task') return JSON.stringify({ session_key: cloudAgentSessionKey('cag_1', 'task-1'), cursor: 0, parts: [] });
+            if (name === 'cloud_submit_workflow_form') return '{}';
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await submitCloudWorkflowForm({ project_name: 'demo', _agent_view_variant: 'local' })).toBe(true);
+        const call = op.mock.calls.find(entry => entry[1] === 'cloud_submit_workflow_form');
+        const payload = JSON.parse(String(call?.[2]));
+        expect(payload.task_id).toBe('task-1');
+        expect(payload.values).toEqual({ project_name: 'demo', _agent_view_variant: 'local' });
+        expect(payload.client_message_id).toMatch(/^cm_/);
     });
 });

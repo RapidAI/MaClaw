@@ -34132,6 +34132,17 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   transition: color 140ms ease, border-color 140ms ease;
 }
 .mc-task-artifacts__more:hover { color: var(--mc-accent, #2e75cb); border-color: color-mix(in srgb, var(--theme-primary) 40%, transparent); }
+/* Card-head export (cloud workspace .tar.gz): hugs the right edge so the
+   count badge keeps its slot next to the label. */
+.mc-task-artifacts__export {
+  margin-left: auto; min-height: 22px; padding: 0 10px; flex: none;
+  border: 1px dashed color-mix(in srgb, var(--theme-border) 90%, transparent); border-radius: var(--radius-pill);
+  background: transparent; color: var(--theme-text-secondary); font-size: 11px; cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+.mc-task-artifacts__export:hover:not(:disabled) { color: var(--mc-accent, #2e75cb); border-color: color-mix(in srgb, var(--theme-primary) 40%, transparent); }
+.mc-task-artifacts__export[data-status='done'] { color: var(--theme-success); }
+.mc-task-artifacts__export[data-status='error'] { color: var(--theme-danger); }
 .mc-task-result-card__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .mc-task-result-card__actions button { min-height: 28px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: var(--radius-md); background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; cursor: pointer; }
 /* Skip the filled preview. Accent text here is the same blue as its fill. */
@@ -34180,6 +34191,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 #App[data-ai-theme='dark'] .mc-task-artifact__icon--os { background: transparent; box-shadow: none; }
 #App[data-ai-theme='dark'] .mc-task-artifacts__more { border-color: var(--theme-border); color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts__export { border-color: var(--theme-border); color: var(--theme-text-secondary); }
+#App[data-ai-theme='dark'] .mc-task-artifacts__export:hover:not(:disabled) { color: var(--theme-primary-strong); border-color: color-mix(in srgb, var(--theme-primary) 42%, var(--theme-border)); }
 #App[data-ai-theme='dark'] .mc-execution-step:not(:last-child)::after { background: var(--theme-border) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step > span:first-child { background: var(--theme-primary-soft) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-execution-step[data-status='passed'] > span:first-child { background: color-mix(in srgb, var(--mc-done) 16%, var(--theme-surface)) !important; color: var(--mc-done) !important; }

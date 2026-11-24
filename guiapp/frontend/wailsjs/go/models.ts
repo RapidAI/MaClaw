@@ -11213,6 +11213,76 @@ export namespace main {
 	        this.browser_opened = source["browser_opened"];
 	    }
 	}
+	export class GitLabConnectionStatus {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    avatar_url?: string;
+	    html_url?: string;
+	    origin?: string;
+	    scopes?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GitLabConnectionStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.avatar_url = source["avatar_url"];
+	        this.html_url = source["html_url"];
+	        this.origin = source["origin"];
+	        this.scopes = source["scopes"];
+	    }
+	}
+	export class CloudAgentGitHubAccount {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    email?: string;
+	    token?: string;
+	    repo_scope: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudAgentGitHubAccount(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.email = source["email"];
+	        this.token = source["token"];
+	        this.repo_scope = source["repo_scope"];
+	    }
+	}
+	export class CloudAgentGitLabAccount {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    email?: string;
+	    origin?: string;
+	    token?: string;
+	    repo_scope: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudAgentGitLabAccount(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.email = source["email"];
+	        this.origin = source["origin"];
+	        this.token = source["token"];
+	        this.repo_scope = source["repo_scope"];
+	    }
+	}
 	export class GossipPost {
 	    id: string;
 	    nickname: string;

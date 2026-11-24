@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 type executor interface {
@@ -33,6 +34,13 @@ type turnBody struct {
 	MaxBytes        int64  `json:"max_bytes"`
 	DataBase64      string `json:"data_base64"`
 	Offset          int64  `json:"offset"`
+	// Task persona + workflow setup shipped by the desktop at create time.
+	ExpertName   string         `json:"expert_name"`
+	ExpertPrompt string         `json:"expert_prompt"`
+	WorkflowID   string         `json:"workflow_template_id"`
+	WorkflowArgs map[string]any `json:"workflow_params"`
+	// Values is the cloud_submit_workflow_form body: the gated phase's fields.
+	Values map[string]any `json:"values"`
 }
 
 func (b turnBody) text() string {
@@ -60,10 +68,9 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 	}
 	switch op {
 	case "cloud_send_message":
-		if inst.meta.Kind == KindCoding {
-			return rt.sendCoding(ctx, inst, payload)
-		}
-		return rt.sendSession(inst, payload)
+		return rt.send(ctx, inst, payload)
+	case "cloud_submit_workflow_form":
+		return rt.submitWorkflowForm(ctx, inst, payload)
 	case "cloud_create_task":
 		taskID := newID("task_")
 		title := payload.Title
@@ -73,7 +80,24 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		if err := inst.book.EnsureTask(taskID, title); err != nil {
 			return nil, err
 		}
-		return json.Marshal(map[string]any{"accepted": true, "task_id": taskID})
+		if name, prompt := strings.TrimSpace(payload.ExpertName), strings.TrimSpace(payload.ExpertPrompt); name != "" || prompt != "" {
+			if err := inst.book.SetPersona(taskID, name, prompt); err != nil {
+				return nil, err
+			}
+		}
+		var warning string
+		if templateID := strings.TrimSpace(payload.WorkflowID); templateID != "" {
+			// The task is already recorded, so a bad template id degrades to a
+			// warning instead of leaving an orphan sidebar row — same contract
+			// the desktop's unified create keeps.
+			if err := rt.workflowCreate(inst, taskID, templateID, payload.WorkflowArgs, title); err != nil {
+				slog.Warn("cloudagent workflow create failed",
+					slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+					slog.String("template", templateID), slog.Any("err", err))
+				warning = err.Error()
+			}
+		}
+		return json.Marshal(map[string]any{"accepted": true, "task_id": taskID, "workflow_warning": warning})
 	case "cloud_list_tasks":
 		tasks, err := inst.book.Tasks()
 		if err != nil {
@@ -110,6 +134,15 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		rt.cancelIDs(ids)
 		if err != nil {
 			return nil, err
+		}
+		// Stopping the task also stops its workflow — same semantic the
+		// desktop's stop button applies to a running flow.
+		if machine, werr := rt.workflowMachine(inst); werr == nil {
+			if state := machine.GetActive(payload.TaskID); state != nil && state.Status == v2.StatusActive {
+				if cerr := machine.Cancel(payload.TaskID); cerr == nil {
+					rt.publishWorkflowState(inst, payload.TaskID, machine.GetActive(payload.TaskID))
+				}
+			}
 		}
 		return json.Marshal(map[string]any{"ok": true, "cancelled": ids})
 	case "cloud_instance_state":
@@ -234,9 +267,25 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 		return
 	}
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
-	content, asError, files := rt.sessionResult(ctx, inst, taskID, requestID, text)
+	route := rt.workflowRoute(inst, taskID, text)
+	var content string
+	var asError bool
+	var files []string
+	if route.notice != "" {
+		// A workflow gate answers the turn itself — no agent loop, but the
+		// transcript keeps the same user/assistant pair a model turn leaves.
+		rt.publish(inst, taskID, requestID, "response", route.notice, map[string]any{
+			"terminal": map[string]any{"text": route.notice},
+		})
+		content = route.notice
+	} else {
+		content, asError, files = rt.sessionResult(ctx, inst, taskID, requestID, route.modelText, route.phasePrompt)
+	}
 	if ctx.Err() != nil {
 		return
+	}
+	if route.phaseRan && !asError {
+		rt.workflowRecordOutput(inst, taskID, content)
 	}
 	// sessionResult owns the terminal response frame — publishing another
 	// here would give viewers two "response" events for one turn.
@@ -248,7 +297,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 // coding kind uses — one shared host, one tool-routing implementation, real
 // token streaming — instead of the bare executor that had no workspace
 // tools at all.
-func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool, []string) {
+func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text, phasePrompt string) (string, bool, []string) {
 	fail := func(msg string) (string, bool, []string) {
 		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
 			"terminal": map[string]any{"text": msg},
@@ -288,6 +337,7 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		cfg:     cfg,
 		started: time.Now(),
 	}
+	host.phasePrompt = phasePrompt
 	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
 		return "", true, nil

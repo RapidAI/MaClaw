@@ -21,3 +21,22 @@ export function subscribeNewTaskCoverHeld(listener: () => void): () => void {
     listeners.add(listener);
     return () => { listeners.delete(listener); };
 }
+
+// --- Cover dismissal for surfaces outside the tab strip ---
+//
+// Remote-machine and cloud conversations do not activate an assistant tab —
+// they publish onto the shared remote surface instead, so a task-tab switch's
+// dismiss never runs for them. Task opens on those surfaces retire the
+// new-task cover the same way a tab switch does. The wiring binds a gated
+// dismiss; openers call dismissNewTaskCover.
+let dismissCover: (() => void) | null = null;
+
+export function bindNewTaskCoverDismiss(fn: (() => void) | null): void {
+    dismissCover = fn;
+}
+
+/** A non-tab conversation surface (remote machine task, cloud instance) is
+ * opening. Drops the new-task cover when one is painted; no-op otherwise. */
+export function dismissNewTaskCover(): void {
+    dismissCover?.();
+}

@@ -309,8 +309,8 @@ export const getSettingsTabOptions = (lang: string, options: SettingsTabVisibili
         },
         {
             id: 'github' as const,
-            label: 'GitHub',
-            desc: textForLang(lang, 'Connect a GitHub account for skill search, update checks and code cloning', '连接 GitHub 账号，用于技能搜索、更新检测与代码克隆', '連接 GitHub 帳號，用於技能搜尋、更新檢測與程式碼複製'),
+            label: 'GitHub & GitLab',
+            desc: textForLang(lang, 'Connect GitHub and GitLab accounts for skill search, update checks and code cloning', '连接 GitHub 与 GitLab 账号，用于技能搜索、更新检测与代码克隆', '連接 GitHub 與 GitLab 帳號，用於技能搜尋、更新檢測與程式碼複製'),
             icon: settingsTabIcons.github,
         },
         {

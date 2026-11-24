@@ -629,6 +629,12 @@ export interface ChatMessage {
     remoteFileFetch?: (filePath: string) => Promise<string>;
     /** Cloud-transcript artifacts download to Downloads as soon as they are listed. */
     remoteArtifactsAutoFetch?: boolean;
+    /**
+     * Cloud task only: packs the whole instance workspace into "<name>.tar.gz"
+     * — the card-head 导出, same as the task list's 打包下载. Resolves to the
+     * saved path, or "" when the save dialog was cancelled.
+     */
+    remoteWorkspaceDownload?: () => Promise<string>;
     thumbnailBase64?: string;
     imageKey?: string;
     /**

@@ -1,6 +1,15 @@
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
+import type { CloudWorkflowState, RemoteWorkbenchState } from './remoteAssistantSession';
 
 const rounds = new Map<string, ViewerReduceState>();
+// The workbench (plan checklist) is task state, not round state: it rides
+// workbench_steps frames the round reducer deliberately ignores, and the
+// watch snapshot's workbench field. Same shape the remote mirror keeps in
+// remoteAssistantSession.workbenchByKey.
+const workbenches = new Map<string, RemoteWorkbenchState>();
+// The V2 workflow rides the same channel: workflow_state frames plus the
+// watch snapshot's workflow field, keyed by task like the workbench.
+const workflows = new Map<string, CloudWorkflowState>();
 const roundListeners = new Set<() => void>();
 
 function notifyRounds() {
@@ -32,9 +41,37 @@ export function cloudAgentRound(key: string): ViewerReduceState {
     return rounds.get(key) || emptyViewerState();
 }
 
+/** Latest workbench payload for one cloud task key; null when none is live. */
+export function cloudAgentWorkbench(key: string): RemoteWorkbenchState | null {
+    return workbenches.get(key) || null;
+}
+
+function noteCloudAgentWorkbench(key: string, workbench: unknown) {
+    if (workbench && typeof workbench === 'object') {
+        workbenches.set(key, workbench as RemoteWorkbenchState);
+    } else {
+        workbenches.delete(key);
+    }
+}
+
+/** Latest workflow snapshot for one cloud task key; null when none is live. */
+export function cloudAgentWorkflow(key: string): CloudWorkflowState | null {
+    return workflows.get(key) || null;
+}
+
+function noteCloudAgentWorkflow(key: string, workflow: unknown) {
+    if (workflow && typeof workflow === 'object') {
+        workflows.set(key, workflow as CloudWorkflowState);
+    } else {
+        workflows.delete(key);
+    }
+}
+
 export function resetCloudAgentRounds(): void {
-    if (rounds.size === 0) return;
+    if (rounds.size === 0 && workbenches.size === 0 && workflows.size === 0) return;
     rounds.clear();
+    workbenches.clear();
+    workflows.clear();
     notifyRounds();
 }
 
@@ -120,6 +157,10 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
         console.debug('[cloud-agent] watch snapshot dropped: staler than live frames', { sessionKey, cursor, storedLast, floor });
         return key;
     }
+    // Task-level workbench rides the snapshot. A snapshot rejected above as
+    // stale keeps the live frames' workbench instead.
+    noteCloudAgentWorkbench(key, live.workbench);
+    noteCloudAgentWorkflow(key, live.workflow);
     console.debug('[cloud-agent] watch snapshot apply', {
         sessionKey, cursor, responded: live.responded === true,
         parts: Array.isArray(live.parts) ? live.parts.length : 0,
@@ -167,6 +208,16 @@ export function applyCloudAgentStream(payload: unknown): string {
             session: String(event.session_key || ''),
         });
         return '';
+    }
+    if (String(event.event || '') === 'workbench_steps') {
+        // The reducer ignores this event by design; the task-level payload
+        // lives beside the round instead of inside it.
+        noteCloudAgentWorkbench(key, event.workbench);
+    }
+    if (String(event.event || '') === 'workflow_state') {
+        // Same deal as workbench_steps — the workflow snapshot is task
+        // state, published with an empty request id, never part of a round.
+        noteCloudAgentWorkflow(key, event.workflow);
     }
     const previousId = cloudAgentRound(key).requestId;
     const next = reduceCloudAgentEvent(cloudAgentRound(key), event);

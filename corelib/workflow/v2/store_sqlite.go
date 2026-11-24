@@ -15,7 +15,10 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite ignores the mattn-style _journal_mode/_busy_timeout
+	// params — they must ride _pragma. Without WAL the journal stays "delete"
+	// and a steady read stream (watch polls) starves writers into SQLITE_BUSY.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, err
 	}

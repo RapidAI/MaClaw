@@ -4,10 +4,14 @@ import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { corelib, main } from '../../../wailsjs/go/models';
 import {
     CancelGitHubOAuth,
+    ConnectGitLab,
     DisconnectGitHub,
+    DisconnectGitLab,
     GetGitHubConnection,
+    GetGitLabConnection,
     GitHubAPIRequest,
     GitHubCloneRepository,
+    OpenGitLabTokenPage,
     ShowItemInFolder,
     StartGitHubOAuth,
     WaitGitHubOAuth,
@@ -27,6 +31,12 @@ const t = (lang: string, en: string, hans: string, hant?: string) => localizeTex
 const GitHubMark = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.39-5.25 5.68.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z" />
+    </svg>
+);
+
+const GitLabMark = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M23.6 9.59l-.03-.08L20.2 2.1a.86.86 0 0 0-.86-.55.86.86 0 0 0-.82.55l-3.33 8.75H8.81L5.48 2.1a.85.85 0 0 0-.82-.55.85.85 0 0 0-.86.55L.44 9.51l-.04.08a5.83 5.83 0 0 0 1.93 6.72l.01.01.05.04 4.76 3.56 2.36 1.78 1.43 1.08a1 1 0 0 0 1.2 0l1.43-1.08 2.36-1.78 4.8-3.6.01-.02a5.83 5.83 0 0 0 1.93-6.72z" />
     </svg>
 );
 
@@ -50,6 +60,15 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
     const [cloneBusy, setCloneBusy] = useState(false);
     const [cloneResult, setCloneResult] = useState<{ ok: boolean; text: string; destDir?: string } | null>(null);
 
+    // GitLab 卡片：浏览器辅助 PAT 登录。origin 输入框在未连接时可编辑；
+    // 连接后它固定显示账号所在实例。
+    const [gitlabConnection, setGitlabConnection] = useState<main.GitLabConnectionStatus | null>(null);
+    const [gitlabOrigin, setGitlabOrigin] = useState('https://gitlab.com');
+    const [gitlabToken, setGitlabToken] = useState('');
+    const [gitlabBusy, setGitlabBusy] = useState(false);
+    const [gitlabMessage, setGitlabMessage] = useState('');
+    const [gitlabError, setGitlabError] = useState('');
+
     // A pending device login must die with the panel — navigating away without
     // cancelling would leave the backend polling a code nobody can see.
     const pendingRef = useRef(false);
@@ -65,16 +84,27 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
         }
     }, []);
 
+    const loadGitLabStatus = useCallback(async (refresh: boolean) => {
+        try {
+            const status = await GetGitLabConnection(refresh);
+            setGitlabConnection(status);
+            if (status?.origin) setGitlabOrigin(status.origin);
+        } catch {
+            /* status read is best-effort; UI shows disconnected */
+        }
+    }, []);
+
     useEffect(() => {
         pendingRef.current = deviceInfo != null;
     }, [deviceInfo]);
 
     useEffect(() => {
         void loadStatus(false);
+        void loadGitLabStatus(false);
         return () => {
             if (pendingRef.current) void CancelGitHubOAuth();
         };
-    }, [loadStatus]);
+    }, [loadStatus, loadGitLabStatus]);
 
     useEffect(() => {
         // Seed only once config has actually arrived — seeding on mount with a
@@ -147,6 +177,49 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
         }
     };
 
+    const openGitLabTokenPage = () => {
+        setGitlabError('');
+        void OpenGitLabTokenPage(gitlabOrigin).catch((err: any) => {
+            setGitlabError(String(err?.message || err || t(lang, 'Could not open the token page', '无法打开令牌页面', '無法開啟權杖頁面')));
+        });
+    };
+
+    const connectGitLab = async () => {
+        setGitlabBusy(true);
+        setGitlabError('');
+        setGitlabMessage('');
+        try {
+            const status = await ConnectGitLab(gitlabOrigin, gitlabToken);
+            setGitlabConnection(status);
+            setGitlabToken('');
+            setGitlabMessage(t(lang, `GitLab connected as @${status.login}`, `已连接 GitLab 账号 @${status.login}`, `已連接 GitLab 帳號 @${status.login}`));
+        } catch (err: any) {
+            setGitlabError(String(err?.message || err || t(lang, 'GitLab connect failed', 'GitLab 连接失败', 'GitLab 連接失敗')));
+        } finally {
+            setGitlabBusy(false);
+        }
+    };
+
+    const disconnectGitLab = async () => {
+        const ok = await showConfirm(
+            t(lang, 'Disconnect GitLab? Cloud coding instances keep their pushed token but will no longer get refreshed copies.', '断开 GitLab 连接？云端编程实例已推送的令牌仍然有效，但不会再自动更新。', '中斷 GitLab 連接？雲端編程實例已推送的權杖仍然有效，但不會再自動更新。'),
+            t(lang, 'Disconnect GitLab', '断开 GitLab', '中斷 GitLab'),
+        );
+        if (!ok) return;
+        setGitlabBusy(true);
+        setGitlabError('');
+        setGitlabMessage('');
+        try {
+            await DisconnectGitLab();
+            setGitlabConnection(null);
+            setGitlabMessage(t(lang, 'GitLab disconnected', '已断开 GitLab 连接', '已中斷 GitLab 連接'));
+        } catch (err: any) {
+            setGitlabError(String(err?.message || err || t(lang, 'Disconnect failed', '断开失败', '中斷失敗')));
+        } finally {
+            setGitlabBusy(false);
+        }
+    };
+
     const refreshStatus = () => {
         setBusy(true);
         setError('');
@@ -205,6 +278,7 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
     };
 
     const connected = connection?.connected === true;
+    const gitlabConnected = gitlabConnection?.connected === true;
 
     return (
         <>
@@ -312,6 +386,118 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
 
                 {message && <p className="im-settings-description">{message}</p>}
                 {error && <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>{error}</p>}
+            </section>
+
+            <section className="im-settings-card im-settings-channel">
+                <p className="im-settings-description">
+                    {t(lang,
+                        'Connect a GitLab account. GitLab has no device login, so the token is minted in your browser and pasted here once — it powers repository access on cloud coding instances.',
+                        '连接 GitLab 账号。GitLab 没有设备码登录，所以在浏览器中创建访问令牌后粘贴到这里——云端编程实例的仓库访问会用到它。',
+                        '連接 GitLab 帳號。GitLab 沒有裝置碼登入，所以在瀏覽器中建立存取權杖後貼到這裡——雲端編程實例的儲存庫存取會用到它。')}
+                </p>
+                <div className="im-settings-toolbar" style={{ alignItems: 'center' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <GitLabMark />
+                        <strong>GitLab</strong>
+                    </span>
+                    <ConnectionStatusBadge status={gitlabConnected ? 'connected' : 'disconnected'} lang={lang} />
+                </div>
+
+                {gitlabConnected && (
+                    <div className="im-settings-toolbar" style={{ alignItems: 'center', gap: 10 }}>
+                        {gitlabConnection?.avatar_url ? (
+                            <img src={gitlabConnection.avatar_url} alt="" width={32} height={32} referrerPolicy="no-referrer" style={{ borderRadius: '50%' }} />
+                        ) : null}
+                        <span>
+                            <strong>@{gitlabConnection?.login}</strong>
+                            {gitlabConnection?.name ? ` (${gitlabConnection.name})` : ''}
+                        </span>
+                        {gitlabConnection?.html_url ? (
+                            <a
+                                href={gitlabConnection.html_url}
+                                onClick={(event) => { event.preventDefault(); BrowserOpenURL(gitlabConnection.html_url!); }}
+                            >
+                                {t(lang, 'View profile', '查看主页', '檢視主頁')}
+                            </a>
+                        ) : null}
+                    </div>
+                )}
+                {gitlabConnected && gitlabConnection?.origin ? (
+                    <p className="im-settings-description">{gitlabConnection.origin}</p>
+                ) : null}
+                {gitlabConnected && gitlabConnection?.scopes ? (
+                    <p className="im-settings-description">Scopes: {gitlabConnection.scopes}</p>
+                ) : null}
+
+                {!gitlabConnected && (
+                    <>
+                        <p className="im-settings-description">
+                            {t(lang,
+                                '1. Open the token page and create a Personal Access Token with the api scope (minimal: read_user + read_repository + write_repository). 2. Paste it here.',
+                                '1. 打开令牌页面，创建带 api 权限的访问令牌（最小权限：read_user + read_repository + write_repository）。2. 粘贴到这里。',
+                                '1. 開啟權杖頁面，建立帶 api 權限的存取權杖（最小權限：read_user + read_repository + write_repository）。2. 貼到這裡。')}
+                        </p>
+                        <div className="im-settings-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                            <input
+                                className="form-input"
+                                type="text"
+                                value={gitlabOrigin}
+                                disabled={gitlabBusy}
+                                onChange={(event) => setGitlabOrigin(event.target.value)}
+                                placeholder="https://gitlab.com"
+                                aria-label={t(lang, 'GitLab origin', 'GitLab 地址', 'GitLab 位址')}
+                            />
+                            <input
+                                className="form-input"
+                                type="password"
+                                value={gitlabToken}
+                                disabled={gitlabBusy}
+                                onChange={(event) => setGitlabToken(event.target.value)}
+                                placeholder="glpat-…"
+                                aria-label={t(lang, 'Personal access token', '访问令牌', '存取權杖')}
+                            />
+                        </div>
+                    </>
+                )}
+
+                <div className="im-settings-toolbar">
+                    {!gitlabConnected && (
+                        <>
+                            <button type="button" className="im-settings-button" disabled={gitlabBusy} onClick={openGitLabTokenPage}>
+                                {t(lang, 'Open token page', '打开令牌页面', '開啟權杖頁面')}
+                            </button>
+                            <button
+                                type="button"
+                                className="im-settings-button im-settings-button--accent"
+                                disabled={gitlabBusy || !gitlabToken.trim()}
+                                onClick={() => void connectGitLab()}
+                            >
+                                {gitlabBusy
+                                    ? t(lang, 'Verifying…', '验证中…', '驗證中…')
+                                    : t(lang, 'Connect GitLab', '连接 GitLab', '連接 GitLab')}
+                            </button>
+                        </>
+                    )}
+                    {gitlabConnected && (
+                        <>
+                            <button type="button" className="im-settings-button" disabled={gitlabBusy} onClick={() => {
+                                setGitlabBusy(true);
+                                setGitlabError('');
+                                void loadGitLabStatus(true)
+                                    .then(() => setGitlabMessage(t(lang, 'Status refreshed', '状态已刷新', '狀態已刷新')))
+                                    .finally(() => setGitlabBusy(false));
+                            }}>
+                                {t(lang, 'Refresh status', '刷新状态', '刷新狀態')}
+                            </button>
+                            <button type="button" className="im-settings-button" disabled={gitlabBusy} onClick={() => void disconnectGitLab()}>
+                                {t(lang, 'Disconnect', '断开连接', '中斷連接')}
+                            </button>
+                        </>
+                    )}
+                </div>
+
+                {gitlabMessage && <p className="im-settings-description">{gitlabMessage}</p>}
+                {gitlabError && <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>{gitlabError}</p>}
             </section>
 
             <section className="im-settings-card im-settings-channel">

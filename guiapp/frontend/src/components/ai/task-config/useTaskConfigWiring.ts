@@ -42,7 +42,7 @@ import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExp
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
 import { dispatchDueRunWindows, launchRunWindowTask } from "./runWindowDispatch";
-import { setNewTaskCoverHeld } from "./newTaskCoverHold";
+import { bindNewTaskCoverDismiss, setNewTaskCoverHeld } from "./newTaskCoverHold";
 import {
     createLatexDocumentForTask,
     isLatexExpertId,
@@ -739,7 +739,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                         return { projectPath, warning };
                     },
                     openRemoteMachineTask: ({ grantId, projectPath }) => remoteOpenTask(grantId, projectPath),
-                    createCloudAgentTask: ({ name, kind, text }) => startCloudAgentFromNewTask(name, kind, text, lang || "zh-Hans"),
+                    createCloudAgentTask: ({ name, kind, text, workflowTemplateId, workflowParams, expertId }) => startCloudAgentFromNewTask(name, kind, text, lang || "zh-Hans", { workflowTemplateId, workflowParams, expertId }),
                     materializeLatexDocument: async ({ projectPath, templateId, templateName, userText }) => {
                         let failure = "";
                         const document = await createLatexDocumentForTask(projectPath, templateId, "", lang || "zh-Hans", (message) => {
@@ -1208,6 +1208,24 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         setNewTaskCoverHeld(wizardOverlay);
         return () => setNewTaskCoverHeld(false);
     }, [wizardOverlay]);
+    // Remote/cloud conversations open outside the tab strip. Their open
+    // actions call dismissNewTaskCover; route it to the same gated dismiss a
+    // task-tab switch performs.
+    useEffect(() => {
+        bindNewTaskCoverDismiss(() => {
+            if (wizardOverlayRef.current) dismissWizardOverlayRef.current();
+        });
+        return () => bindNewTaskCoverDismiss(null);
+    }, []);
+    // A foreground tab switch from any path — including VE/group/history
+    // opens that do not route through beforeUser*Open — retires the cover:
+    // the new foreground tab is the conversation the user asked to see.
+    const foregroundTabIdRef = useRef(activeTab.id);
+    useEffect(() => {
+        if (activeTab.id === foregroundTabIdRef.current) return;
+        foregroundTabIdRef.current = activeTab.id;
+        if (wizardOverlayRef.current) dismissWizardOverlayRef.current();
+    }, [activeTab.id]);
 
     const dismissWizardOverlay = useCallback(() => {
         const covered = composerStashRef.current;

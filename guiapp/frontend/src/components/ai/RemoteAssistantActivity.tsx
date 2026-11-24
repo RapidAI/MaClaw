@@ -5,7 +5,7 @@ import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
 import { isProgressOnlyToolAction, parseAssistantToolStatus, type AssistantToolCall } from "./assistantToolCall";
 import { localizeText } from "../../i18n";
 import { workflowStatusForTask } from "../layout/SidebarTaskManagement";
-import type { RemoteAssistantSession, RemoteLivePart } from "../layout/remoteAssistantSession";
+import { remoteAssistantSend, type RemoteAssistantSession, type RemoteLivePart } from "../layout/remoteAssistantSession";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { formatProjectSearchTime } from "./projectSearchTime";
 import { isCodingAgentProgressContent, renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
@@ -156,6 +156,15 @@ export function RemoteCodingPlanChecklist({ session, lang, theme: t }: { session
     const heldLabel = stopping
         ? localizeText(lang, "Stopping", "正在停止", "正在停止")
         : (!working && workflowStatus && workflowStatus.tone !== "info" ? workflowStatus.label : "");
+    // A controlled desktop decides on the other computer — no gate buttons.
+    // A cloud task's gate is answered by this panel's own send.
+    const cloudGate = session.cloud && gateOpen
+        ? {
+            onApprove: () => { void remoteAssistantSend("按计划开始"); },
+            onSkip: () => { void remoteAssistantSend("不用计划，直接做"); },
+            onReject: () => { void remoteAssistantSend("取消这个计划"); },
+        }
+        : {};
     return (
         <CodingAgentPlanChecklist
             lang={lang}
@@ -163,8 +172,10 @@ export function RemoteCodingPlanChecklist({ session, lang, theme: t }: { session
             chrome={buildCodingBannerChrome({ isDark: !!t.isDark, remote: true, theme: t })}
             steps={steps}
             understanding={understanding}
+            pendingApproval={!!session.cloud && gateOpen}
             executionLive={working}
             executionStatusLabel={heldLabel}
+            {...cloudGate}
         />
     );
 }

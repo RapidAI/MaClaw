@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func putCoding(t *testing.T, rt *Runtime, loopback string) Spec {
@@ -297,7 +299,7 @@ func TestAgentHostStreamShapes(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(frames) != 3 {
+	if len(frames) != 4 {
 		t.Fatalf("frames=%d %v", len(frames), frames)
 	}
 	if frames[0]["event"] != "thinking" || frames[0]["state"] != "delta" || frames[0]["text"] != "thinking about it" {
@@ -306,8 +308,15 @@ func TestAgentHostStreamShapes(t *testing.T) {
 	if frames[1]["event"] != "token" || frames[1]["text"] != "answer text" {
 		t.Fatalf("token frame=%v", frames[1])
 	}
-	if frames[2]["event"] != "progress" || !strings.Contains(fmtString(frames[2]["text"]), "工具 · 调用工具 (missing_tool)") {
-		t.Fatalf("progress frame=%v", frames[2])
+	// Coding turns report tool activity as Coding Agent Event lines — one
+	// tool_started and one tool_finished per call.
+	started := fmtString(frames[2]["text"])
+	if frames[2]["event"] != "progress" || !strings.Contains(started, cloudCodingEventPrefix) || !strings.Contains(started, `"event":"tool_started"`) || !strings.Contains(started, `"detail":"missing_tool"`) {
+		t.Fatalf("tool_started frame=%v", frames[2])
+	}
+	finished := fmtString(frames[3]["text"])
+	if frames[3]["event"] != "progress" || !strings.Contains(finished, `"event":"tool_finished"`) || !strings.Contains(finished, `"outcome":"failed"`) {
+		t.Fatalf("tool_finished frame=%v", frames[3])
 	}
 }
 
@@ -379,5 +388,36 @@ func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
 		if !want[rel] {
 			t.Fatalf("unexpected artifact %q in %v", rel, got)
 		}
+	}
+}
+
+// A spent iteration budget keeps the same conversation: the host grants
+// another wave while the turn is alive, and refuses before any tool ran
+// or once the turn is cancelled. The loop's stall detectors are what end
+// a wedged turn, so a still-progressing one is not capped by count.
+func TestExtendIterationBudgetGrantsWavesUntilStopped(t *testing.T) {
+	h := &agentHost{
+		inst: &instance{meta: Spec{ID: "cag_t"}},
+		cfg:  corelib.MaclawLLMConfig{MaclawAgentMaxIterations: 30},
+	}
+	if got := h.ExtendIterationBudget(30, 0); got != 0 {
+		t.Fatalf("no-tool refill = %d, want 0", got)
+	}
+	for wave := 1; wave <= 3; wave++ {
+		if got := h.ExtendIterationBudget(30*wave, 8); got != 30 {
+			t.Fatalf("wave %d refill = %d, want 30", wave, got)
+		}
+	}
+	if h.iterationExtensions != 3 {
+		t.Fatalf("iterationExtensions = %d, want 3", h.iterationExtensions)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.turn = ctx
+	if got := h.ExtendIterationBudget(120, 8); got != 30 {
+		t.Fatalf("live turn refill = %d, want 30", got)
+	}
+	cancel()
+	if got := h.ExtendIterationBudget(150, 8); got != 0 {
+		t.Fatalf("cancelled turn refill = %d, want 0", got)
 	}
 }

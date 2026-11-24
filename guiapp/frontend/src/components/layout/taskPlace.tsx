@@ -10,6 +10,8 @@ export type CloudAgentListItem = {
     kind: string;
     status: string;
     updatedAt: string;
+    /** 实例实际部署的私有 maclawsrv 节点 id；空 = 官方云端服务。 */
+    srvNodeId?: string;
 };
 
 const OPEN_STAMP_KEY = 'maclaw.cloud-agent-opened.v1';
@@ -180,12 +182,14 @@ export function asCloudAgentListItem(value: unknown): CloudAgentListItem | null 
     if (!id) return null;
     const status = textOf(row, 'status', 'Status');
     if (status === 'deleted') return null;
+    const srvNodeId = textOf(row, 'srv_node_id', 'SrvNodeID');
     return {
         id,
         name: textOf(row, 'name', 'Name'),
         kind: textOf(row, 'kind', 'Kind'),
         status,
         updatedAt: textOf(row, 'updated_at', 'UpdatedAt', 'created_at', 'CreatedAt'),
+        ...(srvNodeId ? { srvNodeId } : {}),
     };
 }
 

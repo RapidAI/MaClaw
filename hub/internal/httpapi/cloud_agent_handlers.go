@@ -92,7 +92,7 @@ func cloudAgentAdminUserLimits(svc *cloudagent.Service, audit store.AdminAuditRe
 	}
 }
 
-func cloudAgentAdminAccessGet(svc *cloudagent.Service) http.HandlerFunc {
+func cloudAgentAdminAccessGet(svc *cloudagent.Service, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "云端管理暂时不可用")
@@ -102,6 +102,28 @@ func cloudAgentAdminAccessGet(svc *cloudagent.Service) http.HandlerFunc {
 		if err != nil {
 			writeCloudAgentErr(w, err)
 			return
+		}
+		// The org tree on the admin page loads lazily, so each scope row
+		// carries its own display name instead of the page resolving it
+		// from a full-tree or user-directory fetch.
+		secCtx := security.WithTenant(r.Context(), AdminTenantID(r.Context()))
+		for i := range items {
+			switch items[i].Scope {
+			case cloudagent.ScopeDepartment:
+				if securitySvc == nil {
+					break
+				}
+				if group, err := securitySvc.GetGroupByID(secCtx, items[i].TargetID); err == nil && group != nil {
+					items[i].TargetName = group.Name
+				}
+			case cloudagent.ScopeUser:
+				if svc.Directory == nil {
+					break
+				}
+				if email, err := svc.Directory.Email(secCtx, items[i].TargetID); err == nil {
+					items[i].TargetName = email
+				}
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}

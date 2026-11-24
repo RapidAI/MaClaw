@@ -10,10 +10,19 @@ function appBinding(name: string): Binding | null {
     return typeof fn === 'function' ? fn as Binding : null;
 }
 
+type AccountView = {
+    connected?: boolean; login?: string; name?: string;
+    email?: string; origin?: string; token?: string; repo_scope?: boolean;
+};
+
 /**
  * The coding-instance repository form. ConnectGit clones the repo into the
  * instance workspace on the srv; until then the turn works in the bare
  * workspace and git_commit/git_push stay unavailable.
+ *
+ * Account-first: the primary path pulls the token from the GitHub/GitLab
+ * account connected in Settings → GitHub & GitLab. A hand-pasted token is
+ * still possible under "advanced".
  */
 export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: string; instanceId: string; onClose: () => void }) {
     const [git, setGit] = useState({
@@ -28,6 +37,8 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
     const [error, setError] = useState('');
     const [note, setNote] = useState('');
     const [busy, setBusy] = useState(false);
+    const [accountBusy, setAccountBusy] = useState(false);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
     const dialogRef = useRef<HTMLDivElement | null>(null);
 
     const text = (en: string, zh: string, hant?: string) => localizeText(lang, en, zh, hant);
@@ -56,15 +67,17 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
     };
 
     const fillFromAccount = async () => {
-        const account = appBinding('CloudAgentGitHubAccount');
+        const isGitLab = git.service === 'gitlab';
+        const account = appBinding(isGitLab ? 'CloudAgentGitLabAccount' : 'CloudAgentGitHubAccount');
         if (!account) return;
+        setAccountBusy(true);
+        setNote('');
         try {
-            const view = await account() as {
-                connected?: boolean; login?: string; name?: string;
-                email?: string; token?: string; repo_scope?: boolean;
-            };
+            const view = await account() as AccountView;
             if (!view?.connected || !view.token) {
-                setNote(text('Connect GitHub in Settings first', '请先在设置中登录 GitHub', '請先在設定中登入 GitHub'));
+                setNote(isGitLab
+                    ? text('Connect GitLab in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中连接 GitLab', '請先在 設定 → GitHub & GitLab 中連接 GitLab')
+                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub'));
                 return;
             }
             if (!view.repo_scope) {
@@ -73,8 +86,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
             }
             setGit((prev) => ({
                 ...prev,
-                service: 'github',
-                origin: 'https://github.com',
+                origin: isGitLab ? String(view.origin || 'https://gitlab.com') : 'https://github.com',
                 authorName: String(view.name || view.login || ''),
                 authorEmail: String(view.email || ''),
                 token: String(view.token),
@@ -83,6 +95,8 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
             setNote(text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`));
         } catch (err) {
             fail(err);
+        } finally {
+            setAccountBusy(false);
         }
     };
 
@@ -170,18 +184,56 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
                         aria-label={text('Service', '服务', '服務')}
                         value={git.service}
                         disabled={busy}
-                        onChange={(event) => setGit((prev) => ({ ...prev, service: event.target.value, source: '' }))}
+                        onChange={(event) => setGit((prev) => {
+                            const service = event.target.value;
+                            // A github.com default must not follow the form into a
+                            // gitlab connect — the srv parses the repo against it.
+                            const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
+                            const untouched = !prev.origin.trim() || prev.origin === prevDefault;
+                            return {
+                                ...prev,
+                                service,
+                                source: '',
+                                origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin,
+                            };
+                        })}
                         style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid var(--theme-border, #d0d5dd)' }}
                     >
                         <option value="github">GitHub</option>
                         <option value="gitlab">GitLab</option>
                     </select>
-                    {field(text('Origin', '地址', '位址'), 'origin')}
+                    <button
+                        type="button"
+                        disabled={busy || accountBusy}
+                        onClick={() => void fillFromAccount()}
+                    >
+                        {accountBusy
+                            ? text('Loading…', '加载中…', '載入中…')
+                            : git.service === 'gitlab'
+                                ? text('Use GitLab account', '用 GitLab 账号', '用 GitLab 帳號')
+                                : text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}
+                    </button>
                     <span style={{ gridColumn: '1 / -1' }}>{field(text('Repository (owner/name)', '代码库（owner/name）', '程式庫（owner/name）'), 'repo')}</span>
                     {field(text('Author name', '作者', '作者'), 'authorName')}
                     {field(text('Author email', '邮箱', '郵箱'), 'authorEmail')}
-                    <span style={{ gridColumn: '1 / -1' }}>{field(text('Token', '令牌', '權杖'), 'token', 'password')}</span>
-                    <button type="button" disabled={busy} onClick={() => void fillFromAccount()}>{text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}</button>
+                    <span style={{ gridColumn: '1 / -1' }}>
+                        <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setAdvancedOpen((v) => !v)}
+                            style={{ padding: 0, border: 'none', background: 'none', color: 'var(--theme-text-secondary, #667085)', fontSize: 12, cursor: 'pointer' }}
+                        >
+                            {advancedOpen
+                                ? text('Hide advanced (manual token & origin)', '收起高级（手动令牌与地址）', '收起進階（手動權杖與位址）')
+                                : text('Advanced (manual token & origin)', '高级选项（手动令牌与地址）', '進階選項（手動權杖與位址）')}
+                        </button>
+                    </span>
+                    {advancedOpen && (
+                        <>
+                            <span style={{ gridColumn: '1 / -1' }}>{field(text('Origin', '地址', '位址'), 'origin')}</span>
+                            <span style={{ gridColumn: '1 / -1' }}>{field(text('Token', '令牌', '權杖'), 'token', 'password')}</span>
+                        </>
+                    )}
                     <button type="submit" disabled={busy || !git.repo.trim() || !git.authorName.trim() || !git.authorEmail.trim() || !git.token}>
                         {busy ? text('Connecting…', '连接中…', '連接中…') : text('Connect', '连接', '連接')}
                     </button>

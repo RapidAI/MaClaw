@@ -7,6 +7,8 @@ import {
     cloudAgentRound,
     cloudAgentSessionKey,
     cloudAgentStoreKey,
+    cloudAgentWorkbench,
+    cloudAgentWorkflow,
     expireCloudAgentCards,
 } from './cloudAgentSession';
 import {
@@ -62,6 +64,22 @@ type Owner = {
      *  stays false until GetCloudAgentGit answers, so the banner never flashes
      *  "not connected" on a bound instance while the read is in flight. */
     git: { connected: boolean; repo: string; checked: boolean };
+    /** The private node srv this instance runs on, resolved from the user's
+     *  srv-capable nodes. Null while the lookup is pending or after it failed —
+     *  the header falls back to the node id. */
+    srv: { nodeId: string; name: string; address: string; online: boolean } | null;
+    /**
+     * Wizard choices the first cloud_create_task ships: the workflow template
+     * + its form params and the expert persona resolved to name/prompt.
+     * Read once by sendCloud's lazy create; later tasks on the same instance
+     * start plain.
+     */
+    taskSetup?: {
+        workflowTemplateId: string;
+        workflowParams: Record<string, string>;
+        expertName: string;
+        expertPrompt: string;
+    } | null;
 };
 
 let generation = 0;
@@ -282,6 +300,18 @@ function cloudLive(round: ReturnType<typeof cloudAgentRound> | null): RemoteLive
     };
 }
 
+/**
+ * The header's server line. An empty srv_node_id is the official cloud
+ * service; a private node names itself and its address (the ip).
+ */
+function cloudServerLabel(current: Owner, text: (en: string, zh: string, hant?: string) => string): string {
+    const nodeId = String(current.item.srvNodeId || current.srv?.nodeId || '').trim();
+    if (!nodeId) return text('Official cloud service', '官方云端服务', '官方雲端服務');
+    const detail = [current.srv?.name || '', current.srv?.address || ''].filter(Boolean).join(' · ') || nodeId;
+    const offline = current.srv && !current.srv.online ? ` · ${text('offline', '离线', '離線')}` : '';
+    return `${text('Private maclawsrv', '私有 maclawsrv')} · ${detail}${offline}`;
+}
+
 function publishOwner() {
     const current = owner;
     if (!current) return;
@@ -382,6 +412,7 @@ function publishOwner() {
     publishRemoteAssistantSession({
         grantId: current.grant || current.item.id,
         machineName: text('Cloud', '云端', '雲端'),
+        serverLabel: cloudServerLabel(current, text),
         projectPath: `cloud-agent:${current.item.id}`,
         taskName: current.item.name || current.item.id,
         cloud: true,
@@ -393,6 +424,8 @@ function publishOwner() {
         busy: observeTurn(current, round),
         activity: current.stopping ? { stopping: true } : undefined,
         live,
+        workbench: storeKey ? cloudAgentWorkbench(storeKey) : null,
+        cloudWorkflow: storeKey ? cloudAgentWorkflow(storeKey) : null,
         messages,
     });
     bindRemoteAssistantActions({
@@ -558,9 +591,18 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
     try {
         let taskId = current.taskId;
         if (!taskId) {
-            const created = parseJSON<{ task_id?: string }>(
+            const setup = current.taskSetup;
+            const created = parseJSON<{ task_id?: string; workflow_warning?: string }>(
                 await op(current.grant, 'cloud_create_task', JSON.stringify({
                     title: Array.from(outgoing).slice(0, 48).join(''),
+                    ...(setup?.workflowTemplateId ? {
+                        workflow_template_id: setup.workflowTemplateId,
+                        workflow_params: setup.workflowParams || {},
+                    } : {}),
+                    ...(setup && (setup.expertName || setup.expertPrompt) ? {
+                        expert_name: setup.expertName,
+                        expert_prompt: setup.expertPrompt,
+                    } : {}),
                 })),
                 {},
             );
@@ -575,6 +617,16 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
                 return false;
             }
             owner.taskId = taskId;
+            // The wizard's workflow/expert belong to THIS first task only —
+            // a later task on the same instance starts plain.
+            current.taskSetup = null;
+            // A bad template id leaves the task itself usable — the warning
+            // lands as a transcript line instead of failing the send.
+            const workflowWarning = String(created.workflow_warning || '').trim();
+            if (workflowWarning) {
+                owner.history = [...owner.history, `assistant\n⚠ ${workflowWarning}`];
+                owner.historyEpoch += 1;
+            }
             const session = cloudAgentSessionKey(current.item.id, taskId);
             const baseline = cloudAgentRound(cloudAgentStoreKey(current.grant, session)).last;
             const watchRaw = await op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: taskId, session_key: session }));
@@ -656,10 +708,11 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [], git: { connected: false, repo: '', checked: false } };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [], git: { connected: false, repo: '', checked: false }, srv: null };
     notify();
     ensureStream();
     publishOwner();
+    void refreshCloudSrvNode(gen);
     const open = binding('OpenCloudAgentGrant');
     const op = binding('RemoteControlOp');
     if (!open || !op) {
@@ -706,12 +759,37 @@ export async function openCloudAgent(item: CloudAgentListItem, lang: string): Pr
 }
 
 /**
+ * Wizard selections a cloud task carries. The expert id resolves through the
+ * desktop's store to the name + persona the instance replays every turn;
+ * workflow fields land on cloud_create_task untouched.
+ */
+export type CloudTaskSetup = {
+    workflowTemplateId?: string;
+    workflowParams?: Record<string, string>;
+    expertId?: string;
+};
+
+/** expert id → {name, system_prompt} via the CloudAgentExpertProfile binding. */
+async function resolveCloudExpertProfile(expertId: string): Promise<{ name: string; prompt: string } | null> {
+    const id = (expertId || '').trim();
+    if (!id) return null;
+    const profile = binding('CloudAgentExpertProfile');
+    if (!profile) return null;
+    try {
+        const parsed = parseJSON<{ name?: string; system_prompt?: string }>(await profile(id), {});
+        return { name: String(parsed.name || '').trim(), prompt: String(parsed.system_prompt || '').trim() };
+    } catch {
+        return null;
+    }
+}
+
+/**
  * New-task send when 位置 is 云端. Same composer text, different place:
  * create the instance, open it in the main assistant, and deliver the first message.
  * The returned id is the created instance. A warning means that instance exists
  * and the first instruction was not accepted.
  */
-export async function startCloudAgentFromNewTask(name: string, kind: 'session' | 'coding', text: string, lang: string): Promise<{ id: string; warning?: string }> {
+export async function startCloudAgentFromNewTask(name: string, kind: 'session' | 'coding', text: string, lang: string, setup?: CloudTaskSetup): Promise<{ id: string; warning?: string }> {
     const create = binding('CreateCloudAgent');
     if (!create) {
         throw new Error(localizeText(lang, 'Cloud runtime is unavailable', '云端运行时不可用', '雲端運行時不可用'));
@@ -721,8 +799,20 @@ export async function startCloudAgentFromNewTask(name: string, kind: 'session' |
     if (!item) {
         throw new Error(localizeText(lang, 'The cloud task was not created', '云端任务没有创建', '雲端任務沒有建立'));
     }
+    // Resolve the picked expert before the open races the first send — the
+    // profile rides cloud_create_task once, not every message.
+    const workflowTemplateId = (setup?.workflowTemplateId || '').trim();
+    const expertId = (setup?.expertId || '').trim();
+    const expert = expertId ? await resolveCloudExpertProfile(expertId) : null;
+    const taskSetup = (workflowTemplateId || expertId) ? {
+        workflowTemplateId,
+        workflowParams: setup?.workflowParams || {},
+        expertName: expert?.name || '',
+        expertPrompt: expert?.prompt || '',
+    } : null;
     requestCloudAgentListRefresh();
     await openCloudAgent(item, lang);
+    if (owner && owner.item.id === item.id) owner.taskSetup = taskSetup;
     // The instance already exists. A later open or send failure must not look
     // like "nothing was created", or a scheduled launch will create another one.
     if (!owner || owner.item.id !== item.id || !owner.grant) {
@@ -741,6 +831,43 @@ export async function startCloudAgentFromNewTask(name: string, kind: 'session' |
         };
     }
     return { id: item.id };
+}
+
+/**
+ * Resolves the node id recorded on the instance to a name/address the header
+ * can show. Only a private srv needs the lookup — the official label needs
+ * no round trip. A failed read leaves the node id on the header.
+ */
+async function refreshCloudSrvNode(gen: number): Promise<void> {
+    const current = owner;
+    if (!current) return;
+    // The instance records the srv it provisioned on. A row that never
+    // landed (provisioning/provision_failed) has no record yet; its next
+    // attempt goes to the user's current pin, so the pin is the right label.
+    const recorded = String(current.item.srvNodeId || '').trim();
+    const pending = current.item.status === 'provisioning' || current.item.status === 'provision_failed';
+    if (!recorded && !pending) return;
+    const choice = binding('GetCloudSrvChoice');
+    if (!choice) return;
+    try {
+        const state = await choice() as {
+            node_id?: string;
+            nodes?: Array<{ node_id?: string; name?: string; address?: string; online?: boolean }>;
+        };
+        const nodeId = recorded || String(state?.node_id || '').trim();
+        if (!nodeId || !owner || owner.generation !== gen) return;
+        const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+        const node = nodes.find(candidate => String(candidate?.node_id || '').trim() === nodeId);
+        owner.srv = {
+            nodeId,
+            name: String(node?.name || '').trim(),
+            address: String(node?.address || '').trim(),
+            online: node ? node.online === true : true,
+        };
+        publishOwner();
+    } catch {
+        // The node id still identifies the private server on the header.
+    }
 }
 
 /**
@@ -779,6 +906,41 @@ export function sendShownCloudAgent(instanceId: string, taskId: string, text: st
 export function stopShownCloudAgent(instanceId: string, taskId: string): Promise<boolean> | null {
     if (!owner || owner.item.id !== instanceId || owner.taskId !== taskId) return null;
     return stopCloud(owner.generation);
+}
+
+/**
+ * Submit the workflow form the open cloud task is gating on. The instance
+ * continues with a phase turn behind the same send slot, so this borrows
+ * sendCloud's pending bookkeeping rather than tracking a separate flight.
+ */
+export async function submitCloudWorkflowForm(values: Record<string, unknown>): Promise<boolean> {
+    const current = owner;
+    const op = binding('RemoteControlOp');
+    if (!current || !op || !current.grant || !current.taskId) return false;
+    const gen = current.generation;
+    current.pending = true;
+    current.pendingBaseline = currentRound(current)?.requestId || '';
+    setAwaiting(current);
+    publishOwner();
+    try {
+        await op(current.grant, 'cloud_submit_workflow_form', JSON.stringify({
+            task_id: current.taskId,
+            values,
+            client_message_id: `cm_${Date.now()}`,
+        }));
+        if (!owner || owner.generation !== gen) return true;
+        publishOwner();
+        return true;
+    } catch (err) {
+        if (!owner || owner.generation !== gen) {
+            dropUnansweredSend(current);
+            return false;
+        }
+        owner.error = err instanceof Error ? err.message : String(err);
+        dropUnansweredSend(owner);
+        publishOwner();
+        return false;
+    }
 }
 
 export function cloudAgentsFromList(value: unknown): CloudAgentListItem[] {

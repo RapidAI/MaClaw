@@ -48,6 +48,8 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { RemoteAssistantActivity, RemoteCodingPlanChecklist } from "./RemoteAssistantActivity";
+import { downloadRemoteWorkspace } from "./remoteWorkspaceDownload";
+import { CloudWorkflowPanel } from "./CloudWorkflowPanel";
 import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
 import { legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
 import { isTranscriptToolCallText } from "./assistantToolCall";
@@ -5667,6 +5669,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         console.debug('[remote-artifact] saved', { op: opName, path: filePath, saved });
         return saved;
     }, [remoteChat, lang]);
+    // The card-head 导出 packs the whole cloud workspace into one .tar.gz —
+    // the same srv call the task list's 打包下载 context entry runs. The
+    // session's projectPath carries the instance id as "cloud-agent:<id>".
+    const remoteWorkspaceDownload = useCallback((): Promise<string> => downloadRemoteWorkspace(remoteChat, lang), [remoteChat, lang]);
     const remoteTranscript = useMemo(() => {
         if (!remoteChat) return [];
         return remoteChat.messages.map((message, index): ChatMessage => {
@@ -5684,6 +5690,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 // cannot serve cloud_fetch_file — keep the manual fetch
                 // button instead of painting an error on every artifact.
                 remoteArtifactsAutoFetch: localFilePaths.length && remoteChat.cloud && remoteChat.canSend ? true : undefined,
+                remoteWorkspaceDownload: localFilePaths.length && remoteChat.cloud ? remoteWorkspaceDownload : undefined,
                 fields: message.fields,
                 queued: message.queued || undefined,
                 toolCalls: message.toolCalls,
@@ -5692,7 +5699,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 timestamp: index + 1,
             };
         });
-    }, [remoteChat, remoteFileFetch]);
+    }, [remoteChat, remoteFileFetch, remoteWorkspaceDownload]);
     const remoteRenderedMessages = useMemo(() => {
         if (!remoteTranscript.length) return null;
         const last = remoteTranscript.length - 1;
@@ -7902,7 +7909,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? remoteChat.machineName : remoteWorkspaceLabel} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             {/* The visible bell lives on the sidebar status row; this
@@ -8026,6 +8033,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     A retired checklist still mounts for that chip but stripped
                     to it — the finished steps do not come back with it. */}
                 {!showWelcomeView && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
+                {/* Cloud workflow surface: phases + form/review gates mirrored
+                    from the instance's V2 machine via workflow_state frames. */}
+                {!showWelcomeView && remoteChat ? <CloudWorkflowPanel session={remoteChat} lang={lang} theme={t} /> : null}
                 {!showWelcomeView && !remoteChat && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}

@@ -494,7 +494,9 @@ func (a *App) openPetRearingDBLocked() {
 		return
 	}
 	path := filepath.Join(dir, petRearingDBFile)
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite ignores the mattn-style _journal_mode/_busy_timeout
+	// params — they must ride _pragma.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		log.Printf("[pet-rearing] open: %v", err)
 		return

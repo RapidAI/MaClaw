@@ -3746,6 +3746,10 @@ export function ListExperts() {
   return window['go']['main']['App']['ListExperts']();
 }
 
+export function CloudAgentExpertProfile(arg1) {
+  return window['go']['main']['App']['CloudAgentExpertProfile'](arg1);
+}
+
 export function ListManagedIndustryExperts() {
   return window['go']['main']['App']['ListManagedIndustryExperts']();
 }
@@ -5909,6 +5913,30 @@ export function GetGitHubConnection(arg1) {
 
 export function DisconnectGitHub() {
   return window['go']['main']['App']['DisconnectGitHub']();
+}
+
+export function GetGitLabConnection(arg1) {
+  return window['go']['main']['App']['GetGitLabConnection'](arg1);
+}
+
+export function ConnectGitLab(arg1, arg2) {
+  return window['go']['main']['App']['ConnectGitLab'](arg1, arg2);
+}
+
+export function DisconnectGitLab() {
+  return window['go']['main']['App']['DisconnectGitLab']();
+}
+
+export function OpenGitLabTokenPage(arg1) {
+  return window['go']['main']['App']['OpenGitLabTokenPage'](arg1);
+}
+
+export function CloudAgentGitHubAccount() {
+  return window['go']['main']['App']['CloudAgentGitHubAccount']();
+}
+
+export function CloudAgentGitLabAccount() {
+  return window['go']['main']['App']['CloudAgentGitLabAccount']();
 }
 
 export function GitHubAPIRequest(arg1, arg2) {

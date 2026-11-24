@@ -81,6 +81,52 @@ export type RemoteWorkbenchState = {
     steps_revision?: number;
 };
 
+/** One phase row of a cloud workflow (MaClawSrv/cloudagent V2 machine). */
+export type CloudWorkflowPhase = {
+    id?: string;
+    name?: string;
+    status?: string;
+    needs_confirm?: boolean;
+    expects_document?: boolean;
+};
+
+/** One field of a cloud workflow phase form (v2 PhaseInputField). */
+export type CloudWorkflowFormField = {
+    name: string;
+    label?: string;
+    type?: string;
+    required?: boolean;
+    description?: string;
+    placeholder?: string;
+    options?: { label: string; value: string }[];
+    default?: unknown;
+};
+
+/** The gated phase's input schema (v2 PhaseInputSchema). */
+export type CloudWorkflowFormSchema = {
+    title?: string;
+    description?: string;
+    fields?: CloudWorkflowFormField[];
+    variants?: { id: string; label: string; fields: CloudWorkflowFormField[] }[];
+};
+
+/**
+ * Full workflow snapshot for a cloud task, serialized by the instance's V2
+ * state machine and riding workflow_state frames + the watch snapshot.
+ */
+export type CloudWorkflowState = {
+    id?: string;
+    status?: string;
+    type?: string;
+    current_phase?: string;
+    phases?: CloudWorkflowPhase[];
+    project_path?: string;
+    suspended?: boolean;
+    awaiting_form?: boolean;
+    form_schema?: CloudWorkflowFormSchema;
+    pending_review?: boolean;
+};
+
 /**
  * Live status mirrored from the remote task snapshot. Everything here comes
  * from the get_task poll, so it refreshes on the same cadence (3s while the
@@ -108,6 +154,8 @@ export type RemoteAssistantSession = {
     taskName: string;
     /** Cloud agent task projected through this channel — the UI says 云端, not 对方电脑. */
     cloud?: boolean;
+    /** Which maclawsrv runs this cloud task: private node address or the official service label. */
+    serverLabel?: string;
     /** Coding-instance repository binding; absent for session instances. */
     cloudGit?: { connected: boolean; repo?: string };
     canSend: boolean;
@@ -125,6 +173,8 @@ export type RemoteAssistantSession = {
     syncing?: boolean;
     /** Coding workbench checklist mirrored over workbench_steps events. */
     workbench?: RemoteWorkbenchState | null;
+    /** V2 workflow state mirrored over workflow_state events (cloud tasks). */
+    cloudWorkflow?: CloudWorkflowState | null;
     messages: RemoteAssistantTranscriptMessage[];
 };
 
@@ -861,9 +911,11 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
                 merged.push({ role: note.asError ? 'error' : 'assistant', content: note.text });
             }
         }
-        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) || null, syncing: !!reduced?.gap };
+        return { ...session, messages: merged, live: round, workbench: workbenchByKey.get(key) ?? session.workbench ?? null, syncing: !!reduced?.gap };
     }
-    const workbench = workbenchByKey.get(key) || null;
+    // A cloud session's workbench arrives on the published session itself —
+    // workbenchByKey only mirrors controlled-desktop tasks.
+    const workbench = workbenchByKey.get(key) ?? session.workbench ?? null;
     if (merged || workbench) return { ...session, messages: merged || session.messages, workbench };
     return session;
 }
@@ -880,11 +932,13 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.cloud ? 'cloud' : '',
         session.machineName,
         session.taskName,
+        session.serverLabel || '',
         session.error,
         session.activity ? JSON.stringify(session.activity) : '',
         liveStamp(session.live),
         session.syncing ? 'sync' : '',
         session.workbench ? JSON.stringify(session.workbench) : '',
+        session.cloudWorkflow ? JSON.stringify(session.cloudWorkflow) : '',
         session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}\n${message.queued ? 'queued' : ''}`).join('\n--\n'),
     ].join('\n');
 }

@@ -9,10 +9,14 @@ const { showConfirmMock, clipboardMock } = vi.hoisted(() => ({
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelGitHubOAuth: vi.fn().mockResolvedValue(undefined),
+    ConnectGitLab: vi.fn().mockResolvedValue({ connected: true, login: 'tux', name: 'Tux', origin: 'https://gitlab.com', scopes: 'api' }),
     DisconnectGitHub: vi.fn().mockResolvedValue(undefined),
+    DisconnectGitLab: vi.fn().mockResolvedValue(undefined),
     GetGitHubConnection: vi.fn().mockResolvedValue({ connected: false, client_id: 'Iv1.b507a08c87ecfe98', custom_client_id: false }),
+    GetGitLabConnection: vi.fn().mockResolvedValue({ connected: false }),
     GitHubAPIRequest: vi.fn().mockResolvedValue('{"resources":{"core":{"limit":5000,"remaining":4999},"search":{"limit":30,"remaining":29}}}'),
     GitHubCloneRepository: vi.fn().mockResolvedValue({ output: 'Cloning into repo...', dest_dir: '/data/github/repo', repo_url: 'https://github.com/o/repo.git' }),
+    OpenGitLabTokenPage: vi.fn().mockResolvedValue(undefined),
     ShowItemInFolder: vi.fn().mockResolvedValue(undefined),
     StartGitHubOAuth: vi.fn().mockResolvedValue({ user_code: 'ABCD-1234', verification_uri: 'https://github.com/login/device', browser_opened: true }),
     WaitGitHubOAuth: vi.fn().mockResolvedValue({ connected: true, login: 'octocat', name: 'The Octocat', client_id: 'Iv1.b507a08c87ecfe98', custom_client_id: false }),
@@ -28,10 +32,14 @@ vi.mock('../../CustomDialog', () => ({
 
 import {
     CancelGitHubOAuth,
+    ConnectGitLab,
     DisconnectGitHub,
+    DisconnectGitLab,
     GetGitHubConnection,
+    GetGitLabConnection,
     GitHubAPIRequest,
     GitHubCloneRepository,
+    OpenGitLabTokenPage,
     ShowItemInFolder,
     StartGitHubOAuth,
     WaitGitHubOAuth,
@@ -117,6 +125,31 @@ describe('GitHubSettingsPanel', () => {
         fireEvent.click(screen.getByText('测试连接'));
         await waitFor(() => expect(GitHubAPIRequest).toHaveBeenCalledWith('GET', '/rate_limit'));
         await waitFor(() => expect(screen.getByText(/core 4999\/5000/)).toBeTruthy());
+    });
+
+    it('connects GitLab from a pasted token and renders the account', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenCalledWith('https://gitlab.com');
+        fireEvent.change(screen.getByLabelText('访问令牌'), { target: { value: 'glpat-xyz' } });
+        fireEvent.click(screen.getByText('连接 GitLab'));
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenCalledWith('https://gitlab.com', 'glpat-xyz'));
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        // The token field unmounts once connected — the paste never lingers.
+        expect(screen.queryByLabelText('访问令牌')).toBeNull();
+    });
+
+    it('disconnects GitLab after confirm', async () => {
+        vi.mocked(GetGitLabConnection).mockResolvedValue({
+            connected: true, login: 'tux', name: 'Tux',
+            html_url: 'https://gitlab.com/tux', origin: 'https://gitlab.com', scopes: 'api',
+        } as any);
+        renderPanel();
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        fireEvent.click(screen.getAllByText('断开连接').find((node) => node.closest('section')?.textContent?.includes('GitLab'))!);
+        await waitFor(() => expect(DisconnectGitLab).toHaveBeenCalled());
+        expect(showConfirmMock).toHaveBeenCalled();
     });
 
     it('clones a repository and offers show-in-folder', async () => {
