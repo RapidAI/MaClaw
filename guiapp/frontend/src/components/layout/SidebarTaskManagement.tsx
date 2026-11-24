@@ -2815,21 +2815,38 @@ export const SidebarTaskManagement = ({
     const [cloudFolderCollapsed, setCloudFolderCollapsed] = useState(false);
     const cloudOpenRevision = useCloudOpenRevision();
     const openCloudId = useCloudAssistantId();
+    /** 云端页签选中：点了云端页签，或主面板正看着一个云端任务（行点击会像点页签一样高亮云端）。 */
+    const cloudTabSelected = !remote.selected && (cloudPlaceSelected || !!openCloudId);
     useEffect(() => {
         let cancelled = false;
         const list = (window as unknown as { go?: { main?: { App?: { ListCloudAgents?: () => Promise<unknown> } } } }).go?.main?.App?.ListCloudAgents;
         if (typeof list !== 'function') return;
-        void list().then((rows) => {
-            if (cancelled) return;
-            const catalog = cloudAgentCatalog(rows);
-            setCloudAgents(cloudAgentsFromList(catalog.instances));
-            setCloudAgentsEnabled(catalog.enabled);
-            if (!catalog.enabled) setCloudPlaceSelected(false);
-        }).catch(() => {
-            // Hub answers with enabled. A rejected call is not that answer,
-            // so the last catalog stays until a list actually returns.
-        });
-        return () => { cancelled = true; };
+        const load = () => {
+            void list().then((rows) => {
+                if (cancelled) return;
+                const catalog = cloudAgentCatalog(rows);
+                setCloudAgents(cloudAgentsFromList(catalog.instances));
+                setCloudAgentsEnabled(catalog.enabled);
+                if (!catalog.enabled) setCloudPlaceSelected(false);
+            }).catch(() => {
+                // Hub answers with enabled. A rejected call is not that answer,
+                // so the last catalog stays until a list actually returns.
+            });
+        };
+        load();
+        // The first fetch can race Hub login or hit a restart; one rejection
+        // used to hide the 云端 place for the whole session. Poll like the
+        // remote-control bar so a transient miss self-heals.
+        const timer = window.setInterval(() => {
+            if (!document.hidden) load();
+        }, 30000);
+        const onVisible = () => { if (!document.hidden) load(); };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
     }, [cloudListEpoch]);
     useEffect(() => onCloudAgentListRefresh(() => {
         setCloudListEpoch(epoch => epoch + 1);
@@ -2839,9 +2856,9 @@ export const SidebarTaskManagement = ({
         // Opening a cloud row highlights 云端 the same way clicking the tab does.
         publishCloudTaskPlace({
             enabled: cloudAgentsEnabled,
-            selected: !remote.selected && (cloudPlaceSelected || !!openCloudId),
+            selected: cloudTabSelected,
         });
-    }, [cloudAgentsEnabled, cloudPlaceSelected, remote.selected, openCloudId]);
+    }, [cloudAgentsEnabled, cloudTabSelected]);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
@@ -3603,15 +3620,59 @@ export const SidebarTaskManagement = ({
         };
         return [recentFolder, ...taskFolders];
     }, [recentView, remote.selected, taskFolders, taskSearchQuery]);
-    const visibleCloudAgents = remote.selected ? [] : cloudAgents.filter(item => {
+    const visibleCloudAgents = useMemo(() => {
+        if (remote.selected) return [] as CloudAgentListItem[];
         const query = taskSearchQuery.trim().toLowerCase();
-        if (!query) return true;
-        return (item.name || item.id).toLowerCase().includes(query);
-    });
+        if (!query) return cloudAgents;
+        return cloudAgents.filter(item => (item.name || item.id).toLowerCase().includes(query));
+    }, [cloudAgents, remote.selected, taskSearchQuery]);
+    // 云端页签下的列表只放云端任务，按 会话/编程 分文件夹，与本机的分组一致。
+    // 云端实例没有工作目录，目录分组不适用；文件夹顺序跟随本机保存的顺序。
+    const cloudFolderGroups = useMemo(() => {
+        const buckets: Record<MovableTaskListFolderKind, CloudAgentListItem[]> = { session: [], coding: [] };
+        for (const item of visibleCloudAgents) {
+            buckets[item.kind === 'coding' ? 'coding' : 'session'].push(item);
+        }
+        return normalizeTaskFolderOrder(taskFolderOrder)
+            .map(kind => ({ kind, items: buckets[kind] }))
+            .filter(group => group.items.length > 0);
+    }, [taskFolderOrder, visibleCloudAgents]);
+    // 云端页签的最近任务 band 只数云端实例，cap 与本机相同；搜索时和本机一样收起 band。
+    const recentCloudItems = useMemo(() => {
+        if (recentTaskCount <= 0 || taskSearchQuery.trim()) return [] as CloudAgentListItem[];
+        const stamps = readCloudOpenStamps();
+        return cloudAgents
+            .map(item => ({ item, at: cloudAgentRecency(item, stamps) }))
+            .filter(entry => entry.at > 0)
+            .sort((a, b) => b.at - a.at)
+            .slice(0, recentTaskCount)
+            .map(entry => entry.item);
+        // cloudOpenRevision rereads the open stamps after a cloud row is opened.
+    }, [cloudAgents, cloudOpenRevision, recentTaskCount, taskSearchQuery]);
+    // Opening a cloud row reveals its folder the way a local active task does —
+    // one reveal per open, so collapsing it afterwards stays collapsed.
+    const openCloudFolderKind: MovableTaskListFolderKind = openCloudId
+        ? (cloudAgents.find(item => item.id === openCloudId)?.kind === 'coding' ? 'coding' : 'session')
+        : 'session';
+    useEffect(() => {
+        if (!openCloudId) return;
+        revealTaskFolder(openCloudFolderKind);
+    }, [openCloudId, openCloudFolderKind]);
     const openCloudRow = (item: CloudAgentListItem) => {
         remote.closeDetail();
         void openCloudAgent(item, lang);
     };
+    const renderCloudRow = (item: CloudAgentListItem, order?: number) => (
+        <CloudAgentListRow
+            key={item.id}
+            item={item}
+            lang={lang}
+            active={openCloudId === item.id}
+            order={order}
+            timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
+            onOpen={() => openCloudRow(item)}
+        />
+    );
     const taskDragKeyRef = useRef<string | null>(null);
     const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
     const taskDragPinnedRef = useRef<boolean | null>(null);
@@ -6072,7 +6133,7 @@ export const SidebarTaskManagement = ({
                 {/* Filter rows are noise while the list is empty on the default
                     filters — same conditional-chip rule as zero-count chips
                     above; they return with the first task. */}
-                {(visibleTasks.length > 0 || taskFilter !== 'all' || workspaceFilter !== 'all') && (
+                {!cloudTabSelected && (visibleTasks.length > 0 || taskFilter !== 'all' || workspaceFilter !== 'all') && (
                     <TaskFilterRow
                         ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
                         chips={taskFilterChips}
@@ -6083,7 +6144,7 @@ export const SidebarTaskManagement = ({
                     />
                 )}
             </div>
-            {showWorkspaceFilterRow && (
+            {!cloudTabSelected && showWorkspaceFilterRow && (
                 <TaskFilterRow
                     ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
                     chips={workspaceFilterChips}
@@ -6099,7 +6160,7 @@ export const SidebarTaskManagement = ({
             lang={lang}
             remote={remote}
             cloudAvailable={cloudAgentsEnabled}
-            cloudSelected={!remote.selected && (cloudPlaceSelected || !!openCloudId)}
+            cloudSelected={cloudTabSelected}
             onSelectCloud={() => {
                 if (remote.selected) remote.selectLocal();
                 setCloudPlaceSelected(true);
@@ -6133,7 +6194,104 @@ export const SidebarTaskManagement = ({
                 label={textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}
             />
         ) : null}
-            {filteredTasks.length === 0 && visibleCloudAgents.length === 0 && !suppressEmptyState ? (
+            {cloudTabSelected ? (
+                visibleCloudAgents.length === 0 && !suppressEmptyState ? (
+                    <div className="stsm-empty">
+                        {taskSearchQuery.trim()
+                            ? textForLang(lang, 'No matching tasks', '没有匹配的任务', '沒有匹配的任務')
+                            : textForLang(lang, 'No cloud tasks', '暂无云端任务', '暫無雲端任務')}
+                    </div>
+                ) : (
+                <>
+                    {recentCloudItems.length > 0 ? (
+                        <section
+                            className="stsm-task-folder"
+                            data-testid="task-folder-recent"
+                            data-expanded={recentFolderCollapsed ? 'false' : 'true'}
+                            aria-label={textForLang(lang, 'Recent tasks', '最近任务', '最近任務')}
+                        >
+                            <div
+                                role="button"
+                                tabIndex={0}
+                                className="stsm-task-folder__head stsm-task-folder__toggle"
+                                data-testid="task-folder-toggle-recent"
+                                aria-expanded={!recentFolderCollapsed}
+                                aria-controls="task-folder-items-recent"
+                                title={recentFolderCollapsed
+                                    ? textForLang(lang, 'Expand Recent tasks', '展开最近任务', '展開最近任務')
+                                    : textForLang(lang, 'Collapse Recent tasks', '折叠最近任务', '摺疊最近任務')}
+                                onClick={toggleRecentFolder}
+                                onKeyDown={e => {
+                                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                                    e.preventDefault();
+                                    toggleRecentFolder();
+                                }}
+                            >
+                                <TaskFolderChevron />
+                                <TaskFolderIcon open={!recentFolderCollapsed} />
+                                <span className="stsm-task-folder__label">{textForLang(lang, 'Recent tasks', '最近任务', '最近任務')}</span>
+                                <span className="stsm-task-folder__count">{recentCloudItems.length}</span>
+                            </div>
+                            {!recentFolderCollapsed ? (
+                                <div id="task-folder-items-recent" className="stsm-task-folder__items">
+                                    {recentCloudItems.map(item => renderCloudRow(item))}
+                                </div>
+                            ) : null}
+                        </section>
+                    ) : null}
+                <div data-testid="task-folder-cloud" className="stsm-task-cloud-group">
+                    <div className="stsm-task-place" data-testid="task-place-cloud">
+                        <div className="stsm-task-folder__head" style={{ padding: '5px 8px', gap: 6 }}>
+                            <TaskPlaceIcon place="cloud" lang={lang} />
+                            <span className="stsm-task-folder__label">{textForLang(lang, 'Cloud', '云端', '雲端')}</span>
+                        </div>
+                    </div>
+                    {cloudFolderGroups.map(group => {
+                        const groupExpanded = !!taskSearchQuery.trim() || !collapsedTaskFolders.has(group.kind);
+                        const groupLabel = taskListFolderLabel(group.kind, lang);
+                        const groupToggleLabel = groupExpanded
+                            ? textForLang(lang, `Collapse ${groupLabel}`, `折叠${groupLabel}`, `摺疊${groupLabel}`)
+                            : textForLang(lang, `Expand ${groupLabel}`, `展开${groupLabel}`, `展開${groupLabel}`);
+                        return (
+                        <section
+                            key={group.kind}
+                            className="stsm-task-folder"
+                            data-testid={`task-folder-cloud-${group.kind}`}
+                            data-expanded={groupExpanded ? 'true' : 'false'}
+                            aria-label={groupLabel}
+                        >
+                            <div
+                                role="button"
+                                tabIndex={0}
+                                className="stsm-task-folder__head stsm-task-folder__toggle"
+                                data-testid={`task-folder-toggle-cloud-${group.kind}`}
+                                aria-expanded={groupExpanded}
+                                aria-controls={`task-folder-items-cloud-${group.kind}`}
+                                title={groupToggleLabel}
+                                onClick={() => toggleTaskFolder(group.kind)}
+                                onKeyDown={e => {
+                                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                                    e.preventDefault();
+                                    toggleTaskFolder(group.kind);
+                                }}
+                            >
+                                <TaskFolderChevron />
+                                <TaskFolderIcon open={groupExpanded} />
+                                <span className="stsm-task-folder__label">{groupLabel}</span>
+                                <span className="stsm-task-folder__count">{group.items.length}</span>
+                            </div>
+                            {groupExpanded ? (
+                                <div id={`task-folder-items-cloud-${group.kind}`} className="stsm-task-folder__items">
+                                    {group.items.map(item => renderCloudRow(item))}
+                                </div>
+                            ) : null}
+                        </section>
+                        );
+                    })}
+                </div>
+                </>
+                )
+            ) : filteredTasks.length === 0 && visibleCloudAgents.length === 0 && !suppressEmptyState ? (
             <div className="stsm-empty">
                 {remote.selected
                     ? (remote.selected.online === false
@@ -6572,17 +6730,7 @@ export const SidebarTaskManagement = ({
             </section>
             );
             })}
-            {folder.kind === 'recent' ? recentView.cloud.map(item => (
-                <CloudAgentListRow
-                    key={item.id}
-                    item={item}
-                    lang={lang}
-                    active={openCloudId === item.id}
-                    order={recentView.order[`cloud:${item.id}`]}
-                    timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
-                    onOpen={() => openCloudRow(item)}
-                />
-            )) : null}
+            {folder.kind === 'recent' ? recentView.cloud.map(item => renderCloudRow(item, recentView.order[`cloud:${item.id}`])) : null}
             </div>
             ) : null}
             </section>
@@ -6615,16 +6763,7 @@ export const SidebarTaskManagement = ({
                 </div>
                 {cloudFolderCollapsed ? null : (
                     <div className="stsm-task-folder__items">
-                        {visibleCloudAgents.map(item => (
-                            <CloudAgentListRow
-                                key={item.id}
-                                item={item}
-                                lang={lang}
-                                active={openCloudId === item.id}
-                                timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
-                                onOpen={() => openCloudRow(item)}
-                            />
-                        ))}
+                        {visibleCloudAgents.map(item => renderCloudRow(item))}
                     </div>
                 )}
             </section>

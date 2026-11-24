@@ -323,6 +323,7 @@ func (s *Service) Create(ctx context.Context, tenantID, userID string, in Create
 		return Instance{}, err
 	}
 	if err := s.disp.provision(ctx, &inst); err != nil {
+		log.Printf("[cloud-agent] provision %s: %s", inst.ID, logDetail(err))
 		_ = s.setStatus(ctx, inst.ID, StatusProvisionFailed)
 		inst.Status = StatusProvisionFailed
 	} else {
@@ -563,7 +564,9 @@ func (s *Service) Delete(ctx context.Context, tenantID, userID, id string) error
 	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
 		TurnInterrupted, now, now, inst.ID, TurnRunning)
 	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
-		_, _ = s.disp.call(ctx, "DELETE", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), nil)
+		if _, err := s.disp.call(ctx, "DELETE", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), nil); err != nil {
+			log.Printf("[cloud-agent] delete %s on runtime: %s", inst.ID, logDetail(err))
+		}
 	}
 	return nil
 }
@@ -582,7 +585,9 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID, id string) (Instan
 	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
 		TurnCancelled, now, now, inst.ID, TurnRunning)
 	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
-		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/stop", map[string]any{"owner_user_id": inst.OwnerUserID})
+		if _, err := s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/stop", map[string]any{"owner_user_id": inst.OwnerUserID}); err != nil {
+			log.Printf("[cloud-agent] stop %s on runtime: %s", inst.ID, logDetail(err))
+		}
 	}
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
 }
@@ -600,7 +605,9 @@ func (s *Service) Resume(ctx context.Context, tenantID, userID, id string) (Inst
 		return Instance{}, err
 	}
 	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
-		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/resume", map[string]any{"owner_user_id": inst.OwnerUserID})
+		if _, err := s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/resume", map[string]any{"owner_user_id": inst.OwnerUserID}); err != nil {
+			log.Printf("[cloud-agent] resume %s on runtime: %s", inst.ID, logDetail(err))
+		}
 	}
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
 }
@@ -706,6 +713,17 @@ func (s *Service) retireOtherRunning(ctx context.Context, instanceID, requestID,
 	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ? AND request_id <> ?`,
 		TurnFinished, stamp, stamp, instanceID, TurnRunning, requestID)
 	return err
+}
+
+// settleRunning finishes every running turn of one instance. The runtime
+// already confirmed nothing is running — these rows are shadow state left by
+// a lost finish beat.
+func (s *Service) settleRunning(ctx context.Context, instanceID, stamp string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
+		TurnFinished, stamp, stamp, instanceID, TurnRunning); err != nil {
+		return err
+	}
+	return s.releaseIdle(ctx, instanceID, stamp)
 }
 
 func (s *Service) releaseIdle(ctx context.Context, instanceID, stamp string) error {
@@ -886,10 +904,10 @@ type srvRecord struct {
 // publicConn is the loopback system connection.
 func (r srvRecord) publicConn() (srvConn, error) {
 	if !loopbackBaseURL(r.baseURL) {
-		return srvConn{}, failOffline()
+		return srvConn{}, failOfflineDetail("base_url is not a loopback address: " + r.baseURL)
 	}
 	if strings.TrimSpace(r.adminSecret) == "" {
-		return srvConn{}, failOffline()
+		return srvConn{}, failOfflineDetail("admin_secret is not configured")
 	}
 	return srvConn{BaseURL: strings.TrimRight(strings.TrimSpace(r.baseURL), "/"), AdminSecret: r.adminSecret}, nil
 }
@@ -899,7 +917,7 @@ func (r srvRecord) publicConn() (srvConn, error) {
 func (r srvRecord) nodeConn(nodeID string) (srvConn, error) {
 	conn, ok := r.nodeLinks[nodeID]
 	if !ok || strings.TrimSpace(conn.BaseURL) == "" || strings.TrimSpace(conn.AdminSecret) == "" {
-		return srvConn{}, failOffline()
+		return srvConn{}, failOfflineDetail("no usable node link for " + nodeID)
 	}
 	return conn, nil
 }
@@ -907,11 +925,14 @@ func (r srvRecord) nodeConn(nodeID string) (srvConn, error) {
 func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, error) {
 	rec := srvRecord{ownerCloudNode: map[string]string{}, nodeLinks: map[string]srvConn{}}
 	if s == nil || s.settings == nil {
-		return rec, failOffline()
+		return rec, failOfflineDetail("settings store unavailable")
 	}
 	raw, err := s.settings.Get(ctx, SrvSettingsKey(tenantID))
-	if err != nil || strings.TrimSpace(raw) == "" {
-		return rec, failOffline()
+	if err != nil {
+		return rec, failOfflineDetail("srv settings read: " + err.Error())
+	}
+	if strings.TrimSpace(raw) == "" {
+		return rec, failOfflineDetail("no maclawsrv connection is configured for tenant " + tenantID)
 	}
 	var doc struct {
 		BaseURL        string            `json:"base_url"`
@@ -924,8 +945,11 @@ func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, er
 			AdminSecret string `json:"admin_secret"`
 		} `json:"node_links"`
 	}
-	if err := json.Unmarshal([]byte(raw), &doc); err != nil || strings.TrimSpace(doc.DialNode) != "" {
-		return rec, failOffline()
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return rec, failOfflineDetail("maclawsrv record is not valid JSON")
+	}
+	if strings.TrimSpace(doc.DialNode) != "" {
+		return rec, failOfflineDetail("maclawsrv record delegates to dial_node")
 	}
 	rec.baseURL = doc.BaseURL
 	rec.adminSecret = doc.AdminSecret

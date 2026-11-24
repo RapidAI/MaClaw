@@ -175,23 +175,28 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
 
     if (!showPanel) return null;
 
-    let liveLabel = localizeText(lang, "Working on the other computer…", "对方正在执行…", "對方正在執行…");
+    // A cloud agent session runs on the cloud server, not a controlled
+    // computer — the labels name 云端 instead of 对方.
+    const target = session.cloud
+        ? localizeText(lang, "the cloud", "云端", "雲端")
+        : localizeText(lang, "the other computer", "对方", "對方");
+    let liveLabel = localizeText(lang, `Working on ${target}…`, `${target}正在执行…`, `${target}正在執行…`);
     if (activity?.stopping) {
-        liveLabel = localizeText(lang, "Stopping the task on the other computer…", "正在停止对方任务…", "正在停止對方任務…");
+        liveLabel = localizeText(lang, `Stopping the task on ${target}…`, `正在停止${target}任务…`, `正在停止${target}任務…`);
     } else if (paused) {
-        liveLabel = localizeText(lang, "Paused on the other computer", "对方任务已暂停", "對方任務已暫停");
+        liveLabel = localizeText(lang, `Paused on ${target}`, `${target}任务已暂停`, `${target}任務已暫停`);
     } else if (review) {
-        liveLabel = localizeText(lang, "Waiting for review on the other computer…", "等待对方处理审核…", "等待對方處理審核…");
+        liveLabel = localizeText(lang, `Waiting for review on ${target}…`, `等待${target}处理审核…`, `等待${target}處理審核…`);
     } else if (session.syncing) {
-        liveLabel = localizeText(lang, "Catching up the other computer's output…", "正在补齐中断的输出…", "正在補齊中斷的輸出…");
+        liveLabel = localizeText(lang, `Catching up ${target}'s output…`, "正在补齐中断的输出…", "正在補齊中斷的輸出…");
     } else if (workbench?.pending_approval && !hasLive) {
-        liveLabel = localizeText(lang, "Plan waiting for approval on the other computer…", "对方任务等待计划确认…", "對方任務等待計畫確認…");
+        liveLabel = localizeText(lang, `Plan waiting for approval on ${target}…`, `${target}任务等待计划确认…`, `${target}任務等待計畫確認…`);
     } else if (activity?.awaitingReply && (!workflowStatus || workflowStatus.tone !== "info")) {
-        liveLabel = localizeText(lang, "Sent. Waiting for the other computer to start…", "已发送，等待对方开始执行…", "已發送，等待對方開始執行…");
+        liveLabel = localizeText(lang, `Sent. Waiting for ${target} to start…`, `已发送，等待${target}开始执行…`, `已發送，等待${target}開始執行…`);
     } else if (!busy && !hasLive) {
-        // Idle attention (a plan waiting on the other computer) must not
+        // Idle attention (a plan waiting for approval there) must not
         // read as a live run.
-        liveLabel = localizeText(lang, "Work plan on the other computer", "对方任务的工作清单", "對方任務的工作清單");
+        liveLabel = localizeText(lang, `Work plan on ${target}`, `${target}任务的工作清单`, `${target}任務的工作清單`);
     }
     // A terminal snapshot is the previous run's residue — "正在执行 · 已完成"
     // would read as a contradiction, so only live states make the object slot.
@@ -207,7 +212,7 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     const meta = [
         remoteElapsed(lang, activity?.busySince, now),
         lastActivityAgo
-            ? localizeText(lang, `Last activity ${lastActivityAgo}`, `对方最近活动：${lastActivityAgo}`, `對方最近活動：${lastActivityAgo}`)
+            ? localizeText(lang, `Last activity ${lastActivityAgo}`, `${target}最近活动：${lastActivityAgo}`, `${target}最近活動：${lastActivityAgo}`)
             : "",
     ].filter(Boolean).join(" · ");
 

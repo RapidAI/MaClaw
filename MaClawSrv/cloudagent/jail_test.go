@@ -1,13 +1,16 @@
 package cloudagent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -30,7 +33,7 @@ func TestJailRejectsParentGitJSONAndSymlink(t *testing.T) {
 	if err != nil || root != repo {
 		t.Fatalf("jail root = %s err=%v", root, err)
 	}
-	if _, err := RunBash(root, []string{"cat", "../git.json"}); err == nil {
+	if _, err := RunBash(context.Background(), root, []string{"cat", "../git.json"}); err == nil {
 		t.Fatal("cat ../git.json was allowed")
 	}
 	if _, err := resolveInJail(root, filepath.Join("..", "llm.json")); err == nil {
@@ -58,7 +61,7 @@ func TestJailRejectsParentGitJSONAndSymlink(t *testing.T) {
 			t.Fatalf("secret env leaked: %s", kv)
 		}
 	}
-	out, bashErr := RunBash(root, []string{"powershell", "-NoProfile", "-Command", "Write-Output $env:SIDE_CHANNEL"}, secretValues(inst)...)
+	out, bashErr := RunBash(context.Background(), root, []string{"powershell", "-NoProfile", "-Command", "Write-Output $env:SIDE_CHANNEL"}, secretValues(inst)...)
 	if bashErr != nil {
 		t.Fatal(bashErr)
 	}
@@ -84,7 +87,7 @@ func TestShellRejectsWrappedGit(t *testing.T) {
 		{"powershell", "-EncodedCommand", encodePowerShellCommand("git push")},
 	}
 	for _, argv := range denied {
-		if _, err := RunBash(root, argv); err == nil || !strings.Contains(err.Error(), "shell 不能执行 git") {
+		if _, err := RunBash(context.Background(), root, argv); err == nil || !strings.Contains(err.Error(), "shell 不能执行 git") {
 			t.Fatalf("argv %q err=%v", argv, err)
 		}
 	}
@@ -101,12 +104,30 @@ func TestShellRejectsWrappedGit(t *testing.T) {
 
 func TestBashOutputIsCapped(t *testing.T) {
 	root := t.TempDir()
-	out, err := RunBash(root, []string{"powershell", "-NoProfile", "-Command", "Write-Output ('A'*40000)"})
+	out, err := RunBash(context.Background(), root, []string{"powershell", "-NoProfile", "-Command", "Write-Output ('A'*40000)"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(out), "输出已截断") || len(out) > bashOutputCap+len("\n…输出已截断") {
 		t.Fatalf("len=%d tail=%q", len(out), tail(out))
+	}
+}
+
+func TestBashCancelledContextKillsProcess(t *testing.T) {
+	root := t.TempDir()
+	argv := []string{"sleep", "300"}
+	if runtime.GOOS == "windows" {
+		argv = []string{"powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 300"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := RunBash(ctx, root, argv)
+	if err == nil {
+		t.Fatal("cancelled command should fail")
+	}
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Fatalf("cancelled command ran %s, expected prompt kill", elapsed)
 	}
 }
 

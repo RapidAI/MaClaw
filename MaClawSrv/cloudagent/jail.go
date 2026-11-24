@@ -1,6 +1,8 @@
 package cloudagent
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -9,7 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 var errJail = errors.New("路径超出工作区")
@@ -282,10 +287,16 @@ func shellTextHasBannedGit(text string) bool {
 	return false
 }
 
+// bashTimeout bounds one shell command; the turn context can cancel sooner.
+// Without a ceiling a hung command would pin the turn goroutine and the
+// child process forever — the book's interrupt only cancels the context.
+const bashTimeout = 5 * time.Minute
+
 // RunBash executes argv with the working directory pinned to the jail root.
 // Paths that escape the root, or that name git.json or llm.json, are refused
-// before the process starts.
-func RunBash(root string, argv []string, secrets ...string) ([]byte, error) {
+// before the process starts. Cancelling ctx, or hitting bashTimeout, kills
+// the whole process tree — a shell child must not outlive its turn.
+func RunBash(ctx context.Context, root string, argv []string, secrets ...string) ([]byte, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("缺少命令")
 	}
@@ -303,11 +314,26 @@ func RunBash(root string, argv []string, secrets ...string) ([]byte, error) {
 			}
 		}
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, bashTimeout)
+	defer cancel()
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = root
 	cmd.Env = bashEnv(secrets...)
-	out, err := cmd.CombinedOutput()
-	return capBashOutput(out), err
+	tool.PrepareCommandForTreeKill(cmd)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	err := tool.WaitCommandWithContext(runCtx, cmd)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = errors.New("命令超过 5 分钟，已终止")
+	}
+	return capBashOutput(out.Bytes()), err
 }
 
 const bashOutputCap = 32 << 10

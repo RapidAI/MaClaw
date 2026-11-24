@@ -40,6 +40,18 @@ describe('RemoteAssistantActivity', () => {
         expect(screen.getByTestId('remote-activity-meta').textContent).toContain('已用时');
     });
 
+    it('names the cloud as the target instead of the other computer', () => {
+        renderActivity(session({
+            cloud: true,
+            activity: {
+                workflow: { status: 'active', phase: 'execute' },
+                lastActivityAt: new Date().toISOString(),
+            },
+        }));
+        expect(screen.getByTestId('assistant-reasoning-label').textContent).toBe('云端正在执行…');
+        expect(screen.getByTestId('remote-activity-meta').textContent).toContain('云端最近活动');
+    });
+
     it('says the output is catching up while a cursor hole is open', () => {
         renderActivity(session({
             syncing: true,

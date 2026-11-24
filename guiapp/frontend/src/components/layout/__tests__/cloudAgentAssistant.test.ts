@@ -70,6 +70,7 @@ describe('cloud agent assistant', () => {
         expect(session?.machineName).toBe('云端');
         expect(session?.taskName).toBe('演示');
         expect(session?.projectPath).toBe('cloud-agent:cag_1');
+        expect(session?.cloud).toBe(true);
         expect(session?.offline).toBe(false);
         expect(session?.canSend).toBe(true);
         expect(session?.error).toBe('');

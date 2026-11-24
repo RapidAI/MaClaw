@@ -47,10 +47,14 @@ func (rt *Runtime) ServeControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if payload.Op == "cloud_unwatch_task" {
-		rt.dropGrant(id, payload.GrantID)
-	} else {
-		rt.noteGrant(id, payload.GrantID)
+	// Only a real instance may register a viewer grant — Control rejects the
+	// op anyway, but noting a grant for a bogus id leaks a grants entry.
+	if _, err := rt.instance(id); err == nil {
+		if payload.Op == "cloud_unwatch_task" {
+			rt.dropGrant(id, payload.GrantID)
+		} else {
+			rt.noteGrant(id, payload.GrantID)
+		}
 	}
 	raw, err := rt.Control(r.Context(), id, payload.OwnerUserID, payload.Op, payload.Body)
 	if err != nil {
@@ -60,6 +64,35 @@ func (rt *Runtime) ServeControl(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+func (rt *Runtime) ServeStop(w http.ResponseWriter, r *http.Request) {
+	if err := rt.Stop(r.PathValue("id")); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (rt *Runtime) ServeResume(w http.ResponseWriter, r *http.Request) {
+	if _, err := rt.instance(r.PathValue("id")); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (rt *Runtime) ServeDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := rt.Stop(id); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	if err := rt.Delete(id); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (rt *Runtime) ServeLLM(w http.ResponseWriter, r *http.Request) {

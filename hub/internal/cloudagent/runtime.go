@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +56,19 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 	if inst.Status == StatusStopped && op == remotecontrol.OpCloudSendMessage {
 		return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: "实例已停止"}
 	}
+	// A provision that never landed — a failed attempt or a stale
+	// "provisioning" row from a crashed one — retries here: the runtime PUT
+	// is idempotent. Without it the row stayed dead until delete+recreate.
+	reprovisioned := false
+	if inst.Status == StatusProvisionFailed || inst.Status == StatusProvisioning {
+		if err := d.provision(ctx, &inst); err != nil {
+			log.Printf("[cloud-agent] re-provision %s: %s", inst.ID, logDetail(err))
+			return nil, offlineStatus()
+		}
+		_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
+		inst.Status = StatusIdle
+		reprovisioned = true
+	}
 	if op == remotecontrol.OpCloudSendMessage {
 		// The Hub row stays running until the heartbeat window closes, which is
 		// after maclawsrv has already finished. Forward the send. The runtime
@@ -64,27 +79,46 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: "云端管理暂时不可用"}
 		}
 		if !busy {
-			if err := d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID); err != nil {
+			err := d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID)
+			if err != nil && d.settleStaleTurns(ctx, &inst, grant.TargetUserID) {
+				// Shadow state can lag the runtime: a lost finish beat pins a
+				// stale running row for the whole miss window. If the srv book
+				// says nothing is running, retire the rows and re-check now
+				// instead of making the caller wait for the sweep.
+				err = d.svc.ensureTurnRoom(ctx, grant.TenantID, grant.TargetUserID, instanceID)
+			}
+			if err != nil {
 				return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: err.Error()}
 			}
 		}
 	}
-	conn, err := d.svc.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
-	if err != nil {
-		_ = d.svc.MarkProvisionFailed(ctx, inst.ID)
-		return nil, offlineStatus()
-	}
-	raw, err := d.call(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/control", map[string]any{
+	payload := map[string]any{
 		"op":            op,
 		"body":          json.RawMessage(bodyOrEmpty(body)),
 		"owner_user_id": grant.TargetUserID,
 		"grant_id":      grant.ID,
-	})
+	}
+	raw, err := d.control(ctx, &inst, payload)
+	if err != nil {
+		var client *Failure
+		if errors.As(err, &client) && client.HTTP == http.StatusNotFound && !reprovisioned {
+			// The runtime no longer has the instance (wiped data, a node
+			// replaced under it): re-provision once and retry.
+			if perr := d.provision(ctx, &inst); perr != nil {
+				log.Printf("[cloud-agent] re-provision %s after 404: %s", inst.ID, logDetail(perr))
+				return nil, offlineStatus()
+			}
+			_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
+			inst.Status = StatusIdle
+			raw, err = d.control(ctx, &inst, payload)
+		}
+	}
 	if err != nil {
 		var client *Failure
 		if errors.As(err, &client) && client.HTTP >= 400 && client.HTTP < 500 && client.Code != "OFFLINE" {
 			return nil, &remotecontrol.StatusError{Code: client.Code, Message: client.Message}
 		}
+		log.Printf("[cloud-agent] instance %s op %s: %s", inst.ID, op, logDetail(err))
 		return nil, offlineStatus()
 	}
 	if op == remotecontrol.OpCloudSendMessage {
@@ -93,10 +127,45 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			_ = d.svc.NoteAcceptedTurn(ctx, grant.TenantID, grant.TargetUserID, instanceID, taskID, requestID)
 		}
 	}
-	if inst.Status == StatusProvisionFailed || inst.Status == StatusProvisioning {
-		_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
-	}
 	return raw, nil
+}
+
+// settleStaleTurns asks the runtime whether a turn is actually running and,
+// when it is not, finishes this instance's stale running rows so the slot
+// frees on demand instead of at the next sweep tick. Returns false whenever
+// the runtime is unreachable or still busy, leaving the original failure.
+func (d *Dispatcher) settleStaleTurns(ctx context.Context, inst *Instance, owner string) bool {
+	raw, err := d.control(ctx, inst, map[string]any{
+		"op":            "cloud_instance_state",
+		"body":          json.RawMessage(`{}`),
+		"owner_user_id": owner,
+	})
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Running bool `json:"running"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil || state.Running {
+		return false
+	}
+	if err := d.svc.settleRunning(ctx, inst.ID, formatTS(d.svc.now())); err != nil {
+		return false
+	}
+	return true
+}
+
+// control resolves the conn the instance's recorded srv binding points at
+// and posts the op. A conn failure marks the row provision_failed so the
+// next op retries provisioning.
+func (d *Dispatcher) control(ctx context.Context, inst *Instance, payload map[string]any) (json.RawMessage, error) {
+	conn, err := d.svc.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
+	if err != nil {
+		_ = d.svc.MarkProvisionFailed(ctx, inst.ID)
+		log.Printf("[cloud-agent] instance %s conn: %s", inst.ID, logDetail(err))
+		return nil, err
+	}
+	return d.call(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/control", payload)
 }
 
 func offlineStatus() error {
@@ -148,16 +217,21 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		inst.SrvNodeID = conn.NodeID
 	}
 	loopback := hubLoopback()
+	origin := hubPublicOrigin()
 	if conn.NodeID != "" {
 		// A private srv cannot reach hub's loopback; it calls the public
 		// origin directly. Hub accepts its link secret from any address.
 		// Without a configured public origin the instance could never call
 		// back, so fail instead of provisioning a dead agent.
-		origin := hubPublicOrigin()
 		if origin == "" {
 			return fail(503, "OFFLINE", "私有 maclawsrv 需要 Hub 先配置 MACLAW_HUB_URL 公网地址")
 		}
 		loopback = origin
+	}
+	if origin == "" {
+		// With MACLAW_HUB_URL unset, the only origin a co-located srv can
+		// same-origin match against its own env is the loopback we send.
+		origin = loopback
 	}
 	_, err = d.call(ctx, http.MethodPut, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), map[string]any{
 		"id":            inst.ID,
@@ -167,7 +241,7 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		"kind":          inst.Kind,
 		"llm_mode":      inst.LLMMode,
 		"llm_model":     inst.LLMModel,
-		"hub_origin":    hubPublicOrigin(),
+		"hub_origin":    origin,
 		"hub_loopback":  loopback,
 	})
 	return err
@@ -193,24 +267,27 @@ func (d *Dispatcher) call(ctx context.Context, method string, conn srvConn, path
 	client := d.client
 	if conn.NodeID != "" {
 		if d.svc.NodeHTTP == nil {
-			return nil, failOffline()
+			return nil, failOfflineDetail("no edge tunnel resolver for node " + conn.NodeID)
 		}
 		client = d.svc.NodeHTTP(conn.NodeID)
 		if client == nil {
-			return nil, failOffline()
+			return nil, failOfflineDetail("no edge tunnel client for node " + conn.NodeID)
 		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, failOfflineDetail("runtime call failed: " + err.Error())
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, failOfflineDetail("runtime response read failed: " + err.Error())
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode >= 500 {
-		return nil, failOffline()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, failOfflineDetail("runtime rejected the admin secret (401)")
+	}
+	if resp.StatusCode >= 500 {
+		return nil, failOfflineDetail("runtime returned HTTP " + strconv.Itoa(resp.StatusCode))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := strings.TrimSpace(runtimeErrorMessage(body))

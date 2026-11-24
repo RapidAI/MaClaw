@@ -736,6 +736,7 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		WSGateway:       gateway,
 		HTTPHandler:     router,
 		KnowledgeShares: st.KnowledgeShares,
+		LLMBilling:      st.LLMBillingLedger,
 
 		// Agent Passthrough IM modules
 		MessageRouter:  messageRouter,

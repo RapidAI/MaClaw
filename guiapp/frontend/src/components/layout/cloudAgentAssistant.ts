@@ -304,6 +304,7 @@ function publishOwner() {
         machineName: text('Cloud', '云端', '雲端'),
         projectPath: `cloud-agent:${current.item.id}`,
         taskName: current.item.name || current.item.id,
+        cloud: true,
         canSend: !!current.grant,
         offline: false,
         error: current.error,

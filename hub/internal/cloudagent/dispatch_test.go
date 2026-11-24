@@ -378,6 +378,157 @@ func TestProvisionOnNodeSrvRecordsBindingAndPublicLoopback(t *testing.T) {
 	}
 }
 
+func TestDispatchReprovisionsFailedInstance(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			_, _ = w.Write([]byte(`{"accepted":true,"request_id":"req-9","task_id":"task-9"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer runtime.Close()
+
+	settings := memSettings{kv: map[string]string{}}
+	db := openTestDB(t)
+	svc := New(db, settings)
+	rc := remotecontrol.New(db, nopAccounts{}, ownMachines{}, nopSend{}, nopNote{})
+	rc.Cloud = svc.Dispatcher()
+	mux := userMux(svc, rc)
+
+	// Create against a non-loopback base_url: the instance goes straight to
+	// provision_failed without a single runtime call.
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"https://maclawsrv.example","admin_secret":"sec-1"}`
+	enable(t, svc, "tenant-a", 3, 1)
+	created := call(mux, http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "会话", Kind: KindSession})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	id := decodeMap(t, created)["id"].(string)
+	var status string
+	if err := db.QueryRow(`SELECT status FROM cloud_agents WHERE id = ?`, id).Scan(&status); err != nil || status != StatusProvisionFailed {
+		t.Fatalf("status = %s %v", status, err)
+	}
+	grantRec := call(mux, http.MethodPost, "/api/v1/cloud-agents/"+id+"/control-grant", map[string]any{})
+	if grantRec.Code != http.StatusOK {
+		t.Fatalf("grant: %d %s", grantRec.Code, grantRec.Body.String())
+	}
+	grantID := decodeMap(t, grantRec)["grant_id"].(string)
+	mu.Lock()
+	before := len(hits)
+	mu.Unlock()
+
+	// Once the record is fixed the next op re-provisions and dispatches.
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"` + runtime.URL + `","admin_secret":"sec-1"}`
+	raw, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudSendMessage, json.RawMessage(`{"instance_id":"`+id+`","task_id":"task-9","text":"hi"}`))
+	if err != nil {
+		t.Fatalf("send after repair: %v", err)
+	}
+	if !strings.Contains(string(raw), `"request_id":"req-9"`) {
+		t.Fatalf("result = %s", raw)
+	}
+	if err := db.QueryRow(`SELECT status FROM cloud_agents WHERE id = ?`, id).Scan(&status); err != nil || status != StatusRunning {
+		t.Fatalf("status after re-provision = %s %v", status, err)
+	}
+	mu.Lock()
+	joined := strings.Join(hits[before:], "\n")
+	mu.Unlock()
+	put := strings.Index(joined, "PUT /api/v1/cloud-agents/"+id)
+	ctl := strings.Index(joined, "POST /api/v1/cloud-agents/"+id+"/control")
+	if put < 0 || ctl < 0 || put > ctl {
+		t.Fatalf("expected PUT then control, hits = %s", joined)
+	}
+}
+
+func TestDispatchReprovisionsAfterRuntimeNotFound(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	provisioned := false
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodPut {
+			provisioned = true
+		}
+		known := provisioned
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			if !known {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"没有找到这个云端实例"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"tasks":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer runtime.Close()
+
+	settings := memSettings{kv: map[string]string{}}
+	db := openTestDB(t)
+	svc := New(db, settings)
+	rc := remotecontrol.New(db, nopAccounts{}, ownMachines{}, nopSend{}, nopNote{})
+	rc.Cloud = svc.Dispatcher()
+	mux := userMux(svc, rc)
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"` + runtime.URL + `","admin_secret":"sec-1"}`
+	enable(t, svc, "tenant-a", 3, 1)
+	created := call(mux, http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "会话", Kind: KindSession})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	id := decodeMap(t, created)["id"].(string)
+	grantRec := call(mux, http.MethodPost, "/api/v1/cloud-agents/"+id+"/control-grant", map[string]any{})
+	grantID := decodeMap(t, grantRec)["grant_id"].(string)
+
+	// Simulate the runtime losing the instance (wiped dir, replaced srv).
+	mu.Lock()
+	provisioned = false
+	before := len(hits)
+	mu.Unlock()
+	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudListTasks, json.RawMessage(`{"instance_id":"`+id+`"}`)); err != nil {
+		t.Fatalf("list after runtime loss: %v", err)
+	}
+	mu.Lock()
+	joined := strings.Join(hits[before:], "\n")
+	mu.Unlock()
+	want := "POST /api/v1/cloud-agents/" + id + "/control\nPUT /api/v1/cloud-agents/" + id + "\nPOST /api/v1/cloud-agents/" + id + "/control"
+	if joined != want {
+		t.Fatalf("hits =\n%s\nwant =\n%s", joined, want)
+	}
+}
+
+func TestProvisionDefaultsHubOriginToLoopback(t *testing.T) {
+	t.Setenv("MACLAW_HUB_URL", "")
+	t.Setenv("MACLAW_HUB_LOOPBACK", "")
+	var got map[string]any
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer runtime.Close()
+
+	settings := memSettings{kv: map[string]string{}}
+	db := openTestDB(t)
+	svc := New(db, settings)
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"` + runtime.URL + `","admin_secret":"sec-1"}`
+	if _, err := svc.db.ExecContext(context.Background(), `INSERT INTO cloud_agents (id, tenant_id, owner_user_id, name, kind, llm_mode, status, created_at, updated_at) VALUES ('cag_l', 'tenant-a', 'user-1', 's', 'session', 'official', 'provisioning', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	inst := Instance{ID: "cag_l", TenantID: "tenant-a", OwnerUserID: "user-1"}
+	if err := svc.disp.provision(context.Background(), &inst); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if got["hub_origin"] != "http://127.0.0.1:9399" || got["hub_loopback"] != "http://127.0.0.1:9399" {
+		t.Fatalf("origin = %v loopback = %v", got["hub_origin"], got["hub_loopback"])
+	}
+}
+
 func TestProvisionOnNodeSrvWithoutPublicOriginFails(t *testing.T) {
 	t.Setenv("MACLAW_HUB_URL", "")
 	settings := memSettings{kv: map[string]string{}}

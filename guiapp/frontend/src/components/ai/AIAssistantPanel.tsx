@@ -5535,7 +5535,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : remoteChat && !remoteChat.canSend
             ? (remoteChat.offline
                 ? localizeText(lang, "This computer is offline", "对方离线", "對方離線")
-                : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))
+                : (remoteChat.cloud
+                    ? localizeText(lang, "This cloud task is read-only", "此云端任务为只读", "此雲端任務為唯讀")
+                    : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀")))
             : cloudShareReadOnly
             ? localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")
             : recordingActive
@@ -5697,14 +5699,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         undefined,
                         false,
                         undefined,
-                        liveThinking ? localizeText(lang, "Thinking on the other computer…", "对方正在思考…", "對方正在思考…") : undefined,
+                        liveThinking ? (remoteChat?.cloud
+                            ? localizeText(lang, "Thinking in the cloud…", "云端正在思考…", "雲端正在思考…")
+                            : localizeText(lang, "Thinking on the other computer…", "对方正在思考…", "對方正在思考…")) : undefined,
                         undefined,
                         streaming,
                     )}
                 </Fragment>
             );
         });
-    }, [lang, remoteChat?.live, remoteTranscript, t]);
+    }, [lang, remoteChat?.cloud, remoteChat?.live, remoteTranscript, t]);
     const remoteRenderedProgress = useMemo(() => {
         const parts = (remoteChat?.live?.parts || []).filter(part => part.kind === "progress" && part.text);
         if (!remoteChat || parts.length === 0) return null;
@@ -5725,7 +5729,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return (
                 <div data-testid="remote-chat-loading" className="aap-remote-loading">
                     <div className="aap-wf-icon"><IconRocket size={28} color="currentColor" /></div>
-                    <div className="aap-wf-title">{localizeText(lang, "Opening remote task…", "正在打开远端任务…", "正在開啟遠端任務…")}</div>
+                    <div className="aap-wf-title">{remoteChat.cloud
+                        ? localizeText(lang, "Opening cloud task…", "正在打开云端任务…", "正在開啟雲端任務…")
+                        : localizeText(lang, "Opening remote task…", "正在打开远端任务…", "正在開啟遠端任務…")}</div>
                     <div className="aap-wf-sub">{localizeText(lang, "Please wait...", "请稍候...", "請稍候...")}</div>
                 </div>
             );
@@ -5740,7 +5746,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!remoteChat.canSend) {
             return (
                 <span data-testid="remote-chat-readonly" className="aap-remote-empty-hint">
-                    {localizeText(lang, "View only. You cannot send messages to that computer.", "仅查看。不能向对方电脑发送消息。", "唯讀。不能向對方電腦傳送訊息。")}
+                    {remoteChat.cloud
+                        ? localizeText(lang, "View only. You cannot send messages to this cloud task.", "仅查看。不能向云端任务发送消息。", "唯讀。不能向雲端任務傳送訊息。")
+                        : localizeText(lang, "View only. You cannot send messages to that computer.", "仅查看。不能向对方电脑发送消息。", "唯讀。不能向對方電腦傳送訊息。")}
                 </span>
             );
         }
@@ -5749,7 +5757,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (remoteChat.busy) return null;
         return (
             <span data-testid="remote-chat-idle" className="aap-remote-empty-hint">
-                {localizeText(lang, "Connected. Messages sent here run on that computer.", "已连接远端任务，输入的消息会在对方电脑上执行。", "已連接遠端任務，輸入的訊息會在對方電腦上執行。")}
+                {remoteChat.cloud
+                    ? localizeText(lang, "Connected. Messages sent here run on the cloud server.", "已连接云端任务，输入的消息会在云端服务器上执行。", "已連接雲端任務，輸入的訊息會在雲端伺服器上執行。")
+                    : localizeText(lang, "Connected. Messages sent here run on that computer.", "已连接远端任务，输入的消息会在对方电脑上执行。", "已連接遠端任務，輸入的訊息會在對方電腦上執行。")}
             </span>
         );
     }, [lang, remoteChat, t]);
@@ -8040,7 +8050,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         defaultTop={isPureCodingEnvironment && !remoteChat ? 124 : 80}
                     />
                 ) : null}
-                {!showWelcomeView && !wizardScreen && remoteChat && (!remoteChat.canSend || !!remoteChat.error) ? <div data-testid={remoteChat.canSend ? "ai-remote-error" : "ai-remote-readonly"} role="alert" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: remoteChat.error ? "var(--theme-danger, #b42318)" : "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}>{remoteChat.canSend ? null : <span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀")}</span>}<span style={{ fontWeight: 500 }}>{remoteChat.error || (remoteChat.offline ? localizeText(lang, "This computer is offline. You cannot operate it from here.", "对方离线，暂时不能操作。", "對方離線，暫時不能操作。") : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀"))}</span></div> : !showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
+                {!showWelcomeView && !wizardScreen && remoteChat && (!remoteChat.canSend || !!remoteChat.error) ? <div data-testid={remoteChat.canSend ? "ai-remote-error" : "ai-remote-readonly"} role="alert" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: remoteChat.error ? "var(--theme-danger, #b42318)" : "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}>{remoteChat.canSend ? null : <span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀")}</span>}<span style={{ fontWeight: 500 }}>{remoteChat.error || (remoteChat.offline ? localizeText(lang, "This computer is offline. You cannot operate it from here.", "对方离线，暂时不能操作。", "對方離線，暫時不能操作。") : (remoteChat.cloud ? localizeText(lang, "This cloud task is read-only", "此云端任务为只读", "此雲端任務為唯讀") : localizeText(lang, "This remote task is read-only", "此远控任务为只读", "此遠控任務為唯讀")))}</span></div> : !showWelcomeView && !wizardScreen && cloudShareReadOnly ? <div data-testid="ai-cloud-share-readonly" style={{ display: "flex", alignItems: "center", gap: 8, margin: "0 12px 6px", color: "var(--theme-text-secondary, #667085)", fontSize: 12, fontWeight: 600 }}><span style={{ display: "inline-flex", padding: "1px 6px", borderRadius: 999, border: "1px solid color-mix(in srgb, currentColor 35%, transparent)", lineHeight: 1.4 }}>{localizeText(lang, "Read-only", "只读", "唯讀")}</span><span style={{ fontWeight: 500 }}>{localizeText(lang, "This shared task is read-only", "此共享任务为只读", "此共享任務為唯讀")}</span><button type="button" data-testid="ai-cloud-share-copy-local" onClick={() => { const source = String(activeTab?.projectPath || "").trim(); if (source) window.dispatchEvent(new CustomEvent("maclaw:copy-read-share-as-local", { detail: { projectPath: source } })); }} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: 600, cursor: "pointer", padding: 0 }}>{localizeText(lang, "Copy as local task", "复制为本地任务", "複製為本機任務")}</button></div> : null}
                 {!showWelcomeView && !wizardScreen && <AssistantInputStack active={panelActive} browseFile={remoteChat ? () => undefined : browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={cloudShareReadOnly || remoteChat ? () => undefined : handleVoiceClick} handleVoicePointerDown={cloudShareReadOnly || remoteChat ? () => undefined : handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive || cloudShareReadOnly || (!!remoteChat && !remoteChat.canSend)} inputRef={inputRef} inputValue={composerValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={remoteChat ? [] : pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment && !remoteChat} placeholderText={placeholderText} queue={remoteChat ? [] : queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={remoteChat ? [] : selectedFilePaths} setPendingAttachments={remoteChat ? () => undefined : setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} theme={t} themeMode={themeMode} toolbarEndContent={remoteChat ? null : <AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={onSwitchTaskProvider ? taskModelProviders : availableProviders} currentModel={onSwitchTaskProvider ? taskModelCurrent : currentModel} modelOptions={onSwitchTaskProvider ? taskModelOptions : modelOptions} modelMultipliers={modelMultipliers} modelsLoading={onSwitchTaskProvider ? !!taskModelLoading : modelsLoading} onSwitchProvider={onSwitchTaskProvider || onSwitchProvider} onSwitchModel={onSwitchTaskModel || onSwitchModel} onOpenModelMenu={onSwitchTaskProvider ? onOpenTaskModelMenu : onOpenModelMenu} onDismissModelMenu={onSwitchTaskProvider ? onDismissTaskModelMenu : onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={onSwitchTaskProvider ? false : codingInheritsAssistant} providerSelectionPending={onSwitchTaskProvider ? false : providerSelectionPending} profileSavePending={onSwitchTaskProvider ? !!taskModelSavePending : profileSavePending} onOpenLLMSettings={onOpenLLMSettings} onAddCustomModel={onAddCustomModel} chipTestId="composer-model-chip" labelOverride={taskModelLabel} titleOverride={taskModelTitle} onFollowAssignment={onFollowTaskModel} followsAssignment={!!taskModelFollows} />} trailingToolbarContent={!remoteChat && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing

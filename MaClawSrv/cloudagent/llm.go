@@ -304,11 +304,13 @@ func (rt *Runtime) postHeartbeat(ctx context.Context, inst *instance, taskID, re
 	req.Header.Set("X-MaClaw-Admin-Secret", rt.adminSecret)
 	resp, err := heartbeatHTTP.Do(req)
 	if err != nil {
+		rt.noteHubPostFailure(inst.meta.ID, "heartbeat", err.Error())
 		return false, false
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		rt.noteHubPostFailure(inst.meta.ID, "heartbeat", resp.Status)
 		return false, false
 	}
 	var body struct {

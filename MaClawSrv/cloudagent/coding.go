@@ -72,19 +72,28 @@ func (rt *Runtime) runCoding(ctx context.Context, inst *instance, requestID, tas
 }
 
 func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool) {
+	// round_started precedes every terminal frame — the viewer drops events
+	// for a round it has not seen open.
+	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
+	fail := func(msg string) (string, bool) {
+		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
+			"terminal": map[string]any{"text": msg},
+		})
+		return msg, true
+	}
 	root, err := jailRoot(inst.dir, KindCoding)
 	if err != nil {
-		return err.Error(), true
+		return fail(err.Error())
 	}
 	cfg := rt.maclawCfg(inst)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		return "云端官方模型未接通", true
+		return fail("云端官方模型未接通")
 	}
 	history, err := inst.book.History(taskID)
 	if err != nil {
-		return err.Error(), true
+		return fail(err.Error())
 	}
-	host := &codingHost{
+	host := &agentHost{
 		rt:      rt,
 		inst:    inst,
 		task:    taskID,
@@ -92,8 +101,8 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		root:    root,
 		turn:    ctx,
 		cfg:     cfg,
+		coding:  true,
 	}
-	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
 	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
 		return "", true
@@ -172,7 +181,10 @@ func codingHistory(rows []string) []agent.ConversationEntry {
 	return out
 }
 
-type codingHost struct {
+// agentHost is the shared workspace host for both instance kinds — the
+// session loop and the coding loop run the same agent kernel, tools and
+// streaming; only the prompt and the git tool pair differ.
+type agentHost struct {
 	rt      *Runtime
 	inst    *instance
 	task    string
@@ -180,20 +192,25 @@ type codingHost struct {
 	root    string
 	turn    context.Context
 	cfg     corelib.MaclawLLMConfig
+	coding  bool
 }
 
-func (h *codingHost) GetLLMConfig() corelib.MaclawLLMConfig { return h.cfg }
-func (h *codingHost) GetMaxIterations() int {
+func (h *agentHost) GetLLMConfig() corelib.MaclawLLMConfig { return h.cfg }
+func (h *agentHost) GetMaxIterations() int {
 	return config.EffectiveMaxIterations(h.cfg.MaclawAgentMaxIterations)
 }
-func (h *codingHost) BuildSystemPrompt(string, bool) string {
+func (h *agentHost) BuildSystemPrompt(string, bool) string {
+	if !h.coding {
+		return "你是这个云端会话实例。读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
+			"运行命令用 bash，读文件用 read_file，写文件用 write_file。"
+	}
 	return "你是这个云端编程实例。工作区只有已检出的那一个代码库。" +
 		"读和写必须留在工作区里，不能读取 git.json 或 llm.json。" +
 		"提交用 git_commit。推送用 git_push，推送前必须等人确认。" +
 		"不要执行 git clone、fetch、pull、push、commit。"
 }
-func (h *codingHost) BuildTools(string) []map[string]interface{} {
-	return []map[string]interface{}{
+func (h *agentHost) BuildTools(string) []map[string]interface{} {
+	tools := []map[string]interface{}{
 		fnTool("bash", "在工作区里运行一个 argv 命令。不要用 shell 字符串。", map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -216,6 +233,11 @@ func (h *codingHost) BuildTools(string) []map[string]interface{} {
 			},
 			"required": []string{"path", "content"},
 		}),
+	}
+	if !h.coding {
+		return tools
+	}
+	return append(tools,
 		fnTool("git_commit", "用仓库里保存的作者提交已跟踪的改动。这一步不会推送。", map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -227,50 +249,16 @@ func (h *codingHost) BuildTools(string) []map[string]interface{} {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		}),
-	}
+	)
 }
-func (h *codingHost) ExecuteTool(name, argsJSON string) string {
+func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	switch strings.TrimSpace(name) {
 	case "bash":
-		var body struct {
-			Argv []string `json:"argv"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &body); err != nil || len(body.Argv) == 0 {
-			return "请用 argv 调用"
-		}
-		out, err := RunBash(h.root, body.Argv, secretValues(h.inst.dir)...)
-		if err != nil {
-			return strings.TrimSpace(string(out) + "\n" + err.Error())
-		}
-		return string(out)
+		return h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
 	case "read_file":
-		var body struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-			return "路径无效"
-		}
-		raw, err := h.rt.fetchFile(h.inst, body.Path)
-		if err != nil {
-			return err.Error()
-		}
-		return string(raw)
+		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		var body struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-			return "路径无效"
-		}
-		path, err := resolveInJail(h.root, body.Path)
-		if err != nil {
-			return err.Error()
-		}
-		if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
-			return err.Error()
-		}
-		return "已写入 " + body.Path
+		return h.rt.execWriteFile(h.inst, h.root, argsJSON)
 	case "git_commit":
 		var body struct {
 			Message string `json:"message"`
@@ -294,23 +282,72 @@ func (h *codingHost) ExecuteTool(name, argsJSON string) string {
 		return "不支持这个工具"
 	}
 }
-func (h *codingHost) OnToken(delta string) {
+func (h *agentHost) OnToken(delta string) {
 	h.rt.publish(h.inst, h.task, h.request, "token", delta, nil)
 }
-func (h *codingHost) OnProgress(text string) {
+func (h *agentHost) OnProgress(text string) {
 	h.rt.publish(h.inst, h.task, h.request, "progress", text, nil)
 }
-func (h *codingHost) OnToolCall(string)   {}
-func (h *codingHost) OnToolResult(string) {}
-func (h *codingHost) ShouldStop() bool {
+func (h *agentHost) OnToolCall(string)   {}
+func (h *agentHost) OnToolResult(string) {}
+func (h *agentHost) ShouldStop() bool {
 	return h.turn != nil && h.turn.Err() != nil
 }
-func (h *codingHost) LLMRequestContext(int) (context.Context, func(error), error) {
+func (h *agentHost) LLMRequestContext(int) (context.Context, func(error), error) {
 	ctx := h.turn
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return withInstance(ctx, h.inst.meta.ID), func(error) {}, nil
+}
+
+// execBash, execReadFile and execWriteFile are the shared workspace tool
+// implementations — session and coding hosts route to the same bodies, so
+// the tool surface is maintained in exactly one place.
+func (rt *Runtime) execBash(ctx context.Context, inst *instance, root, argsJSON string) string {
+	var body struct {
+		Argv []string `json:"argv"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil || len(body.Argv) == 0 {
+		return "请用 argv 调用"
+	}
+	out, err := RunBash(ctx, root, body.Argv, secretValues(inst.dir)...)
+	if err != nil {
+		return strings.TrimSpace(string(out) + "\n" + err.Error())
+	}
+	return string(out)
+}
+
+func (rt *Runtime) execReadFile(inst *instance, argsJSON string) string {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
+		return "路径无效"
+	}
+	raw, err := rt.fetchFile(inst, body.Path)
+	if err != nil {
+		return err.Error()
+	}
+	return string(raw)
+}
+
+func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) string {
+	var body struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
+		return "路径无效"
+	}
+	path, err := resolveInJail(root, body.Path)
+	if err != nil {
+		return err.Error()
+	}
+	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
+		return err.Error()
+	}
+	return "已写入 " + body.Path
 }
 
 func fnTool(name, desc string, params map[string]interface{}) map[string]interface{} {

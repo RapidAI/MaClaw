@@ -920,10 +920,25 @@ function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
       max_instances: instances,
       max_concurrent_turns: turns
     })
-  }).then(function () {
-    return loadCloudAgentAccess();
-  }).then(function (reloaded) {
-    if (!reloaded) return;
+  }).then(function (saved) {
+    // A successful PUT means the row is written; applying the echo locally
+    // avoids a full access+groups+users+members reload after every save.
+    // The server deletes a non-global row that inherits with blank limits.
+    var key = cagKey(scope, target);
+    var cleared = scope !== 'global' && (enabled === 'inherit' || enabled === '') && instances == null && turns == null;
+    if (cleared || (saved && saved.deleted)) {
+      delete cagOrg.access[key];
+    } else {
+      cagOrg.access[key] = {
+        scope: scope,
+        target_id: target,
+        enabled: enabled || 'inherit',
+        max_instances: instances == null ? null : instances,
+        max_concurrent_turns: turns == null ? null : turns
+      };
+    }
+    renderCloudAgentAccessTree();
+    cagRenderGrants();
     if (typeof showToast === 'function') showToast(okText, 'success');
   }, function (err) {
     var msg = failText.replace('{error}', err && err.message ? err.message : String(err));
@@ -993,7 +1008,19 @@ async function saveCloudAgentQuota() {
   if (button) button.disabled = true;
   try {
     await api('/api/admin/cloud-agents/settings', { method: 'PATCH', body: JSON.stringify(body) });
-    await loadCloudAgentQuota();
+    // Reflect the saved global row locally. A full loadCloudAgentAccess
+    // reload refetches access+groups+users and would also drop unsaved
+    // limit edits on other rows.
+    if (cagOrg.loaded) {
+      cagOrg.access[cagKey('global', '')] = {
+        scope: 'global', target_id: '',
+        enabled: body.cloud_agents_enabled ? 'on' : 'off',
+        max_instances: body.max_instances,
+        max_concurrent_turns: body.max_concurrent_turns
+      };
+      renderCloudAgentAccessTree();
+      cagRenderGrants();
+    }
     if (typeof showToast === 'function') showToast(t.saved, 'success');
   } catch (err) {
     var msg = t.saveFailed.replace('{error}', err.message || String(err));

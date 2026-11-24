@@ -1785,6 +1785,7 @@ describe('AIAssistantPanel property tests', () => {
             'Cloud drive (shared with the phone)',
             'Buy service redemption cards',
             'Knowledge Base',
+            'Feature request or bug report',
             'Open with companion',
             'Refresh news',
             'New conversation',
@@ -11268,14 +11269,16 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         expect(screen.getByRole('heading', { level: 2, name: 'What do you want to finish today?' })).toBeTruthy();
         expect(screen.getByTestId('ai-execution-secondary-titlebar').getAttribute('aria-hidden')).toBeNull();
         expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
-        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeTruthy();
+        // The session-locator label carries the same text; the conversation
+        // copy is the one inside the hidden cover.
+        expect(screen.getAllByText('Chongzhou weather').some(el => el.closest('[hidden]'))).toBe(true);
         expect(clearHistory).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByTestId('new-task-wizard-back'));
         await waitFor(() => {
             expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
         });
-        expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+        expect(screen.getAllByText('Chongzhou weather').every(el => !el.closest('[hidden]'))).toBe(true);
 
         act(() => {
             window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
@@ -11292,7 +11295,7 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         expect(sendMessage).not.toHaveBeenCalled();
         expect(clearHistory).not.toHaveBeenCalled();
         await waitFor(() => {
-            expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+            expect(screen.getAllByText('Chongzhou weather').length).toBeGreaterThan(0);
         });
     });
 
@@ -11565,14 +11568,14 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         await waitFor(() => {
             expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
         });
-        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeTruthy();
+        expect(screen.getAllByText('Chongzhou weather').some(el => el.closest('[hidden]'))).toBe(true);
 
         activateLocalTab();
 
         await waitFor(() => {
             expect(screen.queryByTestId('new-task-wizard-running-banner')).toBeNull();
         });
-        expect(screen.getByText('Chongzhou weather').closest('[hidden]')).toBeNull();
+        expect(screen.getAllByText('Chongzhou weather').every(el => !el.closest('[hidden]'))).toBe(true);
         expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
     });
 

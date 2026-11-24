@@ -654,3 +654,39 @@ func TestMetaRejectsLoadedSecret(t *testing.T) {
 		t.Fatalf("memory kept the secret name: %s", kept.meta.Name)
 	}
 }
+
+func TestStopInterruptsRunningTurnAndDeleteTombstones(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, created, err := inst.book.Begin("client-1", "task_1", "跑一轮", time.Now())
+	if err != nil || !created {
+		t.Fatalf("begin: created=%v err=%v", created, err)
+	}
+	if _, running := inst.book.Running(); running != requestID {
+		t.Fatalf("running = %q", running)
+	}
+	if err := rt.Stop(spec.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	var status string
+	if err := inst.book.db.QueryRow(`SELECT status FROM turns WHERE request_id = ?`, requestID).Scan(&status); err != nil || status != "interrupted" {
+		t.Fatalf("turn status = %q %v", status, err)
+	}
+	if err := rt.Stop("cag_missing"); !errors.Is(err, errNotFound) {
+		t.Fatalf("stop missing = %v", err)
+	}
+	if err := rt.Delete(spec.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := rt.instance(spec.ID); !errors.Is(err, errNotFound) {
+		t.Fatalf("instance after delete: %v", err)
+	}
+	tombs, err := filepath.Glob(filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), ".deleted-"+spec.ID+"-*"))
+	if err != nil || len(tombs) == 0 {
+		t.Fatalf("tombstone dir: %v %d", err, len(tombs))
+	}
+}
