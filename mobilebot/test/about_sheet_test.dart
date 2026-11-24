@@ -67,6 +67,18 @@ void main() {
     expect(find.text('当前账号'), findsOneWidget);
     expect(find.text('me@example.com'), findsOneWidget);
     expect(find.text('开源许可'), findsOneWidget);
+    // The copyright holder and the site it belongs to are stated on the page.
+    expect(find.text('官方网站'), findsOneWidget);
+    expect(find.text('https://www.maclaw.top'), findsOneWidget);
+    final year = DateTime.now().year;
+    expect(
+      find.textContaining('© $year mwclaw.top'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('© $year mwclaw.top\nhttps://www.maclaw.top'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('without an account the node and account rows say so', (

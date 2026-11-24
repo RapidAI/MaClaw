@@ -317,6 +317,7 @@
   "aboutNever": "Хэзээ ч шалгаагүй",
   "aboutLegal": "Хууль эрх зүйн мэдээлэл",
   "aboutLicenses": "Нээлттэй эхийн лиценз",
+  "aboutWebsite": "Албан ёсны вэбсайт",
   "acCredits": "Bot-ын кредит",
   "acCreditsUsedRemain": "Ашигласан {used} / {total}, үлдсэн {remain}",
   "@acCreditsUsedRemain": {

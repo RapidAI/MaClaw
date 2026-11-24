@@ -181,6 +181,7 @@
   "aboutNever": "尚未檢查過",
   "aboutLegal": "法律資訊",
   "aboutLicenses": "開源授權",
+  "aboutWebsite": "官方網站",
   "acCredits": "Bot 額度",
   "acCreditsUsedRemain": "已用 {used} / {total}，剩餘 {remain}",
   "acCreditsUnlimited": "不限量",

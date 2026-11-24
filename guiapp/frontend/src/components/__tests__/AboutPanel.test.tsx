@@ -364,7 +364,7 @@ describe('AboutPanel', () => {
                     slogan: 'AI Native 组织操作系统',
                     author: 'Dr. Daniel',
                     businessContact: '联系信息：微信 znsoft',
-                    websiteURL: 'https://maclaw.top',
+                    websiteURL: 'https://www.maclaw.top',
                     githubURL: 'https://github.com/nicedoc/maclaw',
                     iconPath: 'build/appicon.png',
                 }}
@@ -420,7 +420,7 @@ describe('AboutPanel', () => {
                     slogan: 'AI Native 组织操作系统',
                     author: 'Dr. Daniel',
                     businessContact: 'Contact: WeChat znsoft',
-                    websiteURL: 'https://maclaw.top',
+                    websiteURL: 'https://www.maclaw.top',
                     githubURL: 'https://github.com/nicedoc/maclaw',
                     iconPath: 'build/appicon.png',
                 }}
@@ -444,7 +444,7 @@ describe('AboutPanel', () => {
                     slogan: 'AI Native 组织操作系统',
                     author: 'Dr. Daniel',
                     businessContact: 'Contact: WeChat znsoft',
-                    websiteURL: 'https://maclaw.top',
+                    websiteURL: 'https://www.maclaw.top',
                     githubURL: 'https://github.com/nicedoc/maclaw',
                     iconPath: 'build/appicon.png',
                 }}
