@@ -174,17 +174,22 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
 
     useEffect(() => { void refresh(); }, [refresh]);
 
-    // Install dialog: Esc closes, like the other settings dialogs, and the
-    // first field takes focus so keyboard users start inside the form.
+    // Install dialog: Esc closes, like the other settings dialogs. Opening
+    // moves focus into the first field; closing restores it to the control
+    // that opened the dialog so keyboard users are not dropped on <body>.
     const installDialogRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
         if (!installOpen) return;
+        const invoker = document.activeElement as HTMLElement | null;
         const onKey = (event: KeyboardEvent) => {
             if (event.key === 'Escape') setInstallOpen(false);
         };
         window.addEventListener('keydown', onKey);
         installDialogRef.current?.querySelector<HTMLInputElement>('input')?.focus();
-        return () => window.removeEventListener('keydown', onKey);
+        return () => {
+            window.removeEventListener('keydown', onKey);
+            invoker?.focus?.();
+        };
     }, [installOpen]);
 
     const selectedNode = useMemo(
@@ -315,11 +320,38 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
     const installFormValid = host.trim() !== '' && user.trim() !== '' && password !== '';
     const installBusy = probing || installing;
 
+    // Editing any SSH field invalidates the previous probe result and install
+    // note: they describe the connection that was checked, not the edited one.
+    const setInstallField = (setter: (value: string) => void, value: string) => {
+        setter(value);
+        setProbe(null);
+        setInstallNote('');
+    };
+
     const currentModelText = (row: CloudAgentRow) => (
         row.llm_mode === 'custom'
             ? [row.llm_label, row.llm_model].filter(Boolean).join(' · ') || t('Custom', '自定义')
             : t('MaClaw official (default)', 'MaClaw 官方（默认）')
     );
+
+    // Hub instance statuses (hub/internal/cloudagent/model.go): unknown or
+    // deleted rows render no status chip at all.
+    const instanceStatusChip = (status: string): { label: string; tone: string } | null => {
+        switch (status) {
+            case 'running':
+                return { label: t('Running', '运行中'), tone: 'success' };
+            case 'idle':
+                return { label: t('Idle', '空闲'), tone: '' };
+            case 'provisioning':
+                return { label: t('Provisioning', '部署中'), tone: 'info' };
+            case 'stopped':
+                return { label: t('Stopped', '已停止'), tone: '' };
+            case 'provision_failed':
+                return { label: t('Provision failed', '部署失败'), tone: 'danger' };
+            default:
+                return null;
+        }
+    };
 
     return (
         <div className="cloud-agent-settings">
@@ -390,7 +422,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                     </div>
                 )}
                 {choice === 'private' && selectedNode && !selectedNode.online && (
-                    <p className="cloud-agent-banner cloud-agent-banner--error">
+                    <p role="status" className="cloud-agent-banner cloud-agent-banner--error">
                         {t('This node is offline right now; cloud tasks will fail until its link comes back.', '这个节点当前离线，链路恢复前云端任务会执行失败。')}
                     </p>
                 )}
@@ -408,7 +440,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                         {t('Refresh', '刷新')}
                     </button>
                 </div>
-                {loadError && <p className="cloud-agent-banner cloud-agent-banner--error">{loadError}</p>}
+                {loadError && <p role="status" className="cloud-agent-banner cloud-agent-banner--error">{loadError}</p>}
             </section>
 
             <section className="im-settings-card">
@@ -435,11 +467,17 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                         const isCustom = edit.providerName !== '' && edit.providerName !== undefined;
                         const models = modelOptionsFor(edit.providerName);
                         const modelList = edit.model && !models.includes(edit.model) ? [edit.model, ...models] : models;
+                        const statusChip = instanceStatusChip(row.status);
                         return (
                             <div key={row.id} className="cloud-agent-instance">
                                 <div className="cloud-agent-instance__meta">
                                     <span className="cloud-agent-instance__name">{row.name || row.id}</span>
                                     <span className="cloud-agent-instance__tags">
+                                        {statusChip && (
+                                            <span className={'cloud-agent-chip' + (statusChip.tone ? ' cloud-agent-chip--' + statusChip.tone : '')}>
+                                                {statusChip.label}
+                                            </span>
+                                        )}
                                         <span className="cloud-agent-chip">
                                             {row.kind === 'coding' ? t('coding', '编程') : t('session', '会话')}
                                         </span>
@@ -537,7 +575,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                     </button>
                 </div>
                 {installNote && !installOpen && (
-                    <p className="cloud-agent-banner cloud-agent-banner--info">{installNote}</p>
+                    <p role="status" className="cloud-agent-banner cloud-agent-banner--info">{installNote}</p>
                 )}
             </section>
 
@@ -568,7 +606,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                                     placeholder={t('e.g. 203.0.113.10', '例如 203.0.113.10')}
                                     value={host}
                                     disabled={installBusy}
-                                    onChange={(event) => setHost(event.target.value)}
+                                    onChange={(event) => setInstallField(setHost, event.target.value)}
                                 />
                             </div>
                             <div className="cloud-agent-field">
@@ -579,7 +617,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                                     placeholder="22"
                                     value={port}
                                     disabled={installBusy}
-                                    onChange={(event) => setPort(event.target.value)}
+                                    onChange={(event) => setInstallField(setPort, event.target.value)}
                                 />
                             </div>
                             <div className="cloud-agent-field">
@@ -590,7 +628,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                                     placeholder="root"
                                     value={user}
                                     disabled={installBusy}
-                                    onChange={(event) => setUser(event.target.value)}
+                                    onChange={(event) => setInstallField(setUser, event.target.value)}
                                 />
                             </div>
                             <div className="cloud-agent-field cloud-agent-field--wide">
@@ -602,17 +640,17 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                                     autoComplete="new-password"
                                     value={password}
                                     disabled={installBusy}
-                                    onChange={(event) => setPassword(event.target.value)}
+                                    onChange={(event) => setInstallField(setPassword, event.target.value)}
                                 />
                             </div>
                         </div>
                         {probe && (
-                            <p className={probe.ok ? 'cloud-agent-banner cloud-agent-banner--ok' : 'cloud-agent-banner cloud-agent-banner--error'}>
+                            <p role="status" className={probe.ok ? 'cloud-agent-banner cloud-agent-banner--ok' : 'cloud-agent-banner cloud-agent-banner--error'}>
                                 {probe.message}
                             </p>
                         )}
                         {installNote && (
-                            <p className="cloud-agent-banner cloud-agent-banner--info">{installNote}</p>
+                            <p role="status" className="cloud-agent-banner cloud-agent-banner--info">{installNote}</p>
                         )}
                         <div className="cloud-agent-actions">
                             <button

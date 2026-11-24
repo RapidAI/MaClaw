@@ -66,6 +66,9 @@ describe('CloudAgentSettingsPanel', () => {
         // Current effective model chip is shown per instance row.
         expect(screen.getAllByText('MaClaw 官方（默认）').length).toBeGreaterThanOrEqual(1);
         expect(screen.getAllByText(/DeepSeek/).length).toBeGreaterThanOrEqual(1);
+        // Runtime status chips: running → 运行中, idle → 空闲.
+        expect(screen.getByText('运行中')).toBeTruthy();
+        expect(screen.getByText('空闲')).toBeTruthy();
     });
 
     it('opens the install dialog from the entry button and keeps the SSH form working', async () => {
@@ -92,6 +95,18 @@ describe('CloudAgentSettingsPanel', () => {
         fireEvent.click(screen.getByRole('button', { name: '检测 sudo' }));
         await waitFor(() => expect(mocks.probeCloudSrvSSH).toHaveBeenCalledWith({ host: '203.0.113.10', port: 22, user: 'root', password: 'secret' }));
         await waitFor(() => expect(screen.getByText('sudo ok')).toBeTruthy());
+
+        // Editing a field invalidates the stale probe result...
+        fireEvent.change(screen.getByLabelText('服务器 IP 或主机名'), { target: { value: '203.0.113.11' } });
+        expect(screen.queryByText('sudo ok')).toBeNull();
+
+        // ...and closing the dialog restores focus to the entry button.
+        const entry = screen.getByRole('button', { name: '安装私有云端服务' });
+        entry.focus();
+        fireEvent.click(entry);
+        fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+        expect(screen.queryByText('SSH 密码')).toBeNull();
+        expect(entry).toBe(document.activeElement);
     });
 
     it('shows the offline status chip and warning when an offline node is selected', async () => {

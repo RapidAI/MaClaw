@@ -65,10 +65,12 @@
     border-radius: var(--radius-md);
     background: var(--theme-surface-muted);
     cursor: pointer;
-    transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+    transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.cloud-agent-choice:hover {
+/* Hover hint on unselected cards only — hovering the selected card must not
+    dilute its solid primary border back to the 45% mix. */
+.cloud-agent-choice:not([data-active="true"]):hover {
     border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
 }
 
@@ -242,6 +244,25 @@
     border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border));
     background: var(--theme-info-bg);
     color: var(--theme-primary-strong);
+}
+
+/* Instance runtime status tones (running / provisioning / provision_failed). */
+.cloud-agent-chip--success {
+    border-color: color-mix(in srgb, var(--theme-success) 30%, var(--theme-border));
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+}
+
+.cloud-agent-chip--info {
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border));
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+}
+
+.cloud-agent-chip--danger {
+    border-color: color-mix(in srgb, var(--theme-danger) 30%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
 }
 
 .cloud-agent-instance__controls {
