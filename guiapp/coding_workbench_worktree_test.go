@@ -242,6 +242,58 @@ func TestPruneSkipsLiveWorktreeAndRemovesOrphan(t *testing.T) {
 	}
 }
 
+// TestClearStickySessionPreservesLiveWorktree covers the BR-20261124-D9DCBA72D95D
+// reproduction path end-to-end: one coding session's /new reset calls
+// clearStickyCodingWorkbenchMemory → cleanupStickyCodingIsolationArtifacts →
+// pruneCodingWorkbenchWorktrees on the *shared* git root. The prune must not
+// delete a worktree that a different, still-running task created in the same
+// repo (and is holding via codingWorkbenchLiveWorktrees).
+func TestClearStickySessionPreservesLiveWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	run := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(root, "init")
+	run(root, "config", "user.email", "test@example.com")
+	run(root, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(root, "add", ".")
+	run(root, "commit", "-m", "init")
+
+	// Task A (running): created a worktree in this repo and is mid-execution.
+	live, err := createCodingWorkbenchWorktree(root, 1, "running-task")
+	if err != nil || live == nil {
+		t.Fatalf("create live worktree=%+v err=%v", live, err)
+	}
+	defer live.cleanup(false)
+
+	// Task B (being reset): its sticky memory records the same git root as its
+	// project path — the /new boundary then prunes the shared repo.
+	h := &IMMessageHandler{}
+	userB := "desktop-user:br-reset-prunes-shared-repo"
+	h.updateStickyCodingWorkbenchMemory(userB, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ProjectPath = root
+	})
+	defer h.clearStickyCodingWorkbenchMemory(userB)
+
+	// The session-reset entry point — this is what fired the global sweep in the
+	// bug report.
+	h.clearStickyCodingWorkbenchMemory(userB)
+
+	if _, err := os.Stat(live.Path); err != nil {
+		t.Fatalf("session reset pruned another task's live worktree: %v", err)
+	}
+}
+
 func TestIsCodingWorkbenchSlashWorktree(t *testing.T) {
 	if !isCodingWorkbenchSlash("/worktree mode always") {
 		t.Fatal("expected worktree slash")
