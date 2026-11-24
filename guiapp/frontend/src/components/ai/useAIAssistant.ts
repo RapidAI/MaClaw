@@ -642,6 +642,8 @@ export interface ChatMessage {
      * scrolled-up reader back to the tail.
      */
     hostInitiated?: boolean;
+    /** A remote/cloud user row parked in the send queue; cleared when its turn starts. */
+    queued?: boolean;
     /** Host assignment for one goal stage, shown above that stage's process and report. */
     goalStageCommand?: string;
     /** The goal stage filed its report. Its process list stays folded while the goal continues. */

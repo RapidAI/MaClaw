@@ -48,6 +48,7 @@ import { AssistantConversationBody } from "./AssistantConversationBody";
 import { RemoteAssistantActivity, RemoteCodingPlanChecklist } from "./RemoteAssistantActivity";
 import { isViewerReducerEnabled, viewerOwnsRaw } from "./viewerReducerFlag";
 import { legacyFromViewerEvent, parseViewerEvent } from "./reduceViewerEvent";
+import { isTranscriptToolCallText } from "./assistantToolCall";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { chatTaskInSession, codingStepsAllPassed, executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, openChatWorkForSession, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
@@ -5669,6 +5670,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 localFilePaths: localFilePaths.length ? localFilePaths : undefined,
                 remoteFileFetch: localFilePaths.length ? remoteFileFetch : undefined,
                 fields: message.fields,
+                queued: message.queued || undefined,
+                toolCalls: message.toolCalls,
                 confirmation: message.confirmation ? { id: message.confirmation.id, summary: message.confirmation.summary || message.content || '' } : undefined,
                 actions: message.actions?.map(action => ({ label: action.label, command: action.command, style: 'primary' as const })),
                 timestamp: index + 1,
@@ -5710,7 +5713,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
     }, [lang, remoteChat?.cloud, remoteChat?.live, remoteTranscript, t]);
     const remoteRenderedProgress = useMemo(() => {
-        const parts = (remoteChat?.live?.parts || []).filter(part => part.kind === "progress" && part.text);
+        // Styled tool-status rows live on the assistant bubble's toolCalls
+        // timeline now — rendering them here too would double every call.
+        const parts = (remoteChat?.live?.parts || []).filter(part => part.kind === "progress" && part.text && !isTranscriptToolCallText(part.text));
         if (!remoteChat || parts.length === 0) return null;
         return parts.map((part, index) => (
             <Fragment key={`remote-progress-${remoteChat.grantId}-${part.seq || index}`}>

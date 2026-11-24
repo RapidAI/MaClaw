@@ -1824,6 +1824,22 @@ export function renderMessage(
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
                         <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{(localizeText(lang, "U", "我"))}</span>
                         <span>{(localizeText(lang, "You", "我"))}</span>
+                        {msg.queued && (
+                            <span
+                                data-testid="remote-queued-badge"
+                                style={{
+                                    padding: "1px 5px",
+                                    borderRadius: 999,
+                                    background: `color-mix(in srgb, ${t.sendBtnBg} 14%, transparent)`,
+                                    color: t.text,
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    lineHeight: 1.4,
+                                }}
+                            >
+                                {(localizeText(lang, "Queued", "排队中", "排隊中"))}
+                            </span>
+                        )}
                         {isGuideInjection && (
                             <span
                                 data-testid="guide-injection-badge"

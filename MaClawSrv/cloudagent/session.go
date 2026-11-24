@@ -149,10 +149,15 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 	return json.Marshal(map[string]any{"accepted": true, "request_id": requestID, "task_id": taskID})
 }
 
-// drainSessionQueue starts the next parked message once the running turn is
+// drainQueue starts the next parked message once the running turn is
 // done. Parked rows survive a GUI shutdown and an srv restart because they
 // live in this instance's transcript db; Recover kicks the drain back up.
-func (rt *Runtime) drainSessionQueue(inst *instance) {
+// The queue is per instance, so the runner is the instance's own kind.
+func (rt *Runtime) drainQueue(inst *instance) {
+	run := rt.runSession
+	if inst.meta.Kind == KindCoding {
+		run = rt.runCoding
+	}
 	for {
 		if got, err := rt.instance(inst.meta.ID); err != nil || got != inst {
 			return
@@ -174,7 +179,7 @@ func (rt *Runtime) drainSessionQueue(inst *instance) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		rt.track(requestID, cancel)
-		go rt.runSession(ctx, inst, requestID, taskID, msg.Text)
+		go run(ctx, inst, requestID, taskID, msg.Text)
 		return
 	}
 }
@@ -214,7 +219,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 	// sessionResult owns the terminal response frame — publishing another
 	// here would give viewers two "response" events for one turn.
 	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
-	rt.drainSessionQueue(inst)
+	rt.drainQueue(inst)
 }
 
 // sessionResult runs the session turn through the same agent kernel the

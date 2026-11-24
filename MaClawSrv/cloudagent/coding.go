@@ -37,6 +37,17 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		payload.TaskID = taskID
 	}
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
+	if errors.Is(err, errBusy) {
+		// Same parked-input semantics as the session kind: the message waits
+		// in this instance's queue and runCoding drains it after the turn.
+		// An approval answer was already recorded above, so its queued turn
+		// re-enters the conversation with the decision in place.
+		queueID, qerr := inst.book.Enqueue(payload.ClientMessageID, payload.TaskID, text, time.Now())
+		if qerr != nil {
+			return nil, qerr
+		}
+		return json.Marshal(map[string]any{"accepted": true, "queued": true, "queue_id": queueID, "task_id": payload.TaskID})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +80,7 @@ func (rt *Runtime) runCoding(ctx context.Context, inst *instance, requestID, tas
 		return
 	}
 	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
+	rt.drainQueue(inst)
 }
 
 func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool) {
@@ -252,6 +264,11 @@ func (h *agentHost) BuildTools(string) []map[string]interface{} {
 	)
 }
 func (h *agentHost) ExecuteTool(name, argsJSON string) string {
+	// The same styled activity line the desktop tray emits, so a remote
+	// viewer folds cloud tool calls into the same transcript timeline.
+	if line := cloudToolStatusLine(name, argsJSON); line != "" {
+		h.rt.publish(h.inst, h.task, h.request, "progress", line, nil)
+	}
 	switch strings.TrimSpace(name) {
 	case "bash":
 		return h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
@@ -283,6 +300,13 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	}
 }
 func (h *agentHost) OnToken(delta string) {
+	if strings.HasPrefix(delta, "\x01") {
+		// Reasoning deltas ride OnToken behind the sentinel. Forward them as
+		// thinking events so viewers fold them into the thinking block like
+		// the local transcript does, not into the answer body.
+		h.rt.publish(h.inst, h.task, h.request, "thinking", delta[1:], map[string]any{"state": "delta"})
+		return
+	}
 	h.rt.publish(h.inst, h.task, h.request, "token", delta, nil)
 }
 func (h *agentHost) OnProgress(text string) {
@@ -348,6 +372,76 @@ func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) string {
 		return err.Error()
 	}
 	return "已写入 " + body.Path
+}
+
+// cloudToolStatusLine renders one tool call as the "工具 · action (name)"
+// activity line the desktop tray and the remote tool timeline already parse.
+// The viewer's language is not known here; the wire shape is zh, same as the
+// rest of this service's user-facing strings.
+func cloudToolStatusLine(name, argsJSON string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(argsJSON), &args)
+	action := "调用工具"
+	detail := ""
+	switch name {
+	case "bash":
+		action = "执行命令"
+		detail = joinArgs(args, "argv")
+	case "read_file":
+		action = "读取文件"
+		detail = stringArg(args, "path")
+	case "write_file":
+		action = "写入文件"
+		detail = stringArg(args, "path")
+	case "git_commit":
+		action = "提交改动"
+		detail = stringArg(args, "message")
+	case "git_push":
+		action = "推送代码"
+	default:
+		detail = name
+	}
+	line := "工具 · " + action + " (" + name + ")"
+	if detail = collapseToolDetail(detail); detail != "" {
+		line += "\n" + detail
+	}
+	return line
+}
+
+func stringArg(args map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s, ok := args[key].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func joinArgs(args map[string]any, key string) string {
+	list, ok := args[key].([]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func collapseToolDetail(detail string) string {
+	detail = strings.Join(strings.Fields(strings.TrimSpace(detail)), " ")
+	runes := []rune(detail)
+	if len(runes) > 100 {
+		return string(runes[:97]) + "..."
+	}
+	return detail
 }
 
 func fnTool(name, desc string, params map[string]interface{}) map[string]interface{} {

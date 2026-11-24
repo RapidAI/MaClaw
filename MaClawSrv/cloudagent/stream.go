@@ -40,10 +40,14 @@ type streamLane struct {
 	lastProgress string
 	token        bytes.Buffer
 	tokenReq     string
+	think        bytes.Buffer
+	thinkReq     string
 	timer        *time.Timer
 	requestID    string
 	display      string
 	body         strings.Builder
+	thinking     strings.Builder
+	thinkOpen    bool
 	responded    bool
 	done         bool
 	started      int64
@@ -139,22 +143,29 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		lane.lastProgress = text
 	}
 	rt.noteLive(lane, requestID, event, text, extra)
-	if event == "token" {
+	if event == "token" || event == "thinking" {
 		if text == "" {
 			rt.streamMu.Unlock()
 			return
 		}
-		lane.token.WriteString(text)
-		lane.tokenReq = requestID
+		if event == "token" {
+			lane.token.WriteString(text)
+			lane.tokenReq = requestID
+		} else {
+			lane.think.WriteString(text)
+			lane.thinkReq = requestID
+		}
 		if streamCoalesce <= 0 {
-			payload := rt.takeToken(lane, inst.meta.ID, taskID)
+			pending := rt.takePending(lane, inst.meta.ID, taskID)
 			rt.streamMu.Unlock()
-			rt.postStream(inst, grants, payload)
+			for _, frame := range pending {
+				rt.postStream(inst, grants, frame)
+			}
 			return
 		}
 		if lane.timer == nil {
 			lane.timer = time.AfterFunc(streamCoalesce, func() {
-				rt.flushToken(inst, taskID)
+				rt.flushPending(inst, taskID)
 			})
 		}
 		rt.streamMu.Unlock()
@@ -164,16 +175,16 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		lane.timer.Stop()
 		lane.timer = nil
 	}
-	pending := rt.takeToken(lane, inst.meta.ID, taskID)
+	pending := rt.takePending(lane, inst.meta.ID, taskID)
 	body := rt.nextFrame(lane, inst.meta.ID, taskID, requestID, event, text, extra)
 	rt.streamMu.Unlock()
-	if pending != nil {
-		rt.postStream(inst, grants, pending)
+	for _, frame := range pending {
+		rt.postStream(inst, grants, frame)
 	}
 	rt.postStream(inst, grants, body)
 }
 
-func (rt *Runtime) flushToken(inst *instance, taskID string) {
+func (rt *Runtime) flushPending(inst *instance, taskID string) {
 	if rt == nil || inst == nil {
 		return
 	}
@@ -184,13 +195,15 @@ func (rt *Runtime) flushToken(inst *instance, taskID string) {
 		lane.timer.Stop()
 		lane.timer = nil
 	}
-	var payload []byte
+	var pending [][]byte
 	if lane != nil {
-		payload = rt.takeToken(lane, inst.meta.ID, taskID)
+		pending = rt.takePending(lane, inst.meta.ID, taskID)
 	}
 	rt.streamMu.Unlock()
-	if payload != nil && len(grants) > 0 {
-		rt.postStream(inst, grants, payload)
+	if len(grants) > 0 {
+		for _, frame := range pending {
+			rt.postStream(inst, grants, frame)
+		}
 	}
 }
 
@@ -206,14 +219,23 @@ func (rt *Runtime) lane(key string) *streamLane {
 	return lane
 }
 
-func (rt *Runtime) takeToken(lane *streamLane, instanceID, taskID string) []byte {
-	if lane == nil || lane.token.Len() == 0 {
+// takePending drains the coalesced token and thinking buffers. Thinking is
+// flushed first: a visible token seals the open block on the viewer, which
+// matches the loop's real order of reasoning before answer text.
+func (rt *Runtime) takePending(lane *streamLane, instanceID, taskID string) [][]byte {
+	if lane == nil {
 		return nil
 	}
-	text := lane.token.String()
-	req := lane.tokenReq
-	lane.token.Reset()
-	return rt.nextFrame(lane, instanceID, taskID, req, "token", text, nil)
+	var frames [][]byte
+	if lane.think.Len() > 0 {
+		frames = append(frames, rt.nextFrame(lane, instanceID, taskID, lane.thinkReq, "thinking", lane.think.String(), map[string]any{"state": "delta"}))
+		lane.think.Reset()
+	}
+	if lane.token.Len() > 0 {
+		frames = append(frames, rt.nextFrame(lane, instanceID, taskID, lane.tokenReq, "token", lane.token.String(), nil))
+		lane.token.Reset()
+	}
+	return frames
 }
 
 func (rt *Runtime) nextFrame(lane *streamLane, instanceID, taskID, requestID, event, text string, extra map[string]any) []byte {
@@ -264,7 +286,7 @@ func asString(value any) string {
 }
 
 func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, extra map[string]any) {
-	if lane == nil || (event == "token" && text == "") {
+	if lane == nil || ((event == "token" || event == "thinking") && text == "") {
 		return
 	}
 	if requestID != "" {
@@ -273,6 +295,8 @@ func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, ext
 	switch event {
 	case "round_started":
 		lane.body.Reset()
+		lane.thinking.Reset()
+		lane.thinkOpen = false
 		lane.responded = false
 		lane.done = false
 		lane.progress = nil
@@ -286,8 +310,13 @@ func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, ext
 		}
 		lane.display = cloudDisplay(display)
 	case "token":
+		lane.thinkOpen = false
 		lane.body.WriteString(text)
+	case "thinking":
+		lane.thinking.WriteString(text)
+		lane.thinkOpen = true
 	case "response":
+		lane.thinkOpen = false
 		lane.responded = true
 		lane.done = true
 		lane.terminal = confirmationTerminal(extra)
@@ -339,8 +368,11 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 			snap.StreamDone = lane.done
 			snap.StartedAt = lane.started
 			snap.Cursor = uint64(lane.cursor)
+			if lane.thinking.Len() > 0 {
+				snap.Parts = append(snap.Parts, livePart{Kind: "thinking", Seq: 1, Text: lane.thinking.String(), Done: !lane.thinkOpen})
+			}
 			if lane.body.Len() > 0 {
-				snap.Parts = append(snap.Parts, livePart{Kind: "text", Seq: 1, Text: lane.body.String()})
+				snap.Parts = append(snap.Parts, livePart{Kind: "text", Seq: uint64(len(snap.Parts) + 1), Text: lane.body.String()})
 			}
 			snap.Parts = append(snap.Parts, lane.progress...)
 			snap.Terminal = lane.terminal

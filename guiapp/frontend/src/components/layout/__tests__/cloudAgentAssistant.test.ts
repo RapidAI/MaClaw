@@ -788,4 +788,75 @@ describe('cloud agent assistant', () => {
         await sending;
         expect(cloudTurnRunning('cag_1', 'idle')).toBe(false);
     });
+
+    it('a parked send shows the queued badge until its round starts', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                return JSON.stringify({ accepted: true, queued: true, queue_id: 'que_1', task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('排队的话')).toBe(true);
+        const parked = remoteAssistantSessionSnapshot()?.messages.find(message => message.role === 'user' && message.content === '排队的话');
+        expect(parked?.queued).toBe(true);
+
+        // The srv started the parked turn — the badge goes away with it.
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '排队的话',
+        });
+        const started = remoteAssistantSessionSnapshot()?.messages.find(message => message.role === 'user' && message.content === '排队的话');
+        expect(started?.queued).toBeFalsy();
+    });
+
+    it('folds styled tool progress into the live row tool calls', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '干活',
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'progress',
+            request_id: 'req-1',
+            cursor: 2,
+            text: '工具 · 执行命令 (bash)\ngit status',
+        });
+        const row = remoteAssistantSessionSnapshot()?.messages.find(message => message.remoteLive);
+        expect(row?.toolCalls?.length).toBe(1);
+        expect(row?.toolCalls?.[0].name).toBe('bash');
+        expect(row?.toolCalls?.[0].action).toBe('执行命令');
+        expect(row?.toolCalls?.[0].detail).toBe('git status');
+        expect(row?.content).toContain('<!--maclaw-tool:');
+    });
 });

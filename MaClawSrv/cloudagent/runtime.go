@@ -222,9 +222,7 @@ func (rt *Runtime) Recover() error {
 	ids, err := rt.interrupt(time.Now(), restartNote, time.Time{})
 	rt.cancelIDs(ids)
 	for _, inst := range rt.snapshot() {
-		if inst.meta.Kind == KindSession {
-			go rt.drainSessionQueue(inst)
-		}
+		go rt.drainQueue(inst)
 	}
 	return err
 }

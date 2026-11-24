@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
+import {
+    appendToolCallMarker,
+    isProgressOnlyToolAction,
+    parseAssistantToolStatus,
+    type AssistantToolCall,
+} from '../ai/assistantToolCall';
 
 export type RemoteAssistantTranscriptMessage = {
     role: string;
@@ -12,6 +18,10 @@ export type RemoteAssistantTranscriptMessage = {
     remoteLive?: boolean;
     /** The live row's thinking is still open on the controlled machine. */
     liveThinking?: boolean;
+    /** User row parked in the cloud send queue; cleared when its turn starts. */
+    queued?: boolean;
+    /** Tool calls folded from styled progress lines, same as a local turn. */
+    toolCalls?: AssistantToolCall[];
     fields?: Array<{ label: string; value: string }>;
     confirmation?: { id: string; summary?: string };
     actions?: Array<{ label: string; command: string }>;
@@ -188,6 +198,28 @@ function liveKey(grantId: string, projectPath: string) {
 /** External-origin user rows carry a 〔远控〕/〔…〕 prefix — strip it for dedupe and display. */
 function stripRemoteOriginMarker(text: string) {
     return String(text || '').replace(/^〔[^〕]*〕/, '').trim();
+}
+
+/**
+ * Styled tool-status progress parts (工具 · action (name)) ride the same wire
+ * shape the local tray emits. Fold them into the live row's toolCalls so a
+ * mirrored round renders the same tool timeline a local turn does; the
+ * progress-only rows stay in parts for the progress renderer.
+ */
+export function remoteLiveToolCalls(parts: RemoteLivePart[], content: string): { content: string; toolCalls?: AssistantToolCall[] } {
+    let next = content;
+    const calls: AssistantToolCall[] = [];
+    for (const part of parts) {
+        if (part.kind !== 'progress' || !part.text) continue;
+        const parsed = parseAssistantToolStatus(part.text);
+        if (!parsed || isProgressOnlyToolAction(parsed.action)) continue;
+        const tail = calls[calls.length - 1];
+        if (tail && tail.name === parsed.name && tail.action === parsed.action && tail.detail === parsed.detail) continue;
+        const id = `remote-tool-${calls.length}`;
+        calls.push({ id, ...parsed });
+        next = appendToolCallMarker(next, id);
+    }
+    return calls.length ? { content: next, toolCalls: calls } : { content: next };
 }
 
 function closeLiveThinking(round: RemoteLiveRound) {
@@ -799,15 +831,17 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
         const fields: Array<{ label: string; value: string }> = [];
         if (reduced?.trialStatus) fields.push({ label: 'Recovery', value: reduced.trialStatus });
         if (reduced && reduced.trialFailures > 0) fields.push({ label: 'Failures', value: String(reduced.trialFailures) });
-        if (shown || thinking || liveThinking || fields.length) {
+        const folded = remoteLiveToolCalls(round.parts, shown);
+        if (folded.content || thinking || liveThinking || fields.length || folded.toolCalls) {
             merged.push({
                 role: 'assistant',
-                content: shown,
+                content: folded.content,
                 reasoning: thinking || undefined,
                 remoteLive: true,
                 liveThinking,
                 localFilePaths: carriedFiles,
                 fields: fields.length ? fields : undefined,
+                toolCalls: folded.toolCalls,
             });
         }
         if (reduced) {
@@ -849,7 +883,7 @@ function sessionKey(session: RemoteAssistantSession | null) {
         liveStamp(session.live),
         session.syncing ? 'sync' : '',
         session.workbench ? JSON.stringify(session.workbench) : '',
-        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}`).join('\n--\n'),
+        session.messages.map(message => `${message.role}\n${message.content}\n${message.reasoning || ''}\n${(message.localFilePaths || []).join(',')}\n${message.cardExpired ? 'expired' : ''}\n${message.confirmation?.id || ''}\n${message.queued ? 'queued' : ''}`).join('\n--\n'),
     ].join('\n');
 }
 

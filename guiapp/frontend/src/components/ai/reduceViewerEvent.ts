@@ -1,4 +1,5 @@
 import { parseCodingAgentProgress } from './CodingAgentProgressStatus';
+import { isProgressOnlyToolAction, parseAssistantToolStatus } from './assistantToolCall';
 import { sanitizeVisibleChatText } from './visibleChatText';
 
 export interface ViewerThinking {
@@ -146,14 +147,23 @@ function pushTimelineRow(state: ViewerReduceState, row: ViewerTimelineRow): void
 
 function rowFromProgressText(raw: string): ViewerTimelineRow | null {
     const parsed = parseCodingAgentProgress(raw);
-    if (!parsed) return null;
-    return {
-        phase: parsed.phase === 'unknown' ? '' : parsed.phase,
-        taskId: parsed.taskID || '',
-        title: parsed.title || '',
-        runId: parsed.runID || '',
-        text: raw,
-    };
+    if (parsed) {
+        return {
+            phase: parsed.phase === 'unknown' ? '' : parsed.phase,
+            taskId: parsed.taskID || '',
+            title: parsed.title || '',
+            runId: parsed.runID || '',
+            text: raw,
+        };
+    }
+    // Styled tool-status lines (工具 · action (name)) are the wire shape the
+    // local tray and the cloud turns share — keep them so the mirrored tool
+    // timeline renders instead of dropping the call entirely.
+    const tool = parseAssistantToolStatus(raw);
+    if (tool && !isProgressOnlyToolAction(tool.action)) {
+        return { phase: '', taskId: '', title: '', runId: '', text: raw };
+    }
+    return null;
 }
 
 function eventActions(raw: unknown): Array<{ label: string; command: string }> | undefined {

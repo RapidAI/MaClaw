@@ -12,6 +12,7 @@ import {
 import {
     bindRemoteAssistantActions,
     publishRemoteAssistantSession,
+    remoteLiveToolCalls,
     type RemoteAssistantTranscriptMessage,
     type RemoteLivePart,
     type RemoteLiveRound,
@@ -53,6 +54,8 @@ type Owner = {
     pendingBaseline: string;
     /** cloud_stop_task is in flight. The stream does not announce the cancel. */
     stopping: boolean;
+    /** Sends the srv parked while a turn was running, in FIFO order. */
+    queued: string[];
 };
 
 let generation = 0;
@@ -248,8 +251,11 @@ function publishOwner() {
     if (prompt && !messages.some(message => message.role === 'user' && message.content.trim() === prompt)) {
         messages.push({ role: 'user', content: prompt });
     }
+    const live = cloudLive(round);
     const liveText = (round?.visible || round?.body || '').trim();
     const reasoning = (round?.thinking || []).map(block => block.text).filter(Boolean).join('\n\n');
+    // Styled progress rows become the same tool timeline a local turn keeps.
+    const folded = remoteLiveToolCalls(live?.parts || [], liveText);
     const last = messages[messages.length - 1];
     // The round still on screen is the one this send already saw. Keep it above
     // the new line; a later request paints its own text after that line.
@@ -257,25 +263,41 @@ function publishOwner() {
     if (previousRound && last?.role === 'user') {
         const prior = messages.slice(0, -1);
         const seen = !!liveText && prior.some(message => message.role !== 'user' && message.content.trim() === liveText);
-        if (!seen && (liveText || reasoning)) {
+        if (!seen && (liveText || reasoning || folded.toolCalls)) {
             messages.splice(messages.length - 1, 0, {
                 role: 'assistant',
-                content: liveText,
+                content: folded.content,
                 reasoning: reasoning || undefined,
                 remoteLive: true,
                 liveThinking: !!round?.thinking.some(block => !block.done),
+                toolCalls: folded.toolCalls,
             });
         }
     } else if (liveText && last && last.role !== 'user' && last.content.trim() === liveText) {
         if (reasoning && !last.reasoning) last.reasoning = reasoning;
-    } else if (liveText || reasoning) {
+        if (folded.toolCalls && !last.toolCalls) last.toolCalls = folded.toolCalls;
+    } else if (liveText || reasoning || folded.toolCalls) {
         messages.push({
             role: 'assistant',
-            content: liveText,
+            content: folded.content,
             reasoning: reasoning || undefined,
             remoteLive: true,
             liveThinking: !!round?.thinking.some(block => !block.done),
+            toolCalls: folded.toolCalls,
         });
+    }
+    // Sends the srv parked wait for the running turn; the next round_started
+    // drops the oldest parked line, so mark exactly the still-waiting ones.
+    if (current.queued.length) {
+        const parked = current.queued.slice();
+        for (let i = messages.length - 1, qi = parked.length - 1; i >= 0 && qi >= 0; i--) {
+            const row = messages[i];
+            if (row.role !== 'user') continue;
+            if (row.content.trim() === parked[qi]) {
+                row.queued = true;
+                qi--;
+            }
+        }
     }
     const card = round?.cards.find(item => !item.expired && (item.actions?.length || item.text || item.confirmationId));
     if (card) {
@@ -298,7 +320,6 @@ function publishOwner() {
     for (const note of round?.notices || []) {
         if (note.text) messages.push({ role: note.asError ? 'error' : 'assistant', content: note.text });
     }
-    const live = cloudLive(round);
     publishRemoteAssistantSession({
         grantId: current.grant || current.item.id,
         machineName: text('Cloud', '云端', '雲端'),
@@ -321,6 +342,13 @@ function publishOwner() {
     });
 }
 
+/** The stream payload's event name and display text, or ''s when absent. */
+function streamStarted(payload: unknown): string {
+    const parsed = typeof payload === 'string' ? parseJSON<{ event?: string; display_text?: string }>(payload, {}) : (payload && typeof payload === 'object' ? payload as { event?: unknown; display_text?: unknown } : {});
+    if (String(parsed.event || '') !== 'round_started') return '';
+    return stripOrigin(String(parsed.display_text || ''));
+}
+
 function ensureStream() {
     if (streamOff) return;
     const off = EventsOn('remote-control:stream', (payload: unknown) => {
@@ -339,6 +367,13 @@ function ensureStream() {
                 noteCloudTurn(instanceId, true);
             }
             return;
+        }
+        // A fresh round means the srv started the oldest parked send — but
+        // only clear our badge when it is OUR line: another client's parked
+        // send drains first and must not clear ours.
+        const started = streamStarted(payload);
+        if (started && current.queued.length && current.queued[0] === started) {
+            current.queued = current.queued.slice(1);
         }
         if (current.error) current.error = '';
         publishOwner();
@@ -471,11 +506,18 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
             dropUnansweredSend(current);
             return false;
         }
-        await op(current.grant, 'cloud_send_message', JSON.stringify({
-            task_id: current.taskId,
-            text: outgoing,
-            client_message_id: `cm_${Date.now()}`,
-        }));
+        const sent = parseJSON<{ queued?: boolean }>(
+            await op(current.grant, 'cloud_send_message', JSON.stringify({
+                task_id: current.taskId,
+                text: outgoing,
+                client_message_id: `cm_${Date.now()}`,
+            })),
+            {},
+        );
+        // A parked send keeps a FIFO slot; the next round_started drains it.
+        if (sent.queued === true) {
+            current.queued = [...current.queued, outgoing];
+        }
         const asked = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
         if (asked) expireCloudAgentCards(asked);
         current.historyEpoch += 1;
@@ -536,7 +578,7 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [] };
     notify();
     ensureStream();
     publishOwner();
