@@ -16,7 +16,7 @@ func TestHistoryReportsErrorFlagWithoutChangingLines(t *testing.T) {
 	if err != nil || !created || requestID == "" {
 		t.Fatalf("begin %v %v %s", err, created, requestID)
 	}
-	wrote, err := b.Finish(requestID, "云端官方模型未接通", true, now.Add(time.Second))
+	wrote, err := b.Finish(requestID, "云端官方模型未接通", true, []string{"out/report.md"}, now.Add(time.Second))
 	if err != nil || !wrote {
 		t.Fatalf("finish %v %v", err, wrote)
 	}
@@ -24,9 +24,15 @@ func TestHistoryReportsErrorFlagWithoutChangingLines(t *testing.T) {
 	if err != nil || len(lines) != 2 || lines[0] != "user\n实现登录" || lines[1] != "assistant\n云端官方模型未接通" {
 		t.Fatalf("lines %#v %v", lines, err)
 	}
-	_, flags, err := b.history("task_1")
+	_, flags, files, err := b.history("task_1")
 	if err != nil || len(flags) != 2 || flags[0] || !flags[1] {
 		t.Fatalf("flags %v %v", flags, err)
+	}
+	if len(files) != 2 || len(files[0]) != 0 || len(files[1]) != 1 || files[1][0] != "out/report.md" {
+		t.Fatalf("files %v", files)
+	}
+	if !b.producedPaths()["out/report.md"] {
+		t.Fatal("producedPaths misses the finished file")
 	}
 }
 

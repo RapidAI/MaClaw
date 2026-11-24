@@ -859,4 +859,109 @@ describe('cloud agent assistant', () => {
         expect(row?.toolCalls?.[0].detail).toBe('git status');
         expect(row?.content).toContain('<!--maclaw-tool:');
     });
+
+    it('carries produced files from history onto transcript rows', async () => {
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['user\n做个表', 'assistant\n报表已生成'],
+                files: [null, ['out/report.csv']],
+            });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        const rows = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(rows[0].localFilePaths).toBeUndefined();
+        expect(rows[1].localFilePaths).toEqual(['out/report.csv']);
+    });
+
+    it('attaches a response terminal local_file_paths to the live row', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '出图',
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'response',
+            request_id: 'req-1',
+            cursor: 2,
+            text: '图好了',
+            terminal: { text: '图好了', local_file_paths: ['pics/a.png'] },
+        });
+        const row = remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths);
+        expect(row?.localFilePaths).toEqual(['pics/a.png']);
+    });
+});
+
+describe('cloud stream resync', () => {
+    it('re-watches the task when a stream frame gaps', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const key = cloudAgentStoreKey('grant-1', session);
+        let watchCalls = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_watch_task') {
+                watchCalls += 1;
+                if (watchCalls === 1) return JSON.stringify({ session_key: session, cursor: 0, parts: [] });
+                return JSON.stringify({
+                    session_key: session,
+                    request_id: 'req-1',
+                    cursor: 5,
+                    parts: [{ kind: 'text', seq: 1, text: 'recovered body' }],
+                });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        const before = watchCalls;
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: 'hi',
+        });
+        // Cursors 2-4 never arrived: the reducer marks the gap.
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'token',
+            request_id: 'req-1',
+            cursor: 5,
+            cursor_from: 5,
+            text: 'tail',
+        });
+        expect(cloudAgentRound(key).gap).toBe(true);
+        await vi.waitFor(() => expect(watchCalls).toBeGreaterThan(before));
+        await vi.waitFor(() => {
+            expect(cloudAgentRound(key).gap).toBe(false);
+            expect(cloudAgentRound(key).body).toContain('recovered body');
+        });
+    });
 });

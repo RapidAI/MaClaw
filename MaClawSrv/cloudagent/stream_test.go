@@ -79,3 +79,82 @@ func TestStreamPublishesViewerFrameWithoutProjectPath(t *testing.T) {
 		t.Fatalf("round = %s", bodies[2])
 	}
 }
+
+// A terminal response emits the same tail the local loop does: the open
+// thinking block closes with its full text, stream_done marks the stream
+// end, and only then the response frame lands.
+func TestStreamResponseSealsThinkingAndEndsStream(t *testing.T) {
+	previous := streamCoalesce
+	streamCoalesce = 0
+	t.Cleanup(func() { streamCoalesce = previous })
+
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	spec.HubLoopback = srv.URL
+	if err := rt.Put(spec); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.noteGrant(spec.ID, "grant-cloud")
+	rt.publish(inst, "task-1", "req-1", "thinking", "reasoning", map[string]any{"state": "delta"})
+	rt.publish(inst, "task-1", "req-1", "response", "answer", map[string]any{"terminal": map[string]any{"text": "answer"}})
+
+	// A second turn settles the same way minus the thinking close.
+	rt.publish(inst, "task-1", "req-2", "round_started", "继续", nil)
+	rt.publish(inst, "task-1", "req-2", "response", "again", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 7 {
+		t.Fatalf("frames = %d %v", len(bodies), bodies)
+	}
+	var events, lanes []string
+	var cursors []float64
+	for _, body := range bodies {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, fmtString(frame["event"])+":"+fmtString(frame["state"]))
+		lanes = append(lanes, fmtString(frame["lane"]))
+		cursors = append(cursors, frame["cursor"].(float64))
+	}
+	want := []string{"thinking:delta", "thinking:done", "stream_done:", "response:", "round_started:", "stream_done:", "response:"}
+	for i, got := range events {
+		if got != want[i] {
+			t.Fatalf("events = %v", events)
+		}
+	}
+	wantLanes := []string{"reasoning", "reasoning", "control", "control", "control", "control", "control"}
+	for i, got := range lanes {
+		if got != wantLanes[i] {
+			t.Fatalf("lanes = %v", lanes)
+		}
+	}
+	for i := 1; i < len(cursors); i++ {
+		if cursors[i] != cursors[i-1]+1 {
+			t.Fatalf("cursors = %v", cursors)
+		}
+	}
+	var done map[string]any
+	if err := json.Unmarshal([]byte(bodies[1]), &done); err != nil {
+		t.Fatal(err)
+	}
+	if done["text"] != "reasoning" {
+		t.Fatalf("thinking done frame = %s", bodies[1])
+	}
+}

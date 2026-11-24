@@ -42,6 +42,8 @@ type Owner = {
     grant: string;
     taskId: string;
     history: string[];
+    /** Produced-file lists parallel to history — files stay on the instance. */
+    historyFiles: string[][];
     historyRequest: string;
     /** Bumped when a send appends a line. A fetch from before that send is stale. */
     historyEpoch: number;
@@ -101,14 +103,15 @@ function parseJSON<T>(raw: unknown, fallback: T): T {
     }
 }
 
-function historyMessages(lines: string[]): RemoteAssistantTranscriptMessage[] {
+function historyMessages(lines: string[], files: string[][]): RemoteAssistantTranscriptMessage[] {
     const messages: RemoteAssistantTranscriptMessage[] = [];
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
         const split = line.indexOf('\n');
         const role = (split < 0 ? line : line.slice(0, split)).trim() || 'assistant';
         const content = split < 0 ? '' : line.slice(split + 1);
         if (!content.trim()) continue;
-        messages.push({ role, content });
+        const produced = (files[index] || []).map(path => String(path || '').trim()).filter(Boolean);
+        messages.push({ role, content, localFilePaths: produced.length ? produced : undefined });
     }
     return messages;
 }
@@ -155,6 +158,30 @@ function instanceIdFromStoreKey(key: string): string {
 
 /** Instance id to the request id already on screen when its send left. */
 const awaitingBaseline = new Map<string, string>();
+
+/** Last resync attempt per store key — a dropped frame gaps the reducer and
+ * every later frame keeps gapping, so retries ride a short throttle, not a latch. */
+const gapRecoveryAt = new Map<string, number>();
+const GAP_RECOVERY_MIN_MS = 2000;
+
+/** A lost stream frame leaves the reducer gapped; the watch snapshot is the
+ * resync — the same recovery the local viewer's resync snapshot performs. */
+function recoverCloudStream(key: string) {
+    const at = gapRecoveryAt.get(key) || 0;
+    if (Date.now() - at < GAP_RECOVERY_MIN_MS) return;
+    gapRecoveryAt.set(key, Date.now());
+    const breakAt = key.indexOf('\n');
+    const grant = breakAt < 0 ? '' : key.slice(0, breakAt);
+    const session = breakAt < 0 ? '' : key.slice(breakAt + 1);
+    const taskId = session.slice(session.lastIndexOf(':') + 1).trim();
+    const instanceId = instanceIdFromStoreKey(key);
+    const op = binding('RemoteControlOp');
+    if (!op || !grant || !session || !taskId || !instanceId) return;
+    const baseline = cloudAgentRound(key).last;
+    void op(grant, 'cloud_watch_task', JSON.stringify({ task_id: taskId, session_key: session }))
+        .then(raw => applyWatchedTurn(instanceId, grant, session, parseJSON(raw, {}), baseline))
+        .catch(() => { /* the next gapped frame retries */ });
+}
 
 function setAwaiting(current: Owner) {
     awaitingBaseline.set(current.item.id, current.pendingBaseline);
@@ -246,7 +273,7 @@ function publishOwner() {
     const sessionKey = cloudAgentSessionKey(current.item.id, current.taskId);
     const storeKey = cloudAgentStoreKey(current.grant, sessionKey);
     const round = storeKey ? cloudAgentRound(storeKey) : null;
-    const messages = historyMessages(current.history);
+    const messages = historyMessages(current.history, current.historyFiles);
     const prompt = stripOrigin(round?.displayText || '');
     if (prompt && !messages.some(message => message.role === 'user' && message.content.trim() === prompt)) {
         messages.push({ role: 'user', content: prompt });
@@ -259,6 +286,9 @@ function publishOwner() {
     const last = messages[messages.length - 1];
     // The round still on screen is the one this send already saw. Keep it above
     // the new line; a later request paints its own text after that line.
+    // Files the turn produced on the instance ride the round's artifacts list.
+    const produced = (round?.artifacts || []).map(path => String(path || '').trim()).filter(Boolean);
+    const producedFiles = produced.length ? produced : undefined;
     const previousRound = current.pending && !!round?.requestId && round.requestId === current.pendingBaseline;
     if (previousRound && last?.role === 'user') {
         const prior = messages.slice(0, -1);
@@ -271,11 +301,13 @@ function publishOwner() {
                 remoteLive: true,
                 liveThinking: !!round?.thinking.some(block => !block.done),
                 toolCalls: folded.toolCalls,
+                localFilePaths: producedFiles,
             });
         }
     } else if (liveText && last && last.role !== 'user' && last.content.trim() === liveText) {
         if (reasoning && !last.reasoning) last.reasoning = reasoning;
         if (folded.toolCalls && !last.toolCalls) last.toolCalls = folded.toolCalls;
+        if (producedFiles && !last.localFilePaths) last.localFilePaths = producedFiles;
     } else if (liveText || reasoning || folded.toolCalls) {
         messages.push({
             role: 'assistant',
@@ -284,6 +316,7 @@ function publishOwner() {
             remoteLive: true,
             liveThinking: !!round?.thinking.some(block => !block.done),
             toolCalls: folded.toolCalls,
+            localFilePaths: producedFiles,
         });
     }
     // Sends the srv parked wait for the running turn; a round_started drops
@@ -357,6 +390,7 @@ function ensureStream() {
     const off = EventsOn('remote-control:stream', (payload: unknown) => {
         const key = applyCloudAgentStream(payload);
         if (!key) return;
+        if (cloudAgentRound(key).gap) recoverCloudStream(key);
         const current = owner;
         const want = current ? cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId)) : '';
         if (!current || key !== want) {
@@ -419,9 +453,17 @@ function keepUnackedUserLines(local: string[], incoming: string[]): string[] {
 /** A fetch writes only when no send and no newer fetch has happened since it started. */
 function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boolean {
     if (current.historyEpoch !== ticket.epoch || current.historyLoad !== ticket.load) return false;
-    const body = parseJSON<{ messages?: string[] }>(raw, {});
+    const body = parseJSON<{ messages?: string[]; files?: unknown[] }>(raw, {});
     const incoming = Array.isArray(body.messages) ? body.messages : [];
-    current.history = keepUnackedUserLines(current.history, incoming);
+    const merged = keepUnackedUserLines(current.history, incoming);
+    // files[i] belongs to messages[i]; locally-appended user lines have none.
+    const files: string[][] = [];
+    for (let index = 0; index < merged.length; index += 1) {
+        const row = Array.isArray(body.files?.[index]) ? body.files[index] as string[] : [];
+        files.push(row);
+    }
+    current.history = merged;
+    current.historyFiles = files;
     return true;
 }
 
@@ -452,6 +494,7 @@ export function resetCloudAssistantForTests() {
     generation += 1;
     owner = null;
     awaitingBaseline.clear();
+    gapRecoveryAt.clear();
     if (streamOff) {
         const off = streamOff;
         streamOff = null;
@@ -582,7 +625,7 @@ async function stopCloud(gen: number): Promise<boolean> {
 export async function openCloudAgent(item: CloudAgentListItem, lang: string): Promise<void> {
     const gen = ++generation;
     rememberCloudOpen(item.id);
-    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [] };
+    owner = { generation: gen, lang, item, grant: '', taskId: '', history: [], historyFiles: [], historyRequest: '', historyEpoch: 0, historyLoad: 0, error: '', pending: false, pendingBaseline: '', stopping: false, queued: [] };
     notify();
     ensureStream();
     publishOwner();

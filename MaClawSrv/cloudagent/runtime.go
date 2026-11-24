@@ -182,8 +182,8 @@ func (rt *Runtime) loop(ctx context.Context) {
 // concurrent-turn slot is released without waiting out the heartbeat window.
 // The finish beat retries: one lost POST must not pin the slot for the whole
 // miss window — that is how a finished turn still blocks the next send.
-func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string, asError bool, now time.Time) {
-	wrote, err := inst.book.Finish(requestID, content, asError, now)
+func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string, asError bool, files []string, now time.Time) {
+	wrote, err := inst.book.Finish(requestID, content, asError, files, now)
 	if err != nil || !wrote {
 		return
 	}
@@ -205,6 +205,9 @@ func (rt *Runtime) pulse(ctx context.Context, now time.Time) {
 		if !ok {
 			continue
 		}
+		// The stream keepalive rides the same cadence: a watcher sees the lane
+		// alive and the cursor advancing while a long tool call emits nothing.
+		rt.publish(inst, taskID, requestID, "heartbeat", "", nil)
 		if !enabled {
 			ids, _ := inst.book.interrupt(now, heartbeatNote, time.Time{})
 			rt.cancelIDs(ids)

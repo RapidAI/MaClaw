@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,23 +79,23 @@ func (rt *Runtime) runCoding(ctx context.Context, inst *instance, requestID, tas
 	if ctx.Err() != nil {
 		return
 	}
-	content, asError := rt.codingResult(ctx, inst, taskID, requestID, text)
+	content, asError, files := rt.codingResult(ctx, inst, taskID, requestID, text)
 	if ctx.Err() != nil {
 		return
 	}
-	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
+	rt.finishTurn(inst, requestID, taskID, content, asError, files, time.Now())
 	rt.drainQueue(inst)
 }
 
-func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool) {
+func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool, []string) {
 	// round_started precedes every terminal frame — the viewer drops events
 	// for a round it has not seen open.
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
-	fail := func(msg string) (string, bool) {
+	fail := func(msg string) (string, bool, []string) {
 		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
 			"terminal": map[string]any{"text": msg},
 		})
-		return msg, true
+		return msg, true, nil
 	}
 	root, err := jailRoot(inst.dir, KindCoding)
 	if err != nil {
@@ -116,31 +118,33 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		turn:    ctx,
 		cfg:     cfg,
 		coding:  true,
+		started: time.Now(),
 	}
 	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
-		return "", true
+		return "", true, nil
 	}
+	files := host.producedFiles()
 	if result.AskUser != nil {
 		question := strings.TrimSpace(result.AskUser.Question)
 		if strings.TrimSpace(result.Text) != "" {
 			question = strings.TrimSpace(result.Text) + "\n" + question
 		}
 		rt.publish(inst, taskID, requestID, "response", question, map[string]any{
-			"terminal": askTerminal(question, taskID),
+			"terminal": attachFiles(askTerminal(question, taskID), files),
 		})
-		return question, false
+		return question, false, files
 	}
 	if strings.TrimSpace(result.Error) != "" {
 		rt.publish(inst, taskID, requestID, "response", result.Error, map[string]any{
-			"terminal": map[string]any{"text": result.Error},
+			"terminal": attachFiles(map[string]any{"text": result.Error}, files),
 		})
-		return result.Error, true
+		return result.Error, true, files
 	}
 	rt.publish(inst, taskID, requestID, "response", result.Text, map[string]any{
-		"terminal": map[string]any{"text": result.Text},
+		"terminal": attachFiles(map[string]any{"text": result.Text}, files),
 	})
-	return result.Text, false
+	return result.Text, false, files
 }
 
 func (rt *Runtime) maclawCfg(inst *instance) corelib.MaclawLLMConfig {
@@ -207,6 +211,8 @@ type agentHost struct {
 	turn    context.Context
 	cfg     corelib.MaclawLLMConfig
 	coding  bool
+	started time.Time
+	files   map[string]bool
 }
 
 func (h *agentHost) GetLLMConfig() corelib.MaclawLLMConfig { return h.cfg }
@@ -277,7 +283,18 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	case "read_file":
 		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		return h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		out := h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		var body struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &body) == nil {
+			if path, err := resolveInJail(h.root, body.Path); err == nil {
+				if info, statErr := os.Lstat(path); statErr == nil && info.Mode().IsRegular() {
+					h.noteFile(path)
+				}
+			}
+		}
+		return out
 	case "git_commit":
 		var body struct {
 			Message string `json:"message"`
@@ -325,6 +342,91 @@ func (h *agentHost) LLMRequestContext(int) (context.Context, func(error), error)
 		ctx = context.Background()
 	}
 	return withInstance(ctx, h.inst.meta.ID), func(error) {}, nil
+}
+
+// noteFile records one produced file under its canonical jail-relative path —
+// the same form producedPaths and the fetch whitelist compare against.
+func (h *agentHost) noteFile(abs string) {
+	if h.files == nil {
+		h.files = map[string]bool{}
+	}
+	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
+		h.files[rel] = true
+	}
+}
+
+// canonicalArtifactRel is the stored artifact key: path relative to the jail
+// root, slash-separated so it compares equal across platforms.
+func canonicalArtifactRel(root, abs string) string {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(abs))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// producedSkipDirs never count as artifacts — tool noise, not deliverables.
+var producedSkipDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true,
+	"__pycache__": true, ".venv": true, "venv": true,
+}
+
+const producedFilesMax = 50
+const producedScanEntries = 20000
+
+// producedFiles is the turn's artifact set: explicit write_file targets plus
+// any workspace file whose mtime landed inside the turn window, which is how
+// files a bash command generated still reach the card.
+func (h *agentHost) producedFiles() []string {
+	seen := map[string]bool{}
+	for rel := range h.files {
+		seen[rel] = true
+	}
+	if !h.started.IsZero() {
+		floor := h.started.Add(-2 * time.Second)
+		walked := 0
+		_ = filepath.WalkDir(h.root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			walked++
+			if walked > producedScanEntries {
+				return filepath.SkipAll
+			}
+			if entry.IsDir() {
+				if path != h.root && producedSkipDirs[strings.ToLower(entry.Name())] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.Mode().IsRegular() || info.ModTime().Before(floor) {
+				return nil
+			}
+			if rel := canonicalArtifactRel(h.root, path); rel != "" {
+				seen[rel] = true
+			}
+			return nil
+		})
+	}
+	out := make([]string, 0, len(seen))
+	for rel := range seen {
+		out = append(out, rel)
+	}
+	sort.Strings(out)
+	if len(out) > producedFilesMax {
+		out = out[:producedFilesMax]
+	}
+	return out
+}
+
+// attachFiles puts the turn's produced-file list on a response terminal —
+// the same local_file_paths shape the desktop terminal carries.
+func attachFiles(terminal map[string]any, files []string) map[string]any {
+	if len(files) > 0 {
+		terminal["local_file_paths"] = files
+	}
+	return terminal
 }
 
 // execBash, execReadFile and execWriteFile are the shared workspace tool

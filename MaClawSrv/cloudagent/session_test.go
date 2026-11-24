@@ -2,8 +2,10 @@ package cloudagent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -737,5 +739,52 @@ func TestStopInterruptsRunningTurnAndDeleteTombstones(t *testing.T) {
 	tombs, err := filepath.Glob(filepath.Join(rt.root, slug(spec.TenantID), slug(spec.OwnerUserID), ".deleted-"+spec.ID+"-*"))
 	if err != nil || len(tombs) == 0 {
 		t.Fatalf("tombstone dir: %v %d", err, len(tombs))
+	}
+}
+
+func TestServeFileOnlyServesProducedPaths(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	inst := &instance{dir: dir, meta: Spec{Kind: KindSession}, book: b}
+	rt := &Runtime{}
+
+	workspace := filepath.Join(dir, "workspace")
+	for name, body := range map[string]string{"report.txt": "ok-bytes", "stray.txt": "not-produced"} {
+		if err := os.MkdirAll(workspace, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "写报告", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Finish(requestID, "报告好了", false, []string{"report.txt"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := rt.serveFile(inst, "report.txt")
+	if err != nil {
+		t.Fatalf("serve produced: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["name"] != "report.txt" {
+		t.Fatalf("name %v", body["name"])
+	}
+	got, err := base64.StdEncoding.DecodeString(fmt.Sprint(body["data_base64"]))
+	if err != nil || string(got) != "ok-bytes" {
+		t.Fatalf("bytes %q %v", got, err)
+	}
+	if _, err := rt.serveFile(inst, "stray.txt"); err == nil {
+		t.Fatal("an unrecorded file must not be served")
 	}
 }

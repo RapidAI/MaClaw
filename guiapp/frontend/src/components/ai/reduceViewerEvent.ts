@@ -44,6 +44,8 @@ export interface ViewerReduceState {
     gap: boolean;
     responded: boolean;
     displayText: string;
+    /** Files the turn produced on the remote machine — fetch paths, not local. */
+    artifacts: string[];
 }
 
 /** Progress rows kept in the reduced state — the remote mirror caps rendered
@@ -65,6 +67,7 @@ export function emptyViewerState(): ViewerReduceState {
         gap: false,
         responded: false,
         displayText: '',
+        artifacts: [],
     };
 }
 
@@ -298,6 +301,11 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
             state.trialStatus = text(terminal.trial_reflect_status);
             state.trialFailures = num(terminal.trial_reflect_failures);
             if (!state.body && body) state.body = body;
+            const produced = Array.isArray(terminal.local_file_paths) ? terminal.local_file_paths : [];
+            for (const item of produced) {
+                const path = text(item).trim();
+                if (path && !state.artifacts.includes(path)) state.artifacts.push(path);
+            }
             const confirmation = terminal.confirmation && typeof terminal.confirmation === 'object'
                 ? terminal.confirmation as Record<string, unknown>
                 : null;
@@ -374,6 +382,13 @@ function replaceFromLive(state: ViewerReduceState, event: ViewerEvent, cursor: n
         next.notices = state.notices;
         next.trialStatus = state.trialStatus;
         next.trialFailures = state.trialFailures;
+        next.artifacts = state.artifacts;
+    }
+    if (Array.isArray(live.local_file_paths)) {
+        for (const item of live.local_file_paths) {
+            const path = text(item).trim();
+            if (path && !next.artifacts.includes(path)) next.artifacts.push(path);
+        }
     }
     // Wire snapshots carry remoteLiveSnapshot.parts. live.text is the older
     // golden shape and applies only when parts is absent.
@@ -445,6 +460,7 @@ function cloneState(state: ViewerReduceState): ViewerReduceState {
         timeline: state.timeline.map(row => ({ ...row })),
         cards: state.cards.map(card => ({ ...card })),
         notices: state.notices.map(note => ({ ...note })),
+        artifacts: [...state.artifacts],
     };
 }
 

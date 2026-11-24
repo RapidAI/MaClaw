@@ -2,10 +2,13 @@ package cloudagent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,7 +77,7 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		}
 		return json.Marshal(map[string]any{"tasks": tasks})
 	case "cloud_get_task":
-		lines, flags, err := inst.book.history(payload.TaskID)
+		lines, flags, files, err := inst.book.history(payload.TaskID)
 		if err != nil {
 			return nil, err
 		}
@@ -86,6 +89,7 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 			"task_id":     payload.TaskID,
 			"messages":    lines,
 			"as_error":    flags,
+			"files":       files,
 			"turn_status": turnStatus,
 		})
 	case "cloud_rename_task":
@@ -119,7 +123,7 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 	case "cloud_unwatch_task":
 		return json.Marshal(map[string]any{"ok": true})
 	case "cloud_fetch_file":
-		return rt.fetchFile(inst, payload.Path)
+		return rt.serveFile(inst, payload.Path)
 	default:
 		return nil, errors.New("不支持这个云端操作")
 	}
@@ -212,13 +216,13 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 		return
 	}
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
-	content, asError := rt.sessionResult(ctx, inst, taskID, requestID, text)
+	content, asError, files := rt.sessionResult(ctx, inst, taskID, requestID, text)
 	if ctx.Err() != nil {
 		return
 	}
 	// sessionResult owns the terminal response frame — publishing another
 	// here would give viewers two "response" events for one turn.
-	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
+	rt.finishTurn(inst, requestID, taskID, content, asError, files, time.Now())
 	rt.drainQueue(inst)
 }
 
@@ -226,12 +230,12 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 // coding kind uses — one shared host, one tool-routing implementation, real
 // token streaming — instead of the bare executor that had no workspace
 // tools at all.
-func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool) {
-	fail := func(msg string) (string, bool) {
+func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text string) (string, bool, []string) {
+	fail := func(msg string) (string, bool, []string) {
 		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
 			"terminal": map[string]any{"text": msg},
 		})
-		return msg, true
+		return msg, true, nil
 	}
 	if inst.meta.LLMMode != llmCustom {
 		if err := officialReady(inst.meta); err != nil {
@@ -258,31 +262,33 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		root:    root,
 		turn:    ctx,
 		cfg:     cfg,
+		started: time.Now(),
 	}
 	result := agentruntime.RunAgentTurn(host, text, codingHistory(history), rt.httpClient)
 	if ctx.Err() != nil {
-		return "", true
+		return "", true, nil
 	}
+	files := host.producedFiles()
 	if result.AskUser != nil {
 		question := strings.TrimSpace(result.AskUser.Question)
 		if strings.TrimSpace(result.Text) != "" {
 			question = strings.TrimSpace(result.Text) + "\n" + question
 		}
 		rt.publish(inst, taskID, requestID, "response", question, map[string]any{
-			"terminal": map[string]any{"text": question},
+			"terminal": attachFiles(map[string]any{"text": question}, files),
 		})
-		return question, false
+		return question, false, files
 	}
 	if strings.TrimSpace(result.Error) != "" {
 		rt.publish(inst, taskID, requestID, "response", result.Error, map[string]any{
-			"terminal": map[string]any{"text": result.Error},
+			"terminal": attachFiles(map[string]any{"text": result.Error}, files),
 		})
-		return result.Error, true
+		return result.Error, true, files
 	}
 	rt.publish(inst, taskID, requestID, "response", result.Text, map[string]any{
-		"terminal": map[string]any{"text": result.Text},
+		"terminal": attachFiles(map[string]any{"text": result.Text}, files),
 	})
-	return result.Text, false
+	return result.Text, false, files
 }
 
 func priorHistory(rows []string) []agentservice.Message {
@@ -325,4 +331,43 @@ func (rt *Runtime) fetchFile(inst *instance, rel string) (json.RawMessage, error
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"path": rel, "content": string(raw)})
+}
+
+// serveFileMaxBytes matches the desktop fetch_file cap so the same download
+// path handles local-remote and cloud artifacts identically.
+const serveFileMaxBytes = 4 << 20
+
+// serveFile returns one produced file the desktop fetch_file shape — name,
+// size, base64 bytes. Like the desktop op it only serves paths a turn
+// recorded as produced, never an arbitrary workspace read.
+func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error) {
+	root, err := jailRoot(inst.dir, inst.meta.Kind)
+	if err != nil {
+		return nil, err
+	}
+	path, err := resolveInJail(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	if !inst.book.producedPaths()[canonicalArtifactRel(root, path)] {
+		return nil, errors.New("没有找到这个文件")
+	}
+	// Lstat like the desktop fetch: a recorded path swapped for a symlink or
+	// special file after the turn must not leak an unrelated target.
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("这个文件已经不在了")
+	}
+	if info.Size() > serveFileMaxBytes {
+		return nil, fmt.Errorf("文件太大（%.1f MB），暂不支持回传", float64(info.Size())/(1<<20))
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("这个文件暂时读取失败")
+	}
+	return json.Marshal(map[string]any{
+		"name":        filepath.Base(path),
+		"size":        info.Size(),
+		"data_base64": base64.StdEncoding.EncodeToString(raw),
+	})
 }

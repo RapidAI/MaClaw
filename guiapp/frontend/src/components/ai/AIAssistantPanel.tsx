@@ -5639,7 +5639,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (typeof op !== 'function' || typeof save !== 'function') {
             throw new Error(localizeText(lang, 'Remote control is not ready', '远控尚未就绪'));
         }
-        const raw = String(await op(chat.grantId, 'fetch_file', JSON.stringify({ project_path: chat.projectPath, path: filePath })) || '{}');
+        // Cloud artifacts live on the srv instance (no desktop project_path);
+        // cloud_fetch_file serves only paths a recorded turn produced.
+        const request = chat.cloud
+            ? JSON.stringify({ path: filePath })
+            : JSON.stringify({ project_path: chat.projectPath, path: filePath });
+        const raw = String(await op(chat.grantId, chat.cloud ? 'cloud_fetch_file' : 'fetch_file', request) || '{}');
         let parsed: { name?: string; data_base64?: string; error?: string };
         try {
             parsed = JSON.parse(raw) as { name?: string; data_base64?: string; error?: string };

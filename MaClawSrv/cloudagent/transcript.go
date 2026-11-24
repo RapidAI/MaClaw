@@ -2,6 +2,7 @@ package cloudagent
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	role TEXT NOT NULL,
 	content TEXT NOT NULL,
 	as_error INTEGER NOT NULL DEFAULT 0,
+	files TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS client_messages (
@@ -93,7 +95,15 @@ CREATE TABLE IF NOT EXISTS queued_turns (
 CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Artifact paths a turn produced ride on its assistant row. Older dbs get
+	// the column here; a fresh CREATE already has it through the ALTER too.
+	if _, err := b.db.Exec(`ALTER TABLE messages ADD COLUMN files TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 func (b *book) EnsureTask(id, title string) error {
@@ -236,41 +246,74 @@ func (b *book) TaskOf(requestID string) (string, error) {
 }
 
 func (b *book) History(taskID string) ([]string, error) {
-	lines, _, err := b.history(taskID)
+	lines, _, _, err := b.history(taskID)
 	return lines, err
 }
 
-// history returns the role\ncontent lines and a parallel as_error flag.
-// Callers that feed the model or the desktop split on the first newline, so
-// the line stays role, newline, content. The flag is a separate value.
-func (b *book) history(taskID string) ([]string, []bool, error) {
+// history returns the role\ncontent lines plus a parallel as_error flag and
+// the produced-file list of each row. Callers that feed the model or the
+// desktop split on the first newline, so the line stays role, newline,
+// content. The flag and files are separate values.
+func (b *book) history(taskID string) ([]string, []bool, [][]string, error) {
 	// rowid breaks created_at ties: messages written inside one transaction
 	// share a stamp, and the transcript order is the insertion order.
-	rows, err := b.db.Query(`SELECT role, content, as_error FROM messages WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`, taskID)
+	rows, err := b.db.Query(`SELECT role, content, as_error, files FROM messages WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`, taskID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var lines []string
 	var flags []bool
+	var files [][]string
 	for rows.Next() {
-		var role, content string
+		var role, content, rawFiles string
 		var asError int
-		if err := rows.Scan(&role, &content, &asError); err != nil {
+		if err := rows.Scan(&role, &content, &asError, &rawFiles); err != nil {
 			_ = rows.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		lines = append(lines, role+"\n"+content)
 		flags = append(flags, asError != 0)
+		list := []string{}
+		_ = json.Unmarshal([]byte(rawFiles), &list)
+		files = append(files, list)
 	}
 	err = rows.Err()
 	_ = rows.Close()
-	return lines, flags, err
+	return lines, flags, files, err
+}
+
+// producedPaths is the fetch whitelist: every workspace-relative path a
+// finished turn recorded, in the canonical slash form.
+func (b *book) producedPaths() map[string]bool {
+	out := map[string]bool{}
+	rows, err := b.db.Query(`SELECT files FROM messages WHERE files != ''`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return out
+		}
+		var list []string
+		if json.Unmarshal([]byte(raw), &list) != nil {
+			continue
+		}
+		for _, path := range list {
+			if path = strings.TrimSpace(path); path != "" {
+				out[path] = true
+			}
+		}
+	}
+	return out
 }
 
 // Finish writes the assistant reply only while the turn is still running.
 // An interrupted turn is left as it is, so a late model result is not a replay.
-// wrote is true only when this call moved the turn out of running.
-func (b *book) Finish(requestID, content string, asError bool, now time.Time) (wrote bool, err error) {
+// wrote is true only when this call moved the turn out of running. files are
+// the workspace-relative paths this turn produced, stored as JSON.
+func (b *book) Finish(requestID, content string, asError bool, files []string, now time.Time) (wrote bool, err error) {
 	taskID, err := b.TaskOf(requestID)
 	if err != nil {
 		return false, err
@@ -289,8 +332,14 @@ func (b *book) Finish(requestID, content string, asError bool, now time.Time) (w
 	if asError {
 		flag = 1
 	}
-	_, err = b.db.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, created_at) VALUES (?, ?, 'assistant', ?, ?, ?)`,
-		newID("msg_"), taskID, content, flag, stamp)
+	rawFiles := ""
+	if len(files) > 0 {
+		if raw, marshalErr := json.Marshal(files); marshalErr == nil {
+			rawFiles = string(raw)
+		}
+	}
+	_, err = b.db.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, files, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
+		newID("msg_"), taskID, content, flag, rawFiles, stamp)
 	return err == nil, err
 }
 

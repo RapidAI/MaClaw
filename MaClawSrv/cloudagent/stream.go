@@ -17,16 +17,17 @@ type livePart struct {
 }
 
 type liveSnapshot struct {
-	RequestID   string         `json:"request_id"`
-	SessionKey  string         `json:"session_key"`
-	ProjectPath string         `json:"project_path"`
-	DisplayText string         `json:"display_text,omitempty"`
-	Parts       []livePart     `json:"parts"`
-	StreamDone  bool           `json:"stream_done"`
-	Responded   bool           `json:"responded"`
-	StartedAt   int64          `json:"started_at,omitempty"`
-	Cursor      uint64         `json:"cursor,omitempty"`
-	Terminal    map[string]any `json:"terminal,omitempty"`
+	RequestID      string         `json:"request_id"`
+	SessionKey     string         `json:"session_key"`
+	ProjectPath    string         `json:"project_path"`
+	DisplayText    string         `json:"display_text,omitempty"`
+	Parts          []livePart     `json:"parts"`
+	StreamDone     bool           `json:"stream_done"`
+	Responded      bool           `json:"responded"`
+	StartedAt      int64          `json:"started_at,omitempty"`
+	Cursor         uint64         `json:"cursor,omitempty"`
+	Terminal       map[string]any `json:"terminal,omitempty"`
+	LocalFilePaths []string       `json:"local_file_paths,omitempty"`
 }
 
 // streamCoalesce batches token deltas before a viewer frame is posted.
@@ -50,9 +51,11 @@ type streamLane struct {
 	thinkOpen    bool
 	responded    bool
 	done         bool
+	streamDone   bool
 	started      int64
 	progress     []livePart
 	terminal     map[string]any
+	files        []string
 }
 
 func (rt *Runtime) noteGrant(instanceID, grantID string) {
@@ -142,6 +145,17 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 	if event == "progress" {
 		lane.lastProgress = text
 	}
+	// A sealing event closes an open thinking block first — the desktop relay
+	// emits thinking/done ahead of new_round, stream_done, and the terminal
+	// response. Capture pre-state: noteLive clears it.
+	sealThink := lane.thinkOpen && sealThinkingEvent(event)
+	thinkClose := ""
+	if sealThink {
+		thinkClose = lane.thinking.String()
+	}
+	// A response also ends the stream: stream_done goes out before the
+	// terminal frame, the same order the local loop produces.
+	emitDone := event == "response" && !lane.streamDone
 	rt.noteLive(lane, requestID, event, text, extra)
 	if event == "token" || event == "thinking" {
 		if text == "" {
@@ -176,6 +190,13 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		lane.timer = nil
 	}
 	pending := rt.takePending(lane, inst.meta.ID, taskID)
+	if sealThink {
+		pending = append(pending, rt.nextFrame(lane, inst.meta.ID, taskID, requestID, "thinking", thinkClose, map[string]any{"state": "done"}))
+	}
+	if emitDone {
+		lane.streamDone = true
+		pending = append(pending, rt.nextFrame(lane, inst.meta.ID, taskID, requestID, "stream_done", "", nil))
+	}
 	body := rt.nextFrame(lane, inst.meta.ID, taskID, requestID, event, text, extra)
 	rt.streamMu.Unlock()
 	for _, frame := range pending {
@@ -238,6 +259,30 @@ func (rt *Runtime) takePending(lane *streamLane, instanceID, taskID string) [][]
 	return frames
 }
 
+// sealThinkingEvent names the events after which an open thinking block is
+// over — the same set the desktop relay closes thinking on.
+func sealThinkingEvent(event string) bool {
+	switch event {
+	case "new_round", "round_started", "stream_done", "response":
+		return true
+	}
+	return false
+}
+
+// eventLane mirrors the desktop viewer lanes so a shared consumer sorts the
+// frame the same way for local and cloud turns.
+func eventLane(event string) string {
+	switch event {
+	case "token":
+		return "content"
+	case "thinking":
+		return "reasoning"
+	case "progress":
+		return "progress"
+	}
+	return "control"
+}
+
 func (rt *Runtime) nextFrame(lane *streamLane, instanceID, taskID, requestID, event, text string, extra map[string]any) []byte {
 	lane.cursor++
 	cursor := lane.cursor
@@ -249,6 +294,7 @@ func (rt *Runtime) nextFrame(lane *streamLane, instanceID, taskID, requestID, ev
 		"proto":        2,
 		"cursor":       cursor,
 		"cursor_from":  cursor,
+		"lane":         eventLane(event),
 		"project_path": "",
 		"text":         text,
 	}
@@ -299,8 +345,10 @@ func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, ext
 		lane.thinkOpen = false
 		lane.responded = false
 		lane.done = false
+		lane.streamDone = false
 		lane.progress = nil
 		lane.terminal = nil
+		lane.files = nil
 		lane.started = time.Now().UnixMilli()
 		display := text
 		if extra != nil {
@@ -315,11 +363,16 @@ func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, ext
 	case "thinking":
 		lane.thinking.WriteString(text)
 		lane.thinkOpen = true
+	case "stream_done":
+		lane.thinkOpen = false
+		lane.done = true
+		lane.streamDone = true
 	case "response":
 		lane.thinkOpen = false
 		lane.responded = true
 		lane.done = true
 		lane.terminal = confirmationTerminal(extra)
+		lane.files = artifactPathsOf(extra)
 		if strings.TrimSpace(text) != "" {
 			lane.body.Reset()
 			lane.body.WriteString(text)
@@ -330,6 +383,32 @@ func (rt *Runtime) noteLive(lane *streamLane, requestID, event, text string, ext
 			lane.progress = lane.progress[len(lane.progress)-40:]
 		}
 	}
+}
+
+// artifactPathsOf reads the produced-file list off a response terminal so
+// the watch snapshot can offer the same artifacts the stream carried.
+func artifactPathsOf(extra map[string]any) []string {
+	if extra == nil {
+		return nil
+	}
+	raw, _ := extra["terminal"].(map[string]any)
+	if raw == nil {
+		return nil
+	}
+	list, _ := raw["local_file_paths"].([]any)
+	if len(list) == 0 {
+		if typed, ok := raw["local_file_paths"].([]string); ok && len(typed) > 0 {
+			return append([]string(nil), typed...)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if path := strings.TrimSpace(asString(item)); path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // confirmationTerminal keeps a push ask on the lane so a later watch can
@@ -376,6 +455,7 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 			}
 			snap.Parts = append(snap.Parts, lane.progress...)
 			snap.Terminal = lane.terminal
+			snap.LocalFilePaths = lane.files
 		}
 		rt.streamMu.Unlock()
 	}
