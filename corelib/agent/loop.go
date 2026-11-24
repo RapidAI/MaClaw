@@ -1600,6 +1600,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	// the guidance and keeps failing.
 	var lastFailedTool string
 	consecutiveSameToolFailures := 0
+	// sameToolBusinessFailures counts every same-tool failure, recoverable
+	// or not. The stop guidance at the lower threshold uses it: a model
+	// stuck in a red test loop still deserves one "change approach" nudge,
+	// while only unrecoverable call-level failures may end the turn.
+	sameToolBusinessFailures := 0
 	sameToolFailureGuidanceInjected := false
 	const maxConsecutiveSameToolFailures = 8
 	const hardStopSameToolFailures = 12
@@ -4206,39 +4211,67 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// The stop returns inside this loop, before the post-batch
 			// continuation. A guide that became visible while the failing
 			// call was running must not take that return.
+			//
+			// Classification: only unrecoverable call-level failures count
+			// toward the consecutive streak (permission/guard denial, timeout,
+			// structured admission failure, policy rejection). Recoverable
+			// business failures (go test assertion, compile error, lint) reset
+			// the counter because the model is actively debugging.
 			if !replanSkip && !toolSuccess {
 				if tc.Function.Name == lastFailedTool || lastFailedTool == "" {
-					lastFailedTool = tc.Function.Name
-					consecutiveSameToolFailures++
+					sameToolBusinessFailures++
+				} else {
+					sameToolBusinessFailures = 1
 				}
-				// Different tool failing: don't reset — it's likely noise
-				// (e.g. an intermittent write_file permission error between
-				// bash failures). Only the dominant failing tool matters.
-
-				if consecutiveSameToolFailures >= hardStopSameToolFailures && !llmReplanAlreadyRequested(cb) {
-					// Hard stop: LLM ignored the guidance and keeps failing.
-					log.Printf("[agent-loop] hard stop: tool=%q failed %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
-					_ = wsBatch.apply(workingState)
-					if abandoner, ok := h.(ToolBatchAbandoner); ok {
-						abandoner.OnToolBatchAbandoned(batchMeta)
+				unrecoverable := guardRejected ||
+					lastToolOutcome.kind == toolOutcomeTimeout ||
+					execResult.FailureKind != "" ||
+					policyRejected
+				if unrecoverable {
+					if tc.Function.Name == lastFailedTool || lastFailedTool == "" {
+						lastFailedTool = tc.Function.Name
+						consecutiveSameToolFailures++
 					}
-					disposeSurface(ToolSurfaceResponseAbandoned)
-					// The cause belongs in Error, not only Text. A hard exit
-					// with an empty Error is the consecutive-empty stop, and
-					// the coding finisher then reports that sentence even when
-					// this breaker already named the tool (BR-20261123-9BDD354BCE62).
-					cause := fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures)
-					return finish(LoopResult{
-						Text:       cause,
-						Error:      cause,
-						Iterations: iteration + 1,
-						ToolCalls:  totalToolCalls,
-						HardExit:   true,
-					})
+					// Different tool failing: don't reset — it's likely noise
+					// (e.g. an intermittent write_file permission error between
+					// bash failures). Only the dominant failing tool matters.
+
+					if consecutiveSameToolFailures >= hardStopSameToolFailures && !llmReplanAlreadyRequested(cb) {
+						// Hard stop: LLM ignored the guidance and keeps failing.
+						log.Printf("[agent-loop] hard stop: tool=%q unrecoverable failures %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
+						_ = wsBatch.apply(workingState)
+						if abandoner, ok := h.(ToolBatchAbandoner); ok {
+							abandoner.OnToolBatchAbandoned(batchMeta)
+						}
+						disposeSurface(ToolSurfaceResponseAbandoned)
+						// The cause belongs in Error, not only Text. A hard exit
+						// with an empty Error is the consecutive-empty stop, and
+						// the coding finisher then reports that sentence even when
+						// this breaker already named the tool (BR-20261123-9BDD354BCE62).
+						// Include the last failure snippet so the GUI shows the real reason.
+						lastSnippet := truncateRunesSuffix(lastToolOutcome.snippet, 200)
+						cause := fmt.Sprintf("工具 %s 不可恢复调用级失败连续 %d 次，已停止执行。最后失败摘要：%s", lastFailedTool, consecutiveSameToolFailures, lastSnippet)
+						return finish(LoopResult{
+							Text:       cause,
+							Error:      cause,
+							Iterations: iteration + 1,
+							ToolCalls:  totalToolCalls,
+							HardExit:   true,
+						})
+					}
+				} else {
+					// Recoverable business failure (test assertion, compile error,
+					// lint): the model is actively debugging, not stuck. Reset
+					// the consecutive counter so a long debug loop does not trip
+					// the hard stop.
+					consecutiveSameToolFailures = 0
+					lastFailedTool = ""
+					sameToolFailureGuidanceInjected = false
 				}
 			} else if !replanSkip && toolSuccess && !commitSkipped && tc.Function.Name == lastFailedTool {
-				// Success of the previously-failing tool resets the counter.
+				// Success of the previously-failing tool resets both counters.
 				consecutiveSameToolFailures = 0
+				sameToolBusinessFailures = 0
 				lastFailedTool = ""
 				sameToolFailureGuidanceInjected = false
 			}
@@ -4504,10 +4537,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Use >= threshold with a one-shot flag to handle cases where the
 		// counter jumps past the exact threshold within a single multi-tool-call
 		// iteration.
-		if consecutiveSameToolFailures >= maxConsecutiveSameToolFailures && !sameToolFailureGuidanceInjected {
+		if sameToolBusinessFailures >= maxConsecutiveSameToolFailures && !sameToolFailureGuidanceInjected {
 			sameToolFailureGuidanceInjected = true
-			log.Printf("[agent-loop] consecutive same-tool failures: tool=%q count=%d, injecting stop guidance", lastFailedTool, consecutiveSameToolFailures)
-			guidance := fmt.Sprintf("[系统] 工具 %s 已连续失败 %d 次（每次方法不同但均未成功）。请停止继续尝试该工具，改用其他方式完成任务，或向用户说明当前遇到的具体问题和限制。", lastFailedTool, consecutiveSameToolFailures)
+			log.Printf("[agent-loop] consecutive same-tool failures: tool=%q count=%d, injecting stop guidance", lastFailedTool, sameToolBusinessFailures)
+			guidance := fmt.Sprintf("[系统] 工具 %s 已连续失败 %d 次（每次方法不同但均未成功）。请停止继续尝试该工具，改用其他方式完成任务，或向用户说明当前遇到的具体问题和限制。", lastFailedTool, sameToolBusinessFailures)
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
 				"content": guidance,
