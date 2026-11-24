@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,30 @@ func (e *holdingExecutor) Execute(ctx context.Context, req agentservice.ExecuteR
 		noteDesktopHandoff(req.Principal.TenantID, req.Principal.UserID, req.Instance.ID)
 		noteDesktopAttention(req.Principal.TenantID, req.Principal.UserID, req.Instance.ID, "payment_confirm")
 	}
+	e.once.Do(func() { close(e.started) })
+	select {
+	case <-e.release:
+		return &agentservice.ExecuteResult{Content: "桌面操作完成"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// countingDesktopExecutor is a holdingExecutor that also records how many
+// times a turn actually entered Execute. A replay that started a second turn
+// would push this past one.
+type countingDesktopExecutor struct {
+	started chan struct{}
+	release chan struct{}
+	entered *int32
+	once    sync.Once
+}
+
+func (e *countingDesktopExecutor) Execute(ctx context.Context, req agentservice.ExecuteRequest) (*agentservice.ExecuteResult, error) {
+	if !noteDesktopShot(ctx, "image/png", "aGVsbG8=") {
+		return nil, context.Canceled
+	}
+	atomic.AddInt32(e.entered, 1)
 	e.once.Do(func() { close(e.started) })
 	select {
 	case <-e.release:
@@ -355,4 +380,107 @@ func TestAsyncReplayDoesNotStealTheDesktopTurn(t *testing.T) {
 	if left != 0 || stops != 0 {
 		t.Fatalf("left=%d stops=%d", left, stops)
 	}
+}
+
+// GUI->Hub->Srv sends client_message_id only in the JSON body. It does not
+// set an Idempotency-Key header, so the body's key alone must bind a repeat
+// post to the run it already started instead of executing a second turn.
+func TestAsyncReplayBindsRunWithoutIdempotencyHeader(t *testing.T) {
+	var executions int32
+	executor := &countingDesktopExecutor{started: make(chan struct{}), release: make(chan struct{}), entered: &executions}
+	var releaseOnce sync.Once
+	releaseRun := func() { releaseOnce.Do(func() { close(executor.release) }) }
+	t.Cleanup(releaseRun)
+
+	svc, err := agentservice.NewService(agentservice.Config{
+		DataRoot:    t.TempDir(),
+		TokenSecret: "test-token-secret-0123456789012345",
+	}, agentservice.NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	t.Cleanup(server.Close)
+	runKey := desktopRunKey(tenant.ID, user.ID)
+	t.Cleanup(func() {
+		desktopRunsMu.Lock()
+		delete(desktopRuns, runKey)
+		delete(desktopHolds, runKey)
+		desktopRunsMu.Unlock()
+	})
+
+	// client_message_id travels only in the body; no Idempotency-Key header.
+	body := `{"content":"打开页面","client_session_key":"bot_replay","client_message_id":"turn-body-only"}`
+	post := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/messages", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Prefer", "respond-async")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		return w
+	}
+	first := post()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s", first.Code, first.Body.String())
+	}
+	var admitted struct {
+		Run struct {
+			ID string `json:"id"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted.Run.ID == "" {
+		t.Fatalf("admission = %s", first.Body.String())
+	}
+	t.Cleanup(func() { desktopTurnResults.Delete(admitted.Run.ID) })
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("desktop run did not start")
+	}
+
+	replay := post()
+	if replay.Code != http.StatusAccepted {
+		t.Fatalf("replay status = %d body = %s", replay.Code, replay.Body.String())
+	}
+	var replayed struct {
+		Run struct {
+			ID string `json:"id"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayed); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Run.ID != admitted.Run.ID {
+		t.Fatalf("replay run = %s, want %s", replayed.Run.ID, admitted.Run.ID)
+	}
+	// The body's client_message_id alone kept the second post from running a
+	// second turn.
+	if got := atomic.LoadInt32(&executions); got != 1 {
+		t.Fatalf("executions = %d, want 1", got)
+	}
+	releaseRun()
 }
