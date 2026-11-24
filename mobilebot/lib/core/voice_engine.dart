@@ -210,6 +210,9 @@ class VoiceEngine {
     String voice,
   ) => Isolate.run(() => NativeVoice.loadTts(model, voiceDir, voice));
 
+  static Future<Uint8List> _runTts(String text, double speed) =>
+      Isolate.run(() => NativeVoice.tts(text, speed: speed));
+
   // Paths are looked up once and snapshotted for the worker isolate (the
   // isolate can't call path_provider).
   String? _modelPathSnapshot;
@@ -234,7 +237,7 @@ class VoiceEngine {
     if (loadErr != null) return loadErr;
     final Uint8List wav;
     try {
-      wav = await Isolate.run(() => NativeVoice.tts(text, speed: speed));
+      wav = await _runTts(text, speed);
     } on Object catch (e) {
       return 'kokoro synthesize failed: $e';
     }
@@ -260,21 +263,20 @@ class VoiceEngine {
     if (_asrLoaded) return null;
     final inFlight = _asrLoading;
     if (inFlight != null) return inFlight;
+    // The path is read into a local here, and the actual isolate work lives in
+    // the static `_runAsrLoad`: a closure built inside an instance method picks
+    // up `this` as its context (a sibling field write is enough), and sending
+    // that context to a worker isolate fails in release/AOT builds with
+    // "object is unsendable - Instance of 'VoiceEngine'" — the engine holds an
+    // AudioPlayer.
+    final model = _asrPathSnapshot;
     final future = () async {
       try {
-        // Snapshot into a local FIRST: the `_asrPathSnapshot = null` branches
-        // below are writes to a field of `this`, so a later read of the same
-        // field inside an Isolate.run closure forces the compiler to send the
-        // enclosing instance as the closure context — and VoiceEngine holds an
-        // AudioPlayer, which is unsendable ("object is unsendable" on every
-        // local transcription). Reading the field once before, with no capture
-        // of `this` in the closure, keeps the message to the plain path.
-        final model = _asrPathSnapshot!;
-        if (!await VoiceAssets.asrReady()) {
+        if (model == null || !await VoiceAssets.asrReady()) {
           _asrPathSnapshot = null;
           return 'asr model missing or failed validation';
         }
-        final err = await Isolate.run(() => NativeVoice.loadAsr(model));
+        final err = await _runAsrLoad(model);
         if (err == null) {
           _asrLoaded = true;
           return null;
@@ -293,6 +295,14 @@ class VoiceEngine {
     return future;
   }
 
+  // Static, like _runTtsLoad: an instance method here would give the closure
+  // an implicit `this` context again.
+  static Future<String?> _runAsrLoad(String model) =>
+      Isolate.run(() => NativeVoice.loadAsr(model));
+
+  static Future<String> _runAsr(Uint8List pcm16) =>
+      Isolate.run(() => NativeVoice.asr(pcm16));
+
   /// Report each transcription step, so a silent microphone and a model that
   /// never finishes inference do not both look like "nothing happened".
   void Function(String stage)? onTranscribeStage;
@@ -309,8 +319,7 @@ class VoiceEngine {
     if (err != null) throw StateError(err);
     onTranscribeStage?.call('transcribing');
     try {
-      return await Isolate.run(() => NativeVoice.asr(pcm16))
-          .timeout(transcribeTimeout);
+      return await _runAsr(pcm16).timeout(transcribeTimeout);
     } on TimeoutException {
       // Drop the cached manager: the stuck call owns the library mutex, so
       // the next attempt must load it fresh.

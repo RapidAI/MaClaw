@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:audioplayers_platform_interface/audioplayers_platform_interface.dart';
@@ -180,4 +181,40 @@ void main() {
     expect(err, isNotNull);
     expect(err, isNot(contains('unsendable')));
   });
+
+  // The test above only proves the error is not an unsendable one, and on a
+  // JIT test host the closure context would not be sent anyway. The check
+  // below is the one that fails when a closure built in an instance method
+  // captures `this`: the same computation real code runs is sent to a worker
+  // isolate, and a capture of the engine shows up as an unsendable object.
+  test('isolate send of the engine context is what release builds reject', () async {
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    engine.ttsVoice = 'zf_xiaoyi';
+
+    // Sanity: the sanity check must not depend on the engine. A ReceivePort is
+    // unsendable too, so the same call must fail for it — otherwise the guard
+    // below proves nothing.
+    await expectLater(_sendToWorker(engine), throwsA(anything));
+
+    // What the engine now sends: a plain path, captured before the call.
+    final model = '/data/user/0/top.maclaw.mobilebot/models/asr.gguf';
+    expect(await _sendToWorker(model), 'sent');
+  });
+}
+
+/// Builds the closure with [captured] in scope and runs it on a worker
+/// isolate: whatever the closure leaves in its context is sent with the
+/// message, exactly as `Isolate.run` does on a release build. An unsendable
+/// object in that context fails the call with "Illegal argument in isolate
+/// message".
+Future<Object?> _sendToWorker(Object? captured) async {
+  final port = ReceivePort();
+  final isolate = await Isolate.spawn((SendPort reply) {
+    void use(Object? _) {}
+    use(captured);
+    Isolate.exit(reply, 'sent');
+  }, port.sendPort);
+  addTearDown(isolate.kill);
+  return port.first.timeout(const Duration(seconds: 10));
 }
