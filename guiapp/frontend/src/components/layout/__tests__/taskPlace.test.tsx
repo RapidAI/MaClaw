@@ -76,6 +76,27 @@ describe('task place', () => {
         expect(screen.getByTestId('task-place-icon-cloud').innerHTML).not.toContain('M12 13v5');
     });
 
+    it('maps the instance status onto the mark and the kind line', () => {
+        const row = { id: 'cag_s', name: '', kind: 'session', status: 'stopped', updatedAt: '' };
+        const { rerender } = render(<CloudAgentListRow item={row} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('task-status-mark').getAttribute('data-status')).toBe('paused');
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toBe('会话 · 已停止');
+
+        rerender(<CloudAgentListRow item={{ ...row, status: 'provision_failed' }} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('task-status-mark').getAttribute('data-status')).toBe('failed');
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toBe('会话 · 启动失败');
+
+        rerender(<CloudAgentListRow item={{ ...row, status: 'idle' }} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('task-status-mark').getAttribute('data-status')).toBe('idle');
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toBe('会话');
+
+        // A live turn overrides the snapshot for both mark and words.
+        act(() => { noteCloudTurn('cag_s', true); });
+        rerender(<CloudAgentListRow item={{ ...row, status: 'stopped' }} lang="zh" active={false} onOpen={() => {}} />);
+        expect(screen.getByTestId('task-status-mark').getAttribute('data-status')).toBe('running');
+        expect(screen.getByTestId('cloud-agent-kind').textContent).toContain('进行中');
+    });
+
     it('shows 进行中 from the live turn, not a frozen list status', () => {
         const row = { id: 'cag_1', name: '演示', kind: 'session', status: 'running', updatedAt: '' };
         const { rerender } = render(<CloudAgentListRow item={row} lang="zh" active={false} onOpen={() => {}} />);

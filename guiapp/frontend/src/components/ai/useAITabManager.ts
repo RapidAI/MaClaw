@@ -1256,6 +1256,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && !isACPMirrorTab(t)) || t.type === "expert");
         for (const tab of projectTabs) {
             const generationAtRequest = historyGenerationByTabIdRef.current.get(tab.id) || 0;
+            // A tab still registering its session — e.g. a copied task whose
+            // transcript lands inside CreateProjectTabSession — must not be
+            // read before that write, or this hydrate sees an empty file and
+            // saves the slim memory copy back over the seed. Wait for the
+            // registration like the open-flow restore does; the tracker
+            // resolves on failure too.
+            void (projectTabSessionReadyByIDRef.current.get(tab.id) || Promise.resolve()).then(() =>
             LoadProjectTabConversation(tab.id).then(async (conversation) => {
                 const adopted = adoptBackendTranscript(tab.id, conversation, generationAtRequest);
                 if (adopted === null) return;
@@ -1282,7 +1289,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     lastActiveAt: Date.now(),
                 });
                 if (cacheHasConversation(merged)) noteActiveTranscriptLanded(tab.id);
-            }).catch(() => {});
+            }).catch(() => {}));
         }
     }, [adoptBackendTranscript, loadProjectMemoryFallback, noteActiveTranscriptLanded]);
     useEffect(() => {

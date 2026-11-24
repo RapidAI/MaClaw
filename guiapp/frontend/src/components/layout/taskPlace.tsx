@@ -270,6 +270,95 @@ export function cloudAgentKindLabel(kind: string, lang: string): string {
         : localizeText(lang, 'Session', '会话', '會話');
 }
 
+/** Row status glyph vocabulary shared by local and cloud task rows. */
+export type TaskListStatusKind = 'running' | 'completed' | 'pending' | 'failed' | 'paused' | 'cancelled' | 'idle';
+
+const STATUS_MARK_STROKE = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+};
+
+/** Row status glyph. In progress is a spinning ring; the other states keep
+ * the same outer size but a different mark, so they stay distinct from the
+ * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
+ * user unit equals one CSS pixel — the previous 14px viewport scaled every
+ * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
+ * No title here: the row tooltip already carries the status plus the path. */
+export const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
+    <span
+        className="mc-task-status"
+        data-status={kind}
+        data-testid="task-status-mark"
+        role="img"
+        aria-label={label}
+    >
+        {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                {kind === 'completed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
+                    </>
+                )}
+                {kind === 'pending' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
+                    </>
+                )}
+                {kind === 'failed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
+                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
+                    </>
+                )}
+                {kind === 'paused' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
+                    </>
+                )}
+                {kind === 'cancelled' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
+                    </>
+                )}
+            </svg>
+        )}
+    </span>
+);
+
+/** Cloud instance status → row glyph. A live turn wins over the list status,
+ * which is only a snapshot. Stopped reuses the paused mark; a failed
+ * provision shows the attention mark. */
+export function cloudAgentStatusKind(status: string, liveRunning: boolean): TaskListStatusKind {
+    if (liveRunning) return 'running';
+    switch (status) {
+        case 'stopped': return 'paused';
+        case 'provisioning': return 'pending';
+        case 'provision_failed': return 'failed';
+        default: return 'idle';
+    }
+}
+
+/** Status words for the mark and the kind line. Stopped and a failed
+ * provision carry their own labels instead of the local "paused"/"needs
+ * attention" — a cloud instance freezes, it does not pause mid-task. */
+export function cloudAgentStatusText(status: string, liveRunning: boolean, lang: string): string {
+    if (liveRunning) return localizeText(lang, 'In progress', '进行中', '進行中');
+    switch (status) {
+        case 'stopped': return localizeText(lang, 'Stopped', '已停止', '已停止');
+        case 'provisioning': return localizeText(lang, 'Starting', '启动中', '啟動中');
+        case 'provision_failed': return localizeText(lang, 'Failed to start', '启动失败', '啟動失敗');
+        default: return localizeText(lang, 'Idle', '空闲', '閒置');
+    }
+}
+
 const ROW_STYLE = {
     display: 'flex',
     flexDirection: 'row' as const,
@@ -311,9 +400,9 @@ export function CloudAgentListRow({
     const title = item.name || item.id;
     const kind = cloudAgentKindLabel(item.kind, lang);
     const running = useCloudTurnRunning(item.id, item.status);
-    const kindLine = running
-        ? `${kind} · ${localizeText(lang, 'In progress', '进行中', '進行中')}`
-        : kind;
+    const statusKind = cloudAgentStatusKind(item.status, running);
+    const statusText = cloudAgentStatusText(item.status, running, lang);
+    const kindLine = statusKind === 'idle' ? kind : `${kind} · ${statusText}`;
     return (
         <div data-testid="cloud-agent-task-row" data-cloud-agent={item.id} style={order == null ? undefined : { order }}>
             <div
@@ -334,6 +423,7 @@ export function CloudAgentListRow({
                     onOpen();
                 }}
             >
+                <TaskStatusMark kind={statusKind} label={statusText} />
                 <TaskPlaceIcon place="cloud" lang={lang} />
                 <span className="stsm-row-body">
                     {renaming ? (

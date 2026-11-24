@@ -5677,6 +5677,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 reasoning: message.reasoning || '',
                 localFilePaths: localFilePaths.length ? localFilePaths : undefined,
                 remoteFileFetch: localFilePaths.length ? remoteFileFetch : undefined,
+                // A grantless cloud session (grantId fell back to the item id)
+                // cannot serve cloud_fetch_file — keep the manual fetch
+                // button instead of painting an error on every artifact.
+                remoteArtifactsAutoFetch: localFilePaths.length && remoteChat.cloud && remoteChat.canSend ? true : undefined,
                 fields: message.fields,
                 queued: message.queued || undefined,
                 toolCalls: message.toolCalls,

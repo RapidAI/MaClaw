@@ -12,7 +12,7 @@ import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, requestCloudAgentListRefresh, useCloudAssistantId } from './cloudAgentAssistant';
-import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
+import { CloudAgentListRow, TaskPlaceIcon, TaskStatusMark, cloudAgentRecency, cloudTurnRunning, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem, type TaskListStatusKind } from './taskPlace';
 import { CloudAgentFilesDialog } from './CloudAgentFilesDialog';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
@@ -362,66 +362,6 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
     }
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-
-const STATUS_MARK_STROKE = {
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.8,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-};
-
-/** Row status glyph. In progress is a spinning ring; the other states keep
- * the same outer size but a different mark, so they stay distinct from the
- * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
- * user unit equals one CSS pixel — the previous 14px viewport scaled every
- * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
- * No title here: the row tooltip already carries the status plus the path. */
-const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
-    <span
-        className="mc-task-status"
-        data-status={kind}
-        data-testid="task-status-mark"
-        role="img"
-        aria-label={label}
-    >
-        {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                {kind === 'completed' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
-                    </>
-                )}
-                {kind === 'pending' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
-                    </>
-                )}
-                {kind === 'failed' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
-                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
-                    </>
-                )}
-                {kind === 'paused' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
-                    </>
-                )}
-                {kind === 'cancelled' && (
-                    <>
-                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
-                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
-                    </>
-                )}
-            </svg>
-        )}
-    </span>
-);
 
 const TaskFolderChevron = () => (
     <svg className="stsm-task-folder__chevron" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -922,8 +862,10 @@ export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workf
 }
 
 /** Glyph shown beside a task-list row. Live execution wins over a stale
- * snapshot; a paused or pending bucket wins over a generic "in progress" tone. */
-export type TaskListStatusKind = 'running' | 'completed' | 'pending' | 'failed' | 'paused' | 'cancelled' | 'idle';
+ * snapshot; a paused or pending bucket wins over a generic "in progress" tone.
+ * TaskListStatusKind and the mark itself live in taskPlace so the cloud row
+ * can reuse them. */
+export type { TaskListStatusKind } from './taskPlace';
 
 export function taskListStatusKind(input: {
     liveRunning?: boolean;
@@ -3732,6 +3674,26 @@ export const SidebarTaskManagement = ({
     };
     const buildCloudContextMenuItems = (item: CloudAgentListItem): TaskContextMenuItem[] => {
         const stopped = item.status === 'stopped';
+        // Only a running turn can be stopped; idle and failed instances have
+        // nothing to interrupt, so the menu omits the item entirely.
+        const running = cloudTurnRunning(item.id, item.status);
+        const stopOrResumeItem: TaskContextMenuItem | null = stopped
+            ? {
+                label: textForLang(lang, 'Resume', '恢复', '恢復'),
+                icon: 'restore',
+                testId: 'cloud-agent-context-resume',
+                title: textForLang(lang, 'Resume this stopped instance', '恢复已停止的实例', '恢復已停止的實例'),
+                action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+            }
+            : running
+                ? {
+                    label: textForLang(lang, 'Stop', '停止', '停止'),
+                    icon: 'stop',
+                    testId: 'cloud-agent-context-stop',
+                    title: textForLang(lang, 'Stop the instance. Its files stay browsable.', '停止实例；文件仍可浏览。', '停止實例；檔案仍可瀏覽。'),
+                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+                }
+                : null;
         const items: TaskContextMenuItem[] = [
             {
                 label: textForLang(lang, 'Open', '打开', '打開'),
@@ -3758,21 +3720,7 @@ export const SidebarTaskManagement = ({
                 title: textForLang(lang, 'View the files inside this cloud task', '查看这个云端任务里的文件', '查看這個雲端任務裡的檔案'),
                 action: () => { setCloudContextMenu(null); setCloudFilesItem(item); },
             },
-            stopped
-                ? {
-                    label: textForLang(lang, 'Resume', '恢复', '恢復'),
-                    icon: 'restore',
-                    testId: 'cloud-agent-context-resume',
-                    title: textForLang(lang, 'Resume this stopped instance', '恢复已停止的实例', '恢復已停止的實例'),
-                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
-                }
-                : {
-                    label: textForLang(lang, 'Stop', '停止', '停止'),
-                    icon: 'stop',
-                    testId: 'cloud-agent-context-stop',
-                    title: textForLang(lang, 'Stop the instance. Its files stay browsable.', '停止实例；文件仍可浏览。', '停止實例；檔案仍可瀏覽。'),
-                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
-                },
+            ...(stopOrResumeItem ? [stopOrResumeItem] : []),
             {
                 label: textForLang(lang, 'Delete', '删除', '刪除'),
                 icon: 'remove',
