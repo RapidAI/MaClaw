@@ -2,10 +2,12 @@ package botmgmt
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktopbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 )
 
 // Typed desktop picture. running is the only state with a frame. asleep is
@@ -151,7 +153,13 @@ func (s *Service) readDesktopViewState(ctx context.Context, tenantID, desktopUse
 		if desktopbot.IsDesktopAsleep(err) {
 			return DesktopStateAsleep, "", true
 		}
-		return DesktopStateUnavailable, "", true
+		// A coded upstream rejection (the tunnel's 502 after a gate restart)
+		// is a definite miss, not a blink. Callers drop the cached page and
+		// wait out the existing recover gap instead of asking every poll.
+		if desktopViewRejected(err) {
+			return DesktopStateUnavailable, "", true
+		}
+		return "", "", false
 	}
 	if strings.TrimSpace(state) == "" {
 		if strings.TrimSpace(novnc) == "" {
@@ -161,6 +169,20 @@ func (s *Service) readDesktopViewState(ctx context.Context, tenantID, desktopUse
 		}
 	}
 	return state, novnc, true
+}
+
+// desktopViewRejected reports a definite upstream miss. A transport blink is
+// not one: only a typed status (the gate tunnel's 502) or a coded asleep
+// error means the cached bearer can no longer be served.
+func desktopViewRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	if desktopbot.IsDesktopAsleep(err) {
+		return true
+	}
+	var statusErr *upstream.StatusError
+	return errors.As(err, &statusErr)
 }
 
 // desktopPictureRunning reports whether a remembered page is still a live

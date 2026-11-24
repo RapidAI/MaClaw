@@ -324,3 +324,35 @@ func TestExclusiveComputerRejectsOtherScopes(t *testing.T) {
 		}
 	}
 }
+
+// A cloud bot pins an empty computer. That must follow a cloud assignment
+// (here the global default) and must not land on the user's node assignment,
+// which is what an account owner_node pin would select.
+func TestEmptyComputerPinUsesCloudAssignmentNotNode(t *testing.T) {
+	pool := New(&memSettings{}, memDir{})
+	ctx := context.Background()
+	cloud, err := pool.CreateServer(ctx, "tenant-a", Server{
+		Name: "cloud", BaseURL: "http://cloud.example", AccessToken: "cloud-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeSrv, err := pool.CreateServer(ctx, "tenant-a", Server{
+		Name: "offline-lan", BaseURL: "http://lan.example", AccessToken: "lan-token", NodeID: "f8f54ad9",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeUser, TargetID: "alice", ServerID: nodeSrv.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.CreateAssignment(ctx, "tenant-a", Assignment{Scope: ScopeGlobal, ServerID: cloud.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.ResolvedServerID(WithComputer(ctx, ""), "tenant-a", "alice"); got != cloud.ID {
+		t.Fatalf("empty pin = %s, want cloud assignment %s", got, cloud.ID)
+	}
+	if got := pool.ResolvedServerID(WithComputer(ctx, "f8f54ad9"), "tenant-a", "alice"); got != nodeSrv.ID {
+		t.Fatalf("named node = %s, want node server %s", got, nodeSrv.ID)
+	}
+}

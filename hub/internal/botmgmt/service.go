@@ -405,7 +405,8 @@ func preferAsync(ctx context.Context) context.Context {
 
 // desktopWatch is the noVNC page for a user's running desktop.
 // The gated path stays the same while that desktop stays up, so the chat
-// picture does not reconnect on every poll.
+// picture does not reconnect on every poll. A restarted container changes
+// the gate bearer inside raw; the issued token is retargeted in place.
 type desktopWatch struct {
 	raw   string
 	gated string

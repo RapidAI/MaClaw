@@ -46,7 +46,7 @@ func TestDesktopBotEventCases(t *testing.T) {
 	t.Run("handoff_does_not_refresh", func(t *testing.T) {
 		clock := time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)
 		svc := &Service{Now: func() time.Time { return clock }}
-		gated := svc.gateDesktopHandoff("http://10.1.2.3:6080/vnc.html")
+		gated := svc.gateDesktopHandoff("http://10.1.2.3:6080/vnc.html", "")
 		const marker = "/api/v1/desktop-handoff/"
 		token := strings.TrimPrefix(gated, marker)
 		if i := strings.IndexByte(token, '/'); i >= 0 {

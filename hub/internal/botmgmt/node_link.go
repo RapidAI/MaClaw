@@ -82,6 +82,16 @@ func explainDesktopErr(err error) error {
 	return fmt.Errorf("%w: %s", ErrSrv, err.Error())
 }
 
+// desktopComputerForBot is the computer a desktop call should pin.
+// A bot that stored its own node keeps that node. An empty node_id is the
+// cloud computer: desktoppool then follows desktop-service assignments
+// (user, department, global), not the account owner_node pin. That pin is
+// for new bots and user-only calls; applying it here sends a cloud bot to
+// a LAN node that may already be offline.
+func desktopComputerForBot(bot Bot) string {
+	return strings.TrimSpace(bot.NodeID)
+}
+
 func ownerNodeID(rec record, owner string) string {
 	owner = strings.TrimSpace(owner)
 	if owner == "" || rec.OwnerNode == nil {

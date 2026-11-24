@@ -36,7 +36,7 @@ func TestProxyDesktopHandoffFallsBackToVNC(t *testing.T) {
 	u.User = url.UserPassword("x", "gate")
 	u.Path = "/vnc.html"
 	s := &Service{}
-	gated := s.gateDesktopHandoff(u.String())
+	gated := s.gateDesktopHandoff(u.String(), "")
 	token, _, err := ParseHandoffPath("http://hub" + gated)
 	if err != nil {
 		t.Fatal(err)

@@ -20,7 +20,7 @@ func TestDesktopHandoffStaysOnHub(t *testing.T) {
 	}))
 	defer upstream.Close()
 	svc := NewService(&memSettings{})
-	gated := svc.gateDesktopHandoff(upstream.URL + "/vnc.html?autoconnect=1")
+	gated := svc.gateDesktopHandoff(upstream.URL + "/vnc.html?autoconnect=1", "")
 	if strings.Contains(gated, "127.0.0.1") || strings.Contains(gated, upstream.URL) || !strings.Contains(gated, "/vnc.html") || !strings.Contains(gated, "reconnect=1") {
 		t.Fatalf("gated=%q", gated)
 	}
@@ -54,7 +54,7 @@ func TestDesktopHandoffKeepsTheTunnelPrefix(t *testing.T) {
 	defer upstream.Close()
 	svc := NewService(&memSettings{})
 	raw := strings.Replace(upstream.URL, "://", "://desktop:gate-token@", 1) + "/v1/desktops/tunnel/abcdef0123456789/vnc/vnc.html?autoconnect=1"
-	gated := svc.gateDesktopHandoff(raw)
+	gated := svc.gateDesktopHandoff(raw, "")
 	if strings.Contains(gated, upstream.URL) || strings.Contains(gated, "abcdef0123456789") || !strings.Contains(gated, "/vnc.html") {
 		t.Fatalf("gated=%q", gated)
 	}
@@ -143,7 +143,7 @@ func TestDesktopHandoffCarriesThePointer(t *testing.T) {
 	}))
 	defer upstream.Close()
 	svc := NewService(&memSettings{})
-	gated := svc.gateDesktopHandoff(upstream.URL + "/vnc.html?autoconnect=1")
+	gated := svc.gateDesktopHandoff(upstream.URL + "/vnc.html?autoconnect=1", "")
 	token, _, err := ParseHandoffPath(gated)
 	if err != nil {
 		t.Fatal(err)
