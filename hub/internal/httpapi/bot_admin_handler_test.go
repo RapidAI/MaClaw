@@ -344,6 +344,22 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		t.Fatalf("offline status=%d body=%s", offline.Code, offline.Body.String())
 	}
 
+	missing := httptest.NewRecorder()
+	writeBotError(missing, botmgmt.ErrAdminSecretMissing)
+	if missing.Code != http.StatusConflict ||
+		!strings.Contains(missing.Body.String(), "系统设置") ||
+		strings.Contains(missing.Body.String(), "Bot 管理") {
+		t.Fatalf("admin secret hint status=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	unconfigured := httptest.NewRecorder()
+	writeBotUserError(unconfigured, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrNotConfigured, "")
+	if unconfigured.Code != http.StatusBadGateway ||
+		!strings.Contains(unconfigured.Body.String(), "系统设置") ||
+		strings.Contains(unconfigured.Body.String(), "Bot 管理") {
+		t.Fatalf("user unconfigured status=%d body=%s", unconfigured.Code, unconfigured.Body.String())
+	}
+
 	task := httptest.NewRecorder()
 	writeBotUserError(task, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrBotBusy, "")
 	if task.Code != http.StatusConflict ||

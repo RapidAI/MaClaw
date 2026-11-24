@@ -18,6 +18,7 @@ import {
     withCloudWorkspace,
     withMachine,
     withMachineWorkDir,
+    withTaskPlace,
     withRemoteWorkspace,
     withLatexTemplate,
     withTaskModel,
@@ -33,6 +34,7 @@ import {
     type TaskType,
 } from "./taskDraft";
 import { isRunWindowScheduled, nextHourLocalValue, runWindowChipLabel, toDatetimeLocalValue } from "./runWindow";
+import { useCloudTaskPlace } from "../../layout/taskPlace";
 import { LATEX_BLANK_TEMPLATE_ID, latexBlankTemplateName, type LatexTemplate } from "../../../utils/latexTemplates";
 import { LatexTemplatePickerPopover } from "./LatexTemplatePickerPopover";
 import type { ExpertOption } from "./ExpertPickerPopover";
@@ -99,8 +101,8 @@ export interface TaskConfigBarProps {
     /** Reload the catalogue when the template menu opens. */
     onPrepareLatexTemplates?: () => void;
     /**
-     * 远控被控机器候选。非空即显示「位置」chip（本机/远程·机器名）；
-     * 空或缺省 = 无远控主机，位置恒为本机且不显示该 chip。
+     * 远控被控机器候选。非空，或 Hub 已开通云端任务时，显示「位置」chip。
+     * 顺序是本机、云端（开通才有）、远控机器。两者都没有时位置恒为本机且不显示该 chip。
      */
     remoteMachines?: RemoteMachineOption[];
     /** 浏览对方电脑上的目录（remote_control list_dirs）；缺省时工作空间 chip 仍锁定为「对方电脑默认」。 */
@@ -121,7 +123,7 @@ const CHIP_RADIUS = 15;
 function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boolean): TaskConfigIconName {
     switch (key) {
         case 'machine':
-            return 'monitor';
+            return draft.place === 'cloud' && !draft.machine ? 'cloud' : 'monitor';
         case 'type':
             return draft.taskType === 'coding' ? 'code' : 'chat';
         case 'model':
@@ -226,7 +228,9 @@ export function TaskConfigBar({
         if (!next) setMenu((current) => (current === "model" || current === "window" ? null : current));
         setMoreOpen(next);
     }, [advancedCustomized]);
-    const showMachineChip = remoteMachines != null && remoteMachines.length > 0;
+    const cloudPlace = useCloudTaskPlace();
+    const showMachineChip = (remoteMachines != null && remoteMachines.length > 0) || cloudPlace.enabled;
+    const cloudPlaceSelected = draft.place === 'cloud' && !draft.machine?.grantId;
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
     const showLatexTemplate = expertNeedsSetup(draft);
@@ -423,10 +427,12 @@ export function TaskConfigBar({
                 <>
                     <div className="mc-taskcfg-row" data-testid="task-config-primary">
                     {showMachineChip && renderChip('machine', "task-config-chip-machine", tailText(lang ?? "", "Location", "位置"), (
-                        (draft.machine?.machineName?.trim() ? draft.machine.machineName : tailText(lang ?? "", "This computer", "本机"))
+                        cloudPlaceSelected
+                            ? tailText(lang ?? "", "Cloud", "云端")
+                            : (draft.machine?.machineName?.trim() ? draft.machine.machineName : tailText(lang ?? "", "This computer", "本机"))
                     ), {
-                        active: draft.machine != null,
-                        title: tailText(lang ?? "", "Which computer runs this task", "任务在哪台电脑上执行"),
+                        active: draft.machine != null || cloudPlaceSelected,
+                        title: tailText(lang ?? "", "Where this task runs", "任务在哪里执行"),
                     })}
                     {renderChip('type', "task-config-chip-type", tailText(lang ?? "", "Type", "类型"), draft.taskType === 'chat' ? (tailText(lang ?? "", "Chat", "会话")) : (tailText(lang ?? "", "Coding", "编程")), {
                         active: draft.taskType === 'coding',
@@ -529,14 +535,18 @@ export function TaskConfigBar({
                 </>
             )}
 
-            {menu === 'machine' && remoteMachines != null && (
+            {menu === 'machine' && showMachineChip && (
                 <MachinePickerPopover
                     anchor={chipRefs.machine.current}
                     theme={t}
                     lang={lang}
-                    machines={remoteMachines}
+                    machines={remoteMachines || []}
                     current={draft.machine}
-                    onSelect={(target) => { onChange(withMachine(draft, target)); closeMenu('machine'); }}
+                    cloudEnabled={cloudPlace.enabled}
+                    cloudSelected={cloudPlaceSelected}
+                    onSelectLocal={() => { onChange(withTaskPlace(draft, 'local')); closeMenu('machine'); }}
+                    onSelectCloud={() => { onChange(withTaskPlace(draft, 'cloud')); closeMenu('machine'); }}
+                    onSelectMachine={(target) => { onChange(withMachine(draft, target)); closeMenu('machine'); }}
                     onClose={() => closeMenu('machine')}
                 />
             )}
@@ -905,14 +915,18 @@ function TypePickerPopover({
 }
 
 
-/** 位置弹层：本机 + 各远控被控机器（离线/仅查看不可选）。 */
+/** 位置弹层：本机，开通后紧跟云端，再是各远控被控机器（离线/仅查看不可选）。 */
 function MachinePickerPopover({
     anchor,
     theme: t,
     lang,
     machines,
     current,
-    onSelect,
+    cloudEnabled,
+    cloudSelected,
+    onSelectLocal,
+    onSelectCloud,
+    onSelectMachine,
     onClose,
 }: {
     anchor: HTMLElement | null;
@@ -920,11 +934,15 @@ function MachinePickerPopover({
     lang?: string;
     machines: RemoteMachineOption[];
     current?: MachineTarget | null;
-    onSelect: (target: MachineTarget | null) => void;
+    cloudEnabled: boolean;
+    cloudSelected: boolean;
+    onSelectLocal: () => void;
+    onSelectCloud: () => void;
+    onSelectMachine: (target: MachineTarget) => void;
     onClose: () => void;
 }) {
     const isZh = !!lang?.startsWith("zh");
-    const localSelected = current == null;
+    const localSelected = current == null && !cloudSelected;
     const row = (
         testId: string,
         icon: TaskConfigIconName,
@@ -992,8 +1010,17 @@ function MachinePickerPopover({
                     tailText(lang ?? "", "Create and run the task here", "在本机创建并执行任务"),
                     localSelected,
                     true,
-                    () => onSelect(null),
+                    () => onSelectLocal(),
                 )}
+                {cloudEnabled ? row(
+                    "machine-item-cloud",
+                    "cloud",
+                    tailText(lang ?? "", "Cloud", "云端"),
+                    tailText(lang ?? "", "Create and run the task in the cloud", "在云端创建并执行任务"),
+                    cloudSelected,
+                    true,
+                    () => onSelectCloud(),
+                ) : null}
                 {machines.map((m) => {
                     const enabled = m.online && m.operate;
                     const desc = !m.online
@@ -1008,7 +1035,7 @@ function MachinePickerPopover({
                         desc,
                         current?.grantId === m.grantId,
                         enabled,
-                        () => onSelect({ grantId: m.grantId, machineName: m.machineName }),
+                        () => onSelectMachine({ grantId: m.grantId, machineName: m.machineName }),
                     );
                 })}
             </div>

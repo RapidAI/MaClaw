@@ -76,6 +76,10 @@ var (
 	ErrAdminSecretMissing = fmt.Errorf("%w: maclawsrv admin secret missing", ErrNotConfigured)
 )
 
+// AdminSecretHint is the admin-facing line for ErrAdminSecretMissing.
+// The field is on the system settings page.
+const AdminSecretHint = "请先在系统设置里保存 MaClawSrv 管理密钥"
+
 // turnBusy reports the retry-later kind of busy: one run holding a shared
 // cloud desktop, or a computerless bot still answering its previous message.
 // Dispatch and queue code treat the two the same; only the person-facing
@@ -186,6 +190,11 @@ type record struct {
 	// OwnerNode pins a hub user to a node srv. Empty keeps that user on
 	// the public connection. A bot stores the same choice on Bot.NodeID.
 	OwnerNode map[string]string `json:"owner_node,omitempty"`
+	// OwnerCloudNode pins a hub user's cloud agents to a node srv. It is
+	// separate from OwnerNode: the desktop a user runs bots on and the srv
+	// their cloud tasks use are two choices. Absent means the public
+	// (system default) maclawsrv.
+	OwnerCloudNode map[string]string `json:"owner_cloud_node,omitempty"`
 	// DialNode is set on a record copied for one call into a node srv.
 	// It is not stored. save folds such a copy back onto NodeLinks.
 	DialNode string `json:"-"`

@@ -105,7 +105,7 @@ describe('getSettingsTabOptions', () => {
     it('groups employees, IM, email, GitHub, and hardware under Integrations', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const integration = zh.filter((tab) => tab.group === 'integration').map((tab) => tab.id);
-        expect(integration).toEqual(['virtualEmployee', 'im', 'email', 'github', 'hardware']);
+        expect(integration).toEqual(['virtualEmployee', 'im', 'email', 'github', 'cloudAgent', 'hardware']);
 
         const im = zh.find((tab) => tab.id === 'im');
         expect(im?.groupLabel).toBe('集成与接入');
@@ -116,7 +116,7 @@ describe('getSettingsTabOptions', () => {
         expect(getSettingsTabOptions('en').find((tab) => tab.id === 'email')?.label).toBe('Email');
 
         const hidden = getSettingsTabOptions('zh-Hans', { hideVirtualEmployee: true });
-        expect(hidden.filter((tab) => tab.group === 'integration').map((tab) => tab.id)).toEqual(['im', 'email', 'github', 'hardware']);
+        expect(hidden.filter((tab) => tab.group === 'integration').map((tab) => tab.id)).toEqual(['im', 'email', 'github', 'cloudAgent', 'hardware']);
         expect(hidden.find((tab) => tab.id === 'assetManagement')?.group).toBe('system');
     });
 

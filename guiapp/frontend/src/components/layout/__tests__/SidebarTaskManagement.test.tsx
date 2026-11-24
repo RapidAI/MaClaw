@@ -13,7 +13,8 @@ import { EventsEmit } from '../../../../wailsjs/runtime';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_OPEN_NEW_TASK_WIZARD } from '../../../constants/events';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 import { DialogProvider } from '../../CustomDialog';
-import { resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { requestCloudAgentListRefresh, resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { cloudTaskPlaceSnapshot, resetCloudTaskPlaceForTests } from '../taskPlace';
 import { remoteAssistantSessionSnapshot } from '../remoteAssistantSession';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
 import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
@@ -260,6 +261,7 @@ function openCreateDialog() {
 }
 
 afterEach(async () => {
+    resetCloudTaskPlaceForTests();
     localStorage.removeItem('maclaw.cloud-agent-opened.v1');
     delete (window as unknown as { go?: unknown }).go;
     // Flush pending openEditRemoteDialog / save / test microtasks so unmount is quiet.
@@ -1388,6 +1390,93 @@ describe('SidebarTaskManagement', () => {
         const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'));
         expect(tabs[0]).toBe('task-machine-tab-local');
         expect(tabs[1]).toBe('task-machine-tab-cloud');
+        expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: true, selected: false });
+        fireEvent.click(screen.getByTestId('task-machine-tab-cloud'));
+        await waitFor(() => {
+            expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: true, selected: true });
+        });
+        fireEvent.click(screen.getByTestId('task-machine-tab-local'));
+        await waitFor(() => {
+            expect(cloudTaskPlaceSnapshot().selected).toBe(false);
+        });
+    });
+
+    it('defaults the next new task to 云端 while a cloud task is open', async () => {
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    ListCloudAgents: async () => ({
+                        instances: [{
+                            id: 'cag_1',
+                            name: '云端演示',
+                            kind: 'session',
+                            status: 'idle',
+                            updated_at: '2026-11-23T12:00:00Z',
+                        }],
+                        enabled: true,
+                    }),
+                    OpenCloudAgentGrant: async () => 'grant-1',
+                    RemoteControlOp: async (_grant: string, name: string) => {
+                        if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+                        if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+                        return '{}';
+                    },
+                },
+            },
+        };
+        renderTaskManagement({ lang: 'zh', tasks: [] });
+        const cloudFolder = await screen.findByTestId('task-folder-cloud');
+        expect(cloudTaskPlaceSnapshot().selected).toBe(false);
+        fireEvent.click(within(cloudFolder).getByText('云端演示'));
+        await waitFor(() => {
+            expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: true, selected: true });
+            expect(screen.getByTestId('task-machine-tab-cloud').getAttribute('aria-selected')).toBe('true');
+        });
+    });
+
+    it('keeps the cloud catalog when a later list refresh fails', async () => {
+        const instance = {
+            id: 'cag_1',
+            name: '云端演示',
+            kind: 'session',
+            status: 'idle',
+            updated_at: '2026-11-23T12:00:00Z',
+        };
+        let list: () => Promise<unknown> = async () => ({ instances: [instance], enabled: true });
+        (window as unknown as { go?: unknown }).go = {
+            main: { App: { ListCloudAgents: () => list() } },
+        };
+        renderTaskManagement({ lang: 'zh', tasks: [] });
+        const cloudFolder = await screen.findByTestId('task-folder-cloud');
+        expect(screen.getByTestId('task-machine-tab-cloud').textContent).toContain('云端');
+        expect(within(cloudFolder).getByText('云端演示')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-machine-tab-cloud'));
+        await waitFor(() => {
+            expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: true, selected: true });
+        });
+
+        list = async () => {
+            throw new Error('hub down');
+        };
+        await act(async () => {
+            requestCloudAgentListRefresh();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(screen.getByTestId('task-machine-tab-cloud').textContent).toContain('云端');
+        expect(within(screen.getByTestId('task-folder-cloud')).getByText('云端演示')).toBeTruthy();
+        expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: true, selected: true });
+
+        list = async () => ({ instances: [], enabled: false });
+        await act(async () => {
+            requestCloudAgentListRefresh();
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId('task-machine-tab-cloud')).toBeNull();
+            expect(screen.queryByTestId('task-folder-cloud')).toBeNull();
+            expect(cloudTaskPlaceSnapshot()).toEqual({ enabled: false, selected: false });
+        });
     });
 
     it('keeps the 最近任务 band count at the configured entry cap', () => {

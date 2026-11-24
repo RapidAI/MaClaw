@@ -50,10 +50,11 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // 3320 -> 3330 (2026-11-16): remote LLM codegen SSO fields measured 3321 inline styles.
 // 3330 -> 3340 (2026-11-20): problem report mark editor and task model picker measured 3331 inline styles.
 // 3340 -> 3350 (2026-11-23): cloud agent manage panel measured 3344 inline styles.
+// 3350 -> 3353 (2026-11-24): in-flight work in the tree measured 3353 inline styles.
 // 1596 -> 1598 (2026-11-19): in-flight expert-share-categories additions added
 // two !important uses; the pinned-message banner added none.
 const IMPORTANT_BASELINE = 1598
-const INLINE_STYLE_BASELINE = 3350
+const INLINE_STYLE_BASELINE = 3353
 
 function countImportant(css) {
     return (css.match(/!important/g) || []).length

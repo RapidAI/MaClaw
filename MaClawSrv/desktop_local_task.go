@@ -23,7 +23,7 @@ const localTaskToolName = "local_task"
 const localTaskPrompt = "local_task creates and follows programming tasks on the person's own MaClaw app, using that app's MCP service. " +
 	"The call rides the app's outbound connection to Hub. It works from the public server and from an intranet MaclawSrv; do not dial the computer's MCP address or open a tunnel to its port. " +
 	"The app must be signed in to this Hub, and the person must turn MCP on in the app. If it is offline or MCP is off, say so. " +
-	"mode coding_dev with working_dir is a task in a folder on that computer. mode remote_coding_dev is a task on a machine that computer can SSH to. The call returns when the task has started; poll with get_task. " +
+	"mode coding_dev with working_dir is a task in a folder on that computer. mode remote_coding_dev is a task on a machine that computer can SSH to. location cloud creates a cloud agent. cloud_workspace_id is only a working directory for a chat task on that computer, not a location. location remote_device with grant_id creates the task on an authorized computer. The call returns when the task has started; poll with get_task. " +
 	"Work that should run in this cloud desktop stays on the desktop and repo tools."
 
 var localTaskToolNames = []string{
@@ -64,7 +64,7 @@ func localTaskTool() agentruntime.ToolDefinition {
 		Description: "Create and follow programming tasks on the person's own MaClaw app (the computer where that app is open). " +
 			"This calls that app's MCP tools over the app's outbound connection to Hub. It works when this bot runs on the public server and when MaclawSrv is installed on the person's intranet: never dial the computer's MCP address, and do not open a tunnel to its port. Loopback, a private IP, and a firewall do not matter. " +
 			"The app must be signed in to the same Hub, and the person must turn the MCP service on in the app. If the app is offline or MCP is off, the result says so and nothing is created. " +
-			"tool=create_task starts a task. mode=coding_dev with working_dir is a programming task in a folder on that computer. mode=remote_coding_dev with ssh_host, ssh_user and remote_work_dir is a programming task on a machine that computer can reach. mode=chat is a conversation. prompt is the instruction. Omit mode when a working_dir is set and it is treated as a programming task. " +
+			"tool=create_task starts a task. location=local is that computer. location=cloud creates a cloud agent (chat or coding_dev) and does not take grant_id, cloud_workspace_id, provider, or model. cloud_workspace_id is only the working directory of a chat task on that computer, not a location and not a cloud agent. location=remote_device with grant_id creates the task on an authorized computer; mode is chat or coding_dev, and working_dir is a folder on that computer. Omit location and a grant_id means remote_device, otherwise local. mode=coding_dev with working_dir is a programming task in a folder on that computer. mode=remote_coding_dev with ssh_host, ssh_user and remote_work_dir is a programming task on a machine that computer can reach by SSH. mode=chat is a conversation. prompt is the instruction. Omit mode when a working_dir is set and location is local and it is treated as a programming task. Do not pass provider or model for a remote device or a cloud agent. " +
 			"The call returns project_path and run_id as soon as the task has started, even when wait is set; then tool=get_task with that project_path (run_id optional). A timed-out call may still have started the task: use get_request with the same client_request_id when one was sent, otherwise list_tasks, before creating another. tool=list_tasks lists them. tool=send_command sends a follow-up or a confirmation, and must pass confirmation_id from get_task when commands are present. tool=stop_task stops the current round. tool=list_models lists models on that computer. tool=get_request checks a client_request_id after a timeout. tool=retry_steps retries failed steps and needs step_ids (T5, 5, or 步骤 5) plus confirmation_id from get_task. tool=read_log reads one page of a round; pass cursor from the previous next_cursor for the next page. expected_status_version and dry_run apply to send_command and retry_steps. " +
 			"Pass client_request_id on create_task so a retry does not create a second task. " +
 			"Use this when the work should run on the person's computer or on a machine only that computer can reach. Work that belongs in this cloud desktop stays on the desktop and repo tools.",
@@ -82,8 +82,11 @@ func localTaskTool() agentruntime.ToolDefinition {
 				},
 				"name":                    map[string]any{"type": "string", "description": "create_task: task name. Empty uses the first line of prompt."},
 				"prompt":                  map[string]any{"type": "string", "description": "create_task: what to do. Empty creates the task and does not start it. send_command: the follow-up text."},
-				"mode":                    map[string]any{"type": "string", "description": "create_task: chat, coding_dev, or remote_coding_dev."},
-				"working_dir":             map[string]any{"type": "string", "description": "create_task: absolute folder on the person's computer for a local programming task."},
+				"mode":                    map[string]any{"type": "string", "description": "create_task: chat, coding_dev, or remote_coding_dev. A cloud agent accepts chat or coding_dev. A remote device accepts chat or coding_dev."},
+				"location":                map[string]any{"type": "string", "description": "create_task: local, cloud, or remote_device. cloud is a cloud agent. Omit to infer remote_device from grant_id, otherwise local. cloud_workspace_id does not select a location."},
+				"cloud_workspace_id":      map[string]any{"type": "string", "description": "create_task: working directory of a chat task on that computer, as a cloud workspace id. Not a location. Do not pass it with location=cloud."},
+				"grant_id":                map[string]any{"type": "string", "description": "create_task: remote-control grant id. Required when location is remote_device. A cloud agent opens its own grant."},
+				"working_dir":             map[string]any{"type": "string", "description": "create_task: absolute folder on the person's computer for a local programming task. For a remote device, a folder on that computer."},
 				"remote_work_dir":         map[string]any{"type": "string", "description": "create_task: remote directory for remote_coding_dev."},
 				"ssh_host":                map[string]any{"type": "string", "description": "create_task: SSH host for a remote programming task."},
 				"ssh_user":                map[string]any{"type": "string", "description": "create_task: SSH user."},
@@ -294,6 +297,9 @@ func localTaskFold(merged map[string]any, tool string) ([]string, error) {
 	dropped := localTaskAdopt(merged, "ssh_password", "sshPassword", "password")
 	localTaskAdopt(merged, "client_request_id", "clientRequestId")
 	localTaskAdopt(merged, "working_dir", "workingDir", "work_dir")
+	localTaskAdopt(merged, "location")
+	localTaskAdopt(merged, "cloud_workspace_id", "cloudWorkspaceId", "workspace_id")
+	localTaskAdopt(merged, "grant_id", "grantId")
 	localTaskAdopt(merged, "ssh_host", "sshHost")
 	localTaskAdopt(merged, "ssh_user", "sshUser")
 	localTaskAdopt(merged, "ssh_port", "sshPort")

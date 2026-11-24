@@ -222,7 +222,7 @@ func pinDesktopChoice(ctx context.Context, bots *botmgmt.Service, reg *edgenode.
 }
 
 // DeleteSelfDesktopNodeHandler DELETE /api/v1/self-desktop-nodes/{server_id}
-func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, identity botAuthenticator) http.HandlerFunc {
+func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := botMachine(w, r, identity)
 		if !ok {
@@ -238,7 +238,7 @@ func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry
 			return
 		}
 		if nodeID != "" {
-			retireEdgeNodes(r.Context(), reg, broker, principal.TenantID, []string{nodeID})
+			retireEdgeNodes(r.Context(), reg, broker, bots, principal.TenantID, []string{nodeID})
 		}
 		view, err := selfDesktopList(r.Context(), pool, reg, broker, principal.TenantID, principal.UserID)
 		if err != nil {
@@ -249,8 +249,10 @@ func DeleteSelfDesktopNodeHandler(pool *desktoppool.Pool, reg *edgenode.Registry
 	}
 }
 
-// retireEdgeNodes removes nodes of this tenant and closes their links.
-func retireEdgeNodes(ctx context.Context, reg *edgenode.Registry, broker *edgenode.Broker, tenantID string, nodes []string) {
+// retireEdgeNodes removes nodes of this tenant and closes their links. The
+// srv connection and any pins die with the node, as the admin delete path
+// does, so nothing is left pointing at a node that no longer exists.
+func retireEdgeNodes(ctx context.Context, reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, tenantID string, nodes []string) {
 	for _, id := range nodes {
 		node, err := reg.Lookup(ctx, id)
 		if err != nil || edgeTenantMismatch(node.TenantID, tenantID) || edgeTenantMismatch(tenantID, node.TenantID) {
@@ -260,6 +262,10 @@ func retireEdgeNodes(ctx context.Context, reg *edgenode.Registry, broker *edgeno
 		if broker != nil {
 			broker.Drop(id)
 		}
+		if bots != nil {
+			_ = bots.ForgetNodeSrv(ctx, node.TenantID, id)
+		}
+		dropCDPTickets(id)
 	}
 }
 

@@ -156,22 +156,33 @@ func (b *book) TaskOf(requestID string) (string, error) {
 }
 
 func (b *book) History(taskID string) ([]string, error) {
-	rows, err := b.db.Query(`SELECT role, content FROM messages WHERE task_id = ? ORDER BY created_at ASC`, taskID)
+	lines, _, err := b.history(taskID)
+	return lines, err
+}
+
+// history returns the role\ncontent lines and a parallel as_error flag.
+// Callers that feed the model or the desktop split on the first newline, so
+// the line stays role, newline, content. The flag is a separate value.
+func (b *book) history(taskID string) ([]string, []bool, error) {
+	rows, err := b.db.Query(`SELECT role, content, as_error FROM messages WHERE task_id = ? ORDER BY created_at ASC`, taskID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []string
+	var lines []string
+	var flags []bool
 	for rows.Next() {
 		var role, content string
-		if err := rows.Scan(&role, &content); err != nil {
+		var asError int
+		if err := rows.Scan(&role, &content, &asError); err != nil {
 			_ = rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
-		out = append(out, role+"\n"+content)
+		lines = append(lines, role+"\n"+content)
+		flags = append(flags, asError != 0)
 	}
 	err = rows.Err()
 	_ = rows.Close()
-	return out, err
+	return lines, flags, err
 }
 
 // Finish writes the assistant reply only while the turn is still running.
@@ -251,6 +262,17 @@ func (b *book) interrupt(now time.Time, note string, olderThan time.Time) ([]str
 func (b *book) Status(requestID string) (string, error) {
 	var status string
 	err := b.db.QueryRow(`SELECT status FROM turns WHERE request_id = ?`, requestID).Scan(&status)
+	return status, err
+}
+
+// latestTurn is the newest turn for one task. Cancel does not append a
+// message, so the transcript alone still ends with the user line.
+func (b *book) latestTurn(taskID string) (string, error) {
+	var status string
+	err := b.db.QueryRow(`SELECT status FROM turns WHERE task_id = ? ORDER BY updated_at DESC LIMIT 1`, taskID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
 	return status, err
 }
 

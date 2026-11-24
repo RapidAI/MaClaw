@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -52,6 +53,8 @@ type RunWindowDraft struct {
 	// LLMProviderID and LLMModel replay a per-task pin. Empty follows 模型分配.
 	LLMProviderID string `json:"llmProviderId,omitempty"`
 	LLMModel      string `json:"llmModel,omitempty"`
+	// Place is where the task runs. "cloud" replays as a cloud agent. Empty is this computer.
+	Place string `json:"place,omitempty"`
 }
 
 // RunWindowTask is a one-shot new-task launch held until StartAt.
@@ -169,6 +172,9 @@ func (a *App) stopRunWindowSession(sessionUserID string) error {
 	if a == nil || sessionUserID == "" {
 		return nil
 	}
+	if id := cloudAgentInstanceFromRunWindowSession(sessionUserID); id != "" {
+		return a.stopCloudRunWindow(id)
+	}
 	_, err := a.CancelAIAssistantSessionForSession(sessionUserID)
 	// Skip only an id this call already stopped. A failed cancel must still
 	// be retried on every spelling, including the folded project id.
@@ -216,6 +222,13 @@ func (a *App) pauseRunWindowAfterCurrent(sessionUserID string) (bool, error) {
 	sessionUserID = strings.TrimSpace(sessionUserID)
 	if a == nil || sessionUserID == "" {
 		return false, nil
+	}
+	if id := cloudAgentInstanceFromRunWindowSession(sessionUserID); id != "" {
+		// The cloud turn has no local unit boundary. Ending the window
+		// cancels that turn, which is the control the panel already uses.
+		// The cancel itself is a Hub round trip and must not run here:
+		// sweep calls this while List waits on the same lock.
+		return a.pauseCloudRunWindow(id)
 	}
 	handler := a.runWindowHandler()
 	if handler == nil {
@@ -265,9 +278,17 @@ func (a *App) runWindowHandler() *IMMessageHandler {
 // which drops the in-memory end time: after the launch grace, a task with no
 // deadline is no longer executing. An open deadline stays running until the
 // loop is actually observed to end.
+//
+// A cloud place is not a local project session. The instance id is the
+// session, and Hub's instance status is the loop: running means the turn is
+// still going, anything else means that turn has already ended.
 func (a *App) runWindowWorkFinished(sessionUserID string, startedAt, now time.Time, allowImplicit bool) bool {
 	if a == nil {
 		return false
+	}
+	if id := cloudAgentInstanceFromRunWindowSession(sessionUserID); id != "" {
+		status, found, lookedAt, ok := a.cloudAgentRunStatus(id)
+		return cloudRunWindowObservedFinished(status, found, ok, lookedAt, startedAt)
 	}
 	handler := a.runWindowHandler()
 	// An open window only completes when this process saw the loop end, so a
@@ -277,6 +298,296 @@ func (a *App) runWindowWorkFinished(sessionUserID string, startedAt, now time.Ti
 		handler = a.ensureLocalIMHandler()
 	}
 	return runWindowWorkFinishedOn(handler, a.goalContinuation, sessionUserID, startedAt, now, allowImplicit)
+}
+
+const cloudAgentRunWindowPrefix = "cloud-agent:"
+
+// cloudRunSnap is the last Hub list seen for scheduled cloud turns.
+// The sweep must not call Hub while it holds its lock: List() waits on that
+// lock, and a slow round trip would freeze the scheduled-task list.
+var cloudRunSnap struct {
+	mu         sync.Mutex
+	askedAt    time.Time
+	receivedAt time.Time
+	ok         bool
+	byID       map[string]string
+	refreshing bool
+}
+
+func cloudAgentInstanceID(id string) bool {
+	const prefix = "cag_"
+	if !strings.HasPrefix(id, prefix) {
+		return false
+	}
+	rest := id[len(prefix):]
+	if len(rest) != 32 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func cloudAgentInstanceFromProjectPath(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if !strings.HasPrefix(projectPath, cloudAgentRunWindowPrefix) {
+		return ""
+	}
+	id := strings.TrimPrefix(projectPath, cloudAgentRunWindowPrefix)
+	if !cloudAgentInstanceID(id) {
+		return ""
+	}
+	return id
+}
+
+func cloudAgentInstanceFromRunWindowSession(session string) string {
+	return cloudAgentInstanceFromProjectPath(session)
+}
+
+func cloudAgentRunWindowSession(instanceID string) string {
+	return cloudAgentRunWindowPrefix + instanceID
+}
+
+// runWindowSessionForStart binds a launched task to the session the sweep
+// watches. A cloud instance is that session even when the draft still names
+// an expert: the expert chat on this computer is not the turn that is running.
+func runWindowSessionForStart(projectPath, expertID string) string {
+	if id := cloudAgentInstanceFromProjectPath(projectPath); id != "" {
+		return cloudAgentRunWindowSession(id)
+	}
+	session := projectSessionOwnerID(projectPath)
+	if expertID = strings.TrimSpace(expertID); expertID != "" {
+		session = expertSessionUserID(expertID)
+	}
+	return session
+}
+
+// cloudRunWindowTurnFinished reports whether a cloud instance's turn is over.
+// lookupOK is false when Hub has not answered; the row stays running then.
+// A missing instance was deleted. provisioning and running are still in progress.
+func cloudRunWindowTurnFinished(status string, found, lookupOK bool) bool {
+	if !lookupOK {
+		return false
+	}
+	if !found {
+		return true
+	}
+	switch status {
+	case "running", "provisioning":
+		return false
+	default:
+		return true
+	}
+}
+
+// cloudRunWindowObservedFinished ignores a list that was requested before this
+// task started. That list cannot contain the new instance, so "missing" would
+// otherwise look like the instance was deleted.
+func cloudRunWindowObservedFinished(status string, found, lookupOK bool, lookedAt, startedAt time.Time) bool {
+	if !lookupOK || lookedAt.Before(startedAt) {
+		return false
+	}
+	return cloudRunWindowTurnFinished(status, found, true)
+}
+
+func (a *App) cloudAgentRunStatus(instanceID string) (status string, found bool, lookedAt time.Time, ok bool) {
+	const freshFor = 5 * time.Second
+	cloudRunSnap.mu.Lock()
+	fresh := cloudRunSnap.ok && time.Since(cloudRunSnap.receivedAt) < freshFor
+	status, found = cloudRunSnap.byID[instanceID]
+	lookedAt = cloudRunSnap.askedAt
+	ok = cloudRunSnap.ok
+	start := !fresh && !cloudRunSnap.refreshing && a != nil
+	if start {
+		cloudRunSnap.refreshing = true
+	}
+	cloudRunSnap.mu.Unlock()
+	if start {
+		go a.refreshCloudRunSnapshot()
+	}
+	if !fresh {
+		return "", false, time.Time{}, false
+	}
+	return status, found, lookedAt, ok
+}
+
+func (a *App) refreshCloudRunSnapshot() {
+	defer func() {
+		cloudRunSnap.mu.Lock()
+		cloudRunSnap.refreshing = false
+		cloudRunSnap.mu.Unlock()
+	}()
+	if a == nil {
+		return
+	}
+	// Stamp the ask, not the reply. A reply that lands after MarkStarted can
+	// still be a list that was requested before the instance existed.
+	askedAt := time.Now()
+	list, err := a.ListCloudAgents()
+	cloudRunSnap.mu.Lock()
+	if err != nil {
+		cloudRunSnap.ok = false
+		cloudRunSnap.byID = nil
+		cloudRunSnap.mu.Unlock()
+		return
+	}
+	byID := make(map[string]string, len(list.Instances))
+	for _, row := range list.Instances {
+		id := strings.TrimSpace(row.ID)
+		if id == "" {
+			continue
+		}
+		byID[id] = strings.TrimSpace(row.Status)
+	}
+	cloudRunSnap.askedAt = askedAt
+	cloudRunSnap.receivedAt = time.Now()
+	cloudRunSnap.ok = true
+	cloudRunSnap.byID = byID
+	cloudRunSnap.mu.Unlock()
+	a.runWindowManagerMu.Lock()
+	m := a.runWindowManager
+	a.runWindowManagerMu.Unlock()
+	if m != nil {
+		m.sweep(time.Now())
+	}
+}
+
+// cloudStopFlight is one Hub cancel for a scheduled cloud instance.
+// The sweep only learns the result. It does not wait on the round trip,
+// because List() calls sweep and a slow cancel would freeze that list.
+type cloudStopFlight struct {
+	inflight bool
+	err      error
+	ready    bool
+}
+
+var cloudStopFlights struct {
+	mu   sync.Mutex
+	byID map[string]*cloudStopFlight
+}
+
+// cloudStopBegin starts a cancel, or returns one that already finished.
+// An in-flight cancel returns start=false and accepted=false with no error,
+// so the caller leaves the row running and does not start a second request.
+func cloudStopBegin(instanceID string) (start bool, accepted bool, err error) {
+	cloudStopFlights.mu.Lock()
+	defer cloudStopFlights.mu.Unlock()
+	if cloudStopFlights.byID == nil {
+		cloudStopFlights.byID = map[string]*cloudStopFlight{}
+	}
+	st := cloudStopFlights.byID[instanceID]
+	if st == nil {
+		cloudStopFlights.byID[instanceID] = &cloudStopFlight{inflight: true}
+		return true, false, nil
+	}
+	if st.inflight || !st.ready {
+		return false, false, nil
+	}
+	delete(cloudStopFlights.byID, instanceID)
+	if st.err != nil {
+		return false, false, st.err
+	}
+	return false, true, nil
+}
+
+func cloudStopFinish(instanceID string, err error) {
+	cloudStopFlights.mu.Lock()
+	defer cloudStopFlights.mu.Unlock()
+	st := cloudStopFlights.byID[instanceID]
+	if st == nil {
+		return
+	}
+	st.inflight = false
+	st.ready = true
+	st.err = err
+}
+
+// cloudStopDropFinished removes a result nobody read, such as a task deleted
+// while its cancel was in flight. An in-flight cancel stays so its result
+// can still be read.
+func cloudStopDropFinished(instanceID string) {
+	cloudStopFlights.mu.Lock()
+	defer cloudStopFlights.mu.Unlock()
+	st := cloudStopFlights.byID[instanceID]
+	if st == nil || st.inflight || !st.ready {
+		return
+	}
+	delete(cloudStopFlights.byID, instanceID)
+}
+
+// pauseCloudRunWindow starts the Hub cancel and returns before it finishes.
+// The next call returns that attempt's result and no second request is sent
+// while the first is still out.
+func (a *App) pauseCloudRunWindow(instanceID string) (bool, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if a == nil || instanceID == "" {
+		return false, nil
+	}
+	start, accepted, err := cloudStopBegin(instanceID)
+	if !start {
+		return accepted, err
+	}
+	go a.runCloudRunWindowStop(instanceID)
+	return false, nil
+}
+
+func (a *App) runCloudRunWindowStop(instanceID string) {
+	err := a.stopCloudRunWindow(instanceID)
+	cloudStopFinish(instanceID, err)
+	a.runWindowManagerMu.Lock()
+	m := a.runWindowManager
+	a.runWindowManagerMu.Unlock()
+	if m != nil {
+		m.sweep(time.Now())
+	}
+	// The sweep above reads a result for a row that is still running.
+	// A deleted row never asks again, so drop whatever it left behind.
+	cloudStopDropFinished(instanceID)
+}
+
+func (a *App) stopCloudRunWindow(instanceID string) error {
+	if a == nil || instanceID == "" {
+		return nil
+	}
+	grantID, err := a.OpenCloudAgentGrant(instanceID)
+	if err != nil {
+		return err
+	}
+	raw, err := a.RemoteControlOp(grantID, "cloud_list_tasks", "")
+	if err != nil {
+		return err
+	}
+	taskID := lastCloudTaskID(raw)
+	if taskID == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]string{"task_id": taskID})
+	if err != nil {
+		return err
+	}
+	_, err = a.RemoteControlOp(grantID, "cloud_stop_task", string(body))
+	return err
+}
+
+func lastCloudTaskID(raw string) string {
+	var decoded struct {
+		Tasks []struct {
+			ID string `json:"id"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return ""
+	}
+	for i := len(decoded.Tasks) - 1; i >= 0; i-- {
+		if id := strings.TrimSpace(decoded.Tasks[i].ID); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 func runWindowWorkFinishedOn(handler *IMMessageHandler, continuation *GoalContinuationEngine, sessionUserID string, startedAt, now time.Time, allowImplicit bool) bool {
@@ -448,6 +759,17 @@ func runWindowPauseGraceElapsed(task *RunWindowTask, now time.Time) bool {
 	return !now.Before(task.StartedAt.Add(runWindowPauseAttachGrace))
 }
 
+// runWindowCloudCancelGraceElapsed is the give-up for a Hub cancel that
+// keeps failing. It starts when the window ends. The local grace starts
+// when the task starts, and that clock has already run out for a long
+// cloud turn, so the first failed cancel would otherwise drop the retry.
+func runWindowCloudCancelGraceElapsed(task *RunWindowTask, now time.Time) bool {
+	if task == nil || task.EndAt == nil {
+		return false
+	}
+	return !now.Before(task.EndAt.Add(runWindowPauseAttachGrace))
+}
+
 func lastAssistantReply(conversation []interface{}) string {
 	for i := len(conversation) - 1; i >= 0; i-- {
 		role, content, hasTools := conversationMessageView(conversation[i])
@@ -559,6 +881,7 @@ type runWindowPauseJob struct {
 	session  string
 	accepted bool
 	unwired  bool
+	failed   bool
 }
 
 type runWindowFinishCandidate struct {
@@ -654,6 +977,7 @@ func (m *runWindowManager) sweep(now time.Time) {
 		accepted, err := pauseRun(pauseJobs[i].session)
 		if err != nil {
 			log.Printf("[run-window] pause after current unit failed session=%s err=%v", pauseJobs[i].session, err)
+			pauseJobs[i].failed = true
 			continue
 		}
 		pauseJobs[i].accepted = accepted
@@ -682,6 +1006,14 @@ func (m *runWindowManager) sweep(now time.Time) {
 			continue
 		}
 		if task.EndAt == nil || now.Before(*task.EndAt) {
+			continue
+		}
+		// A cloud turn stays up until Hub accepts the cancel. In flight, the
+		// row waits for that result. A failure keeps retrying until the
+		// budget measured from the window end runs out. The local grace
+		// starts at task start, so it has already expired for a long run
+		// and must not decide this row.
+		if cloudAgentInstanceFromRunWindowSession(job.session) != "" && !job.unwired && !job.accepted && (!job.failed || !runWindowCloudCancelGraceElapsed(task, now)) {
 			continue
 		}
 		// No loop yet, or the pause call failed. Leave the row running so the
@@ -1112,10 +1444,7 @@ func (a *App) MarkRunWindowTaskStarted(id, projectPath string) error {
 	if err != nil {
 		return err
 	}
-	session := projectSessionOwnerID(projectPath)
-	if expertID := strings.TrimSpace(task.Draft.ExpertID); expertID != "" {
-		session = expertSessionUserID(expertID)
-	}
+	session := runWindowSessionForStart(projectPath, task.Draft.ExpertID)
 	return a.runWindowManager.MarkStarted(id, projectPath, session)
 }
 
@@ -1185,6 +1514,10 @@ func normalizeRunWindowDraft(draft RunWindowDraft) RunWindowDraft {
 	draft.RemoteWorkDir = strings.TrimSpace(draft.RemoteWorkDir)
 	draft.LatexTemplateID = strings.TrimSpace(draft.LatexTemplateID)
 	draft.LatexTemplateName = strings.TrimSpace(draft.LatexTemplateName)
+	draft.Place = strings.ToLower(strings.TrimSpace(draft.Place))
+	if draft.Place != "cloud" {
+		draft.Place = ""
+	}
 	if len(draft.WorkflowParams) == 0 {
 		draft.WorkflowParams = nil
 	}

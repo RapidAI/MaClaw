@@ -60,6 +60,11 @@ func TestCloudAgentStreamSkipsDesktopGrantPath(t *testing.T) {
 	svc := cloudagent.New(db, streamSettings{
 		cloudagent.SrvSettingsKey("tenant-1"): `{"base_url":"http://127.0.0.1:9","admin_secret":"sec-1"}`,
 	})
+	// Stream auth resolves the instance's recorded srv binding, so the
+	// grant target must be a real instance row.
+	if _, err := db.Exec(`INSERT INTO cloud_agents (id, tenant_id, owner_user_id, name, kind, llm_mode, status, created_at, updated_at) VALUES ('cag_stream', 'tenant-1', 'user-a', 's', 'session', 'official', 'idle', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
 	grant, err := rc.EnsureCloudGrant(context.Background(), "tenant-1", "user-a", "mac-1", "cag_stream", "user-a")
 	if err != nil {
 		t.Fatal(err)

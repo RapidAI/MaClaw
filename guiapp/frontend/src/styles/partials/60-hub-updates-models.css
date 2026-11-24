@@ -505,10 +505,10 @@
    action. Every surface, border and accent comes from the theme tokens so
    the same hierarchy survives light, dark and the alternate schemes. */
 .update-modal {
-    width: min(468px, calc(100vw - 32px));
-    padding: 22px 24px 20px;
+    width: min(480px, calc(100vw - 32px));
+    padding: 24px 26px 20px;
     border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-xl);
     background: var(--theme-surface);
     box-shadow: var(--shadow-xl);
     text-align: left;
@@ -650,9 +650,9 @@
 
 /* Info card: var(--theme-info-bg) keeps the version pair readable in both themes. */
 .update-modal__card {
-    padding: 16px;
+    padding: 18px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--theme-info-bg);
 }
 
@@ -665,7 +665,7 @@
 .update-modal__rollback {
     padding: 16px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--theme-info-bg);
 }
 
@@ -705,7 +705,7 @@
 
 .update-modal__version {
     color: var(--theme-text-primary);
-    font-size: 1rem;
+    font-size: 1.06rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1.35;
@@ -748,7 +748,7 @@
     gap: 12px;
     margin-top: 14px;
     padding-top: 12px;
-    border-top: 1px dashed var(--theme-border);
+    border-top: 1px solid var(--theme-border-subtle);
     font-size: 0.78rem;
 }
 
@@ -784,8 +784,9 @@
     margin-top: 14px;
     padding: 14px 16px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--theme-surface-muted);
+    animation: fadeIn 0.18s ease-out;
 }
 
 .update-modal__status-panel--working {
@@ -817,6 +818,26 @@
     font-size: 0.85rem;
     font-weight: 600;
     line-height: 1.45;
+}
+
+/* Circular chip behind the status glyph: reads as an icon badge rather than
+   a bare character floating on the tinted band. */
+.update-modal__status-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+}
+
+.update-modal__status-mark--error {
+    background: color-mix(in srgb, var(--theme-danger) 14%, var(--theme-surface));
+}
+
+.update-modal__status-mark--info {
+    background: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-surface));
 }
 
 .update-modal__status-title {
@@ -858,6 +879,25 @@
     font-size: 0.82rem;
 }
 
+/* Raw backend failure text (one line per attempted source). Bounded and
+   scrollable so a long chain of mirror errors cannot stretch the dialog;
+   the mono face keeps the host/error pairs scannable. */
+.update-modal__error-detail {
+    max-height: 92px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    overflow-y: auto;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 16%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--theme-surface) 72%, transparent);
+    color: var(--theme-text-secondary);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
 .update-modal__spinner {
     flex: 0 0 auto;
     width: 14px;
@@ -871,7 +911,7 @@
 .update-modal__progress-track {
     position: relative;
     width: 100%;
-    height: 6px;
+    height: 8px;
     margin-top: 12px;
     overflow: hidden;
     border-radius: var(--radius-pill);
@@ -985,6 +1025,13 @@
     line-height: 1.55;
 }
 
+/* The elevation consent note is actionable, so it steps one emphasis level
+   above the surrounding hint text. */
+.update-modal__install-hint--consent {
+    color: var(--theme-text-primary);
+    font-weight: 600;
+}
+
 .update-modal__install-progress {
     grid-column: 1 / -1;
     margin-top: 12px;
@@ -994,7 +1041,7 @@
     margin-top: 14px;
     padding: 18px 16px 16px;
     border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--theme-surface-muted);
     text-align: center;
 }
@@ -1056,17 +1103,6 @@
     outline-offset: 2px;
 }
 
-.update-modal__cta-button[data-tone='danger'] {
-    background: var(--theme-danger);
-    color: var(--theme-on-primary);
-    box-shadow: 0 4px 12px color-mix(in srgb, var(--theme-danger) 26%, transparent);
-}
-
-.update-modal__cta-button[data-tone='danger']:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--theme-danger) 86%, #000);
-    box-shadow: 0 6px 16px color-mix(in srgb, var(--theme-danger) 32%, transparent);
-}
-
 /* Inside a status band the action follows the message: intrinsic width and
    right-aligned, so a failure reads as "message + remedy", not a wall of red.
    fit-content (not auto) is what actually shrinks a block-level flex box;
@@ -1074,7 +1110,10 @@
 .update-modal__status-panel .update-modal__cta-button {
     width: fit-content;
     min-width: 104px;
+    min-height: 34px;
     margin: 12px 0 0 auto;
+    padding: 7px 18px;
+    font-size: 0.8rem;
 }
 
 .update-modal__latest-ok {
@@ -1240,6 +1279,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .update-modal__status-panel {
+        animation: none;
+    }
+
     .update-modal__progress-bar,
     .update-modal__switch,
     .update-modal__switch-thumb,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { presentDialogMessage } from '../../../CustomDialog';
-import { defaultTaskDraft, withRunWindow, withTaskModel } from '../taskDraft';
+import { defaultTaskDraft, withRunWindow, withTaskModel, withTaskPlace } from '../taskDraft';
 import {
     isRunWindowDue,
     runWindowChipLabel,
@@ -85,6 +85,25 @@ describe('run window', () => {
         });
         expect(restored.llmProviderId).toBe('devin');
         expect(restored.llmModel).toBe('swe-2-max');
+        expect(restored.place).toBe('local');
+    });
+
+    it('keeps a cloud place on a scheduled draft', () => {
+        const draft = withTaskPlace(defaultTaskDraft(), 'cloud');
+        const request = runWindowCreateRequest('夜间整理', '夜间整理', '夜间整理', draft);
+        expect(request.draft.place).toBe('cloud');
+        expect(request.draft.cloudWorkspaceId).toBe('');
+        const restored = taskDraftFromRunWindow({
+            id: 'rw-cloud',
+            name: '夜间整理',
+            prompt: '夜间整理',
+            initialMessage: '夜间整理',
+            draft: request.draft,
+            status: 'pending',
+            startAt: '2099-03-01T02:00',
+            createdAt: '2099-03-01T00:00',
+        });
+        expect(restored.place).toBe('cloud');
     });
 
     it('treats a pending task as due only inside the window', () => {

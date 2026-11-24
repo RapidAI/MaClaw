@@ -25,6 +25,10 @@ type UpdateModalProps = {
     // window closes on its own, so the modal says so instead of leaving the
     // user on a "download complete" screen with nothing happening.
     isInstalling?: boolean;
+    // Windows launches the installer through the elevation verb, which can
+    // park the flow on a consent prompt the user has to find and approve.
+    // Other platforms never show that prompt, so the hint stays hidden there.
+    needsElevationHint?: boolean;
     preferBetaChannel?: boolean;
     t: (key: string) => string;
     onCancelDownload: () => void;
@@ -129,6 +133,7 @@ export const UpdateModal = ({
     installerPath,
     downloadError,
     isInstalling = false,
+    needsElevationHint = false,
     preferBetaChannel,
     t,
     onCancelDownload,
@@ -240,6 +245,11 @@ export const UpdateModal = ({
     };
 
     const selectRollbackRelease = (release: RollbackRelease) => {
+        // A rollback pick supersedes any in-flight channel check: without
+        // this invalidation a late CheckUpdateBeta/CheckUpdate response
+        // would overwrite the selected target and leave betaLoading stuck.
+        beginRequest();
+        setBetaLoading(false);
         onRollbackReleaseChange?.(release);
         setRollbackOpen(false);
     };
@@ -280,7 +290,7 @@ export const UpdateModal = ({
                             type="checkbox"
                             checked={betaChecked}
                             onChange={(e) => handleBetaToggle(e.target.checked)}
-                            disabled={isDownloading || betaLoading}
+                            disabled={isDownloading || betaLoading || isInstalling}
                         />
                         <span className="update-modal__switch" aria-hidden="true">
                             <span className="update-modal__switch-thumb" />
@@ -309,7 +319,7 @@ export const UpdateModal = ({
                                             type="button"
                                             className="update-modal__rollback-item"
                                             key={String(release.build)}
-                                            disabled={isDownloading || release.download_unavailable}
+                                            disabled={isDownloading || isInstalling || release.download_unavailable}
                                             onClick={() => selectRollbackRelease(release)}
                                         >
                                             <strong>{release.build}</strong>
@@ -329,7 +339,9 @@ export const UpdateModal = ({
                     ) : checkFailed ? (
                         <section className="update-modal__status-panel update-modal__status-panel--error" role="alert">
                             <div className="update-modal__status-head">
-                                <StatusGlyph kind="error" size={16} />
+                                <span className="update-modal__status-mark update-modal__status-mark--error" aria-hidden="true">
+                                    <StatusGlyph kind="error" size={13} />
+                                </span>
                                 <span className="update-modal__status-title">{updateResult.message || t("updateCheckFailedMessage")}</span>
                             </div>
                             <div className="update-modal__status-foot">
@@ -408,6 +420,11 @@ export const UpdateModal = ({
                                         <div className="update-modal__install-copy" role="status">
                                             <p className="update-modal__install-title">{t("installingUpdate")}</p>
                                             <p className="update-modal__install-hint">{t("installingUpdateHint")}</p>
+                                            {needsElevationHint && (
+                                                <p className="update-modal__install-hint update-modal__install-hint--consent">
+                                                    {t("installingUpdateConsentHint")}
+                                                </p>
+                                            )}
                                         </div>
                                         <div
                                             className="update-modal__progress-track update-modal__progress-track--indeterminate update-modal__install-progress"
@@ -444,15 +461,19 @@ export const UpdateModal = ({
                             ) : downloadError ? (
                                 <section className="update-modal__status-panel update-modal__status-panel--error" role="alert">
                                     <div className="update-modal__status-head">
-                                        <StatusGlyph kind="error" size={16} />
-                                        <span className="update-modal__status-title">
-                                            {t("downloadError").replace("{error}", downloadError)}
+                                        <span className="update-modal__status-mark update-modal__status-mark--error" aria-hidden="true">
+                                            <StatusGlyph kind="error" size={13} />
                                         </span>
+                                        <span className="update-modal__status-title">{t("downloadFailed")}</span>
                                     </div>
+                                    {/* Backend errors name every source that
+                                        was tried; the raw text stays readable
+                                        in a bounded scroll region instead of
+                                        stretching the whole dialog. */}
+                                    <div className="update-modal__error-detail">{downloadError}</div>
                                     <button
                                         type="button"
                                         className="update-modal__cta-button"
-                                        data-tone="danger"
                                         onClick={onDownload}
                                     >
                                         {t("retry")}
@@ -461,7 +482,9 @@ export const UpdateModal = ({
                             ) : updateResult.download_unavailable ? (
                                 <section className="update-modal__status-panel update-modal__status-panel--muted">
                                     <div className="update-modal__status-head">
-                                        <StatusGlyph kind="info" size={16} />
+                                        <span className="update-modal__status-mark update-modal__status-mark--info" aria-hidden="true">
+                                            <StatusGlyph kind="info" size={13} />
+                                        </span>
                                         <span className="update-modal__status-title">{t("downloadUnavailable")}</span>
                                     </div>
                                 </section>

@@ -330,7 +330,7 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 }
 
 func (rt *Runtime) postStream(inst *instance, grants []string, frame []byte) {
-	if inst == nil || len(frame) == 0 || !loopbackURL(inst.meta.HubLoopback) || rt.adminSecret == "" {
+	if inst == nil || len(frame) == 0 || !hubCallable(inst.meta) || rt.adminSecret == "" {
 		return
 	}
 	var body map[string]any

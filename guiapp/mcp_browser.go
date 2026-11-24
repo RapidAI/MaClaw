@@ -191,6 +191,7 @@ func (a *App) mcpBrowserTask(projectPath string) (mcpTaskView, error) {
 	if a == nil || path == "" {
 		return mcpTaskView{}, errors.New("没有找到这个任务")
 	}
+	a.mcpLoadDurable()
 	if view, ok := a.mcpViewFromRegistry(path); ok {
 		if strings.TrimSpace(view.ProjectPath) == "" {
 			view.ProjectPath = path

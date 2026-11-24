@@ -1989,8 +1989,11 @@ func TestInboundMCPSendCommandCanSwitchModel(t *testing.T) {
 		desc, _ := def["description"].(string)
 		switch def["name"] {
 		case "create_task":
-			if strings.Contains(desc, "共用同一套能力") || !strings.Contains(desc, "不提供 ACP 或远控操作") {
+			if strings.Contains(desc, "共用同一套能力") || !strings.Contains(desc, "不提供 ACP") || !strings.Contains(desc, "remote_device") || !strings.Contains(desc, "云端 agent") || !strings.Contains(desc, "cloud_workspace_id") || !strings.Contains(desc, "只是本机会话的工作目录") {
 				t.Fatalf("create_task schema %s", desc)
+			}
+			if !strings.Contains(desc, "location") {
+				t.Fatalf("create_task schema missing location %s", desc)
 			}
 		case "get_task":
 			if !strings.Contains(desc, "授权说明在 text") || !strings.Contains(desc, "以 send_command 当时的 commands 为准") {

@@ -95,7 +95,7 @@ func (t *hubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func officialReady(meta Spec) error {
-	if !sameOrigin(os.Getenv("MACLAW_HUB_URL"), meta.HubOrigin) || !loopbackURL(meta.HubLoopback) {
+	if !sameOrigin(os.Getenv("MACLAW_HUB_URL"), meta.HubOrigin) || !hubCallable(meta) {
 		return errors.New("云端官方模型未接通")
 	}
 	return nil
@@ -120,6 +120,18 @@ func loopbackURL(raw string) bool {
 	}
 	host := strings.ToLower(strings.Trim(parsed.Hostname(), "."))
 	return host == "127.0.0.1" || host == "::1"
+}
+
+// hubCallable reports whether meta.HubLoopback is an address the srv may
+// post its admin secret to. A co-located hub is loopback. A private srv
+// calls the public hub origin over the network: that must match both the
+// provision's HubOrigin and this deployment's MACLAW_HUB_URL, so a
+// provision cannot steer the secret to a different host.
+func hubCallable(meta Spec) bool {
+	if loopbackURL(meta.HubLoopback) {
+		return true
+	}
+	return sameOrigin(meta.HubLoopback, meta.HubOrigin) && sameOrigin(os.Getenv("MACLAW_HUB_URL"), meta.HubOrigin)
 }
 
 // LoopbackRemote reports whether a request came from the loopback interface.
@@ -272,7 +284,7 @@ var heartbeatHTTP = &http.Client{Timeout: 5 * time.Second}
 // postHeartbeat reports whether Hub accepted the beat and the feature is still on.
 // A failed POST, a non-loopback hub, or a body without enabled does not count as a beat.
 func (rt *Runtime) postHeartbeat(ctx context.Context, inst *instance, taskID, requestID string, finished bool) (enabled bool, ok bool) {
-	if inst == nil || !loopbackURL(inst.meta.HubLoopback) {
+	if inst == nil || !hubCallable(inst.meta) {
 		return false, false
 	}
 	payload, err := json.Marshal(map[string]any{

@@ -30,7 +30,29 @@ var CLOUD_AGENT_QUOTA_I18N = {
     users: 'Matching users',
     accessSaved: 'Opening scope saved',
     accessFailed: 'Save opening scope failed: {error}',
-    accessLoadFailed: 'Load opening scope failed: {error}'
+    accessLoadFailed: 'Load opening scope failed: {error}',
+    grantsTitle: 'Granted access',
+    grantsHint: 'Saved department and user overrides. Revoke deletes the override so the level above applies again.',
+    grantsEmpty: 'No department or user overrides yet. Pick one in the organization tree below.',
+    scopeDept: 'Department',
+    scopeUser: 'User',
+    revoke: 'Revoke',
+    revokeTitle: 'Revoke access',
+    revokeConfirm: 'Remove the saved override for {name}?',
+    revoked: 'Override removed',
+    revokeFailed: 'Revoke failed: {error}',
+    locate: 'Show in tree',
+    colTarget: 'Department / member',
+    colAccess: 'Access',
+    colActions: 'Actions',
+    custom: 'Custom',
+    srvTitle: 'maclawsrv bindings',
+    srvHint: 'Users bound to a private maclawsrv run their cloud tasks on it. Everyone else uses the system default.',
+    srvEmpty: 'No private bindings. All users run on the system default maclawsrv.',
+    srvPrivate: 'Private',
+    srvOnline: 'online',
+    srvOffline: 'offline',
+    srvLoadFailed: 'Load bindings failed: {error}'
   },
   zh: {
     nav: '\u4e91\u7aef Agent',
@@ -61,12 +83,35 @@ var CLOUD_AGENT_QUOTA_I18N = {
     users: '\u5339\u914d\u7684\u7528\u6237',
     accessSaved: '\u5f00\u901a\u8303\u56f4\u5df2\u4fdd\u5b58',
     accessFailed: '\u4fdd\u5b58\u5f00\u901a\u8303\u56f4\u5931\u8d25\uff1a{error}',
-    accessLoadFailed: '\u8bfb\u53d6\u5f00\u901a\u8303\u56f4\u5931\u8d25\uff1a{error}'
+    accessLoadFailed: '\u8bfb\u53d6\u5f00\u901a\u8303\u56f4\u5931\u8d25\uff1a{error}',
+    grantsTitle: '\u5df2\u5f00\u901a\u8bb0\u5f55',
+    grantsHint: '\u5df2\u4fdd\u5b58\u7684\u90e8\u95e8\u548c\u7528\u6237\u8bbe\u7f6e\u3002\u64a4\u9500\u4f1a\u5220\u9664\u8fd9\u6761\u8bbe\u7f6e\uff0c\u91cd\u65b0\u7ee7\u627f\u4e0a\u4e00\u7ea7\u3002',
+    grantsEmpty: '\u8fd8\u6ca1\u6709\u90e8\u95e8\u6216\u7528\u6237\u7684\u5f00\u901a\u8bb0\u5f55\u3002\u5728\u4e0b\u65b9\u7ec4\u7ec7\u673a\u6784\u91cc\u9009\u62e9\u3002',
+    scopeDept: '\u90e8\u95e8',
+    scopeUser: '\u7528\u6237',
+    revoke: '\u64a4\u9500',
+    revokeTitle: '\u64a4\u9500\u5f00\u901a',
+    revokeConfirm: '\u786e\u5b9a\u64a4\u9500 {name} \u7684\u5f00\u901a\u8bbe\u7f6e\uff1f',
+    revoked: '\u5df2\u64a4\u9500',
+    revokeFailed: '\u64a4\u9500\u5931\u8d25\uff1a{error}',
+    locate: '\u5728\u6811\u4e2d\u5b9a\u4f4d',
+    colTarget: '\u90e8\u95e8 / \u6210\u5458',
+    colAccess: '\u72b6\u6001',
+    colActions: '\u64cd\u4f5c',
+    custom: '\u5df2\u81ea\u5b9a\u4e49',
+    srvTitle: 'maclawsrv \u7ed1\u5b9a',
+    srvHint: '\u7ed1\u5b9a\u7528\u6237\u7684\u4e91\u7aef\u4efb\u52a1\u8d70\u81ea\u5df1\u7684\u79c1\u6709 maclawsrv\uff0c\u5176\u4f59\u7528\u6237\u4f7f\u7528\u7cfb\u7edf\u7f3a\u7701\u3002',
+    srvEmpty: '\u6682\u65e0\u79c1\u6709\u7ed1\u5b9a\uff0c\u5168\u90e8\u7528\u6237\u4f7f\u7528\u7cfb\u7edf\u7f3a\u7701 maclawsrv\u3002',
+    srvPrivate: '\u79c1\u6709',
+    srvOnline: '\u5728\u7ebf',
+    srvOffline: '\u79bb\u7ebf',
+    srvLoadFailed: '\u8bfb\u53d6\u7ed1\u5b9a\u5931\u8d25\uff1a{error}'
   }
 };
 
 var cagOrg = {
   tree: [],
+  deptNames: {},
   users: [],
   usersByEmail: {},
   usersById: {},
@@ -106,6 +151,11 @@ function applyCloudAgentQuotaI18n() {
   set('cloudAgentAccessTitle', t.accessTitle);
   set('cloudAgentAccessHint', t.accessHint);
   set('cloudAgentAccessReloadBtn', t.reload);
+  set('cloudAgentGrantsTitle', t.grantsTitle);
+  set('cloudAgentGrantsHint', t.grantsHint);
+  set('cloudAgentSrvTitle', t.srvTitle);
+  set('cloudAgentSrvHint', t.srvHint);
+  set('cloudAgentSrvReloadBtn', t.reload);
   var filter = document.getElementById('cloudAgentAccessFilter');
   if (filter) filter.placeholder = t.filter;
   if (cagOrg.loaded) renderCloudAgentAccessTree();
@@ -143,18 +193,68 @@ function cagEnsureStyle() {
   var style = document.createElement('style');
   style.id = 'cloud-agent-access-style';
   style.textContent = ''
-    + '#tab-cloud-agents .cag-org-tree{max-height:460px;overflow:auto;border:1px solid #e4e9f2;border-radius:10px;padding:6px;background:#fbfcfe}'
-    + '#tab-cloud-agents .cag-org-row{display:flex;align-items:center;gap:8px;min-height:36px;padding:3px 8px;border-radius:8px}'
+    + '#tab-cloud-agents{display:grid;gap:14px;align-content:start}'
+    + '#tab-cloud-agents .cag-card{padding:16px 18px}'
+    + '#tab-cloud-agents .cag-card-head{margin-bottom:14px}'
+    + '#tab-cloud-agents .cag-card-head .item-meta{max-width:640px}'
+    + '#tab-cloud-agents .cag-status{margin-top:8px;font-size:12px;color:var(--muted,#667386);min-height:16px}'
+    + '#tab-cloud-agents .cag-quota-body{display:flex;flex-wrap:wrap;gap:16px 28px;align-items:flex-end}'
+    + '#tab-cloud-agents .cag-quota-fields{display:flex;gap:14px;flex-wrap:wrap}'
+    + '#tab-cloud-agents .cag-field label{display:block;margin:0 0 5px;font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted,#667386)}'
+    + '#tab-cloud-agents .cag-field input{width:120px;height:38px}'
+    + '#tab-cloud-agents .cag-quota-side{margin-left:auto;display:flex;align-items:center;gap:12px}'
+    + '#tab-cloud-agents .cag-quota-side .cag-status{margin:0}'
+    + '#tab-cloud-agents .cag-switch{display:inline-flex;align-items:center;gap:10px;padding-bottom:8px;cursor:pointer;font-size:13px;font-weight:650;color:var(--text,#202733)}'
+    + '#tab-cloud-agents .cag-switch input{position:absolute;width:1px;height:1px;opacity:0}'
+    + '#tab-cloud-agents .cag-switch-track{position:relative;width:38px;height:22px;flex:0 0 auto;border-radius:999px;background:#cbd5e1;transition:background .15s ease}'
+    + '#tab-cloud-agents .cag-switch-track::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.3);transition:left .15s ease}'
+    + '#tab-cloud-agents .cag-switch input:checked+.cag-switch-track{background:var(--primary,#2563eb)}'
+    + '#tab-cloud-agents .cag-switch input:checked+.cag-switch-track::after{left:19px}'
+    + '#tab-cloud-agents .cag-switch input:focus-visible+.cag-switch-track{outline:2px solid var(--primary,#2563eb);outline-offset:2px}'
+    + '#tab-cloud-agents .cag-grant-count{min-width:22px;height:22px;padding:0 7px;border-radius:999px;background:var(--primary-soft,rgba(37,99,235,.1));color:var(--primary,#2563eb);font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;align-self:center}'
+    + '#tab-cloud-agents .cag-grant-list{display:grid;gap:8px}'
+    + '#tab-cloud-agents .cag-grant{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:10px;align-items:center;padding:9px 12px;border:1px solid var(--line,rgba(28,39,55,.11));border-radius:10px;background:var(--bg-2,#fbfcfe)}'
+    + '#tab-cloud-agents .cag-grant-main{display:flex;align-items:center;gap:10px;min-width:0;cursor:pointer}'
+    + '#tab-cloud-agents .cag-grant-ic{width:30px;height:30px;flex:0 0 auto;border-radius:8px;border:1px solid #dbe7ff;background:#eef5ff center/16px no-repeat}'
+    + '#tab-cloud-agents .cag-grant-ic-dept{background-image:var(--icon-building)}'
+    + '#tab-cloud-agents .cag-grant-ic-user{background-image:var(--icon-user)}'
+    + '#tab-cloud-agents .cag-grant-id{min-width:0}'
+    + '#tab-cloud-agents .cag-grant-name{font-size:13px;font-weight:650;color:var(--text,#202733);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '#tab-cloud-agents .cag-grant-meta{margin-top:2px;font-size:11px;color:var(--muted,#667386);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '#tab-cloud-agents .cag-state{padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}'
+    + '#tab-cloud-agents .cag-state-on{background:rgba(20,125,88,.1);color:var(--ok,#147d58)}'
+    + '#tab-cloud-agents .cag-state-off{background:rgba(194,65,58,.09);color:var(--danger,#c2413a)}'
+    + '#tab-cloud-agents .cag-state-inherit{background:var(--soft-2,#eef3f8);color:var(--muted,#667386)}'
+    + '#tab-cloud-agents .cag-grant-locate,#tab-cloud-agents .cag-grant-revoke{height:30px;min-height:30px;padding:0 10px;font-size:12px;white-space:nowrap}'
+    + '#tab-cloud-agents .cag-grant-revoke{color:var(--danger,#c2413a)}'
+    + '#tab-cloud-agents .cag-grant-revoke:hover{background:rgba(194,65,58,.07);border-color:rgba(194,65,58,.3)}'
+    + '#tab-cloud-agents .cag-grants-empty{padding:16px;border:1px dashed rgba(28,39,55,.18);border-radius:10px;background:var(--bg-2,#fbfcfe);color:var(--muted,#667386);font-size:12px;text-align:center}'
+    + '#tab-cloud-agents .cag-filter{position:relative;max-width:400px;margin-bottom:10px}'
+    + '#tab-cloud-agents .cag-filter input{width:100%;height:36px;padding-left:32px;border-radius:9px}'
+    + '#tab-cloud-agents .cag-filter::before{content:"";position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;background:var(--icon-search) center/contain no-repeat;opacity:.4;pointer-events:none}'
+    + '#tab-cloud-agents .cag-org-tree{max-height:480px;overflow:auto;border:1px solid var(--line,rgba(28,39,55,.11));border-radius:10px;padding:4px;background:var(--bg-2,#fbfcfe)}'
+    + '#tab-cloud-agents .cag-org-head,#tab-cloud-agents .cag-org-row{display:grid;grid-template-columns:minmax(0,1fr) 134px 92px 92px 72px;gap:8px;align-items:center;min-width:660px}'
+    + '#tab-cloud-agents .cag-org-head{position:sticky;top:0;z-index:2;margin:0 2px;padding:7px 10px;border-bottom:1px solid var(--line,rgba(28,39,55,.11));background:var(--bg-2,#fbfcfe);font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted,#667386)}'
+    + '#tab-cloud-agents .cag-org-row{min-height:38px;padding:2px 8px;border-radius:8px}'
     + '#tab-cloud-agents .cag-org-row:hover{background:#eef5ff}'
-    + '#tab-cloud-agents .cag-org-toggle{width:22px;min-width:22px;height:22px;min-height:22px;padding:0;border:0;background:transparent;box-shadow:none;color:#64748b;font-size:12px}'
+    + '#tab-cloud-agents .cag-org-row.is-dirty{background:#f5f9ff}'
+    + '#tab-cloud-agents .cag-org-namecell{display:flex;align-items:center;gap:7px;min-width:0}'
+    + '#tab-cloud-agents .cag-org-namecell:only-child{grid-column:1/-1}'
+    + '#tab-cloud-agents .cag-org-toggle{width:22px;min-width:22px;height:22px;min-height:22px;padding:0;border:0;background:transparent;box-shadow:none;color:#64748b;font-size:11px;flex:0 0 auto}'
     + '#tab-cloud-agents .cag-org-pad{width:22px;min-width:22px;flex:0 0 auto}'
-    + '#tab-cloud-agents .cag-org-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}'
-    + '#tab-cloud-agents .cag-org-user .cag-org-name{color:#64748b;font-size:12px}'
-    + '#tab-cloud-agents .cag-access-enabled{width:92px;height:30px;min-height:30px;flex:0 0 auto}'
-    + '#tab-cloud-agents .cag-access-instances,#tab-cloud-agents .cag-access-turns{width:88px;height:30px;min-height:30px;flex:0 0 auto}'
-    + '#tab-cloud-agents .cag-access-save{height:30px;min-height:30px;padding:0 10px;font-size:12px;flex:0 0 auto}'
-    + '#tab-cloud-agents .cag-org-note{margin:4px 8px;color:#64748b;font-size:12px}'
-    + '#tab-cloud-agents #cloudAgentAccessFilter{max-width:360px;margin:0 0 8px}';
+    + '#tab-cloud-agents .cag-org-ic{width:15px;height:15px;flex:0 0 auto;background:center/contain no-repeat;opacity:.5}'
+    + '#tab-cloud-agents .cag-org-ic-dept{background-image:var(--icon-building)}'
+    + '#tab-cloud-agents .cag-org-ic-user{background-image:var(--icon-user)}'
+    + '#tab-cloud-agents .cag-org-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--text,#202733)}'
+    + '#tab-cloud-agents .cag-org-user .cag-org-name{font-size:12px;font-weight:400;color:var(--muted,#667386)}'
+    + '#tab-cloud-agents .cag-org-dot{width:6px;height:6px;flex:0 0 auto;border-radius:50%;background:var(--primary,#2563eb)}'
+    + '#tab-cloud-agents .cag-access-enabled{width:100%;height:30px;min-height:30px;font-size:12px;border-radius:8px}'
+    + '#tab-cloud-agents .cag-access-enabled.cag-state-on{border-color:rgba(20,125,88,.45);background:rgba(20,125,88,.07);color:var(--ok,#147d58);font-weight:650}'
+    + '#tab-cloud-agents .cag-access-enabled.cag-state-off{border-color:rgba(194,65,58,.4);background:rgba(194,65,58,.06);color:var(--danger,#c2413a);font-weight:650}'
+    + '#tab-cloud-agents .cag-access-instances,#tab-cloud-agents .cag-access-turns{width:100%;height:30px;min-height:30px;font-size:12px}'
+    + '#tab-cloud-agents .cag-access-save{height:30px;min-height:30px;padding:0 10px;font-size:12px;visibility:hidden}'
+    + '#tab-cloud-agents .cag-org-row.is-dirty .cag-access-save{visibility:visible}'
+    + '#tab-cloud-agents .cag-org-note{margin:5px 10px;color:var(--muted,#667386);font-size:12px}';
   document.head.appendChild(style);
 }
 
@@ -211,7 +311,7 @@ function cagControls(scope, target) {
   var enabled = draft ? draft.enabled : (row.enabled || 'inherit');
   var instances = draft ? draft.instances : (row.max_instances == null ? '' : String(row.max_instances));
   var turns = draft ? draft.turns : (row.max_concurrent_turns == null ? '' : String(row.max_concurrent_turns));
-  return '<select class="cag-access-enabled" aria-label="' + cagEscape(t.accessTitle) + '">'
+  return '<select class="cag-access-enabled cag-state-' + cagEscape(enabled) + '" aria-label="' + cagEscape(t.accessTitle) + '">'
     + cagOption('inherit', t.inherit, enabled)
     + cagOption('on', t.on, enabled)
     + cagOption('off', t.off, enabled)
@@ -221,10 +321,21 @@ function cagControls(scope, target) {
     + '<button type="button" class="btn-secondary cag-access-save">' + cagEscape(t.save) + '</button>';
 }
 
+function cagRowHasOverride(scope, target) {
+  var saved = cagOrg.access[cagKey(scope, target)] || {};
+  return !!(saved.enabled && saved.enabled !== 'inherit') || saved.max_instances != null || saved.max_concurrent_turns != null;
+}
+
 function cagRow(scope, target, name, depth, userRow, toggle) {
-  return '<div class="cag-org-row' + (userRow ? ' cag-org-user' : '') + '" data-scope="' + cagEscape(scope) + '" data-target="' + cagEscape(target) + '" style="margin-left:' + (depth * 16) + 'px">'
+  var dirty = !!cagOrg.drafts[cagKey(scope, target)];
+  var dot = cagRowHasOverride(scope, target) ? '<span class="cag-org-dot" title="' + cagEscape(cloudAgentQuotaText().custom) + '"></span>' : '';
+  return '<div class="cag-org-row' + (userRow ? ' cag-org-user' : '') + (dirty ? ' is-dirty' : '') + '" data-scope="' + cagEscape(scope) + '" data-target="' + cagEscape(target) + '" style="margin-left:' + (depth * 16) + 'px">'
+    + '<div class="cag-org-namecell">'
     + (toggle || '<span class="cag-org-pad"></span>')
+    + '<span class="cag-org-ic ' + (userRow ? 'cag-org-ic-user' : 'cag-org-ic-dept') + '" aria-hidden="true"></span>'
     + '<span class="cag-org-name">' + cagEscape(name) + '</span>'
+    + dot
+    + '</div>'
     + cagControls(scope, target)
     + '</div>';
 }
@@ -316,7 +427,7 @@ function cagRenderNodes(nodes, depth, query) {
       cagMembers(node.id).forEach(function (member) {
         if (!cagMemberVisible(member, query, nameHit)) return;
         if (!member.userId) {
-          memberHtml += '<div class="cag-org-row cag-org-user" style="margin-left:' + ((depth + 1) * 16) + 'px"><span class="cag-org-pad"></span><span class="cag-org-name">' + cagEscape(member.label || member.email) + '</span></div>';
+          memberHtml += '<div class="cag-org-row cag-org-user" style="margin-left:' + ((depth + 1) * 16) + 'px"><div class="cag-org-namecell"><span class="cag-org-pad"></span><span class="cag-org-ic cag-org-ic-user" aria-hidden="true"></span><span class="cag-org-name">' + cagEscape(member.label || member.email) + '</span></div></div>';
           return;
         }
         memberHtml += cagRow('user', member.userId, member.label || member.email, depth + 1, true, '');
@@ -358,31 +469,53 @@ function cagVisibleUserIds(query) {
   return ids;
 }
 
+function cagRowDraft(row) {
+  if (!row || typeof row.getAttribute !== 'function' || typeof row.querySelector !== 'function') return null;
+  var scope = String(row.getAttribute('data-scope') || '');
+  var target = String(row.getAttribute('data-target') || '');
+  if (!scope || !target) return null;
+  var enabledEl = row.querySelector('.cag-access-enabled');
+  if (!enabledEl) return null;
+  var instEl = row.querySelector('.cag-access-instances');
+  var turnEl = row.querySelector('.cag-access-turns');
+  var saved = cagOrg.access[cagKey(scope, target)] || {};
+  var enabled = String(enabledEl.value || 'inherit');
+  var instances = instEl ? String(instEl.value == null ? '' : instEl.value) : '';
+  var turns = turnEl ? String(turnEl.value == null ? '' : turnEl.value) : '';
+  var savedEnabled = saved.enabled || 'inherit';
+  var savedInstances = saved.max_instances == null ? '' : String(saved.max_instances);
+  var savedTurns = saved.max_concurrent_turns == null ? '' : String(saved.max_concurrent_turns);
+  if (enabled === savedEnabled && instances === savedInstances && turns === savedTurns) return null;
+  return { scope: scope, target: target, enabled: enabled, instances: instances, turns: turns };
+}
+
 function cagCaptureDrafts(root) {
   var drafts = {};
   if (!root || typeof root.querySelectorAll !== 'function') return drafts;
   var rows = root.querySelectorAll('.cag-org-row') || [];
   for (var i = 0; i < rows.length; i += 1) {
-    var row = rows[i];
-    if (!row || typeof row.getAttribute !== 'function' || typeof row.querySelector !== 'function') continue;
-    var scope = String(row.getAttribute('data-scope') || '');
-    var target = String(row.getAttribute('data-target') || '');
-    if (!scope || !target) continue;
-    var enabledEl = row.querySelector('.cag-access-enabled');
-    if (!enabledEl) continue;
-    var instEl = row.querySelector('.cag-access-instances');
-    var turnEl = row.querySelector('.cag-access-turns');
-    var saved = cagOrg.access[cagKey(scope, target)] || {};
-    var enabled = String(enabledEl.value || 'inherit');
-    var instances = instEl ? String(instEl.value == null ? '' : instEl.value) : '';
-    var turns = turnEl ? String(turnEl.value == null ? '' : turnEl.value) : '';
-    var savedEnabled = saved.enabled || 'inherit';
-    var savedInstances = saved.max_instances == null ? '' : String(saved.max_instances);
-    var savedTurns = saved.max_concurrent_turns == null ? '' : String(saved.max_concurrent_turns);
-    if (enabled === savedEnabled && instances === savedInstances && turns === savedTurns) continue;
-    drafts[cagKey(scope, target)] = { enabled: enabled, instances: instances, turns: turns };
+    var draft = cagRowDraft(rows[i]);
+    if (draft) drafts[cagKey(draft.scope, draft.target)] = draft;
   }
   return drafts;
+}
+
+function cagSyncSelectState(select) {
+  if (!select || !select.classList) return;
+  select.classList.remove('cag-state-inherit');
+  select.classList.remove('cag-state-on');
+  select.classList.remove('cag-state-off');
+  select.classList.add('cag-state-' + (select.value || 'inherit'));
+}
+
+function cagRowEdited(event) {
+  var target = event && event.target;
+  if (!target || typeof target.closest !== 'function') return;
+  var row = target.closest('.cag-org-row');
+  if (!row) return;
+  if (row.classList && typeof row.classList.toggle === 'function') row.classList.toggle('is-dirty', !!cagRowDraft(row));
+  var select = typeof row.querySelector === 'function' ? row.querySelector('.cag-access-enabled') : null;
+  if (select) cagSyncSelectState(select);
 }
 
 function cagFocusMark(root) {
@@ -444,6 +577,8 @@ function cagBindTree(root) {
     var row = save.closest('.cag-org-row');
     if (row) saveCloudAgentAccessFromRow(row);
   });
+  root.addEventListener('input', cagRowEdited);
+  root.addEventListener('change', cagRowEdited);
 }
 
 function renderCloudAgentAccessTree() {
@@ -451,6 +586,7 @@ function renderCloudAgentAccessTree() {
   if (!root) return;
   cagEnsureStyle();
   cagBindTree(root);
+  cagRenderGrants();
   var t = cloudAgentQuotaText();
   if (!cagOrg.loaded) {
     var loading = '<div class="cag-org-note">' + cagEscape(t.loading) + '</div>';
@@ -460,16 +596,21 @@ function renderCloudAgentAccessTree() {
   }
   var query = cagQuery();
   cagOrg.drafts = cagOrg.suspendDrafts ? {} : cagCaptureDrafts(root);
-  var html = cagRenderNodes(cagOrg.tree, 0, query);
+  var rows = cagRenderNodes(cagOrg.tree, 0, query);
   var shown = cagVisibleUserIds(query);
   var hits = cagMatchingUsers(query).filter(function (user) {
     return !shown[String(user.id || '').trim()];
   });
+  var extras = '';
   if (hits.length) {
-    html += '<div class="cag-org-note">' + cagEscape(t.users) + '</div>';
+    extras += '<div class="cag-org-note">' + cagEscape(t.users) + '</div>';
     hits.forEach(function (user) {
-      html += cagRow('user', user.id, cagUserLabel(user), 0, true, '');
+      extras += cagRow('user', user.id, cagUserLabel(user), 0, true, '');
     });
+  }
+  var html = '';
+  if (rows || extras) {
+    html = '<div class="cag-org-head"><span>' + cagEscape(t.colTarget) + '</span><span>' + cagEscape(t.colAccess) + '</span><span>' + cagEscape(t.instances) + '</span><span>' + cagEscape(t.turns) + '</span><span>' + cagEscape(t.colActions) + '</span></div>' + rows + extras;
   }
   if (!html) html = '<div class="cag-org-note">' + cagEscape(t.empty) + '</div>';
   cagOrg.drafts = {};
@@ -543,6 +684,172 @@ function cagLoadMembers(groupId) {
   return pending;
 }
 
+function cagBuildDeptNames(nodes) {
+  var map = {};
+  (function walk(list) {
+    (list || []).forEach(function (node) {
+      if (!node || !node.id) return;
+      map[node.id] = node.name;
+      walk(node.children);
+    });
+  })(nodes);
+  return map;
+}
+
+function cagGrantName(scope, target) {
+  if (scope === 'department') return (cagOrg.deptNames || {})[target] || '';
+  if (scope === 'user') return cagUserLabel(cagOrg.usersById[target]);
+  return '';
+}
+
+function cagGrantRows() {
+  var out = [];
+  Object.keys(cagOrg.access || {}).forEach(function (key) {
+    var row = cagOrg.access[key];
+    if (!row || (row.scope !== 'department' && row.scope !== 'user')) return;
+    out.push(row);
+  });
+  out.sort(function (a, b) {
+    if (a.scope !== b.scope) return a.scope === 'department' ? -1 : 1;
+    var an = cagGrantName(a.scope, a.target_id) || String(a.target_id || '');
+    var bn = cagGrantName(b.scope, b.target_id) || String(b.target_id || '');
+    return an.localeCompare(bn);
+  });
+  return out;
+}
+
+function cagGrantMeta(row, t) {
+  var value = function (v) { return v == null ? t.limitInherit : String(v); };
+  return t.instances + ' ' + value(row.max_instances) + ' \u00b7 ' + t.turns + ' ' + value(row.max_concurrent_turns);
+}
+
+function cagBindGrants(root) {
+  if (!root || typeof root.addEventListener !== 'function') return;
+  if (root.dataset && root.dataset.bound === '1') return;
+  if (root.dataset) root.dataset.bound = '1';
+  root.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    var row = target.closest('.cag-grant');
+    if (!row || typeof row.getAttribute !== 'function') return;
+    var scope = row.getAttribute('data-scope');
+    var targetId = row.getAttribute('data-target');
+    if (target.closest('.cag-grant-revoke')) {
+      cagRevokeGrant(scope, targetId);
+      return;
+    }
+    if (target.closest('.cag-grant-locate') || target.closest('.cag-grant-main')) cagLocateGrant(scope, targetId);
+  });
+  root.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function' || !target.closest('.cag-grant-main')) return;
+    var row = target.closest('.cag-grant');
+    if (!row || typeof row.getAttribute !== 'function') return;
+    event.preventDefault();
+    cagLocateGrant(row.getAttribute('data-scope'), row.getAttribute('data-target'));
+  });
+}
+
+function cagRenderGrants() {
+  var list = document.getElementById('cloudAgentGrantList');
+  if (!list) return;
+  cagBindGrants(list);
+  var t = cloudAgentQuotaText();
+  var count = document.getElementById('cloudAgentGrantsCount');
+  if (!cagOrg.loaded) {
+    if (count) { count.textContent = '0'; count.hidden = true; }
+    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.loading) + '</div>';
+    return;
+  }
+  var rows = cagGrantRows();
+  if (count) {
+    count.textContent = String(rows.length);
+    count.hidden = !rows.length;
+  }
+  if (!rows.length) {
+    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.grantsEmpty) + '</div>';
+    return;
+  }
+  var html = '';
+  rows.forEach(function (row) {
+    var scope = String(row.scope || '');
+    var target = String(row.target_id || '');
+    var enabled = String(row.enabled || 'inherit');
+    var stateText = enabled === 'on' ? t.on : enabled === 'off' ? t.off : t.inherit;
+    html += '<div class="cag-grant" data-scope="' + cagEscape(scope) + '" data-target="' + cagEscape(target) + '">'
+      + '<div class="cag-grant-main" role="button" tabindex="0">'
+      + '<span class="cag-grant-ic ' + (scope === 'user' ? 'cag-grant-ic-user' : 'cag-grant-ic-dept') + '" aria-hidden="true"></span>'
+      + '<div class="cag-grant-id"><div class="cag-grant-name">' + cagEscape(cagGrantName(scope, target) || target) + '</div>'
+      + '<div class="cag-grant-meta">' + cagEscape((scope === 'department' ? t.scopeDept : t.scopeUser) + ' \u00b7 ' + cagGrantMeta(row, t)) + '</div></div>'
+      + '</div>'
+      + '<span class="cag-state cag-state-' + cagEscape(enabled) + '">' + cagEscape(stateText) + '</span>'
+      + '<button type="button" class="btn-ghost cag-grant-locate">' + cagEscape(t.locate) + '</button>'
+      + '<button type="button" class="btn-ghost cag-grant-revoke">' + cagEscape(t.revoke) + '</button>'
+      + '</div>';
+  });
+  list.innerHTML = html;
+}
+
+function cagLocateGrant(scope, target) {
+  var filter = document.getElementById('cloudAgentAccessFilter');
+  if (filter) filter.value = cagGrantName(scope, target) || String(target || '');
+  renderCloudAgentAccessTree();
+  var card = document.getElementById('cloudAgentAccessCard');
+  if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (filter && typeof filter.focus === 'function') filter.focus();
+}
+
+function cagRevokeGrant(scope, target) {
+  var t = cloudAgentQuotaText();
+  var name = cagGrantName(scope, target) || String(target || '');
+  var run = function () {
+    return saveCloudAgentAccessRow(scope, target, 'inherit', null, null, { ok: t.revoked, fail: t.revokeFailed });
+  };
+  if (typeof AdminUI !== 'undefined' && AdminUI && typeof AdminUI.confirmDialog === 'function') {
+    return AdminUI.confirmDialog(t.revokeConfirm.replace('{name}', name), { title: t.revokeTitle, confirmText: t.revoke, danger: true }).then(function (ok) {
+      return ok ? run() : null;
+    });
+  }
+  return run();
+}
+
+function cagRenderSrvBindings(items) {
+  var list = document.getElementById('cloudAgentSrvList');
+  if (!list) return;
+  var t = cloudAgentQuotaText();
+  if (!items || !items.length) {
+    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.srvEmpty) + '</div>';
+    return;
+  }
+  var html = '';
+  items.forEach(function (item) {
+    var label = cagUserLabel(cagOrg.usersById[String(item.user_id || '')]) || String(item.user_id || '');
+    var nodeName = String(item.name || '') || String(item.node_id || '');
+    var address = String(item.address || '');
+    var meta = nodeName + (address && address !== nodeName ? ' \u00b7 ' + address : '');
+    html += '<div class="cag-grant">'
+      + '<div class="cag-grant-main"><span class="cag-grant-ic cag-grant-ic-user" aria-hidden="true"></span>'
+      + '<div class="cag-grant-id"><div class="cag-grant-name">' + cagEscape(label) + '</div>'
+      + '<div class="cag-grant-meta">' + cagEscape(t.srvPrivate + ' \u00b7 ' + meta) + '</div></div></div>'
+      + '<span class="cag-state ' + (item.online ? 'cag-state-on' : 'cag-state-off') + '">' + cagEscape(item.online ? t.srvOnline : t.srvOffline) + '</span>'
+      + '</div>';
+  });
+  list.innerHTML = html;
+}
+
+async function loadCloudAgentSrvBindings() {
+  var list = document.getElementById('cloudAgentSrvList');
+  if (!list) return;
+  var t = cloudAgentQuotaText();
+  try {
+    var data = await api('/api/admin/cloud-agents/srv-bindings');
+    cagRenderSrvBindings(data && data.items);
+  } catch (err) {
+    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.srvLoadFailed.replace('{error}', err.message || String(err))) + '</div>';
+  }
+}
+
 async function loadCloudAgentAccess(discardDrafts) {
   applyCloudAgentQuotaI18n();
   var status = document.getElementById('cloudAgentAccessStatus');
@@ -574,6 +881,7 @@ async function loadCloudAgentAccess(discardDrafts) {
     });
     var rawTree = results[1] && results[1].tree;
     cagOrg.tree = cagNormalize(Array.isArray(rawTree) ? rawTree : (rawTree ? [rawTree] : []));
+    cagOrg.deptNames = cagBuildDeptNames(cagOrg.tree);
     cagIndexUsers((results[2] && results[2].users) || []);
     cagOrg.loaded = true;
     if (!Object.keys(cagOrg.expanded).length && cagOrg.tree[0]) cagOrg.expanded[cagOrg.tree[0].id] = true;
@@ -595,8 +903,10 @@ async function loadCloudAgentAccess(discardDrafts) {
   }
 }
 
-function cagWriteAccess(scope, target, enabled, instances, turns) {
+function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
   var t = cloudAgentQuotaText();
+  var okText = msgs && msgs.ok ? msgs.ok : t.accessSaved;
+  var failText = msgs && msgs.fail ? msgs.fail : t.accessFailed;
   if (instances === undefined || turns === undefined) {
     if (typeof showToast === 'function') showToast(t.bad, 'error');
     return Promise.resolve();
@@ -614,16 +924,16 @@ function cagWriteAccess(scope, target, enabled, instances, turns) {
     return loadCloudAgentAccess();
   }).then(function (reloaded) {
     if (!reloaded) return;
-    if (typeof showToast === 'function') showToast(t.accessSaved, 'success');
+    if (typeof showToast === 'function') showToast(okText, 'success');
   }, function (err) {
-    var msg = t.accessFailed.replace('{error}', err && err.message ? err.message : String(err));
+    var msg = failText.replace('{error}', err && err.message ? err.message : String(err));
     if (typeof showToast === 'function') showToast(msg, 'error');
   });
 }
 
-function saveCloudAgentAccessRow(scope, target, enabled, instances, turns) {
+function saveCloudAgentAccessRow(scope, target, enabled, instances, turns, msgs) {
   var next = cagOrg.saveChain.then(function () {
-    return cagWriteAccess(scope, target, enabled, instances, turns);
+    return cagWriteAccess(scope, target, enabled, instances, turns, msgs);
   });
   cagOrg.saveChain = next.then(function () {}, function () {});
   return next;
@@ -698,7 +1008,7 @@ if (typeof window !== 'undefined' && window.AdminTabRegistry && typeof window.Ad
     id: 'cloud-agents',
     title: function () { return cloudAgentQuotaText().nav; },
     subtitle: function () { return cloudAgentQuotaText().navDesc; },
-    onOpen: function () { loadCloudAgentQuota(); }
+    onOpen: function () { loadCloudAgentQuota().then(function () { return loadCloudAgentSrvBindings(); }); }
   });
 }
 if (typeof window !== 'undefined' && window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {

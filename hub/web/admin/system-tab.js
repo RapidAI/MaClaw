@@ -1352,11 +1352,10 @@ const MACLAWSRV_I18N = {
     hint: 'Bots and cloud tasks share this maclawsrv. Cloud tasks have no host unless the address is loopback (127.0.0.1 or ::1) and the admin secret is set.',
     url: 'maclawsrv URL',
     admin: 'Admin secret',
-    token: 'Access token',
+    adminHint: 'Paste the MaClawSrv Root Admin API Secret. Saving it provisions the connection account automatically. Leave blank to keep the saved secret.',
     save: 'Save',
     test: 'Test connection',
     reload: 'Reload',
-    blank: 'Leave a secret or token blank to keep the saved value.',
     testing: 'Testing...',
     connected: 'Connected. {count} instances.',
     saveBeforeTest: 'Save the address or secret before testing',
@@ -1365,12 +1364,11 @@ const MACLAWSRV_I18N = {
     tokenForbidden: 'The credential cannot perform this operation (HTTP 403). Check the admin secret',
     notFound: 'Instance or API not found (HTTP 404). Check that the address forwards /api',
     needUrl: 'Enter the maclawsrv URL',
+    needConfig: 'Save the maclawsrv URL and admin secret first',
     badUrl: 'The URL must start with http:// or https:// and must not include a username',
     saved: 'Saved',
     adminSet: 'Admin secret saved',
     adminMissing: 'No admin secret saved',
-    tokenSet: 'Access token saved',
-    tokenMissing: 'No access token saved',
     loadFailed: 'Load maclawsrv connection failed: {error}',
     saveFailed: 'Save maclawsrv connection failed: {error}'
   },
@@ -1379,11 +1377,10 @@ const MACLAWSRV_I18N = {
     hint: 'Bot \u548c\u4e91\u7aef\u4efb\u52a1\u5171\u7528\u8fd9\u4e00\u4efd\u914d\u7f6e\u3002\u4e91\u7aef\u4efb\u52a1\u53ea\u6709\u5728\u5730\u5740\u662f\u672c\u673a\u56de\u73af\uff08127.0.0.1 \u6216 ::1\uff09\u5e76\u4e14\u4fdd\u5b58\u4e86\u7ba1\u7406\u5bc6\u94a5\u65f6\u624d\u6709\u4efb\u52a1\u5bbf\u4e3b\u3002',
     url: 'maclawsrv \u5730\u5740',
     admin: '\u7ba1\u7406\u5bc6\u94a5',
-    token: '\u8bbf\u95ee\u4ee4\u724c',
+    adminHint: '\u7c98\u8d34 MaClawSrv \u7684 Root Admin API Secret\uff0c\u4fdd\u5b58\u540e\u81ea\u52a8\u521b\u5efa\u8fde\u63a5\u8d26\u53f7\u3002\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u3002',
     save: '\u4fdd\u5b58',
     test: '\u6d4b\u8bd5\u8fde\u63a5',
     reload: '\u91cd\u65b0\u52a0\u8f7d',
-    blank: '\u5bc6\u94a5\u6216\u4ee4\u724c\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u503c\u3002',
     testing: '\u6b63\u5728\u6d4b\u8bd5...',
     connected: '\u8fde\u63a5\u6210\u529f\uff0c\u5f53\u524d\u5b9e\u4f8b {count} \u4e2a',
     saveBeforeTest: '\u5730\u5740\u6216\u7ba1\u7406\u5bc6\u94a5\u8fd8\u6ca1\u4fdd\u5b58\uff0c\u8bf7\u5148\u4fdd\u5b58\u518d\u6d4b\u8bd5',
@@ -1392,12 +1389,11 @@ const MACLAWSRV_I18N = {
     tokenForbidden: '\u51ed\u8bc1\u65e0\u6743\u6267\u884c\u8be5\u64cd\u4f5c\uff08HTTP 403\uff09\uff0c\u8bf7\u68c0\u67e5\u7ba1\u7406\u5bc6\u94a5\u662f\u5426\u6b63\u786e',
     notFound: '\u627e\u4e0d\u5230\u5b9e\u4f8b\u6216\u63a5\u53e3\uff08HTTP 404\uff09\uff0c\u8bf7\u68c0\u67e5\u5730\u5740\u662f\u5426\u6b63\u786e\u8f6c\u53d1 /api',
     needUrl: '\u8bf7\u586b\u5199 maclawsrv \u5730\u5740',
+    needConfig: '\u8bf7\u5148\u4fdd\u5b58 maclawsrv \u5730\u5740\u548c\u7ba1\u7406\u5bc6\u94a5',
     badUrl: '\u5730\u5740\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934\uff0c\u4e14\u4e0d\u80fd\u5e26\u8d26\u53f7',
     saved: '\u5df2\u4fdd\u5b58',
     adminSet: '\u7ba1\u7406\u5bc6\u94a5\u5df2\u4fdd\u5b58',
     adminMissing: '\u5c1a\u672a\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5',
-    tokenSet: '\u8bbf\u95ee\u4ee4\u724c\u5df2\u4fdd\u5b58',
-    tokenMissing: '\u5c1a\u672a\u4fdd\u5b58\u8bbf\u95ee\u4ee4\u724c',
     loadFailed: '\u8bfb\u53d6 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}',
     saveFailed: '\u4fdd\u5b58 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}'
   }
@@ -1406,6 +1402,14 @@ const MACLAWSRV_I18N = {
 function maclawsrvText() {
   const lang = (typeof getCurrentLanguage === 'function' && getCurrentLanguage() === 'en') ? 'en' : 'zh';
   return MACLAWSRV_I18N[lang] || MACLAWSRV_I18N.zh;
+}
+
+// Bot settings are tenant-admin routes. A missing profile helper means this
+// file is running outside the admin page, so keep the call working.
+function canManageMaclawsrv() {
+  if (typeof adminProfile !== 'function') return true;
+  const profile = adminProfile();
+  return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
 }
 
 function applyMaclawsrvI18n() {
@@ -1418,7 +1422,7 @@ function applyMaclawsrvI18n() {
   set('maclawsrvConnectionHint', t.hint);
   set('maclawsrvBaseUrlLabel', t.url);
   set('maclawsrvAdminSecretLabel', t.admin);
-  set('maclawsrvAccessTokenLabel', t.token);
+  set('maclawsrvAdminSecretHint', t.adminHint);
   set('maclawsrvConnectionSaveBtn', t.save);
   set('maclawsrvConnectionTestBtn', t.test);
   set('maclawsrvConnectionReloadBtn', t.reload);
@@ -1432,6 +1436,7 @@ function maclawsrvUrlOk(value) {
 }
 
 async function loadMaclawsrvConnection() {
+  if (!canManageMaclawsrv()) return null;
   applyMaclawsrvI18n();
   const status = document.getElementById('maclawsrvConnectionStatus');
   try {
@@ -1442,15 +1447,9 @@ async function loadMaclawsrvConnection() {
       url._loaded = url.value;
     }
     const admin = document.getElementById('maclawsrvAdminSecret');
-    const token = document.getElementById('maclawsrvAccessToken');
     if (admin) admin.value = '';
-    if (token) token.value = '';
     const t = maclawsrvText();
-    if (status) {
-      const adminLine = data && data.admin_secret_set ? t.adminSet : t.adminMissing;
-      const tokenLine = data && data.token_set ? t.tokenSet : t.tokenMissing;
-      status.textContent = adminLine + ' \u00b7 ' + tokenLine + ' \u00b7 ' + t.blank;
-    }
+    if (status) status.textContent = data && data.admin_secret_set ? t.adminSet : t.adminMissing;
     return data;
   } catch (err) {
     const msg = maclawsrvText().loadFailed.replace('{error}', err.message);
@@ -1461,6 +1460,7 @@ async function loadMaclawsrvConnection() {
 }
 
 async function saveMaclawsrvConnection() {
+  if (!canManageMaclawsrv()) return;
   const t = maclawsrvText();
   const base = (document.getElementById('maclawsrvBaseUrl').value || '').trim();
   if (!base) {
@@ -1472,10 +1472,9 @@ async function saveMaclawsrvConnection() {
     return;
   }
   const body = { base_url: base };
-  const admin = document.getElementById('maclawsrvAdminSecret').value || '';
-  const token = document.getElementById('maclawsrvAccessToken').value || '';
+  const adminEl = document.getElementById('maclawsrvAdminSecret');
+  const admin = String(adminEl && adminEl.value || '').trim();
   if (admin !== '') body.admin_secret = admin;
-  if (token !== '') body.access_token = token;
   const button = document.getElementById('maclawsrvConnectionSaveBtn');
   if (button) button.disabled = true;
   try {
@@ -1499,8 +1498,7 @@ function maclawsrvUnsaved() {
   const url = document.getElementById('maclawsrvBaseUrl');
   const typed = String(url && url.value || '').trim().replace(/\/+$/, '');
   const admin = document.getElementById('maclawsrvAdminSecret');
-  const token = document.getElementById('maclawsrvAccessToken');
-  return typed !== maclawsrvStoredUrl() || String(admin && admin.value || '') !== '' || String(token && token.value || '') !== '';
+  return typed !== maclawsrvStoredUrl() || String(admin && admin.value || '').trim() !== '';
 }
 
 function maclawsrvReason(raw) {
@@ -1512,6 +1510,9 @@ function maclawsrvReason(raw) {
 function maclawsrvTestMessage(raw) {
   const text = String(raw || '');
   const t = maclawsrvText();
+  // The same not-configured errors are also shown on the bot page, where they
+  // name this page. Here the admin is already on it, so say what to save.
+  if (text.indexOf('save the MaClawSrv URL') !== -1 || text.indexOf('\u8bf7\u5148\u5728\u7cfb\u7edf\u8bbe\u7f6e\u91cc\u4fdd\u5b58') !== -1) return t.needConfig;
   if (text.indexOf('HTTP 401') !== -1) return t.tokenRejected + maclawsrvReason(text);
   if (text.indexOf('HTTP 403') !== -1) return t.tokenForbidden + maclawsrvReason(text);
   if (text.indexOf('HTTP 404') !== -1 || text.indexOf('check the MaClawSrv URL') !== -1) return t.notFound + maclawsrvReason(text);
@@ -1520,6 +1521,7 @@ function maclawsrvTestMessage(raw) {
 }
 
 async function testMaclawsrvConnection() {
+  if (!canManageMaclawsrv()) return;
   applyMaclawsrvI18n();
   const t = maclawsrvText();
   if (maclawsrvUnsaved()) {

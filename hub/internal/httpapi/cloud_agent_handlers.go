@@ -7,10 +7,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudagent"
+	"github.com/RapidAI/CodeClaw/hub/internal/edgenode"
 	"github.com/RapidAI/CodeClaw/hub/internal/remotecontrol"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -151,10 +154,6 @@ func cloudAgentStream(rc *remotecontrol.Service, svc *cloudagent.Service) http.H
 			writeError(w, http.StatusServiceUnavailable, "OFFLINE", "云端运行时不可用")
 			return
 		}
-		if !cloudagent.LoopbackAddr(r.RemoteAddr) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "云端事件只接受本机")
-			return
-		}
 		payload, err := io.ReadAll(io.LimitReader(r.Body, remoteControlStreamPayloadLimit+1))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID", "云端事件无效")
@@ -176,7 +175,19 @@ func cloudAgentStream(rc *remotecontrol.Service, svc *cloudagent.Service) http.H
 			writeRemoteControlError(w, err)
 			return
 		}
-		if !svc.AdminSecretMatches(r.Context(), grant.TenantID, r.Header.Get("X-MaClaw-Admin-Secret")) {
+		srvTenant, _, srvNode, err := svc.InstanceOwner(r.Context(), grant.TargetAgentID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "没有找到这个云端实例")
+			return
+		}
+		// A node srv streams over the open network; the public connection
+		// stays loopback-only.
+		isNode, authed := svc.SrvAuth(r.Context(), srvTenant, srvNode, r.Header.Get("X-MaClaw-Admin-Secret"))
+		if !isNode && !cloudagent.LoopbackAddr(r.RemoteAddr) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "云端事件只接受本机")
+			return
+		}
+		if !authed {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "管理凭证无效")
 			return
 		}
@@ -215,21 +226,22 @@ func cloudAgentLLMChat(db *sql.DB, svc *cloudagent.Service, identity *auth.Ident
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 			return
 		}
-		if !cloudagent.LoopbackAddr(r.RemoteAddr) {
-			writeError(w, http.StatusForbidden, "FORBIDDEN", "云端运行时不可用")
-			return
-		}
 		if svc == nil || db == nil {
 			writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "云端管理暂时不可用")
 			return
 		}
 		id := strings.TrimSpace(r.Header.Get("X-MaClaw-Cloud-Agent"))
-		tenantID, userID, err := svc.InstanceOwner(r.Context(), id)
+		tenantID, userID, srvNode, err := svc.InstanceOwner(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "没有找到这个云端实例")
 			return
 		}
-		if !svc.AdminSecretMatches(r.Context(), tenantID, r.Header.Get("X-MaClaw-Admin-Secret")) {
+		isNode, authed := svc.SrvAuth(r.Context(), tenantID, srvNode, r.Header.Get("X-MaClaw-Admin-Secret"))
+		if !isNode && !cloudagent.LoopbackAddr(r.RemoteAddr) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "云端运行时不可用")
+			return
+		}
+		if !authed {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid admin secret")
 			return
 		}
@@ -241,5 +253,125 @@ func cloudAgentLLMChat(db *sql.DB, svc *cloudagent.Service, identity *auth.Ident
 		}
 		principal := &auth.ViewerPrincipal{TenantID: tenantID, UserID: userID, Email: email}
 		next(w, r.WithContext(withCloudAgentOwner(r.Context(), principal)))
+	}
+}
+
+// srvNodeView is the node summary both the user chooser and the admin
+// bindings list share: name, a reachable address, and live link state.
+func srvNodeView(node edgenode.Node) map[string]any {
+	address := strings.TrimSpace(node.DirectBase)
+	if address == "" {
+		address = strings.TrimSpace(node.AdvertiseURL)
+	}
+	return map[string]any{
+		"node_id": node.ID,
+		"name":    strings.TrimSpace(node.Name),
+		"address": address,
+		"online":  node.Online,
+	}
+}
+
+// cloudAgentUserSrv serves GET/PUT /api/v1/cloud-agents/srv. The signed-in
+// user picks between the public maclawsrv and one of their own node srvs.
+func cloudAgentUserSrv(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, viewer cloudagent.ViewerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if viewer == nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		principal, err := viewer(r)
+		if err != nil || principal == nil || strings.TrimSpace(principal.UserID) == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		tenantID := strings.TrimSpace(principal.TenantID)
+		userID := strings.TrimSpace(principal.UserID)
+		// GET and PUT answer the same payload so a save never blanks the
+		// client's node list between refreshes.
+		payload := func() map[string]any {
+			nodes := []map[string]any{}
+			if reg != nil {
+				if listed, err := reg.List(r.Context(), tenantID); err == nil {
+					for _, node := range listed {
+						if node.OwnerUserID != userID || !node.HasSrv {
+							continue
+						}
+						if broker != nil {
+							broker.ApplyLive(&node)
+						}
+						nodes = append(nodes, srvNodeView(node))
+					}
+				}
+			}
+			choice := ""
+			if bots != nil {
+				choice = bots.OwnerCloudNodeID(r.Context(), tenantID, userID)
+			}
+			return map[string]any{"node_id": choice, "nodes": nodes}
+		}
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, payload())
+		case http.MethodPut:
+			var in struct {
+				NodeID string `json:"node_id"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID", "请求无效")
+				return
+			}
+			nodeID := strings.TrimSpace(in.NodeID)
+			if nodeID != "" {
+				if reg == nil {
+					writeError(w, http.StatusNotFound, "EDGE_NOT_FOUND", "edge node was not found")
+					return
+				}
+				node, err := reg.Lookup(r.Context(), nodeID)
+				if err != nil || node.TenantID != tenantID || node.OwnerUserID != userID || !node.HasSrv {
+					writeError(w, http.StatusNotFound, "EDGE_NOT_FOUND", "edge node was not found")
+					return
+				}
+			}
+			if bots == nil {
+				writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "云端管理暂时不可用")
+				return
+			}
+			if err := bots.PinOwnerCloudNode(r.Context(), tenantID, userID, nodeID); err != nil {
+				writeError(w, http.StatusBadGateway, "EDGE_NODES", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, payload())
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
+		}
+	}
+}
+
+// cloudAgentAdminSrvBindings serves GET /api/admin/cloud-agents/srv-bindings:
+// every user whose cloud agents are pinned to a private node srv. Users not
+// listed run on the public maclawsrv.
+func cloudAgentAdminSrvBindings(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items := []map[string]any{}
+		if bots != nil {
+			for userID, nodeID := range bots.CloudNodeBindings(r.Context(), AdminTenantID(r.Context())) {
+				item := map[string]any{"user_id": userID, "node_id": nodeID, "scope": "private"}
+				if reg != nil {
+					if node, err := reg.Lookup(r.Context(), nodeID); err == nil {
+						if broker != nil {
+							broker.ApplyLive(&node)
+						}
+						for key, value := range srvNodeView(node) {
+							item[key] = value
+						}
+					}
+				}
+				items = append(items, item)
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return items[i]["user_id"].(string) < items[j]["user_id"].(string)
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }

@@ -46,6 +46,9 @@ type mcpRunSnapshot struct {
 	RemoteUser         string         `json:"ssh_user,omitempty"`
 	RemotePort         int            `json:"ssh_port,omitempty"`
 	RemoteWorkDir      string         `json:"remote_work_dir,omitempty"`
+	Location           string         `json:"location,omitempty"`
+	CloudWorkspaceID   string         `json:"cloud_workspace_id,omitempty"`
+	GrantID            string         `json:"grant_id,omitempty"`
 	Steps              []mcpStepView  `json:"steps,omitempty"`
 	Checks             []mcpCheckView `json:"checks,omitempty"`
 	RunID              string         `json:"run_id,omitempty"`
@@ -723,6 +726,9 @@ func mcpSnapshotFromRun(rec *mcpRunRecord) *mcpRunSnapshot {
 		RemoteUser:         clone.RemoteUser,
 		RemotePort:         clone.RemotePort,
 		RemoteWorkDir:      clone.RemoteWorkDir,
+		Location:           clone.Location,
+		CloudWorkspaceID:   clone.CloudWorkspaceID,
+		GrantID:            clone.GrantID,
 		Steps:              clone.Steps,
 		Checks:             clone.Checks,
 		RunID:              clone.RunID,
@@ -775,6 +781,9 @@ func mcpRunFromSnapshot(snap *mcpRunSnapshot) *mcpRunRecord {
 		RemoteUser:         snap.RemoteUser,
 		RemotePort:         snap.RemotePort,
 		RemoteWorkDir:      snap.RemoteWorkDir,
+		Location:           snap.Location,
+		CloudWorkspaceID:   snap.CloudWorkspaceID,
+		GrantID:            snap.GrantID,
 		Steps:              mcpCloneSteps(snap.Steps),
 		Checks:             mcpCloneChecks(snap.Checks),
 		RunID:              snap.RunID,

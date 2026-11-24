@@ -4,6 +4,7 @@ import {
     isDraftDefault,
     withCloudWorkspace,
     withMachine,
+    withTaskPlace,
     withExpert,
     withLatexTemplate,
     withLocalWorkspace,
@@ -432,6 +433,51 @@ describe('runTaskConfigSend interception', () => {
             projectPath: 'D:/tasks/unified-task',
             agentMode: 'coding_dev',
         }));
+    });
+});
+
+describe('cloud place', () => {
+    it('is the same draft with only the place changed', () => {
+        const expert = withExpert(withTaskType(defaultTaskDraft(), 'coding'), 'exp-1', '编程专家');
+        const cloud = withTaskPlace(expert, 'cloud');
+        expect(cloud.place).toBe('cloud');
+        expect(cloud.machine).toBeNull();
+        expect(cloud.expertId).toBe('exp-1');
+        expect(cloud.taskType).toBe('coding');
+        expect(cloud.workspace.kind).toBe('local');
+        expect(isDraftDefault(cloud)).toBe(false);
+        expect(withTaskPlace(cloud, 'local').place).toBe('local');
+        expect(withMachine(cloud, { grantId: 'gb', machineName: 'B机' }).place).toBe('local');
+    });
+
+    it('creates a cloud coding task and does not create a local or cloud-workspace task', async () => {
+        const createCloudAgentTask = vi.fn().mockResolvedValue({});
+        const bindings = makeBindings({ createCloudAgentTask });
+        const draft = withTaskPlace(withTaskType(withExpert(defaultTaskDraft(), 'exp-1', '编程专家'), 'coding'), 'cloud');
+        const result = await runTaskConfigSend({ text: '整理这个仓库', draft, bindings });
+        expect(result.ok).toBe(true);
+        expect(createCloudAgentTask).toHaveBeenCalledWith({
+            name: '整理这个仓库',
+            kind: 'coding',
+            text: '整理这个仓库',
+        });
+        expect(bindings.createTaskUnified).not.toHaveBeenCalled();
+        expect(bindings.openTaskLaunch).not.toHaveBeenCalled();
+    });
+
+    it('maps a chat place to a session instance', async () => {
+        const createCloudAgentTask = vi.fn().mockResolvedValue({});
+        const bindings = makeBindings({ createCloudAgentTask });
+        const result = await runTaskConfigSend({ text: '写个总结', draft: withTaskPlace(defaultTaskDraft(), 'cloud'), bindings });
+        expect(result.ok).toBe(true);
+        expect(createCloudAgentTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session' }));
+    });
+
+    it('reports a cloud runtime that is not ready', async () => {
+        const bindings = makeBindings();
+        const result = await runTaskConfigSend({ text: '写个总结', draft: withTaskPlace(defaultTaskDraft(), 'cloud'), bindings });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain('云端运行时不可用');
     });
 });
 

@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'agentGroup' | 'sharedPages' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'github' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'pdfStyles' | 'embedding' | 'memory' | 'botCatalog' | 'agentGroup' | 'sharedPages' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'github' | 'cloudAgent' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -30,6 +30,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'im',
     'email',
     'github',
+    'cloudAgent',
     'hardware',
     'redeem',
     'tokenBank',
@@ -119,6 +120,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     im: 'integration',
     email: 'integration',
     github: 'integration',
+    cloudAgent: 'integration',
     hardware: 'integration',
 };
 
@@ -165,6 +167,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     system: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 1.5h2.4l.3 1.8.9.4 1.5-1 1.7 1.7-1 1.5.4.9 1.8.3v2.4l-1.8.3-.4.9 1 1.5-1.7 1.7-1.5-1-.9.4-.3 1.8H6.8l-.3-1.8-.9-.4-1.5 1-1.7-1.7 1-1.5-.4-.9-1.8-.3V6.8l1.8-.3.4-.9-1-1.5 1.7-1.7 1.5 1 .9-.4z"/><circle cx="8" cy="8" r="2"/></svg>',
     hardware: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/><circle cx="8" cy="8" r="1.5"/></svg>',
     assetManagement: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2 6.5h12M5 10h3"/></svg>',
+    cloudAgent: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 11.5a2.8 2.8 0 0 1-.4-5.57A3.6 3.6 0 0 1 11.5 5a2.9 2.9 0 0 1-.3 6.5z"/><path d="M6 13.8h4"/></svg>',
 };
 
 const textForLang = localizeText;
@@ -309,6 +312,12 @@ export const getSettingsTabOptions = (lang: string, options: SettingsTabVisibili
             label: 'GitHub',
             desc: textForLang(lang, 'Connect a GitHub account for skill search, update checks and code cloning', '连接 GitHub 账号，用于技能搜索、更新检测与代码克隆', '連接 GitHub 帳號，用於技能搜尋、更新檢測與程式碼複製'),
             icon: settingsTabIcons.github,
+        },
+        {
+            id: 'cloudAgent' as const,
+            label: textForLang(lang, 'Cloud Agent', '云端 Agent', '雲端 Agent'),
+            desc: textForLang(lang, 'Pick public or private maclawsrv for cloud tasks, and install your own', '云端任务走公有还是私有 maclawsrv，并可一键安装自己的', '雲端任務走公有還是私有 maclawsrv，並可一鍵安裝自己的'),
+            icon: settingsTabIcons.cloudAgent,
         },
         {
             id: 'hardware' as const,

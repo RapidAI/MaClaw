@@ -86,6 +86,7 @@ describe('cloud agent page', () => {
         expect(bar.slice(localAt, cloudAt)).toContain('cloudAvailable ?');
         expect(sidebar).toContain('cloudAvailable={cloudAgentsEnabled}');
         expect(sidebar).toContain('catalog.enabled');
+        expect(sidebar.includes('<CloudAgentManage')).toBe(false);
         expect(bar.slice(cloudAt, cloudAt + 400)).toContain('云端');
         expect(bar.slice(cloudAt, cloudAt + 400)).not.toContain('云端工作区');
     });

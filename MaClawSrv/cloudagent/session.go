@@ -76,11 +76,20 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		}
 		return json.Marshal(map[string]any{"tasks": tasks})
 	case "cloud_get_task":
-		lines, err := inst.book.History(payload.TaskID)
+		lines, flags, err := inst.book.history(payload.TaskID)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(map[string]any{"task_id": payload.TaskID, "messages": lines})
+		turnStatus, err := inst.book.latestTurn(payload.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{
+			"task_id":     payload.TaskID,
+			"messages":    lines,
+			"as_error":    flags,
+			"turn_status": turnStatus,
+		})
 	case "cloud_rename_task":
 		title := payload.Title
 		if title == "" {

@@ -42,7 +42,7 @@ func writeBotError(w http.ResponseWriter, err error) {
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
 	case errors.Is(err, botmgmt.ErrAdminSecretMissing):
-		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "请先在 Bot 管理里保存 MaClawSrv 管理密钥")
+		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", botmgmt.AdminSecretHint)
 	case errors.Is(err, botmgmt.ErrNotConfigured):
 		writeError(w, http.StatusConflict, "MACLAWSRV_NOT_CONFIGURED", "save the MaClawSrv URL and admin secret first")
 	case errors.Is(err, botmgmt.ErrNameTaken):
@@ -97,7 +97,7 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		// turn could have reached MaClawSrv because the tenant never saved a
 		// connection; say what the admin must do instead of a bare
 		// "unavailable" that reads like a crash.
-		message = "bot 服务还没有对接 MaClawSrv，请联系管理员在 Bot 管理里完成配置"
+		message = "bot 服务还没有对接 MaClawSrv，请联系管理员在系统设置里完成配置"
 	case errors.Is(err, botmgmt.ErrNodeOffline):
 		status, code, message = http.StatusBadGateway, "NODE_OFFLINE", botmgmt.ErrNodeOffline.Error()
 	case errors.Is(err, botmgmt.ErrSettingsUnavailable),

@@ -26,6 +26,8 @@ export interface RunWindowDraftPayload {
     latexTemplateName: string;
     llmProviderId?: string;
     llmModel?: string;
+    /** 云端位置。缺省是本机。与工作空间的 cloud 不是同一件事。 */
+    place?: 'local' | 'cloud';
 }
 
 export interface RunWindowTaskRecord {
@@ -137,6 +139,7 @@ export function runWindowCreateRequest(name: string, prompt: string, initialMess
                 llmProviderId: String(draft.llmProviderId || "").trim(),
                 llmModel: String(draft.llmModel || "").trim(),
             } : {}),
+            ...(draft.place === "cloud" ? { place: "cloud" as const } : {}),
         },
     };
 }
@@ -170,6 +173,7 @@ export function taskDraftFromRunWindow(task: RunWindowTaskRecord): TaskDraft {
         latexTemplateName: stored.latexTemplateName || null,
         llmProviderId: stored.llmProviderId || "",
         llmModel: stored.llmModel || "",
+        place: stored.place === "cloud" ? "cloud" : "local",
         runWindow: immediateRunWindow(),
     };
 }

@@ -45,6 +45,7 @@ import {
     IMSettingsPanel,
     EmailSettingsPanel,
     GitHubSettingsPanel,
+    CloudAgentSettingsPanel,
     ThirdPartyAccessSettings,
     BuddySettingsSection,
 } from '../../appLazyComponents';
@@ -566,6 +567,11 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     saveRemoteConfigField={saveRemoteConfigField}
                     showToastMessage={showToastMessage}
                 />
+            ));
+            break;
+        case 'cloudAgent':
+            body = wrapPanel('settings-content settings-panel', (
+                <CloudAgentSettingsPanel lang={lang} showToastMessage={showToastMessage} />
             ));
             break;
         case 'tokenBank':

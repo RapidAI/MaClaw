@@ -2236,6 +2236,46 @@ func (a *App) ensureLocalNodeBinary() {
 	a.log("Successfully copied node.exe to local directory.")
 }
 
+// installerLaunchAttempts / installerLaunchRetryDelay bound the transient
+// launch retry. A just-downloaded installer is a prime target for antivirus
+// and indexer opens, and on slower machines those locks hold the file past
+// the first ShellExecuteExW call — a sharing or access error there usually
+// clears within a second or two. Without the retry every such machine ends
+// on the manual "install now" fallback for a failure a moment would fix.
+const (
+	installerLaunchAttempts   = 4
+	installerLaunchRetryDelay = 1 * time.Second
+)
+
+// installerLaunchErrRetryable reports whether a failed launch is worth
+// another attempt. File-lock and shell-busy failures are transient; a
+// declined elevation prompt is handled separately and never reaches here.
+func installerLaunchErrRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var shellErr *shellExecuteError
+	if errors.As(err, &shellErr) {
+		switch shellErr.code {
+		case 2, 3, 5, 26, 28, 30: // SE_ERR_FNF, SE_ERR_PNF, SE_ERR_ACCESSDENIED, SE_ERR_SHARE, SE_ERR_DDETIMEOUT, SE_ERR_DDEBUSY
+			return true
+		}
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case windows.ERROR_FILE_NOT_FOUND,
+			windows.ERROR_PATH_NOT_FOUND,
+			windows.ERROR_ACCESS_DENIED,
+			windows.ERROR_SHARING_VIOLATION,
+			windows.ERROR_LOCK_VIOLATION:
+			return true
+		}
+	}
+	return false
+}
+
 // LaunchInstallerAndExit hands control to the installer and quits.
 //
 // targetVersion is the release the installer will install. It is recorded
@@ -2270,19 +2310,55 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	launched := false
 	cancelled := false
 	var lastErr error
-	for _, verb := range verbs {
-		err := shellExecuteFile(verb, verifiedPath, windowsInstallerSilentArgs, filepath.Dir(verifiedPath))
-		if err == nil {
+	for attempt := 1; attempt <= installerLaunchAttempts && !launched && !cancelled; attempt++ {
+		if attempt > 1 {
+			a.log(fmt.Sprintf("Retrying installer launch after transient failure (attempt %d/%d)", attempt, installerLaunchAttempts))
+			time.Sleep(installerLaunchRetryDelay)
+		}
+		retryable := false
+		for _, verb := range verbs {
+			err := shellExecuteFile(verb, verifiedPath, windowsInstallerSilentArgs, filepath.Dir(verifiedPath))
+			if err == nil {
+				launched = true
+				break
+			}
+			if errors.Is(err, windows.ERROR_CANCELLED) {
+				a.log(fmt.Sprintf("ShellExecuteExW %s cancelled at the elevation prompt", verb))
+				cancelled = true
+				break
+			}
+			a.log(fmt.Sprintf("ShellExecuteExW %s failed: %v", verb, err))
+			lastErr = err
+			if installerLaunchErrRetryable(err) {
+				retryable = true
+			}
+		}
+		if launched || cancelled {
+			break
+		}
+		// Last resort inside the same attempt: start the installer directly
+		// with the same silent switches. It only succeeds when this process
+		// is already elevated, but it is the closest equivalent to the
+		// ShellExecute path.
+		cmd := exec.Command(verifiedPath, windowsInstallerSilentArgList...)
+		if err := cmd.Start(); err != nil {
+			a.log(fmt.Sprintf("Direct installer launch failed: %v", err))
+			if installerLaunchErrRetryable(err) {
+				retryable = true
+			}
+			if lastErr != nil {
+				lastErr = fmt.Errorf("%v; direct launch also failed: %w", lastErr, err)
+			} else {
+				lastErr = err
+			}
+		} else {
 			launched = true
+		}
+		if !launched && !retryable {
+			// Terminal failure (e.g. a genuinely bad path): retrying would
+			// only delay the same error.
 			break
 		}
-		if errors.Is(err, windows.ERROR_CANCELLED) {
-			a.log(fmt.Sprintf("ShellExecuteExW %s cancelled at the elevation prompt", verb))
-			cancelled = true
-			break
-		}
-		a.log(fmt.Sprintf("ShellExecuteExW %s failed: %v", verb, err))
-		lastErr = err
 	}
 
 	if cancelled {
@@ -2290,16 +2366,7 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	}
 
 	if !launched {
-		// Last resort: start the installer directly with the same silent
-		// switches. It only succeeds when this process is already elevated,
-		// but it is the closest equivalent to the ShellExecute path.
-		cmd := exec.Command(verifiedPath, windowsInstallerSilentArgList...)
-		if err := cmd.Start(); err != nil {
-			if lastErr != nil {
-				return fmt.Errorf("failed to launch installer %s: %v; direct launch also failed: %w; run it manually to finish the update", verifiedPath, lastErr, err)
-			}
-			return fmt.Errorf("failed to launch installer %s: %w; run it manually to finish the update", verifiedPath, err)
-		}
+		return fmt.Errorf("failed to launch installer %s: %v; run it manually to finish the update", verifiedPath, lastErr)
 	}
 
 	// Record only after the installer is actually running. A declined elevation
@@ -2340,6 +2407,15 @@ type shellExecuteInfoW struct {
 	hotKey     uint32
 	iconOrMon  uintptr
 	process    uintptr
+}
+
+// shellExecuteError reports a ShellExecuteExW failure. hInstApp carries the
+// SE_ERR_* code; keeping it typed lets the update launch retry classify the
+// failure instead of matching on a formatted string.
+type shellExecuteError struct{ code uintptr }
+
+func (e *shellExecuteError) Error() string {
+	return fmt.Sprintf("shell error code %d", e.code)
 }
 
 // shellExecuteFile runs file through the shell with the given verb.
@@ -2397,7 +2473,7 @@ func shellExecuteFile(verb, file, params, dir string) error {
 	// GetLastError is sometimes unset even though hInstApp carries a
 	// SE_ERR_* failure code.
 	if info.instApp > 0 && info.instApp <= 32 {
-		return fmt.Errorf("shell error code %d", info.instApp)
+		return &shellExecuteError{code: info.instApp}
 	}
 	return fmt.Errorf("ShellExecuteExW failed")
 }

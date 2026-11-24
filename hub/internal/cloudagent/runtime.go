@@ -69,7 +69,7 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			}
 		}
 	}
-	conn, err := d.svc.srvConn(ctx, grant.TenantID, grant.TargetUserID)
+	conn, err := d.svc.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
 	if err != nil {
 		_ = d.svc.MarkProvisionFailed(ctx, inst.ID)
 		return nil, offlineStatus()
@@ -136,10 +136,28 @@ func acceptedTurn(body, raw json.RawMessage) (taskID, requestID string, accepted
 	return taskID, strings.TrimSpace(ack.RequestID), ack.Accepted && strings.TrimSpace(ack.RequestID) != "" && taskID != ""
 }
 
-func (d *Dispatcher) provision(ctx context.Context, inst Instance) error {
+func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 	conn, err := d.svc.srvConn(ctx, inst.TenantID, inst.OwnerUserID)
 	if err != nil {
 		return err
+	}
+	if conn.NodeID != inst.SrvNodeID {
+		if err := d.svc.setSrvNode(ctx, inst.ID, conn.NodeID); err != nil {
+			return err
+		}
+		inst.SrvNodeID = conn.NodeID
+	}
+	loopback := hubLoopback()
+	if conn.NodeID != "" {
+		// A private srv cannot reach hub's loopback; it calls the public
+		// origin directly. Hub accepts its link secret from any address.
+		// Without a configured public origin the instance could never call
+		// back, so fail instead of provisioning a dead agent.
+		origin := hubPublicOrigin()
+		if origin == "" {
+			return fail(503, "OFFLINE", "私有 maclawsrv 需要 Hub 先配置 MACLAW_HUB_URL 公网地址")
+		}
+		loopback = origin
 	}
 	_, err = d.call(ctx, http.MethodPut, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), map[string]any{
 		"id":            inst.ID,
@@ -150,7 +168,7 @@ func (d *Dispatcher) provision(ctx context.Context, inst Instance) error {
 		"llm_mode":      inst.LLMMode,
 		"llm_model":     inst.LLMModel,
 		"hub_origin":    hubPublicOrigin(),
-		"hub_loopback":  hubLoopback(),
+		"hub_loopback":  loopback,
 	})
 	return err
 }
@@ -172,7 +190,17 @@ func (d *Dispatcher) call(ctx context.Context, method string, conn srvConn, path
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("X-MaClaw-Admin-Secret", conn.AdminSecret)
-	resp, err := d.client.Do(req)
+	client := d.client
+	if conn.NodeID != "" {
+		if d.svc.NodeHTTP == nil {
+			return nil, failOffline()
+		}
+		client = d.svc.NodeHTTP(conn.NodeID)
+		if client == nil {
+			return nil, failOffline()
+		}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +301,7 @@ func LoopbackAddr(remote string) bool {
 
 func (s *Service) gitPublic(ctx context.Context, inst Instance) GitPublic {
 	unknown := GitPublic{Status: "unknown"}
-	conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID)
+	conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
 	if err != nil {
 		return unknown
 	}
@@ -301,7 +329,7 @@ func (s *Service) ConnectGit(ctx context.Context, tenantID, userID, id string, i
 	if err := validateGit(in); err != nil {
 		return GitPublic{}, err
 	}
-	conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID)
+	conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
 	if err != nil {
 		return GitPublic{}, failOffline()
 	}
@@ -326,7 +354,7 @@ func (s *Service) DisconnectGit(ctx context.Context, tenantID, userID, id string
 	if inst.Kind != KindCoding {
 		return failSessionGit()
 	}
-	conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID)
+	conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
 	if err != nil {
 		return failOffline()
 	}
@@ -395,7 +423,7 @@ func (s *Service) SetCustomLLM(ctx context.Context, tenantID, userID, id string,
 	if IsHubLLMURL(rawURL, hubHosts) {
 		return Instance{}, failInvalid("自定义模型不能指向本 Hub 的官方接口")
 	}
-	conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID)
+	conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
 	if err != nil {
 		return Instance{}, failOffline()
 	}

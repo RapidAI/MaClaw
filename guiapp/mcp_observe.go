@@ -248,13 +248,16 @@ func (a *App) mcpAssignPlanSession(view mcpTaskView) mcpTaskView {
 		// desktop turn is not stuck on needs_confirmation. mcpCommitRun
 		// would force status_version to at least 1.
 		a.mcpRuns[path] = &mcpRunRecord{
-			ProjectPath:   path,
-			Name:          view.Name,
-			Mode:          view.Mode,
-			Status:        mcpStatusIdle,
-			Workspace:     firstNonEmpty(view.workspace, view.WorkingDir),
-			RunID:         id,
-			StatusVersion: view.StatusVersion,
+			ProjectPath:      path,
+			Name:             view.Name,
+			Mode:             view.Mode,
+			Location:         view.Location,
+			CloudWorkspaceID: view.CloudWorkspaceID,
+			GrantID:          view.GrantID,
+			Status:           mcpStatusIdle,
+			Workspace:        firstNonEmpty(view.workspace, view.WorkingDir),
+			RunID:            id,
+			StatusVersion:    view.StatusVersion,
 		}
 		persist = true
 	}
@@ -364,6 +367,7 @@ func (a *App) mcpLiveConfirmationPending(projectPath string) bool {
 }
 
 func (a *App) mcpReturnTask(view mcpTaskView) mcpTaskView {
+	view = mcpEnsureLocation(view)
 	if a == nil {
 		return view
 	}
@@ -556,6 +560,11 @@ func (a *App) mcpPendingPlanStamp(projectPath string) string {
 }
 
 func (a *App) mcpEnsureConfirmationID(view mcpTaskView) mcpTaskView {
+	// The cloud confirmation id is the instance's own card. Minting a local
+	// id would change it on every read and write the bookkeeping record.
+	if mcpIsCloudAgent(view) || mcpIsRemoteDevice(view) {
+		return view
+	}
 	if strings.TrimSpace(view.ConfirmationKind) == "" && len(view.Commands) == 0 {
 		// retry_steps reads the id stored on a real round. A read must hand
 		// that id back, and must not mint one or clear a record that has none.
@@ -1030,6 +1039,7 @@ func (a *App) mcpArtifactRoot(projectPath string) (string, mcpTaskView, error) {
 	if a == nil || path == "" {
 		return "", mcpTaskView{}, errors.New("没有找到这个任务")
 	}
+	a.mcpLoadDurable()
 	view, ok := a.mcpViewFromRegistry(path)
 	if !ok {
 		view = mcpTaskView{ProjectPath: path}
@@ -1055,6 +1065,15 @@ func (a *App) mcpArtifactRoot(projectPath string) (string, mcpTaskView, error) {
 }
 
 func mcpRemoteArtifactError(view mcpTaskView) error {
+	switch strings.TrimSpace(view.Location) {
+	case mcpLocationCloud:
+		return errors.New("云端 agent 上的文件不从本机读取")
+	case mcpLocationRemoteDevice:
+		return errors.New("远程设备上的文件不从本机读取")
+	}
+	if strings.TrimSpace(view.GrantID) != "" {
+		return errors.New("远程设备上的文件不从本机读取")
+	}
 	if view.Mode == taskRemoteCodingDevTag || strings.TrimSpace(view.RemoteHost) != "" {
 		return errors.New("远程工作目录在 SSH 主机上，不从本机读取")
 	}
@@ -1688,10 +1707,29 @@ func (a *App) mcpReplayRequest(ctx context.Context, req *mcpClientRequest) (mcpT
 func (a *App) mcpRequestSessionView(path, runID string) (mcpTaskView, bool) {
 	path = normalizeProjectSessionPath(path)
 	runID = strings.TrimSpace(runID)
+	var view mcpTaskView
+	var ok bool
 	if runID != "" {
-		return a.mcpViewForRun(path, runID)
+		view, ok = a.mcpViewForRun(path, runID)
+	} else {
+		view, ok = a.mcpViewFromRegistry(path)
 	}
-	return a.mcpViewFromRegistry(path)
+	if !ok {
+		return mcpTaskView{}, false
+	}
+	// The stored row is idle on purpose. Replay and get_request have to
+	// show the live task, not that bookkeeping row.
+	if mcpIsCloudAgent(view) {
+		if live, err := a.mcpRefreshCloudAgentTask(view); err == nil {
+			return a.mcpFinishDelegatedRead(view, live), true
+		}
+	}
+	if mcpIsRemoteDevice(view) {
+		if live, err := a.mcpRefreshRemoteDeviceTask(view); err == nil {
+			return a.mcpFinishDelegatedRead(view, live), true
+		}
+	}
+	return view, true
 }
 
 func (a *App) mcpGetRequest(ctx context.Context, clientRequestID string) (mcpRequestView, error) {

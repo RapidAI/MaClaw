@@ -189,6 +189,15 @@ export interface TaskConfigSendBindings {
     }) => Promise<{ projectPath: string; warning?: string }>;
     /** 打开对方电脑上刚创建的任务（展示远程会话）。 */
     openRemoteMachineTask?: (args: { grantId: string; projectPath: string }) => void;
+    /**
+     * 位置 = 云端：创建云端实例并在同一个助手里打开，首条消息发到该实例。
+     * 不走本机 CreateTaskUnified，也不写 cloud_workspace_id。
+     */
+    createCloudAgentTask?: (args: {
+        name: string;
+        kind: 'session' | 'coding';
+        text: string;
+    }) => Promise<{ id?: string; warning?: string } | void>;
 }
 
 export type TaskConfigSendResult =
@@ -246,9 +255,26 @@ export async function runTaskConfigSend(args: {
     }
     if (!shouldCreateUnifiedTask(draft) && args.force !== true) return { ok: true };
     const opts = draftToTaskCreateOptions(trimmed, draft);
+    // 云端位置与本机共用这一份草稿。类型决定会话/编程，正文是首条消息。
+    // 远控机器优先：选了对方电脑就不再走云端。
+    const machine = draft.machine || null;
+    if (!machine?.grantId && draft.place === 'cloud') {
+        if (!bindings.createCloudAgentTask) {
+            return { ok: false, error: tailText(lang, 'Cloud runtime is unavailable', '云端运行时不可用') };
+        }
+        try {
+            const created = await bindings.createCloudAgentTask({
+                name: opts.name,
+                kind: draft.taskType === 'coding' ? 'coding' : 'session',
+                text: initialMessage,
+            });
+            return { ok: true, ...(created?.warning ? { warning: created.warning } : {}) };
+        } catch (err) {
+            return { ok: false, error: errorMessage(err) || tailText(lang, 'Failed to create the cloud task', '云端任务没有创建') };
+        }
+    }
     // 远控被控机器目标：remote_control create_task 建任务 + send_message 发
     // 首条指令，随后打开对方电脑上的任务——不走本机 CreateTaskUnified。
-    const machine = draft.machine || null;
     if (machine?.grantId) {
         if (!bindings.createRemoteMachineTask) {
             return { ok: false, error: tailText(lang, "Remote control is not ready", "远程控制尚未就绪") };

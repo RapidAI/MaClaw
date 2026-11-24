@@ -40,6 +40,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'assetManagement',
     'tokenBank',
     'email',
+    'cloudAgent',
 ] as const satisfies readonly SettingsTabId[];
 
 const needsConfigSet: ReadonlySet<string> = new Set(SETTINGS_TABS_NEEDING_CONFIG);

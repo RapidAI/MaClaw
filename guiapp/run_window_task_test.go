@@ -1,10 +1,13 @@
 package guiapp
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -850,5 +853,443 @@ CREATE TRIGGER run_param_audit_delete AFTER DELETE ON run_window_workflow_params
 	got, err := backfilled.Get("window-a")
 	if err != nil || got.Name != "first edited" || got.Draft.WorkflowParams["topic"] != "updated" {
 		t.Fatalf("backfilled task = %#v, %v", got, err)
+	}
+}
+
+func TestCloudRunWindowIdentity(t *testing.T) {
+	id := "cag_" + strings.Repeat("ab", 16)
+	path := "cloud-agent:" + id
+	if got := cloudAgentInstanceFromProjectPath(path); got != id {
+		t.Fatalf("instance = %q, want %s", got, id)
+	}
+	if got := runWindowSessionForStart(path, "expert-9"); got != "cloud-agent:"+id {
+		t.Fatalf("session = %q, want the cloud instance even when an expert is on the draft", got)
+	}
+	if got := cloudAgentInstanceFromRunWindowSession("cloud-agent:" + id); got != id {
+		t.Fatalf("session instance = %q", got)
+	}
+	if cloudAgentInstanceFromProjectPath("cloud-agent:"+id+":task-1") != "" {
+		t.Fatal("a stream key is not the scheduled instance")
+	}
+	if cloudAgentInstanceFromProjectPath(`D:\tasks\notes`) != "" {
+		t.Fatal("a local path was read as a cloud instance")
+	}
+	if got := runWindowSessionForStart(`D:\tasks\notes`, "expert-9"); got != expertSessionUserID("expert-9") {
+		t.Fatalf("local expert session = %q", got)
+	}
+	if got := runWindowSessionForStart(`D:\tasks\notes`, ""); got != projectSessionOwnerID(`D:\tasks\notes`) {
+		t.Fatalf("local session = %q", got)
+	}
+}
+
+func TestCloudRunWindowTurnFinished(t *testing.T) {
+	if cloudRunWindowTurnFinished("running", true, true) {
+		t.Fatal("a running cloud turn was treated as finished")
+	}
+	if cloudRunWindowTurnFinished("provisioning", true, true) {
+		t.Fatal("a provisioning instance was treated as finished")
+	}
+	if !cloudRunWindowTurnFinished("idle", true, true) {
+		t.Fatal("an idle instance still has its turn open")
+	}
+	if !cloudRunWindowTurnFinished("stopped", true, true) || !cloudRunWindowTurnFinished("provision_failed", true, true) {
+		t.Fatal("a stopped or failed instance is still executing")
+	}
+	if cloudRunWindowTurnFinished("idle", true, false) {
+		t.Fatal("a failed Hub lookup finished the scheduled row")
+	}
+	if !cloudRunWindowTurnFinished("", false, true) {
+		t.Fatal("a deleted instance stayed running")
+	}
+	started := time.Now()
+	if cloudRunWindowObservedFinished("", false, true, started.Add(-time.Second), started) {
+		t.Fatal("a list from before the task started deleted the new instance")
+	}
+	if !cloudRunWindowObservedFinished("idle", true, true, started.Add(time.Second), started) {
+		t.Fatal("an idle status read after the start was ignored")
+	}
+	if cloudRunWindowObservedFinished("running", true, true, started.Add(time.Second), started) {
+		t.Fatal("a running status read after the start finished the row")
+	}
+}
+
+func TestCloudRunWindowLastTaskID(t *testing.T) {
+	if got := lastCloudTaskID(`{"tasks":[{"id":"task-1"},{"id":" task-2 "}]}`); got != "task-2" {
+		t.Fatalf("last task = %q", got)
+	}
+	if lastCloudTaskID(`{"tasks":[]}`) != "" || lastCloudTaskID("nope") != "" {
+		t.Fatal("missing tasks returned an id")
+	}
+}
+
+func resetCloudStopFlightsForTest() {
+	cloudStopFlights.mu.Lock()
+	cloudStopFlights.byID = nil
+	cloudStopFlights.mu.Unlock()
+}
+
+func TestCloudRunWindowStopFlight(t *testing.T) {
+	resetCloudStopFlightsForTest()
+	t.Cleanup(resetCloudStopFlightsForTest)
+	const id = "cag_flight"
+	start, accepted, err := cloudStopBegin(id)
+	if !start || accepted || err != nil {
+		t.Fatalf("begin = start %v accepted %v err %v", start, accepted, err)
+	}
+	start, accepted, err = cloudStopBegin(id)
+	if start || accepted || err != nil {
+		t.Fatalf("second begin = start %v accepted %v err %v", start, accepted, err)
+	}
+	cloudStopDropFinished(id)
+	start, _, _ = cloudStopBegin(id)
+	if start {
+		t.Fatal("drop removed an in-flight cancel")
+	}
+	cloudStopFinish(id, nil)
+	start, accepted, err = cloudStopBegin(id)
+	if start || !accepted || err != nil {
+		t.Fatalf("finished begin = start %v accepted %v err %v", start, accepted, err)
+	}
+	start, _, _ = cloudStopBegin(id)
+	if !start {
+		t.Fatal("a read result did not allow the next cancel")
+	}
+	stopErr := errors.New("云端运行时不可用")
+	cloudStopFinish(id, stopErr)
+	start, accepted, err = cloudStopBegin(id)
+	if start || accepted || !errors.Is(err, stopErr) {
+		t.Fatalf("failed begin = start %v accepted %v err %v", start, accepted, err)
+	}
+	start, _, _ = cloudStopBegin(id)
+	if !start {
+		t.Fatal("a read failure did not allow the next cancel")
+	}
+	cloudStopFinish(id, nil)
+	cloudStopDropFinished(id)
+	start, _, _ = cloudStopBegin(id)
+	if !start {
+		t.Fatal("an unread result stayed behind after the task was gone")
+	}
+	cloudStopFinish(id, nil)
+}
+
+func TestCloudRunWindowListDoesNotWaitForCancel(t *testing.T) {
+	resetCloudStopFlightsForTest()
+	t.Cleanup(resetCloudStopFlightsForTest)
+	m := newTestRunWindowManager(t)
+	now := time.Now().Truncate(time.Minute)
+	start := now.Add(time.Hour)
+	end := start.Add(time.Hour)
+	instanceID := "cag_" + strings.Repeat("ab", 16)
+	session := "cloud-agent:" + instanceID
+	cloudID, err := m.Create(RunWindowCreateRequest{
+		Prompt:  "云端定时",
+		StartAt: start.Format("2006-01-02T15:04"),
+		EndAt:   end.Format("2006-01-02T15:04"),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, err := m.Create(RunWindowCreateRequest{
+		Prompt:  "本机定时",
+		StartAt: start.Format("2006-01-02T15:04"),
+		EndAt:   end.Format("2006-01-02T15:04"),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Claim(cloudID, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Claim(localID, start); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkStarted(cloudID, session, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkStarted(localID, `D:\tasks\notes`, "desktop-user:D:\\tasks\\notes"); err != nil {
+		t.Fatal(err)
+	}
+	// The window has been running longer than the local attach grace, and
+	// its end has passed. A local miss stops the row. A cloud miss stays
+	// until the Hub cancel actually returns.
+	startedAt := time.Now().Add(-10 * time.Minute)
+	endedAt := startedAt
+	m.mu.Lock()
+	for _, id := range []string{cloudID, localID} {
+		task, _, findErr := m.find(id)
+		if findErr != nil {
+			m.mu.Unlock()
+			t.Fatal(findErr)
+		}
+		task.StartedAt = &startedAt
+		task.EndAt = &endedAt
+	}
+	m.mu.Unlock()
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	done := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		closeRelease()
+		select {
+		case <-started:
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+		default:
+		}
+	}()
+	m.pauseRun = func(gotSession string) (bool, error) {
+		if cloudAgentInstanceFromRunWindowSession(gotSession) == "" {
+			return false, nil
+		}
+		begin, accepted, beginErr := cloudStopBegin(instanceID)
+		if !begin {
+			return accepted, beginErr
+		}
+		go func() {
+			defer close(done)
+			close(started)
+			<-release
+			cloudStopFinish(instanceID, nil)
+			m.sweep(time.Now())
+			cloudStopDropFinished(instanceID)
+		}()
+		return false, nil
+	}
+
+	listDone := make(chan []RunWindowTask, 1)
+	go func() {
+		listDone <- m.List()
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cloud cancel did not start")
+	}
+	var listed []RunWindowTask
+	select {
+	case listed = <-listDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listing scheduled tasks waited on the cloud cancel")
+	}
+	var cloudStatus, localStatus string
+	for _, task := range listed {
+		switch task.ID {
+		case cloudID:
+			cloudStatus = task.Status
+		case localID:
+			localStatus = task.Status
+		}
+	}
+	if cloudStatus != runWindowRunning {
+		t.Fatalf("cloud row = %s, want running while the cancel is in flight", cloudStatus)
+	}
+	if localStatus != runWindowStopped {
+		t.Fatalf("local row = %s, want stopped once its grace has passed", localStatus)
+	}
+	closeRelease()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cloud cancel did not finish")
+	}
+	got, err := m.Get(cloudID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != runWindowStopped {
+		t.Fatalf("cloud row after cancel = %s", got.Status)
+	}
+}
+
+func TestCloudRunWindowFailedCancelRetries(t *testing.T) {
+	m := newTestRunWindowManager(t)
+	now := time.Now().Truncate(time.Minute)
+	start := now.Add(time.Hour)
+	end := start.Add(time.Hour)
+	retrySession := "cloud-agent:cag_" + strings.Repeat("cd", 16)
+	giveUpSession := "cloud-agent:cag_" + strings.Repeat("ef", 16)
+	retryID, err := m.Create(RunWindowCreateRequest{
+		Prompt:  "云端取消会再试",
+		StartAt: start.Format("2006-01-02T15:04"),
+		EndAt:   end.Format("2006-01-02T15:04"),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	giveUpID, err := m.Create(RunWindowCreateRequest{
+		Prompt:  "云端取消到点放弃",
+		StartAt: start.Format("2006-01-02T15:04"),
+		EndAt:   end.Format("2006-01-02T15:04"),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, err := m.Create(RunWindowCreateRequest{
+		Prompt:  "本机取消失败",
+		StartAt: start.Format("2006-01-02T15:04"),
+		EndAt:   end.Format("2006-01-02T15:04"),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{retryID, giveUpID} {
+		if _, err := m.Claim(id, start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := m.Claim(localID, start); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkStarted(retryID, retrySession, retrySession); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkStarted(giveUpID, giveUpSession, giveUpSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkStarted(localID, `D:\tasks\notes`, "desktop-user:D:\\tasks\\notes"); err != nil {
+		t.Fatal(err)
+	}
+	// The task itself started long enough ago that the local attach grace
+	// has expired. The window ended a moment ago, so the cloud retry budget
+	// is still open.
+	startedAt := time.Now().Add(-10 * time.Minute)
+	endedAt := time.Now().Add(-time.Second)
+	m.mu.Lock()
+	for _, id := range []string{retryID, giveUpID, localID} {
+		task, _, findErr := m.find(id)
+		if findErr != nil {
+			m.mu.Unlock()
+			t.Fatal(findErr)
+		}
+		task.StartedAt = &startedAt
+		task.EndAt = &endedAt
+	}
+	m.mu.Unlock()
+	retryCalls := 0
+	m.pauseRun = func(session string) (bool, error) {
+		if session == giveUpSession || cloudAgentInstanceFromRunWindowSession(session) == "" {
+			return false, errors.New("云端运行时不可用")
+		}
+		retryCalls++
+		if retryCalls == 1 {
+			return false, errors.New("云端运行时不可用")
+		}
+		return true, nil
+	}
+	m.sweep(time.Now())
+	retry, err := m.Get(retryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	giveUp, err := m.Get(giveUpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := m.Get(localID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.Status != runWindowRunning || giveUp.Status != runWindowRunning {
+		t.Fatalf("cloud after first failure retry=%s giveUp=%s", retry.Status, giveUp.Status)
+	}
+	if local.Status != runWindowStopped {
+		t.Fatalf("local status = %s, the attach grace had already passed", local.Status)
+	}
+	m.sweep(time.Now().Add(time.Second))
+	retry, err = m.Get(retryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	giveUp, err = m.Get(giveUpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.Status != runWindowStopped || retryCalls != 2 {
+		t.Fatalf("retry after a later success = %s calls=%d", retry.Status, retryCalls)
+	}
+	if giveUp.Status != runWindowRunning {
+		t.Fatalf("give-up row stopped while its budget was open: %s", giveUp.Status)
+	}
+	m.sweep(endedAt.Add(runWindowPauseAttachGrace + time.Second))
+	giveUp, err = m.Get(giveUpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if giveUp.Status != runWindowStopped {
+		t.Fatalf("give-up row after the budget = %s", giveUp.Status)
+	}
+}
+
+func TestCloudRunWindowPlaceSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run_window_tasks.json")
+	// A database created before place existed. Opening it must add the
+	// column, and a cloud window saved after that must still be cloud.
+	created, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Close()
+	db, err := sql.Open("sqlite", runWindowDBPath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE run_window_tasks DROP COLUMN place`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(upgraded.Close)
+	now := time.Now().Truncate(time.Minute)
+	start := now.Add(time.Hour)
+	cloudID, err := upgraded.Create(RunWindowCreateRequest{
+		Prompt:  "云端定时",
+		StartAt: start.Format("2006-01-02T15:04"),
+		Draft:   RunWindowDraft{TaskType: "coding", Place: "cloud"},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localID, err := upgraded.Create(RunWindowCreateRequest{
+		Prompt:  "本机定时",
+		StartAt: start.Format("2006-01-02T15:04"),
+		Draft:   RunWindowDraft{TaskType: "chat", Place: "local"},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded.Close()
+
+	reopened, err := newRunWindowManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reopened.Close)
+	cloud, err := reopened.Get(cloudID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := reopened.Get(localID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloud.Draft.Place != "cloud" || cloud.Draft.TaskType != "coding" {
+		t.Fatalf("cloud window reloaded as %#v", cloud.Draft)
+	}
+	if local.Draft.Place != "" {
+		t.Fatalf("local window place = %q", local.Draft.Place)
 	}
 }

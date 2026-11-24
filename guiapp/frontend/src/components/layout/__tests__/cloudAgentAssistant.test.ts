@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds } from '../cloudAgentSession';
-import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests, startCloudAgentFromNewTask } from '../cloudAgentAssistant';
 import { remoteAssistantSend, remoteAssistantSessionSnapshot, remoteAssistantStop } from '../remoteAssistantSession';
 import { cloudTurnRunning, noteCloudTurn, resetCloudTurnNotes, type CloudAgentListItem } from '../taskPlace';
 
@@ -44,6 +44,15 @@ describe('cloud agent assistant', () => {
         expect(cloudAgentCatalog({ instances: [], enabled: false }).enabled).toBe(false);
         expect(cloudAgentCatalog({ instances: [], enabled: true })).toEqual({ instances: [], enabled: true });
         expect(cloudAgentCatalog(null)).toEqual({ instances: [], enabled: false });
+    });
+
+    it('returns the instance when control does not open, instead of looking uncreated', async () => {
+        setBindings({
+            CreateCloudAgent: vi.fn(async () => ({ id: 'cag_1', name: '演示', kind: 'session', status: 'idle' })),
+        });
+        const result = await startCloudAgentFromNewTask('演示', 'session', '你好', 'zh');
+        expect(result.id).toBe('cag_1');
+        expect(result.warning).toContain('云端控制不可用');
     });
 
     it('opens in the same panel as a remote task and does not mark the computer offline', async () => {

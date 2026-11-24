@@ -2453,3 +2453,55 @@ func sortDesktopNodeEntries(nodes []DesktopNodeEntry) {
 		return nodes[i].CreatedAt < nodes[j].CreatedAt
 	})
 }
+
+// CloudSrvProbeResult reports whether an SSH target can host a private
+// maclawsrv. Method is "root", "sudo" or "su" — how root commands would run.
+type CloudSrvProbeResult struct {
+	OK      bool   `json:"ok"`
+	Method  string `json:"method,omitempty"`
+	Message string `json:"message"`
+	HostKey string `json:"host_key,omitempty"`
+}
+
+// ProbeCloudSrvSSH checks the SSH login and sudo capability for a private
+// maclawsrv target. Unlike ensurePrivilege it never writes the temporary
+// sudoers drop-in: the su path only reports that su works.
+func (a *App) ProbeCloudSrvSSH(req DesktopNodeDeployRequest) (CloudSrvProbeResult, error) {
+	host := strings.TrimSpace(req.Host)
+	port := req.Port
+	if port <= 0 {
+		port = 22
+	}
+	user := strings.TrimSpace(req.User)
+	if host == "" || user == "" || strings.TrimSpace(req.Password) == "" {
+		return CloudSrvProbeResult{}, errors.New("请填写服务器地址、用户名和密码")
+	}
+	conn, err := dialDesktopNodeSSH(host, port, user, req.Password, "")
+	if err != nil {
+		return CloudSrvProbeResult{Message: "SSH 连接失败：" + err.Error()}, nil
+	}
+	defer conn.Close()
+	result := CloudSrvProbeResult{HostKey: conn.hostKey}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if out, err := conn.exec(ctx, "id -u", ""); err == nil && strings.TrimSpace(lastLine(out)) == "0" {
+		result.OK = true
+		result.Method = "root"
+		result.Message = "连接成功，root 权限可用"
+		return result, nil
+	}
+	if out, err := conn.exec(ctx, "sudo -S -p '' id -u", req.Password+"\n"); err == nil && strings.TrimSpace(lastLine(out)) == "0" {
+		result.OK = true
+		result.Method = "sudo"
+		result.Message = "连接成功，sudo 可用"
+		return result, nil
+	}
+	if out, err := conn.suExec(ctx, "id -u", req.Password); err == nil && strings.TrimSpace(lastLine(out)) == "0" {
+		result.OK = true
+		result.Method = "su"
+		result.Message = "连接成功，可以通过 su 提权，安装时会临时写入 sudoers 规则"
+		return result, nil
+	}
+	result.Message = user + " 既不是 root，也不能用这个密码 sudo 或 su 到 root"
+	return result, nil
+}

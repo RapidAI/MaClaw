@@ -240,10 +240,6 @@ func (s *Service) ServeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "OFFLINE", "云端运行时不可用")
 		return
 	}
-	if !LoopbackAddr(r.RemoteAddr) {
-		writeErr(w, http.StatusForbidden, "FORBIDDEN", "云端心跳只接受本机")
-		return
-	}
 	var body struct {
 		InstanceID string `json:"instance_id"`
 		TaskID     string `json:"task_id"`
@@ -259,7 +255,14 @@ func (s *Service) ServeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeServiceErr(w, err)
 		return
 	}
-	if !s.AdminSecretMatches(r.Context(), inst.TenantID, r.Header.Get("X-MaClaw-Admin-Secret")) {
+	// A public-connection heartbeat still must be loopback. A node srv
+	// calls in over the open network, so its admin secret is the gate.
+	isNode, authed := s.SrvAuth(r.Context(), inst.TenantID, inst.SrvNodeID, r.Header.Get("X-MaClaw-Admin-Secret"))
+	if !isNode && !LoopbackAddr(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "FORBIDDEN", "云端心跳只接受本机")
+		return
+	}
+	if !authed {
 		writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED", "管理凭证无效")
 		return
 	}

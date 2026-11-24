@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -174,13 +175,22 @@ func TestDispatchUsesLoopbackAdminSecretOnly(t *testing.T) {
 	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudListTasks, json.RawMessage(`{"instance_id":"`+id+`"}`)); err == nil {
 		t.Fatal("dial_node was dispatched")
 	}
-	set(`{"base_url":"` + runtime.URL + `","admin_secret":"sec-1","owner_node":{"user-1":"node-9"},"access_token":"bot-token-should-not-leak"}`)
-	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudListTasks, json.RawMessage(`{"instance_id":"`+id+`"}`)); err == nil {
-		t.Fatal("owner node was dispatched")
-	}
 	mu.Lock()
 	if len(hits) != before {
 		t.Fatalf("refused targets called runtime: %v", hits)
+	}
+	mu.Unlock()
+
+	// A bot owner_node pin does not reroute an existing public instance:
+	// its recorded srv binding is empty, so it still dispatches to the
+	// public runtime where it was provisioned.
+	set(`{"base_url":"` + runtime.URL + `","admin_secret":"sec-1","owner_node":{"user-1":"node-9"},"access_token":"bot-token-should-not-leak"}`)
+	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudListTasks, json.RawMessage(`{"instance_id":"`+id+`"}`)); err != nil {
+		t.Fatalf("public instance under a bot pin: %v", err)
+	}
+	mu.Lock()
+	if len(hits) == before {
+		t.Fatal("public-bound instance did not reach its runtime")
 	}
 	mu.Unlock()
 
@@ -267,5 +277,122 @@ func TestDispatchUsesLoopbackAdminSecretOnly(t *testing.T) {
 	var mode string
 	if err := db.QueryRow(`SELECT llm_mode FROM cloud_agents WHERE id = ?`, id).Scan(&mode); err != nil || mode != LLMCustom {
 		t.Fatalf("mode = %s %v", mode, err)
+	}
+}
+
+func TestSrvConnResolvesOwnerCloudNode(t *testing.T) {
+	settings := memSettings{kv: map[string]string{}}
+	svc := New(openTestDB(t), settings)
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"http://127.0.0.1:9","admin_secret":"pub-sec","owner_cloud_node":{"user-1":"node-7"},"node_links":[{"node_id":"node-7","base_url":"http://srv.node-7.node.invalid","admin_secret":"link-sec"}]}`
+
+	// The pin resolves new instances to the node srv.
+	conn, err := svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.NodeID != "node-7" || conn.AdminSecret != "link-sec" {
+		t.Fatalf("node conn = %+v err = %v", conn, err)
+	}
+	pub, err := svc.srvConn(context.Background(), "tenant-a", "user-2")
+	if err != nil || pub.NodeID != "" || pub.AdminSecret != "pub-sec" {
+		t.Fatalf("public conn = %+v err = %v", pub, err)
+	}
+
+	// Instance-level routing follows the recorded srv, not the pin: an
+	// instance bound to node-7 authenticates with the link secret even
+	// after the pin moves, and a public instance stays public.
+	if !svc.AdminSecretMatches(context.Background(), "tenant-a", "node-7", "link-sec") {
+		t.Fatal("link secret should authenticate a node-bound instance")
+	}
+	if svc.AdminSecretMatches(context.Background(), "tenant-a", "node-7", "pub-sec") {
+		t.Fatal("public secret must not authenticate a node-bound instance")
+	}
+	if !svc.SrvConnIsNode(context.Background(), "tenant-a", "node-7") {
+		t.Fatal("a node-bound instance should report a node conn")
+	}
+	if svc.SrvConnIsNode(context.Background(), "tenant-a", "") {
+		t.Fatal("a public instance must report the public conn")
+	}
+
+	// A pin without a matching link fails closed: no silent public fallback.
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"http://127.0.0.1:9","admin_secret":"pub-sec","owner_cloud_node":{"user-1":"node-missing"}}`
+	if _, err := svc.srvConn(context.Background(), "tenant-a", "user-1"); err == nil {
+		t.Fatal("pin without link must fail closed")
+	}
+	if _, err := svc.srvConnForNode(context.Background(), "tenant-a", "node-missing"); err == nil {
+		t.Fatal("a recorded node without a link must fail closed")
+	}
+}
+
+// rewriteHost sends any request to the test server regardless of its URL:
+// the stand-in for an edge-tunnel client reaching srv.<id>.node.invalid.
+type rewriteHost struct{ base *url.URL }
+
+func (rt rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = rt.base.Scheme
+	clone.URL.Host = rt.base.Host
+	return http.DefaultTransport.RoundTrip(clone)
+}
+
+func TestProvisionOnNodeSrvRecordsBindingAndPublicLoopback(t *testing.T) {
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	var got map[string]any
+	var gotSecret string
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got)
+		gotSecret = r.Header.Get("X-MaClaw-Admin-Secret")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	settings := memSettings{kv: map[string]string{}}
+	db := openTestDB(t)
+	svc := New(db, settings)
+	svc.NodeHTTP = func(string) *http.Client {
+		return &http.Client{Transport: rewriteHost{base: runtimeURL}}
+	}
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"http://127.0.0.1:9","admin_secret":"pub-sec","owner_cloud_node":{"user-1":"node-7"},"node_links":[{"node_id":"node-7","base_url":"http://srv.node-7.node.invalid","admin_secret":"link-sec"}]}`
+
+	if _, err := svc.db.ExecContext(context.Background(), `INSERT INTO cloud_agents (id, tenant_id, owner_user_id, name, kind, llm_mode, status, created_at, updated_at) VALUES ('cag_p', 'tenant-a', 'user-1', 's', 'session', 'official', 'provisioning', 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	inst := Instance{ID: "cag_p", TenantID: "tenant-a", OwnerUserID: "user-1"}
+	if err := svc.disp.provision(context.Background(), &inst); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if inst.SrvNodeID != "node-7" {
+		t.Fatalf("srv node = %q", inst.SrvNodeID)
+	}
+	var recorded string
+	if err := db.QueryRow(`SELECT srv_node_id FROM cloud_agents WHERE id = 'cag_p'`).Scan(&recorded); err != nil || recorded != "node-7" {
+		t.Fatalf("recorded = %q %v", recorded, err)
+	}
+	if got["hub_loopback"] != "https://hub.example" {
+		t.Fatalf("hub_loopback = %v", got["hub_loopback"])
+	}
+	if got["hub_origin"] != "https://hub.example" {
+		t.Fatalf("hub_origin = %v", got["hub_origin"])
+	}
+	if gotSecret != "link-sec" {
+		t.Fatalf("secret = %q", gotSecret)
+	}
+}
+
+func TestProvisionOnNodeSrvWithoutPublicOriginFails(t *testing.T) {
+	t.Setenv("MACLAW_HUB_URL", "")
+	settings := memSettings{kv: map[string]string{}}
+	svc := New(openTestDB(t), settings)
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"http://127.0.0.1:9","admin_secret":"pub-sec","owner_cloud_node":{"user-1":"node-7"},"node_links":[{"node_id":"node-7","base_url":"http://srv.node-7.node.invalid","admin_secret":"link-sec"}]}`
+
+	inst := Instance{ID: "cag_dead", TenantID: "tenant-a", OwnerUserID: "user-1"}
+	err := svc.disp.provision(context.Background(), &inst)
+	var failure *Failure
+	if !errors.As(err, &failure) || !strings.Contains(failure.Message, "MACLAW_HUB_URL") {
+		t.Fatalf("err = %v", err)
+	}
+	// The pin resolves and the binding is recorded before the origin check,
+	// so the failure is about hub config, not node selection.
+	if inst.SrvNodeID != "node-7" {
+		t.Fatalf("srv node = %q", inst.SrvNodeID)
 	}
 }

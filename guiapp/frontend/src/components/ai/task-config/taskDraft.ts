@@ -80,6 +80,12 @@ export interface TaskDraft {
     /** 任务执行位置：null/未设置 = 本机；否则在远控被控机器上创建并执行。 */
     machine?: MachineTarget | null;
     /**
+     * 云端任务与本机任务共用这一份新建草稿，只是执行位置不同。
+     * cloud 不写入 machine：远控会锁住专家/工作流/工作空间，云端不锁。
+     * 缺省与 local 都是本机。
+     */
+    place?: 'local' | 'cloud';
+    /**
      * 这个任务单独使用的服务商和模型。两者都空 = 跟随模型分配（会随分配变化）。
      * 只填一边不算指定。
      */
@@ -182,7 +188,14 @@ export function isDraftDefault(draft: TaskDraft): boolean {
         && draft.workspace.kind === 'local'
         && !draft.workspace.localPath
         && !draft.machine
+        && draft.place !== 'cloud'
         && !taskModelPinned(draft);
+}
+
+/** 位置切到云端或回到本机。只改执行位置，专家、类型、工作流、工作空间保持原样。 */
+export function withTaskPlace(draft: TaskDraft, place: 'local' | 'cloud'): TaskDraft {
+    if (place === 'cloud') return { ...draft, place: 'cloud', machine: null };
+    return { ...draft, place: 'local', machine: null };
 }
 
 /**
@@ -191,7 +204,7 @@ export function isDraftDefault(draft: TaskDraft): boolean {
  * 工作目录仍可经 machine.workDir 指定（list_dirs 浏览对方电脑目录）。
  */
 export function withMachine(draft: TaskDraft, machine: MachineTarget | null): TaskDraft {
-    if (!machine || !machine.grantId) return { ...draft, machine: null };
+    if (!machine || !machine.grantId) return { ...draft, machine: null, place: 'local' };
     const target = { ...machine };
     // Re-picking the same machine (位置弹层里再点一次) must not drop the
     // workDir already chosen for it; a different machine never inherits it.
@@ -200,6 +213,7 @@ export function withMachine(draft: TaskDraft, machine: MachineTarget | null): Ta
     }
     return {
         ...draft,
+        place: 'local',
         machine: target,
         expertId: null,
         expertName: null,
@@ -337,6 +351,8 @@ export function normalizeDraftForTaskType(draft: TaskDraft): TaskDraft {
 
 /** 编程 + 本地且未选目录（空白路径也算未选）→ 需要用户补目录（chip 高亮「请选择目录」）。 */
 export function needsLocalPath(draft: TaskDraft): boolean {
+    // 云端位置用实例自己的工作目录，不要求再选一个本机目录。
+    if (draft.place === 'cloud') return false;
     return draft.taskType === 'coding'
         && draft.workspace.kind === 'local'
         && !(draft.workspace.localPath || '').trim();

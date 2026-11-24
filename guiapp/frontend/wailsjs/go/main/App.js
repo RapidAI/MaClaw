@@ -6802,3 +6802,15 @@ export function AnswerBotLocalAccessPrompt(arg1, arg2) {
 export function GetPendingBotLocalAccessPrompts() {
   return window['go']['main']['App']['GetPendingBotLocalAccessPrompts']();
 }
+
+export function GetCloudSrvChoice() {
+  return window['go']['main']['App']['GetCloudSrvChoice']();
+}
+
+export function SetCloudSrvChoice(arg1) {
+  return window['go']['main']['App']['SetCloudSrvChoice'](arg1);
+}
+
+export function ProbeCloudSrvSSH(arg1) {
+  return window['go']['main']['App']['ProbeCloudSrvSSH'](arg1);
+}

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS run_window_tasks (
     remote_work_dir TEXT NOT NULL DEFAULT '',
     latex_template_id TEXT NOT NULL DEFAULT '',
     latex_template_name TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '',
     start_at_unix_nano INTEGER NOT NULL DEFAULT 0,
     end_at_unix_nano INTEGER,
@@ -88,6 +89,10 @@ CREATE TABLE IF NOT EXISTS run_window_meta (
     value TEXT NOT NULL
 );
 `); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureRunWindowPlaceColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -116,6 +121,21 @@ func runWindowParamsSignature(params map[string]string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(raw)), nil
+}
+
+// ensureRunWindowPlaceColumn adds the cloud-place column to a database
+// created before scheduled tasks remembered where they run. Without it a
+// restart reloads every cloud window as a task on this computer.
+func ensureRunWindowPlaceColumn(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('run_window_tasks') WHERE name='place'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE run_window_tasks ADD COLUMN place TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func ensureRunWindowTaskSignatures(db *sql.DB) error {
@@ -199,7 +219,7 @@ func importLegacyRunWindowTasks(db *sql.DB, jsonPath string) error {
 func loadRunWindowTasks(db *sql.DB) ([]RunWindowTask, error) {
 	rows, err := db.Query(`SELECT id, name, prompt, initial_message, task_type, expert_id, expert_name,
 		workflow_template_id, workspace_kind, local_path, cloud_workspace_id, cloud_name, remote_host,
-		remote_port, remote_user, remote_work_dir, latex_template_id, latex_template_name, status,
+		remote_port, remote_user, remote_work_dir, latex_template_id, latex_template_name, place, status,
 		start_at_unix_nano, end_at_unix_nano, project_path, session_user_id, claimed_at_unix_nano,
 		started_at_unix_nano, created_at_unix_nano, last_error
 		FROM run_window_tasks ORDER BY position, id`)
@@ -215,7 +235,7 @@ func loadRunWindowTasks(db *sql.DB) ([]RunWindowTask, error) {
 			&task.Draft.TaskType, &task.Draft.ExpertID, &task.Draft.ExpertName, &task.Draft.WorkflowTemplateID,
 			&task.Draft.WorkspaceKind, &task.Draft.LocalPath, &task.Draft.CloudWorkspaceID, &task.Draft.CloudName,
 			&task.Draft.RemoteHost, &task.Draft.RemotePort, &task.Draft.RemoteUser, &task.Draft.RemoteWorkDir,
-			&task.Draft.LatexTemplateID, &task.Draft.LatexTemplateName, &task.Status, &startAt, &endAt,
+			&task.Draft.LatexTemplateID, &task.Draft.LatexTemplateName, &task.Draft.Place, &task.Status, &startAt, &endAt,
 			&task.ProjectPath, &task.SessionUserID, &claimedAt, &startedAt, &createdAt, &task.LastError); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -368,9 +388,9 @@ func writeRunWindowTask(tx *sql.Tx, task RunWindowTask, position int, signature,
 	if _, err := tx.Exec(`INSERT INTO run_window_tasks(
 		id, signature, params_signature, position, name, prompt, initial_message, task_type, expert_id, expert_name, workflow_template_id,
 		workspace_kind, local_path, cloud_workspace_id, cloud_name, remote_host, remote_port, remote_user,
-		remote_work_dir, latex_template_id, latex_template_name, status, start_at_unix_nano, end_at_unix_nano,
+		remote_work_dir, latex_template_id, latex_template_name, place, status, start_at_unix_nano, end_at_unix_nano,
 		project_path, session_user_id, claimed_at_unix_nano, started_at_unix_nano, created_at_unix_nano, last_error)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET signature=excluded.signature, params_signature=excluded.params_signature, position=excluded.position, name=excluded.name, prompt=excluded.prompt,
 		initial_message=excluded.initial_message, task_type=excluded.task_type, expert_id=excluded.expert_id,
 		expert_name=excluded.expert_name, workflow_template_id=excluded.workflow_template_id,
@@ -378,6 +398,7 @@ func writeRunWindowTask(tx *sql.Tx, task RunWindowTask, position int, signature,
 		cloud_workspace_id=excluded.cloud_workspace_id, cloud_name=excluded.cloud_name, remote_host=excluded.remote_host,
 		remote_port=excluded.remote_port, remote_user=excluded.remote_user, remote_work_dir=excluded.remote_work_dir,
 		latex_template_id=excluded.latex_template_id, latex_template_name=excluded.latex_template_name,
+		place=excluded.place,
 		status=excluded.status, start_at_unix_nano=excluded.start_at_unix_nano, end_at_unix_nano=excluded.end_at_unix_nano,
 		project_path=excluded.project_path, session_user_id=excluded.session_user_id,
 		claimed_at_unix_nano=excluded.claimed_at_unix_nano, started_at_unix_nano=excluded.started_at_unix_nano,
@@ -386,7 +407,7 @@ func writeRunWindowTask(tx *sql.Tx, task RunWindowTask, position int, signature,
 		task.Draft.ExpertName, task.Draft.WorkflowTemplateID, task.Draft.WorkspaceKind, task.Draft.LocalPath,
 		task.Draft.CloudWorkspaceID, task.Draft.CloudName, task.Draft.RemoteHost, task.Draft.RemotePort,
 		task.Draft.RemoteUser, task.Draft.RemoteWorkDir, task.Draft.LatexTemplateID, task.Draft.LatexTemplateName,
-		task.Status, startAt, nullableRunWindowTime(task.EndAt), task.ProjectPath, task.SessionUserID,
+		task.Draft.Place, task.Status, startAt, nullableRunWindowTime(task.EndAt), task.ProjectPath, task.SessionUserID,
 		nullableRunWindowTime(task.ClaimedAt), nullableRunWindowTime(task.StartedAt), createdAt, task.LastError); err != nil {
 		return err
 	}

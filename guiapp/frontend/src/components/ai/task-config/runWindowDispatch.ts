@@ -17,6 +17,7 @@ import {
 } from "../../../utils/latexTemplates";
 import { openExpertConversation } from "../../../utils/expertConversationNavigation";
 import { builtinExpertIcon, expertTabId } from "../expertTypes";
+import { startCloudAgentFromNewTask } from "../../layout/cloudAgentAssistant";
 import { runTaskConfigSend } from "./taskConfigSend";
 import { isRunWindowDue, taskDraftFromRunWindow, type RunWindowTaskRecord } from "./runWindow";
 import { tailText } from "../../../i18n/mnTail"
@@ -27,12 +28,25 @@ function callable<T extends (...args: never[]) => unknown>(fn: T | undefined): f
 
 let runWindowDispatchTail: Promise<void> = Promise.resolve();
 let runWindowDispatchQueued = false;
-let runWindowDispatchLaunch: ((task: RunWindowTaskRecord) => Promise<string>) | null = null;
+let runWindowDispatchLaunch: ((task: RunWindowTaskRecord) => Promise<RunWindowLaunchResult>) | null = null;
 let runWindowDispatchNow = new Date();
 const runWindowRetryAfter = new Map<string, number>();
 const runWindowRetryGapMs = 60_000;
 
-export function dispatchDueRunWindows(launch: (task: RunWindowTaskRecord) => Promise<string>, now = new Date()): Promise<void> {
+/** A string is the created task identity. An object can name that identity and why the turn was not accepted. */
+export type RunWindowLaunchResult = string | { projectPath: string; error?: string };
+
+function launchIdentity(value: RunWindowLaunchResult | null | undefined): { projectPath: string; error: string } {
+    if (typeof value === 'string' || value == null) {
+        return { projectPath: String(value || '').trim(), error: '' };
+    }
+    return {
+        projectPath: String(value.projectPath || '').trim(),
+        error: String(value.error || '').trim(),
+    };
+}
+
+export function dispatchDueRunWindows(launch: (task: RunWindowTaskRecord) => Promise<RunWindowLaunchResult>, now = new Date()): Promise<void> {
     runWindowDispatchLaunch = launch;
     runWindowDispatchNow = now;
     if (runWindowDispatchQueued) return runWindowDispatchTail;
@@ -49,7 +63,7 @@ export function dispatchDueRunWindows(launch: (task: RunWindowTaskRecord) => Pro
     return run;
 }
 
-async function dispatchDueRunWindowsOnce(launch: (task: RunWindowTaskRecord) => Promise<string>, now = new Date()): Promise<void> {
+async function dispatchDueRunWindowsOnce(launch: (task: RunWindowTaskRecord) => Promise<RunWindowLaunchResult>, now = new Date()): Promise<void> {
     if (!callable(ListRunWindowTasks) || !callable(ClaimRunWindowTask)) return;
     const listed = await ListRunWindowTasks();
     const tasks = (Array.isArray(listed) ? listed : []) as RunWindowTaskRecord[];
@@ -67,7 +81,11 @@ async function dispatchDueRunWindowsOnce(launch: (task: RunWindowTaskRecord) => 
         }
         let projectPath = "";
         try {
-            projectPath = (await launch(claimed)).trim();
+            const launched = launchIdentity(await launch(claimed));
+            projectPath = launched.projectPath;
+            // The identity is known before this throw, so a turn that was not
+            // accepted fails the row instead of being launched again.
+            if (launched.error) throw new Error(launched.error);
             if (!projectPath) throw new Error("未返回任务路径");
             if (!callable(MarkRunWindowTaskStarted)) throw new Error("无法记录任务启动");
             await MarkRunWindowTaskStarted(claimed.id, projectPath);
@@ -96,7 +114,7 @@ async function dispatchDueRunWindowsOnce(launch: (task: RunWindowTaskRecord) => 
 }
 
 /** Replay a scheduled new-task through the same create-and-open path as an immediate send. */
-export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-Hans"): Promise<string> {
+export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-Hans"): Promise<RunWindowLaunchResult> {
     const draft = taskDraftFromRunWindow(task);
     const isZh = lang.startsWith("zh");
     let projectPath = "";
@@ -154,6 +172,17 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     { backgroundLaunch: true },
                 );
             },
+            createCloudAgentTask: async ({ name, kind, text }) => {
+                const created = await startCloudAgentFromNewTask(name, kind, text, lang);
+                const id = String(created?.id || '').trim();
+                // This is the task identity the schedule row stores. It is not a
+                // local directory. An empty path is what tells the dispatcher
+                // that nothing was created and the claim may be launched again.
+                if (id && !id.includes('/') && !id.includes('\\') && !id.includes(':')) {
+                    projectPath = `cloud-agent:${id}`;
+                }
+                return created;
+            },
             materializeLatexDocument: async ({ projectPath: path, templateId, templateName, userText }) => {
                 let failure = "";
                 const document = await createLatexDocumentForTask(path, templateId, "", lang, (message) => {
@@ -180,5 +209,11 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
         throw new Error(result.error || (tailText(lang, "Failed to create task", "创建任务失败")));
     }
     if (!projectPath) throw new Error(tailText(lang, "Failed to create task: no task path returned", "创建任务失败：未返回任务路径"));
+    // The instance exists, but the turn was not accepted. Hand the identity
+    // back with the reason so the schedule row fails instead of being created again.
+    // A local create warning still means the task opened.
+    if (projectPath.startsWith('cloud-agent:') && result.warning) {
+        return { projectPath, error: result.warning };
+    }
     return projectPath;
 }

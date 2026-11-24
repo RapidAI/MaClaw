@@ -3361,3 +3361,9 @@ export function PickBotLocalAccessFolder():Promise<string>;
 export function AnswerBotLocalAccessPrompt(arg1:string,arg2:string):Promise<void>;
 
 export function GetPendingBotLocalAccessPrompts():Promise<Array<any>>;
+
+export function GetCloudSrvChoice():Promise<{ node_id: string; nodes: Array<{ node_id: string; name: string; address: string; online: boolean }> }>;
+
+export function SetCloudSrvChoice(arg1:string):Promise<{ node_id: string; nodes: Array<{ node_id: string; name: string; address: string; online: boolean }> }>;
+
+export function ProbeCloudSrvSSH(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ ok: boolean; method?: string; message: string; host_key?: string }>;

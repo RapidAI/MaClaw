@@ -278,6 +278,399 @@ func TestInboundMCPRemoteModeAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestInboundMCPCloudAgentLocation(t *testing.T) {
+	chatLoc, chatMode, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "云端"})
+	if err != nil || chatLoc != mcpLocationCloud || chatMode != "chat" {
+		t.Fatalf("云端 = %s %s %v", chatLoc, chatMode, err)
+	}
+	agentLoc, agentMode, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "cloud_agent", Mode: "programming"})
+	if err != nil || agentLoc != mcpLocationCloud || agentMode != taskCodingDevTag {
+		t.Fatalf("cloud agent coding = %s %s %v", agentLoc, agentMode, err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "cloud", SSHHost: "10.0.0.8"}); err == nil || !strings.Contains(err.Error(), "SSH") {
+		t.Fatalf("cloud ssh: %v", err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "cloud", GrantID: "g1"}); err == nil || !strings.Contains(err.Error(), "grant_id") {
+		t.Fatalf("cloud grant: %v", err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "cloud", CloudWorkspaceID: "cws_math"}); err == nil || !strings.Contains(err.Error(), "工作目录") {
+		t.Fatalf("cloud workspace on agent: %v", err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "cloud_workspace"}); err == nil {
+		t.Fatal("cloud_workspace was accepted as a location")
+	}
+
+	dirLoc, dirMode, err := mcpResolveCreateTarget(mcpCreateArgs{CloudWorkspaceID: "cws_math"})
+	if err != nil || dirLoc != mcpLocationLocal || dirMode != "chat" {
+		t.Fatalf("workspace id as directory = %s %s %v", dirLoc, dirMode, err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{CloudWorkspaceID: "not valid!"}); err == nil || !strings.Contains(err.Error(), "cloud_workspace_id") {
+		t.Fatalf("bad workspace id: %v", err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{CloudWorkspaceID: "cws_math", GrantID: "g1"}); err == nil || !strings.Contains(err.Error(), "不能同时指定") {
+		t.Fatalf("workspace and device: %v", err)
+	}
+	deviceLoc, deviceMode, err := mcpResolveCreateTarget(mcpCreateArgs{GrantID: "g1"})
+	if err != nil || deviceLoc != mcpLocationRemoteDevice || deviceMode != "chat" {
+		t.Fatalf("grant = %s %s %v", deviceLoc, deviceMode, err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "远程设备", GrantID: "g1", Mode: "coding"}); err != nil {
+		t.Fatalf("remote coding: %v", err)
+	}
+	if _, _, err := mcpResolveCreateTarget(mcpCreateArgs{Location: "remote_device", GrantID: "g1", SSHHost: "10.0.0.8"}); err == nil || !strings.Contains(err.Error(), "SSH") {
+		t.Fatalf("device ssh: %v", err)
+	}
+
+	omitted := mcpCreateArgs{Name: "login", SSHHost: "10.0.0.8", SSHUser: "ubuntu", SSHPassword: "s3cret", RemoteWorkDir: "/srv/app"}
+	sshLoc, sshMode, err := mcpResolveCreateTarget(omitted)
+	if err != nil || sshLoc != mcpLocationLocal || sshMode != taskRemoteCodingDevTag {
+		t.Fatalf("ssh stays local = %s %s %v", sshLoc, sshMode, err)
+	}
+	local := mcpCreateArgs{Name: "login", Mode: "chat", WorkingDir: `D:\repo`}
+	explicit := local
+	explicit.Location = "本机"
+	if mcpCreateClaimKey(local) != mcpCreateClaimKey(explicit) {
+		t.Fatal("explicit local changed the claim")
+	}
+	cloudKey := mcpCreateClaimKey(mcpCreateArgs{Name: "ship", Location: "cloud", Mode: "chat"})
+	if cloudKey == mcpCreateClaimKey(mcpCreateArgs{Name: "ship", Location: "cloud", Mode: "coding_dev"}) {
+		t.Fatal("cloud mode reused one claim")
+	}
+	if mcpCreateClaimKey(mcpCreateArgs{Name: "login", Mode: "chat", CloudWorkspaceID: "cws_math"}) == mcpCreateClaimKey(mcpCreateArgs{Name: "login", Mode: "chat"}) {
+		t.Fatal("workspace id was left out of the claim")
+	}
+	noted := mcpViewWithTaskTags(mcpTaskView{ProjectPath: "gui"}, []string{"cloud_workspace:cws_math"})
+	if noted.Location != "" || noted.CloudWorkspaceID != "cws_math" {
+		t.Fatalf("workspace tag became a location: %+v", noted)
+	}
+	if got := mcpEnsureLocation(noted); got.Location != mcpLocationLocal {
+		t.Fatalf("workspace id selected %s", got.Location)
+	}
+	if err := mcpRemoteArtifactError(mcpEnsureLocation(noted)); err != nil {
+		t.Fatalf("local cloud directory refused: %v", err)
+	}
+	if err := mcpRemoteArtifactError(mcpTaskView{Location: mcpLocationCloud, GrantID: "g-cloud"}); err == nil || !strings.Contains(err.Error(), "云端 agent") {
+		t.Fatalf("cloud artifacts: %v", err)
+	}
+
+	prevCreate := mcpCloudAgentCreateFunc
+	prevGrant := mcpCloudAgentGrantFunc
+	prevDelete := mcpCloudAgentDeleteFunc
+	prevOp := mcpCloudAgentOpFunc
+	prevDir := mcpCloudCreateFunc
+	t.Cleanup(func() {
+		mcpCloudAgentCreateFunc = prevCreate
+		mcpCloudAgentGrantFunc = prevGrant
+		mcpCloudAgentDeleteFunc = prevDelete
+		mcpCloudAgentOpFunc = prevOp
+		mcpCloudCreateFunc = prevDir
+	})
+	var kinds []string
+	var ops []string
+	mcpCloudCreateFunc = func(a *App, opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
+		t.Fatal("cloud workspace create was used for a cloud agent")
+		return UnifiedTaskCreateResult{}, errors.New("wrong path")
+	}
+	mcpCloudAgentCreateFunc = func(a *App, name, kind string) (CloudAgentRow, error) {
+		kinds = append(kinds, name+"/"+kind)
+		return CloudAgentRow{ID: "cag_1", Name: name, Kind: kind}, nil
+	}
+	mcpCloudAgentGrantFunc = func(a *App, instanceID string) (string, error) {
+		if instanceID != "cag_1" {
+			t.Fatalf("grant for %s", instanceID)
+		}
+		return "grant-cloud", nil
+	}
+	sendFails := false
+	transcript := `{"task_id":"task_1","messages":["user\n实现登录","assistant\n好了"]}`
+	watch := `{"stream_done":true}`
+	mcpCloudAgentOpFunc = func(a *App, grantID, op, body string) (string, error) {
+		if grantID != "grant-cloud" {
+			t.Fatalf("op grant %s", grantID)
+		}
+		ops = append(ops, op+" "+body)
+		if op == "cloud_send_message" && sendFails {
+			return "", errors.New("发送失败")
+		}
+		switch op {
+		case "cloud_create_task":
+			if !strings.Contains(body, `"title":"ship"`) {
+				t.Fatalf("create body %s", body)
+			}
+			return `{"accepted":true,"task_id":"task_1"}`, nil
+		case "cloud_send_message":
+			if !strings.Contains(body, `"task_id":"task_1"`) || !strings.Contains(body, `"text":`) {
+				t.Fatalf("send body %s", body)
+			}
+			return `{"accepted":true}`, nil
+		case "cloud_get_task":
+			return transcript, nil
+		case "cloud_watch_task":
+			return watch, nil
+		case "cloud_stop_task":
+			return `{"ok":true,"cancelled":["req-1"]}`, nil
+		default:
+			return "", errors.New(op)
+		}
+	}
+
+	stateDir := t.TempDir()
+	app := &App{mcpStateDir: stateDir}
+	created, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "cloud", Prompt: "实现登录", ClientRequestID: "create-cloud-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Location != mcpLocationCloud || created.Mode != "chat" || created.GrantID != "grant-cloud" || created.Status != mcpStatusRunning || !strings.Contains(created.Text, "云端 agent") || created.CloudWorkspaceID != "" {
+		t.Fatalf("created %+v", created)
+	}
+	if _, taskID, ok := mcpParseCloudAgentKey(created.ProjectPath); !ok || taskID != "task_1" {
+		t.Fatalf("path %s", created.ProjectPath)
+	}
+	if len(kinds) != 1 || kinds[0] != "ship/session" || len(ops) != 2 || !strings.HasPrefix(ops[0], "cloud_create_task") || !strings.Contains(ops[1], `"text":"实现登录"`) {
+		t.Fatalf("kinds %v ops %v", kinds, ops)
+	}
+	replayed, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "cloud", Prompt: "实现登录", ClientRequestID: "create-cloud-1"})
+	if err != nil || replayed.ProjectPath != created.ProjectPath || replayed.Location != mcpLocationCloud {
+		t.Fatalf("replay create %+v %v", replayed, err)
+	}
+	if countPrefixed(ops, "cloud_create_task") != 1 || countPrefixed(ops, "cloud_send_message") != 1 {
+		t.Fatalf("replay created again %v", ops)
+	}
+	stored, ok := app.mcpViewFromRegistry(created.ProjectPath)
+	if !ok || stored.Status != mcpStatusIdle || stored.Location != mcpLocationCloud {
+		t.Fatalf("stored %+v ok=%v", stored, ok)
+	}
+	followed, err := app.mcpSendCommand(context.Background(), created.ProjectPath, "继续", "", "follow-cloud-1", false)
+	if err != nil || followed.Status != mcpStatusRunning || !strings.Contains(followed.Text, "云端 agent") {
+		t.Fatalf("follow %+v %v", followed, err)
+	}
+	if !strings.Contains(ops[len(ops)-1], `"client_message_id":"mcp:task_1:follow-cloud-1"`) {
+		t.Fatalf("message id %v", ops[len(ops)-1])
+	}
+	sentBefore := countPrefixed(ops, "cloud_send_message")
+	followedAgain, err := app.mcpSendCommand(context.Background(), created.ProjectPath, "继续", "", "follow-cloud-1", false)
+	if err != nil || followedAgain.ProjectPath != created.ProjectPath || countPrefixed(ops, "cloud_send_message") != sentBefore {
+		t.Fatalf("replay send %+v %v ops %v", followedAgain, err, ops)
+	}
+	if again, ok := app.mcpViewFromRegistry(created.ProjectPath); !ok || again.Status == mcpStatusRunning {
+		t.Fatalf("follow stored running %+v", again)
+	}
+	got, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || got.Status != mcpStatusCompleted || got.Text != "好了" || got.Location != mcpLocationCloud {
+		t.Fatalf("get %+v %v", got, err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录"],"turn_status":"cancelled"}`
+	discovered, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || discovered.Status != mcpStatusCancelled || discovered.Stop == nil || discovered.Stop.Class != "user_stop" {
+		t.Fatalf("discovered cancel %+v %v", discovered, err)
+	}
+	if stored, ok := app.mcpViewFromRegistry(created.ProjectPath); !ok || stored.Status != mcpStatusIdle {
+		t.Fatalf("discovered cancel rewrote the book %+v", stored)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n好了"]}`
+	app.mcpRunsMu.Lock()
+	modeRec := app.mcpRuns[created.ProjectPath]
+	if modeRec == nil {
+		app.mcpRunsMu.Unlock()
+		t.Fatalf("missing run %s", created.ProjectPath)
+	}
+	modeRec.Mode = taskCodingDevTag
+	app.mcpRunsMu.Unlock()
+	watch = `{"stream_done":true,"terminal":{"text":"请确认推送","ask_user_question":"请确认推送","confirmation":{"id":"commit-approval;task_1"},"actions":[{"command":"仅这一次"},{"command":"拒绝"}]}}`
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n请确认推送"]}`
+	asked, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || asked.Status != mcpStatusNeedsConfirmation || asked.ConfirmationID != "commit-approval;task_1" || !strings.Contains(asked.Text, "请确认推送") || !containsAll(asked.Commands, "仅这一次", "拒绝") {
+		t.Fatalf("ask %+v %v", asked, err)
+	}
+	askedAgain, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || askedAgain.ConfirmationID != asked.ConfirmationID || askedAgain.Status != mcpStatusNeedsConfirmation {
+		t.Fatalf("ask id changed %+v %v", askedAgain, err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n云端官方模型未接通"],"as_error":[false,true]}`
+	errored, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || errored.Status != mcpStatusFailed || errored.EndReason != mcpStatusFailed || errored.ConfirmationID != "" || !strings.Contains(errored.Error, "未接通") || !strings.Contains(errored.Text, "未接通") {
+		t.Fatalf("model error %+v %v", errored, err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n云端官方模型未接通","user\n再试"],"as_error":[false,true,false]}`
+	retrying, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || retrying.Status != mcpStatusRunning || retrying.Text != "" || retrying.Error != "" {
+		t.Fatalf("error then user %+v %v", retrying, err)
+	}
+	app.mcpRunsMu.Lock()
+	if rec := app.mcpRuns[created.ProjectPath]; rec != nil {
+		rec.Mode = "chat"
+	}
+	app.mcpRunsMu.Unlock()
+	watch = `{"stream_done":true}`
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n云端官方模型未接通"],"as_error":[false,true]}`
+	watches := countPrefixed(ops, "cloud_watch_task")
+	chatErr, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || chatErr.Status != mcpStatusFailed || !strings.Contains(chatErr.Error, "未接通") || countPrefixed(ops, "cloud_watch_task") != watches {
+		t.Fatalf("chat watched a model error %+v %v", chatErr, err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n好了"]}`
+	if _, err := app.mcpListArtifacts(context.Background(), created.ProjectPath); err == nil || !strings.Contains(err.Error(), "云端 agent") {
+		t.Fatalf("artifacts %v", err)
+	}
+	stopped, err := app.mcpStopTask(context.Background(), created.ProjectPath)
+	if err != nil || stopped.Status != mcpStatusCancelled || stopped.Stop == nil || stopped.Stop.Class != "user_stop" {
+		t.Fatalf("stop %+v %v", stopped, err)
+	}
+	settled, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || settled.Status != mcpStatusCompleted || settled.Text != "好了" || settled.Stop != nil || settled.EndReason == mcpStatusCancelled {
+		t.Fatalf("answered stop %+v %v", settled, err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录"],"turn_status":"cancelled"}`
+	afterStop, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || afterStop.Status != mcpStatusCancelled || afterStop.Stop == nil || afterStop.Stop.Class != "user_stop" || afterStop.Stop.At != stopped.Stop.At {
+		t.Fatalf("get after stop %+v %v", afterStop, err)
+	}
+	if _, err := app.mcpSendCommand(mcpContextWithOpts(context.Background(), mcpCallOpts{Provider: "p", Model: "m"}), created.ProjectPath, "换模型", "", "", false); err == nil || !strings.Contains(err.Error(), "不要传 provider") {
+		t.Fatalf("cloud model change: %v", err)
+	}
+	if _, err := app.mcpRetrySteps(context.Background(), created.ProjectPath, []string{"T1"}, "", "", false); err == nil || !strings.Contains(err.Error(), "不在本机") {
+		t.Fatalf("cloud retry: %v", err)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n继续","assistant\n继续好了"]}`
+	resumed, err := app.mcpSendCommand(context.Background(), created.ProjectPath, "继续", "", "", false)
+	if err != nil || resumed.Status != mcpStatusRunning {
+		t.Fatalf("resume %+v %v", resumed, err)
+	}
+	resumedGet, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || resumedGet.Status != mcpStatusCompleted || resumedGet.Text != "继续好了" || resumedGet.Stop != nil {
+		t.Fatalf("get after resume %+v %v", resumedGet, err)
+	}
+	restarted := &App{mcpStateDir: stateDir}
+	restartOps := len(ops)
+	restartedStop, err := restarted.mcpStopTask(context.Background(), created.ProjectPath)
+	if err != nil || restartedStop.Status != mcpStatusCancelled || countPrefixed(ops, "cloud_stop_task") < 2 {
+		t.Fatalf("restart stop %+v %v", restartedStop, err)
+	}
+	if _, err := restarted.mcpSendCommand(context.Background(), created.ProjectPath, "重启后继续", "", "", false); err != nil || countPrefixed(ops, "cloud_send_message") == countPrefixed(ops[:restartOps], "cloud_send_message") {
+		t.Fatalf("restart send %v", err)
+	}
+
+	ops = nil
+	kinds = nil
+	sendFails = true
+	transcript = `{"task_id":"task_1","messages":[]}`
+	failed, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "cloud", Mode: "coding_dev", Prompt: "实现登录", ClientRequestID: "cloud-fail-1"})
+	if err != nil || failed.Status != mcpStatusFailed || !strings.Contains(failed.Error, "首条指令未发出") || failed.Mode != taskCodingDevTag {
+		t.Fatalf("failed send %+v %v", failed, err)
+	}
+	if len(kinds) != 1 || kinds[0] != "ship/coding" {
+		t.Fatalf("coding kind %v", kinds)
+	}
+	if saved, ok := app.mcpViewFromRegistry(failed.ProjectPath); !ok || saved.Status != mcpStatusFailed || !strings.Contains(saved.Error, "首条指令未发出") {
+		t.Fatalf("failed stored %+v", saved)
+	}
+	failedGet, err := app.mcpGetTask(context.Background(), failed.ProjectPath, failed.RunID)
+	if err != nil || failedGet.Status != mcpStatusFailed || !strings.Contains(failedGet.Error, "首条指令未发出") {
+		t.Fatalf("failed get %+v %v", failedGet, err)
+	}
+	failedReplay, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "cloud", Mode: "coding_dev", Prompt: "实现登录", ClientRequestID: "cloud-fail-1"})
+	if err != nil || failedReplay.Status != mcpStatusFailed || !strings.Contains(failedReplay.Error, "首条指令未发出") || countPrefixed(ops, "cloud_create_task") != 1 {
+		t.Fatalf("failed replay %+v %v ops %v", failedReplay, err, ops)
+	}
+	transcript = `{"task_id":"task_1","messages":["user\n实现登录","assistant\n写好了"]}`
+	cleared, err := app.mcpGetTask(context.Background(), failed.ProjectPath, failed.RunID)
+	if err != nil || cleared.Status != mcpStatusCompleted || cleared.Text != "写好了" {
+		t.Fatalf("cleared %+v %v", cleared, err)
+	}
+	if saved, ok := app.mcpViewFromRegistry(failed.ProjectPath); !ok || saved.Status != mcpStatusIdle || saved.Error != "" {
+		t.Fatalf("stale failure kept %+v", saved)
+	}
+	if _, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "cloud", Provider: "p", Model: "m"}); err == nil || !strings.Contains(err.Error(), "不要传 provider") {
+		t.Fatalf("provider: %v", err)
+	}
+	var discarded []string
+	mcpCloudAgentDeleteFunc = func(a *App, instanceID string) error {
+		discarded = append(discarded, instanceID)
+		return nil
+	}
+	mcpCloudAgentGrantFunc = func(a *App, instanceID string) (string, error) {
+		return "", errors.New("授权失败")
+	}
+	if _, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "other", Location: "cloud"}); err == nil || !strings.Contains(err.Error(), "授权失败") {
+		t.Fatalf("grant failure: %v", err)
+	}
+	if len(discarded) != 1 || discarded[0] != "cag_1" {
+		t.Fatalf("discarded %v", discarded)
+	}
+}
+
+func countPrefixed(items []string, prefix string) int {
+	n := 0
+	for _, item := range items {
+		if strings.HasPrefix(item, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestInboundMCPRemoteDeviceTranscript(t *testing.T) {
+	prev := mcpRemoteDeviceOpFunc
+	t.Cleanup(func() { mcpRemoteDeviceOpFunc = prev })
+	messages := `[{"role":"user","content":"实现登录"}]`
+	mcpRemoteDeviceOpFunc = func(a *App, grantID, op, body string) (string, error) {
+		if grantID != "g-device" {
+			t.Fatalf("grant %s", grantID)
+		}
+		switch op {
+		case "create_task":
+			return `{"task":{"project_path":"D:\\remote-mcp","name":"ship","working_dir":"D:\\remote-mcp"}}`, nil
+		case "send_message":
+			return `{"accepted":true}`, nil
+		case "get_task":
+			return `{"task":{"name":"ship","working_dir":"D:\\remote-mcp"},"messages":` + messages + `}`, nil
+		case "stop_task":
+			return `{"ok":true}`, nil
+		default:
+			return "", errors.New(op)
+		}
+	}
+	app := &App{}
+	created, err := app.mcpCreateTask(context.Background(), mcpCreateArgs{Name: "ship", Location: "remote_device", GrantID: "g-device", Prompt: "实现登录"})
+	if err != nil || created.Location != mcpLocationRemoteDevice || created.Status != mcpStatusRunning {
+		t.Fatalf("created %+v %v", created, err)
+	}
+	if stored, ok := app.mcpViewFromRegistry(created.ProjectPath); !ok || stored.Status != mcpStatusIdle {
+		t.Fatalf("stored %+v", stored)
+	}
+	running, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || running.Status != mcpStatusRunning || running.Text != "" {
+		t.Fatalf("running %+v %v", running, err)
+	}
+	stopped, err := app.mcpStopTask(context.Background(), created.ProjectPath)
+	if err != nil || stopped.Status != mcpStatusCancelled || stopped.Stop == nil || stopped.Stop.Class != "user_stop" {
+		t.Fatalf("stop %+v %v", stopped, err)
+	}
+	held, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || held.Status != mcpStatusCancelled || held.Stop == nil {
+		t.Fatalf("held %+v %v", held, err)
+	}
+	messages = `[{"role":"user","content":"实现登录"},{"role":"assistant","content":"好了"}]`
+	done, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || done.Status != mcpStatusCompleted || done.Text != "好了" || done.Stop != nil || done.EndReason == mcpStatusCancelled {
+		t.Fatalf("done %+v %v", done, err)
+	}
+	messages = `[{"role":"user","content":"实现登录"},{"role":"assistant","content":"写到一半","result_status":"incomplete","terminal_class":"no_progress"}]`
+	broken, err := app.mcpGetTask(context.Background(), created.ProjectPath, created.RunID)
+	if err != nil || broken.Status != mcpStatusFailed || broken.Text != "写到一半" || broken.Error != "写到一半" || broken.Stop != nil {
+		t.Fatalf("remote incomplete %+v %v", broken, err)
+	}
+	if _, err := app.mcpSendCommand(context.Background(), created.ProjectPath, "继续", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if stored, ok := app.mcpViewFromRegistry(created.ProjectPath); !ok || stored.Status != mcpStatusIdle {
+		t.Fatalf("after send %+v", stored)
+	}
+	if _, err := app.mcpSendCommand(mcpContextWithOpts(context.Background(), mcpCallOpts{Provider: "p", Model: "m"}), created.ProjectPath, "换模型", "", "", false); err == nil || !strings.Contains(err.Error(), "不要传 provider") {
+		t.Fatalf("remote model: %v", err)
+	}
+}
+
 func TestInboundMCPDisplayStatus(t *testing.T) {
 	if got := mcpDisplayStatus(mcpStatusCancelled, "completed", "done"); got != mcpStatusCancelled {
 		t.Fatalf("cancelled lost to %s", got)

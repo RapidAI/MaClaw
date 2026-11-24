@@ -62,7 +62,13 @@ async function main() {
     cloudAgentAccessReloadBtn: element('cloudAgentAccessReloadBtn'),
     cloudAgentAccessStatus: element('cloudAgentAccessStatus'),
     cloudAgentAccessFilter: element('cloudAgentAccessFilter'),
-    cloudAgentAccessTree: element('cloudAgentAccessTree')
+    cloudAgentAccessTree: element('cloudAgentAccessTree'),
+    cloudAgentGrantsTitle: element('cloudAgentGrantsTitle'),
+    cloudAgentGrantsHint: element('cloudAgentGrantsHint'),
+    cloudAgentGrantsCount: element('cloudAgentGrantsCount'),
+    cloudAgentGrantList: element('cloudAgentGrantList'),
+    cloudAgentSrvList: element('cloudAgentSrvList'),
+    cloudAgentSrvReloadBtn: element('cloudAgentSrvReloadBtn')
   };
   const calls = [];
   const context = {
@@ -101,11 +107,17 @@ async function main() {
   context.cagOrg.memberFailed = {};
   context.cagOrg.access = {};
   calls.length = 0;
+  var accessItems = [{ scope: 'department', target_id: 'dept-1', enabled: 'on', max_instances: 2, max_concurrent_turns: null }];
   context.api = async function (url, opts) {
     calls.push({ url: url, opts: opts || null });
-    if (opts && opts.method === 'PUT') return { ok: true };
+    if (opts && opts.method === 'PUT') {
+      var saved = JSON.parse(opts.body);
+      accessItems = accessItems.filter(function (item) { return !(item.scope === saved.scope && item.target_id === saved.target_id); });
+      if (saved.enabled !== 'inherit' || saved.max_instances !== null || saved.max_concurrent_turns !== null) accessItems.push(saved);
+      return { ok: true };
+    }
     if (url === '/api/admin/cloud-agents/access') {
-      return { items: [{ scope: 'department', target_id: 'dept-1', enabled: 'on', max_instances: 2, max_concurrent_turns: null }] };
+      return { items: accessItems };
     }
     if (url === '/api/admin/security/groups') {
       return { tree: [{ id: 'dept-1', name: 'Engineering', children: [{ id: 'dept-2', name: 'Platform', children: [] }] }] };
@@ -128,6 +140,26 @@ async function main() {
   const accessBody = JSON.parse(put[0].opts.body);
   assert(accessBody.scope === 'department' && accessBody.target_id === 'dept-1', 'department target is saved');
   assert(accessBody.enabled === 'inherit' && accessBody.max_instances === null && accessBody.max_concurrent_turns === null, 'a blank inherit row is cleared');
+  assert(!elements.cloudAgentGrantList.innerHTML.includes('data-target='), 'a cleared row leaves the granted card');
+  await context.saveCloudAgentAccessRow('department', 'dept-1', 'on', 2, null);
+
+  const grants = elements.cloudAgentGrantList.innerHTML;
+  assert(grants.includes('data-scope="department"') && grants.includes('data-target="dept-1"'), 'a granted department is listed in the granted card');
+  assert(grants.includes('Engineering') && grants.includes('cag-state-on'), 'the grant shows its resolved name and on state');
+  assert(grants.includes('cag-grant-revoke') && grants.includes('cag-grant-locate'), 'a grant can be revoked or located');
+  assert(elements.cloudAgentGrantsTitle.textContent === '\u5df2\u5f00\u901a\u8bb0\u5f55', 'granted card title is rendered');
+  calls.length = 0;
+  await context.cagRevokeGrant('department', 'dept-1');
+  const revoke = calls.filter(function (call) { return call.opts && call.opts.method === 'PUT'; });
+  assert(revoke.length === 1 && revoke[0].url === '/api/admin/cloud-agents/access', 'revoking a grant writes one access update');
+  const revokeBody = JSON.parse(revoke[0].opts.body);
+  assert(revokeBody.scope === 'department' && revokeBody.target_id === 'dept-1', 'revoke targets the granted scope');
+  assert(revokeBody.enabled === 'inherit' && revokeBody.max_instances === null && revokeBody.max_concurrent_turns === null, 'revoke clears the saved override');
+  assert(!elements.cloudAgentGrantList.innerHTML.includes('data-target='), 'an empty granted card shows the empty state');
+  context.cagLocateGrant('department', 'dept-1');
+  assert(elements.cloudAgentAccessFilter.value === 'Engineering', 'locating a grant fills the search');
+  assert(elements.cloudAgentAccessTree.innerHTML.includes('data-target="dept-1"'), 'the located row is rendered');
+  elements.cloudAgentAccessFilter.value = '';
 
   elements.cloudAgentAccessFilter.value = 'ada';
   context.renderCloudAgentAccessTree();
@@ -169,6 +201,7 @@ async function main() {
   context.cagOrg.expanded = savedExpanded;
   elements.cloudAgentAccessFilter.value = '';
   context.renderCloudAgentAccessTree();
+  await context.saveCloudAgentAccessRow('department', 'dept-1', 'on', 2, null);
 
   elements.cloudAgentAccessTree.querySelectorAll = function () {
     return [{
@@ -329,6 +362,26 @@ async function main() {
   assert(settled.indexOf('ada@example.com') !== -1, 'the newer membership stays on screen');
   assert(settled.indexOf('old@example.com') === -1, 'a late membership response does not replace it');
   assert(settled.indexOf('value="on" selected') !== -1, 'a late scope response does not replace the newer one');
+
+  context.cagOrg.usersById = { 'user-7': { id: 'user-7', email: 'ada@example.com' } };
+  context.api = async function (url) {
+    if (url === '/api/admin/cloud-agents/srv-bindings') {
+      return { items: [
+        { user_id: 'user-7', node_id: 'node-7', scope: 'private', name: 'ada-srv', address: '10.0.0.8:18080', online: true },
+        { user_id: 'ghost', node_id: 'node-gone', scope: 'private' }
+      ] };
+    }
+    return {};
+  };
+  await context.loadCloudAgentSrvBindings();
+  var srvList = elements.cloudAgentSrvList.innerHTML;
+  assert(srvList.indexOf('ada@example.com') !== -1, 'a bound user resolves to the account email');
+  assert(srvList.indexOf('ada-srv') !== -1 && srvList.indexOf('10.0.0.8:18080') !== -1, 'node name and address are shown');
+  assert(srvList.indexOf('在线') !== -1 && srvList.indexOf('离线') !== -1, 'online and offline states both render');
+  assert(srvList.indexOf('node-gone') !== -1, 'a missing node still lists with its id');
+  context.api = async function () { return { items: [] }; };
+  await context.loadCloudAgentSrvBindings();
+  assert(elements.cloudAgentSrvList.innerHTML.indexOf('全部使用系统缺省') !== -1 || elements.cloudAgentSrvList.innerHTML.indexOf('cag-grants-empty') !== -1, 'empty bindings explain the public default');
   console.log(passed + ' passed, ' + failed + ' failed');
   if (failed) process.exit(1);
 }

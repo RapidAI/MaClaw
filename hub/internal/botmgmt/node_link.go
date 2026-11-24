@@ -250,6 +250,71 @@ func (s *Service) PinOwnerNode(ctx context.Context, tenantID, userID, nodeID str
 	return s.save(ctx, tenantID, rec)
 }
 
+// PinOwnerCloudNode sends this user's cloud agents to the node srv. An empty
+// nodeID clears the pin, putting the user back on the public connection. A
+// node that has no srv link is refused and the current pin stays unchanged.
+func (s *Service) PinOwnerCloudNode(ctx context.Context, tenantID, userID, nodeID string) error {
+	userID = strings.TrimSpace(userID)
+	nodeID = strings.TrimSpace(nodeID)
+	if s == nil || userID == "" {
+		return fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if rec.OwnerCloudNode == nil {
+		rec.OwnerCloudNode = map[string]string{}
+	}
+	if nodeID == "" {
+		delete(rec.OwnerCloudNode, userID)
+		return s.save(ctx, tenantID, rec)
+	}
+	if findNodeLink(rec.NodeLinks, nodeID) == nil {
+		return fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
+	}
+	rec.OwnerCloudNode[userID] = nodeID
+	return s.save(ctx, tenantID, rec)
+}
+
+// OwnerCloudNodeID reports the node srv this user's cloud agents use.
+// Empty means the public connection.
+func (s *Service) OwnerCloudNodeID(ctx context.Context, tenantID, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if s == nil || userID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(rec.OwnerCloudNode[userID])
+}
+
+// CloudNodeBindings lists every user pinned to a node srv for cloud agents.
+func (s *Service) CloudNodeBindings(ctx context.Context, tenantID string) map[string]string {
+	out := map[string]string{}
+	if s == nil {
+		return out
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return out
+	}
+	for user, node := range rec.OwnerCloudNode {
+		if strings.TrimSpace(node) != "" {
+			out[user] = node
+		}
+	}
+	return out
+}
+
 // UnpinNodeExcept drops every pin that names this node except keepUserID's.
 // A node turning exclusive strands every other user's pin: their next bots
 // would land on the srv but could never wake the desktop.
@@ -269,6 +334,12 @@ func (s *Service) UnpinNodeExcept(ctx context.Context, tenantID, nodeID, keepUse
 	for user, id := range rec.OwnerNode {
 		if id == nodeID && user != keepUserID {
 			delete(rec.OwnerNode, user)
+			changed = true
+		}
+	}
+	for user, id := range rec.OwnerCloudNode {
+		if id == nodeID && user != keepUserID {
+			delete(rec.OwnerCloudNode, user)
 			changed = true
 		}
 	}
@@ -301,6 +372,11 @@ func (s *Service) ForgetNodeSrv(ctx context.Context, tenantID, nodeID string) er
 	for user, id := range rec.OwnerNode {
 		if id == nodeID {
 			delete(rec.OwnerNode, user)
+		}
+	}
+	for user, id := range rec.OwnerCloudNode {
+		if id == nodeID {
+			delete(rec.OwnerCloudNode, user)
 		}
 	}
 	return s.save(ctx, tenantID, rec)
@@ -343,7 +419,7 @@ func (s *Service) provisionNodeConnection(ctx context.Context, tenantID, nodeID 
 		return nil
 	}
 	if strings.TrimSpace(view.AdminSecret) == "" {
-		return fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+		return fmt.Errorf("%w: %s", ErrAdminSecretMissing, AdminSecretHint)
 	}
 	maclawTenant := strings.TrimSpace(view.MaClawTenantID)
 	if maclawTenant == "" {
@@ -480,7 +556,7 @@ func (s *Service) ensureNodeOwnerToken(ctx context.Context, tenantID string, rec
 		return "", fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 	}
 	if strings.TrimSpace(view.AdminSecret) == "" {
-		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+		return "", fmt.Errorf("%w: %s", ErrAdminSecretMissing, AdminSecretHint)
 	}
 	// A principal already on this node can mint its own bearer. Provisioning
 	// the shared connection is only needed before the first user is created.
@@ -526,7 +602,7 @@ func (s *Service) finishNodeOwnerToken(ctx context.Context, tenantID, owner, nod
 		return record{}, "", fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 	}
 	if strings.TrimSpace(view.AdminSecret) == "" {
-		return record{}, "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+		return record{}, "", fmt.Errorf("%w: %s", ErrAdminSecretMissing, AdminSecretHint)
 	}
 	if principal := findPrincipal(view.Principals, owner); principal != nil {
 		token, err := s.exchangeOwnerToken(ctx, view, *principal)

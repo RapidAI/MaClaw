@@ -54,7 +54,7 @@ func (s *Service) ensurePublicOwnerToken(ctx context.Context, tenantID string, r
 		return s.sharedBearer(ctx, *rec), nil
 	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
-		return "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+		return "", fmt.Errorf("%w: %s", ErrAdminSecretMissing, AdminSecretHint)
 	}
 	principal := findPrincipal(rec.Principals, owner)
 	if principal == nil {
@@ -103,7 +103,7 @@ func (s *Service) ownerTokenPublic(ctx context.Context, tenantID, owner string) 
 		return rec, s.sharedBearer(ctx, rec), nil
 	}
 	if strings.TrimSpace(rec.AdminSecret) == "" {
-		return record{}, "", fmt.Errorf("%w: 请先在 Bot 管理里保存 MaClawSrv 管理密钥", ErrAdminSecretMissing)
+		return record{}, "", fmt.Errorf("%w: %s", ErrAdminSecretMissing, AdminSecretHint)
 	}
 	if principal := findPrincipal(rec.Principals, owner); principal != nil {
 		token, err := s.exchangeOwnerToken(ctx, rec, *principal)

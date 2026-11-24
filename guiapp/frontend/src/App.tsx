@@ -2059,15 +2059,69 @@ function App() {
         });
     };
 
+    // Escape hatch for a launch that reported success but never quit the app.
+    // Armed only after LaunchInstallerAndExit resolves — see startInstaller.
+    const installQuitWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const clearInstallQuitWatchdog = useCallback(() => {
+        if (installQuitWatchdogRef.current != null) {
+            clearTimeout(installQuitWatchdogRef.current);
+            installQuitWatchdogRef.current = null;
+        }
+    }, []);
+    useEffect(() => () => clearInstallQuitWatchdog(), [clearInstallQuitWatchdog]);
+
+    // Name of the installer currently being downloaded. Cancel must target the
+    // same key the backend registered; rebuilding it from the brand can miss.
+    const activeDownloadFileNameRef = useRef("");
+    const cancelActiveDownload = useCallback(() => {
+        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
+        const fileName = activeDownloadFileNameRef.current ||
+            `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
+        CancelDownload(fileName);
+        activeDownloadFileNameRef.current = "";
+    }, [brandInfo?.displayName, isWindows]);
+
+    // Bumped whenever the update target changes. An in-flight download or
+    // installer launch captures it so a late completion cannot offer or run
+    // a file the dialog no longer describes.
+    const updateTargetGenerationRef = useRef(0);
+    // Swap the check result, dropping any downloaded-installer state when the
+    // target changed. A same-target refresh keeps the completed download so a
+    // re-check does not force a second download; a different version/channel
+    // must never let "Install Now" run a file that does not match the
+    // version the dialog shows.
+    const handleUpdateResultChange = useCallback((next: any) => {
+        const targetOf = (r: any) => [r?.latest_version, r?.channel, r?.is_rollback ? 1 : 0, r?.sha256].join("|");
+        setUpdateResult((previous: any) => {
+            if (targetOf(previous) !== targetOf(next)) {
+                updateTargetGenerationRef.current += 1;
+                // A download for the superseded target is useless: stop it so
+                // a fresh download can start right away instead of waiting for
+                // the old one to finish and be discarded.
+                cancelActiveDownload();
+                clearInstallQuitWatchdog();
+                setIsDownloading(false);
+                setIsInstallingUpdate(false);
+                setInstallerPath("");
+                setDownloadError("");
+                setDownloadProgress(0);
+                setActiveDownloadSource("");
+            }
+            return next;
+        });
+    }, [clearInstallQuitWatchdog, cancelActiveDownload]);
+
     const handleOpenAppUpdate = useCallback(() => {
         if (!appUpdateAvailable) return;
-        setUpdateResult(appUpdateAvailable);
+        handleUpdateResultChange(appUpdateAvailable);
         // Opening the dialog is a fresh attempt: never inherit an "installing"
         // state from a launch that never quit the app, or the dialog would
         // reopen with its buttons disabled.
+        clearInstallQuitWatchdog();
+        installLaunchInFlightRef.current = false;
         setIsInstallingUpdate(false);
         setShowUpdateModal(true);
-    }, [appUpdateAvailable]);
+    }, [appUpdateAvailable, clearInstallQuitWatchdog, handleUpdateResultChange]);
 
     const handleOpenAppReleaseNotes = useCallback(() => {
         const releaseUrl = String(appUpdateAvailable?.release_url || appUpdateAvailable?.ReleaseUrl || "").trim();
@@ -2090,10 +2144,6 @@ function App() {
         setAppUpdateAvailable(null);
     }, []);
 
-    // Name of the installer currently being downloaded. Cancel must target the
-    // same key the backend registered; rebuilding it from the brand can miss.
-    const activeDownloadFileNameRef = useRef("");
-
     // Hands a downloaded installer to the backend and quits the app.
     //
     // Shared by the automatic path (download finished) and the manual fallback
@@ -2105,19 +2155,55 @@ function App() {
     // the point of memoising it.
     const translateRef = useRef(translate);
     translateRef.current = translate;
+    // Re-entrancy across a single render: isInstallingUpdate only flips after
+    // the next commit, so a fast double invoke would launch the installer
+    // twice (two ShellExecute calls / stacked consent prompts).
+    const installLaunchInFlightRef = useRef(false);
     const startInstaller = useCallback(async (path: string): Promise<boolean> => {
-        if (!path) return false;
+        if (!path || installLaunchInFlightRef.current) return false;
+        installLaunchInFlightRef.current = true;
         setIsInstallingUpdate(true);
         // Clear the previous failure: a retry should not show the old reason
         // while it is in progress.
         setDownloadError("");
+        const generation = updateTargetGenerationRef.current;
         try {
             // The target version lets the app detect on the next start
             // whether this silent install actually landed.
             const targetVersion = String(updateResult?.latest_version || "").trim();
             await LaunchInstallerAndExit(path, targetVersion);
+            if (generation !== updateTargetGenerationRef.current) {
+                // The update target changed while the launch was in flight
+                // (consent prompt or launch-retry wait). Do not arm the quit
+                // watchdog for a superseded install; release the guard so the
+                // new target can be launched.
+                installLaunchInFlightRef.current = false;
+                return false;
+            }
+            // The backend quits ~500ms after this returns and the exit
+            // controller bounds the whole shutdown, so surviving well past
+            // this window means the quit never happened (a browser/dev
+            // session, a blocked shutdown) and the manual fallback is due.
+            // The timer cannot start earlier: the awaited call legitimately
+            // blocks on the elevation consent prompt and on the launch
+            // retry, and on slower machines either can stretch past any
+            // fixed deadline without anything being wrong.
+            // Drop a previous attempt's timer: in a session that never quits
+            // it would otherwise fire inside this launch's grace window.
+            clearInstallQuitWatchdog();
+            installQuitWatchdogRef.current = setTimeout(() => {
+                // Quit never came — reopen the manual path, which means
+                // letting a fresh launch run again.
+                installLaunchInFlightRef.current = false;
+                setIsInstallingUpdate(false);
+                setDownloadError((previous) => previous || translateRef.current("installStillPending"));
+            }, 20000);
             return true;
         } catch (err) {
+            installLaunchInFlightRef.current = false;
+            // A superseded launch failure belongs to the old target; the
+            // result change already reset the dialog, so report nothing.
+            if (generation !== updateTargetGenerationRef.current) return false;
             console.error("Install launch error:", err);
             // The app stays open (the backend refuses to quit when the
             // installer did not start), so surface why and fall back to the
@@ -2128,32 +2214,19 @@ function App() {
             setDownloadError(err instanceof Error ? err.message : String(err));
             return false;
         }
-    }, [updateResult]);
+    }, [updateResult, clearInstallQuitWatchdog]);
 
-    // Escape hatch for a launch that reported success but never quit the app.
-    //
-    // The backend quits ~500ms after handing off to the installer, so if this
-    // component is still alive well past that the quit did not happen (a
-    // browser/dev session, a blocked shutdown). The modal disables Close while
-    // installing, which would otherwise leave the user with a window they
-    // cannot dismiss and no way to retry.
-    //
-    // translateRef rather than t: t is rebuilt every render, so listing it as a
-    // dependency would restart this timer on each render and it would never fire.
-    useEffect(() => {
-        if (!isInstallingUpdate) return;
-        const timer = setTimeout(() => {
-            setIsInstallingUpdate(false);
-            setDownloadError((previous) => previous || translateRef.current("installStillPending"));
-        }, 20000);
-        return () => clearTimeout(timer);
-    }, [isInstallingUpdate]);
-
+    // Same-render double-invoke guard: isDownloading only flips on the next
+    // commit, so a fast double click could still run two downloads (the
+    // backend would cancel one, but that churn is avoidable).
+    const downloadInFlightRef = useRef(false);
     const handleDownload = async () => {
-        if (!updateResult) return;
+        if (!updateResult || downloadInFlightRef.current) return;
         // Use download_url if available (added in backend update), fallback to release_url
         const downloadUrl = updateResult.download_url || updateResult.release_url;
         if (!downloadUrl) return;
+        downloadInFlightRef.current = true;
+        const generation = updateTargetGenerationRef.current;
 
         setIsDownloading(true);
         setDownloadProgress(0);
@@ -2177,6 +2250,14 @@ function App() {
 
         try {
             const path = await DownloadUpdateWithSHA256(downloadUrl, fileName, expectedSHA256);
+            if (generation !== updateTargetGenerationRef.current) {
+                // The update target changed while this download ran (a
+                // recheck or a rollback pick): the file belongs to the old
+                // target, so do not offer or auto-launch it under the new
+                // version the dialog now shows.
+                setIsDownloading(false);
+                return;
+            }
             setInstallerPath(path);
             // The promise result is authoritative; progress events are auxiliary
             // and may be unavailable in browser-based development sessions.
@@ -2188,29 +2269,36 @@ function App() {
             // installer; a failure falls back to the manual button.
             void startInstaller(path);
         } catch (err: any) {
+            // A superseded download's failure belongs to the old target; the
+            // result change already reset the dialog, so report nothing.
+            if (generation !== updateTargetGenerationRef.current) return;
             console.error("Download error:", err);
-            // Some failures (for example, an unavailable Downloads folder) happen
-            // before the backend can emit a download-progress error event.
-            setDownloadError(err instanceof Error ? err.message : String(err));
+            const message = err instanceof Error ? err.message : String(err);
+            if (/cancelled|canceled/i.test(message)) {
+                // A user cancel is not a failure: the cancelled progress event
+                // may already have set the localized note — clear it and return
+                // to the update offer rather than showing an error band.
+                setDownloadError("");
+            } else {
+                // Some failures (for example, an unavailable Downloads folder) happen
+                // before the backend can emit a download-progress error event.
+                setDownloadError(message);
+            }
             setIsDownloading(false);
+        } finally {
+            downloadInFlightRef.current = false;
         }
     };
 
     const handleRollbackRelease = (release: RollbackRelease | null) => {
         if (!release?.download_url) return;
-        setUpdateResult(rollbackUpdateResult(release));
-        setInstallerPath("");
-        setDownloadError("");
-        setDownloadProgress(0);
-        setIsInstallingUpdate(false);
+        // The shared fingerprint guard decides whether the previous
+        // download/install state still applies to this target; re-picking the
+        // same rollback keeps a completed download instead of forcing a
+        // second one.
+        handleUpdateResultChange(rollbackUpdateResult(release));
     };
-    const handleCancelDownload = () => {
-        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
-        const fileName = activeDownloadFileNameRef.current ||
-            `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
-        CancelDownload(fileName);
-        activeDownloadFileNameRef.current = "";
-    };
+    const handleCancelDownload = () => cancelActiveDownload();
 
     // Manual fallback: only reachable when the automatic launch failed, or when
     // a download finished before this change and the button is still shown.
@@ -2531,7 +2619,9 @@ function App() {
         safeEventsOn("download-progress", (data: any) => {
             console.log("Download progress event:", data);
             if (data.status === "downloading") {
-                setDownloadProgress(Math.floor(data.percentage));
+                // The source-switch event carries only the host: coercing a
+                // missing percentage would put NaN on the bar and aria-valuenow.
+                if (data.percentage != null) setDownloadProgress(Math.floor(data.percentage));
                 if (data.source) setActiveDownloadSource(String(data.source));
             } else if (data.status === "verifying") {
                 // SHA256 verification in progress — keep showing progress at 100%
@@ -2544,7 +2634,8 @@ function App() {
                 setDownloadError(data.error);
                 setIsDownloading(false);
             } else if (data.status === "cancelled") {
-                setDownloadError(t("downloadCancelled"));
+                // A user cancel is not a failure: return to the update offer.
+                setDownloadError("");
                 setIsDownloading(false);
             }
         });
@@ -6777,13 +6868,13 @@ ${instruction}`;
                                 const preferBeta = Boolean(config?.prefer_beta_channel);
                                 checkAppUpdate(APP_VERSION, preferBeta).then((res: any) => {
                                     console.log(preferBeta ? "CheckUpdateBeta result:" : "CheckUpdate result:", res);
-                                    setUpdateResult(res);
+                                    handleUpdateResultChange(res);
                                     setShowUpdateModal(true);
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error(preferBeta ? "CheckUpdateBeta error:" : "CheckUpdate error:", err);
                                     setStatus(localizeText('Update check failed: ', '检查更新失败：', '檢查更新失敗：') + err);
-                                    setUpdateResult({
+                                    handleUpdateResultChange({
                                         has_update: false,
                                         check_failed: true,
                                         message: localizeText('Unable to check for updates. Check your connection and try again.', '无法检查更新，请检查网络后重试。', '無法檢查更新，請檢查網路後重試。'),
@@ -7064,12 +7155,13 @@ ${instruction}`;
                     installerPath={installerPath}
                     downloadError={downloadError}
                     isInstalling={isInstallingUpdate}
+                    needsElevationHint={isWindows}
                     preferBetaChannel={config?.prefer_beta_channel}
                     t={t}
                     onCancelDownload={handleCancelDownload}
                     onDownload={handleDownload}
                     onInstall={handleInstall}
-                    onUpdateResultChange={setUpdateResult}
+                    onUpdateResultChange={handleUpdateResultChange}
                     onRollbackReleaseChange={handleRollbackRelease}
                     onClose={() => {
                         setShowUpdateModal(false);

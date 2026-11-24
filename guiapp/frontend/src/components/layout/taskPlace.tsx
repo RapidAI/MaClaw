@@ -61,6 +61,53 @@ export function rememberCloudOpen(id: string, at = Date.now()): number {
     return at;
 }
 
+export type CloudTaskPlaceSnapshot = {
+    /** Hub 已为这个账号开通云端任务。没开通时新建任务的位置里不出现云端。 */
+    enabled: boolean;
+    /** 任务栏当前停在云端页签。新建任务的位置默认跟着它。 */
+    selected: boolean;
+};
+
+let cloudTaskPlace: CloudTaskPlaceSnapshot = { enabled: false, selected: false };
+const cloudTaskPlaceListeners = new Set<() => void>();
+
+function sameCloudTaskPlace(a: CloudTaskPlaceSnapshot, b: CloudTaskPlaceSnapshot): boolean {
+    return a.enabled === b.enabled && a.selected === b.selected;
+}
+
+function notifyCloudTaskPlace() {
+    cloudTaskPlaceListeners.forEach(listener => listener());
+}
+
+/** Sidebar publishes this after the Hub list and when the 云端 tab changes. */
+export function publishCloudTaskPlace(next: CloudTaskPlaceSnapshot) {
+    if (sameCloudTaskPlace(cloudTaskPlace, next)) return;
+    cloudTaskPlace = { enabled: next.enabled === true, selected: next.selected === true };
+    notifyCloudTaskPlace();
+}
+
+export function cloudTaskPlaceSnapshot(): CloudTaskPlaceSnapshot {
+    return cloudTaskPlace;
+}
+
+export function useCloudTaskPlace(): CloudTaskPlaceSnapshot {
+    return useSyncExternalStore(
+        (listener: () => void) => {
+            cloudTaskPlaceListeners.add(listener);
+            return () => cloudTaskPlaceListeners.delete(listener);
+        },
+        () => cloudTaskPlace,
+        () => cloudTaskPlace,
+    );
+}
+
+/** Test isolation. Production starts disabled until the sidebar publishes the Hub list. */
+export function resetCloudTaskPlaceForTests() {
+    if (!cloudTaskPlace.enabled && !cloudTaskPlace.selected) return;
+    cloudTaskPlace = { enabled: false, selected: false };
+    notifyCloudTaskPlace();
+}
+
 export function useCloudOpenRevision(): number {
     return useSyncExternalStore(
         (listener: () => void) => {

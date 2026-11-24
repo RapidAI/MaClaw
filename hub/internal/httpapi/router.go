@@ -636,7 +636,7 @@ func NewRouter(
 		mux.HandleFunc("PUT /api/v1/bots/desktop-node/{server_id}/active", PutSelfDesktopActiveHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
 		// Not under /api/v1/bots/{id}/...: that shape overlaps
 		// DELETE /api/v1/bots/{id}/preference and Go's mux panics at startup.
-		mux.HandleFunc("DELETE /api/v1/self-desktop-nodes/{server_id}", DeleteSelfDesktopNodeHandler(desktopPool, edgeRegistry, edgeBroker, identity))
+		mux.HandleFunc("DELETE /api/v1/self-desktop-nodes/{server_id}", DeleteSelfDesktopNodeHandler(desktopPool, edgeRegistry, edgeBroker, botSvc, identity))
 	}
 	var computerViews desktopViewForgetter
 	if botSvc != nil {
@@ -1572,6 +1572,18 @@ func NewRouter(
 			if directory, ok := desktopDirectory.(cloudagent.Directory); ok {
 				cloudSvc.Directory = directory
 			}
+			// Cloud agents pinned to a private node reach its srv over the
+			// edge tunnel, same client bot management uses.
+			cloudSvc.NodeHTTP = func(nodeID string) *http.Client {
+				if edgeBroker == nil || edgeRegistry == nil {
+					return nil
+				}
+				node, err := edgeRegistry.Lookup(context.Background(), nodeID)
+				if err != nil {
+					return nil
+				}
+				return edgeBroker.Client(node.TenantID, node.ID, edgelink.TargetSrv)
+			}
 			cloudSvc.Start(context.Background())
 			if rc != nil {
 				rc.Cloud = cloudSvc.Dispatcher()
@@ -1588,11 +1600,15 @@ func NewRouter(
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/stop", users.Stop)
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/resume", users.Resume)
 			mux.HandleFunc("POST /api/v1/cloud-agents/{id}/control-grant", users.ControlGrant)
+			srvChoice := cloudAgentUserSrv(edgeRegistry, edgeBroker, botSvc, cloudAgentViewer(identity))
+			mux.HandleFunc("GET /api/v1/cloud-agents/srv", srvChoice)
+			mux.HandleFunc("PUT /api/v1/cloud-agents/srv", srvChoice)
 			mux.HandleFunc("GET /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettingsGet(cloudSvc)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettings(cloudSvc, adminAudit)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/users/{id}/limits", requireTenantAdmin(cloudAgentAdminUserLimits(cloudSvc, adminAudit)))
 			mux.HandleFunc("GET /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessGet(cloudSvc)))
 			mux.HandleFunc("PUT /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessPut(cloudSvc, adminAudit)))
+			mux.HandleFunc("GET /api/admin/cloud-agents/srv-bindings", requireTenantAdmin(cloudAgentAdminSrvBindings(edgeRegistry, edgeBroker, botSvc)))
 			mux.HandleFunc("POST /api/internal/cloud-agents/heartbeat", cloudSvc.ServeHeartbeat)
 			mux.HandleFunc("POST /api/internal/cloud-agents/stream", cloudAgentStream(rc, cloudSvc))
 			mux.HandleFunc("POST /api/internal/cloud-agents/llm/chat", cloudAgentLLMChat(hubDB, cloudSvc, identity, system, securitySvc, llmPromptCache))

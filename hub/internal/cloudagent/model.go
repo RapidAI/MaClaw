@@ -99,6 +99,10 @@ type Instance struct {
 	LLMModel         string     `json:"llm_model"`
 	Status           string     `json:"status"`
 	CloudWorkspaceID string     `json:"cloud_workspace_id"`
+	// SrvNodeID is the private node srv this instance was provisioned on.
+	// Empty means the public connection. The pin that created it may move;
+	// the instance keeps running where it was provisioned.
+	SrvNodeID string `json:"srv_node_id,omitempty"`
 	RuntimeStatus    string     `json:"runtime_status,omitempty"`
 	Git              *GitPublic `json:"git,omitempty"`
 	CreatedAt        time.Time  `json:"created_at"`

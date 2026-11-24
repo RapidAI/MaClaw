@@ -20,6 +20,7 @@ import {
     withLatexTemplate,
     withLocalWorkspace,
     withRemoteWorkspace,
+    withTaskPlace,
     withWorkflow,
     workspaceKindsForExpert,
     workspaceSummaryLabel,
@@ -27,6 +28,7 @@ import {
     type TaskDraft,
 } from '../taskDraft';
 import { TaskConfigBar, type ExpertOption, type RemoteMachineOption, type WorkflowOption } from '../TaskConfigBar';
+import { publishCloudTaskPlace, resetCloudTaskPlaceForTests } from '../../../layout/taskPlace';
 import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { nextDefaultCloudWorkspaceName } from '../WorkspacePickerPopover';
 import { RemoteServerForm } from '../RemoteServerPopover';
@@ -77,6 +79,7 @@ function renderBar(draft: TaskDraft, onChange: (d: TaskDraft) => void, extra?: P
 afterEach(() => {
     cleanup();
     testRemoteSSHConnection.mockReset();
+    resetCloudTaskPlaceForTests();
 });
 
 // Stateful harness for round-trip UI flows (mock-onChange renderBar cannot
@@ -1188,6 +1191,43 @@ describe('machine (位置) chip', () => {
         });
         fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
         await screen.findByTestId('task-config-popover-workspace');
+    });
+
+    it('shows 云端 after 本机 when cloud tasks are enabled, and does not lock the other chips', async () => {
+        publishCloudTaskPlace({ enabled: true, selected: false });
+        renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
+        fireEvent.click(screen.getByTestId('task-config-chip-machine'));
+        const popover = await screen.findByTestId('task-config-popover-machine');
+        const local = popover.querySelector('[data-testid="machine-item-local"]');
+        const cloud = popover.querySelector('[data-testid="machine-item-cloud"]');
+        const remote = popover.querySelector('[data-testid="machine-item-gb"]');
+        expect(local).toBeTruthy();
+        expect(cloud).toBeTruthy();
+        expect(remote).toBeTruthy();
+        expect(popover.innerHTML.indexOf('machine-item-local')).toBeLessThan(popover.innerHTML.indexOf('machine-item-cloud'));
+        expect(popover.innerHTML.indexOf('machine-item-cloud')).toBeLessThan(popover.innerHTML.indexOf('machine-item-gb'));
+        fireEvent.click(cloud!);
+        await waitFor(() => {
+            expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('云端');
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        expect(await screen.findByTestId('task-config-popover-expert')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-config-chip-workflow'));
+        expect(await screen.findByTestId('task-config-popover-workflow')).toBeTruthy();
+    });
+
+    it('hides 云端 when cloud tasks are not enabled', async () => {
+        renderStatefulBar(undefined, { variant: 'bare', defaultExpanded: true, remoteMachines: machines });
+        fireEvent.click(screen.getByTestId('task-config-chip-machine'));
+        const popover = await screen.findByTestId('task-config-popover-machine');
+        expect(popover.querySelector('[data-testid="machine-item-cloud"]')).toBeNull();
+        expect(popover.textContent).toContain('本机');
+    });
+
+    it('shows the location chip for cloud alone, with no remote machines', () => {
+        publishCloudTaskPlace({ enabled: true, selected: false });
+        renderBar(withTaskPlace(defaultTaskDraft(), 'cloud'), vi.fn(), { variant: 'bare', defaultExpanded: true, remoteMachines: [] });
+        expect(screen.getByTestId('task-config-chip-machine-value').textContent).toBe('云端');
     });
 
     it('view-only machine cannot be picked', async () => {

@@ -28,13 +28,20 @@ const (
 	// fails it. It is not a wall clock on the round, and it is not the
 	// per-request LLM deadline (DefaultLLMTimeoutSec / MaxAgentTimeoutSec).
 	// A round that keeps producing activity is never cancelled by this window.
-	mcpRunStallWindow = 30 * time.Minute
+	mcpRunStallWindow          = 30 * time.Minute
 	mcpConfirmKindPlan         = "plan"
 	mcpConfirmKindPlanReview   = "plan_review"
 	mcpConfirmKindPlanDialogue = "plan_dialogue"
-	mcpPlanConfirmHint         = "编程计划待确认，确认前不会改文件。请用 send_command 发送 /plan approve（开始实施）、/plan skip（直接执行）或 /plan reject（拒绝）。"
-	mcpPlanReviewHint          = "编程计划还在评审，确认前不会改文件。评审结束后再 get_task，然后用 send_command 发送 /plan approve。"
-	mcpPlanDialogueHint        = "规划还在等回复，确认前不会改文件。用 send_command 把要补充或修改的话发回这个任务。"
+	// Task location is where the task runs. local runs on this computer
+	// (including an SSH programming workspace, and a cloud workspace used
+	// only as that task's directory). cloud is a cloud agent. remote_device
+	// is an authorized computer reached through remote control.
+	mcpLocationLocal        = "local"
+	mcpLocationCloud        = "cloud"
+	mcpLocationRemoteDevice = "remote_device"
+	mcpPlanConfirmHint      = "编程计划待确认，确认前不会改文件。请用 send_command 发送 /plan approve（开始实施）、/plan skip（直接执行）或 /plan reject（拒绝）。"
+	mcpPlanReviewHint       = "编程计划还在评审，确认前不会改文件。评审结束后再 get_task，然后用 send_command 发送 /plan approve。"
+	mcpPlanDialogueHint     = "规划还在等回复，确认前不会改文件。用 send_command 把要补充或修改的话发回这个任务。"
 )
 
 var (
@@ -57,6 +64,20 @@ var (
 	// mcpMaterializeModelFunc replaces provider materialization in tests.
 	// Production leaves it nil and loads the configured provider.
 	mcpMaterializeModelFunc func(a *App, provider, model string) (corelib.MaclawLLMConfig, bool)
+	// mcpCloudCreateFunc replaces creation of a local task whose working
+	// directory is a cloud workspace. Production leaves it nil and uses
+	// CreateTaskUnified. It is not the cloud-agent location.
+	mcpCloudCreateFunc func(a *App, opts TaskCreateOptions) (UnifiedTaskCreateResult, error)
+	// mcpCloudAgentCreateFunc, mcpCloudAgentGrantFunc, and mcpCloudAgentOpFunc
+	// replace the cloud-agent instance, its control grant, and cloud_* ops in
+	// tests. Production leaves them nil.
+	mcpCloudAgentCreateFunc func(a *App, name, kind string) (CloudAgentRow, error)
+	mcpCloudAgentGrantFunc  func(a *App, instanceID string) (string, error)
+	mcpCloudAgentDeleteFunc func(a *App, instanceID string) error
+	mcpCloudAgentOpFunc     func(a *App, grantID, op, body string) (string, error)
+	// mcpRemoteDeviceOpFunc replaces the remote-device control call in tests.
+	// Production leaves it nil and uses RemoteControlOp.
+	mcpRemoteDeviceOpFunc func(a *App, grantID, op, body string) (string, error)
 )
 
 // mcpTaskView is the JSON text returned by create, get, stop, and list.
@@ -79,6 +100,9 @@ type mcpTaskView struct {
 	FinishedAt          string              `json:"finished_at,omitempty"`
 	EndReason           string              `json:"end_reason,omitempty"`
 	EndDetail           string              `json:"end_detail,omitempty"`
+	Location            string              `json:"location,omitempty"`
+	CloudWorkspaceID    string              `json:"cloud_workspace_id,omitempty"`
+	GrantID             string              `json:"grant_id,omitempty"`
 	RemoteHost          string              `json:"ssh_host,omitempty"`
 	RemoteUser          string              `json:"ssh_user,omitempty"`
 	RemotePort          int                 `json:"ssh_port,omitempty"`
@@ -151,6 +175,9 @@ type mcpRunRecord struct {
 	RemoteUser         string
 	RemotePort         int
 	RemoteWorkDir      string
+	Location           string
+	CloudWorkspaceID   string
+	GrantID            string
 	Steps              []mcpStepView
 	Checks             []mcpCheckView
 	RunID              string
@@ -211,6 +238,9 @@ func (rec *mcpRunRecord) view() mcpTaskView {
 		FinishedAt:          mcpFormatTime(rec.FinishedAt),
 		EndReason:           rec.EndReason,
 		EndDetail:           rec.EndDetail,
+		Location:            rec.Location,
+		CloudWorkspaceID:    rec.CloudWorkspaceID,
+		GrantID:             rec.GrantID,
 		RemoteHost:          rec.RemoteHost,
 		RemoteUser:          rec.RemoteUser,
 		RemotePort:          rec.RemotePort,
@@ -277,6 +307,41 @@ func (a *App) mcpCreateTask(ctx context.Context, args mcpCreateArgs) (view mcpTa
 }
 
 func mcpCreateClaimKey(args mcpCreateArgs) string {
+	location, locErr := mcpNormalizeLocation(args)
+	if locErr == nil && location == mcpLocationCloud {
+		return mcpClaimIdentity(
+			strings.TrimSpace(args.Name),
+			mcpLocationCloud,
+			strings.TrimSpace(args.Mode),
+			strings.TrimSpace(args.CloudWorkspaceID),
+			strings.TrimSpace(args.GrantID),
+			strings.TrimSpace(args.Provider),
+			strings.TrimSpace(args.Model),
+		)
+	}
+	if locErr == nil && location == mcpLocationRemoteDevice {
+		return mcpClaimIdentity(
+			strings.TrimSpace(args.Name),
+			mcpLocationRemoteDevice,
+			strings.TrimSpace(args.GrantID),
+			strings.TrimSpace(args.Mode),
+			strings.TrimSpace(args.WorkingDir),
+			strings.TrimSpace(args.Provider),
+			strings.TrimSpace(args.Model),
+		)
+	}
+	if locErr != nil || (strings.TrimSpace(args.Location) != "" && location != mcpLocationLocal) {
+		return mcpClaimIdentity(
+			strings.TrimSpace(args.Location),
+			strings.TrimSpace(args.CloudWorkspaceID),
+			strings.TrimSpace(args.GrantID),
+			strings.TrimSpace(args.Name),
+			strings.TrimSpace(args.Mode),
+			strings.TrimSpace(args.WorkingDir),
+			strings.TrimSpace(args.Provider),
+			strings.TrimSpace(args.Model),
+		)
+	}
 	mode, modeErr := mcpEffectiveCreateMode(args)
 	if mcpHasRemoteConnection(args) || (modeErr == nil && mode == taskRemoteCodingDevTag) {
 		label := mode
@@ -311,6 +376,16 @@ func mcpCreateClaimKey(args mcpCreateArgs) string {
 	if dir != "" {
 		if normalized := normalizeRecentTaskWorkingDir(dir); normalized != "" {
 			dir = normalized
+		}
+	}
+	// A cloud workspace id is the working directory, so it belongs in the
+	// same identity slot as a local folder. An empty location still hashes
+	// the old way when this id is absent.
+	if id := strings.TrimSpace(args.CloudWorkspaceID); id != "" {
+		if dir == "" {
+			dir = id
+		} else {
+			dir = dir + "\n" + id
 		}
 	}
 	return mcpClaimIdentity(
@@ -351,13 +426,28 @@ func (a *App) mcpCreateTaskBody(ctx context.Context, args mcpCreateArgs, prompt 
 	if name == "" {
 		return mcpTaskView{}, errors.New("任务名称或内容不能为空")
 	}
-	mode, err := mcpEffectiveCreateMode(args)
+	location, mode, err := mcpResolveCreateTarget(args)
 	if err != nil {
 		return mcpTaskView{}, err
+	}
+	if location == mcpLocationRemoteDevice && (strings.TrimSpace(args.Provider) != "" || strings.TrimSpace(args.Model) != "") {
+		return mcpTaskView{}, errors.New("远程设备上的模型由对方电脑决定，不要传 provider 或 model")
+	}
+	if location == mcpLocationCloud && (strings.TrimSpace(args.Provider) != "" || strings.TrimSpace(args.Model) != "") {
+		return mcpTaskView{}, errors.New("云端 agent 的模型由云端实例决定，不要传 provider 或 model")
 	}
 	providerName, model, err := a.mcpResolveSelection(args.Provider, args.Model)
 	if err != nil {
 		return mcpTaskView{}, err
+	}
+	switch location {
+	case mcpLocationRemoteDevice:
+		return a.mcpCreateRemoteDeviceTask(ctx, args, prompt, name, mode, accept)
+	case mcpLocationCloud:
+		return a.mcpCreateCloudAgentTask(ctx, args, prompt, name, mode, accept)
+	}
+	if strings.TrimSpace(args.CloudWorkspaceID) != "" {
+		return a.mcpCreateCloudDirectoryTask(ctx, args, prompt, name, providerName, model, accept)
 	}
 	if mode == taskRemoteCodingDevTag {
 		return a.mcpCreateRemoteTask(ctx, args, prompt, name, mode, providerName, model, accept)
@@ -385,6 +475,7 @@ func (a *App) mcpCreateTaskBody(ctx context.Context, args mcpCreateArgs, prompt 
 		ProjectPath: created.ProjectPath,
 		Name:        firstNonEmpty(created.Name, name),
 		Mode:        mode,
+		Location:    mcpLocationLocal,
 		Status:      mcpStatusIdle,
 		Provider:    providerName,
 		Model:       model,
@@ -398,15 +489,18 @@ func (a *App) mcpCreateTaskBody(ctx context.Context, args mcpCreateArgs, prompt 
 		view.historyCount = mark.count
 		view.historySeal = mark.text
 		a.mcpStoreRun(&mcpRunRecord{
-			ProjectPath:  view.ProjectPath,
-			Name:         view.Name,
-			Mode:         view.Mode,
-			Status:       mcpStatusIdle,
-			Provider:     providerName,
-			Model:        model,
-			Workspace:    workDir,
-			historyCount: mark.count,
-			historySeal:  mark.text,
+			ProjectPath:      view.ProjectPath,
+			Name:             view.Name,
+			Mode:             view.Mode,
+			Location:         view.Location,
+			CloudWorkspaceID: view.CloudWorkspaceID,
+			GrantID:          view.GrantID,
+			Status:           mcpStatusIdle,
+			Provider:         providerName,
+			Model:            model,
+			Workspace:        workDir,
+			historyCount:     mark.count,
+			historySeal:      mark.text,
 		})
 		return a.mcpPublishInstalledCreate(view), nil
 	}
@@ -436,6 +530,7 @@ func (a *App) mcpCreateRemoteTask(ctx context.Context, args mcpCreateArgs, promp
 		ProjectPath:   created.ProjectPath,
 		Name:          firstNonEmpty(name, created.ProjectPath),
 		Mode:          mode,
+		Location:      mcpLocationLocal,
 		Status:        mcpStatusIdle,
 		Provider:      providerName,
 		Model:         model,
@@ -472,6 +567,763 @@ func (a *App) mcpCreateRemoteTask(ctx context.Context, args mcpCreateArgs, promp
 	return a.mcpStartPrompt(ctx, view, prompt, args.Wait, true, nil)
 }
 
+// mcpCreateCloudDirectoryTask creates a task on this computer whose working
+// directory is a cloud workspace. The agent stays here. location=cloud is a
+// cloud agent and does not call this.
+func (a *App) mcpCreateCloudDirectoryTask(ctx context.Context, args mcpCreateArgs, prompt, name, providerName, model string, accept func(path string)) (mcpTaskView, error) {
+	id := strings.TrimSpace(args.CloudWorkspaceID)
+	opts := TaskCreateOptions{Name: name, Mode: "cloud", CloudWorkspaceID: id}
+	if providerName != "" && model != "" {
+		opts.LLMProviderID = providerName
+		opts.LLMModel = model
+	}
+	created, err := a.mcpCreateCloudWorkspace(opts)
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	if strings.TrimSpace(created.ProjectPath) == "" {
+		return mcpTaskView{}, errors.New("没有创建任务")
+	}
+	snap := a.remoteControlTaskSnapshot(created.ProjectPath)
+	workDir := strings.TrimSpace(firstNonEmpty(snap.WorkingDir, snap.ExecutionDir))
+	view := mcpTaskView{
+		ProjectPath:      created.ProjectPath,
+		Name:             firstNonEmpty(name, created.ProjectPath),
+		Mode:             "chat",
+		Location:         mcpLocationLocal,
+		CloudWorkspaceID: id,
+		Status:           mcpStatusIdle,
+		Provider:         providerName,
+		Model:            model,
+		WorkingDir:       workDir,
+		workspace:        workDir,
+	}
+	if warning := strings.TrimSpace(created.Warning); warning != "" {
+		view.EndDetail = warning
+	}
+	if providerName != "" {
+		a.mcpRememberPin(created.ProjectPath, providerName, model)
+	}
+	a.recordMCPAccess(ctx, "create_task", view.Name, created.ProjectPath)
+	if accept != nil {
+		accept(created.ProjectPath)
+	}
+	if prompt == "" {
+		mark := a.mcpConversationMark(view.ProjectPath)
+		view.historyCount = mark.count
+		view.historySeal = mark.text
+		a.mcpStoreRun(mcpRunRecordFromView(view))
+		return a.mcpPublishInstalledCreate(view), nil
+	}
+	return a.mcpStartPrompt(ctx, view, prompt, args.Wait, true, nil)
+}
+
+func (a *App) mcpCreateCloudWorkspace(opts TaskCreateOptions) (UnifiedTaskCreateResult, error) {
+	if mcpCloudCreateFunc != nil {
+		return mcpCloudCreateFunc(a, opts)
+	}
+	return a.CreateTaskUnified(opts)
+}
+
+// mcpCreateRemoteDeviceTask creates the task on an authorized computer.
+// The prompt is delivered with that computer's send_message. A failed
+// delivery still returns the created task so the caller does not create
+// another one.
+func (a *App) mcpCreateRemoteDeviceTask(ctx context.Context, args mcpCreateArgs, prompt, name, mode string, accept func(path string)) (mcpTaskView, error) {
+	grantID := strings.TrimSpace(args.GrantID)
+	payload := map[string]any{"name": name, "mode": mode}
+	if dir := strings.TrimSpace(args.WorkingDir); dir != "" {
+		payload["work_dir"] = dir
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	raw, err := a.mcpRemoteDeviceOp(grantID, "create_task", string(body))
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	path, remoteName, workDir, err := mcpRemoteDeviceCreated(raw)
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	view := mcpTaskView{
+		ProjectPath: path,
+		Name:        firstNonEmpty(remoteName, name),
+		Mode:        mode,
+		Location:    mcpLocationRemoteDevice,
+		GrantID:     grantID,
+		Status:      mcpStatusIdle,
+		WorkingDir:  workDir,
+		workspace:   workDir,
+	}
+	if prompt != "" {
+		message, marshalErr := json.Marshal(map[string]string{"project_path": path, "text": prompt})
+		if marshalErr != nil {
+			return mcpTaskView{}, marshalErr
+		}
+		if _, sendErr := a.mcpRemoteDeviceOp(grantID, "send_message", string(message)); sendErr != nil {
+			view.Status = mcpStatusFailed
+			view.Error = "任务已在远程设备创建，但首条指令未发出"
+			view.EndReason = mcpStatusFailed
+			view.EndDetail = sendErr.Error()
+		} else {
+			view.Status = mcpStatusRunning
+			view.Text = "指令已发到远程设备。"
+		}
+	}
+	a.recordMCPAccess(ctx, "create_task", view.Name, path)
+	if accept != nil {
+		accept(path)
+	}
+	// The device runs the round. The local record stays idle, or failed when
+	// the first message never left, so a later send_command is not rejected
+	// as still running on this computer. Do not read this computer's history:
+	// that opens the hub for a path that belongs to the other computer.
+	a.mcpStoreDelegated(view)
+	return a.mcpPublishInstalledCreate(view), nil
+}
+
+func (a *App) mcpRemoteDeviceOp(grantID, op, body string) (string, error) {
+	if mcpRemoteDeviceOpFunc != nil {
+		return mcpRemoteDeviceOpFunc(a, grantID, op, body)
+	}
+	if a == nil {
+		return "", errors.New("远程设备还没有准备好")
+	}
+	return a.RemoteControlOp(grantID, op, body)
+}
+
+func mcpRemoteDeviceCreated(raw string) (path, name, workDir string, err error) {
+	var decoded struct {
+		Task struct {
+			ProjectPath string `json:"project_path"`
+			Name        string `json:"name"`
+			WorkingDir  string `json:"working_dir"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return "", "", "", errors.New("远程设备没有返回任务")
+	}
+	path = normalizeProjectSessionPath(decoded.Task.ProjectPath)
+	if path == "" {
+		return "", "", "", errors.New("没有在远程设备上创建任务")
+	}
+	return path, strings.TrimSpace(decoded.Task.Name), strings.TrimSpace(decoded.Task.WorkingDir), nil
+}
+
+func (a *App) mcpRefreshRemoteDeviceTask(view mcpTaskView) (mcpTaskView, error) {
+	body, err := json.Marshal(map[string]string{"project_path": view.ProjectPath})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	raw, err := a.mcpRemoteDeviceOp(view.GrantID, "get_task", string(body))
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	var decoded struct {
+		Task struct {
+			Name           string                `json:"name"`
+			WorkingDir     string                `json:"working_dir"`
+			ActiveWorkflow *ProjectWorkflowState `json:"active_workflow"`
+		} `json:"task"`
+		Messages []ProjectConversationHistoryItem `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return mcpTaskView{}, errors.New("远程设备没有返回任务")
+	}
+	mcpStripDelegatedBookkeeping(&view)
+	text := mcpLastAssistantText(decoded.Messages)
+	workflow := ""
+	if decoded.Task.ActiveWorkflow != nil {
+		workflow = decoded.Task.ActiveWorkflow.Status
+	}
+	if name := strings.TrimSpace(decoded.Task.Name); name != "" && name != view.ProjectPath {
+		view.Name = name
+	}
+	if dir := strings.TrimSpace(decoded.Task.WorkingDir); dir != "" {
+		view.WorkingDir = dir
+		view.workspace = dir
+	}
+	// A newer user line means the other computer has not answered yet.
+	// The previous assistant text would otherwise look like a finished round.
+	if mcpTranscriptAwaitingReply(decoded.Messages) {
+		view.Text = ""
+		view.Status = mcpStatusRunning
+	} else {
+		view.Text = text
+		view.Status = mcpDisplayStatus("", workflow, text)
+		// result_status incomplete is the other computer's failed turn.
+		// The sentence itself often does not match a local failure phrase.
+		if view.Status == mcpStatusCompleted && mcpRemoteHistoryIncomplete(decoded.Messages) {
+			view.Status = mcpStatusFailed
+			view.Error = text
+			view.EndReason = mcpStatusFailed
+		}
+	}
+	view.Location = mcpLocationRemoteDevice
+	return view, nil
+}
+
+func (a *App) mcpSendRemoteDeviceCommand(view mcpTaskView, command string) (mcpTaskView, error) {
+	body, err := json.Marshal(map[string]string{"project_path": view.ProjectPath, "text": command})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	if _, err := a.mcpRemoteDeviceOp(view.GrantID, "send_message", string(body)); err != nil {
+		return mcpTaskView{}, err
+	}
+	a.mcpClearDelegatedBookkeeping(view.ProjectPath)
+	view.Status = mcpStatusRunning
+	view.Text = "指令已发到远程设备。"
+	view.Error = ""
+	view.EndReason = ""
+	view.EndDetail = ""
+	view.ConfirmationKind = ""
+	view.ConfirmationID = ""
+	view.Commands = nil
+	return view, nil
+}
+
+func (a *App) mcpStopRemoteDevice(view mcpTaskView) (mcpTaskView, error) {
+	body, err := json.Marshal(map[string]string{"project_path": view.ProjectPath})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	if _, err := a.mcpRemoteDeviceOp(view.GrantID, "stop_task", string(body)); err != nil {
+		return mcpTaskView{}, err
+	}
+	now := time.Now()
+	view.Status = mcpStatusCancelled
+	view.EndReason = mcpStatusCancelled
+	view.FinishedAt = mcpFormatTime(now)
+	view.Stop = mcpStopFor(mcpStatusCancelled, "", nil, context.Canceled, now)
+	stored := mcpRunRecordFromView(view)
+	stored.Status = mcpStatusCancelled
+	stored.EndReason = mcpStatusCancelled
+	stored.FinishedAt = now
+	stored.Stop = mcpCloneStop(view.Stop)
+	a.mcpStoreRun(stored)
+	return view, nil
+}
+
+// mcpCreateCloudAgentTask creates a cloud agent and one task on it.
+// A cloud workspace id is not an agent. The prompt goes out with
+// cloud_send_message. A failed delivery still returns the created task.
+func (a *App) mcpCreateCloudAgentTask(ctx context.Context, args mcpCreateArgs, prompt, name, mode string, accept func(path string)) (mcpTaskView, error) {
+	kind := "session"
+	if mode == taskCodingDevTag {
+		kind = "coding"
+	}
+	row, err := a.mcpOpenCloudAgent(name, kind)
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	instanceID := strings.TrimSpace(row.ID)
+	if instanceID == "" || strings.ContainsAny(instanceID, `/\`) {
+		return mcpTaskView{}, errors.New("没有创建云端 agent")
+	}
+	grantID, err := a.mcpCloudAgentGrant(instanceID)
+	if err != nil {
+		a.mcpDiscardCloudAgent(instanceID)
+		return mcpTaskView{}, err
+	}
+	grantID = strings.TrimSpace(grantID)
+	if !mcpValidGrantID(grantID) {
+		a.mcpDiscardCloudAgent(instanceID)
+		return mcpTaskView{}, errors.New("没有打开云端控制")
+	}
+	body, err := json.Marshal(map[string]string{"title": name})
+	if err != nil {
+		a.mcpDiscardCloudAgent(instanceID)
+		return mcpTaskView{}, err
+	}
+	raw, err := a.mcpCloudAgentOp(grantID, "cloud_create_task", string(body))
+	if err != nil {
+		a.mcpDiscardCloudAgent(instanceID)
+		return mcpTaskView{}, err
+	}
+	taskID, err := mcpCloudAgentCreated(raw)
+	if err != nil {
+		a.mcpDiscardCloudAgent(instanceID)
+		return mcpTaskView{}, err
+	}
+	path := mcpCloudAgentKey(instanceID, taskID)
+	if path == "" {
+		return mcpTaskView{}, errors.New("没有在云端 agent 上创建任务")
+	}
+	view := mcpTaskView{
+		ProjectPath: path,
+		Name:        firstNonEmpty(strings.TrimSpace(row.Name), name),
+		Mode:        mode,
+		Location:    mcpLocationCloud,
+		GrantID:     grantID,
+		Status:      mcpStatusIdle,
+	}
+	if prompt != "" {
+		message, marshalErr := json.Marshal(map[string]string{
+			"task_id":           taskID,
+			"text":              prompt,
+			"client_message_id": "mcp-create:" + taskID,
+		})
+		if marshalErr != nil {
+			return mcpTaskView{}, marshalErr
+		}
+		if _, sendErr := a.mcpCloudAgentOp(grantID, "cloud_send_message", string(message)); sendErr != nil {
+			view.Status = mcpStatusFailed
+			view.Error = "任务已在云端 agent 创建，但首条指令未发出"
+			view.EndReason = mcpStatusFailed
+			view.EndDetail = sendErr.Error()
+		} else {
+			view.Status = mcpStatusRunning
+			view.Text = "指令已发到云端 agent。"
+		}
+	}
+	a.recordMCPAccess(ctx, "create_task", view.Name, path)
+	if accept != nil {
+		accept(path)
+	}
+	// The agent runs the round. The local record stays idle, or failed when
+	// the first message never left, so a later send_command is not rejected
+	// as still running on this computer.
+	a.mcpStoreDelegated(view)
+	return a.mcpPublishInstalledCreate(view), nil
+}
+
+func (a *App) mcpOpenCloudAgent(name, kind string) (CloudAgentRow, error) {
+	if mcpCloudAgentCreateFunc != nil {
+		return mcpCloudAgentCreateFunc(a, name, kind)
+	}
+	if a == nil {
+		return CloudAgentRow{}, errors.New("云端 agent 还没有准备好")
+	}
+	return a.CreateCloudAgent(name, kind)
+}
+
+func (a *App) mcpCloudAgentGrant(instanceID string) (string, error) {
+	if mcpCloudAgentGrantFunc != nil {
+		return mcpCloudAgentGrantFunc(a, instanceID)
+	}
+	if a == nil {
+		return "", errors.New("云端 agent 还没有准备好")
+	}
+	return a.OpenCloudAgentGrant(instanceID)
+}
+
+// mcpDiscardCloudAgent deletes an instance that has no task yet.
+// The instance quota is small, and a retry would otherwise create another one.
+func (a *App) mcpDiscardCloudAgent(instanceID string) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return
+	}
+	if mcpCloudAgentDeleteFunc != nil {
+		_ = mcpCloudAgentDeleteFunc(a, instanceID)
+		return
+	}
+	if a == nil {
+		return
+	}
+	_ = a.DeleteCloudAgent(instanceID)
+}
+
+func (a *App) mcpCloudAgentOp(grantID, op, body string) (string, error) {
+	if mcpCloudAgentOpFunc != nil {
+		return mcpCloudAgentOpFunc(a, grantID, op, body)
+	}
+	if a == nil {
+		return "", errors.New("云端 agent 还没有准备好")
+	}
+	return a.RemoteControlOp(grantID, op, body)
+}
+
+func mcpCloudAgentKey(instanceID, taskID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	taskID = strings.TrimSpace(taskID)
+	if instanceID == "" || taskID == "" || strings.ContainsAny(instanceID, `/\`) || strings.ContainsAny(taskID, `/\`) {
+		return ""
+	}
+	return normalizeProjectSessionPath(filepath.Join("cloud-agent", instanceID, taskID))
+}
+
+func mcpParseCloudAgentKey(projectPath string) (instanceID, taskID string, ok bool) {
+	cleaned := filepath.ToSlash(normalizeProjectSessionPath(projectPath))
+	parts := strings.Split(cleaned, "/")
+	if len(parts) != 3 || parts[0] != "cloud-agent" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+func mcpCloudAgentCreated(raw string) (string, error) {
+	var decoded struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return "", errors.New("云端 agent 没有返回任务")
+	}
+	taskID := strings.TrimSpace(decoded.TaskID)
+	if taskID == "" || strings.ContainsAny(taskID, `/\`) {
+		return "", errors.New("没有在云端 agent 上创建任务")
+	}
+	return taskID, nil
+}
+
+func mcpCloudAgentTranscript(lines []string, asError []bool, turnStatus string) (text, status string) {
+	lastRole := ""
+	lastAssistant := ""
+	lastAssistantFailed := false
+	for i, line := range lines {
+		role, content, _ := strings.Cut(line, "\n")
+		role = strings.TrimSpace(role)
+		if role == "assistant" {
+			lastAssistant = content
+			lastAssistantFailed = i < len(asError) && asError[i]
+		}
+		lastRole = role
+	}
+	// A newer user line means the next turn has started. An older error
+	// stays in the transcript and does not keep this read failed.
+	// Cancel does not append a line, so the turn status is what ends it.
+	if lastRole == "user" {
+		if strings.EqualFold(strings.TrimSpace(turnStatus), "cancelled") {
+			return "", mcpStatusCancelled
+		}
+		return "", mcpStatusRunning
+	}
+	if strings.TrimSpace(lastAssistant) == "" {
+		return "", mcpStatusIdle
+	}
+	if lastAssistantFailed {
+		return lastAssistant, mcpStatusFailed
+	}
+	return lastAssistant, mcpDisplayStatus("", "", lastAssistant)
+}
+
+func (a *App) mcpRefreshCloudAgentTask(view mcpTaskView) (mcpTaskView, error) {
+	_, taskID, ok := mcpParseCloudAgentKey(view.ProjectPath)
+	if !ok {
+		return mcpTaskView{}, errors.New("没有找到这个云端任务")
+	}
+	body, err := json.Marshal(map[string]string{"task_id": taskID})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	raw, err := a.mcpCloudAgentOp(view.GrantID, "cloud_get_task", string(body))
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	var decoded struct {
+		Messages   []string `json:"messages"`
+		AsError    []bool   `json:"as_error"`
+		TurnStatus string   `json:"turn_status"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return mcpTaskView{}, errors.New("云端 agent 没有返回任务")
+	}
+	mcpStripDelegatedBookkeeping(&view)
+	text, status := mcpCloudAgentTranscript(decoded.Messages, decoded.AsError, decoded.TurnStatus)
+	view.Text = text
+	view.Status = status
+	view.Location = mcpLocationCloud
+	if status == mcpStatusFailed {
+		view.Error = text
+		view.EndReason = mcpStatusFailed
+	}
+	// A commit ask lives on the watch snapshot, not in the transcript.
+	// Only a finished coding answer can carry that card. A session agent
+	// does not, and a failed or still-running transcript must not be covered
+	// by a stale terminal.
+	if status == mcpStatusCompleted && strings.TrimSpace(view.Mode) == taskCodingDevTag {
+		if watched, watchErr := a.mcpCloudAgentOp(view.GrantID, "cloud_watch_task", string(body)); watchErr == nil {
+			mcpApplyCloudAgentAsk(&view, watched)
+		}
+	}
+	return view, nil
+}
+
+// mcpApplyCloudAgentAsk turns a commit card into needs_confirmation.
+// cloud_get_task has already finished the turn, so the question would
+// otherwise look like a completed answer and the caller would not send a choice.
+func mcpApplyCloudAgentAsk(view *mcpTaskView, raw string) {
+	if view == nil {
+		return
+	}
+	question, confirmationID, commands, ok := mcpCloudAgentAsk(raw)
+	if !ok {
+		return
+	}
+	if question != "" && strings.TrimSpace(view.Text) == "" {
+		view.Text = question
+	}
+	view.Status = mcpStatusNeedsConfirmation
+	view.ConfirmationKind = "ask"
+	if strings.Contains(confirmationID, "commit-approval") {
+		view.ConfirmationKind = "commit"
+	}
+	view.ConfirmationID = confirmationID
+	view.Commands = commands
+	hint := "需要你的回答。用 send_command 把回答原文发回这个任务。"
+	if view.ConfirmationKind == "commit" {
+		hint = "云端编程要确认这次提交。用 send_command 原样发送 commands 中的一条。"
+	}
+	if !strings.Contains(view.Text, "send_command") {
+		view.Text = strings.TrimSpace(view.Text + "\n\n" + hint)
+	}
+}
+
+func mcpCloudAgentAsk(raw string) (question, confirmationID string, commands []string, ok bool) {
+	var snap struct {
+		Terminal json.RawMessage `json:"terminal"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil || len(snap.Terminal) == 0 || string(snap.Terminal) == "null" {
+		return "", "", nil, false
+	}
+	var terminal struct {
+		Text    string `json:"text"`
+		Ask     string `json:"ask_user_question"`
+		Options string `json:"ask_user_options_json"`
+		Confirm struct {
+			ID string `json:"id"`
+		} `json:"confirmation"`
+		Actions []struct {
+			Command string `json:"command"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(snap.Terminal, &terminal); err != nil {
+		return "", "", nil, false
+	}
+	confirmationID = strings.TrimSpace(terminal.Confirm.ID)
+	for _, action := range terminal.Actions {
+		if command := strings.TrimSpace(action.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	if len(commands) == 0 && strings.TrimSpace(terminal.Options) != "" {
+		var labels []string
+		if err := json.Unmarshal([]byte(terminal.Options), &labels); err == nil {
+			for _, label := range labels {
+				if command := strings.TrimSpace(label); command != "" {
+					commands = append(commands, command)
+				}
+			}
+		}
+	}
+	question = strings.TrimSpace(firstNonEmpty(terminal.Ask, terminal.Text))
+	if confirmationID == "" && question == "" && len(commands) == 0 {
+		return "", "", nil, false
+	}
+	if confirmationID == "" {
+		confirmationID = "cloud-ask"
+	}
+	// A plain text terminal is the finished answer, not an ask.
+	if strings.TrimSpace(terminal.Ask) == "" && len(commands) == 0 && strings.TrimSpace(terminal.Confirm.ID) == "" {
+		return "", "", nil, false
+	}
+	return question, confirmationID, commands, true
+}
+
+// mcpStripDelegatedBookkeeping drops the previous local stop or failure
+// before a live read is applied. The caller puts back a stop that the
+// transcript still cannot show.
+func mcpStripDelegatedBookkeeping(view *mcpTaskView) {
+	if view == nil {
+		return
+	}
+	view.Error = ""
+	view.EndReason = ""
+	view.EndDetail = ""
+	view.FinishedAt = ""
+	view.Stop = nil
+	view.ConfirmationKind = ""
+	view.ConfirmationID = ""
+	view.Commands = nil
+}
+
+// mcpKeepDelegatedBookkeeping keeps a local stop or a failed first send when
+// the live read has nothing newer. A later assistant answer is shown as itself.
+func mcpKeepDelegatedBookkeeping(saved, live mcpTaskView) mcpTaskView {
+	if saved.Status == mcpStatusFailed && live.Status == mcpStatusIdle {
+		live.Status = mcpStatusFailed
+		live.Error = saved.Error
+		live.EndReason = saved.EndReason
+		live.EndDetail = saved.EndDetail
+		live.Stop = nil
+		return live
+	}
+	if saved.Status != mcpStatusCancelled {
+		return live
+	}
+	// A live cancel has no assistant answer either. Keep the stored stop
+	// so a later read does not mint a new one. A finished answer stays.
+	switch live.Status {
+	case mcpStatusRunning, mcpStatusIdle, mcpStatusCancelled:
+		live.Status = mcpStatusCancelled
+		live.EndReason = mcpStatusCancelled
+		live.Stop = mcpCloneStop(saved.Stop)
+		if strings.TrimSpace(saved.FinishedAt) != "" {
+			live.FinishedAt = saved.FinishedAt
+		}
+		return live
+	default:
+		return live
+	}
+}
+
+// mcpNoteDiscoveredCancel fills a stop when the other side cancelled and
+// this computer did not record one. A stored stop is left as it is.
+func mcpNoteDiscoveredCancel(live mcpTaskView) mcpTaskView {
+	if live.Status != mcpStatusCancelled || live.Stop != nil {
+		return live
+	}
+	now := time.Now()
+	live.EndReason = mcpStatusCancelled
+	if strings.TrimSpace(live.FinishedAt) == "" {
+		live.FinishedAt = mcpFormatTime(now)
+	}
+	live.Stop = mcpStopFor(mcpStatusCancelled, "", nil, context.Canceled, now)
+	return live
+}
+
+// mcpFinishDelegatedRead drops a stored first-send failure once the live
+// transcript has moved past an empty book. The in-memory saved row is what
+// the stop overlay still reads, so a cancel is not rewritten here.
+func (a *App) mcpFinishDelegatedRead(saved, live mcpTaskView) mcpTaskView {
+	if saved.Status == mcpStatusFailed && live.Status != mcpStatusIdle {
+		a.mcpClearDelegatedBookkeeping(saved.ProjectPath)
+	}
+	return mcpNoteDiscoveredCancel(mcpKeepDelegatedBookkeeping(saved, live))
+}
+
+// mcpClearDelegatedBookkeeping lets the next get_task read the live task.
+// The local record stays idle so a follow-up is not rejected as running here.
+func (a *App) mcpClearDelegatedBookkeeping(path string) {
+	if a == nil {
+		return
+	}
+	path = normalizeProjectSessionPath(path)
+	a.mcpRunsMu.Lock()
+	rec := a.mcpRuns[path]
+	changed := rec != nil && (rec.Status == mcpStatusCancelled || rec.Status == mcpStatusFailed)
+	if changed {
+		rec.Status = mcpStatusIdle
+		rec.Text = ""
+		rec.Error = ""
+		rec.EndReason = ""
+		rec.EndDetail = ""
+		rec.FinishedAt = time.Time{}
+		rec.Stop = nil
+	}
+	a.mcpRunsMu.Unlock()
+	if changed {
+		a.mcpPersistRun(path)
+	}
+}
+
+// mcpStoreDelegated keeps the bookkeeping record for a cloud agent or a
+// remote device. A failed first send stays failed so the same request id
+// can replay that error. A running round is not stored: the other side is
+// running it, and a local running record would reject the next command.
+func (a *App) mcpStoreDelegated(view mcpTaskView) {
+	if a == nil {
+		return
+	}
+	view.historySeal = "delegated"
+	stored := mcpRunRecordFromView(view)
+	stored.Text = ""
+	stored.Error = ""
+	stored.EndReason = ""
+	stored.EndDetail = ""
+	stored.FinishedAt = time.Time{}
+	stored.Stop = nil
+	if view.Status == mcpStatusFailed {
+		stored.Status = mcpStatusFailed
+		stored.Error = view.Error
+		stored.EndReason = view.EndReason
+		stored.EndDetail = view.EndDetail
+	} else {
+		stored.Status = mcpStatusIdle
+	}
+	a.mcpStoreRun(stored)
+}
+
+func (a *App) mcpSendCloudAgentCommand(view mcpTaskView, command, clientRequestID string) (mcpTaskView, error) {
+	_, taskID, ok := mcpParseCloudAgentKey(view.ProjectPath)
+	if !ok {
+		return mcpTaskView{}, errors.New("没有找到这个云端任务")
+	}
+	messageID := strings.TrimSpace(clientRequestID)
+	if messageID == "" {
+		messageID = "mcp:" + taskID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	} else {
+		// The same request id must hit the same cloud message. A retry after
+		// a lost response then does not start a second turn.
+		messageID = "mcp:" + taskID + ":" + messageID
+	}
+	body, err := json.Marshal(map[string]string{
+		"task_id":           taskID,
+		"text":              command,
+		"client_message_id": messageID,
+	})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	if _, err := a.mcpCloudAgentOp(view.GrantID, "cloud_send_message", string(body)); err != nil {
+		return mcpTaskView{}, err
+	}
+	a.mcpClearDelegatedBookkeeping(view.ProjectPath)
+	view.Status = mcpStatusRunning
+	view.Text = "指令已发到云端 agent。"
+	view.Error = ""
+	view.EndReason = ""
+	view.EndDetail = ""
+	view.ConfirmationKind = ""
+	view.ConfirmationID = ""
+	view.Commands = nil
+	return view, nil
+}
+
+func (a *App) mcpStopCloudAgent(view mcpTaskView) (mcpTaskView, error) {
+	_, taskID, ok := mcpParseCloudAgentKey(view.ProjectPath)
+	if !ok {
+		return mcpTaskView{}, errors.New("没有找到这个云端任务")
+	}
+	body, err := json.Marshal(map[string]string{"task_id": taskID})
+	if err != nil {
+		return mcpTaskView{}, err
+	}
+	if _, err := a.mcpCloudAgentOp(view.GrantID, "cloud_stop_task", string(body)); err != nil {
+		return mcpTaskView{}, err
+	}
+	now := time.Now()
+	view.Status = mcpStatusCancelled
+	view.EndReason = mcpStatusCancelled
+	view.FinishedAt = mcpFormatTime(now)
+	view.Stop = mcpStopFor(mcpStatusCancelled, "", nil, context.Canceled, now)
+	stored := mcpRunRecordFromView(view)
+	stored.Status = mcpStatusCancelled
+	stored.EndReason = mcpStatusCancelled
+	stored.FinishedAt = now
+	stored.Stop = mcpCloneStop(view.Stop)
+	a.mcpStoreRun(stored)
+	return view, nil
+}
+
+func mcpRunMismatch(saved mcpTaskView, path, runID string) error {
+	if runID != "" && runID != strings.TrimSpace(saved.RunID) && runID != strings.TrimSpace(saved.CurrentRunID) {
+		return mcpErr(mcpCodeRunNotFound, "没有这一轮执行", path, runID)
+	}
+	return nil
+}
+
+func mcpIsCloudAgent(view mcpTaskView) bool {
+	return strings.TrimSpace(view.Location) == mcpLocationCloud && strings.TrimSpace(view.GrantID) != ""
+}
+
+func mcpIsRemoteDevice(view mcpTaskView) bool {
+	return strings.TrimSpace(view.Location) == mcpLocationRemoteDevice && strings.TrimSpace(view.GrantID) != ""
+}
+
 // mcpPublishInstalledCreate copies the run id commit just minted and binds
 // that session to the in-flight create request.
 func (a *App) mcpPublishInstalledCreate(view mcpTaskView) mcpTaskView {
@@ -489,19 +1341,23 @@ func (a *App) mcpPublishInstalledCreate(view mcpTaskView) mcpTaskView {
 
 func mcpRunRecordFromView(view mcpTaskView) *mcpRunRecord {
 	return &mcpRunRecord{
-		ProjectPath:   view.ProjectPath,
-		Name:          view.Name,
-		Mode:          view.Mode,
-		Status:        view.Status,
-		Provider:      view.Provider,
-		Model:         view.Model,
-		Workspace:     view.workspace,
-		RemoteHost:    view.RemoteHost,
-		RemoteUser:    view.RemoteUser,
-		RemotePort:    view.RemotePort,
-		RemoteWorkDir: view.RemoteWorkDir,
-		historyCount:  view.historyCount,
-		historySeal:   view.historySeal,
+		ProjectPath:      view.ProjectPath,
+		Name:             view.Name,
+		Mode:             view.Mode,
+		Status:           view.Status,
+		Provider:         view.Provider,
+		Model:            view.Model,
+		Workspace:        view.workspace,
+		Location:         view.Location,
+		CloudWorkspaceID: view.CloudWorkspaceID,
+		GrantID:          view.GrantID,
+		RemoteHost:       view.RemoteHost,
+		RemoteUser:       view.RemoteUser,
+		RemotePort:       view.RemotePort,
+		RemoteWorkDir:    view.RemoteWorkDir,
+		RunID:            strings.TrimSpace(view.RunID),
+		historyCount:     view.historyCount,
+		historySeal:      view.historySeal,
 	}
 }
 
@@ -549,6 +1405,10 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 	if command == "" {
 		return mcpTaskView{}, errors.New("命令不能为空")
 	}
+	// Load before the registry lookup. A cloud agent or remote device is only
+	// in that registry; without the load, the first send after a restart
+	// would start a prompt on this computer.
+	a.mcpLoadDurable()
 	registryPath := normalizeProjectSessionPath(projectPath)
 	opts := mcpCallOptsFrom(ctx)
 	// A scope or critical command continues the live round. A model change
@@ -599,6 +1459,34 @@ func (a *App) mcpSendCommand(ctx context.Context, projectPath, command, confirma
 		a.mcpBindRequest(req, path)
 	}
 	reg, inRegistry := a.mcpViewFromRegistry(registryPath)
+	if inRegistry && mcpIsCloudAgent(reg) {
+		if mcpCommandChangesModel(opts) {
+			err = errors.New("云端 agent 的模型由云端实例决定，不要传 provider 或 model")
+			return mcpTaskView{}, err
+		}
+		sent, sendErr := a.mcpSendCloudAgentCommand(reg, command, clientRequestID)
+		if sendErr != nil {
+			err = sendErr
+			return mcpTaskView{}, err
+		}
+		accept(firstNonEmpty(reg.ProjectPath, registryPath))
+		a.mcpNoteRequestRun(reg.ProjectPath, reg.RunID)
+		return a.mcpReturnTask(sent), nil
+	}
+	if inRegistry && mcpIsRemoteDevice(reg) {
+		if mcpCommandChangesModel(opts) {
+			err = errors.New("远程设备上的模型由对方电脑决定，不要传 provider 或 model")
+			return mcpTaskView{}, err
+		}
+		sent, sendErr := a.mcpSendRemoteDeviceCommand(reg, command)
+		if sendErr != nil {
+			err = sendErr
+			return mcpTaskView{}, err
+		}
+		accept(firstNonEmpty(reg.ProjectPath, registryPath))
+		a.mcpNoteRequestRun(reg.ProjectPath, reg.RunID)
+		return a.mcpReturnTask(sent), nil
+	}
 	if live, err := a.mcpPrepareLiveGate(projectPath, reg, inRegistry, command); live {
 		if err != nil {
 			return mcpTaskView{}, err
@@ -677,6 +1565,10 @@ func (a *App) mcpRetrySteps(ctx context.Context, projectPath string, rawIDs []st
 	path := normalizeProjectSessionPath(projectPath)
 	if path == "" {
 		return mcpTaskView{}, errors.New("没有找到这个任务")
+	}
+	a.mcpLoadDurable()
+	if reg, ok := a.mcpViewFromRegistry(path); ok && (mcpIsCloudAgent(reg) || mcpIsRemoteDevice(reg)) {
+		return mcpTaskView{}, errors.New("这个任务不在本机执行，不能续跑步骤")
 	}
 	confirmationID = strings.TrimSpace(confirmationID)
 	opts := mcpCallOptsFrom(ctx)
@@ -799,6 +1691,26 @@ func (a *App) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTas
 		return mcpTaskView{}, mcpErr(mcpCodeTaskNotFound, "没有找到这个任务", path, runID)
 	}
 	a.mcpLoadDurable()
+	if saved, ok := a.mcpViewFromRegistry(path); ok && mcpIsCloudAgent(saved) {
+		if err := mcpRunMismatch(saved, path, runID); err != nil {
+			return mcpTaskView{}, err
+		}
+		view, err := a.mcpRefreshCloudAgentTask(saved)
+		if err != nil {
+			return mcpTaskView{}, err
+		}
+		return a.mcpReturnTask(a.mcpFinishDelegatedRead(saved, view)), nil
+	}
+	if saved, ok := a.mcpViewFromRegistry(path); ok && mcpIsRemoteDevice(saved) {
+		if err := mcpRunMismatch(saved, path, runID); err != nil {
+			return mcpTaskView{}, err
+		}
+		view, err := a.mcpRefreshRemoteDeviceTask(saved)
+		if err != nil {
+			return mcpTaskView{}, err
+		}
+		return a.mcpReturnTask(a.mcpFinishDelegatedRead(saved, view)), nil
+	}
 	if runID != "" {
 		view, ok := a.mcpViewForRun(path, runID)
 		if !ok {
@@ -855,7 +1767,29 @@ func (a *App) mcpStopTask(ctx context.Context, projectPath string) (mcpTaskView,
 		return mcpTaskView{}, errors.New("没有找到这个任务")
 	}
 	registryPath := normalizeProjectSessionPath(projectPath)
+	// Same as send: the delegated task is not visible until the registry is loaded.
+	a.mcpLoadDurable()
 	opts := mcpCallOptsFrom(ctx)
+	if saved, ok := a.mcpViewFromRegistry(registryPath); ok && (mcpIsCloudAgent(saved) || mcpIsRemoteDevice(saved)) {
+		if opts.HasExpected {
+			a.mcpLoadDurable()
+			current, known := a.mcpViewFromRegistry(registryPath)
+			if err := mcpRejectStaleVersion(registryPath, current, known, opts); err != nil {
+				return mcpTaskView{}, err
+			}
+		}
+		var stopped mcpTaskView
+		var stopErr error
+		if mcpIsCloudAgent(saved) {
+			stopped, stopErr = a.mcpStopCloudAgent(saved)
+		} else {
+			stopped, stopErr = a.mcpStopRemoteDevice(saved)
+		}
+		if stopErr != nil {
+			return mcpTaskView{}, stopErr
+		}
+		return a.mcpPublishTaskView(stopped), nil
+	}
 	if opts.HasExpected {
 		a.mcpLoadDurable()
 		current, known := a.mcpViewFromRegistry(registryPath)
@@ -903,6 +1837,18 @@ func (a *App) mcpListTasks(ctx context.Context) ([]mcpTaskView, error) {
 			continue
 		}
 		seen[path] = struct{}{}
+		// A cloud agent or remote device keeps its identity on this path.
+		// The local conversation at the same string is a different task.
+		if view, ok := a.mcpViewFromRegistry(path); ok && (mcpIsCloudAgent(view) || mcpIsRemoteDevice(view)) {
+			if view.Name == "" {
+				view.Name = task.Name
+			}
+			if view.Mode == "" {
+				view.Mode = mcpModeFromTags(task.Tags)
+			}
+			out = append(out, a.mcpReturnTask(view))
+			continue
+		}
 		if view, ok := a.mcpViewFromRegistry(path); ok && view.Status == mcpStatusRunning {
 			if view.Name == "" {
 				view.Name = task.Name
@@ -1080,6 +2026,9 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		RemoteUser:        view.RemoteUser,
 		RemotePort:        view.RemotePort,
 		RemoteWorkDir:     view.RemoteWorkDir,
+		Location:          view.Location,
+		CloudWorkspaceID:  view.CloudWorkspaceID,
+		GrantID:           view.GrantID,
 		Round:             a.mcpNextRound(path),
 		RunID:             mcpNewRunID(),
 		StatusVersion:     1,
@@ -1094,80 +2043,80 @@ func (a *App) mcpStartPrompt(parent context.Context, view mcpTaskView, prompt st
 		cancel:            cancel,
 		progressAt:        time.Now(),
 	}
-		prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
-		if err != nil {
-			stopStallWatch()
-			cancel()
-			return mcpTaskView{}, err
-		}
-		if prevCancel != nil {
-			prevCancel()
-		}
-		if dismiss {
-			a.mcpDismissPendingConfirmation(path)
-		}
-		if bind != nil {
-			bind(path)
-		}
-		a.mcpNoteRequestRun(path, rec.RunID)
-		// Drop the claim once the run is stored. Waiting for the prompt used to
-		// keep it, so the next command was rejected after this run had already
-		// finished and the waiter was only packaging the result.
-		a.mcpReleaseTurn(path, token)
-		if promptFn == nil {
-			a.mirrorMCPUser(prompt, requestID, userID, path, view.Name, view.Mode)
-		}
-		bound := mcpBindActionCommand(prompt)
+	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, startNew, mcpCallOptsFrom(parent))
+	if err != nil {
+		stopStallWatch()
+		cancel()
+		return mcpTaskView{}, err
+	}
+	if prevCancel != nil {
+		prevCancel()
+	}
+	if dismiss {
+		a.mcpDismissPendingConfirmation(path)
+	}
+	if bind != nil {
+		bind(path)
+	}
+	a.mcpNoteRequestRun(path, rec.RunID)
+	// Drop the claim once the run is stored. Waiting for the prompt used to
+	// keep it, so the next command was rejected after this run had already
+	// finished and the waiter was only packaging the result.
+	a.mcpReleaseTurn(path, token)
+	if promptFn == nil {
+		a.mirrorMCPUser(prompt, requestID, userID, path, view.Name, view.Mode)
+	}
+	bound := mcpBindActionCommand(prompt)
 
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			defer stopStallWatch()
-			defer cancel()
-			// Recover before cancel and close, so a waiter reads the failed record.
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					a.mcpFinishPromptPanic(path, requestID, recovered)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer stopStallWatch()
+		defer cancel()
+		// Recover before cancel and close, so a waiter reads the failed record.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				a.mcpFinishPromptPanic(path, requestID, recovered)
+			}
+		}()
+		var resp *IMAgentResponse
+		var err error
+		req := AIAssistantSendRequest{
+			Text:                        bound.Text,
+			ProjectPath:                 path,
+			RequestID:                   requestID,
+			Lang:                        a.CurrentLanguage,
+			StartNewTask:                startNew || bound.StartNewTask,
+			UIAction:                    bound.UIAction,
+			ResumeSlotID:                bound.ResumeSlotID,
+			DismissSlotID:               bound.DismissSlotID,
+			ResumeSessionID:             bound.ResumeSessionID,
+			DismissRecoverableSessionID: bound.DismissRecoverableSessionID,
+			PromptProfile:               assistantHostMCP,
+			TaskMode:                    view.Mode,
+			HostRawText:                 mcpStartUsesRawText(startNew, view.Mode, prompt, bound.Bound),
+		}
+		cb := AIAssistantExternalCallbacks{
+			OnToken: func(delta string) {
+				a.mirrorMCPToken(requestID, userID, delta)
+				if stored := mcpStoredRunDelta(delta); stored != "" {
+					a.mcpAppendRunText(path, requestID, stored)
 				}
-			}()
-			var resp *IMAgentResponse
-			var err error
-			req := AIAssistantSendRequest{
-				Text:                        bound.Text,
-				ProjectPath:                 path,
-				RequestID:                   requestID,
-				Lang:                        a.CurrentLanguage,
-				StartNewTask:                startNew || bound.StartNewTask,
-				UIAction:                    bound.UIAction,
-				ResumeSlotID:                bound.ResumeSlotID,
-				DismissSlotID:               bound.DismissSlotID,
-				ResumeSessionID:             bound.ResumeSessionID,
-				DismissRecoverableSessionID: bound.DismissRecoverableSessionID,
-				PromptProfile:               assistantHostMCP,
-				TaskMode:                    view.Mode,
-				HostRawText:                 mcpStartUsesRawText(startNew, view.Mode, prompt, bound.Bound),
-			}
-			cb := AIAssistantExternalCallbacks{
-				OnToken: func(delta string) {
-					a.mirrorMCPToken(requestID, userID, delta)
-					if stored := mcpStoredRunDelta(delta); stored != "" {
-						a.mcpAppendRunText(path, requestID, stored)
-					}
-				},
-				OnProgress: func(text string) {
-					a.mirrorMCPProgress(requestID, userID, text)
-					a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
-				},
-				OnToolEvent: func(ev ACPToolEvent) {
-					a.mcpRecordToolEvent(path, requestID, ev)
-				},
-			}
-			if promptFn != nil {
-				resp, err = promptFn(a, runCtx, req, cb)
-			} else {
-				resp, err = a.RunAIAssistantProgrammingPrompt(runCtx, req, cb)
-			}
-			stopStallWatch()
+			},
+			OnProgress: func(text string) {
+				a.mirrorMCPProgress(requestID, userID, text)
+				a.mcpAppendLog(path, requestID, mcpLogEvent{Kind: "progress", Text: text})
+			},
+			OnToolEvent: func(ev ACPToolEvent) {
+				a.mcpRecordToolEvent(path, requestID, ev)
+			},
+		}
+		if promptFn != nil {
+			resp, err = promptFn(a, runCtx, req, cb)
+		} else {
+			resp, err = a.RunAIAssistantProgrammingPrompt(runCtx, req, cb)
+		}
+		stopStallWatch()
 		cause := runCtx.Err()
 		if cause != nil && a.mcpRunStalled(path, requestID) {
 			cause = errMCPRunStalled
@@ -2096,21 +3045,24 @@ func (a *App) mcpConfirmRecovery(ctx context.Context, view mcpTaskView, command,
 	view.RequestID = requestID
 	a.mirrorMCPUser(command, requestID, userID, view.ProjectPath, view.Name, view.Mode)
 	rec := &mcpRunRecord{
-		ProjectPath:  view.ProjectPath,
-		Name:         view.Name,
-		Mode:         view.Mode,
-		Status:       view.Status,
-		Text:         view.Text,
-		Provider:     view.Provider,
-		Model:        view.Model,
-		RequestID:    requestID,
-		Workspace:    view.workspace,
-		Round:        view.Round,
-		StartedAt:    startedAt,
-		FinishedAt:   finishedAt,
-		EndReason:    mcpStatusCompleted,
-		historyCount: view.historyCount,
-		historySeal:  view.historySeal,
+		ProjectPath:      view.ProjectPath,
+		Name:             view.Name,
+		Mode:             view.Mode,
+		Status:           view.Status,
+		Text:             view.Text,
+		Provider:         view.Provider,
+		Model:            view.Model,
+		RequestID:        requestID,
+		Workspace:        view.workspace,
+		Location:         view.Location,
+		CloudWorkspaceID: view.CloudWorkspaceID,
+		GrantID:          view.GrantID,
+		Round:            view.Round,
+		StartedAt:        startedAt,
+		FinishedAt:       finishedAt,
+		EndReason:        mcpStatusCompleted,
+		historyCount:     view.historyCount,
+		historySeal:      view.historySeal,
 	}
 	prevCancel, dismiss, err := a.mcpCommitRun(rec, token, false, mcpCallOptsFrom(ctx))
 	if err != nil {
@@ -2319,6 +3271,10 @@ func mcpJoinBlocks(parts ...string) string {
 }
 
 func (a *App) mcpApplyLiveConfirmation(view mcpTaskView) mcpTaskView {
+	// A cloud agent and a remote device do not share this computer's plan card.
+	if mcpIsCloudAgent(view) || mcpIsRemoteDevice(view) {
+		return view
+	}
 	switch view.Status {
 	case mcpStatusRunning, mcpStatusFailed, mcpStatusCancelled:
 		return view
@@ -3027,7 +3983,7 @@ func (a *App) mcpTaskViewFromStore(path string) mcpTaskView {
 		view.Steps = mcpStepsFromFinishText(text, nil)
 		view.Error = mcpStepFailureDetail(view.Steps, text, nil)
 	}
-	return mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, snap.Tags))
+	return mcpNoteCloudWorkspace(mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, snap.Tags)), snap.Tags)
 }
 
 func mcpRemoteMetaFromTags(tags []string) (host, user, workDir string, port int) {
@@ -3296,6 +4252,15 @@ func mcpFillTaskView(primary, fallback mcpTaskView) mcpTaskView {
 	if strings.TrimSpace(primary.RemoteWorkDir) == "" {
 		primary.RemoteWorkDir = fallback.RemoteWorkDir
 	}
+	if strings.TrimSpace(primary.Location) == "" {
+		primary.Location = fallback.Location
+	}
+	if strings.TrimSpace(primary.CloudWorkspaceID) == "" {
+		primary.CloudWorkspaceID = fallback.CloudWorkspaceID
+	}
+	if strings.TrimSpace(primary.GrantID) == "" {
+		primary.GrantID = fallback.GrantID
+	}
 	if len(primary.Steps) == 0 && len(fallback.Steps) > 0 && (primary.Status == mcpStatusFailed || mcpTextBlocksCompletion(primary.Text)) {
 		primary.Steps = mcpCloneSteps(fallback.Steps)
 	}
@@ -3407,7 +4372,7 @@ func mcpViewWithTaskTags(view mcpTaskView, tags []string) mcpTaskView {
 	if strings.TrimSpace(view.RemoteWorkDir) == "" {
 		view.RemoteWorkDir = workDir
 	}
-	return mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, tags))
+	return mcpNoteCloudWorkspace(mcpSealRemoteWorkspace(mcpApplyNamedWorkingDir(view, tags)), tags)
 }
 
 // mcpApplyNamedWorkingDir copies the task's working_dir tag onto a local view
@@ -3427,6 +4392,150 @@ func mcpApplyNamedWorkingDir(view mcpTaskView, tags []string) mcpTaskView {
 	view.workspace = dir
 	if strings.TrimSpace(view.WorkingDir) == "" {
 		view.WorkingDir = dir
+	}
+	return view
+}
+
+func mcpNormalizeLocation(args mcpCreateArgs) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(args.Location)) {
+	case "":
+		// A cloud workspace id is a directory. It does not select a place.
+		if strings.TrimSpace(args.CloudWorkspaceID) != "" && strings.TrimSpace(args.GrantID) != "" {
+			return "", errors.New("不能同时指定云端工作区和远程设备")
+		}
+		if strings.TrimSpace(args.GrantID) != "" {
+			return mcpLocationRemoteDevice, nil
+		}
+		return mcpLocationLocal, nil
+	case "local", "this", "this_computer", "本地", "本机":
+		return mcpLocationLocal, nil
+	case "cloud", "cloud_agent", "云端", "云端agent":
+		return mcpLocationCloud, nil
+	case "remote_device", "device", "machine", "remote_machine", "远程设备":
+		return mcpLocationRemoteDevice, nil
+	default:
+		return "", errors.New("location 只能是 local、cloud 或 remote_device")
+	}
+}
+
+func mcpValidGrantID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 128 || strings.Contains(id, "..") || strings.ContainsAny(id, "/\\?# \t") {
+		return false
+	}
+	return true
+}
+
+// mcpResolveCreateTarget chooses where the task is created and which mode
+// that place accepts. SSH programming stays on this computer.
+func mcpResolveCreateTarget(args mcpCreateArgs) (string, string, error) {
+	if strings.TrimSpace(args.ArgError) != "" {
+		return "", "", errors.New(args.ArgError)
+	}
+	location, err := mcpNormalizeLocation(args)
+	if err != nil {
+		return "", "", err
+	}
+	switch location {
+	case mcpLocationCloud:
+		if mcpHasRemoteConnection(args) {
+			return "", "", errors.New("云端 agent 不能带 SSH 连接")
+		}
+		if strings.TrimSpace(args.GrantID) != "" {
+			return "", "", errors.New("云端 agent 不用 grant_id，授权在创建时打开")
+		}
+		if strings.TrimSpace(args.CloudWorkspaceID) != "" {
+			return "", "", errors.New("云端工作区只是本机任务的工作目录，不要和云端 agent 一起传")
+		}
+		switch strings.ToLower(strings.TrimSpace(args.Mode)) {
+		case "", "chat", "conversation":
+			return mcpLocationCloud, "chat", nil
+		case "coding_dev", "coding", "code", "programming":
+			return mcpLocationCloud, taskCodingDevTag, nil
+		case "remote_coding_dev", "remote_coding", "remote_programming", "remote_code", "remote":
+			return "", "", errors.New("云端 agent 不能带远程编程")
+		default:
+			return "", "", errors.New("云端 agent 的 mode 只能是 chat 或 coding_dev")
+		}
+	case mcpLocationRemoteDevice:
+		if mcpHasRemoteConnection(args) {
+			return "", "", errors.New("远程设备任务不能带 SSH 连接")
+		}
+		if strings.TrimSpace(args.CloudWorkspaceID) != "" {
+			return "", "", errors.New("远程设备任务不能指定云端工作区")
+		}
+		grantID := strings.TrimSpace(args.GrantID)
+		if grantID == "" {
+			return "", "", errors.New("远程设备任务需要 grant_id")
+		}
+		if !mcpValidGrantID(grantID) {
+			return "", "", errors.New("grant_id 无效")
+		}
+		switch strings.ToLower(strings.TrimSpace(args.Mode)) {
+		case "", "chat", "conversation":
+			return mcpLocationRemoteDevice, "chat", nil
+		case "coding_dev", "coding", "code", "programming":
+			return mcpLocationRemoteDevice, taskCodingDevTag, nil
+		default:
+			return "", "", errors.New("远程设备上的 mode 只能是 chat 或 coding_dev")
+		}
+	default:
+		if strings.TrimSpace(args.GrantID) != "" {
+			return "", "", errors.New("本机任务不能带 grant_id；远程设备请把 location 设为 remote_device")
+		}
+		if id := strings.TrimSpace(args.CloudWorkspaceID); id != "" {
+			if mcpHasRemoteConnection(args) {
+				return "", "", errors.New("云端工作区不能带 SSH 连接")
+			}
+			if strings.TrimSpace(args.WorkingDir) != "" {
+				return "", "", errors.New("工作目录只能指定一个")
+			}
+			if !validCloudWorkspaceCacheID(id) {
+				return "", "", errors.New("cloud_workspace_id 无效")
+			}
+			switch strings.ToLower(strings.TrimSpace(args.Mode)) {
+			case "", "chat", "conversation":
+				return mcpLocationLocal, "chat", nil
+			case "coding_dev", "coding", "code", "programming":
+				return "", "", errors.New("云端工作区只作为会话的工作目录，编程任务请用本机绝对路径")
+			case "remote_coding_dev", "remote_coding", "remote_programming", "remote_code", "remote":
+				return "", "", errors.New("云端工作区不能带远程编程")
+			default:
+				return "", "", errors.New("使用云端工作区时 mode 只能是 chat")
+			}
+		}
+		mode, err := mcpEffectiveCreateMode(args)
+		if err != nil {
+			return "", "", err
+		}
+		return mcpLocationLocal, mode, nil
+	}
+}
+
+func mcpEnsureLocation(view mcpTaskView) mcpTaskView {
+	switch strings.TrimSpace(view.Location) {
+	case mcpLocationLocal, mcpLocationCloud, mcpLocationRemoteDevice:
+		return view
+	}
+	if strings.TrimSpace(view.GrantID) != "" {
+		view.Location = mcpLocationRemoteDevice
+		return view
+	}
+	view.Location = mcpLocationLocal
+	return view
+}
+
+// mcpNoteCloudWorkspace records a cloud workspace tag as the task's directory.
+// The tag is not a cloud agent and does not change location.
+func mcpNoteCloudWorkspace(view mcpTaskView, tags []string) mcpTaskView {
+	if strings.TrimSpace(view.Location) == mcpLocationCloud || strings.TrimSpace(view.Location) == mcpLocationRemoteDevice {
+		return view
+	}
+	if strings.TrimSpace(view.CloudWorkspaceID) != "" {
+		return view
+	}
+	if id := cloudWorkspaceIDFromTags(tags); id != "" {
+		view.CloudWorkspaceID = id
 	}
 	return view
 }
@@ -3507,6 +4616,44 @@ func mcpModeFromTags(tags []string) string {
 		return taskCodingDevTag
 	}
 	return "chat"
+}
+
+// mcpRemoteHistoryIncomplete is the other computer's failed turn. The last
+// visible assistant carries result_status incomplete. A later person line
+// is a new round and is not failed.
+func mcpRemoteHistoryIncomplete(items []ProjectConversationHistoryItem) bool {
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		if item.hostContinuation || item.planningEcho {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role == "" {
+			continue
+		}
+		if role != "assistant" {
+			return false
+		}
+		return strings.EqualFold(strings.TrimSpace(item.ResultStatus), "incomplete")
+	}
+	return false
+}
+
+// mcpTranscriptAwaitingReply is true when the other computer has a new
+// person line and has not answered it yet.
+func mcpTranscriptAwaitingReply(items []ProjectConversationHistoryItem) bool {
+	last := ""
+	for _, item := range items {
+		if item.hostContinuation || item.planningEcho {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role == "" {
+			continue
+		}
+		last = role
+	}
+	return last == "user"
 }
 
 func mcpLastAssistantText(items []ProjectConversationHistoryItem) string {

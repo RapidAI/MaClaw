@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -61,6 +63,11 @@ type Service struct {
 
 	// Directory resolves departments for the opening scope. Nil skips that step.
 	Directory Directory
+
+	// NodeHTTP dials a node's srv through the edge tunnel. The node link's
+	// BaseURL is the virtual srv.<id>.node.invalid host; only this client
+	// can reach it. Nil or a nil client keeps node conns offline.
+	NodeHTTP func(nodeID string) *http.Client
 
 	startOnce sync.Once
 }
@@ -126,6 +133,7 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 			llm_model TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			cloud_workspace_id TEXT NOT NULL DEFAULT '',
+			srv_node_id TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			deleted_at TEXT NOT NULL DEFAULT ''
@@ -150,6 +158,9 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE cloud_agents ADD COLUMN srv_node_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
 	}
 	return s.ensureLimits(ctx)
 }
@@ -311,14 +322,14 @@ func (s *Service) Create(ctx context.Context, tenantID, userID string, in Create
 	if err := tx.Commit(); err != nil {
 		return Instance{}, err
 	}
-	if err := s.disp.provision(ctx, inst); err != nil {
+	if err := s.disp.provision(ctx, &inst); err != nil {
 		_ = s.setStatus(ctx, inst.ID, StatusProvisionFailed)
 		inst.Status = StatusProvisionFailed
 	} else {
 		_ = s.setStatus(ctx, inst.ID, StatusIdle)
 		inst.Status = StatusIdle
 	}
-	inst.RuntimeStatus = s.runtimeStatus(ctx, tenantID, userID)
+	inst.RuntimeStatus = s.runtimeStatus(ctx, inst)
 	return inst, nil
 }
 
@@ -336,12 +347,60 @@ func (s *Service) MarkProvisionFailed(ctx context.Context, id string) error {
 	return s.setStatus(ctx, id, StatusProvisionFailed)
 }
 
-func (s *Service) runtimeStatus(ctx context.Context, tenantID, userID string) string {
-	conn, err := s.srvConn(ctx, tenantID, userID)
-	if err != nil || !dialReachable(ctx, conn.BaseURL) {
+func (s *Service) runtimeStatus(ctx context.Context, inst Instance) string {
+	rec, err := s.srvRecord(ctx, inst.TenantID)
+	if err != nil {
+		return "unreachable"
+	}
+	return s.runtimeStatusFor(ctx, rec, inst.SrvNodeID)
+}
+
+func (s *Service) runtimeStatusFor(ctx context.Context, rec srvRecord, srvNodeID string) string {
+	var conn srvConn
+	var err error
+	if srvNodeID == "" {
+		conn, err = rec.publicConn()
+	} else {
+		conn, err = rec.nodeConn(srvNodeID)
+	}
+	if err != nil {
+		return "unreachable"
+	}
+	if conn.NodeID != "" {
+		if s.nodeSrvReachable(ctx, conn) {
+			return "ready"
+		}
+		return "unreachable"
+	}
+	if !dialReachable(ctx, conn.BaseURL) {
 		return "unreachable"
 	}
 	return "ready"
+}
+
+// nodeSrvReachable pings the node srv over the edge tunnel. A missing
+// tunnel client or any request failure counts as unreachable.
+func (s *Service) nodeSrvReachable(ctx context.Context, conn srvConn) bool {
+	if s.NodeHTTP == nil {
+		return false
+	}
+	client := s.NodeHTTP(conn.NodeID)
+	if client == nil {
+		return false
+	}
+	ping, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ping, http.MethodGet, conn.BaseURL+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 500
 }
 
 // List returns the caller's live instances. Stale turns are interrupted first.
@@ -374,9 +433,20 @@ func (s *Service) List(ctx context.Context, tenantID, userID string) ([]Instance
 		out = []Instance{}
 	}
 	// Close the list query before the settings read. Tests use one connection.
-	status := s.runtimeStatus(ctx, tenantID, userID)
+	// Statuses cache by srv binding so same-srv rows share one probe.
+	rec, recErr := s.srvRecord(ctx, tenantID)
+	statuses := map[string]string{}
 	for i := range out {
-		out[i].RuntimeStatus = status
+		if recErr != nil {
+			out[i].RuntimeStatus = "unreachable"
+			continue
+		}
+		st, ok := statuses[out[i].SrvNodeID]
+		if !ok {
+			st = s.runtimeStatusFor(ctx, rec, out[i].SrvNodeID)
+			statuses[out[i].SrvNodeID] = st
+		}
+		out[i].RuntimeStatus = st
 	}
 	return out, nil
 }
@@ -387,7 +457,7 @@ func (s *Service) Get(ctx context.Context, tenantID, userID, id string) (Instanc
 	if err != nil {
 		return Instance{}, err
 	}
-	inst.RuntimeStatus = s.runtimeStatus(ctx, inst.TenantID, inst.OwnerUserID)
+	inst.RuntimeStatus = s.runtimeStatus(ctx, inst)
 	if inst.Kind == KindCoding {
 		view := s.gitPublic(ctx, inst)
 		inst.Git = &view
@@ -410,6 +480,13 @@ func (s *Service) getOwned(ctx context.Context, tenantID, userID, id string) (In
 	return inst, err
 }
 
+// setSrvNode records which srv an instance was provisioned on. Instance
+// calls keep routing there even when the owner's pin moves.
+func (s *Service) setSrvNode(ctx context.Context, id, nodeID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agents SET srv_node_id = ? WHERE id = ?`, strings.TrimSpace(nodeID), strings.TrimSpace(id))
+	return err
+}
+
 func (s *Service) getByID(ctx context.Context, id string) (Instance, error) {
 	row := s.db.QueryRowContext(ctx, instanceSelect+` WHERE id = ? AND deleted_at = ''`, strings.TrimSpace(id))
 	inst, err := scanInstance(row)
@@ -419,14 +496,14 @@ func (s *Service) getByID(ctx context.Context, id string) (Instance, error) {
 	return inst, err
 }
 
-// InstanceOwner is the tenant and user that own one live instance.
+// InstanceOwner is the tenant, user and srv binding of one live instance.
 // The official LLM route uses this so the caller cannot name a different user.
-func (s *Service) InstanceOwner(ctx context.Context, id string) (tenantID, userID string, err error) {
+func (s *Service) InstanceOwner(ctx context.Context, id string) (tenantID, userID, srvNodeID string, err error) {
 	inst, err := s.getByID(ctx, id)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return inst.TenantID, inst.OwnerUserID, nil
+	return inst.TenantID, inst.OwnerUserID, inst.SrvNodeID, nil
 }
 
 // Patch renames an instance or changes its saved LLM label. A different kind is rejected and nothing is written.
@@ -485,7 +562,7 @@ func (s *Service) Delete(ctx context.Context, tenantID, userID, id string) error
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
 		TurnInterrupted, now, now, inst.ID, TurnRunning)
-	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
 		_, _ = s.disp.call(ctx, "DELETE", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), nil)
 	}
 	return nil
@@ -504,7 +581,7 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID, id string) (Instan
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ?`,
 		TurnCancelled, now, now, inst.ID, TurnRunning)
-	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
 		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/stop", map[string]any{"owner_user_id": inst.OwnerUserID})
 	}
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
@@ -522,13 +599,13 @@ func (s *Service) Resume(ctx context.Context, tenantID, userID, id string) (Inst
 	if err := s.setStatus(ctx, inst.ID, StatusIdle); err != nil {
 		return Instance{}, err
 	}
-	if conn, err := s.srvConn(ctx, inst.TenantID, inst.OwnerUserID); err == nil {
+	if conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID); err == nil {
 		_, _ = s.disp.call(ctx, "POST", conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/resume", map[string]any{"owner_user_id": inst.OwnerUserID})
 	}
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)
 }
 
-const instanceSelect = `SELECT id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at FROM cloud_agents`
+const instanceSelect = `SELECT id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, srv_node_id, created_at, updated_at, deleted_at FROM cloud_agents`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -540,7 +617,7 @@ func scanInstance(row scanner) (Instance, error) {
 	err := row.Scan(
 		&inst.ID, &inst.TenantID, &inst.OwnerUserID, &inst.Name, &inst.Kind,
 		&inst.LLMMode, &inst.LLMLabel, &inst.LLMModel, &inst.Status, &inst.CloudWorkspaceID,
-		&created, &updated, &deleted,
+		&inst.SrvNodeID, &created, &updated, &deleted,
 	)
 	if err != nil {
 		return Instance{}, err
@@ -752,9 +829,11 @@ func (s *Service) InterruptStale(ctx context.Context, now time.Time) error {
 	return err
 }
 
-// AdminSecretMatches compares the header with the tenant maclawsrv admin secret.
-func (s *Service) AdminSecretMatches(ctx context.Context, tenantID, got string) bool {
-	conn, err := s.srvConn(ctx, tenantID, "")
+// AdminSecretMatches compares the header with the admin secret of the
+// maclawsrv this instance's calls route to: the node srv recorded on the
+// instance, or the public connection when srvNodeID is empty.
+func (s *Service) AdminSecretMatches(ctx context.Context, tenantID, srvNodeID, got string) bool {
+	conn, err := s.srvConnForNode(ctx, tenantID, srvNodeID)
 	if err != nil {
 		return false
 	}
@@ -765,39 +844,135 @@ func (s *Service) AdminSecretMatches(ctx context.Context, tenantID, got string) 
 	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
 }
 
+// SrvConnIsNode reports whether srvNodeID routes to a node srv reached over
+// the edge tunnel. False on any resolution error.
+func (s *Service) SrvConnIsNode(ctx context.Context, tenantID, srvNodeID string) bool {
+	conn, err := s.srvConnForNode(ctx, tenantID, srvNodeID)
+	return err == nil && conn.NodeID != ""
+}
+
+// SrvAuth resolves an instance's srv binding once and answers both auth
+// questions the internal callbacks need: isNode says whether the conn is a
+// node srv (non-loopback callers allowed), authed says the presented admin
+// secret matches that conn.
+func (s *Service) SrvAuth(ctx context.Context, tenantID, srvNodeID, got string) (isNode, authed bool) {
+	conn, err := s.srvConnForNode(ctx, tenantID, srvNodeID)
+	if err != nil {
+		return false, false
+	}
+	want := conn.AdminSecret
+	return conn.NodeID != "", want != "" && got != "" && len(want) == len(got) &&
+		subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+
 type srvConn struct {
 	BaseURL     string
 	AdminSecret string
+	// NodeID is set when this conn is a private node srv reached through the
+	// edge tunnel. Its BaseURL is a virtual srv.<id>.node.invalid host that
+	// only resolves through the NodeHTTP client.
+	NodeID string
 }
 
-func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvConn, error) {
-	if s == nil || s.settings == nil {
+// srvRecord is the parsed maclawsrv connection document: the public
+// connection plus every node link and per-owner cloud pin.
+type srvRecord struct {
+	baseURL        string
+	adminSecret    string
+	ownerCloudNode map[string]string
+	nodeLinks      map[string]srvConn
+}
+
+// publicConn is the loopback system connection.
+func (r srvRecord) publicConn() (srvConn, error) {
+	if !loopbackBaseURL(r.baseURL) {
 		return srvConn{}, failOffline()
+	}
+	if strings.TrimSpace(r.adminSecret) == "" {
+		return srvConn{}, failOffline()
+	}
+	return srvConn{BaseURL: strings.TrimRight(strings.TrimSpace(r.baseURL), "/"), AdminSecret: r.adminSecret}, nil
+}
+
+// nodeConn is one node's srv link. A missing or incomplete link fails
+// closed rather than silently falling back to the public connection.
+func (r srvRecord) nodeConn(nodeID string) (srvConn, error) {
+	conn, ok := r.nodeLinks[nodeID]
+	if !ok || strings.TrimSpace(conn.BaseURL) == "" || strings.TrimSpace(conn.AdminSecret) == "" {
+		return srvConn{}, failOffline()
+	}
+	return conn, nil
+}
+
+func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, error) {
+	rec := srvRecord{ownerCloudNode: map[string]string{}, nodeLinks: map[string]srvConn{}}
+	if s == nil || s.settings == nil {
+		return rec, failOffline()
 	}
 	raw, err := s.settings.Get(ctx, SrvSettingsKey(tenantID))
 	if err != nil || strings.TrimSpace(raw) == "" {
-		return srvConn{}, failOffline()
+		return rec, failOffline()
 	}
-	var rec struct {
-		BaseURL     string            `json:"base_url"`
-		AdminSecret string            `json:"admin_secret"`
-		DialNode    string            `json:"dial_node"`
-		OwnerNode   map[string]string `json:"owner_node"`
+	var doc struct {
+		BaseURL        string            `json:"base_url"`
+		AdminSecret    string            `json:"admin_secret"`
+		DialNode       string            `json:"dial_node"`
+		OwnerCloudNode map[string]string `json:"owner_cloud_node"`
+		NodeLinks      []struct {
+			NodeID      string `json:"node_id"`
+			BaseURL     string `json:"base_url"`
+			AdminSecret string `json:"admin_secret"`
+		} `json:"node_links"`
 	}
-	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-		return srvConn{}, failOffline()
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil || strings.TrimSpace(doc.DialNode) != "" {
+		return rec, failOffline()
 	}
-	if strings.TrimSpace(rec.DialNode) != "" {
-		return srvConn{}, failOffline()
+	rec.baseURL = doc.BaseURL
+	rec.adminSecret = doc.AdminSecret
+	for user, node := range doc.OwnerCloudNode {
+		if id := strings.TrimSpace(node); id != "" {
+			rec.ownerCloudNode[user] = id
+		}
 	}
-	if ownerID != "" && strings.TrimSpace(rec.OwnerNode[ownerID]) != "" {
-		return srvConn{}, failOffline()
+	for _, link := range doc.NodeLinks {
+		if id := strings.TrimSpace(link.NodeID); id != "" {
+			rec.nodeLinks[id] = srvConn{
+				BaseURL:     strings.TrimRight(strings.TrimSpace(link.BaseURL), "/"),
+				AdminSecret: link.AdminSecret,
+				NodeID:      id,
+			}
+		}
 	}
-	if !loopbackBaseURL(rec.BaseURL) {
-		return srvConn{}, failOffline()
+	return rec, nil
+}
+
+// srvConn resolves by the owner's current cloud pin. Provision uses it so a
+// newly created instance lands on the srv the user currently chose. A bot
+// owner_node pin is irrelevant here: no cloud pin means public, the
+// documented default.
+func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvConn, error) {
+	rec, err := s.srvRecord(ctx, tenantID)
+	if err != nil {
+		return srvConn{}, err
 	}
-	if strings.TrimSpace(rec.AdminSecret) == "" {
-		return srvConn{}, failOffline()
+	if ownerID != "" {
+		if nodeID := rec.ownerCloudNode[ownerID]; nodeID != "" {
+			return rec.nodeConn(nodeID)
+		}
 	}
-	return srvConn{BaseURL: strings.TrimRight(strings.TrimSpace(rec.BaseURL), "/"), AdminSecret: rec.AdminSecret}, nil
+	return rec.publicConn()
+}
+
+// srvConnForNode resolves the conn an existing instance runs on: the node
+// srv recorded on it at provision, or the public connection when empty.
+// Changing the user's pin does not move live instances.
+func (s *Service) srvConnForNode(ctx context.Context, tenantID, srvNodeID string) (srvConn, error) {
+	rec, err := s.srvRecord(ctx, tenantID)
+	if err != nil {
+		return srvConn{}, err
+	}
+	if srvNodeID == "" {
+		return rec.publicConn()
+	}
+	return rec.nodeConn(srvNodeID)
 }

@@ -11713,6 +11713,13 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	a.downloadMutex.Lock()
 	a.downloadCancelers[downloadID] = canceler
 	a.downloadMutex.Unlock()
+	// This attempt rewrites the destination file. A record left over from an
+	// earlier verified download must not authorize it again: os.Create
+	// truncates in place, so a no-hash manifest's file-identity check could
+	// otherwise bless a half-written installer if a launch ran mid-download.
+	a.verifiedInstallerMu.Lock()
+	a.verifiedInstaller = nil
+	a.verifiedInstallerMu.Unlock()
 	defer func() {
 		a.downloadMutex.Lock()
 		// Only clear our own entry: a newer download may already own the key.

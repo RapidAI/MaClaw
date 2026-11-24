@@ -11,9 +11,8 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
-import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
-import { CloudAgentManage } from './CloudAgentManage';
-import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
+import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
+import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
@@ -2809,7 +2808,7 @@ export const SidebarTaskManagement = ({
         setRenamingTaskPath(null);
     };
     const [creatingTask, setCreatingTask] = useState(false);
-    const [cloudAgentsOpen, setCloudAgentsOpen] = useState(false);
+    const [cloudPlaceSelected, setCloudPlaceSelected] = useState(false);
     const [cloudAgentsEnabled, setCloudAgentsEnabled] = useState(false);
     const [cloudAgents, setCloudAgents] = useState<CloudAgentListItem[]>([]);
     const [cloudListEpoch, setCloudListEpoch] = useState(0);
@@ -2825,15 +2824,24 @@ export const SidebarTaskManagement = ({
             const catalog = cloudAgentCatalog(rows);
             setCloudAgents(cloudAgentsFromList(catalog.instances));
             setCloudAgentsEnabled(catalog.enabled);
-            if (!catalog.enabled) setCloudAgentsOpen(false);
+            if (!catalog.enabled) setCloudPlaceSelected(false);
         }).catch(() => {
-            if (cancelled) return;
-            setCloudAgents([]);
-            setCloudAgentsEnabled(false);
-            setCloudAgentsOpen(false);
+            // Hub answers with enabled. A rejected call is not that answer,
+            // so the last catalog stays until a list actually returns.
         });
         return () => { cancelled = true; };
     }, [cloudListEpoch]);
+    useEffect(() => onCloudAgentListRefresh(() => {
+        setCloudListEpoch(epoch => epoch + 1);
+    }), []);
+    useEffect(() => {
+        // The highlighted machine tab is the place the next new task uses.
+        // Opening a cloud row highlights 云端 the same way clicking the tab does.
+        publishCloudTaskPlace({
+            enabled: cloudAgentsEnabled,
+            selected: !remote.selected && (cloudPlaceSelected || !!openCloudId),
+        });
+    }, [cloudAgentsEnabled, cloudPlaceSelected, remote.selected, openCloudId]);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [newTaskName, setNewTaskName] = useState('');
@@ -5946,8 +5954,8 @@ export const SidebarTaskManagement = ({
                 data-testid="task-pane-new-task-wizard"
                 onClick={() => {
                     const gate = remoteRef.current;
-                    // 远程机器页签选中且可操作：仍走标准新建任务向导——
-                    // 向导「位置」chip 默认跟随当前机器页签（远程·机器名）。
+                    // 仍走标准新建任务向导。位置 chip 跟随当前机器页签：
+                    // 本机、云端（开通且停在云端页签）、或远程·机器名。
                     if (gate.selected && !gate.operate) return;
                     window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
                 }}
@@ -5961,23 +5969,6 @@ export const SidebarTaskManagement = ({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
                 <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
             </button>
-            {cloudAgentsOpen ? (
-                <CloudAgentManage
-                    lang={lang}
-                    onClose={() => {
-                        setCloudAgentsOpen(false);
-                        setCloudListEpoch(epoch => epoch + 1);
-                    }}
-                    onCreated={(row) => {
-                        setCloudListEpoch(epoch => epoch + 1);
-                        const item = cloudAgentsFromList([row])[0];
-                        if (!item) return;
-                        remote.closeDetail();
-                        void openCloudAgent(item, lang);
-                        if (item.kind !== 'coding') setCloudAgentsOpen(false);
-                    }}
-                />
-            ) : null}
             <span className="mc-task-pane__toolbar-end">
                 <span className="mc-task-pane__tool-group">
                     <button
@@ -6108,10 +6099,13 @@ export const SidebarTaskManagement = ({
             lang={lang}
             remote={remote}
             cloudAvailable={cloudAgentsEnabled}
-            cloudSelected={!remote.selected && (cloudAgentsOpen || !!openCloudId)}
-            onSelectCloud={() => setCloudAgentsOpen(true)}
+            cloudSelected={!remote.selected && (cloudPlaceSelected || !!openCloudId)}
+            onSelectCloud={() => {
+                if (remote.selected) remote.selectLocal();
+                setCloudPlaceSelected(true);
+            }}
             onLeaveCloud={() => {
-                setCloudAgentsOpen(false);
+                setCloudPlaceSelected(false);
                 closeCloudAssistant();
             }}
             onCloseGrant={(grantId, name) => {

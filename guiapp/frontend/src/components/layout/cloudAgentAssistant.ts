@@ -18,6 +18,20 @@ import {
 } from './remoteAssistantSession';
 import { asCloudAgentListItem, cloudTurnRunning, noteCloudTurn, rememberCloudOpen, type CloudAgentListItem } from './taskPlace';
 
+const CLOUD_LIST_REFRESH = 'maclaw:cloud-agents-refresh';
+
+/** Ask the task list to reload cloud rows after a new instance is created. */
+export function requestCloudAgentListRefresh() {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent(CLOUD_LIST_REFRESH));
+}
+
+export function onCloudAgentListRefresh(listener: () => void): () => void {
+    if (typeof window === 'undefined') return () => {};
+    window.addEventListener(CLOUD_LIST_REFRESH, listener);
+    return () => window.removeEventListener(CLOUD_LIST_REFRESH, listener);
+}
+
 type Binding = (...args: unknown[]) => Promise<unknown>;
 
 type Owner = {
@@ -567,6 +581,44 @@ export async function openCloudAgent(item: CloudAgentListItem, lang: string): Pr
         owner.error = err instanceof Error ? err.message : String(err);
         publishOwner();
     }
+}
+
+/**
+ * New-task send when 位置 is 云端. Same composer text, different place:
+ * create the instance, open it in the main assistant, and deliver the first message.
+ * The returned id is the created instance. A warning means that instance exists
+ * and the first instruction was not accepted.
+ */
+export async function startCloudAgentFromNewTask(name: string, kind: 'session' | 'coding', text: string, lang: string): Promise<{ id: string; warning?: string }> {
+    const create = binding('CreateCloudAgent');
+    if (!create) {
+        throw new Error(localizeText(lang, 'Cloud runtime is unavailable', '云端运行时不可用', '雲端運行時不可用'));
+    }
+    const row = await create(name, kind);
+    const item = asCloudAgentListItem(row);
+    if (!item) {
+        throw new Error(localizeText(lang, 'The cloud task was not created', '云端任务没有创建', '雲端任務沒有建立'));
+    }
+    requestCloudAgentListRefresh();
+    await openCloudAgent(item, lang);
+    // The instance already exists. A later open or send failure must not look
+    // like "nothing was created", or a scheduled launch will create another one.
+    if (!owner || owner.item.id !== item.id || !owner.grant) {
+        const message = owner && owner.item.id === item.id ? owner.error : '';
+        return {
+            id: item.id,
+            warning: message || localizeText(lang, 'Cloud control is unavailable', '云端控制不可用', '雲端控制不可用'),
+        };
+    }
+    const ok = await sendCloud(owner.generation, text);
+    if (!ok) {
+        const message = owner && owner.item.id === item.id ? owner.error : '';
+        return {
+            id: item.id,
+            warning: message || localizeText(lang, 'The cloud task was created, but the first instruction was not sent', '云端任务已创建，但首条指令未发出', '雲端任務已建立，但第一則指令沒有送出'),
+        };
+    }
+    return { id: item.id };
 }
 
 /** Send through the open panel when it is already on this instance and task. */

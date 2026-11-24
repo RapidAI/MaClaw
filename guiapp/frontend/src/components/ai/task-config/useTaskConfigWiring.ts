@@ -33,7 +33,9 @@ import { builtinExpertIcon, expertDefinitionFromInstallResult, expertTabId, over
 import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, goalCreateCommand, hopCreateCommand, isBtwCommandText, isConversationBranchCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
-import { codingDirectoryRequired, defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { codingDirectoryRequired, defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskPlace, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { startCloudAgentFromNewTask } from "../../layout/cloudAgentAssistant";
+import { cloudTaskPlaceSnapshot } from "../../layout/taskPlace";
 import { remoteMachineTargetSnapshot, remoteOpenTask, useRemoteMachineTarget } from "../../layout/remoteAssistantSession";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
@@ -704,6 +706,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                         return { projectPath, warning };
                     },
                     openRemoteMachineTask: ({ grantId, projectPath }) => remoteOpenTask(grantId, projectPath),
+                    createCloudAgentTask: ({ name, kind, text }) => startCloudAgentFromNewTask(name, kind, text, lang || "zh-Hans"),
                     materializeLatexDocument: async ({ projectPath, templateId, templateName, userText }) => {
                         let failure = "";
                         const document = await createLatexDocumentForTask(projectPath, templateId, "", lang || "zh-Hans", (message) => {
@@ -1034,12 +1037,21 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
                 if (separate) clearGuideDraft?.();
                 else clearComposerDraft({ clearAttachments: true });
             }
-            // 位置默认跟随任务栏机器页签：远控机器页签选中 = 默认在该机执行，
-            // 本机页签或无可用远控 = 本机。
+            // 位置默认跟随任务栏页签：远控机器、云端（已开通且停在云端页签）、否则本机。
             const target = remoteMachineTargetSnapshot();
             const sel = target.machines.find(m => m.grantId === target.selectedGrantId && m.operate && m.online);
             const machine: MachineTarget | null = sel ? { grantId: sel.grantId, machineName: sel.machineName } : null;
-            setTaskConfigDraft(d => (d.machine?.grantId === machine?.grantId ? d : withMachine(d, machine)));
+            const cloud = cloudTaskPlaceSnapshot();
+            setTaskConfigDraft(d => {
+                if (machine) {
+                    return d.machine?.grantId === machine.grantId && d.place !== 'cloud' ? d : withMachine(d, machine);
+                }
+                if (cloud.enabled && cloud.selected) {
+                    return d.place === 'cloud' && !d.machine ? d : withTaskPlace(d, 'cloud');
+                }
+                if (d.place === 'cloud' || d.machine) return withTaskPlace(d, 'local');
+                return d;
+            });
         };
         const focusGuide = () => {
             window.requestAnimationFrame(() => {

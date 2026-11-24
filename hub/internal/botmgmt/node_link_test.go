@@ -436,3 +436,44 @@ func TestUnpinNodeExceptKeepsTheNewOwnerOnly(t *testing.T) {
 		t.Fatalf("a foreign node pin was touched: %+v", stored.OwnerNode)
 	}
 }
+
+func TestPinOwnerCloudNodeLifecycle(t *testing.T) {
+	settings := &memSettings{}
+	svc := NewService(settings)
+	seedRecord(t, settings, "tenant-a", record{
+		NodeLinks: []nodeLink{{NodeID: "node-1", BaseURL: "http://srv.node-1.node.invalid", AdminSecret: "link-sec"}},
+	})
+	ctx := context.Background()
+
+	// A node without a srv link is refused.
+	if err := svc.PinOwnerCloudNode(ctx, "tenant-a", "alice", "node-new"); !errors.Is(err, ErrSrv) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := svc.PinOwnerCloudNode(ctx, "tenant-a", "alice", "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.OwnerCloudNodeID(ctx, "tenant-a", "alice"); got != "node-1" {
+		t.Fatalf("pin = %q", got)
+	}
+	if bindings := svc.CloudNodeBindings(ctx, "tenant-a"); len(bindings) != 1 || bindings["alice"] != "node-1" {
+		t.Fatalf("bindings = %+v", bindings)
+	}
+	// Forgetting the srv drops the pin too.
+	if err := svc.ForgetNodeSrv(ctx, "tenant-a", "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.OwnerCloudNodeID(ctx, "tenant-a", "alice"); got != "" {
+		t.Fatalf("pin after forget = %q", got)
+	}
+	// Clearing explicitly also works.
+	seedRecord(t, settings, "tenant-a", record{
+		NodeLinks:      []nodeLink{{NodeID: "node-1", BaseURL: "http://srv.node-1.node.invalid", AdminSecret: "link-sec"}},
+		OwnerCloudNode: map[string]string{"alice": "node-1"},
+	})
+	if err := svc.PinOwnerCloudNode(ctx, "tenant-a", "alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.OwnerCloudNodeID(ctx, "tenant-a", "alice"); got != "" {
+		t.Fatalf("pin after clear = %q", got)
+	}
+}

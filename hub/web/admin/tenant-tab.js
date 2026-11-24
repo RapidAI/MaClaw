@@ -1042,6 +1042,8 @@
     // global setting, while each tenant controls its verification method.
     var registrationAuthCard = byID('registrationAuthCard');
     if (registrationAuthCard) registrationAuthCard.classList.toggle('hidden', !tenantAdmin);
+    var maclawsrvConnectionCard = byID('maclawsrvConnectionCard');
+    if (maclawsrvConnectionCard) maclawsrvConnectionCard.classList.toggle('hidden', !tenantAdmin);
     var userReferralSystemCard = byID('userReferralSystemCard');
     if (userReferralSystemCard) userReferralSystemCard.classList.toggle('hidden', !tenantAdmin);
     ['systemRoutingCard','mailConfigCard','tlsConfigCard'].forEach(function(id) {
