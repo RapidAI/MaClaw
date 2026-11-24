@@ -109,11 +109,22 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
     const live = frameOf(snapshot);
     const cursor = Number(live.cursor);
     const shaped = typeof live.session_key === 'string' || Array.isArray(live.parts) || Number.isFinite(cursor);
-    if (!shaped) return '';
+    if (!shaped) {
+        console.debug('[cloud-agent] watch snapshot dropped: unshaped payload', { sessionKey });
+        return '';
+    }
     const stored = rounds.get(key);
     const storedLast = stored?.last ?? 0;
     const floor = typeof baselineCursor === 'number' && Number.isFinite(baselineCursor) ? baselineCursor : storedLast;
-    if (stored && storedLast > floor && (!Number.isFinite(cursor) || cursor < storedLast)) return key;
+    if (stored && storedLast > floor && (!Number.isFinite(cursor) || cursor < storedLast)) {
+        console.debug('[cloud-agent] watch snapshot dropped: staler than live frames', { sessionKey, cursor, storedLast, floor });
+        return key;
+    }
+    console.debug('[cloud-agent] watch snapshot apply', {
+        sessionKey, cursor, responded: live.responded === true,
+        parts: Array.isArray(live.parts) ? live.parts.length : 0,
+        artifacts: Array.isArray(live.local_file_paths) ? live.local_file_paths.length : 0,
+    });
     rounds.delete(key);
     if (!Number.isFinite(cursor) || cursor <= 0) {
         notifyRounds();
@@ -150,7 +161,13 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
 export function applyCloudAgentStream(payload: unknown): string {
     const event = frameOf(payload);
     const key = cloudAgentStoreKey(String(event.grant_id || ''), String(event.session_key || ''));
-    if (!key) return '';
+    if (!key) {
+        console.debug('[cloud-agent] stream frame dropped: no grant/session key', {
+            event: String(event.event || ''), grant: String(event.grant_id || ''),
+            session: String(event.session_key || ''),
+        });
+        return '';
+    }
     const previousId = cloudAgentRound(key).requestId;
     const next = reduceCloudAgentEvent(cloudAgentRound(key), event);
     if (next.requestId && previousId && next.requestId !== previousId) {

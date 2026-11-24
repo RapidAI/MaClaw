@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,6 +270,11 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	if len(files) > 0 {
+		slog.Info("cloudagent turn produced files",
+			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+			slog.String("request", requestID), slog.Any("files", files))
+	}
 	if result.AskUser != nil {
 		question := strings.TrimSpace(result.AskUser.Question)
 		if strings.TrimSpace(result.Text) != "" {
@@ -341,30 +347,37 @@ const serveFileMaxBytes = 4 << 20
 // size, base64 bytes. Like the desktop op it only serves paths a turn
 // recorded as produced, never an arbitrary workspace read.
 func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error) {
+	deny := func(reason string, err error) (json.RawMessage, error) {
+		slog.Warn("cloudagent fetch artifact denied",
+			slog.String("instance", inst.meta.ID), slog.String("path", rel), slog.String("reason", reason))
+		return nil, err
+	}
 	root, err := jailRoot(inst.dir, inst.meta.Kind)
 	if err != nil {
-		return nil, err
+		return deny("jail-root", err)
 	}
 	path, err := resolveInJail(root, rel)
 	if err != nil {
-		return nil, err
+		return deny("jail", err)
 	}
 	if !inst.book.producedPaths()[canonicalArtifactRel(root, path)] {
-		return nil, errors.New("没有找到这个文件")
+		return deny("not-produced", errors.New("没有找到这个文件"))
 	}
 	// Lstat like the desktop fetch: a recorded path swapped for a symlink or
 	// special file after the turn must not leak an unrelated target.
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("这个文件已经不在了")
+		return deny("missing", errors.New("这个文件已经不在了"))
 	}
 	if info.Size() > serveFileMaxBytes {
-		return nil, fmt.Errorf("文件太大（%.1f MB），暂不支持回传", float64(info.Size())/(1<<20))
+		return deny("too-large", fmt.Errorf("文件太大（%.1f MB），暂不支持回传", float64(info.Size())/(1<<20)))
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, errors.New("这个文件暂时读取失败")
+		return deny("read-failed", errors.New("这个文件暂时读取失败"))
 	}
+	slog.Info("cloudagent fetch artifact",
+		slog.String("instance", inst.meta.ID), slog.String("path", rel), slog.Int64("size", info.Size()))
 	return json.Marshal(map[string]any{
 		"name":        filepath.Base(path),
 		"size":        info.Size(),

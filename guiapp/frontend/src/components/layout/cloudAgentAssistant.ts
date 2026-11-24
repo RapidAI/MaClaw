@@ -176,11 +176,20 @@ function recoverCloudStream(key: string) {
     const taskId = session.slice(session.lastIndexOf(':') + 1).trim();
     const instanceId = instanceIdFromStoreKey(key);
     const op = binding('RemoteControlOp');
-    if (!op || !grant || !session || !taskId || !instanceId) return;
+    if (!op || !grant || !session || !taskId || !instanceId) {
+        console.debug('[cloud-agent] resync skipped: incomplete key or binding', { key, hasOp: !!op, taskId });
+        return;
+    }
     const baseline = cloudAgentRound(key).last;
+    console.debug('[cloud-agent] stream gap: issuing resync watch', { instanceId, taskId, baseline });
     void op(grant, 'cloud_watch_task', JSON.stringify({ task_id: taskId, session_key: session }))
-        .then(raw => applyWatchedTurn(instanceId, grant, session, parseJSON(raw, {}), baseline))
-        .catch(() => { /* the next gapped frame retries */ });
+        .then(raw => {
+            applyWatchedTurn(instanceId, grant, session, parseJSON(raw, {}), baseline);
+            console.debug('[cloud-agent] resync watch applied', { instanceId, taskId, gap: cloudAgentRound(key).gap });
+        })
+        .catch((err) => {
+            console.debug('[cloud-agent] resync watch failed', { instanceId, taskId, error: String(err) });
+        });
 }
 
 function setAwaiting(current: Owner) {
@@ -289,6 +298,9 @@ function publishOwner() {
     // Files the turn produced on the instance ride the round's artifacts list.
     const produced = (round?.artifacts || []).map(path => String(path || '').trim()).filter(Boolean);
     const producedFiles = produced.length ? produced : undefined;
+    if (producedFiles) {
+        console.debug('[cloud-agent] artifacts on live row', { taskId: current.taskId, requestId: round?.requestId, files: produced });
+    }
     const previousRound = current.pending && !!round?.requestId && round.requestId === current.pendingBaseline;
     if (previousRound && last?.role === 'user') {
         const prior = messages.slice(0, -1);
@@ -461,6 +473,13 @@ function acceptHistory(current: Owner, ticket: HistoryTicket, raw: unknown): boo
     for (let index = 0; index < merged.length; index += 1) {
         const row = Array.isArray(body.files?.[index]) ? body.files[index] as string[] : [];
         files.push(row);
+    }
+    const artifactRows = files.filter(row => row.length > 0).length;
+    if (artifactRows > 0 || merged.length !== incoming.length) {
+        console.debug('[cloud-agent] history accepted', {
+            taskId: current.taskId, lines: merged.length, artifactRows,
+            localOnlyLines: merged.length - incoming.length,
+        });
     }
     current.history = merged;
     current.historyFiles = files;

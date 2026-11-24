@@ -5641,10 +5641,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         // Cloud artifacts live on the srv instance (no desktop project_path);
         // cloud_fetch_file serves only paths a recorded turn produced.
+        const opName = chat.cloud ? 'cloud_fetch_file' : 'fetch_file';
         const request = chat.cloud
             ? JSON.stringify({ path: filePath })
             : JSON.stringify({ project_path: chat.projectPath, path: filePath });
-        const raw = String(await op(chat.grantId, chat.cloud ? 'cloud_fetch_file' : 'fetch_file', request) || '{}');
+        console.debug('[remote-artifact] fetch', { op: opName, path: filePath });
+        const raw = String(await op(chat.grantId, opName, request) || '{}');
         let parsed: { name?: string; data_base64?: string; error?: string };
         try {
             parsed = JSON.parse(raw) as { name?: string; data_base64?: string; error?: string };
@@ -5659,6 +5661,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!saved) {
             throw new Error(localizeText(lang, 'The file could not be saved', '文件保存失败'));
         }
+        console.debug('[remote-artifact] saved', { op: opName, path: filePath, saved });
         return saved;
     }, [remoteChat, lang]);
     const remoteTranscript = useMemo(() => {

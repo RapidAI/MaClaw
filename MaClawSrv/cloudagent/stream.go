@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -198,7 +199,18 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		pending = append(pending, rt.nextFrame(lane, inst.meta.ID, taskID, requestID, "stream_done", "", nil))
 	}
 	body := rt.nextFrame(lane, inst.meta.ID, taskID, requestID, event, text, extra)
+	files := lane.files
 	rt.streamMu.Unlock()
+	attrs := []any{
+		slog.String("instance", inst.meta.ID), slog.String("task", taskID), slog.String("request", requestID),
+		slog.String("event", event), slog.String("lane", eventLane(event)),
+		slog.Int("frames", len(pending)+1), slog.Int("watchers", len(grants)),
+		slog.Bool("sealed_thinking", sealThink), slog.Bool("stream_done", emitDone), slog.Int("text_len", len(text)),
+	}
+	if event == "response" && len(files) > 0 {
+		attrs = append(attrs, slog.Any("artifacts", files))
+	}
+	slog.Debug("cloudagent publish", attrs...)
 	for _, frame := range pending {
 		rt.postStream(inst, grants, frame)
 	}
@@ -462,6 +474,11 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 	if snap.Parts == nil {
 		snap.Parts = []livePart{}
 	}
+	slog.Debug("cloudagent watch snapshot",
+		slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+		slog.String("request", snap.RequestID), slog.Bool("responded", snap.Responded),
+		slog.Bool("stream_done", snap.StreamDone), slog.Int("parts", len(snap.Parts)),
+		slog.Int("artifacts", len(snap.LocalFilePaths)), slog.Int("cursor", int(snap.Cursor)))
 	return json.Marshal(snap)
 }
 

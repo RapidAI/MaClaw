@@ -360,7 +360,7 @@ func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(noise, "x.js"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h := &agentHost{root: root, started: time.Now()}
+	h := &agentHost{root: root, started: time.Now(), inst: &instance{meta: Spec{ID: "cag_t"}}}
 	h.noteFile(filepath.Join(root, "written.md"))
 	got := h.producedFiles()
 	want := map[string]bool{"fresh.txt": true, "written.md": true}

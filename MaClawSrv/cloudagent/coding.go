@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -125,6 +126,11 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	if len(files) > 0 {
+		slog.Info("cloudagent turn produced files",
+			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+			slog.String("request", requestID), slog.Any("files", files))
+	}
 	if result.AskUser != nil {
 		question := strings.TrimSpace(result.AskUser.Question)
 		if strings.TrimSpace(result.Text) != "" {
@@ -345,6 +351,9 @@ func (h *agentHost) noteFile(abs string) {
 	}
 	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
 		h.files[rel] = true
+		slog.Debug("cloudagent artifact noted",
+			slog.String("instance", h.inst.meta.ID), slog.String("task", h.task),
+			slog.String("request", h.request), slog.String("path", rel))
 	}
 }
 

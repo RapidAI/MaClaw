@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -184,6 +185,11 @@ func (rt *Runtime) loop(ctx context.Context) {
 // miss window — that is how a finished turn still blocks the next send.
 func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string, asError bool, files []string, now time.Time) {
 	wrote, err := inst.book.Finish(requestID, content, asError, files, now)
+	slog.Debug("cloudagent finish turn",
+		slog.String("instance", inst.meta.ID), slog.String("task", taskID),
+		slog.String("request", requestID), slog.Bool("wrote", wrote),
+		slog.Bool("as_error", asError), slog.Int("artifacts", len(files)),
+		slog.Int("content_len", len(content)), slog.Any("err", err))
 	if err != nil || !wrote {
 		return
 	}
