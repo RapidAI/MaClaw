@@ -36,6 +36,15 @@ type Dispatcher struct {
 	client *http.Client
 }
 
+// srvCallResultLimit caps one maclawsrv response the Hub buffers for relay.
+const srvCallResultLimit int64 = 1 << 20
+
+// srvCloudFileResultLimit covers the file-carrying ops (cloud_read_file,
+// cloud_pack_dir): srv caps the raw bytes at 4MB so base64 plus the result
+// envelope stay under the desktop's 8MB remote-control reader; the 1MB
+// default would silently truncate a valid download into unparseable JSON.
+const srvCloudFileResultLimit int64 = 8 << 20
+
 // DispatchCloud implements remotecontrol.CloudDispatcher.
 func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Grant, op string, body json.RawMessage) (json.RawMessage, error) {
 	if d == nil || d.svc == nil {
@@ -165,7 +174,11 @@ func (d *Dispatcher) control(ctx context.Context, inst *Instance, payload map[st
 		log.Printf("[cloud-agent] instance %s conn: %s", inst.ID, logDetail(err))
 		return nil, err
 	}
-	return d.call(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/control", payload)
+	resultLimit := srvCallResultLimit
+	if op, _ := payload["op"].(string); op == remotecontrol.OpCloudReadFile || op == remotecontrol.OpCloudPackDir {
+		resultLimit = srvCloudFileResultLimit
+	}
+	return d.callLimit(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/control", payload, resultLimit)
 }
 
 func offlineStatus() error {
@@ -248,6 +261,10 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 }
 
 func (d *Dispatcher) call(ctx context.Context, method string, conn srvConn, path string, payload any) (json.RawMessage, error) {
+	return d.callLimit(ctx, method, conn, path, payload, srvCallResultLimit)
+}
+
+func (d *Dispatcher) callLimit(ctx context.Context, method string, conn srvConn, path string, payload any, resultLimit int64) (json.RawMessage, error) {
 	var buf io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -279,7 +296,7 @@ func (d *Dispatcher) call(ctx context.Context, method string, conn srvConn, path
 		return nil, failOfflineDetail("runtime call failed: " + err.Error())
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, resultLimit))
 	if err != nil {
 		return nil, failOfflineDetail("runtime response read failed: " + err.Error())
 	}
@@ -540,6 +557,17 @@ func (s *Service) SetCustomLLM(ctx context.Context, tenantID, userID, id string,
 	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agents SET llm_mode = ?, llm_label = ?, llm_model = ?, updated_at = ? WHERE id = ? AND deleted_at = ''`,
 		LLMCustom, label, strings.TrimSpace(in.Model), formatTS(s.now()), inst.ID)
 	if err != nil {
+		// srv already saved llm.json while Hub still records the previous
+		// mode. Roll the srv back when the instance was official, otherwise
+		// the Hub would show 官方 while turns use the custom key. A previous
+		// custom mode keeps the new secret and only the display row lags.
+		if inst.LLMMode != LLMCustom {
+			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			if _, rbErr := s.disp.call(rollbackCtx, http.MethodDelete, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/llm", nil); rbErr != nil {
+				log.Printf("[cloud-agent] llm rollback %s: %s", inst.ID, logDetail(rbErr))
+			}
+			cancel()
+		}
 		return Instance{}, err
 	}
 	return s.Get(ctx, inst.TenantID, inst.OwnerUserID, inst.ID)

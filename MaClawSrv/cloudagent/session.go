@@ -30,6 +30,7 @@ type turnBody struct {
 	Title           string `json:"title"`
 	Name            string `json:"name"`
 	Path            string `json:"path"`
+	MaxBytes        int64  `json:"max_bytes"`
 }
 
 func (b turnBody) text() string {
@@ -125,6 +126,16 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		return json.Marshal(map[string]any{"ok": true})
 	case "cloud_fetch_file":
 		return rt.serveFile(inst, payload.Path)
+	case "cloud_list_dir":
+		return rt.browseListDir(inst, payload.Path)
+	case "cloud_read_file":
+		return rt.browseReadFile(inst, payload.Path, payload.MaxBytes)
+	case "cloud_stat":
+		return rt.browseStat(inst, payload.Path)
+	case "cloud_delete_file":
+		return rt.browseDelete(inst, payload.Path)
+	case "cloud_pack_dir":
+		return rt.browsePackDir(inst, payload.Path)
 	default:
 		return nil, errors.New("不支持这个云端操作")
 	}
@@ -245,6 +256,12 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 	}
 	cfg := rt.maclawCfg(inst)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		// maclawCfg flattens llmConfig's error into an empty config; re-read
+		// it so a broken custom llm.json reports its own reason instead of
+		// blaming the official endpoint.
+		if _, lerr := rt.llmConfig(inst); lerr != nil {
+			return fail(lerr.Error())
+		}
 		return fail("云端官方模型未接通")
 	}
 	root, err := jailRoot(inst.dir, inst.meta.Kind)

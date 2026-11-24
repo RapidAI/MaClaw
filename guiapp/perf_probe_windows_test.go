@@ -14,12 +14,15 @@ import (
 // machine, which includes Windows Search and Widgets and produced a figure
 // several times too large.
 func TestPerfSampleProcessTreeIncludesSelfChildren(t *testing.T) {
-	rows, selfCPU, err := perfSampleProcessTree()
+	rows, selfCPU, selfMem, err := perfSampleProcessTree()
 	if err != nil {
 		t.Fatalf("perfSampleProcessTree: %v", err)
 	}
 	if selfCPU < 0 {
 		t.Fatalf("selfCPU = %v, want >= 0", selfCPU)
+	}
+	if selfMem == 0 {
+		t.Fatalf("selfMem = 0, want the test process's own working set")
 	}
 	// A Go test binary has no WebView2 children, so the expected result is an
 	// empty set. A non-empty result means the walk escaped our own subtree.

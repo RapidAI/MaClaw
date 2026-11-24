@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { localizeText } from '../../i18n';
 
 /** Where a task lives. Cloud workspace rows stay local; only cloud agents are cloud. */
@@ -288,6 +288,12 @@ export function CloudAgentListRow({
     order,
     timeLabel,
     onOpen,
+    onContextMenu,
+    renaming,
+    renameValue,
+    onRenameChange,
+    onRenameBlur,
+    onRenameKeyDown,
 }: {
     item: CloudAgentListItem;
     lang: string;
@@ -295,6 +301,12 @@ export function CloudAgentListRow({
     order?: number;
     timeLabel?: string;
     onOpen: () => void;
+    onContextMenu?: (event: MouseEvent) => void;
+    renaming?: boolean;
+    renameValue?: string;
+    onRenameChange?: (value: string) => void;
+    onRenameBlur?: (event: FocusEvent<HTMLInputElement>) => void;
+    onRenameKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
 }) {
     const title = item.name || item.id;
     const kind = cloudAgentKindLabel(item.kind, lang);
@@ -315,6 +327,7 @@ export function CloudAgentListRow({
                     ...(active ? { background: 'var(--theme-surface)', boxShadow: 'inset 3px 0 0 var(--theme-primary)' } : {}),
                 }}
                 onClick={onOpen}
+                onContextMenu={onContextMenu}
                 onKeyDown={(event) => {
                     if (event.key !== 'Enter' && event.key !== ' ') return;
                     event.preventDefault();
@@ -323,10 +336,23 @@ export function CloudAgentListRow({
             >
                 <TaskPlaceIcon place="cloud" lang={lang} />
                 <span className="stsm-row-body">
-                    <span className="mc-sidebar-task-title-row">
-                        <span className="stsm-row-title">{title}</span>
-                        {timeLabel ? <time className="mc-sidebar-task-time">{timeLabel}</time> : null}
-                    </span>
+                    {renaming ? (
+                        <input
+                            data-testid="cloud-agent-rename-input"
+                            autoFocus
+                            value={renameValue}
+                            onChange={e => onRenameChange?.(e.target.value)}
+                            onBlur={onRenameBlur}
+                            onKeyDown={onRenameKeyDown}
+                            onClick={e => e.stopPropagation()}
+                            style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }}
+                        />
+                    ) : (
+                        <span className="mc-sidebar-task-title-row">
+                            <span className="stsm-row-title">{title}</span>
+                            {timeLabel ? <time className="mc-sidebar-task-time">{timeLabel}</time> : null}
+                        </span>
+                    )}
                     <span
                         data-testid="cloud-agent-kind"
                         className="mc-task-working-dir"

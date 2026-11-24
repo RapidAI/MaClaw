@@ -98,9 +98,55 @@ func (a *App) cloudAgentDefaultLLM() (CloudLLMSet, bool) {
 		if model == "" {
 			model = strings.TrimSpace(provider.Model)
 		}
-		return CloudLLMSet{URL: provider.URL, Key: provider.Key, Model: model, Label: name}, true
+		return CloudLLMSet{
+			URL:           provider.URL,
+			Key:           provider.Key,
+			Model:         model,
+			Label:         name,
+			Protocol:        provider.Protocol,
+			WireAPI:         provider.WireAPI,
+			AgentType:       provider.AgentType,
+			ContextLength:   provider.ContextLength,
+			TimeoutSec:      provider.TimeoutSec,
+			MaxOutputTokens: provider.MaxOutputTokens,
+		}, true
 	}
 	return CloudLLMSet{}, false
+}
+
+// RenameCloudAgent renames an instance.
+func (a *App) RenameCloudAgent(instanceID, name string) (CloudAgentRow, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudAgentRow{}, errors.New("缺少云端实例")
+	}
+	var row CloudAgentRow
+	err := a.remoteControlJSON(http.MethodPatch, "/api/v1/cloud-agents/"+url.PathEscape(instanceID), map[string]string{
+		"name": strings.TrimSpace(name),
+	}, &row)
+	return row, err
+}
+
+// StopCloudAgent freezes an instance. Its workspace files remain browsable.
+func (a *App) StopCloudAgent(instanceID string) (CloudAgentRow, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudAgentRow{}, errors.New("缺少云端实例")
+	}
+	var row CloudAgentRow
+	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/stop", map[string]string{}, &row)
+	return row, err
+}
+
+// ResumeCloudAgent wakes a stopped instance.
+func (a *App) ResumeCloudAgent(instanceID string) (CloudAgentRow, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudAgentRow{}, errors.New("缺少云端实例")
+	}
+	var row CloudAgentRow
+	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/resume", map[string]string{}, &row)
+	return row, err
 }
 
 // DeleteCloudAgent removes an instance that never received a task.
@@ -110,7 +156,13 @@ func (a *App) DeleteCloudAgent(instanceID string) error {
 	if instanceID == "" {
 		return errors.New("缺少云端实例")
 	}
-	return a.remoteControlJSON(http.MethodDelete, "/api/v1/cloud-agents/"+url.PathEscape(instanceID), nil, nil)
+	err := a.remoteControlJSON(http.MethodDelete, "/api/v1/cloud-agents/"+url.PathEscape(instanceID), nil, nil)
+	if err == nil {
+		cloudAgentGrantCache.Lock()
+		delete(cloudAgentGrantCache.byID, instanceID)
+		cloudAgentGrantCache.Unlock()
+	}
+	return err
 }
 
 // OpenCloudAgentGrant opens this desktop's control grant for one instance.
@@ -134,12 +186,20 @@ func (a *App) OpenCloudAgentGrant(instanceID string) (string, error) {
 }
 
 // CloudLLMSet is one cloud instance's custom model choice. Key travels only
-// to the user's own maclawsrv (hub forwards it without storing).
+// to the user's own maclawsrv (hub forwards it without storing). The wire
+// fields must ride along: a provider like 智谱编程 is anthropic-protocol and
+// fails every turn when the srv falls back to chat/completions.
 type CloudLLMSet struct {
-	URL   string `json:"url"`
-	Key   string `json:"key"`
-	Model string `json:"model"`
-	Label string `json:"label"`
+	URL           string `json:"url"`
+	Key           string `json:"key"`
+	Model         string `json:"model"`
+	Label         string `json:"label"`
+	Protocol        string `json:"protocol,omitempty"`
+	WireAPI         string `json:"wire_api,omitempty"`
+	AgentType       string `json:"agent_type,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
 
 // SetCloudAgentLLM pins a cloud instance to one of the desktop's configured

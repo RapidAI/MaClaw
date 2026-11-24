@@ -423,6 +423,7 @@ func TestDesktopExecuteRemoteControlHasNoCloudOps(t *testing.T) {
 	for _, op := range []string{
 		"cloud_list_tasks", "cloud_get_task", "cloud_create_task", "cloud_send_message",
 		"cloud_stop_task", "cloud_rename_task", "cloud_watch_task", "cloud_unwatch_task", "cloud_fetch_file",
+		"cloud_list_dir", "cloud_read_file", "cloud_stat", "cloud_delete_file", "cloud_pack_dir",
 	} {
 		if strings.Contains(body, op) {
 			t.Fatalf("desktop executeRemoteControl implements %s", op)

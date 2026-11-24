@@ -104,6 +104,12 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	cfg := rt.maclawCfg(inst)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		// maclawCfg flattens llmConfig's error into an empty config; re-read
+		// it so a broken custom llm.json reports its own reason instead of
+		// blaming the official endpoint.
+		if _, lerr := rt.llmConfig(inst); lerr != nil {
+			return fail(lerr.Error())
+		}
 		return fail("云端官方模型未接通")
 	}
 	history, err := inst.book.History(taskID)
@@ -166,6 +172,10 @@ func (rt *Runtime) maclawCfg(inst *instance) corelib.MaclawLLMConfig {
 			Model:                    item.Model,
 			Protocol:                 item.Protocol,
 			WireAPI:                  item.WireAPI,
+			AgentType:                item.AgentType,
+			ContextLength:            item.ContextLength,
+			TimeoutSec:               item.TimeoutSec,
+			MaxOutputTokens:          item.MaxOutputTokens,
 			ProviderName:             item.Name,
 			MaclawAgentMaxIterations: 30,
 		}

@@ -1105,6 +1105,16 @@ function assertUserReferralPanelIsolation() {
   }
 }
 
+function assertCloudAgentsPanelIsolation() {
+  const source = read('cloud-agent-quota.js');
+  if (!source.includes('#tab-cloud-agents.active{display:grid')) {
+    fail('cloud-agent-quota.js must enable the Cloud agents grid only while its panel is active.');
+  }
+  if (source.includes('#tab-cloud-agents{display:grid')) {
+    fail('cloud-agent-quota.js must not force Cloud agents visible while another panel is active.');
+  }
+}
+
 function assertAdminApiRoutesRegistered() {
   const routerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'router.go');
   const router = fs.readFileSync(routerPath, 'utf8');
@@ -1594,6 +1604,7 @@ assertCloudWorkspaceDepartmentTreeRender();
 assertDigitalAssetRoutesTenantScoped();
 assertAdminAssetsNoStore();
 assertUserReferralPanelIsolation();
+assertCloudAgentsPanelIsolation();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
 assertHTTPThreatFeatureRemoved();

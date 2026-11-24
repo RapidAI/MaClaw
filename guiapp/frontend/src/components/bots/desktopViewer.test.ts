@@ -38,4 +38,13 @@ describe('desktop viewer', () => {
         expect(desktopViewerSrc(vnc, 'vnc', { w: 800, fps: 5 })).toBe(vnc);
         expect(desktopViewerSrc('http://x/other.html?a=1', 'h264', { w: 800 })).toBe('http://x/other.html?a=1');
     });
+
+    it('appends the spec to a direct h264 page before the hash', () => {
+        expect(desktopViewerSrc('http://x/h264.html?view_only=1#frag', 'h264', { w: 1280, fps: 10 }))
+            .toBe('http://x/h264.html?view_only=1&w=1280&fps=10#frag');
+        expect(desktopViewerSrc('http://x/h264.html', 'h264', { w: 1280 }))
+            .toBe('http://x/h264.html?w=1280');
+        expect(desktopViewerSrc('http://x/h264.html?view_only=1', 'h264'))
+            .toBe('http://x/h264.html?view_only=1');
+    });
 });

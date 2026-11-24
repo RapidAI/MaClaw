@@ -48,6 +48,12 @@ type MaclawLLMProvider = {
     model: string;
     models?: string[];
     is_hub_service?: boolean;
+    protocol?: string;
+    wire_api?: string;
+    agent_type?: string;
+    context_length?: number;
+    timeout_sec?: number;
+    max_output_tokens?: number;
 };
 
 type MaclawLLMProviderList = {
@@ -277,6 +283,12 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setCon
                             key: provider.key,
                             model,
                             label: provider.name,
+                            protocol: provider.protocol || '',
+                            wire_api: provider.wire_api || '',
+                            agent_type: provider.agent_type || '',
+                            context_length: provider.context_length || 0,
+                            timeout_sec: provider.timeout_sec || 0,
+                            max_output_tokens: provider.max_output_tokens || 0,
                         }) as CloudAgentRow;
                         setInstances((prev) => prev.map((r) => (r.id === row.id ? updated : r)));
                     }

@@ -54,6 +54,17 @@ func TestParseSSEStreamKeepsNumericQoderBillingCode(t *testing.T) {
 	}
 }
 
+func TestParseNonStreamOpenAIResponseBodySurfacesZhipuMsgEnvelope(t *testing.T) {
+	// A Zhipu-shaped gateway answers a wrong-endpoint call with HTTP 200 and
+	// {"code","msg","success":false} — no choices, no "message". It must
+	// surface as an upstream error rather than parse as zero choices.
+	_, err := ParseNonStreamOpenAIResponseBody([]byte(`{"code":1000,"msg":"身份验证失败。","success":false}`))
+	var upstream *UpstreamModelError
+	if !errors.As(err, &upstream) || !strings.Contains(err.Error(), "身份验证失败") || upstream.Code != "1000" {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
 func TestParseSSEStreamKeepsNormalChunk(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
 	resp, err := parseSSEStreamWithReasoning(strings.NewReader(body), nil, nil)

@@ -42,6 +42,14 @@ type CustomLLM struct {
 	Key   string `json:"key"`
 	Model string `json:"model"`
 	Label string `json:"label"`
+	// Protocol selects the wire dialect ("openai", "anthropic", "google").
+	// The desktop provider carries it; an empty value defaults to openai.
+	Protocol        string `json:"protocol,omitempty"`
+	WireAPI         string `json:"wire_api,omitempty"`
+	AgentType       string `json:"agent_type,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
 
 func (rt *Runtime) newHTTPClient() *http.Client {
@@ -165,11 +173,22 @@ func (rt *Runtime) llmConfig(inst *instance) (corelib.AppConfig, error) {
 		if model == "" {
 			model = "auto"
 		}
+		// Match the desktop's preset migration so an llm.json saved before a
+		// Zhipu default-model rename resolves to the current id.
+		model = corelib.MigrateZhipuCodingModel(strings.TrimSpace(secret.Label), model)
 		return corelib.AppConfig{
-			MaclawLLMUrl:      secret.URL,
-			MaclawLLMKey:      secret.Key,
-			MaclawLLMModel:    model,
-			MaclawLLMProtocol: "openai",
+			MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+				Name:            strings.TrimSpace(secret.Label),
+				URL:             secret.URL,
+				Key:             secret.Key,
+				Model:           model,
+				Protocol:        customLLMProtocol(secret),
+				WireAPI:         strings.TrimSpace(secret.WireAPI),
+				AgentType:       strings.TrimSpace(secret.AgentType),
+				ContextLength:   secret.ContextLength,
+				TimeoutSec:      secret.TimeoutSec,
+				MaxOutputTokens: secret.MaxOutputTokens,
+			}},
 		}, nil
 	}
 	if err := officialReady(inst.meta); err != nil {
@@ -191,6 +210,39 @@ func (rt *Runtime) llmConfig(inst *instance) (corelib.AppConfig, error) {
 			WireAPI:  "responses",
 		}},
 	}, nil
+}
+
+// customLLMProtocol resolves the wire dialect for a saved custom model.
+// An explicit protocol wins, lowercased: the loop's anthropic send path is
+// an exact match while its envelope check folds case, so a mixed-case value
+// would render an anthropic surface and then ship chat/completions.
+// llm.json written before the field existed has none, so an Anthropic-shaped
+// endpoint still routes to the Messages wire instead of chat/completions.
+func customLLMProtocol(secret CustomLLM) string {
+	if p := strings.ToLower(strings.TrimSpace(secret.Protocol)); p != "" {
+		return p
+	}
+	// Desktop providers can carry the dialect on wire_api alone
+	// (agentservice resolves protocol from it the same way).
+	if corelib.IsAnthropicWireAPI(secret.WireAPI) {
+		return "anthropic"
+	}
+	lower := strings.ToLower(strings.TrimSpace(secret.URL))
+	if strings.Contains(lower, "/api/anthropic") {
+		return "anthropic"
+	}
+	if parsed, err := url.Parse(lower); err == nil {
+		host := parsed.Hostname()
+		if host == "anthropic.com" || strings.HasSuffix(host, ".anthropic.com") {
+			return "anthropic"
+		}
+		// AI Studio's OpenAI-compatible route keeps the openai dialect; the
+		// bare generativelanguage host is the native generateContent wire.
+		if host == "generativelanguage.googleapis.com" && !strings.Contains(parsed.Path, "/openai") {
+			return "google"
+		}
+	}
+	return "openai"
 }
 
 func readLLM(dir string) (CustomLLM, error) {
@@ -221,12 +273,30 @@ func (rt *Runtime) SaveLLM(id string, in CustomLLM) error {
 	in.URL = strings.TrimSpace(in.URL)
 	in.Key = strings.TrimSpace(in.Key)
 	in.Model = strings.TrimSpace(in.Model)
+	in.Protocol = strings.ToLower(strings.TrimSpace(in.Protocol))
+	in.WireAPI = strings.ToLower(strings.TrimSpace(in.WireAPI))
+	in.AgentType = strings.TrimSpace(in.AgentType)
+	in.Label = strings.TrimSpace(in.Label)
+	if in.ContextLength < 0 {
+		in.ContextLength = 0
+	}
+	if in.TimeoutSec < 0 {
+		in.TimeoutSec = 0
+	}
+	if in.MaxOutputTokens < 0 {
+		in.MaxOutputTokens = 0
+	}
 	if in.URL == "" || in.Key == "" {
 		return errors.New("请填写模型地址和密钥")
 	}
 	parsed, err := url.Parse(in.URL)
 	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return errors.New("模型地址无效")
+	}
+	// Mirror the Hub label fallback so llm.json and the Hub row name the same
+	// endpoint when the caller leaves the label empty.
+	if in.Label == "" {
+		in.Label = parsed.Hostname()
 	}
 	if rejectsHubLLM(in.URL, inst.meta) {
 		return errors.New("自定义模型不能指向本 Hub 的官方接口")

@@ -3282,28 +3282,51 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // smaller stage is all decode + canvas cost and no sharpness — that
     // iframe's renderer grew ~900MB in minutes and hit the OOM page
     // (2026-11-24). Watch caps at 10fps like the mobile app; interactive
-    // keeps the server default. Sizing inputs are read but NOT deps on
-    // purpose: the memo runs on the same triggers as the iframe's remount
-    // key, so each mount samples the current size while expand or a
-    // list-divider drag keep the mounted frame instead of reloading it.
+    // keeps the server default. Sizing inputs that can change stage class
+    // are deps so expand/collapse remounts and resamples — watching a
+    // 640px feed upscaled to full screen is blurry enough to defeat the
+    // expand. What is NOT a dep (listWidth, the stage's own clientWidth)
+    // keeps a list-divider drag from reloading the mounted frame.
     const desktopFrameSource = useMemo(() => {
         // clientWidth is layout px; the shell's ui-zoom transform applies on
         // top of devicePixelRatio. rect/clientWidth folds the transform in.
         const host = workspaceRef.current;
         const uiScale = host && host.clientWidth ? host.getBoundingClientRect().width / host.clientWidth : 1;
         const px = Math.min(2, (globalThis.devicePixelRatio || 1) * (uiScale || 1));
-        // is-fullscreen is position:fixed inset:0; embedded leaves a gutter
-        // (8% a side, 4% under the 960px viewport media query) in the chat
-        // column beside the list.
-        const column = host ? host.clientWidth - listWidth : 0;
-        const embedded = column > 0 ? column * (globalThis.innerWidth <= 960 ? 0.92 : 0.84) : 0;
+        // Embedded, the stage sits inside the ≤400px .desktop-bot-panel
+        // (minus its 32px padding and an 8%-a-side stage gutter, 4% under
+        // the 960px viewport media query); is-fullscreen is position:fixed
+        // inset:0, i.e. the window itself.
+        const panel = host ? Math.min(400, Math.max(0, host.clientWidth - listWidth)) : 0;
+        const embedded = panel > 64 ? (panel - 32) * (globalThis.innerWidth <= 960 ? 0.92 : 0.84) : 0;
         const cssWidth = takeover || screenExpanded
             ? globalThis.innerWidth
             : stageRef.current?.clientWidth || embedded || globalThis.innerWidth || 1280;
         const w = Math.max(640, Math.min(1920, Math.round(cssWidth * px)));
         const stream = { w: w - (w % 2), ...(stageInteractive ? {} : { fps: 10 }) };
         return desktopViewerSrc(desktopFrameSrc(shownDesktopUrl, stageInteractive), desktopViewer, stream);
-    }, [shownDesktopUrl, stageInteractive, desktopViewer]);
+    }, [shownDesktopUrl, stageInteractive, desktopViewer, screenExpanded, takeover]);
+    // A hidden window keeps the stream's WebSocket and decoder burning
+    // renderer memory for a picture nobody can see. Quick task switches keep
+    // the frame; after a dwell it unmounts and reconnects on return. A live
+    // frame is exempt: its connection heartbeats the server-side takeover
+    // hold, and unmounting would hand the bot back after ~5s mid-takeover.
+    // A hidden start skips the connect entirely rather than paying the dwell.
+    const [streamHidden, setStreamHidden] = useState(() => document.hidden);
+    useEffect(() => {
+        let timer = 0;
+        const update = () => {
+            window.clearTimeout(timer);
+            if (document.hidden && !stageInteractive) timer = window.setTimeout(() => setStreamHidden(true), 60_000);
+            else setStreamHidden(false);
+        };
+        update();
+        document.addEventListener('visibilitychange', update);
+        return () => {
+            window.clearTimeout(timer);
+            document.removeEventListener('visibilitychange', update);
+        };
+    }, [stageInteractive]);
     useEffect(() => {
         const botId = selectedId || '';
         const epoch = controlEpochRef.current + 1;
@@ -4328,7 +4351,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
         frame.addEventListener('load', focusFrame);
         return () => frame.removeEventListener('load', focusFrame);
-    }, [takeover, desktopUrl]);
+    }, [takeover, desktopUrl, streamHidden]);
 
     useEffect(() => {
         const gen = ++loadGen.current;
@@ -8104,8 +8127,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         ) : null}
                                     </div>
                                     <div className="desktop-bot-stage__frame">
+                                        {streamHidden ? null : (
                                         <iframe
-                                            key={frameMode + ':' + desktopViewer}
+                                            key={frameMode + ':' + desktopViewer + ((takeover || screenExpanded) ? ':full' : '')}
                                             ref={handoffRef}
                                             className="desktop-bot-chat__handoff"
                                             data-testid="desktop-bot-handoff"
@@ -8117,6 +8141,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             tabIndex={screenExpanded && !stageInteractive ? -1 : undefined}
                                             onFocus={screenExpanded && !stageInteractive ? () => { restoreBtnRef.current?.focus({ preventScroll: true }); } : undefined}
                                         />
+                                        )}
                                         {stageInteractive ? null : (
                                             <div className="desktop-bot-stage__shield" data-testid="desktop-bot-screen-shield" aria-hidden="true" />
                                         )}

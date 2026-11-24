@@ -429,6 +429,9 @@ func (a *App) GetCodingWorkbenchDirectory(projectPath, relativePath string) (Cod
 	if err != nil {
 		return CodingWorkbenchDirectoryResponse{}, err
 	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.getCloudAgentWorkbenchDirectory(instanceID, relativePath)
+	}
 	status := a.GetCodingWorkbenchStatus(projectPath)
 	if status.Kind == "remote" {
 		return a.getRemoteCodingWorkbenchDirectory(projectPath, relativePath)
@@ -595,6 +598,9 @@ func (a *App) GetCodingWorkbenchFilePreview(projectPath, relativePath string) (C
 		}
 		return CodingWorkbenchFilePreview{}, err
 	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.getCloudAgentWorkbenchFilePreview(instanceID, relativePath)
+	}
 	status := a.GetCodingWorkbenchStatus(projectPath)
 	if status.Kind == "remote" {
 		return a.getRemoteCodingWorkbenchFilePreview(projectPath, relativePath)
@@ -634,6 +640,9 @@ func (a *App) GetCodingWorkbenchEntryProperties(projectPath, relativePath string
 	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
 	if err != nil {
 		return CodingWorkbenchEntryProperties{}, err
+	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.getCloudAgentWorkbenchEntryProperties(instanceID, relativePath)
 	}
 	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
 		return a.getRemoteCodingWorkbenchEntryProperties(projectPath, relativePath)
@@ -687,6 +696,9 @@ func (a *App) OpenCodingWorkbenchFileInVSCode(projectPath, relativePath string) 
 	if err != nil {
 		return false, fmt.Errorf("VS Code is not available: %w", err)
 	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.openCloudAgentWorkbenchFileInVSCode(instanceID, relativePath, codeCLI)
+	}
 	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
 		// Resolve and stat through the live SSH session before downloading. This
 		// applies the explorer's same symlink/root containment check and rejects a
@@ -737,6 +749,9 @@ func (a *App) OpenCodingWorkbenchFileLocally(projectPath, relativePath string) e
 	if a == nil || projectPath == "" {
 		return fmt.Errorf("project path is required")
 	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.openCloudAgentWorkbenchFileLocally(instanceID, relativePath)
+	}
 	if a.codingWorkbenchRejectsLocalOpen(projectPath) {
 		return fmt.Errorf("open locally is not available for remote workspaces")
 	}
@@ -753,6 +768,9 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
 		return fmt.Errorf("project path is required")
+	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.deleteCloudAgentWorkbenchEntry(instanceID, relativePath)
 	}
 	workspaceID := strings.TrimSpace(a.lookupCloudWorkspaceIDForProject(projectPath))
 	root, rootErr := codingWorkbenchBrowserLocalRoot(a, projectPath)
@@ -1734,12 +1752,15 @@ func (a *App) DownloadCodingWorkbenchEntry(projectPath, relativePath string) (st
 	if a == nil || projectPath == "" {
 		return "", fmt.Errorf("project path is required")
 	}
-	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
-		return "", fmt.Errorf("download is not available for remote workspaces")
-	}
 	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
 	if err != nil {
 		return "", err
+	}
+	if instanceID := cloudAgentBrowseInstanceID(projectPath); instanceID != "" {
+		return a.downloadCloudAgentWorkbenchEntry(instanceID, relativePath)
+	}
+	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
+		return "", fmt.Errorf("download is not available for remote workspaces")
 	}
 	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
 	if err != nil {

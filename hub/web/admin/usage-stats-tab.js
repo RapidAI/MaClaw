@@ -647,6 +647,11 @@ if (!window.__usageCreditTooltipDismissBound) {
     if (target && target.closest && (target.closest('#usageCreditPopover') || target.closest('.usage-credit-info'))) return;
     dismissUsageCreditTooltip();
   });
+  document.addEventListener('focusin', function (event) {
+    const target = event.target;
+    if (target && target.closest && (target.closest('#usageCreditPopover') || target.closest('.usage-credit-info'))) return;
+    dismissUsageCreditTooltip();
+  });
   window.addEventListener('resize', dismissUsageCreditTooltip);
   window.addEventListener('scroll', dismissUsageCreditTooltip, true);
 }

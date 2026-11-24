@@ -10,7 +10,7 @@ import { extractErrorMessage } from '../ai/participantAddError';
 import { GlyphCloudDrive, GlyphClose, GlyphRefresh } from './cloudDriveGlyphs';
 import './cloudOverview.css';
 
-const lightFileTheme: CodePreviewTheme = {
+export const cloudFilesLightTheme: CodePreviewTheme = {
     bg: '#ffffff',
     text: '#1f2937',
     textMuted: '#64748b',
@@ -34,7 +34,7 @@ const lightFileTheme: CodePreviewTheme = {
     syntaxOperator: '#334155',
 };
 
-const darkFileTheme: CodePreviewTheme = {
+export const cloudFilesDarkTheme: CodePreviewTheme = {
     bg: '#0f1720',
     text: '#d7dee8',
     textMuted: '#a0abbe',
@@ -61,7 +61,7 @@ const darkFileTheme: CodePreviewTheme = {
 const textForLang = localizeText;
 const FILES_DIALOG_Z_INDEX = 100000;
 
-const portalThemeMode = (themeMode?: 'light' | 'dark') => (
+export const portalThemeMode = (themeMode?: 'light' | 'dark') => (
     themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
 );
 
@@ -104,7 +104,7 @@ export function CloudWorkspaceFilesDialog({
     }, []);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose);
     const title = (workspaceName || workspaceId).trim() || workspaceId;
-    const previewTheme = portalThemeMode(themeMode) === 'dark' ? darkFileTheme : lightFileTheme;
+    const previewTheme = portalThemeMode(themeMode) === 'dark' ? cloudFilesDarkTheme : cloudFilesLightTheme;
 
     useEffect(() => {
         let cancelled = false;

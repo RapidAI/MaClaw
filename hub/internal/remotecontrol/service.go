@@ -48,6 +48,11 @@ const (
 	OpCloudWatchTask   = "cloud_watch_task"
 	OpCloudUnwatchTask = "cloud_unwatch_task"
 	OpCloudFetchFile   = "cloud_fetch_file"
+	OpCloudListDir     = "cloud_list_dir"
+	OpCloudReadFile    = "cloud_read_file"
+	OpCloudStat        = "cloud_stat"
+	OpCloudDeleteFile  = "cloud_delete_file"
+	OpCloudPackDir     = "cloud_pack_dir"
 
 	TargetKindDesktop    = "desktop"
 	TargetKindCloudAgent = "cloud_agent"
@@ -1296,10 +1301,11 @@ func normalizePermission(permission string) (string, error) {
 func permissionAllows(permission, op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpFetchFile, OpWatchTask, OpUnwatchTask,
-		OpCloudListTasks, OpCloudGetTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile:
+		OpCloudListTasks, OpCloudGetTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile,
+		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudPackDir:
 		return permission == PermView || permission == PermOperate
 	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin,
-		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask:
+		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteFile:
 		return permission == PermOperate
 	default:
 		return false
@@ -1309,7 +1315,8 @@ func permissionAllows(permission, op string) bool {
 func allowedOp(op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin,
-		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile:
+		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile,
+		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudDeleteFile, OpCloudPackDir:
 		return true
 	default:
 		return false

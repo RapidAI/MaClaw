@@ -181,12 +181,16 @@ type PatchInput struct {
 
 // CustomLLM is stored on maclawsrv. Hub keeps only the mode, label, and model.
 type CustomLLM struct {
-	URL      string `json:"url"`
-	Key      string `json:"key"`
-	Model    string `json:"model"`
-	Protocol string `json:"protocol"`
-	WireAPI  string `json:"wire_api"`
-	Label    string `json:"label"`
+	URL           string `json:"url"`
+	Key           string `json:"key"`
+	Model         string `json:"model"`
+	Protocol      string `json:"protocol"`
+	WireAPI       string `json:"wire_api"`
+	AgentType       string `json:"agent_type,omitempty"`
+	ContextLength   int    `json:"context_length,omitempty"`
+	TimeoutSec      int    `json:"timeout_sec,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	Label           string `json:"label"`
 }
 
 // GitConnect is forwarded to maclawsrv. The token is not written to Hub.

@@ -38,11 +38,23 @@ export function h264FrameSrc(vncSrc: string, stream?: DesktopStreamSpec): string
     if (!vncSrc) return '';
     const hashAt = vncSrc.indexOf('#');
     const base = hashAt >= 0 ? vncSrc.slice(0, hashAt) : vncSrc;
+    const hash = hashAt >= 0 ? vncSrc.slice(hashAt) : '';
     const queryAt = base.indexOf('?');
     const path = queryAt >= 0 ? base.slice(0, queryAt) : base;
     const query = queryAt >= 0 ? base.slice(queryAt + 1) : '';
     const slash = path.lastIndexOf('/');
-    if (path.slice(slash + 1) !== 'vnc.html') return vncSrc;
+    const page = path.slice(slash + 1);
+    if (page === 'h264.html') {
+        // Already the player: a spec the caller still wants is appended to
+        // the query, before any #hash. A w/fps already present wins (the
+        // page reads the first match).
+        let extra = '';
+        let sep = query ? '&' : '?';
+        if (stream?.w && stream.w > 0) { extra += `${sep}w=${Math.round(stream.w)}`; sep = '&'; }
+        if (stream?.fps && stream.fps > 0) { extra += `${sep}fps=${Math.round(stream.fps)}`; }
+        return base + extra + hash;
+    }
+    if (page !== 'vnc.html') return vncSrc;
     const viewOnly = query.split('&').find(part => part.startsWith('view_only=')) || 'view_only=1';
     const fallback = 'vnc.html' + (query ? '?' + query : '');
     let out = `${path.slice(0, slash + 1)}h264.html?${viewOnly}&vnc=${encodeURIComponent(fallback)}`;

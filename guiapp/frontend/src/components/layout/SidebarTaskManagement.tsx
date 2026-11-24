@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent } from 'react';
 import { Z } from "../ui/zIndex";
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudAgent, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, LoadConfig, MoveTaskConversation, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudAgent, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudAgent, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, StopCloudAgent, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_MACLAW_CONFIG_CHANGED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
@@ -11,8 +11,9 @@ import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
-import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, useCloudAssistantId } from './cloudAgentAssistant';
+import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, requestCloudAgentListRefresh, useCloudAssistantId } from './cloudAgentAssistant';
 import { CloudAgentListRow, TaskPlaceIcon, cloudAgentRecency, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem } from './taskPlace';
+import { CloudAgentFilesDialog } from './CloudAgentFilesDialog';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { GlyphCloudDrive, GlyphClose, GlyphFolder } from './cloudDriveGlyphs';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
@@ -1787,7 +1788,7 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
-type TaskContextMenuIconName = 'rename' | 'new' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove';
+type TaskContextMenuIconName = 'rename' | 'new' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'archive' | 'restore' | 'remove' | 'stop';
 
 type TaskContextMenuItem = {
     label: string;
@@ -1887,6 +1888,9 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
                 <path {...TASK_ICON_PROPS} d="M10.2 10.6v5.2" />
                 <path {...TASK_ICON_PROPS} d="M13.8 10.6v5.2" />
             </>
+        )}
+        {name === 'stop' && (
+            <rect {...TASK_ICON_PROPS} x="6" y="6" width="12" height="12" rx="2" />
         )}
     </svg>
 );
@@ -3662,6 +3666,123 @@ export const SidebarTaskManagement = ({
         remote.closeDetail();
         void openCloudAgent(item, lang);
     };
+    const [cloudContextMenu, setCloudContextMenu] = useState<{ x: number; y: number; item: CloudAgentListItem } | null>(null);
+    const [cloudFilesItem, setCloudFilesItem] = useState<CloudAgentListItem | null>(null);
+    const [cloudRenameId, setCloudRenameId] = useState('');
+    const [cloudRenameValue, setCloudRenameValue] = useState('');
+    const cloudRenameSessionRef = useRef(0);
+    const cloudRenameCancelRef = useRef(false);
+    const runCloudAgentBinding = async (fn: (...args: string[]) => Promise<unknown>, ...args: string[]) => {
+        try {
+            await fn(...args);
+            return true;
+        } catch (error) {
+            setTaskListNotice(extractErrorMessage(error) || textForLang(lang, 'Cloud operation failed', '云端操作失败', '雲端操作失敗'));
+            return false;
+        }
+    };
+    const stopOrResumeCloudAgent = async (item: CloudAgentListItem) => {
+        const op = item.status === 'stopped' ? ResumeCloudAgent : StopCloudAgent;
+        if (await runCloudAgentBinding(op, item.id)) requestCloudAgentListRefresh();
+    };
+    const confirmDeleteCloudAgent = async (item: CloudAgentListItem) => {
+        setCloudContextMenu(null);
+        const name = (item.name || item.id).trim();
+        const confirmed = await showConfirm(
+            textForLang(
+                lang,
+                `Delete cloud task "${name}"? Its workspace files are removed too. This cannot be undone.`,
+                `确定删除云端任务「${name}」？其中的文件也会一并删除，此操作不可撤销。`,
+                `確定刪除雲端任務「${name}」？其中的檔案也會一併刪除，此操作不可撤銷。`,
+            ),
+            textForLang(lang, 'Delete cloud task', '删除云端任务', '刪除雲端任務'),
+            {
+                confirmText: textForLang(lang, 'Delete', '删除', '刪除'),
+                cancelText: textForLang(lang, 'Cancel', '取消', '取消'),
+                confirmVariant: 'danger',
+            },
+        );
+        if (!confirmed || !mountedRef.current) return;
+        if (await runCloudAgentBinding(DeleteCloudAgent, item.id)) {
+            if (openCloudId === item.id) closeCloudAssistant();
+            if (cloudFilesItem?.id === item.id) setCloudFilesItem(null);
+            requestCloudAgentListRefresh();
+        }
+    };
+    const commitCloudRenameBlur = async (
+        event: FocusEvent<HTMLInputElement>,
+        session: number,
+        item: CloudAgentListItem,
+    ) => {
+        if (cloudRenameSessionRef.current !== session) return;
+        if (cloudRenameCancelRef.current) {
+            cloudRenameCancelRef.current = false;
+            setCloudRenameId('');
+            return;
+        }
+        const typed = typeof event.currentTarget?.value === 'string' ? event.currentTarget.value : cloudRenameValue;
+        const trimmed = typed.trim();
+        if (trimmed && trimmed !== (item.name || '').trim()) {
+            if (await runCloudAgentBinding(RenameCloudAgent, item.id, trimmed)) {
+                requestCloudAgentListRefresh();
+            }
+        }
+        if (cloudRenameSessionRef.current !== session) return;
+        setCloudRenameId('');
+    };
+    const buildCloudContextMenuItems = (item: CloudAgentListItem): TaskContextMenuItem[] => {
+        const stopped = item.status === 'stopped';
+        const items: TaskContextMenuItem[] = [
+            {
+                label: textForLang(lang, 'Open', '打开', '打開'),
+                icon: 'browse',
+                testId: 'cloud-agent-context-open',
+                action: () => { setCloudContextMenu(null); openCloudRow(item); },
+            },
+            {
+                label: textForLang(lang, 'Rename', '重命名', '重新命名'),
+                icon: 'rename',
+                testId: 'cloud-agent-context-rename',
+                action: () => {
+                    setCloudContextMenu(null);
+                    cloudRenameCancelRef.current = false;
+                    cloudRenameSessionRef.current += 1;
+                    setCloudRenameValue(item.name || '');
+                    setCloudRenameId(item.id);
+                },
+            },
+            {
+                label: textForLang(lang, 'Browse files', '浏览文件', '瀏覽檔案'),
+                icon: 'cloud',
+                testId: 'cloud-agent-context-files',
+                title: textForLang(lang, 'View the files inside this cloud task', '查看这个云端任务里的文件', '查看這個雲端任務裡的檔案'),
+                action: () => { setCloudContextMenu(null); setCloudFilesItem(item); },
+            },
+            stopped
+                ? {
+                    label: textForLang(lang, 'Resume', '恢复', '恢復'),
+                    icon: 'restore',
+                    testId: 'cloud-agent-context-resume',
+                    title: textForLang(lang, 'Resume this stopped instance', '恢复已停止的实例', '恢復已停止的實例'),
+                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+                }
+                : {
+                    label: textForLang(lang, 'Stop', '停止', '停止'),
+                    icon: 'stop',
+                    testId: 'cloud-agent-context-stop',
+                    title: textForLang(lang, 'Stop the instance. Its files stay browsable.', '停止实例；文件仍可浏览。', '停止實例；檔案仍可瀏覽。'),
+                    action: () => { setCloudContextMenu(null); void stopOrResumeCloudAgent(item); },
+                },
+            {
+                label: textForLang(lang, 'Delete', '删除', '刪除'),
+                icon: 'remove',
+                testId: 'cloud-agent-context-delete',
+                danger: true,
+                action: () => { void confirmDeleteCloudAgent(item); },
+            },
+        ];
+        return items;
+    };
     const renderCloudRow = (item: CloudAgentListItem, order?: number) => (
         <CloudAgentListRow
             key={item.id}
@@ -3671,6 +3792,35 @@ export const SidebarTaskManagement = ({
             order={order}
             timeLabel={taskRecentTimeLabel(item.updatedAt, lang)}
             onOpen={() => openCloudRow(item)}
+            onContextMenu={event => {
+                event.preventDefault();
+                event.stopPropagation();
+                setTaskContextMenu(null);
+                setWorkdirContextMenu(null);
+                // A keyboard-triggered contextmenu reports clientX/Y as 0:
+                // anchor the menu at the row instead of the viewport corner.
+                const rect = event.clientX === 0 && event.clientY === 0
+                    ? event.currentTarget.getBoundingClientRect()
+                    : null;
+                setCloudContextMenu({ x: rect ? rect.left : event.clientX, y: rect ? rect.bottom : event.clientY, item });
+            }}
+            renaming={cloudRenameId === item.id}
+            renameValue={cloudRenameValue}
+            onRenameChange={setCloudRenameValue}
+            onRenameBlur={event => { void commitCloudRenameBlur(event, cloudRenameSessionRef.current, item); }}
+            onRenameKeyDown={event => {
+                event.stopPropagation();
+                if (event.key === 'Enter') {
+                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    event.currentTarget.blur();
+                }
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cloudRenameCancelRef.current = true;
+                    cloudRenameSessionRef.current += 1;
+                    setCloudRenameId('');
+                }
+            }}
         />
     );
     const taskDragKeyRef = useRef<string | null>(null);
@@ -6536,7 +6686,7 @@ export const SidebarTaskManagement = ({
             ) : null;
             const recentOrder = folder.kind === 'recent' && entry.kind !== 'folder' ? recentView.order[orderKey] : undefined;
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path} data-task-order-key={orderKey} style={recentOrder == null ? undefined : { order: recentOrder }}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, storedName: String(proj.name || '').trim(), listAnchor: taskListRenameAnchor(folder.kind, orderKey), archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy && !remote.selected && folder.kind !== 'recent'} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current || folder.kind === 'recent') { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (folder.kind === 'recent' || !canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; if ((e.target as HTMLElement | null)?.closest('input, textarea, select')) return; e.preventDefault(); if (remote.selected) { void handleTaskDoubleClick(proj); return; } if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setWorkdirContextMenu(null); setCloudContextMenu(null); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir, executionDir: proj.execution_dir, workflowTemplateId: String(proj.active_workflow?.type || '').trim(), orderKey, storedName: String(proj.name || '').trim(), listAnchor: taskListRenameAnchor(folder.kind, orderKey), archived: remote.selected ? !!proj.archived : archivedTaskKeys.has(orderKey) }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, remote.selected ? textForLang(lang, 'Click to open.', '单击打开', '單擊開啟') : textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
                     {remote.selected || folder.kind === 'recent' ? null : <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>}
                     <span className="stsm-row-body">
@@ -6689,6 +6839,7 @@ export const SidebarTaskManagement = ({
                     if (remoteRef.current.selected && !remoteRef.current.operate) return;
                     workdirContextClickRef.current = true;
                     setTaskContextMenu(null);
+                    setCloudContextMenu(null);
                     setWorkdirContextMenu({
                         x: event.clientX,
                         y: event.clientY,
@@ -7107,6 +7258,15 @@ export const SidebarTaskManagement = ({
                 workspaceId={cloudFilesWorkspace.id}
                 workspaceName={cloudFilesWorkspace.name}
                 onClose={() => setCloudFilesWorkspace(null)}
+            />
+        )}
+
+        {cloudFilesItem && (
+            <CloudAgentFilesDialog
+                lang={lang}
+                themeMode={themeMode}
+                item={cloudFilesItem}
+                onClose={() => setCloudFilesItem(null)}
             />
         )}
 
@@ -7607,6 +7767,65 @@ export const SidebarTaskManagement = ({
                             // turn, and an unchanged name looks like a dead click.
                             event.preventDefault();
                         }}
+                        onClick={() => {
+                            if (item.disabled) return;
+                            void item.action();
+                        }}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '7px 12px',
+                            cursor: item.disabled ? 'not-allowed' : 'pointer',
+                            fontSize: '0.78rem',
+                            color: item.disabled
+                                ? 'var(--theme-text-muted)'
+                                : item.danger
+                                    ? 'var(--theme-danger, #dc1f25)'
+                                    : 'var(--theme-text-primary)',
+                            opacity: item.disabled ? 0.55 : 1,
+                        }}
+                        onMouseEnter={e => {
+                            if (item.disabled) return;
+                            e.currentTarget.style.background = item.danger
+                                ? 'color-mix(in srgb, var(--theme-danger, #dc1f25) 10%, transparent)'
+                                : 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)';
+                        }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                        <span className="stsm-menu-icon" data-danger={item.danger ? 'true' : undefined} aria-hidden="true"><TaskContextMenuIcon name={item.icon} /></span>
+                        <span>{item.label}</span>
+                    </div>
+                ))}
+            </div>
+            </>;
+        })()}
+
+        {cloudContextMenu && (() => {
+            const menu = cloudContextMenu;
+            const items = buildCloudContextMenuItems(menu.item);
+            if (items.length === 0) return null;
+            return <>
+            <div
+                className="stsm-menu-scrim"
+                onClick={() => setCloudContextMenu(null)}
+                onContextMenu={event => { event.preventDefault(); setCloudContextMenu(null); }}
+            />
+            <div
+                data-testid="cloud-agent-context-menu"
+                role="menu"
+                onContextMenu={event => event.preventDefault()}
+                style={{ position: 'fixed', ...contextMenuPosition(menu.x, menu.y, items.length), zIndex: Z.overlay, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+            >
+                {items.map(item => (
+                    <div
+                        key={item.testId || item.label}
+                        data-testid={item.testId}
+                        data-disabled={item.disabled ? 'true' : undefined}
+                        role="menuitem"
+                        aria-disabled={item.disabled || undefined}
+                        title={item.title}
+                        onMouseDown={event => event.preventDefault()}
                         onClick={() => {
                             if (item.disabled) return;
                             void item.action();

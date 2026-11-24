@@ -41,7 +41,7 @@ const baseInstances = [
 
 const providersPayload = {
     providers: [
-        { id: 'prov-1', name: 'DeepSeek', url: 'https://api.deepseek.com', key: 'sk-test', model: 'deepseek-chat', models: ['deepseek-chat', 'deepseek-v3'], is_hub_service: false },
+        { id: 'prov-1', name: 'DeepSeek', url: 'https://api.deepseek.com', key: 'sk-test', model: 'deepseek-chat', models: ['deepseek-chat', 'deepseek-v3'], is_hub_service: false, protocol: 'openai', agent_type: 'openclaw', context_length: 128000 },
         { id: 'prov-hub', name: 'Hub 内置', url: 'https://hub', key: 'k', model: 'm', is_hub_service: true },
     ],
     current: 'DeepSeek',
@@ -132,6 +132,8 @@ describe('CloudAgentSettingsPanel', () => {
         await waitFor(() => expect(mocks.setCloudAgentLLM).toHaveBeenCalledTimes(2));
         expect(mocks.setCloudAgentLLM).toHaveBeenCalledWith('a1', {
             url: 'https://api.deepseek.com', key: 'sk-test', model: 'deepseek-chat', label: 'DeepSeek',
+            protocol: 'openai', wire_api: '', agent_type: 'openclaw', context_length: 128000,
+            timeout_sec: 0, max_output_tokens: 0,
         });
         expect(mocks.resetCloudAgentLLM).not.toHaveBeenCalled();
         // After the refresh, instances reflect the applied model in their chips.

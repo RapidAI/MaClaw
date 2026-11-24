@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func openRuntime(t *testing.T) *Runtime {
@@ -194,6 +196,112 @@ func TestCustomLLMRejectsHubURL(t *testing.T) {
 	}
 	if !strings.Contains(string(saved), "custom-secret") {
 		t.Fatalf("llm.json missing secret: %s", saved)
+	}
+}
+
+func TestCustomLLMCarriesWireFieldsToConfig(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(spec.ID, CustomLLM{
+		URL:           "https://open.bigmodel.cn/api/anthropic",
+		Key:           "zhipu-key",
+		Model:         "glm-5.3-flash",
+		Label:         "智谱编程",
+		Protocol:      "anthropic",
+		AgentType:     "claude code 2.0",
+		ContextLength: 400000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := rt.maclawCfg(inst)
+	if cfg.Protocol != "anthropic" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	if cfg.AgentType != "claude code 2.0" || cfg.ContextLength != 400000 {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	if cfg.URL != "https://open.bigmodel.cn/api/anthropic" || cfg.Model != "glm-5.3-flash" {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestCustomLLMLegacyFileInfersAnthropicProtocol(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	// llm.json written before the protocol field existed carries none; an
+	// Anthropic-shaped endpoint must still resolve to the Messages wire.
+	if err := rt.SaveLLM(spec.ID, CustomLLM{URL: "https://open.bigmodel.cn/api/anthropic", Key: "k", Model: "glm-5.3-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Protocol != "anthropic" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	other := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(other.ID, CustomLLM{URL: "https://llm.example/v1", Key: "k", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err = rt.instance(other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Protocol != "openai" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	// Desktop providers can carry the dialect on wire_api alone; llm.json
+	// saved from one must resolve anthropic the same way agentservice does.
+	wire := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(wire.ID, CustomLLM{URL: "https://llm.example/anthropic", Key: "k", Model: "m", WireAPI: "anthropic"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err = rt.instance(wire.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Protocol != "anthropic" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	google := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(google.ID, CustomLLM{URL: "https://generativelanguage.googleapis.com/v1beta", Key: "k", Model: "gemini-3.8-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err = rt.instance(google.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Protocol != "google" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	openaiCompat := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(openaiCompat.ID, CustomLLM{URL: "https://generativelanguage.googleapis.com/v1beta/openai", Key: "k", Model: "gemini-3.8-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err = rt.instance(openaiCompat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Protocol != "openai" {
+		t.Fatalf("protocol = %q", cfg.Protocol)
+	}
+	// A llm.json pushed before a Zhipu default-model rename resolves the
+	// preset model the same way the desktop migration does.
+	legacy := putSession(t, rt, "http://127.0.0.1:9")
+	if err := rt.SaveLLM(legacy.ID, CustomLLM{URL: "https://open.bigmodel.cn/api/anthropic", Key: "k", Model: "glm-5.2", Label: "智谱编程"}); err != nil {
+		t.Fatal(err)
+	}
+	inst, err = rt.instance(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := rt.maclawCfg(inst); cfg.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("model = %q", cfg.Model)
 	}
 }
 

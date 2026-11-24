@@ -1413,6 +1413,137 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-chat').inert).toBe(false);
     });
 
+    it('scales the watch stream to the stage and caps it at 10fps, while a live frame keeps the server rate', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => {
+            const src = screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '';
+            expect(src).toContain('h264.html');
+            expect(src).toMatch(/[?&]w=\d+/);
+            expect(src).toContain('fps=10');
+        });
+    });
+
+    it('leaves fps to the server on a live frame', async () => {
+        localStorage.removeItem('maclaw.desktop.viewer');
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: true,
+            input_granted: true,
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => {
+            const frame = screen.getByTestId('desktop-bot-handoff');
+            expect(frame.getAttribute('data-input')).toBe('live');
+            const src = frame.getAttribute('src') || '';
+            expect(src).toContain('view_only=0');
+            expect(src).toMatch(/[?&]w=\d+/);
+            expect(src).not.toContain('fps=');
+        });
+    });
+
+    it('reloads the stream when the stage resizes to fullscreen and back', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: false,
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const embedded = await screen.findByTestId('desktop-bot-handoff');
+        fireEvent.click(screen.getByTestId('desktop-bot-screen-expand'));
+        const full = screen.getByTestId('desktop-bot-handoff');
+        // A remount resamples ?w= for the fullscreen stage — the embedded
+        // feed upscaled to the window would stay blurry for the session.
+        expect(full).not.toBe(embedded);
+        fireEvent.click(screen.getByTestId('desktop-bot-screen-restore'));
+        expect(screen.getByTestId('desktop-bot-handoff')).not.toBe(full);
+    });
+
+    it('unmounts a watch frame after a minute hidden and reconnects on return, but never drops a live frame', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        const hiddenProp = Object.getOwnPropertyDescriptor(document, 'hidden');
+        const setHidden = (value: boolean) => {
+            Object.defineProperty(document, 'visibilityState', { configurable: true, value: value ? 'hidden' : 'visible' });
+            Object.defineProperty(document, 'hidden', { configurable: true, value });
+        };
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+
+            setHidden(true);
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            // A quick task switch keeps the mounted frame.
+            await act(async () => { await vi.advanceTimersByTimeAsync(59_000); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+            // Past the dwell the frame unmounts; coming back reconnects.
+            await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+            setHidden(false);
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+        } finally {
+            setHidden(false);
+            vi.useRealTimers();
+            if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+            if (hiddenProp) Object.defineProperty(document, 'hidden', hiddenProp);
+        }
+    });
+
+    it('keeps a live frame mounted while hidden because its connection holds the remote takeover', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: true,
+            input_granted: true,
+        });
+        const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        const hiddenProp = Object.getOwnPropertyDescriptor(document, 'hidden');
+        const setHidden = (value: boolean) => {
+            Object.defineProperty(document, 'visibilityState', { configurable: true, value: value ? 'hidden' : 'visible' });
+            Object.defineProperty(document, 'hidden', { configurable: true, value });
+        };
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+            const frame = screen.getByTestId('desktop-bot-handoff');
+            expect(frame.getAttribute('data-input')).toBe('live');
+
+            setHidden(true);
+            await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+            await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+            // Unmounting would drop the WebSocket that heartbeats the gate's
+            // viewer_takeover file — the bot would resume mid-takeover.
+            expect(screen.getByTestId('desktop-bot-handoff')).toBe(frame);
+        } finally {
+            setHidden(false);
+            vi.useRealTimers();
+            if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+            if (hiddenProp) Object.defineProperty(document, 'hidden', hiddenProp);
+        }
+    });
+
     it('keeps a watched desktop alive by polling the desktop watch', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         // The hold keeps this desktop up for the watcher, so every poll answers

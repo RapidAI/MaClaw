@@ -6815,6 +6815,10 @@ export function ProbeCloudSrvSSH(arg1) {
   return window['go']['main']['App']['ProbeCloudSrvSSH'](arg1);
 }
 
+export function DeleteCloudAgent(arg1) {
+  return window['go']['main']['App']['DeleteCloudAgent'](arg1);
+}
+
 export function ListCloudAgents() {
   return window['go']['main']['App']['ListCloudAgents']();
 }
@@ -6825,4 +6829,16 @@ export function SetCloudAgentLLM(arg1, arg2) {
 
 export function ResetCloudAgentLLM(arg1) {
   return window['go']['main']['App']['ResetCloudAgentLLM'](arg1);
+}
+
+export function RenameCloudAgent(arg1, arg2) {
+  return window['go']['main']['App']['RenameCloudAgent'](arg1, arg2);
+}
+
+export function StopCloudAgent(arg1) {
+  return window['go']['main']['App']['StopCloudAgent'](arg1);
+}
+
+export function ResumeCloudAgent(arg1) {
+  return window['go']['main']['App']['ResumeCloudAgent'](arg1);
 }

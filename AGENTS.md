@@ -526,16 +526,39 @@
   tree totalled 98→975MB in ~90s of mouse activity. The growing child was
   the desktop-stage iframe (`h264.html`/noVNC), a cross-origin OOPIF with
   its own renderer that `performance.memory`/`dom_nodes` never see — the
-  frontend sampler covers the top frame only. Fix: the stage now encodes
-  the stream at its painted size — `desktopViewerSrc` takes a
-  `DesktopStreamSpec{w,fps}` that lands on `h264.html?w=&fps=` (the page
-  forwards both to `/h264`; `w` scales encoder output server-side, `fps`
-  can only be lowered). `DesktopBotWorkspace.desktopFrameSource` memoizes
-  the src (ref-read of `stageRef.current.clientWidth×dpr`, clamped
-  640–1920, watch→fps=10, mobile precedent `w=960&fps=10`) so expand does
-  not reload the iframe; watch↔live and viewer flips remount anyway via
-  the existing `key`. Bot container native is `MACLAW_DESKTOP_GEOMETRY`
-  (default 1440x900, max 3840x2160).
+  frontend sampler covers the top frame only. Fixes:
+  - `desktopViewerSrc` takes a `DesktopStreamSpec{w,fps}` that lands on
+    `h264.html?w=&fps=` (the page forwards both to `/h264`; `w` scales
+    encoder output server-side, `fps` can only be lowered). A URL that is
+    already `h264.html` gets the spec appended before any `#hash` (a
+    `w`/`fps` already in the query wins — the page reads the first match).
+  - `DesktopBotWorkspace.desktopFrameSource` memoizes the iframe src and
+    samples size ONCE per mount (deps = the iframe's remount key triggers
+    — url, watch↔live, viewer, is-fullscreen — so expand/collapse and
+    takeover reload at the new stage size but a list-divider drag never
+    reloads the stream). Embedded stage lives in the ≤400px
+    `.desktop-bot-panel` (32px padding + 8%-a-side gutter, 4% <960px
+    viewport) ≈ 310 css px; is-fullscreen is fixed inset:0 → innerWidth.
+    Physical px = layout × devicePixelRatio × uiZoom
+    (`rect.width/clientWidth` of `workspaceRef` folds the transform in);
+    w clamped 640–1920, watch→fps=10, interactive keeps server default.
+  - `streamHidden` unmounts the iframe after 60s of `document.hidden`
+    (hidden OOPIF keeps ws+decoder churning); quick task switches keep
+    it, restore remounts and reconnects. Interactive frames are exempt:
+    a live /h264 connection heartbeats the gate's `viewer_takeover` file
+    (5s lapse → `takeover_state` stops reporting "人类接管" → bot
+    resumes), so unmounting would silently release the hold mid-takeover.
+    `streamHidden` initializes from `document.hidden` at mount, so a
+    hidden app start never connects in the first place.
+  Bot container native is `MACLAW_DESKTOP_GEOMETRY` (default 1440x900,
+  max 3840x2160); `view_width` outside [320, native) is ignored.
+  `perfTakeSample` now also dumps the per-PID WebView breakdown without
+  =verbose when the tree grows >128MB in one 30s window, so the next
+  OOPIF balloon names its PID in the default log instead of needing a
+  verbose rerun. The sample line carries `self_mem_mb` too, and the same
+  >128MB window growth on the Go side logs a `self-growth` line that
+  points at MACLAW_HEAP_PROFILE — "which side of the webview boundary
+  ballooned" is answered by the default log either way.
 
 ## MCP host LAN access (guiapp)
 

@@ -58,6 +58,7 @@ func openAIUpstreamErrorText(payload []byte) (string, string) {
 	var probe struct {
 		Code    json.RawMessage `json:"code"`
 		Message string          `json:"message"`
+		Msg     string          `json:"msg"`
 		Choices json.RawMessage `json:"choices"`
 		Error   json.RawMessage `json:"error"`
 	}
@@ -74,10 +75,17 @@ func openAIUpstreamErrorText(payload []byte) (string, string) {
 		return msg, code
 	}
 	// Qoder rejections that never became an error frame: {"code","message"}
-	// with no choices. A completion chunk does not use that shape.
+	// with no choices. Gateways like Zhipu answer a wrong-endpoint call the
+	// same way under "msg": {"code":1000,"msg":"…","success":false} with
+	// HTTP 200 — surface it instead of parsing zero choices. A completion
+	// chunk uses neither shape.
 	code := jsonCodeText(probe.Code)
-	if code != "" && strings.TrimSpace(probe.Message) != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
-		return strings.TrimSpace(probe.Message) + " (" + code + ")", code
+	text := strings.TrimSpace(probe.Message)
+	if text == "" {
+		text = strings.TrimSpace(probe.Msg)
+	}
+	if code != "" && text != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
+		return text + " (" + code + ")", code
 	}
 	return "", ""
 }
@@ -1130,7 +1138,6 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	}
 	return response, nil
 }
-
 
 // noteSkippedSSELine records one dropped SSE event. Past the cap the
 // scan stops: further skipping would hide a turn that is mostly missing.

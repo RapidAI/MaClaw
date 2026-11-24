@@ -55,7 +55,16 @@ var (
 	perfSampleMu       sync.Mutex
 	perfLastSampleAt   time.Time
 	perfLastWebviewCPU float64
+	perfLastWebviewMem uint64
+	perfLastSelfMem    uint64
 )
+
+// perfGrowthDetailMB triggers a per-PID dump without =verbose when the tree
+// balloons inside one window. The flat aggregate line says SOMETHING grew —
+// the 11-24 OOM was a cross-origin OOPIF renderer climbing ~290MB per 30s
+// window — but cannot say which of the ~8 children did it, and the frontend
+// sampler's performance.memory only sees the top frame.
+const perfGrowthDetailMB = 128
 
 // startPerfSampler begins periodic sampling of this process and its WebView2
 // children. It is safe to call once at startup; repeated calls are no-ops.
@@ -84,7 +93,7 @@ func perfSampleLoop() {
 
 // perfTakeSample records one sample and logs the delta since the previous one.
 func perfTakeSample(baseline bool) {
-	rows, selfCPU, err := perfSampleProcessTree()
+	rows, selfCPU, selfMem, err := perfSampleProcessTree()
 	if err != nil {
 		if perfProbeVerboseEnabled() {
 			log.Printf("[perf] sample_error=%v", err)
@@ -103,13 +112,17 @@ func perfTakeSample(baseline bool) {
 	perfSampleMu.Lock()
 	prevAt := perfLastSampleAt
 	prevWebviewCPU := perfLastWebviewCPU
+	prevWebviewMem := perfLastWebviewMem
+	prevSelfMem := perfLastSelfMem
 	perfLastSampleAt = now
 	perfLastWebviewCPU = webviewCPU
+	perfLastWebviewMem = webviewMem
+	perfLastSelfMem = selfMem
 	perfSampleMu.Unlock()
 
 	if baseline || prevAt.IsZero() {
-		log.Printf("[perf] sample baseline webview_procs=%d webview_cpu_s=%.2f webview_mem_mb=%d self_cpu_s=%.2f",
-			len(rows), webviewCPU, webviewMem/1048576, selfCPU)
+		log.Printf("[perf] sample baseline webview_procs=%d webview_cpu_s=%.2f webview_mem_mb=%d self_cpu_s=%.2f self_mem_mb=%d",
+			len(rows), webviewCPU, webviewMem/1048576, selfCPU, selfMem/1048576)
 		return
 	}
 
@@ -120,11 +133,22 @@ func perfTakeSample(baseline bool) {
 	// CPU percent is normalized to one core, matching how Task Manager's
 	// "CPU" column reads for a single process.
 	webviewPct := (webviewCPU - prevWebviewCPU) / wall * 100
-	log.Printf("[perf] sample webview_procs=%d webview_cpu_pct=%.1f webview_mem_mb=%d self_cpu_s=%.2f window_s=%.0f",
-		len(rows), webviewPct, webviewMem/1048576, selfCPU, wall)
+	log.Printf("[perf] sample webview_procs=%d webview_cpu_pct=%.1f webview_mem_mb=%d self_cpu_s=%.2f self_mem_mb=%d window_s=%.0f",
+		len(rows), webviewPct, webviewMem/1048576, selfCPU, selfMem/1048576, wall)
 
 	if perfProbeVerboseEnabled() {
 		logPerfSampleDetail(rows)
+	} else if webviewMem > prevWebviewMem && webviewMem-prevWebviewMem > perfGrowthDetailMB*1048576 {
+		log.Printf("[perf] sample growth +%d MB in %.0fs; per-process detail:",
+			(webviewMem-prevWebviewMem)/1048576, wall)
+		logPerfSampleDetail(rows)
+	}
+	// A Go-side balloon gets its own line — no per-PID breakdown exists for
+	// the host, but naming which side of the boundary grew is what the
+	// aggregate webview figure cannot say.
+	if selfMem > prevSelfMem && selfMem-prevSelfMem > perfGrowthDetailMB*1048576 {
+		log.Printf("[perf] sample self-growth +%d MB in %.0fs (self_mem_mb=%d); MACLAW_HEAP_PROFILE=1 dumps the heap",
+			(selfMem-prevSelfMem)/1048576, wall, selfMem/1048576)
 	}
 }
 
@@ -137,11 +161,11 @@ func logPerfSampleDetail(rows []perfProcSample) {
 }
 
 // perfSampleProcessTree returns WebView2 child samples plus this process's own
-// cumulative CPU seconds.
-func perfSampleProcessTree() ([]perfProcSample, float64, error) {
+// cumulative CPU seconds and working set.
+func perfSampleProcessTree() ([]perfProcSample, float64, uint64, error) {
 	snapshot, err := perfParentMap()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	parents := snapshot.parents
 	selfPID := uint32(windows.GetCurrentProcessId())
@@ -149,6 +173,10 @@ func perfSampleProcessTree() ([]perfProcSample, float64, error) {
 	if err != nil {
 		// Not fatal: the WebView figure is the one being investigated.
 		selfCPU = 0
+	}
+	selfMem, err := perfProcessWorkingSet(selfPID)
+	if err != nil {
+		selfMem = 0
 	}
 
 	// Collect descendants iteratively so a deep tree (WebView2 nests utility
@@ -177,7 +205,7 @@ func perfSampleProcessTree() ([]perfProcSample, float64, error) {
 		}
 		queue = append(queue, children[pid]...)
 	}
-	return rows, selfCPU, nil
+	return rows, selfCPU, selfMem, nil
 }
 
 // perfProcSnapshot is one Toolhelp snapshot: PID to parent PID, plus the image

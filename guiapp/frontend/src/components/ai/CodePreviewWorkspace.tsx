@@ -109,6 +109,26 @@ const workbenchNoticeExact: Record<string, [string, string, string]> = {
     "cloud workspace is read-only": ["The cloud workspace is read-only.", "云端工作区当前为只读。", "雲端工作區目前為唯讀。"],
     "entry cannot be deleted": ["This item cannot be deleted.", "无法删除该项。", "無法刪除該項目。"],
     "delete is not available for remote workspaces": ["Delete is not available for remote workspaces.", "远程工作区不支持删除。", "遠端工作區不支援刪除。"],
+    // Cloud-agent browser ops: the srv answers in Chinese; localize the raw
+    // strings so an English UI does not leak them.
+    "没有找到这个目录": ["The folder was not found.", "没有找到这个文件夹。", "找不到這個資料夾。"],
+    "没有找到这个路径": ["The path was not found.", "没有找到这个路径。", "找不到這個路徑。"],
+    "这个文件已经不在了": ["The file no longer exists.", "这个文件已经不在了。", "這個檔案已不存在。"],
+    "这个文件暂时读取失败": ["The file could not be read right now. Try again.", "这个文件暂时读取失败，请重试。", "這個檔案暫時無法讀取，請重試。"],
+    "这是一个目录，不能按文件读取": ["This path is a folder and cannot be read as a file.", "这是一个文件夹，不能按文件读取。", "這是一個資料夾，無法按檔案讀取。"],
+    "不能删除整个工作区": ["The whole workspace cannot be deleted.", "不能删除整个工作区。", "不能刪除整個工作區。"],
+    "目录太大，暂不支持打包下载": ["The folder is too large to download as an archive.", "文件夹太大，暂不支持打包下载。", "資料夾太大，暫不支援打包下載。"],
+    "还没有检出代码库": ["No repository has been checked out yet.", "还没有检出代码库。", "尚未檢出程式碼庫。"],
+    "路径超出工作区": ["The path is outside the workspace.", "路径超出工作区。", "路徑超出工作區。"],
+    "缺少文件路径": ["A file path is required.", "缺少文件路径。", "缺少檔案路徑。"],
+    "该路径不允许删除": ["This item cannot be deleted.", "该路径不允许删除。", "該路徑不允許刪除。"],
+    "云端目录结果无法读取": ["The cloud directory response could not be read.", "云端目录结果无法读取。", "雲端目錄結果無法讀取。"],
+    "云端文件结果无法读取": ["The cloud file response could not be read.", "云端文件结果无法读取。", "雲端檔案結果無法讀取。"],
+    "云端属性结果无法读取": ["The cloud properties response could not be read.", "云端属性结果无法读取。", "雲端屬性結果無法讀取。"],
+    "没有找到这个云端实例": ["The cloud instance was not found.", "没有找到这个云端实例。", "找不到這個雲端實例。"],
+    "云端运行时不可用": ["The cloud runtime is unavailable.", "云端运行时不可用。", "雲端執行階段不可用。"],
+    "暂时无法连接云端": ["Could not reach the cloud right now. Try again.", "暂时无法连接云端，请重试。", "暫時無法連接雲端，請重試。"],
+    "远控结果太大": ["The remote-control result is too large.", "远控结果太大。", "遠控結果太大。"],
 };
 
 const workbenchNoticePrefixes: Array<{ prefix: string; en: string; zhHans: string; zhHant: string }> = [
@@ -190,6 +210,11 @@ function localizeWorkbenchBrowserNotice(raw: string, lang: string, cloudMode: bo
     if (vsCodeDownloadLimit) {
         const n = vsCodeDownloadLimit[1];
         return label(lang, `The remote file exceeds the ${n} MB VS Code download limit.`, `远程文件超过 ${n} MB 的 VS Code 下载上限。`, `遠端檔案超過 ${n} MB 的 VS Code 下載上限。`);
+    }
+    const cloudFileLimit = text.match(/文件太大（(\d+) MB 上限）/);
+    if (cloudFileLimit) {
+        const n = cloudFileLimit[1];
+        return label(lang, `The file is too large (limit ${n} MB).`, `文件太大（${n} MB 上限）。`, `檔案太大（${n} MB 上限）。`);
     }
     return text;
 }

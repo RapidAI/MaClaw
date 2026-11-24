@@ -34,7 +34,7 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token", RemoteMachineToken: "machine-token", RemoteMachineID: "machine-test",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
-			{ID: "prov-1", Name: "DeepSeek", URL: "https://api.deepseek.com", Key: "sk-test", Model: "deepseek-chat"},
+			{ID: "prov-1", Name: "DeepSeek", URL: "https://api.deepseek.com", Key: "sk-test", Model: "deepseek-chat", Protocol: "openai", AgentType: "openclaw", ContextLength: 128000, TimeoutSec: 300, MaxOutputTokens: 8192},
 		},
 		CloudAgentLLMProvider: "prov-1",
 		CloudAgentLLMModel:    "deepseek-v3",
@@ -60,6 +60,24 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	}
 	if got := llmBody["label"]; got != "DeepSeek" {
 		t.Fatalf("llm label=%v", got)
+	}
+	// The wire fields must ride along or the srv runs every provider as
+	// openai chat/completions — an anthropic endpoint then answers a shape
+	// the loop reports as "LLM returned no choices".
+	if got := llmBody["protocol"]; got != "openai" {
+		t.Fatalf("llm protocol=%v", got)
+	}
+	if got := llmBody["agent_type"]; got != "openclaw" {
+		t.Fatalf("llm agent_type=%v", got)
+	}
+	if got := llmBody["context_length"]; got != float64(128000) {
+		t.Fatalf("llm context_length=%v", got)
+	}
+	if got := llmBody["timeout_sec"]; got != float64(300) {
+		t.Fatalf("llm timeout_sec=%v", got)
+	}
+	if got := llmBody["max_output_tokens"]; got != float64(8192) {
+		t.Fatalf("llm max_output_tokens=%v", got)
 	}
 	if row.LLMMode != "custom" || row.LLMModel != "deepseek-v3" {
 		t.Fatalf("row mode/model=%q/%q, want custom/deepseek-v3", row.LLMMode, row.LLMModel)

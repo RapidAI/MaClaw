@@ -204,7 +204,7 @@ function cagEnsureStyle() {
   var style = document.createElement('style');
   style.id = 'cloud-agent-access-style';
   style.textContent = ''
-    + '#tab-cloud-agents{display:grid;gap:14px;align-content:start}'
+    + '#tab-cloud-agents.active{display:grid;gap:14px;align-content:start}'
     + '#tab-cloud-agents .cag-card{padding:16px 18px}'
     + '#tab-cloud-agents .cag-card-head{margin-bottom:14px}'
     + '#tab-cloud-agents .cag-card-head .item-meta{max-width:640px}'
@@ -902,6 +902,7 @@ function cagRevokeGrant(scope, target) {
 function cagRenderSrvBindings(items) {
   var list = document.getElementById('cloudAgentSrvList');
   if (!list) return;
+  cagEnsureStyle();
   var t = cloudAgentQuotaText();
   if (!items || !items.length) {
     list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.srvEmpty) + '</div>';
@@ -1095,7 +1096,7 @@ async function saveCloudAgentQuota() {
   var t = cloudAgentQuotaText();
   var instances = cloudAgentQuotaInt('cloudAgentQuotaInstances');
   var turns = cloudAgentQuotaInt('cloudAgentQuotaTurns');
-  if (instances == null || turns == null || instances === undefined || turns === undefined) {
+  if (instances == null || turns == null) {
     if (typeof showToast === 'function') showToast(t.bad, 'error');
     return;
   }
