@@ -350,13 +350,22 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 			}
 			if admission.Queued || (admission.Accepted && !admission.Settled) || (admission.Kind != "" && admission.Kind != "new") {
 				status := http.StatusOK
-				if admission.Queued || (admission.Accepted && !admission.Settled && strings.TrimSpace(admission.Reply.Text) == "") {
+				visible := strings.TrimSpace(admission.Reply.SendToUser)
+				if visible == "" {
+					visible = strings.TrimSpace(admission.Reply.Text)
+				}
+				runID := strings.TrimSpace(admission.RunID)
+				// accepted=false used to fall through to status running. A
+				// settled chat, or any turn that never received a run id, is
+				// not a running task. Only a named, unsettled run is.
+				runLive := runID != "" && !admission.Settled
+				if admission.Queued || (runLive && visible == "") {
 					status = http.StatusAccepted
 				}
 				body := map[string]any{
 					"accepted":          admission.Accepted,
-					"run_id":            admission.RunID,
-					"status":            "running",
+					"run_id":            runID,
+					"status":            "settled",
 					"client_message_id": admission.ClientMessageID,
 					"session":           admission.Session,
 					"routed_via":        admission.RoutedVia,
@@ -367,11 +376,15 @@ func PostBotMessageHandler(svc *botmgmt.Service, identity botAuthenticator) http
 					"held":              admission.Held,
 					"position":          admission.Position,
 					"text":              admission.Reply.Text,
+					"send_to_user":      visible,
 					"instruction":       admission.Instruction,
 					"schedule":          admission.Schedule,
 				}
-				if admission.Queued {
+				switch {
+				case admission.Queued:
 					body["status"] = "queued"
+				case runLive:
+					body["status"] = "running"
 				}
 				writeJSON(w, status, body)
 				return

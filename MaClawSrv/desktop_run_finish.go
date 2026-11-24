@@ -189,7 +189,15 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 			fin.Results = append(fin.Results, plain)
 		}
 	}
-	if fin.Status == "failure" {
+	if fin.Status == "failure" && outcome == agentservice.TaskOutcomePartial && !desktopPartialNeedsUser(why, kind, ask) {
+		fin.Next = "none"
+		fin.Blocker = ""
+		fin.Unblock = nil
+		if gap := desktopPartialNotice(why); gap != "" && !strings.Contains(strings.Join(fin.Results, "\n"), gap) {
+			fin.Results = append(fin.Results, gap)
+		}
+	}
+	if fin.Status == "failure" && fin.Next != "none" {
 		fin.Blocker = kind
 		if line := desktopUnblockFor(kind, self, ask); line != "" {
 			fin.Unblock = []string{line}
@@ -212,8 +220,18 @@ func desktopComposeRunFinish(runID string, msg agentservice.Message, outcome, wh
 	if fin.Status == "success" {
 		fin.Next, fin.Plan = desktopSuccessImprovement(runID)
 	}
-	_ = why
 	return fin, true
+}
+
+// desktopPartialNeedsUser is true only when the gap itself asks the person
+// to act, or the turn already has a question only that person can answer.
+// A missing file or an unknown cause is not that question.
+func desktopPartialNeedsUser(why, kind, ask string) bool {
+	if strings.TrimSpace(ask) != "" && (kind == "login" || kind == "missing_info") {
+		return true
+	}
+	text := strings.ToLower(why + " " + kind)
+	return strings.Contains(text, "ask_user") || strings.Contains(text, "login") || strings.Contains(text, "需要你") || strings.Contains(text, "请你")
 }
 
 func desktopRunMeasuredResults(runID string) []string {
@@ -272,6 +290,13 @@ func desktopRunFinishSentence(f desktopRunFinish) string {
 				s += "：" + f.Plan
 			}
 			s += "。"
+		}
+		return s
+	}
+	if f.Next == "none" && f.Blocker == "" {
+		s := "没有全部做成。"
+		if len(f.Results) > 0 {
+			s += "\n" + strings.Join(f.Results, "\n")
 		}
 		return s
 	}

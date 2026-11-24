@@ -115,7 +115,7 @@ kind:
 - stop: the message asks to stop or abandon a running task.
 - pause: the message asks to hold a running task and resume it later, not to abandon it.
 - continue: the message only asks to keep going on a running task and adds no new instruction.
-- reply: small talk, thanks, or an identity, with no desktop work.
+- reply: small talk, thanks, or an identity, carrying no work order at all. A short command is still work, not small talk — a two-word order such as 「测试接口」 is new, never reply.
 - ask: a fact only this person knows is missing, so the work cannot start.
 - schedule: they want work at a later time or on a repeat, the work should keep happening, or they want that timer stopped. When it should keep happening and names no period, still use schedule and set interval_minutes to a period that fits that work. A job that is finished in one run is not schedule.
 - status: they ask how work is going or what it already produced. Do not invent the answer.
@@ -1044,6 +1044,111 @@ func parseBotIntake(raw string) (BotIntake, bool) {
 	return out, true
 }
 
+// imperativeOrderVerbs are the few verbs that, leading a message, unambiguously
+// address an order to this bot — "test the interface", "configure the MCP",
+// "call the endpoint". The list is deliberately short and closed: it names only
+// execution verbs a person uses to command the assistant itself, not a topical
+// keyword table over the message body. The verb must sit in the imperative
+// position — the head of the message — so a mention of "test" inside a longer
+// sentence does not qualify. Small talk ("thanks", "are you there", "who are
+// you") never opens with one of these, and a missing-fact question is settled
+// by its own kind (ask), not by this check.
+var imperativeOrderVerbs = []string{
+	"测试", "測試", "调用", "調用", "配置", "连接", "連接", "部署", "运行", "運行",
+	"执行", "執行", "启动", "啟動", "打开", "打開", "安装", "安裝", "重启", "重啟",
+	"test ", "test the ", "configure ", "connect ", "deploy ", "run ", "call ",
+	"open ", "install ", "restart ", "start ", "launch ", "invoke ", "execute ",
+	"ping ",
+}
+
+// imperativeOrderLeadIns are the polite request markers a person puts before a
+// command — "帮我测试接口", "请帮我配置MCP", "麻烦运行一下". They are stripped
+// before the verb check so the order still reads as imperative. The set is
+// deliberately short: each entry is a request marker, not a topic word, and a
+// lead-in that does not precede a verb ("请问", "给我讲个故事") still fails the
+// verb check and stays settled.
+var imperativeOrderLeadIns = []string{
+	"请帮我", "請幫我", "帮我", "幫我", "麻烦你", "麻煩你", "麻烦", "麻煩",
+	"帮忙", "幫忙", "给我", "給我", "请", "請",
+}
+
+// imperativeOrderLeads reports whether the message opens with an imperative
+// work verb — the structural signal that a short order addresses the bot. Only
+// the leading position counts; the verb is checked as a prefix, so Chinese
+// orders like 「测试接口」「测试下接口」「配置MCP」 and English orders like
+// "test the api" match, while a verb buried mid-sentence does not. This is a
+// positional check over a closed verb set, not a keyword scan.
+func imperativeOrderLeads(content string) bool {
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return false
+	}
+	// A short order is imperative; a long message that happens to start with a
+	// verb is usually prose. Bound the rescue so a paragraph of instructions
+	// pasted as chat is not mistaken for a two-word command.
+	if len([]rune(s)) > 40 {
+		return false
+	}
+	// Strip polite lead-ins so "帮我测试接口" still reads as the order
+	// "测试接口". Bounded: a few stacked lead-ins at most.
+	head := s
+	for i := 0; i < 4; i++ {
+		stripped := false
+		for _, in := range imperativeOrderLeadIns {
+			if strings.HasPrefix(head, in) {
+				head = strings.TrimSpace(strings.TrimPrefix(head, in))
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+	lower := strings.ToLower(head)
+	for _, verb := range imperativeOrderVerbs {
+		if isASCIIWord(verb) {
+			// English verbs carry a trailing space as a word boundary. Match the
+			// bare stem and require a boundary after it, so "test" and "run."
+			// still lead an order without matching "testing" or "runner".
+			stem := strings.TrimRight(verb, " ")
+			if strings.HasPrefix(lower, stem) && imperativeVerbBoundary(lower[len(stem):]) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(lower, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// isASCIIWord reports whether a verb entry is an English (ASCII) stem. Chinese
+// verbs have no word boundary, so they keep the plain prefix match.
+func isASCIIWord(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// imperativeVerbBoundary reports whether the text after a matched English verb
+// stem ends the word: end of message, whitespace, or punctuation. A following
+// letter or digit means the stem was only a prefix of a longer word.
+func imperativeVerbBoundary(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	c := rest[0]
+	if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+		return false
+	}
+	return true
+}
+
 func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) BotIntake {
 	kind := canonicalIntakeKind(in.Kind, in.Pace)
 	if spec, ok := normalizeSpecIntake(in, kind, content); ok {
@@ -1070,6 +1175,21 @@ func normalizeBotIntake(in BotIntake, content string, running []BotIntakeRun) Bo
 	instruction := strings.TrimSpace(in.Instruction)
 	if instruction == "" && (kind == "new" || kind == "supplement" || kind == "change") {
 		instruction = content
+	}
+	// A reply that still carries a work order is work, not small talk: a
+	// short command such as 「测试接口」 must not settle as chatter and be
+	// silently dropped. When the decision wrote the order into instruction,
+	// that order is the signal. When it left instruction empty, the message
+	// itself is the only signal left, and the check is the imperative head —
+	// a verb that commands this bot — not a keyword table over the body and
+	// not the phase the model named. Asking for a missing fact (ask) and a
+	// bare greeting with no order stay settled kinds.
+	if kind == "reply" && instruction == "" && imperativeOrderLeads(content) {
+		instruction = content
+	}
+	if kind == "reply" && instruction != "" {
+		kind = "new"
+		in.Pace = ""
 	}
 	if kind == "change" && instruction != "" && !strings.HasPrefix(instruction, botIntakeChangeMark) {
 		instruction = botIntakeChangeMark + instruction

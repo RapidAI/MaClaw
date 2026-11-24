@@ -100,6 +100,7 @@ describe('one ack bubble per command', () => {
         expect(acks).toHaveLength(1);
         expect(acks[0].id).toBe('ack-p');
         expect(acks[0].content).toBe(model);
+        expect(acks[0].understood).toBe(true);
     });
     it('does not treat a queue note as the first reply', () => {
         const pending = 'm-q';
@@ -138,6 +139,44 @@ describe('one ack bubble per command', () => {
         ]);
         expect(bindAckCommand(registry, 'bot_1', ['m-2'])).toEqual(expect.arrayContaining(['m-2', 'desktop-bot-2']));
         expect(bindAckCommand(registry, 'bot_1', ['fresh'])).not.toContain('m-1');
+    });
+    it('names the user command, not the assistant bubble startTask bound first', () => {
+        const pending = 'm-bot3';
+        const ticket = 'local:' + pending;
+        const userId = 'u-' + pending;
+        const registry = new Map<string, Set<string>>();
+        bindAckCommand(registry, 'bot_3', [pending, ticket]);
+        bindAckCommand(registry, 'bot_3', [userId, pending, ticket]);
+        const messages = turn(pending, ticket);
+        const keys = bindAckCommand(registry, 'bot_3', [userId, messages.find(item => item.id === pending)?.requestId, pending, ticket]);
+        const next = landFirstAck(messages, keys, model, 'zh-Hans', () => 'ack-user');
+        const ack = next.find(item => item.ack);
+        expect(ack?.ackFor).toBe(userId);
+        expect(ack?.ackFor).not.toBe(pending);
+        expect(ack?.understood).toBe(true);
+    });
+    it('does not mark a placeholder as understood', () => {
+        const pending = 'm-stock';
+        const next = landFirstAck(turn(pending, 'desktop-bot-stock'), [pending, 'desktop-bot-stock'], neutral, 'zh-Hans', () => 'ack-stock');
+        const ack = next.find(item => item.ack);
+        expect(ack?.content).toBe(neutral);
+        expect(ack?.understood).toBe(false);
+        expect(desktopBotIsPlaceholderAck(ack?.content || '', 'zh-Hans')).toBe(true);
+    });
+    it('does not let one command’s placeholder swallow the next command', () => {
+        const first = turn('m-1', 'desktop-bot-1');
+        const landed = landFirstAck(first, ['u-m-1', 'm-1', 'desktop-bot-1'], neutral, 'zh-Hans', () => 'ack-1');
+        const secondUser: DesktopBotMessage = { id: 'u-m-2', role: 'user', content: '再做另一个' };
+        const secondPending: DesktopBotMessage = { id: 'm-2', role: 'assistant', content: '', pending: true, requestId: 'desktop-bot-2' };
+        const both = [...landed, secondUser, secondPending];
+        const next = landFirstAck(both, ['u-m-2', 'm-2', 'desktop-bot-2'], model, 'zh-Hans', () => 'ack-2');
+        const acks = next.filter(item => item.ack);
+        expect(acks).toHaveLength(2);
+        expect(acks[0].content).toBe(neutral);
+        expect(acks[0].ackFor).toBe('u-m-1');
+        expect(acks[1].content).toBe(model);
+        expect(acks[1].ackFor).toBe('u-m-2');
+        expect(acks[1].id).not.toBe(acks[0].id);
     });
 });
 

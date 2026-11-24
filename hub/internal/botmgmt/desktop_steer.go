@@ -157,50 +157,43 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	case "supplement", "change":
 		text := firstNonEmptyString(decision.Instruction, content)
 		if _, err := s.SupplementDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID, text); err == nil {
-			base.Settled = true
-			base.Reply.Text = firstNonEmptyString(decision.Ack, decision.Told)
+			settleDesktopWords(&base, firstNonEmptyString(decision.Ack, decision.Told))
 			return content, base, true, nil
 		}
 	case "stop":
 		if s.CancelDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID) == nil {
-			base.Settled = true
-			base.Reply.Text = decision.Ack
+			settleDesktopWords(&base, decision.Ack)
 			return content, base, true, nil
 		}
 	case "pause":
 		_, err := s.PauseDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID, "", 0)
 		if err == nil || err == ErrPauseUnsupported {
-			base.Settled = true
-			base.Reply.Text = decision.Ack
+			settleDesktopWords(&base, decision.Ack)
 			return content, base, true, nil
 		}
 	case "continue":
 		if decision.RunID != "" {
 			_, _ = s.ResumeDesktopRun(ctx, in.TenantID, in.UserID, in.BotID, decision.RunID)
-			base.Settled = true
-			base.Reply.Text = decision.Ack
+			settleDesktopWords(&base, decision.Ack)
 			return content, base, true, nil
 		}
 	case "reply", "ask":
 		text := firstNonEmptyString(decision.Told, decision.Ack)
 		if text != "" {
-			base.Settled = true
-			base.Reply.Text = text
+			settleDesktopWords(&base, text)
 			base.RunID = ""
 			return content, base, true, nil
 		}
 	case "status":
 		text, _, err := s.DesktopTaskQuery(ctx, in.TenantID, in.UserID, in.BotID, firstNonEmptyString(decision.Instruction, content), "")
 		if err == nil && strings.TrimSpace(text) != "" {
-			base.Settled = true
-			base.Reply.Text = text
+			settleDesktopWords(&base, text)
 			base.RunID = ""
 			return content, base, true, nil
 		}
 	case "schedule":
 		if decision.Schedule != nil {
-			base.Settled = true
-			base.Reply.Text = firstNonEmptyString(decision.Ack, decision.Told)
+			settleDesktopWords(&base, firstNonEmptyString(decision.Ack, decision.Told))
 			base.RunID = ""
 			return content, base, true, nil
 		}
@@ -212,6 +205,17 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	base.Kind = "new"
 	base.RunID = ""
 	return next, base, false, nil
+}
+
+// settleDesktopWords marks a turn finished in the chat. The visible layer
+// reads SendToUser only, so a sentence left only in Text is dropped and the
+// pending bubble becomes a stock "started" line. A settled sentence is not a
+// run, and the caller clears RunID when none was started.
+func settleDesktopWords(base *BotAdmission, text string) {
+	text = strings.TrimSpace(text)
+	base.Settled = true
+	base.Reply.Text = text
+	base.Reply.SendToUser = text
 }
 
 func supplementOff() bool {

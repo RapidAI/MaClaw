@@ -19,6 +19,8 @@ started = []
 running = set()
 sup.ensure_gates = lambda: None
 sup.ensure_watch = lambda key, display: None
+sup.ensure_bot_vnc = lambda key, display: 6081 + display - 20
+sup.bot_screen_chain_ready = lambda key, display: True
 sup.desktop_running = lambda key: key in running
 def start(key, display):
     started.append((key[-2:], display)); running.add(key)
@@ -397,6 +399,8 @@ busy = set()
 sup.ensure_gates = lambda: None
 sup.ensure_watch = lambda key, display: None
 sup.ensure_bot_panel = lambda key, display: None
+sup.ensure_bot_vnc = lambda key, display: 6081 + display - 20
+sup.bot_screen_chain_ready = lambda key, display: True
 sup.evict_bots = lambda key: None
 sup.touch_bot_file = lambda *a, **k: None
 sup.desktop_running = lambda key: key in running
@@ -429,6 +433,117 @@ except SystemExit as exc:
     print("refused:", exc)
 `, botOwner)
 	want := ":23 False True True 20 23\n[('ff', 23)]\nrefused: no free desktop display"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+
+// A bot ensure is ready only when that display's own picture chain is up.
+// Xvfb without x11vnc/websockify, or the owner's :20 chain, is not ready.
+func TestSupervisorBotEnsureRequiresItsOwnPictureChain(t *testing.T) {
+	out := runSupervisorPython(t, fakeProcPrelude+`
+owner = "ab" * 8
+bot = owner + "11" * 8
+calls = []
+sup.ensure_gates = lambda: None
+sup.ensure_watch = lambda key, display: None
+sup.ensure_bot_panel = lambda *a, **k: None
+sup.evict_bots = lambda key: None
+sup.touch_bot_file = lambda *a, **k: None
+sup.desktop_running = lambda key: True
+sup.start_bot_desktop = lambda key, display: None
+class Proc:
+    def __init__(self, pid):
+        self.pid = pid
+seq = [80]
+def spawn(argv, env, log):
+    calls.append(argv)
+    seq[0] += 1
+    proc(seq[0], 1, 7000 + seq[0], argv, display=21)
+    return Proc(seq[0])
+sup.spawn = spawn
+sup.time.sleep = lambda *_a, **_k: None
+def kill(pid):
+    try:
+        pid = int(pid or 0)
+    except (TypeError, ValueError):
+        return
+    d = sup.PROC / str(pid)
+    if not d.exists():
+        return
+    for child in d.iterdir():
+        child.unlink()
+    d.rmdir()
+sup.kill_pid = kill
+def which(name):
+    return "/usr/bin/" + name if name in ("x11vnc", "websockify") else None
+sup.shutil.which = which
+live = {}
+def port_open(port):
+    return live.get(port, False)
+sup.X11_DIR = tmp / "x11"
+sup.X11_DIR.mkdir()
+sup.port_open = port_open
+def chain(display, xvfb=True, vnc=True, web=True, sock=True):
+    for pid in (30, 32, 33):
+        d = sup.PROC / str(pid)
+        if d.exists():
+            for child in d.iterdir():
+                child.unlink()
+            d.rmdir()
+    sock_path = sup.X11_DIR / ("X%d" % display)
+    if sock:
+        sock_path.parent.mkdir(parents=True, exist_ok=True)
+        sock_path.write_text("")
+    elif sock_path.exists():
+        sock_path.unlink()
+    if xvfb:
+        proc(30, 1, 5200, ["Xvfb", ":%d" % display, "-screen", "0", "1280x800x24"])
+    if vnc:
+        proc(32, 1, 5202, ["x11vnc", "-display", ":%d" % display, "-rfbport", str(5900 + display - 20)])
+    if web:
+        proc(33, 1, 5203, ["/usr/bin/python3", "/usr/bin/websockify", "--web", "/usr/share/novnc", "127.0.0.1:%d" % (6081 + display - 20), "localhost:%d" % (5900 + display - 20)])
+chain(20, xvfb=True, vnc=True, web=True, sock=True)
+sup.save_registry({"users": {owner: {"display": 20, "token": "aa" * 16, "last_used": 1}}})
+(sup.ROOT / bot).mkdir(exist_ok=True)
+def attempt(label, **flags):
+    calls.clear()
+    chain(21, **flags)
+    live.clear()
+    live[5901] = flags.get("vnc", False)
+    live[6082] = flags.get("web", False)
+    try:
+        got = sup.ensure(bot)
+    except SystemExit as exc:
+        print(label, "failed", "ready" not in str(exc), "ensured" not in str(exc))
+        return
+    print(label, "ready", got.get("ready"), got.get("ensured"), got.get("display"))
+attempt("xvfb-only", xvfb=True, vnc=False, web=False, sock=True)
+attempt("owner-chain", xvfb=False, vnc=False, web=False, sock=False)
+def port_later(port):
+    if calls and port in (5901, 6082):
+        live[port] = True
+        return True
+    return False
+sup.port_open = port_later
+attempt("own-chain", xvfb=True, vnc=False, web=False, sock=True)
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = sup.main(["desktop_supervisor.py", "display", bot])
+print("query", rc, "ready" not in buf.getvalue(), "ensured" not in buf.getvalue(), json.loads(buf.getvalue())["running"], json.loads(buf.getvalue())["display"])
+print("spawned", [item[0] for item in calls], ":21" in " ".join(calls[0]), "6082" in " ".join(calls[1]), "5901" in " ".join(calls[1]))
+print("owner-untouched", not any(":20" in " ".join(item) for item in calls))
+`, botOwner)
+	want := strings.Join([]string{
+		"xvfb-only failed True True",
+		"owner-chain failed True True",
+		"own-chain ready True True :21",
+		"query 0 True True True :21",
+		"spawned ['x11vnc', 'websockify'] True True True",
+		"owner-untouched True",
+	}, "\n")
 	if out != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}

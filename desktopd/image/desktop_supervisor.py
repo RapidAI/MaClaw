@@ -39,13 +39,15 @@ PROC = Path("/proc")
 MAX_RUNNING = 3
 DISPLAY_MIN = 20
 DISPLAY_MAX = 50
+# X11 sockets. Tests point this at a temp dir; production stays on /tmp.
+X11_DIR = Path("/tmp/.X11-unix")
 # The VNC gate fronts websockify on the published noVNC port; websockify
 # itself only listens on loopback so the raw screen cannot be reached.
 VNC_GATE_PORT = 6080
 VNC_WEBSOCKIFY_PORT = 6081
 # Per-bot displays (desktop_mode=isolated). A bot key is the owner's 16-hex
 # user key followed by 16 hex of the bot id. Each bot gets its own display
-# above DISPLAY_MIN with only Xvfb and xfwm4. Chrome uses a working copy of
+# above DISPLAY_MIN with its own Xvfb, x11vnc and websockify. Chrome uses a working copy of
 # the owner's master profile, not an empty profile under the bot key. The
 # owner's two published gates (CDP 19020, noVNC 6080) route a bot's token to
 # that bot's display, so no new container port is needed.
@@ -604,7 +606,17 @@ def main(argv):
         if not entry.get("display"):
             print("desktop was never opened", file=sys.stderr)
             return 1
-        print(json.dumps({"display": ":%d" % int(entry["display"]), "running": desktop_running(key)}))
+        try:
+            number = int(entry["display"])
+        except (TypeError, ValueError):
+            print("desktop was never opened", file=sys.stderr)
+            return 1
+        running = desktop_running(key)
+        # A bot display is not a view until its own Xvfb, x11vnc and
+        # websockify are up. The owner's shared :20 must not count.
+        if is_bot_key(key):
+            running = running and bot_screen_chain_ready(key, number)
+        print(json.dumps({"display": ":%d" % number, "running": running}))
         return 0
     if len(argv) == 2 and argv[1] == "bots-busy":
         print(json.dumps({"busy": [key for key in running_bot_keys() if bot_busy(key)]}))
@@ -5999,6 +6011,27 @@ def prune_bots(keep):
     return released
 
 
+def bot_screen_chain_ready(key, display):
+    """True only when this bot's own picture chain is up.
+
+    Xvfb alone is not a view. x11vnc and websockify must be this display's
+    processes, and the X socket must exist. The owner's :20 chain never
+    counts, even if those processes are healthy.
+    """
+    try:
+        display = int(display)
+    except (TypeError, ValueError):
+        return False
+    if not (DISPLAY_MIN < display <= DISPLAY_MAX):
+        return False
+    if not (X11_DIR / ("X%d" % display)).exists():
+        return False
+    pids = current_pids(key, display)
+    if not (pid_alive(pids.get("xvfb")) and desktop_part(pids.get("xvfb"), key, display) == "xvfb"):
+        return False
+    return pid_alive(pids.get("x11vnc")) and pid_alive(pids.get("vnc")) and desktop_part(pids.get("vnc"), key, display) == "vnc"
+
+
 def ensure_bot(key):
     registry = load_registry()
     users = registry.setdefault("users", {})
@@ -6039,9 +6072,21 @@ def ensure_bot(key):
         start_bot_desktop(key, display)
     else:
         ensure_bot_panel(key, display)
+    # A view is not ready until this display's own picture chain is up.
+    # Missing x11vnc or websockify used to wait for the first viewer, and
+    # ensure still returned a display the person could not see.
+    ensure_bot_vnc(key, display)
+    if not bot_screen_chain_ready(key, display):
+        raise SystemExit("bot display :%d picture chain is not ready" % display)
     ensure_watch(key, display)
     touch_bot_file(key, "activity", force=True)
-    return {"display": ":%d" % display, "cdp_port": proxy_port(DISPLAY_MIN), "token": token}
+    return {
+        "display": ":%d" % display,
+        "cdp_port": proxy_port(DISPLAY_MIN),
+        "token": token,
+        "ready": True,
+        "ensured": True,
+    }
 
 
 def evict_bots(current):
@@ -6529,33 +6574,40 @@ def ensure_gates():
 
 
 def ensure_bot_vnc(key, display):
-    """x11vnc + websockify for one bot display, started on the first view."""
+    """x11vnc + websockify for this bot display, not the owner's :20.
+
+    A missing binary or a pair that never listens is a failed ensure. The
+    caller must not report the screen ready from Xvfb alone.
+    """
+    display = int(display)
+    if not (DISPLAY_MIN < display <= DISPLAY_MAX):
+        raise SystemExit("bot display :%d is not an isolated screen" % display)
     if shutil.which("x11vnc") is None or shutil.which("websockify") is None:
-        return 0
+        raise SystemExit("bot display :%d picture chain is missing x11vnc or websockify" % display)
     with desktop_lock():
-        if not desktop_running(key):
-            return 0
+        if not (pid_alive(current_pids(key, display).get("xvfb")) and (X11_DIR / ("X%d" % display)).exists()):
+            raise SystemExit("bot display :%d has no X server" % display)
         pids = current_pids(key, display)
         ws = vnc_ws_port(display)
-        if pid_alive(pids.get("x11vnc")) and pid_alive(pids.get("vnc")):
-            return ws
+        rfb = vnc_rfb_port(display)
+        if pid_alive(pids.get("x11vnc")) and pid_alive(pids.get("vnc")) and desktop_part(pids.get("vnc"), key, display) == "vnc":
+            if port_open(ws) and port_open(rfb):
+                return ws
         kill_pid(pids.get("vnc"))
         kill_pid(pids.get("x11vnc"))
         log = open(ROOT / key / "desktop.log", "ab")
         env = os.environ.copy()
         env["DISPLAY"] = ":%d" % display
-        rfb = vnc_rfb_port(display)
         x11 = spawn(["x11vnc", "-display", ":%d" % display, "-nopw", "-localhost", "-forever", "-shared", "-rfbport", str(rfb)], env, log)
         web = spawn(["websockify", "--web", "/usr/share/novnc", "127.0.0.1:%d" % ws, "localhost:%d" % rfb], env, log)
         pids["x11vnc"] = x11.pid
         pids["vnc"] = web.pid
         write_pids(key, pids)
         for _ in range(40):
-            if port_open(ws) and port_open(rfb):
-                break
+            if port_open(ws) and port_open(rfb) and pid_alive(x11.pid) and pid_alive(web.pid):
+                return ws
             time.sleep(0.1)
-        return ws
-
+        raise SystemExit("bot display :%d picture chain did not start" % display)
 
 def start_bot_fcitx(key, display):
     """The input method for a person typing on a bot display (lazy)."""

@@ -2967,6 +2967,11 @@ func (a *App) startup(ctx context.Context) {
 	// before any browser session so the first launch is already windowless.
 	a.installAgentBrowserStage()
 	a.installDesktopHandoff()
+	// Recover the persistent desktop-bot outbox so sends that were queued or
+	// unadmitted when the app last closed come back as still-to-deliver. The
+	// data dir is derivable this early; loading now keeps a restarted window
+	// honest about what never reached Hub.
+	a.desktopBotOutboxInit()
 	// `MaClaw.exe --quit` only reaches OnStartup when no running instance was
 	// there to receive the handoff. The user asked for an exit, so do not open
 	// a window just because there was nothing to quit.

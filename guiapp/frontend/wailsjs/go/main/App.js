@@ -5375,6 +5375,26 @@ export function UnmarkDesktopBotLookMigrated(arg1, arg2) {
   return window['go']['main']['App']['UnmarkDesktopBotLookMigrated'](arg1, arg2);
 }
 
+export function ListDesktopBotOutbox() {
+  return window['go']['main']['App']['ListDesktopBotOutbox']();
+}
+
+export function DesktopBotOutboxSnapshot() {
+  return window['go']['main']['App']['DesktopBotOutboxSnapshot']();
+}
+
+export function DesktopBotSetOutboxStatus(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DesktopBotSetOutboxStatus'](arg1, arg2, arg3);
+}
+
+export function MarkDesktopBotOutboxFailed(arg1, arg2) {
+  return window['go']['main']['App']['MarkDesktopBotOutboxFailed'](arg1, arg2);
+}
+
+export function RelaunchDesktopBotOutbox(arg1) {
+  return window['go']['main']['App']['RelaunchDesktopBotOutbox'](arg1);
+}
+
 export function DeleteDesktopBot(arg1) {
   return window['go']['main']['App']['DeleteDesktopBot'](arg1);
 }

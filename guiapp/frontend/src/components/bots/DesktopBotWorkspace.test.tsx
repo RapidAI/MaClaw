@@ -210,6 +210,13 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     SetTTSVoiceID: async () => undefined,
     SynthesizeTTSPreview: async () => 'data:audio/wav;base64,',
     PatchConfigFields: async (patch: Record<string, unknown>) => patch,
+    // Durable outbox bindings the delivery reconcile uses. Empty snapshot =
+    // no unconfirmed sends; relaunch/mark-failed resolve so a retry can run.
+    DesktopBotOutboxSnapshot: async () => ({ items: [] }),
+    ListDesktopBotOutbox: async () => [],
+    RelaunchDesktopBotOutbox: async () => undefined,
+    MarkDesktopBotOutboxFailed: async () => undefined,
+    DesktopBotSetOutboxStatus: async () => undefined,
 }));
 
 const browserOpenURL = vi.hoisted(() => vi.fn());

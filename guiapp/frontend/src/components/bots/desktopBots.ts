@@ -26,6 +26,25 @@ export type BotPhase = 'plan' | 'execute';
 // message type fall behind the reader and fail to compile.
 export type DesktopBotNoReading = 'unread' | 'unscheduled' | 'unreachable' | 'unrouted';
 
+// Where one sent turn stands on the way to the Hub.
+//   local:    still inside this app, never handed to SendDesktopBotTaskTo.
+//   sent:     MaClawSrv accepted it into the durable outbox (deferred) or is
+//             about to be sent; not yet confirmed. NOT done.
+//   admitted: the Hub named a run for it — the only state that means the order
+//             actually reached a worker. Deferred is never admitted.
+//   failed:   delivery hit an error; shown as failed/unconfirmed with an
+//             explicit, idempotent retry. Nothing retries it on its own.
+export type DesktopBotDelivery = 'local' | 'sent' | 'admitted' | 'failed';
+
+// Map a durable outbox row (desktop_bot_outbox.go: queued|admitted|failed)
+// onto the bubble's delivery state. The outbox is the source of truth for
+// anything already sent; the local state only exists before the first send.
+export function desktopBotDeliveryFromOutbox(status: string, failed: string): DesktopBotDelivery {
+    if (status === 'admitted') return 'admitted';
+    if (status === 'failed' || (failed || '').trim() !== '') return 'failed';
+    return 'sent';
+}
+
 // What the latest plan reply still needs from the person.
 // done: the request is already fulfilled, so the reply is the result.
 // arrange: work remains, and the confirm control is the approval.
@@ -857,6 +876,20 @@ export interface DesktopBotMessage {
     // Set just before the order goes to SendDesktopBotTask. A pending bubble
     // without it never left this app: after a restart nothing will answer it.
     dispatched?: boolean;
+    // Real delivery state mirrored from the durable outbox. local until the
+    // send resolves a request id, sent once queued, admitted only on Hub ack,
+    // failed on a delivery error. Never inferred from dispatched alone: a
+    // deferred send is sent, not admitted.
+    delivery?: DesktopBotDelivery;
+    // The idempotent id the durable outbox keys this turn by (the send's
+    // request_id). A user-initiated retry passes it back so a duplicate admit
+    // binds to this same bubble instead of a new line.
+    clientMessageId?: string;
+    // True when the outbox marks a failed send safe to retry (transport /
+    // timeout). A permanent failure stays visible but offers no retry.
+    deliveryRetryable?: boolean;
+    // Last delivery error text, for the failed/unconfirmed bubble.
+    deliveryFailed?: string;
     // The worker order for a confirm arrangement. The visible content is the
     // short plan; this is what the accept button sends. It is not a user bubble.
     workOrder?: string;

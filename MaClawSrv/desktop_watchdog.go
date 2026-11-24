@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -708,6 +709,38 @@ func deliveredOutputNames(msg *agentservice.Message) []string {
 	return names
 }
 
+// desktopPublishIncompleteWhy names the live-but-incomplete posts and the
+// recorded missing piece. Without that record the blocker is unknown.
+func desktopPublishIncompleteWhy(runID string, incomplete int) string {
+	var done, missing []string
+	for _, rec := range desktopPublishRunRecords(runID) {
+		label := strings.TrimSpace(rec.Site)
+		if label == "" {
+			label = "post"
+		}
+		if rec.State == browser.PublishLive {
+			done = append(done, label)
+			continue
+		}
+		if rec.State != browser.PublishLiveIncomplete {
+			continue
+		}
+		gap := strings.TrimSpace(rec.Missing)
+		if gap == "" {
+			gap = "unknown"
+		}
+		missing = append(missing, label+" ("+gap+")")
+	}
+	if len(missing) == 0 {
+		return fmt.Sprintf("publish incomplete: done: %d live posts; not done: %d live-but-incomplete posts; known blocker: unknown", 0, incomplete)
+	}
+	doneLine := "none"
+	if len(done) > 0 {
+		doneLine = strings.Join(done, ", ")
+	}
+	return "publish incomplete: done: " + doneLine + "; not done: " + strings.Join(missing, ", ") + "; known blocker: the live post is missing a required part"
+}
+
 func desktopRunHasConfirmedPost(runID string) bool {
 	for _, key := range desktopLedgerKeysForRun(runID) {
 		if _, ok := desktopLedgerRunPost(desktopLedgerEntries(key), runID); ok {
@@ -771,6 +804,13 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	if resolved && contract.typed {
 		verdict, why := desktopAttributedVerdict(run.ID, msg, contract.parsed)
+		if verdict != agentservice.TaskOutcomeDone && strings.TrimSpace(msg.Metadata["desktop_delivery_failures"]) != "" {
+			if verdict == "" || verdict == agentservice.TaskOutcomeUnverified {
+				verdict = agentservice.TaskOutcomePartial
+				why = desktopAttributedGapWhy(contract.parsed, map[string]bool{})
+			}
+		}
+		verdict, why = desktopDeliveryFailureOutcome(msg, verdict, why)
 		noteDeliveredFiles(msg, files)
 		rememberContractOutcome(run, msg, contract.parsed, verdict)
 		return verdict, why
@@ -799,7 +839,7 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	if incomplete > 0 {
 		noteDeliveredFiles(msg, files)
-		return agentservice.TaskOutcomePartial, "publish incomplete"
+		return agentservice.TaskOutcomePartial, desktopPublishIncompleteWhy(run.ID, incomplete)
 	}
 	if complete > 0 {
 		noteDeliveredFiles(msg, files)
@@ -807,10 +847,19 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	}
 	if files > 0 {
 		noteDeliveredFiles(msg, files)
+		if verdict, why := desktopDeliveryFailureOutcome(msg, agentservice.TaskOutcomeDone, "file delivered"); verdict != agentservice.TaskOutcomeDone {
+			return verdict, why
+		}
 		return agentservice.TaskOutcomeDone, "file delivered"
 	}
 	if desktopVisibleAnswer(msg) != "" && (!desktopRunTookSteps(run.ID) || resolved) {
 		return agentservice.TaskOutcomeDone, "text answer"
+	}
+	// A later successful step already corrected an earlier failure, and the
+	// turn declared done. That is not an unverified effect, and it is not
+	// partial. A still-open contract was returned above.
+	if desktopVisibleAnswer(msg) != "" && desktopDeclaredOutcome(run.ID) == "done" && desktopRunCorrected(run.ID) {
+		return desktopDeliveryFailureOutcome(msg, agentservice.TaskOutcomeDone, "corrected after failure")
 	}
 	if desktopVisibleAnswer(msg) != "" {
 		return agentservice.TaskOutcomeUnverified, "desktop effect not verified"
@@ -905,6 +954,43 @@ func desktopOutputContractOf(runID string) (desktopOutputContract, bool) {
 	return contract, true
 }
 
+// desktopDeliveryFailureOutcome keeps a file that never reached the person
+// from closing the turn. The failed path is the known blocker. Which required
+// item it was is unknown unless the contract already named the gap.
+func desktopDeliveryFailureOutcome(msg *agentservice.Message, outcome, why string) (string, string) {
+	if msg == nil || msg.Metadata == nil {
+		return outcome, why
+	}
+	fail := strings.TrimSpace(msg.Metadata["desktop_delivery_failures"])
+	if fail != "" && outcome == agentservice.TaskOutcomeDone && desktopContractClosed(why) {
+		return outcome, why
+	}
+	if fail == "" || outcome == agentservice.TaskOutcomeBlocked || outcome == agentservice.TaskOutcomeUnverified || outcome == agentservice.TaskOutcomeAwaitingUser {
+		return outcome, why
+	}
+	files := deliveredFileCount(msg)
+	blocker := "delivery failed: " + desktopRuneHead(fail, 160)
+	if outcome == agentservice.TaskOutcomePartial {
+		if strings.Contains(why, "known blocker: unknown") {
+			return outcome, strings.Replace(why, "known blocker: unknown", "known blocker: "+blocker, 1)
+		}
+		if strings.Contains(why, "；not done: ") || strings.Contains(why, "; not done: ") {
+			return outcome, why + "；known blocker: " + blocker
+		}
+		return outcome, why + "; known blocker: " + blocker
+	}
+	if files > 0 {
+		return agentservice.TaskOutcomePartial, fmt.Sprintf("delivery failed: done: %d files reached the reply; not done: declared outputs that failed to deliver; known blocker: %s", files, blocker)
+	}
+	return agentservice.TaskOutcomePartial, "delivery failed: done: none; not done: the declared output did not reach the reply; known blocker: " + blocker
+}
+
+// desktopContractClosed: the typed contract already matched every required
+// item. A leftover delivery error from an earlier attempt is not a new gap.
+func desktopContractClosed(why string) bool {
+	return why == "outputs delivered" || why == "file delivered" || why == "published" || why == "text answer" || why == "corrected after failure"
+}
+
 func deliveredFileCount(msg *agentservice.Message) int {
 	if msg == nil {
 		return 0
@@ -980,7 +1066,8 @@ func desktopPostEvidenceLive(runID string) (complete, incomplete, other int) {
 // desktopContractVerdict checks every required slot against its own evidence.
 // Opaque items have no kind: one item can be closed by one complete file or
 // one fully live post, and more than one item stays incomplete because the
-// evidence cannot be attributed. An empty checklist is not a verdict.
+// evidence cannot be attributed. An empty checklist is not a verdict. A
+// partial verdict names the counts it can prove, not a generic half-done line.
 func desktopContractVerdict(items, slots []string, files, complete, incomplete, other int) (string, string) {
 	if len(slots) > 0 {
 		// A count of files or posts is not proof that each required item
@@ -989,7 +1076,7 @@ func desktopContractVerdict(items, slots []string, files, complete, incomplete, 
 		if files+complete+incomplete+other == 0 {
 			return agentservice.TaskOutcomeUnverified, "output contract open"
 		}
-		return agentservice.TaskOutcomePartial, "output contract unattributed"
+		return agentservice.TaskOutcomePartial, desktopContractGapWhy(len(slots), files, complete, incomplete, other, true)
 	}
 	switch len(items) {
 	case 0:
@@ -1004,13 +1091,36 @@ func desktopContractVerdict(items, slots []string, files, complete, incomplete, 
 		if files+complete+incomplete+other == 0 {
 			return agentservice.TaskOutcomeUnverified, "output contract open"
 		}
-		return agentservice.TaskOutcomePartial, "output contract incomplete"
+		return agentservice.TaskOutcomePartial, desktopContractGapWhy(1, files, complete, incomplete, other, false)
 	default:
 		if files+complete+incomplete+other == 0 {
 			return agentservice.TaskOutcomeUnverified, "output contract open"
 		}
-		return agentservice.TaskOutcomePartial, "output contract incomplete"
+		return agentservice.TaskOutcomePartial, desktopContractGapWhy(len(items), files, complete, incomplete, other, false)
 	}
+}
+
+// desktopContractGapWhy is the structured gap of an unattributed contract.
+// Counts are evidence. Which item is which is unknown when the evidence has
+// no item id, and that is said instead of inventing the missing item.
+func desktopContractGapWhy(required, files, complete, incomplete, other int, unattributed bool) string {
+	done := files + complete
+	if done < 0 {
+		done = 0
+	}
+	gap := required - done
+	if gap < 0 {
+		gap = 0
+	}
+	why := fmt.Sprintf("output contract incomplete: done %d of %d (files %d, live posts %d); not done: %d required outputs have no attributed evidence", done, required, files, complete, gap)
+	if incomplete > 0 || other > 0 {
+		why += fmt.Sprintf("; known blocker: %d incomplete posts, %d unverified posts", incomplete, other)
+	} else if unattributed {
+		why += "; known blocker: evidence has no item id, so it cannot be matched to a required output"
+	} else {
+		why += "; known blocker: unknown"
+	}
+	return why
 }
 
 type desktopPostClaim struct {
@@ -1136,7 +1246,29 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 	if len(satisfied) == 0 {
 		return agentservice.TaskOutcomeUnverified, "output contract open"
 	}
-	return agentservice.TaskOutcomePartial, "output contract incomplete"
+	return agentservice.TaskOutcomePartial, desktopAttributedGapWhy(items, satisfied)
+}
+
+// desktopAttributedGapWhy names the typed items that have evidence and the
+// ones that do not. A missing cause is unknown; it is not invented.
+func desktopAttributedGapWhy(items []agent.DesktopDeliverable, satisfied map[string]bool) string {
+	var done, missing []string
+	for _, item := range items {
+		label := strings.TrimSpace(item.Text)
+		if label == "" {
+			label = item.Kind
+		}
+		if label == "" {
+			label = "output"
+		}
+		label = item.ID + " " + label
+		if satisfied[item.ID] {
+			done = append(done, label)
+			continue
+		}
+		missing = append(missing, label)
+	}
+	return "output contract incomplete: done: " + strings.Join(done, ", ") + "; not done: " + strings.Join(missing, ", ") + "; known blocker: unknown"
 }
 
 func rememberContractOutcome(run *agentservice.Run, msg *agentservice.Message, items []agent.DesktopDeliverable, outcome string) {
@@ -1330,8 +1462,25 @@ func desktopApplyOutcome(msg *agentservice.Message, outcome, why string) {
 		msg.Metadata = map[string]string{}
 	}
 	msg.Metadata["task_outcome"] = outcome
-	if line := desktopOutcomeNotice(outcome, why, msg.Content); line != "" {
+	line := desktopOutcomeNotice(outcome, why, msg.Content)
+	if line != "" {
 		msg.Content = line + "\n" + msg.Content
+		return
+	}
+	// The reply already says it is not done, so the template is not stacked.
+	// A partial still has to name the gap where the person reads the reply.
+	if outcome == agentservice.TaskOutcomePartial {
+		gap := desktopPartialNotice(why)
+		send := strings.TrimSpace(msg.Metadata["send_to_user"])
+		if gap != "" && !strings.Contains(msg.Content, "已完成：") && !strings.Contains(send, "已完成：") {
+			if send == "" {
+				send = strings.TrimSpace(msg.Content)
+			}
+			msg.Metadata["send_to_user"] = gap + "\n" + send
+			if strings.TrimSpace(msg.Metadata["send_to_user_kind"]) == "" {
+				msg.Metadata["send_to_user_kind"] = "report"
+			}
+		}
 	}
 }
 
@@ -1342,7 +1491,7 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 		return ""
 	}
 	line := map[string]string{
-		"partial":       "这件还没完全做成，只完成了一部分。",
+		"partial":       desktopPartialNotice(why),
 		"blocked":       "这件没做成，我已经停下，没有再重复尝试。",
 		"not_submitted": "这件还没提交，内容没有发出去。",
 		"unconfirmed":   "提交后没能确认结果，我没有重复提交，请以页面上的实际状态为准。",
@@ -1352,10 +1501,110 @@ func desktopOutcomeNotice(outcome, why, content string) string {
 	// A still-running job's why names the shell, the job id and a log tail.
 	// That stays in task_outcome_evidence, not in the sentence. Other
 	// outcomes keep a short cause the person can read.
-	if line != "" && why != "" && outcome != "running" {
+	if line != "" && why != "" && outcome != "running" && outcome != agentservice.TaskOutcomePartial {
 		line += "（依据：" + why + "）"
 	}
 	return line
+}
+
+// desktopPartialNotice is the person-facing partial line. It states the
+// structured gap when the verdict has one. It does not use the half-done
+// template, and it does not invent a cause the evidence does not name.
+func desktopPartialNotice(why string) string {
+	done, missing, blocker, ok := desktopPartialParts(why)
+	if !ok {
+		return "这件还没完全做成。已完成：未知。未完成：未知。原因：未知。"
+	}
+	switch strings.ToLower(strings.TrimSpace(blocker)) {
+	case "", "unknown", "未知":
+		blocker = "未知"
+	}
+	return "这件还没完全做成。已完成：" + done + "。未完成：" + missing + "。原因：" + blocker + "。"
+}
+
+func desktopPartialParts(why string) (done, missing, blocker string, ok bool) {
+	why = strings.TrimSpace(why)
+	if why == "" {
+		return "", "", "", false
+	}
+	lower := strings.ToLower(why)
+	switch {
+	case strings.HasPrefix(lower, "output contract incomplete: "):
+		rest := why[len("output contract incomplete: "):]
+		done, missing, blocker = splitPartialClause(rest)
+	case strings.HasPrefix(lower, "publish incomplete: "):
+		rest := why[len("publish incomplete: "):]
+		done, missing, blocker = splitPartialClause(rest)
+	case strings.HasPrefix(lower, "delivery failed: "):
+		rest := why[len("delivery failed: "):]
+		done, missing, blocker = splitPartialClause(rest)
+	case strings.HasPrefix(lower, "stopped: "):
+		done, missing, blocker = splitPartialClause(strings.TrimPrefix(why, "stopped: "))
+	case strings.HasPrefix(lower, "the last step failed: "):
+		done, missing, blocker = splitPartialClause(strings.TrimPrefix(why, "the last step failed: "))
+	case strings.HasPrefix(lower, "done: "):
+		done, missing, blocker = splitPartialClause(why)
+	case strings.Contains(why, "；not done: ") || strings.Contains(why, "; not done: "):
+		done, missing, blocker = splitMeasuredPartial(why)
+	case strings.Contains(why, "；已测得 ") || strings.Contains(why, "verified by measurement"):
+		done, missing, blocker = "已测得的部分", "未知", "未知"
+		if i := strings.Index(why, "；已测得 "); i >= 0 {
+			done = strings.TrimSpace(why[i+len("；已测得 "):])
+		}
+	default:
+		return "", "", "", false
+	}
+	if done == "" {
+		done = "未知"
+	}
+	if missing == "" {
+		missing = "未知"
+	}
+	return done, missing, blocker, true
+}
+
+func splitPartialClause(rest string) (done, missing, blocker string) {
+	rest = strings.TrimSpace(rest)
+	if i := strings.Index(rest, "; known blocker: "); i >= 0 {
+		blocker = strings.TrimSpace(rest[i+len("; known blocker: "):])
+		rest = strings.TrimSpace(rest[:i])
+	}
+	if i := strings.Index(rest, "; not done: "); i >= 0 {
+		missing = strings.TrimSpace(rest[i+len("; not done: "):])
+		rest = strings.TrimSpace(rest[:i])
+	}
+	done = strings.TrimSpace(strings.TrimPrefix(rest, "done: "))
+	done = strings.TrimSpace(strings.TrimPrefix(done, "done "))
+	return done, missing, blocker
+}
+
+// splitMeasuredPartial reads a goal or post verdict ("done: a；not done: b").
+// A missing reason stays unknown. It does not turn an earlier failure into
+// the cause when a later measurement already closed that part.
+func splitMeasuredPartial(why string) (done, missing, blocker string) {
+	sep := "；not done: "
+	if strings.Contains(why, "; not done: ") && !strings.Contains(why, sep) {
+		sep = "; not done: "
+	}
+	head, tail, _ := strings.Cut(why, sep)
+	done = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(head), "done: "))
+	missing = strings.TrimSpace(tail)
+	if i := strings.Index(missing, "；known blocker: "); i >= 0 {
+		blocker = strings.TrimSpace(missing[i+len("；known blocker: "):])
+		missing = strings.TrimSpace(missing[:i])
+	} else if i := strings.Index(missing, "; known blocker: "); i >= 0 {
+		blocker = strings.TrimSpace(missing[i+len("; known blocker: "):])
+		missing = strings.TrimSpace(missing[:i])
+	}
+	if blocker == "" {
+		if i := strings.Index(missing, ": "); i >= 0 {
+			blocker = strings.TrimSpace(missing[i+2:])
+		}
+	}
+	if blocker == "" {
+		blocker = "未知"
+	}
+	return done, missing, blocker
 }
 
 // desktopRunOutcome: the measured outcome of a run's goals, or — for a run
@@ -1378,7 +1627,7 @@ func desktopRunOutcome(runID string, msg *agentservice.Message) (string, string)
 			why += "；最后一次可测的进展 " + snap.lastProgress.Format("15:04") + "：" + snap.progressWhy
 		}
 		if desktopRunEverWorked(runID) {
-			return agentservice.TaskOutcomePartial, why
+			return agentservice.TaskOutcomePartial, desktopStoppedPartialWhy(why)
 		}
 		return agentservice.TaskOutcomeBlocked, why
 	}
@@ -1409,7 +1658,7 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 			// No desktop step: this is a chat reply, not a half-finished task.
 			return "", ""
 		}
-		if desktopRunWorked(runID) {
+		if desktopRunWorked(runID) || desktopRunCorrected(runID) {
 			return agentservice.TaskOutcomeDone, ""
 		}
 		return agentservice.TaskOutcomePartial, "finish said done but the run did no successful desktop work"
@@ -1430,16 +1679,63 @@ func desktopRunOutcomeMeasured(runID string, msg *agentservice.Message) (string,
 		}
 		// Some work done, the last step failed and the reply itself says
 		// it is not done: a failure reply always carries an outcome.
-		if strings.TrimSpace(msg.Content) != "" && desktopOutcomeSaysNotDone.MatchString(msg.Content) && !desktopRunWorked(runID) {
-			return agentservice.TaskOutcomePartial, "the last step failed"
+		// A later successful step already corrected that failure: the
+		// reply is not partial just because an earlier step failed.
+		// The earlier error is not copied in as the cause unless this
+		// run recorded one; an unnamed failure stays unknown.
+		if strings.TrimSpace(msg.Content) != "" && desktopOutcomeSaysNotDone.MatchString(msg.Content) && !desktopRunWorked(runID) && !desktopRunCorrected(runID) {
+			return agentservice.TaskOutcomePartial, desktopLastStepFailedWhy(runID)
 		}
 	}
-	if outcome == "" && steps && msg != nil && strings.TrimSpace(msg.Content) != "" && desktopRunWorked(runID) {
+	if outcome == "" && steps && msg != nil && strings.TrimSpace(msg.Content) != "" && (desktopRunWorked(runID) || desktopRunCorrected(runID)) {
 		if _, stopped := desktopWatchdogStopped(runID); !stopped {
 			return agentservice.TaskOutcomeDone, "undeclared"
 		}
 	}
 	return outcome, why
+}
+
+// desktopStoppedPartialWhy keeps a watchdog stop from becoming a vague
+// half-done line. The stop reason is the blocker. Which goal was left is
+// unknown unless an earlier verdict already named it.
+func desktopStoppedPartialWhy(why string) string {
+	if strings.Contains(why, "not done:") || strings.Contains(why, "未完成") {
+		return why
+	}
+	blocker := strings.TrimSpace(strings.TrimPrefix(why, "stopped: "))
+	if blocker == "" {
+		blocker = "unknown"
+	}
+	return "stopped: done: earlier successful steps; not done: goals not measured before the stop; known blocker: " + blocker
+}
+
+// desktopLastStepFailedWhy names the recorded last error. No record is
+// unknown, not a guessed tool or file.
+func desktopLastStepFailedWhy(runID string) string {
+	st := desktopRunForID(runID)
+	if st == nil {
+		return "the last step failed: done: unknown; not done: the step the reply says is unfinished; known blocker: unknown"
+	}
+	st.mu.Lock()
+	last := strings.TrimSpace(st.lastErr)
+	st.mu.Unlock()
+	if last == "" {
+		return "the last step failed: done: unknown; not done: the step the reply says is unfinished; known blocker: unknown"
+	}
+	return "the last step failed: done: unknown; not done: the step the reply says is unfinished; known blocker: " + desktopRuneHead(last, 120)
+}
+
+// desktopRunCorrected: an earlier step failed, then a later non-looking
+// step succeeded. The earlier failure is not the turn's outcome.
+func desktopRunCorrected(runID string) bool {
+	st := desktopRunForID(runID)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	failed, work := st.lastFailed, st.workOK
+	st.mu.Unlock()
+	return !failed && work > 0
 }
 
 // desktopRunWorked: the run executed desktop steps and its last one did not fail.

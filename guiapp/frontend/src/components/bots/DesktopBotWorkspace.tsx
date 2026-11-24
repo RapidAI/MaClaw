@@ -96,6 +96,9 @@ import {
     SaveBotSecret,
     StageDesktopBotSecret,
     SendDesktopBotTaskTo,
+    RelaunchDesktopBotOutbox,
+    DesktopBotOutboxSnapshot,
+    MarkDesktopBotOutboxFailed,
     ShowItemInFolder,
     SetDesktopBotControl,
     WatchDesktopBot,
@@ -171,6 +174,8 @@ import {
     type DesktopBotFile,
     type DesktopBotMessage,
     type DesktopBotNoReading,
+    type DesktopBotDelivery,
+    desktopBotDeliveryFromOutbox,
 } from './desktopBots';
 import { botWindowIsForeground, setBotWindowForeground, watchBotReplies } from './botUnread';
 import { desktopBotCorrectAttachClaim } from './desktopBotDelivery';
@@ -978,6 +983,11 @@ function copy(lang: string) {
             secretCancel: 'Cancel',
             retryConnect: 'Retry connection',
             desktopDown: 'The desktop picture did not connect. Retry the connection — the task is not sent again.',
+            deliveryUnconfirmed: 'Not confirmed as delivered. The task has not run yet.',
+            deliveryFailedLabel: 'Delivery failed. The task did not run.',
+            deliveryRetry: 'Retry delivery',
+            deliveryRetrying: 'Retrying…',
+            deliveryAdmitted: 'Delivered',
             fillMiss: 'That password field cannot be filled from here. Open this bot’s computer and type it yourself.',
             secretStoreFailed: 'The password was not saved on this computer.',
             ops: 'Actions',
@@ -1238,6 +1248,11 @@ function copy(lang: string) {
             secretCancel: '取消',
             retryConnect: '重試連接',
             desktopDown: '桌面畫面連不上。可以重試連接，不用重發任務。',
+            deliveryUnconfirmed: '尚未確認送達，任務還沒有執行。',
+            deliveryFailedLabel: '傳送失敗，任務沒有執行。',
+            deliveryRetry: '重試傳送',
+            deliveryRetrying: '重試中…',
+            deliveryAdmitted: '已送達',
             fillMiss: '這個密碼框在當前頁面填不了。請打開這個 Bot 的電腦自己輸入。',
             secretStoreFailed: '密碼沒有保存到本機。',
             ops: '操作',
@@ -1496,6 +1511,11 @@ function copy(lang: string) {
         secretCancel: '取消',
         retryConnect: '重试连接',
         desktopDown: '桌面画面连不上。可以重试连接，不用重发任务。',
+        deliveryUnconfirmed: '尚未确认送达，任务还没有执行。',
+        deliveryFailedLabel: '传送失败，任务没有执行。',
+        deliveryRetry: '重试传送',
+        deliveryRetrying: '重试中…',
+        deliveryAdmitted: '已送达',
         fillMiss: '这个密码框在当前页面填不了。请打开这个 Bot 的电脑自己输入。',
         secretStoreFailed: '密码没有保存到本机。',
         ops: '操作',
@@ -4677,6 +4697,77 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return () => { if (typeof off === 'function') off(); };
     }, [userId]);
 
+    // The durable outbox is the source of truth for whether a sent turn was
+    // ever admitted by the Hub. On every outbox emission (and once on mount)
+    // reconcile each item onto the bubble that carries its request id:
+    //   queued   -> delivery 'sent', still unconfirmed
+    //   admitted -> delivery 'admitted' (the only state that means it ran)
+    //   failed   -> delivery 'failed', surfaced with an explicit idempotent
+    //               retry; nothing replays it on its own.
+    useEffect(() => {
+        const reconcile = (items: Array<{ id?: string; bot_id?: string; user_id?: string; status?: string; failed?: string; retryable?: boolean; text?: string }>) => {
+            if (!Array.isArray(items) || items.length === 0) return;
+            const byBot = new Map<string, typeof items>();
+            for (const it of items) {
+                const botId = String(it?.bot_id || '');
+                if (!botId) continue;
+                const list = byBot.get(botId) || [];
+                list.push(it);
+                byBot.set(botId, list);
+            }
+            byBot.forEach((list, botId) => {
+                const stored = messagesForBot(userId, botId);
+                let changed = false;
+                const next = stored.map(item => {
+                    const rid = item.requestId || item.clientMessageId || '';
+                    if (!rid) return item;
+                    const row = list.find(it => String(it?.id || '') === rid);
+                    if (!row) return item;
+                    const status = String(row.status || '');
+                    const delivery = desktopBotDeliveryFromOutbox(status, String(row.failed || ''));
+                    const retryable = row.retryable === true;
+                    const failedText = String(row.failed || '');
+                    if (delivery === 'admitted') {
+                        if (item.delivery === 'admitted' && !item.pending) return item;
+                        changed = true;
+                        return { ...item, delivery, deliveryRetryable: false, deliveryFailed: '' };
+                    }
+                    if (delivery === 'failed') {
+                        // Surface an unconfirmed/failed send. A still-pending
+                        // bubble is unparked so the failed delivery renders
+                        // with its own idempotent retry — it is never
+                        // auto-resent and never shown as done.
+                        changed = true;
+                        return { ...item, delivery, deliveryRetryable: retryable, deliveryFailed: failedText, pending: false, failed: true };
+                    }
+                    // queued / sent: still in transit, not done.
+                    if (item.delivery === delivery && item.deliveryRetryable === retryable) return item;
+                    changed = true;
+                    return { ...item, delivery, deliveryRetryable: retryable, deliveryFailed: failedText };
+                });
+                if (changed) commit(botId, next);
+            });
+        };
+        const handler = (payload: unknown) => {
+            let data: { items?: Array<{ id?: string; bot_id?: string; user_id?: string; status?: string; failed?: string; retryable?: boolean; text?: string }> };
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as typeof data;
+            } catch {
+                return;
+            }
+            if (!data || typeof data !== 'object') return;
+            reconcile(data.items || []);
+        };
+        const off = EventsOn('desktop-bot-outbox', handler);
+        // One snapshot on mount catches sends queued/failed before this page
+        // subscribed (including across a restart).
+        void DesktopBotOutboxSnapshot().then(snapshot => {
+            const items = (snapshot && (snapshot as { items?: unknown }).items) || [];
+            if (Array.isArray(items)) reconcile(items as never);
+        }).catch(() => {});
+        return () => { if (typeof off === 'function') off(); };
+    }, [userId]);
+
     // Another client of this person wrote to a transcript (multi-client
     // sync). Storage already holds the merge; the screen follows it.
     useEffect(() => {
@@ -6101,11 +6192,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // One ack bubble per command. A model line already on screen is not
         // followed by the neutral line. The neutral line lands only when the
         // wait produced nothing.
-        bindAckCommand(ackCommandsRef.current, botId, [assistantMessage.id, ticket]);
+        bindAckCommand(ackCommandsRef.current, botId, [userMessage.id, assistantMessage.id, ticket]);
         const putAckLine = (stored: DesktopBotMessage[], line: string, chips?: string[], anchorId?: string) => {
             const bubbleId = anchorId || assistantMessage.id;
             const bubble = stored.find(item => item.id === bubbleId);
-            const keys = bindAckCommand(ackCommandsRef.current, botId, [bubble?.requestId, bubbleId, ticket]);
+            const keys = bindAckCommand(ackCommandsRef.current, botId, [userMessage.id, bubble?.requestId, bubbleId, ticket]);
             const next = landFirstAck(stored, keys, line, lang, messageID, chips);
             if (!desktopBotIsPlaceholderAck(line, lang)) {
                 ackSaid = true;
@@ -6290,7 +6381,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             {
                 // From here the order is MaClawSrv's. A restart before this
                 // line leaves an orphan the next session offers to resend.
-                const marked = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, dispatched: true } : item);
+                // delivery:'sent' — handed off, not yet admitted by the Hub.
+                const marked = messagesForBot(ownerId, botId).map(item => item.id === assistantMessage.id ? { ...item, dispatched: true, delivery: 'sent' as DesktopBotDelivery } : item);
                 if (ownerLeft()) saveBotMessages(ownerId, botId, marked);
                 else commit(botId, marked);
             }
@@ -6366,7 +6458,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     pendingRef.current.delete(ticket);
                     pendingRef.current.set(requestId, pending);
                     const stored = messagesForBot(userId, botId);
-                    const keyed = stored.map(item => item.id === assistantMessage.id ? { ...item, requestId } : item);
+                    // requestId is the durable idempotent key the outbox uses.
+                    // deferred means Srv queued it, NOT that the Hub admitted
+                    // it — delivery stays 'sent' until the outbox emits
+                    // 'admitted' for this id. Bind clientMessageId so a retry
+                    // reuses it.
+                    const keyed = stored.map(item => item.id === assistantMessage.id ? { ...item, requestId, clientMessageId: requestId, delivery: 'sent' as DesktopBotDelivery } : item);
                     commit(botId, keyed);
                     // This job is admitted. The next one already read can start
                     // beside it. Waiting for this reply would put the chat back
@@ -6918,6 +7015,27 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const consumeNoReading = (botId: string, messageId: string) => {
         const stored = messagesForBot(userId, botId);
         commit(botId, stored.map(item => item.id === messageId && item.noReading ? { ...item, noReading: undefined } : item));
+    };
+
+    // Explicit, idempotent retry of an unconfirmed/failed delivery. The same
+    // request id is passed back so a duplicate admit binds to this bubble
+    // rather than a new line — the order is re-sent, not duplicated. Only a
+    // user click triggers it; nothing replays a delivery on its own, and an
+    // external side-effecting order is never auto-resent.
+    const retryDelivery = async (botId: string, messageId: string) => {
+        const stored = messagesForBot(userId, botId);
+        const target = stored.find(item => item.id === messageId);
+        const requestId = String(target?.clientMessageId || target?.requestId || '').trim();
+        if (!requestId) return;
+        commit(botId, stored.map(item => item.id === messageId ? { ...item, delivery: 'sent' as DesktopBotDelivery, deliveryFailed: '', failed: false } : item));
+        try {
+            await RelaunchDesktopBotOutbox(requestId);
+        } catch (error) {
+            const raw = error instanceof Error ? error.message : String(error || '');
+            const current = messagesForBot(userId, botId);
+            commit(botId, current.map(item => item.id === messageId ? { ...item, delivery: 'failed' as DesktopBotDelivery, deliveryFailed: raw || 'retry failed', deliveryRetryable: false, failed: true } : item));
+            void MarkDesktopBotOutboxFailed(requestId, raw || 'retry failed').catch(() => {});
+        }
     };
 
     const appendNote = (botId: string, content: string) => {
@@ -7772,6 +7890,24 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 void send(reply, undefined, true, undefined, true, message.conversation, message.runId || '');
                                             }}
                                         />
+                                    ) : null}
+                                    {/* Delivery truth from the durable outbox. 'sent' means the order left
+                                        this app but the Hub never confirmed it — shown as unconfirmed, not
+                                        done. 'failed' shows the error plus an explicit idempotent retry.
+                                        Nothing here re-sends on its own. */}
+                                    {message.role === 'assistant' && message.delivery === 'failed' ? (
+                                        <div className="desktop-bot-chat__delivery desktop-bot-chat__delivery--failed" data-testid="desktop-bot-delivery-failed">
+                                            <span className="desktop-bot-chat__delivery-text">{message.deliveryFailed ? `${text.deliveryFailedLabel} ${message.deliveryFailed}` : text.deliveryFailedLabel}</span>
+                                            {message.deliveryRetryable ? (
+                                                <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-delivery-retry" onClick={() => { void retryDelivery(selected.id, message.id); }}>{text.deliveryRetry}</button>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
+                                    {message.role === 'assistant' && message.delivery === 'sent' && !message.failed ? (
+                                        <div className="desktop-bot-chat__delivery desktop-bot-chat__delivery--pending" data-testid="desktop-bot-delivery-unconfirmed">
+                                            <span className="desktop-bot-chat__delivery-text">{text.deliveryUnconfirmed}</span>
+                                            <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-delivery-retry" onClick={() => { void retryDelivery(selected.id, message.id); }}>{text.deliveryRetry}</button>
+                                        </div>
                                     ) : null}
                                     {message.noReading ? (
                                         <div className="desktop-bot-chat__choices" data-testid="desktop-bot-no-reading">

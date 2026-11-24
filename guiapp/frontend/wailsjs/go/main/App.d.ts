@@ -2604,6 +2604,12 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 export function SendDesktopBotTaskTo(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.IMAgentResponse>;
 
+export function ListDesktopBotOutbox():Promise<Array<{key:string,id:string,bot_id:string,user_id:string,text:string,status:string,failed:string,retryable:boolean,created_at:number,dispatched_at:number,updated_at:number}>>;
+export function DesktopBotOutboxSnapshot():Promise<{items:Array<{key:string,id:string,bot_id:string,user_id:string,text:string,status:string,failed:string,retryable:boolean,created_at:number,dispatched_at:number,updated_at:number}>}>;
+export function DesktopBotSetOutboxStatus(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function MarkDesktopBotOutboxFailed(arg1:string,arg2:string):Promise<void>;
+export function RelaunchDesktopBotOutbox(arg1:string):Promise<void>;
+
 
 export function UploadDesktopBotMaterialChunk(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number,arg6:string):Promise<{upload_id:string,name:string,received:number,total:number,done:boolean,path?:string}>;
 

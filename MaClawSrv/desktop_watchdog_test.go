@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +266,119 @@ func TestLedgerPendingAndRecent(t *testing.T) {
 	}
 	if _, ok := desktopLedgerRecentPost(es, "creator.xiaohongshu.com", "另一篇", now); ok {
 		t.Fatal("other title blocked")
+	}
+}
+
+func TestHonestPartialNamesTheStructuredGap(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-honest"}
+	runID := "run_honest_partial"
+	noteParsedDeliverableContract(runID, []agent.DesktopDeliverable{
+		{ID: "a", Kind: "file", Text: "报告"},
+		{ID: "b", Kind: "file", Text: "附件"},
+	}, false, "")
+	t.Cleanup(func() { desktopOutputContracts.Delete(runID) })
+	msg := &agentservice.Message{Content: "报告好了", Attachments: []agent.MessageAttachment{{
+		Type: "file", FileName: "a.pdf", Data: "JVBERg==", Delivery: agent.AttachmentDeliveryFile, ItemID: "a",
+	}}}
+	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: runID, Status: agentservice.RunStatusSucceeded}, msg, nil, false, false)
+	if got.Metadata["task_outcome"] != agentservice.TaskOutcomePartial || got.Metadata["output_contract_outcome"] != agentservice.TaskOutcomePartial {
+		t.Fatalf("true partial not recorded: %+v", got.Metadata)
+	}
+	if strings.Contains(got.Content, "只完成了一部分") || !strings.Contains(got.Content, "已完成：a 报告") || !strings.Contains(got.Content, "未完成：b 附件") || !strings.Contains(got.Content, "原因：未知") {
+		t.Fatalf("partial notice = %q", got.Content)
+	}
+	if !strings.Contains(got.Content, "未完成：b 附件") || !strings.Contains(got.Metadata["output_contract"], `"b"`) {
+		t.Fatalf("gap not stored: content %q contract %q", got.Content, got.Metadata["output_contract"])
+	}
+}
+
+func TestFilePresentButDeliveryFailedStaysPartial(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-honest"}
+	runID := "run_honest_delivery"
+	noteParsedDeliverableContract(runID, []agent.DesktopDeliverable{
+		{ID: "a", Kind: "file", Text: "报告"},
+	}, false, "")
+	t.Cleanup(func() { desktopOutputContracts.Delete(runID) })
+	msg := &agentservice.Message{
+		Content: "报告在这条消息里",
+		Metadata: map[string]string{
+			"desktop_delivery_failures": "DESKTOP_OUTPUT_UNREADABLE /work/report.pdf: permission denied",
+		},
+		Attachments: []agent.MessageAttachment{{
+			Type: "file", FileName: "note.txt", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile,
+		}},
+	}
+	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: runID, Status: agentservice.RunStatusSucceeded}, msg, nil, false, false)
+	if got.Metadata["task_outcome"] != agentservice.TaskOutcomePartial || got.Metadata["output_contract_outcome"] == agentservice.TaskOutcomeDone {
+		t.Fatalf("failed delivery closed the contract: %+v", got.Metadata)
+	}
+	if strings.Contains(got.Content, "只完成了一部分") || !strings.Contains(got.Content, "DESKTOP_OUTPUT_UNREADABLE") || !strings.Contains(got.Content, "未完成：a 报告") {
+		t.Fatalf("delivery notice = %q", got.Content)
+	}
+}
+
+func TestCorrectedFailureIsNotPartial(t *testing.T) {
+	runID := "run_honest_corrected"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-honest", RunID: runID}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[runID] = true
+	desktopRecStateMu.Unlock()
+	t.Cleanup(func() {
+		desktopRecStateMu.Lock()
+		delete(desktopRecRunSteps, runID)
+		desktopRecStateMu.Unlock()
+		desktopClearFinish(runID)
+	})
+	desktopNoteStepResult(scope, fmt.Errorf("first attempt failed"))
+	desktopNoteWorkStep(scope, "bash", fmt.Errorf("first attempt failed"))
+	desktopNoteStepResult(scope, nil)
+	desktopNoteWorkStep(scope, "bash", nil)
+	if _, err := desktopFinishTurn(scope, map[string]any{"outcome": "done", "text": "已经改好了。"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &agentservice.Message{Content: "已经改好了。"}
+	got := desktopEnsureReceipt(scope, &agentservice.Run{ID: runID, Status: agentservice.RunStatusSucceeded}, msg, nil, false, false)
+	if got.Metadata["task_outcome"] != agentservice.TaskOutcomeDone || got.Metadata["output_contract_outcome"] == agentservice.TaskOutcomePartial {
+		t.Fatalf("corrected success stayed partial: %+v", got.Metadata)
+	}
+	if strings.Contains(got.Content, "只完成了一部分") || strings.Contains(got.Metadata["send_to_user"], "只完成了一部分") {
+		t.Fatalf("failure template after a correction: %q", got.Content)
+	}
+}
+
+func TestPartialWithoutEvidenceSaysUnknown(t *testing.T) {
+	notice := desktopOutcomeNotice(agentservice.TaskOutcomePartial, "", "做了一些")
+	if strings.Contains(notice, "只完成了一部分") || !strings.Contains(notice, "已完成：未知") || !strings.Contains(notice, "未完成：未知") || !strings.Contains(notice, "原因：未知") {
+		t.Fatalf("unknown notice = %q", notice)
+	}
+	why := "output contract incomplete: done 1 of 2 (files 1, live posts 0); not done: 1 required outputs have no attributed evidence; known blocker: unknown"
+	got := desktopOutcomeNotice(agentservice.TaskOutcomePartial, why, "")
+	if strings.Contains(got, "只完成了一部分") || !strings.Contains(got, "原因：未知") || !strings.Contains(got, "未完成：1 required outputs") {
+		t.Fatalf("unattributed notice = %q", got)
+	}
+	runID := "run_honest_unknown_goal"
+	scope := agentruntime.Scope{TenantID: "t", UserID: "u-honest", RunID: runID}
+	desktopRecStateMu.Lock()
+	desktopRecRunSteps[runID] = true
+	desktopRecStateMu.Unlock()
+	t.Cleanup(func() {
+		desktopRecStateMu.Lock()
+		delete(desktopRecRunSteps, runID)
+		desktopRecStateMu.Unlock()
+	})
+	desktopNoteStepResult(scope, fmt.Errorf("step failed"))
+	desktopNoteWorkStep(scope, "bash", nil)
+	desktopNoteStepResult(scope, fmt.Errorf("step failed"))
+	msg := &agentservice.Message{Content: "这件没做完"}
+	receipt := desktopEnsureReceipt(scope, &agentservice.Run{ID: runID, Status: agentservice.RunStatusSucceeded}, msg, nil, false, false)
+	if receipt.Metadata["task_outcome"] != agentservice.TaskOutcomePartial {
+		t.Fatalf("failed step after real work was not partial: %+v", receipt.Metadata)
+	}
+	visible := receipt.Content + "\n" + receipt.Metadata["send_to_user"]
+	if strings.Contains(visible, "只完成了一部分") || !strings.Contains(visible, "原因：未知") || !strings.Contains(visible, "已完成：") {
+		t.Fatalf("unknown failure notice = %q", visible)
+	}
+	if strings.Contains(receipt.Metadata["send_to_user"], "请你") || strings.Contains(receipt.Metadata["send_to_user"], "你说一声") {
+		t.Fatalf("unknown cause asked the user: %q", receipt.Metadata["send_to_user"])
 	}
 }

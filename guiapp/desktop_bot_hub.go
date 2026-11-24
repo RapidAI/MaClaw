@@ -1320,6 +1320,7 @@ func forgetAdmitCancelSent(keys ...string) {
 // already stopped, cancels that run before the page waits on it.
 func (a *App) nameAdmittedDesktopRun(botID, requestID, runID string) error {
 	a.setActiveDesktopRunID(botID, requestID, runID)
+	a.desktopBotOutboxMarkAdmitted(botID, requestID)
 	if !takeAdmitCancel(botID, requestID) {
 		return nil
 	}
@@ -1336,15 +1337,20 @@ func (a *App) setActiveDesktopRunID(botID, requestID, runID string) {
 		return
 	}
 	activeDesktopRunsMu.Lock()
-	defer activeDesktopRunsMu.Unlock()
 	placeholder := desktopRunKey(botID, requestID)
 	run, exists := activeDesktopRuns[placeholder]
 	if !exists || run == nil {
+		activeDesktopRunsMu.Unlock()
 		return
 	}
 	delete(activeDesktopRuns, placeholder)
 	run.RunID = runID
 	activeDesktopRuns[desktopRunKey(botID, runID)] = run
+	activeDesktopRunsMu.Unlock()
+	requestID = strings.TrimSpace(requestID)
+	if a != nil && requestID != "" {
+		a.publishDesktopRunState(botID, requestID, runID, "running")
+	}
 }
 
 func unregisterActiveDesktopRun(botID, requestID, runID string) {
@@ -1620,16 +1626,21 @@ func (a *App) reportDesktopSupplementState(botID, sessionKey, runID string) {
 func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase string) {
 	run := a.registerActiveDesktopRun(botID, requestID, sessionKey, text, phase)
 	a.publishDesktopRunDriving(botID)
-	a.publishDesktopRunState(botID, requestID, "", "running")
+	// Running is published only once Hub names a run. An empty id here is the
+	// placeholder, and writing it as running/done makes a settled chat look
+	// like work that started and finished.
 	// The run id has to be read inside the closure. A bare defer would freeze
 	// the value it had when armed, which is the empty placeholder, because Hub
 	// only names the run later; the entry would then be re-keyed under the real
 	// id and never removed, and every finished run would go on being offered as
 	// a supplement target.
 	defer func() {
-		unregisterActiveDesktopRun(botID, requestID, run.RunID)
+		runID := strings.TrimSpace(run.RunID)
+		unregisterActiveDesktopRun(botID, requestID, runID)
 		a.publishDesktopRunDriving(botID)
-		a.publishDesktopRunState(botID, requestID, run.RunID, "done")
+		if runID != "" {
+			a.publishDesktopRunState(botID, requestID, runID, "done")
+		}
 		clearDesktopContinueSession(requestID)
 	}()
 	started := time.Now()
@@ -1652,6 +1663,13 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	waiting := false
 	if err != nil {
 		resp.Error = err.Error()
+		// The turn never reached an admitted run (run.RunID is still the
+		// placeholder): the send failed before Hub could confirm it. Keep it
+		// in the outbox as a visible, retryable failure instead of letting the
+		// local bubble look like it executed.
+		if strings.TrimSpace(run.RunID) == "" {
+			a.desktopBotOutboxMarkFailed(requestID, err.Error(), isDesktopBotRetryableErr(err))
+		}
 		if novnc, ok := a.desktopTimeoutHandoff(botID, err); ok {
 			resp.DesktopHandoffURL = novnc
 			resp.DesktopUserControl = true
@@ -2133,6 +2151,17 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 			botlog.Write(botID, "gui.schedule", armErr)
 		}
 	}
+	// A settled sentence with no run is the reply. Copy it onto send_to_user
+	// so a hub that only filled text is still visible, and so this path does
+	// not fall through into a run wait.
+	if strings.TrimSpace(out.RunID) == "" && strings.TrimSpace(out.SendToUser) == "" {
+		if spoken := firstNonEmpty(out.Text, out.Ack); spoken != "" && !strings.EqualFold(strings.TrimSpace(out.Status), "running") {
+			out.SendToUser = spoken
+			if strings.TrimSpace(out.Text) == "" {
+				out.Text = spoken
+			}
+		}
+	}
 	if out.Queued && strings.TrimSpace(out.RunID) == "" {
 		a.noteDesktopBotQueued(botID, "")
 		runID, outcome, pollErr := a.pollDesktopBotQueue(ctx, botID, requestID)
@@ -2140,18 +2169,22 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 			return desktopBotRelayResult{}, pollErr
 		}
 		if outcome != "" {
-			result, wireErr := a.desktopRelayFromWire(outcome, "", "", "", "", "", "", "", false, nil, nil, "", "")
+			result, wireErr := a.desktopRelayFromWire(outcome, outcome, "", "", "", "", "", "", false, nil, nil, "", "")
 			return result, wireErr
 		}
 		if runID == "" {
-			result, wireErr := a.desktopRelayFromWire(firstNonEmpty(out.Ack, out.Text), "", "", "", "", "", "", "", false, nil, nil, "", "")
+			spoken := firstNonEmpty(out.SendToUser, out.Ack, out.Text)
+			result, wireErr := a.desktopRelayFromWire(spoken, spoken, "", "", "", "", "", "", false, nil, nil, "", "")
 			return result, wireErr
 		}
 		out.RunID = runID
 		out.Text = ""
 		status = http.StatusAccepted
 	}
-	if status == http.StatusAccepted && strings.TrimSpace(out.RunID) != "" && strings.TrimSpace(out.Text) == "" {
+	// 202 with a run and no sentence is a run to wait on. accepted=false, or a
+	// sentence already spoken, is not a start. Waiting on it would drop the
+	// request and then publish an empty done.
+	if status == http.StatusAccepted && out.Accepted && strings.TrimSpace(out.RunID) != "" && strings.TrimSpace(out.Text) == "" && strings.TrimSpace(out.SendToUser) == "" {
 		botlog.Write(botID, "gui.admit", nil,
 			"run", strings.TrimSpace(out.RunID),
 			"http", strconv.Itoa(status),

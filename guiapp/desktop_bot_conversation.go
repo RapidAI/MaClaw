@@ -281,7 +281,14 @@ func (a *App) publishDesktopRunState(botID, requestID, runID, state string) {
 	if a == nil || botID == "" || requestID == "" || !desktopConvAutoPublish() {
 		return
 	}
-	data, _ := json.Marshal(map[string]string{"state": state, "run_id": strings.TrimSpace(runID), "request_id": requestID})
+	runID = strings.TrimSpace(runID)
+	state = strings.TrimSpace(state)
+	// An empty run id is the local placeholder. Publishing it as running or
+	// done makes another client treat a settled chat as work that started.
+	if runID == "" {
+		return
+	}
+	data, _ := json.Marshal(map[string]string{"state": state, "run_id": runID, "request_id": requestID})
 	owner := a.desktopBotAccountUserID()
 	desktopConvGo(func() {
 		if err := a.PublishDesktopBotConversation(owner, []DesktopBotConversationWrite{{BotID: botID, ID: "run:" + requestID, Kind: "run", Data: data}}); err != nil {

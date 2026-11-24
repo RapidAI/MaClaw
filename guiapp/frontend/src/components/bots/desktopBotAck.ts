@@ -397,17 +397,24 @@ export function landFirstAck<T extends FirstAckMessage>(
     const anchorAt = messages.findIndex(item => keySet.has(item.id) || (!!item.requestId && keySet.has(item.requestId)));
     // A queue note is also ack:true. It is not this command's first reply,
     // so it must not swallow the model line. A placeholder counts only when
-    // it sits on this command.
+    // it sits beside this command's anchor.
     const onThisCommand = (item: T | undefined) => {
         if (!item || !item.ack) return false;
         if (item.ackFor && keySet.has(item.ackFor)) return true;
-        if (desktopBotIsPlaceholderAck(String(item.content || ''), lang)) return true;
-        return item.understood === true && !item.ackFor;
+        // A stock line is not a command. It counts only beside this command's
+        // anchor, so a placeholder from the previous order cannot swallow this one.
+        return false;
     };
     let ackAt = messages.findIndex(item => !!item.ack && !!item.ackFor && keySet.has(item.ackFor));
     if (ackAt < 0 && anchorAt > 0 && onThisCommand(messages[anchorAt - 1])) ackAt = anchorAt - 1;
     if (ackAt < 0 && anchorAt >= 0 && anchorAt + 1 < messages.length && onThisCommand(messages[anchorAt + 1])) ackAt = anchorAt + 1;
-    const ackFor = keys[0];
+    // startTask binds the pending assistant bubble before the user line is in
+    // the set. keys[0] is then that assistant id. The ack names the person's
+    // command, which is the user bubble when it is already on the transcript.
+    const userAnchor = anchorAt > 0 && messages[anchorAt - 1].role === 'user' && keySet.has(messages[anchorAt - 1].id)
+        ? messages[anchorAt - 1].id
+        : '';
+    const ackFor = userAnchor || messages.find(item => item.role === 'user' && keySet.has(item.id))?.id || keys[0];
     if (ackAt >= 0) {
         const current = messages[ackAt];
         const currentPlaceholder = desktopBotIsPlaceholderAck(String(current.content || ''), lang);
@@ -417,7 +424,7 @@ export function landFirstAck<T extends FirstAckMessage>(
             ...current,
             content: text,
             ack: true,
-            understood: true,
+            understood: currentPlaceholder ? !incomingPlaceholder : current.understood === true,
             ackFor: current.ackFor || ackFor,
             ...(options && options.length ? { options } : {}),
         };
@@ -428,7 +435,7 @@ export function landFirstAck<T extends FirstAckMessage>(
         role: 'assistant',
         content: text,
         ack: true,
-        understood: true,
+        understood: !incomingPlaceholder,
         ackFor,
         ...(options && options.length ? { options } : {}),
     } as T;

@@ -345,6 +345,22 @@ func TestHubContinueOnlyWhileARunIsLive(t *testing.T) {
 	fake.mu.Unlock()
 }
 
+func TestHubSettledReplyIsVisibleAndStartsNoRun(t *testing.T) {
+	fake := &intakeSrv{intake: `{"kind":"reply","ack":"在的，说吧。","told":"在的，说吧。","pace":"direct"}`}
+	srv := httptest.NewServer(http.HandlerFunc(fake.handle))
+	defer srv.Close()
+	svc := newTurnKeyService(t, srv)
+	got, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "你好", "execute", "turn-hi")
+	if err != nil || !got.Settled || got.RunID != "" || got.Reply.Text != "在的，说吧。" || got.Reply.SendToUser != "在的，说吧。" {
+		t.Fatalf("settled reply = %+v %v", got, err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.posts) != 0 {
+		t.Fatalf("a settled reply started a run: %v", fake.posts)
+	}
+}
+
 func TestHubSpecQuestionDoesNotStartARun(t *testing.T) {
 	fake := &intakeSrv{intake: `{"kind":"ask","instruction":"周报，收件人未定","ack":"发给谁？","told":"发给谁？","pace":"ask","phase":"plan","spec":true}`}
 	srv := httptest.NewServer(http.HandlerFunc(fake.handle))

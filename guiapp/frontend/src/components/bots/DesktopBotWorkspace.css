@@ -1932,6 +1932,39 @@
     gap: 6px;
 }
 
+/* Delivery truth from the durable outbox: unconfirmed sent and failed are
+   shown, never dressed up as done. The retry is an explicit user action. */
+.desktop-bot-chat__delivery {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 0.82em;
+    line-height: 1.4;
+}
+
+.desktop-bot-chat__delivery--pending {
+    background: var(--theme-surface-2, rgba(127, 127, 127, 0.10));
+    color: var(--theme-text-dim, inherit);
+}
+
+.desktop-bot-chat__delivery--failed {
+    background: rgba(200, 60, 60, 0.12);
+    color: var(--theme-danger, #b03030);
+}
+
+.desktop-bot-chat__delivery-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.desktop-bot-chat__delivery .desktop-bot-chat__action {
+    flex: 0 0 auto;
+}
+
 .desktop-bot-chat__choices button {
     display: flex;
     align-items: center;

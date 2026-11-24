@@ -2974,6 +2974,7 @@ func (a *App) SendDesktopBotTaskTo(botID, text, phase, continueSession, askRun s
 	requestID := fmt.Sprintf("desktop-bot-%d", time.Now().UnixNano())
 	setDesktopContinueSession(requestID, continueSession)
 	setDesktopAskRun(requestID, askRun)
+	a.desktopBotOutboxSeed(botID, userID, requestID, text)
 	log.Printf("[desktop bot] enqueue request_id=%s user=%q instance=%q phase=%s text_len=%d", requestID, userID, instanceID, phase, len(text))
 	botlog.Write(botID, "gui.enqueue", nil,
 		"request_id", requestID,

@@ -99,6 +99,102 @@ func TestIntakeReplyAskScheduleAndStatus(t *testing.T) {
 	}
 }
 
+// A work request the model mislabels as small talk must still be a job: when
+// the reply decision itself carries a work order, that order is the signal it
+// is work, so the message is admitted instead of settling as chatter. Bot3's
+// 「测试接口」 hit exactly this: kind reply with an instruction, and the order
+// was silently dropped.
+func TestIntakeShortWorkOrderMislabeledChatStillRuns(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "测试接口"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"reply","run":0,"instruction":"调用测试接口并回报结果","ack":"我去测试接口。","pace":"reply"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Instruction != "调用测试接口并回报结果" || got.Phase != "execute" {
+		t.Fatalf("mislabeled work = %+v %v", got, err)
+	}
+	// The same rescue applies to kind names the canonicalizer maps to
+	// reply, such as chat.
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "测试接口"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"chat","run":0,"instruction":"调用测试接口","ack":"好。","pace":"reply"}`, nil
+	})
+	if err != nil || got.Kind != "new" || got.Instruction != "调用测试接口" {
+		t.Fatalf("chat-labeled work = %+v %v", got, err)
+	}
+	// A missing-fact question must not become a run even when it repeats
+	// the work order it is asking about.
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "帮我发周报"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"instruction":"发周报","ack":"发给谁？","told":"要发给谁？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Instruction != "" || got.Told != "要发给谁？" {
+		t.Fatalf("ask = %+v %v", got, err)
+	}
+	// Bare small talk with no order stays a settled reply.
+	got, err = svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "谢谢"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"reply","run":0,"instruction":"","ack":"不客气。","told":"不客气，有事喊我。","pace":"reply"}`, nil
+	})
+	if err != nil || got.Kind != "reply" || got.Instruction != "" || got.Told != "不客气，有事喊我。" {
+		t.Fatalf("chat = %+v %v", got, err)
+	}
+}
+
+// The harder mislabel is a reply decision that drops the order entirely:
+// instruction comes back empty, so nothing the model wrote marks it as work.
+// The only signal left is the message's own imperative head — a verb that
+// commands this bot. 「测试接口」, 「测试下接口」, and an explicit order to
+// configure an MCP must each open a run even when classified reply with no
+// instruction; real small talk and a missing-fact question must not.
+func TestIntakeEmptyInstructionImperativeStillRuns(t *testing.T) {
+	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
+	defer svc.Close()
+	reply := func(context.Context, string, string) (string, error) {
+		return `{"kind":"reply","run":0,"instruction":"","ack":"好。","pace":"reply"}`, nil
+	}
+	// Each is an explicit order to this bot: the verb sits in the imperative
+	// head. instruction is empty in the decision, yet a run must still open.
+	for _, content := range []string{
+		"测试接口", "测试下接口", "配置一下 MCP", "测试一下连接", "调用接口",
+		// Polite lead-ins still carry the imperative order: the verb follows
+		// the request marker, so these must open a run too.
+		"帮我测试接口", "请帮我配置MCP", "麻烦运行一下", "给我调用接口",
+		// English bare verbs and verb+punctuation lead an order as well.
+		"test", "run.", "call the api",
+	} {
+		got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: content}, reply)
+		if err != nil || got.Kind != "new" || got.Instruction != content || got.Phase != "execute" {
+			t.Fatalf("empty-instruction imperative %q = %+v %v", content, got, err)
+		}
+	}
+	// Real small talk stays a settled reply — none of these opens a run.
+	for _, tc := range []struct{ content, wantTold string }{
+		{"谢谢", "不客气。"},
+		{"好的", "好。"},
+		{"在吗", "我在。"},
+		{"你是谁", "我是你的助手。"},
+		// A lead-in that does not precede a work verb, and an English word that
+		// merely starts with a verb stem, stay settled replies.
+		{"请问", "请讲。"},
+		{"给我讲个故事", "从前有个机器人。"},
+		{"testing", "在的。"},
+		{"runner", "在的。"},
+	} {
+		got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: tc.content}, func(context.Context, string, string) (string, error) {
+			return `{"kind":"reply","run":0,"instruction":"","ack":"` + tc.wantTold + `","told":"` + tc.wantTold + `","pace":"reply"}`, nil
+		})
+		if err != nil || got.Kind != "reply" || got.Instruction != "" || got.RunID != "" {
+			t.Fatalf("small talk %q = %+v %v", tc.content, got, err)
+		}
+	}
+	// A message missing a fact it needs stays ask, never a run — even though
+	// the order it half-states would otherwise read as work.
+	got, err := svc.IntakeBotMessage(context.Background(), p, inst.ID, BotIntakeInput{BotID: "bot_p", Content: "配置一下 MCP"}, func(context.Context, string, string) (string, error) {
+		return `{"kind":"ask","run":0,"instruction":"配置 MCP","ack":"要配置哪个 MCP？","told":"要配置哪个 MCP？","pace":"ask"}`, nil
+	})
+	if err != nil || got.Kind != "ask" || got.Instruction != "" || got.RunID != "" {
+		t.Fatalf("missing-fact ask = %+v %v", got, err)
+	}
+}
+
 func TestIntakeTimeoutAndGarbageBecomeANewTask(t *testing.T) {
 	svc, p, inst := setupCaptureAgentService(t, &captureExecutor{})
 	defer svc.Close()

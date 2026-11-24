@@ -197,6 +197,47 @@ func TestTimeoutAttachesTheDesktopOnlyWhenThePersonHasIt(t *testing.T) {
 	}
 }
 
+func TestSettledChatPublishesNoEmptyRunDone(t *testing.T) {
+	app := &App{}
+	var got *IMAgentResponse
+	var published []string
+	prevGo := desktopConvGo
+	prevPublish := desktopConvTestPublish
+	prevUser := shareAccessRemoteUserOverride
+	desktopBotResultSink = func(resp *IMAgentResponse) { got = resp }
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		return desktopBotRelayResult{Text: "在的，说吧。", SendToUser: "在的，说吧。"}, nil
+	}
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		raw, _ := json.Marshal(body)
+		published = append(published, method+" "+path+" "+string(raw))
+		if dest != nil {
+			fillDesktopBotDest(t, dest, map[string]any{"head": 1, "assigned": []any{}})
+		}
+		return http.StatusOK, nil
+	}
+	desktopConvGo = func(f func()) { f() }
+	desktopConvTestPublish = true
+	shareAccessRemoteUserOverride = "alice"
+	t.Cleanup(func() {
+		desktopBotRelayOverride = nil
+		desktopBotResultSink = nil
+		desktopBotExchangeOverride = nil
+		desktopConvGo = prevGo
+		desktopConvTestPublish = prevPublish
+		shareAccessRemoteUserOverride = prevUser
+	})
+	app.finishDesktopBotTask("desktop-bot-hi", "alice:bot_1", "bot_1", "你好", "execute")
+	if got == nil || got.SendToUser != "在的，说吧。" || strings.TrimSpace(got.RunID) != "" {
+		t.Fatalf("settled chat = %#v", got)
+	}
+	for _, line := range published {
+		if strings.Contains(line, `"state":"done"`) || strings.Contains(line, `"state":"running"`) || strings.Contains(line, `"run_id":""`) {
+			t.Fatalf("settled chat published a run state: %s", line)
+		}
+	}
+}
+
 func TestDesktopAddressOnAFinishedReplyIsNotAHandoff(t *testing.T) {
 	app := &App{}
 	var got *IMAgentResponse

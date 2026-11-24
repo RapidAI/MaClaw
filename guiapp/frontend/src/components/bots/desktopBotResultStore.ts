@@ -187,7 +187,7 @@ export function handleDesktopBotResult(payload: unknown) {
     const sessionKey = String(data.session_key || data.SessionKey || '');
     const split = sessionKey.lastIndexOf(':');
     if (split <= 0) return;
-    const result = responseText(data);
+    const result = responseText(settledVisiblePayload(data));
     const screen = screenOf(data);
     const attached = attachedFiles(data, result.failed);
     const resultUser = sessionKey.slice(0, split);
@@ -306,6 +306,20 @@ export function attachedFiles(data: Record<string, unknown>, failed: boolean) {
 
 function desktopTurnHasAttachment(images: unknown[] | undefined, shotPaths: string[] | undefined, attached: { files?: unknown[]; localPaths?: string[] }, attachmentIds?: string[]) {
     return (images && images.length > 0) || (shotPaths && shotPaths.length > 0) || (attachmentIds && attachmentIds.length > 0) || (attached.files && attached.files.length > 0) || (attached.localPaths && attached.localPaths.length > 0);
+}
+
+// settledVisiblePayload keeps a finished sentence that arrived only as text
+// or ack. The visible layer reads send_to_user; without this copy a settled
+// chat is silent, the pending bubble is deleted, and the stock start line
+// is what remains. A named run is not rewritten: its sentence is send_to_user.
+export function settledVisiblePayload(payload: Record<string, unknown>): Record<string, unknown> {
+    const runId = String(payload.run_id || payload.RunID || '').trim();
+    if (runId) return payload;
+    const send = String(payload.send_to_user ?? payload.SendToUser ?? '').trim();
+    if (send) return payload;
+    const ack = String(payload.ack || payload.Ack || '').trim();
+    if (!ack || isDesktopBotFiller(ack)) return payload;
+    return { ...payload, send_to_user: ack };
 }
 
 export function responseText(payload: Record<string, unknown>) {

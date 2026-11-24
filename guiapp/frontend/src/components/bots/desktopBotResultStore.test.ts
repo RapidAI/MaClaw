@@ -43,6 +43,21 @@ describe('desktop bot voice readback', () => {
         expect(speak.fn).toHaveBeenCalledWith('做好了。');
     });
 
+    it('keeps a settled sentence that arrived only as text, and starts no run', () => {
+        saveBotMessages('alice', 'bot_1', [pendingReply('desktop-bot-hi')]);
+        handleDesktopBotResult({
+            request_id: 'desktop-bot-hi',
+            session_key: 'alice:bot_1',
+            text: '过程记录',
+            ack: '在的，说吧。',
+        });
+        const stored = messagesForBot('alice', 'bot_1');
+        expect(stored).toHaveLength(1);
+        expect(stored[0]?.content).toBe('在的，说吧。');
+        expect(stored[0]?.pending).toBe(false);
+        expect(stored[0]?.runId || '').toBe('');
+    });
+
     it('does not speak when the result drops without a bubble', () => {
         saveBotMessages('alice', 'bot_1', [pendingReply('desktop-bot-r2')]);
         handleDesktopBotResult(resultPayload('desktop-bot-r2', ''));
