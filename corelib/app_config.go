@@ -116,6 +116,13 @@ type AppConfig struct {
 	SkillRunnerTimeoutSec    int                 `json:"skill_runner_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
+	// CloudAgentLLMProvider is the 云端 Agent 全局默认模型：空 = MaClaw 官方；
+	// 否则命名 maclaw_llm_providers 里的一行（优先按 ID 匹配，再按名称）。
+	// 新建云端实例时由 CreateCloudAgent 自动应用，保存设置时扇出到现有实例。
+	CloudAgentLLMProvider string `json:"cloud_agent_llm_provider,omitempty"`
+	// CloudAgentLLMModel pins the model within the default provider; empty
+	// uses the provider's own default model.
+	CloudAgentLLMModel string `json:"cloud_agent_llm_model,omitempty"`
 	// MaclawLLMProfiles separates model selection for general assistance from
 	// coding work and an optional Computer Use caption model. A nil value means
 	// this is a legacy single-profile config and must be resolved lazily without

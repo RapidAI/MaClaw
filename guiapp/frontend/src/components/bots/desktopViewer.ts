@@ -6,6 +6,13 @@
 
 export type DesktopViewer = 'h264' | 'vnc';
 
+// w/fps ride the h264.html query straight onto the /h264 socket. Encoding at
+// the stage's pixel size instead of the remote's native resolution cuts the
+// decoded frame + canvas cost in the iframe's own renderer — a 1440p-class
+// feed grew that renderer ~900MB in minutes and it died to the OOM page.
+// The gate only lets fps go below its env default, never above.
+export type DesktopStreamSpec = { w?: number; fps?: number };
+
 export const DESKTOP_VIEWER_KEY = 'maclaw.desktop.viewer';
 
 export function loadDesktopViewer(): DesktopViewer {
@@ -27,7 +34,7 @@ export function saveDesktopViewer(viewer: DesktopViewer): void {
 // h264FrameSrc turns a noVNC page URL (already carrying view_only) into the
 // sibling h264.html with the same view_only, and the noVNC page as the
 // player's fallback in ?vnc=. A URL that is not a vnc.html page is kept.
-export function h264FrameSrc(vncSrc: string): string {
+export function h264FrameSrc(vncSrc: string, stream?: DesktopStreamSpec): string {
     if (!vncSrc) return '';
     const hashAt = vncSrc.indexOf('#');
     const base = hashAt >= 0 ? vncSrc.slice(0, hashAt) : vncSrc;
@@ -38,9 +45,12 @@ export function h264FrameSrc(vncSrc: string): string {
     if (path.slice(slash + 1) !== 'vnc.html') return vncSrc;
     const viewOnly = query.split('&').find(part => part.startsWith('view_only=')) || 'view_only=1';
     const fallback = 'vnc.html' + (query ? '?' + query : '');
-    return `${path.slice(0, slash + 1)}h264.html?${viewOnly}&vnc=${encodeURIComponent(fallback)}`;
+    let out = `${path.slice(0, slash + 1)}h264.html?${viewOnly}&vnc=${encodeURIComponent(fallback)}`;
+    if (stream?.w && stream.w > 0) out += `&w=${Math.round(stream.w)}`;
+    if (stream?.fps && stream.fps > 0) out += `&fps=${Math.round(stream.fps)}`;
+    return out;
 }
 
-export function desktopViewerSrc(vncSrc: string, viewer: DesktopViewer): string {
-    return viewer === 'h264' ? h264FrameSrc(vncSrc) : vncSrc;
+export function desktopViewerSrc(vncSrc: string, viewer: DesktopViewer, stream?: DesktopStreamSpec): string {
+    return viewer === 'h264' ? h264FrameSrc(vncSrc, stream) : vncSrc;
 }

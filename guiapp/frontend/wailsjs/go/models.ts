@@ -2333,7 +2333,9 @@ export namespace corelib {
 	    skill_runner_timeout_sec?: number;
 	    maclaw_llm_providers?: MaclawLLMProvider[];
 	    maclaw_llm_current_provider?: string;
-	    llm_prompt_cache?: LLMPromptCacheConfig;
+	    cloud_agent_llm_provider?: string;
+	    cloud_agent_llm_model?: string;
+    llm_prompt_cache?: LLMPromptCacheConfig;
 	    office_read_engine?: string;
 	    office_read_formats?: string[];
 	    office_read_scope_migrated?: boolean;
@@ -2641,6 +2643,8 @@ export namespace corelib {
 	        this.skill_runner_timeout_sec = source["skill_runner_timeout_sec"];
 	        this.maclaw_llm_providers = this.convertValues(source["maclaw_llm_providers"], MaclawLLMProvider);
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
+	        this.cloud_agent_llm_provider = source["cloud_agent_llm_provider"];
+	        this.cloud_agent_llm_model = source["cloud_agent_llm_model"];
 	        this.llm_prompt_cache = this.convertValues(source["llm_prompt_cache"], LLMPromptCacheConfig);
 	        this.office_read_engine = source["office_read_engine"];
 	        this.office_read_formats = source["office_read_formats"];

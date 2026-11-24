@@ -25,4 +25,17 @@ describe('desktop viewer', () => {
         expect(desktopViewerSrc('http://x/vnc.html?view_only=1', 'vnc')).toBe('http://x/vnc.html?view_only=1');
         expect(desktopViewerSrc('http://x/vnc.html?view_only=1', 'h264')).toBe('http://x/h264.html?view_only=1&vnc=vnc.html%3Fview_only%3D1');
     });
+
+    it('appends the stream spec to the h264 page only', () => {
+        const vnc = 'http://x/vnc.html?view_only=1&autoconnect=1';
+        const src = desktopViewerSrc(vnc, 'h264', { w: 1440.6, fps: 10 });
+        const url = new URL(src);
+        expect(url.pathname).toBe('/h264.html');
+        expect(url.searchParams.get('w')).toBe('1441');
+        expect(url.searchParams.get('fps')).toBe('10');
+        expect(url.searchParams.get('vnc')).toBe('vnc.html?view_only=1&autoconnect=1');
+        // noVNC ignores the spec, and a non-vnc page never gains params.
+        expect(desktopViewerSrc(vnc, 'vnc', { w: 800, fps: 5 })).toBe(vnc);
+        expect(desktopViewerSrc('http://x/other.html?a=1', 'h264', { w: 800 })).toBe('http://x/other.html?a=1');
+    });
 });

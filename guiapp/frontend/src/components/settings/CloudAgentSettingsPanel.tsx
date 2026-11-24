@@ -4,11 +4,13 @@ import {
     GetCloudSrvChoice,
     GetMaclawLLMProviders,
     ListCloudAgents,
+    PatchConfigFields,
     ProbeCloudSrvSSH,
     ResetCloudAgentLLM,
     SetCloudAgentLLM,
     SetCloudSrvChoice,
 } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 
 type CloudSrvNode = {
@@ -39,6 +41,7 @@ type CloudAgentList = {
 };
 
 type MaclawLLMProvider = {
+    id?: string;
     name: string;
     url: string;
     key: string;
@@ -52,8 +55,6 @@ type MaclawLLMProviderList = {
     current: string;
 };
 
-type LLMEdit = { providerName: string; model: string };
-
 type CloudSrvProbe = {
     ok: boolean;
     method?: string;
@@ -63,6 +64,8 @@ type CloudSrvProbe = {
 type CloudAgentSettingsPanelProps = {
     lang: string;
     showToastMessage: (message: string) => void;
+    config: corelib.AppConfig | null;
+    setConfig: (config: corelib.AppConfig) => void;
 };
 
 const textForLang = localizeText;
@@ -94,7 +97,7 @@ const ServerIcon = () => (
     </svg>
 );
 
-export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSettingsPanelProps) => {
+export const CloudAgentSettingsPanel = ({ lang, showToastMessage, config, setConfig }: CloudAgentSettingsPanelProps) => {
     const t = useCallback((en: string, zhHans: string, zhHant?: string) => textForLang(lang, en, zhHans, zhHant || zhHans), [lang]);
 
     const [state, setState] = useState<CloudSrvState>({ node_id: '', nodes: [] });
@@ -116,11 +119,14 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
 
     const [instances, setInstances] = useState<CloudAgentRow[]>([]);
     const [providers, setProviders] = useState<MaclawLLMProvider[]>([]);
-    const [llmEdits, setLLMEdits] = useState<Record<string, LLMEdit>>({});
-    const [llmSaving, setLLMSaving] = useState('');
+    // 云端 Agent 全局默认模型：'' = MaClaw 官方，否则是服务商的稳定 ID（或名称）。
+    // 保存扇出到现有实例；新建实例由 CreateCloudAgent 在 Go 侧自动应用。
+    const [defaultProvider, setDefaultProvider] = useState('');
+    const [defaultModel, setDefaultModel] = useState('');
+    const [savingDefault, setSavingDefault] = useState(false);
 
     const choiceInitialized = useRef(false);
-    const llmInitialized = useRef(false);
+    const defaultSeeded = useRef(false);
     // Install-start schedules delayed node-list refreshes; clear them on
     // unmount so a closed settings panel never sets state afterwards.
     const refreshTimersRef = useRef<number[]>([]);
@@ -148,19 +154,7 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
         }
         try {
             const list = await ListCloudAgents() as CloudAgentList;
-            const rows = Array.isArray(list?.instances) ? list.instances : [];
-            setInstances(rows);
-            // Seed each instance's edit row once from its saved mode; later
-            // refreshes must not clobber an in-progress pick.
-            if (!llmInitialized.current) {
-                llmInitialized.current = true;
-                setLLMEdits(Object.fromEntries(rows.map((row) => [
-                    row.id,
-                    row.llm_mode === 'custom'
-                        ? { providerName: '__custom__', model: row.llm_model || '' }
-                        : { providerName: '', model: '' },
-                ])));
-            }
+            setInstances(Array.isArray(list?.instances) ? list.instances : []);
         } catch (err) {
             void err;
         }
@@ -173,6 +167,15 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
     }, []);
 
     useEffect(() => { void refresh(); }, [refresh]);
+
+    // Seed the default-model pick once from the saved desktop config; later
+    // config syncs must not clobber an in-progress edit.
+    useEffect(() => {
+        if (defaultSeeded.current || !config) return;
+        defaultSeeded.current = true;
+        setDefaultProvider(String(config.cloud_agent_llm_provider || ''));
+        setDefaultModel(String(config.cloud_agent_llm_model || ''));
+    }, [config]);
 
     // Install dialog: Esc closes, like the other settings dialogs. Opening
     // moves focus into the first field; closing restores it to the control
@@ -205,51 +208,21 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
         [providers],
     );
 
-    const modelOptionsFor = (providerName: string): string[] => {
-        const provider = usableProviders.find((p) => p.name === providerName);
+    // Stable select key: the provider ID when present, else the display name.
+    // The Go default resolver matches by ID first, then by name.
+    const providerKey = useCallback((p: MaclawLLMProvider) => {
+        const id = String(p.id ?? '').trim();
+        return id !== '' ? id : p.name;
+    }, []);
+
+    const modelOptionsFor = useCallback((key: string): string[] => {
+        const provider = usableProviders.find((p) => providerKey(p) === key);
         if (!provider) return [];
         const list = Array.isArray(provider.models) && provider.models.length > 0
             ? provider.models
             : (provider.model ? [provider.model] : []);
         return list;
-    };
-
-    const saveLLM = async (row: CloudAgentRow) => {
-        const edit = llmEdits[row.id] || { providerName: '', model: '' };
-        if (edit.providerName === '__custom__') return;
-        setLLMSaving(row.id);
-        try {
-            let next: CloudAgentRow;
-            if (edit.providerName === '') {
-                next = await ResetCloudAgentLLM(row.id) as CloudAgentRow;
-            } else {
-                const provider = usableProviders.find((p) => p.name === edit.providerName);
-                if (!provider) {
-                    showToastMessage(t('Pick a provider first.', '请先选择服务商。'));
-                    return;
-                }
-                const model = (edit.model || '').trim() || provider.model;
-                next = await SetCloudAgentLLM(row.id, {
-                    url: provider.url,
-                    key: provider.key,
-                    model,
-                    label: provider.name,
-                }) as CloudAgentRow;
-            }
-            setInstances((prev) => prev.map((r) => (r.id === row.id ? next : r)));
-            setLLMEdits((prev) => ({
-                ...prev,
-                [row.id]: next.llm_mode === 'custom'
-                    ? { providerName: edit.providerName, model: next.llm_model || edit.model }
-                    : { providerName: '', model: '' },
-            }));
-            showToastMessage(t('Cloud agent model saved.', '云端 Agent 模型已保存。'));
-        } catch (err) {
-            showToastMessage(errorText(err) || t('Save failed.', '保存失败。'));
-        } finally {
-            setLLMSaving('');
-        }
-    };
+    }, [usableProviders, providerKey]);
 
     const save = async () => {
         const target = choice === 'private' ? nodeID : '';
@@ -270,6 +243,64 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
             showToastMessage(errorText(err) || t('Save failed.', '保存失败。'));
         } finally {
             setSaving(false);
+        }
+    };
+
+    // Save the global default and fan it out to every existing instance right
+    // away; new instances inherit it through CreateCloudAgent on the Go side.
+    const saveDefault = async () => {
+        const provider = defaultProvider === ''
+            ? null
+            : usableProviders.find((p) => providerKey(p) === defaultProvider);
+        if (defaultProvider !== '' && !provider) {
+            // The stored pick names a provider that no longer exists; the
+            // select keeps it visible as 已删除的服务商 until re-picked.
+            showToastMessage(t('The picked provider is gone; pick another one.', '所选服务商已不存在，请重新选择。'));
+            return;
+        }
+        const model = defaultProvider === '' ? '' : (defaultModel || '').trim() || provider!.model || '';
+        setSavingDefault(true);
+        try {
+            const next = await PatchConfigFields({
+                cloud_agent_llm_provider: defaultProvider,
+                cloud_agent_llm_model: model,
+            }) as corelib.AppConfig;
+            setConfig(next);
+            let failed = 0;
+            for (const row of instances) {
+                try {
+                    if (defaultProvider === '') {
+                        if (row.llm_mode !== 'official') await ResetCloudAgentLLM(row.id);
+                    } else if (provider) {
+                        const updated = await SetCloudAgentLLM(row.id, {
+                            url: provider.url,
+                            key: provider.key,
+                            model,
+                            label: provider.name,
+                        }) as CloudAgentRow;
+                        setInstances((prev) => prev.map((r) => (r.id === row.id ? updated : r)));
+                    }
+                } catch (err) {
+                    failed++;
+                    void err;
+                }
+            }
+            if (failed === 0) {
+                showToastMessage(t(
+                    'Default model saved' + (instances.length > 0 ? ' and applied to all instances.' : '. New instances will use it.'),
+                    '默认模型已保存' + (instances.length > 0 ? '，并已应用到全部实例。' : '，新实例将直接使用该设置。'),
+                ));
+            } else {
+                showToastMessage(t(
+                    'Default saved; ' + failed + ' instance(s) could not be updated right now.',
+                    '默认模型已保存；有 ' + failed + ' 个实例暂时未能更新。',
+                ));
+            }
+            await refresh();
+        } catch (err) {
+            showToastMessage(errorText(err) || t('Save failed.', '保存失败。'));
+        } finally {
+            setSavingDefault(false);
         }
     };
 
@@ -352,6 +383,13 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                 return null;
         }
     };
+
+    const defaultModelOptions = useMemo(
+        () => (defaultModel && !modelOptionsFor(defaultProvider).includes(defaultModel)
+            ? [defaultModel, ...modelOptionsFor(defaultProvider)]
+            : modelOptionsFor(defaultProvider)),
+        [defaultProvider, defaultModel, modelOptionsFor],
+    );
 
     return (
         <div className="cloud-agent-settings">
@@ -447,99 +485,92 @@ export const CloudAgentSettingsPanel = ({ lang, showToastMessage }: CloudAgentSe
                 <div className="cloud-agent-section-head">
                     <span className="cloud-agent-section-icon"><CpuIcon /></span>
                     <div className="cloud-agent-section-head__text">
-                        <h3 className="cloud-agent-section-title">{t('Instance models', '实例模型')}</h3>
+                        <h3 className="cloud-agent-section-title">{t('Default model', '默认模型')}</h3>
                         <p className="cloud-agent-section-sub">
                             {t(
-                                'Which model each cloud instance uses. The default is the official MaClaw model; you can also pick a provider and model already configured on this desktop. The provider key is stored only on the maclawsrv that runs the instance.',
-                                '选择每个云端实例使用的模型。默认是 MaClaw 官方；也可以选择本机已配置的服务商和模型，密钥只保存在跑该实例的 maclawsrv 上。',
+                                'One model for every cloud instance. Saving applies it to all existing instances right away, and new instances pick it up automatically. The provider key is stored only on the maclawsrv that runs the instance.',
+                                '所有云端实例共用一个模型。保存后立即应用到全部现有实例，新建实例也会直接使用该设置。密钥只保存在跑实例的 maclawsrv 上。',
                             )}
                         </p>
                     </div>
                 </div>
-                {instances.length === 0 && !loading && (
-                    <p className="cloud-agent-banner cloud-agent-banner--info">
-                        {t('No cloud instances yet. Create one from the task list first.', '还没有云端实例，先在任务列表里创建一个。')}
-                    </p>
-                )}
-                <div className="cloud-agent-instance-list">
-                    {instances.map((row) => {
-                        const edit = llmEdits[row.id] || { providerName: '', model: '' };
-                        const isCustom = edit.providerName !== '' && edit.providerName !== undefined;
-                        const models = modelOptionsFor(edit.providerName);
-                        const modelList = edit.model && !models.includes(edit.model) ? [edit.model, ...models] : models;
-                        const statusChip = instanceStatusChip(row.status);
-                        return (
-                            <div key={row.id} className="cloud-agent-instance">
-                                <div className="cloud-agent-instance__meta">
-                                    <span className="cloud-agent-instance__name">{row.name || row.id}</span>
-                                    <span className="cloud-agent-instance__tags">
-                                        {statusChip && (
-                                            <span className={'cloud-agent-chip' + (statusChip.tone ? ' cloud-agent-chip--' + statusChip.tone : '')}>
-                                                {statusChip.label}
-                                            </span>
-                                        )}
-                                        <span className="cloud-agent-chip">
-                                            {row.kind === 'coding' ? t('coding', '编程') : t('session', '会话')}
-                                        </span>
-                                        <span className="cloud-agent-chip cloud-agent-chip--current">
-                                            {currentModelText(row)}
-                                        </span>
-                                    </span>
-                                </div>
-                                <div className="cloud-agent-instance__controls">
-                                    <select
-                                        className="form-input cloud-agent-select"
-                                        value={edit.providerName}
-                                        disabled={llmSaving === row.id}
-                                        onChange={(event) => {
-                                            const providerName = event.target.value;
-                                            setLLMEdits((prev) => {
-                                                const provider = usableProviders.find((p) => p.name === providerName);
-                                                const firstModel = provider ? (modelOptionsFor(providerName)[0] || provider.model || '') : '';
-                                                return { ...prev, [row.id]: { providerName, model: firstModel } };
-                                            });
-                                        }}
-                                    >
-                                        <option value="">{t('MaClaw official (default)', 'MaClaw 官方（默认）')}</option>
-                                        {edit.providerName === '__custom__' && (
-                                            <option value="__custom__">{t('Custom', '自定义')}{row.llm_label ? ' · ' + row.llm_label : ''}</option>
-                                        )}
-                                        {usableProviders.map((p) => (
-                                            <option key={p.name} value={p.name}>{p.name}</option>
-                                        ))}
-                                    </select>
-                                    {isCustom && edit.providerName !== '__custom__' && (
-                                        <select
-                                            className="form-input cloud-agent-select"
-                                            value={edit.model}
-                                            disabled={llmSaving === row.id}
-                                            onChange={(event) => {
-                                                const model = event.target.value;
-                                                setLLMEdits((prev) => ({ ...prev, [row.id]: { ...edit, model } }));
-                                            }}
-                                        >
-                                            {modelList.length === 0 && <option value="">{t('Model (provider default)', '模型（服务商默认）')}</option>}
-                                            {modelList.map((m) => (
-                                                <option key={m} value={m}>{m}</option>
-                                            ))}
-                                        </select>
-                                    )}
-                                    {isCustom && edit.providerName === '__custom__' && (
-                                        <span className="cloud-agent-chip">{row.llm_model || ''}</span>
-                                    )}
-                                    <button
-                                        type="button"
-                                        className="im-settings-button im-settings-button--accent"
-                                        disabled={llmSaving === row.id || edit.providerName === '__custom__'}
-                                        onClick={() => void saveLLM(row)}
-                                    >
-                                        {llmSaving === row.id ? t('Saving…', '保存中…') : t('Save', '保存')}
-                                    </button>
-                                </div>
-                            </div>
-                        );
-                    })}
+
+                <div className="cloud-agent-default-row">
+                    <select
+                        className="form-input cloud-agent-select"
+                        value={defaultProvider}
+                        disabled={savingDefault}
+                        onChange={(event) => {
+                            const key = event.target.value;
+                            setDefaultProvider(key);
+                            const provider = usableProviders.find((p) => providerKey(p) === key);
+                            setDefaultModel(provider ? (modelOptionsFor(key)[0] || provider.model || '') : '');
+                        }}
+                    >
+                        <option value="">{t('MaClaw official (default)', 'MaClaw 官方（默认）')}</option>
+                        {usableProviders.map((p) => (
+                            <option key={providerKey(p)} value={providerKey(p)}>{p.name}</option>
+                        ))}
+                        {defaultProvider !== '' && !usableProviders.some((p) => providerKey(p) === defaultProvider) && (
+                            <option value={defaultProvider}>{t('Removed provider', '已删除的服务商')}</option>
+                        )}
+                    </select>
+                    {defaultProvider !== '' && usableProviders.some((p) => providerKey(p) === defaultProvider) && (
+                        <select
+                            className="form-input cloud-agent-select"
+                            value={defaultModel}
+                            disabled={savingDefault}
+                            onChange={(event) => setDefaultModel(event.target.value)}
+                        >
+                            {defaultModelOptions.length === 0 && <option value="">{t('Model (provider default)', '模型（服务商默认）')}</option>}
+                            {defaultModelOptions.map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                            ))}
+                        </select>
+                    )}
+                    <button
+                        type="button"
+                        className="im-settings-button im-settings-button--accent"
+                        disabled={savingDefault}
+                        onClick={() => void saveDefault()}
+                    >
+                        {savingDefault ? t('Applying…', '应用中…') : t('Save & apply', '保存并应用')}
+                    </button>
                 </div>
+
+                {instances.length > 0 ? (
+                    <div className="cloud-agent-instance-list">
+                        {instances.map((row) => {
+                            const statusChip = instanceStatusChip(row.status);
+                            return (
+                                <div key={row.id} className="cloud-agent-instance">
+                                    <div className="cloud-agent-instance__meta">
+                                        <span className="cloud-agent-instance__name">{row.name || row.id}</span>
+                                        <span className="cloud-agent-instance__tags">
+                                            {statusChip && (
+                                                <span className={'cloud-agent-chip' + (statusChip.tone ? ' cloud-agent-chip--' + statusChip.tone : '')}>
+                                                    {statusChip.label}
+                                                </span>
+                                            )}
+                                            <span className="cloud-agent-chip">
+                                                {row.kind === 'coding' ? t('coding', '编程') : t('session', '会话')}
+                                            </span>
+                                            <span className="cloud-agent-chip cloud-agent-chip--current">
+                                                {currentModelText(row)}
+                                            </span>
+                                        </span>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    !loading && (
+                        <p className="cloud-agent-banner cloud-agent-banner--info">
+                            {t('No cloud instances yet. New instances will use this model from creation.', '还没有云端实例，新建实例将直接使用该模型。')}
+                        </p>
+                    )
+                )}
             </section>
 
             <section className="im-settings-card">

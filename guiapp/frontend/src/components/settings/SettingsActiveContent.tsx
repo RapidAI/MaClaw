@@ -571,7 +571,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'cloudAgent':
             body = wrapPanel('settings-content settings-panel', (
-                <CloudAgentSettingsPanel lang={lang} showToastMessage={showToastMessage} />
+                <CloudAgentSettingsPanel lang={lang} showToastMessage={showToastMessage} config={config} setConfig={setConfig} />
             ));
             break;
         case 'tokenBank':

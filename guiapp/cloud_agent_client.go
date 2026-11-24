@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -43,7 +44,10 @@ func (a *App) ListCloudAgents() (CloudAgentList, error) {
 }
 
 // CreateCloudAgent creates one session or coding instance.
-// Kind is fixed by the Hub after this call.
+// Kind is fixed by the Hub after this call. When the desktop has a 云端 Agent
+// default model configured (设置 → 云端 Agent), it is applied to the new
+// instance right after creation; a failed apply keeps the official model
+// instead of failing the whole create.
 func (a *App) CreateCloudAgent(name, kind string) (CloudAgentRow, error) {
 	kind = strings.TrimSpace(kind)
 	if kind != "session" && kind != "coding" {
@@ -55,7 +59,48 @@ func (a *App) CreateCloudAgent(name, kind string) (CloudAgentRow, error) {
 		"kind":     kind,
 		"llm_mode": "official",
 	}, &row)
-	return row, err
+	if err != nil {
+		return row, err
+	}
+	if def, ok := a.cloudAgentDefaultLLM(); ok {
+		if applied, applyErr := a.SetCloudAgentLLM(row.ID, def); applyErr != nil {
+			log.Printf("[cloud-agent] apply default llm to %s: %v", row.ID, applyErr)
+		} else {
+			row = applied
+		}
+	}
+	return row, nil
+}
+
+// cloudAgentDefaultLLM resolves the 云端 Agent global default model from the
+// desktop config. It matches the provider by stable ID first, then by name,
+// and skips hub-service rows or rows without real endpoint credentials — the
+// same usability rule the settings panel applies. The second return reports
+// whether a custom default should be applied at all.
+func (a *App) cloudAgentDefaultLLM() (CloudLLMSet, bool) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return CloudLLMSet{}, false
+	}
+	providerID := strings.TrimSpace(cfg.CloudAgentLLMProvider)
+	if providerID == "" {
+		return CloudLLMSet{}, false
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		id, name := strings.TrimSpace(provider.ID), strings.TrimSpace(provider.Name)
+		if id != providerID && name != providerID {
+			continue
+		}
+		if provider.IsHubService || isHubServiceProviderName(name) || strings.TrimSpace(provider.URL) == "" || strings.TrimSpace(provider.Key) == "" {
+			return CloudLLMSet{}, false
+		}
+		model := strings.TrimSpace(cfg.CloudAgentLLMModel)
+		if model == "" {
+			model = strings.TrimSpace(provider.Model)
+		}
+		return CloudLLMSet{URL: provider.URL, Key: provider.Key, Model: model, Label: name}, true
+	}
+	return CloudLLMSet{}, false
 }
 
 // DeleteCloudAgent removes an instance that never received a task.

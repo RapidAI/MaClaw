@@ -8835,6 +8835,18 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.MaclawRoleDescription = strings.TrimSpace(v)
+		case "cloud_agent_llm_provider":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.CloudAgentLLMProvider = strings.TrimSpace(v)
+		case "cloud_agent_llm_model":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.CloudAgentLLMModel = strings.TrimSpace(v)
 		case "im_progress_nudge_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

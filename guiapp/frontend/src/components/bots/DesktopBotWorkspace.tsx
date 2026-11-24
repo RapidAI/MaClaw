@@ -3278,6 +3278,32 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Watch and control are different noVNC documents. Reusing the iframe leaves
     // the first page's viewOnly in place, so takeover looks active and clicks do nothing.
     const frameMode = stageInteractive ? 'live' : 'watch';
+    // Encode near the size the stage paints. A native-resolution feed into a
+    // smaller stage is all decode + canvas cost and no sharpness — that
+    // iframe's renderer grew ~900MB in minutes and hit the OOM page
+    // (2026-11-24). Watch caps at 10fps like the mobile app; interactive
+    // keeps the server default. Sizing inputs are read but NOT deps on
+    // purpose: the memo runs on the same triggers as the iframe's remount
+    // key, so each mount samples the current size while expand or a
+    // list-divider drag keep the mounted frame instead of reloading it.
+    const desktopFrameSource = useMemo(() => {
+        // clientWidth is layout px; the shell's ui-zoom transform applies on
+        // top of devicePixelRatio. rect/clientWidth folds the transform in.
+        const host = workspaceRef.current;
+        const uiScale = host && host.clientWidth ? host.getBoundingClientRect().width / host.clientWidth : 1;
+        const px = Math.min(2, (globalThis.devicePixelRatio || 1) * (uiScale || 1));
+        // is-fullscreen is position:fixed inset:0; embedded leaves a gutter
+        // (8% a side, 4% under the 960px viewport media query) in the chat
+        // column beside the list.
+        const column = host ? host.clientWidth - listWidth : 0;
+        const embedded = column > 0 ? column * (globalThis.innerWidth <= 960 ? 0.92 : 0.84) : 0;
+        const cssWidth = takeover || screenExpanded
+            ? globalThis.innerWidth
+            : stageRef.current?.clientWidth || embedded || globalThis.innerWidth || 1280;
+        const w = Math.max(640, Math.min(1920, Math.round(cssWidth * px)));
+        const stream = { w: w - (w % 2), ...(stageInteractive ? {} : { fps: 10 }) };
+        return desktopViewerSrc(desktopFrameSrc(shownDesktopUrl, stageInteractive), desktopViewer, stream);
+    }, [shownDesktopUrl, stageInteractive, desktopViewer]);
     useEffect(() => {
         const botId = selectedId || '';
         const epoch = controlEpochRef.current + 1;
@@ -8087,7 +8113,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             title="desktop"
                                             data-viewer={desktopViewer}
                                             allow="clipboard-read; clipboard-write"
-                                            src={desktopViewerSrc(desktopFrameSrc(shownDesktopUrl, stageInteractive), desktopViewer)}
+                                            src={desktopFrameSource}
                                             tabIndex={screenExpanded && !stageInteractive ? -1 : undefined}
                                             onFocus={screenExpanded && !stageInteractive ? () => { restoreBtnRef.current?.focus({ preventScroll: true }); } : undefined}
                                         />

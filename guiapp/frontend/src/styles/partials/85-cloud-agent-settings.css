@@ -265,13 +265,17 @@
     color: var(--theme-danger);
 }
 
-.cloud-agent-instance__controls {
+/* --- Global default model picker --- */
+
+.cloud-agent-default-row {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    margin-left: auto;
-    justify-content: flex-end;
+}
+
+.cloud-agent-default-row .cloud-agent-select {
+    flex: 0 1 auto;
 }
 
 .cloud-agent-select {
@@ -377,8 +381,12 @@
         grid-template-columns: 1fr;
     }
 
-    .cloud-agent-instance__controls {
-        margin-left: 0;
-        justify-content: flex-start;
+    .cloud-agent-default-row {
+        align-items: stretch;
+    }
+
+    .cloud-agent-default-row .cloud-agent-select {
+        min-width: 0;
+        flex: 1 1 100%;
     }
 }

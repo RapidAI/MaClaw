@@ -521,6 +521,21 @@
   `useSyncExternalStore` (falls back to `state.messages` props). Token
   flushes re-render the panel only — never add `messages` back to
   `panelState`/`useState` or App re-renders per flush again.
+- 2026-11-24: a second OOM was NOT the main renderer — dom_nodes stayed
+  ~1500 and js-heap kept reporting while `webview_procs` went 7→8 and the
+  tree totalled 98→975MB in ~90s of mouse activity. The growing child was
+  the desktop-stage iframe (`h264.html`/noVNC), a cross-origin OOPIF with
+  its own renderer that `performance.memory`/`dom_nodes` never see — the
+  frontend sampler covers the top frame only. Fix: the stage now encodes
+  the stream at its painted size — `desktopViewerSrc` takes a
+  `DesktopStreamSpec{w,fps}` that lands on `h264.html?w=&fps=` (the page
+  forwards both to `/h264`; `w` scales encoder output server-side, `fps`
+  can only be lowered). `DesktopBotWorkspace.desktopFrameSource` memoizes
+  the src (ref-read of `stageRef.current.clientWidth×dpr`, clamped
+  640–1920, watch→fps=10, mobile precedent `w=960&fps=10`) so expand does
+  not reload the iframe; watch↔live and viewer flips remount anyway via
+  the existing `key`. Bot container native is `MACLAW_DESKTOP_GEOMETRY`
+  (default 1440x900, max 3840x2160).
 
 ## MCP host LAN access (guiapp)
 
