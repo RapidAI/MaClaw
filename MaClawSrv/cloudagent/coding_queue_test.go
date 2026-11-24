@@ -120,6 +120,36 @@ func TestCodingSendWhileRunningIsQueued(t *testing.T) {
 	}
 }
 
+// A send without task_id still belongs to the running task: it parks under
+// it and drains into the same transcript instead of opening a new task.
+func TestCodingBareSendParksUnderRunningTask(t *testing.T) {
+	g, srv, release := newGate(t, officialSessionReply, true)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	_, taskID := send(t, rt, spec.ID, "client-hold", "hold this coding turn")
+	waitCall(t, g)
+
+	// No task_id in the body — the running task must adopt the parked row.
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-bare","text":"bare parked line"}`)
+	_, queuedTask := queuedAck(t, raw)
+	if queuedTask != taskID {
+		t.Fatalf("queued task=%s want %s", queuedTask, taskID)
+	}
+
+	release()
+	waitHits(t, g, 2)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		text := transcript(t, rt, spec.ID, taskID)
+		if strings.Contains(text, "bare parked line") && strings.Count(text, "cloud-session-ok") >= 2 {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("bare parked line never ran on task %s", taskID)
+}
+
 // An approval answer arriving while a coding turn is still running is both
 // recorded against the pending fingerprint and parked like any other send.
 func TestCodingApprovalAnswerQueuedWhileBusy(t *testing.T) {

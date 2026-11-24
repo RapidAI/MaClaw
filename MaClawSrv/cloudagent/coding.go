@@ -30,11 +30,13 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		running, _ := inst.book.Running()
 		taskID = running
 	}
+	// A bare send continues the running task: park it under that task too,
+	// or the drain would file it as a new one.
+	payload.TaskID = taskID
 	if _, ok := agent.ParseCommitApprovalAnswer(text); ok && taskID != "" {
 		if err := inst.book.RecordAnswer(taskID, text); err != nil && !errors.Is(err, errNotApproval) {
 			return nil, err
 		}
-		payload.TaskID = taskID
 	}
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
 	if errors.Is(err, errBusy) {
