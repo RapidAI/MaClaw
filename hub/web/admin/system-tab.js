@@ -1386,7 +1386,7 @@ const MACLAWSRV_I18N = {
     linksSecretMissing: 'No secret saved',
     linksSaved: 'Saved',
     linksDeleted: 'Deleted',
-    linksConfirmDelete: 'Delete {name}? Cloud agent assignments that still point at it fail on the next creation.',
+    linksConfirmDelete: 'Delete {name}? Running cloud agents on it lose their connection immediately, and assignments that still point at it fail on the next creation.',
     linksDeleteFailed: 'Delete maclawsrv failed: {error}',
     saveFailed: 'Save maclawsrv connection failed: {error}'
   },
@@ -1429,7 +1429,7 @@ const MACLAWSRV_I18N = {
     linksSecretMissing: '\u672a\u4fdd\u5b58\u5bc6\u94a5',
     linksSaved: '\u5df2\u4fdd\u5b58',
     linksDeleted: '\u5df2\u5220\u9664',
-    linksConfirmDelete: '\u786e\u5b9a\u5220\u9664 {name}\uff1f\u4ecd\u6307\u5411\u5b83\u7684\u4e91\u7aef Agent \u6307\u5b9a\u4f1a\u5728\u4e0b\u6b21\u521b\u5efa\u65f6\u62a5\u9519\u3002',
+    linksConfirmDelete: '\u786e\u5b9a\u5220\u9664 {name}\uff1f\u5176\u4e0a\u6b63\u5728\u8fd0\u884c\u7684\u4e91\u7aef\u5b9e\u4f8b\u4f1a\u7acb\u5373\u5931\u8054\uff0c\u4ecd\u6307\u5411\u5b83\u7684\u5f00\u901a\u6307\u5b9a\u4e5f\u4f1a\u5728\u4e0b\u6b21\u521b\u5efa\u65f6\u62a5\u9519\u3002',
     linksDeleteFailed: '\u5220\u9664 maclawsrv \u5931\u8d25\uff1a{error}',
     saveFailed: '\u4fdd\u5b58 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}'
   }
