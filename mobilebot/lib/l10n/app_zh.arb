@@ -766,6 +766,8 @@
   "chatRunPlan": "按这个安排执行",
   "chatContinueTask": "继续这个任务",
   "chatFileParseFailed": "文件解析失败",
+  "chatFilesOnDesktop": "{count, plural, =1{文件在电脑上，点此加载} other{{count} 个文件在电脑上，点此加载}}",
+  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
   "chatSecretRequired": "需要输入 {name}",
   "@chatSecretRequired": {
     "placeholders": {

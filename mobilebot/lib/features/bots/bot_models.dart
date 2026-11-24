@@ -328,6 +328,30 @@ class BotReplyFile {
   );
 }
 
+/// Documents a reply produced on the computer. A desktop turn saves them on
+/// its own disk and records only their paths (`local_file_paths`) — a phone
+/// cannot open those, so it fetches the bytes by path (desktop-file).
+/// Paths other than plain absolute ones are refused by the desktop reader.
+List<String> localFilePathsFrom(Map<String, dynamic> data) {
+  final paths = <String>[];
+  for (final value in [
+    data['localFilePath'],
+    data['LocalFilePath'],
+    data['local_file_path'],
+    data['localFilePaths'],
+    data['LocalFilePaths'],
+    data['local_file_paths'],
+  ]) {
+    if (value is String && value.trim().isNotEmpty) paths.add(value.trim());
+    if (value is List) {
+      for (final item in value) {
+        if (item is String && item.trim().isNotEmpty) paths.add(item.trim());
+      }
+    }
+  }
+  return paths.toSet().toList(growable: false);
+}
+
 /// Portable media ids — `desktop_attachment_ids` on a run result,
 /// `attachmentIds` in a shared journal projection (mirrors
 /// `attachmentIdsFrom` in desktopBotResultStore.ts).
@@ -355,6 +379,11 @@ class BotReply {
   final BotQuestion question;
   final List<BotReplyImage> images;
   final List<BotReplyFile> files;
+
+  /// Files the computer left on its own disk for this reply (`local_file_paths`).
+  /// It carries no bytes; a client that did not produce them fetches the
+  /// file by path through `POST .../desktop-file`.
+  final List<String> localFilePaths;
   final BotPhase? phase;
 
   const BotReply({
@@ -366,6 +395,7 @@ class BotReply {
     this.question = const BotQuestion(),
     this.images = const [],
     this.files = const [],
+    this.localFilePaths = const [],
     this.phase,
   });
 
@@ -395,6 +425,7 @@ class BotReply {
       for (final item in syncList(json['files']))
         if (item is Map) BotReplyFile.fromJson(Map<String, dynamic>.from(item)),
     ],
+    localFilePaths: localFilePathsFrom(json),
     phase: BotPhaseWire.fromWire(syncText(json['phase'])),
   );
 }
@@ -909,6 +940,11 @@ class ChatMessage {
   /// Media the owning client staged under these ids (screenshots, files).
   /// Its presence on a synced bubble says the run is worth re-fetching.
   final List<String> attachmentIds;
+
+  /// Files this reply left on the computer, by path. They stay here only
+  /// until their bytes are fetched (see [files]); a path alone is never
+  /// shown as a file, because a phone cannot open it.
+  final List<String> localFilePaths;
   final int syncSeq;
   final DateTime? at;
 
@@ -939,6 +975,7 @@ class ChatMessage {
     this.files = const [],
     this.runId = '',
     this.attachmentIds = const [],
+    this.localFilePaths = const [],
     this.syncSeq = 0,
     this.at,
   });
@@ -957,6 +994,7 @@ class ChatMessage {
     bool? optionsUsed,
     List<BotReplyImage>? images,
     List<BotReplyFile>? files,
+    List<String>? localFilePaths,
     String? runId,
     List<String>? attachmentIds,
     int? syncSeq,
@@ -985,6 +1023,7 @@ class ChatMessage {
     optionsUsed: optionsUsed ?? this.optionsUsed,
     images: images ?? this.images,
     files: files ?? this.files,
+    localFilePaths: localFilePaths ?? this.localFilePaths,
     runId: runId ?? this.runId,
     attachmentIds: attachmentIds ?? this.attachmentIds,
     syncSeq: syncSeq ?? this.syncSeq,
@@ -1033,6 +1072,9 @@ class ChatMessage {
       ...attachmentIds,
     ];
     if (mediaIds.isNotEmpty) out['attachmentIds'] = mediaIds;
+    // The file bytes never travel in the journal either. The path is the
+    // fetch key a client this reply did not originate (a phone) uses.
+    if (localFilePaths.isNotEmpty) out['localFilePaths'] = localFilePaths;
     if (at != null) out['at'] = at!.toIso8601String();
     return out;
   }
@@ -1093,6 +1135,7 @@ class ChatMessage {
       ],
       runId: runId.isNotEmpty ? runId : syncText(data['run_id']),
       attachmentIds: attachmentIdsFrom(data),
+      localFilePaths: localFilePathsFrom(data),
       syncSeq: syncSeq,
       at: parseMessageAt(data['at']),
     );

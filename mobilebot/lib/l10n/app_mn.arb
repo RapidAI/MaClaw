@@ -708,6 +708,8 @@
   "chatRunPlan": "Энэ төлөвлөгөөгөөр гүйцэтгэх",
   "chatContinueTask": "Энэ даалгаврыг үргэлжлүүлэх",
   "chatFileParseFailed": "Файлыг задлан шинжлэх амжилтгүй боллоо",
+  "chatFilesOnDesktop": "{count, plural, =1{Файл компьютер дээр байна — дарж ачаална} other{{count} файл компьютер дээр байна — дарж ачаална}}",
+  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
   "chatSecretRequired": "{name} оруулах шаардлагатай",
   "@chatSecretRequired": {
     "placeholders": {

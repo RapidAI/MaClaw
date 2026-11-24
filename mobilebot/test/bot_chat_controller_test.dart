@@ -92,6 +92,21 @@ class _FakeApi extends BotApi {
 
   List<ActiveRun> runs = const [];
 
+  /// Files the desktop holds by path. A path missing here fails the read the
+  /// same way Hub does.
+  final desktopFiles = <String, BotReplyFile>{};
+  final desktopFileAsks = <String>[];
+
+  @override
+  Future<BotReplyFile> desktopFile(String botId, String path) async {
+    desktopFileAsks.add(path);
+    final file = desktopFiles[path];
+    if (file == null) {
+      throw const HubApiException('INVALID_INPUT', 'no such file', statusCode: 400);
+    }
+    return file;
+  }
+
   @override
   Future<List<ActiveRun>> activeRuns(String botId) async => runs;
 
@@ -1738,5 +1753,93 @@ void main() {
       timeout: const Duration(seconds: 8),
     );
     expect(container.read(botChatProvider).messages.last.content, '跑完了');
+  });
+
+  // A desktop turn records the files it saved as paths on its own disk
+  // (`local_file_paths`) and no bytes. A phone used to show the sentence
+  // "the PDF is attached" with no file at all. The path is now the fetch key.
+  test('a synced reply showing desktop file paths loads those files', () async {
+    const path = '/home/desktop/work/bot/5day.pdf';
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          ConversationEntry(
+            seq: 1,
+            createdSeq: 1,
+            botId: 'b1',
+            id: 'a1',
+            kind: 'message',
+            data: {
+              'role': 'assistant',
+              'content': 'PDF 已附在这条消息里',
+              'runId': 'r1',
+              'localFilePaths': [path],
+              'at': DateTime.now().toIso8601String(),
+            },
+          ),
+        ],
+      )
+      ..desktopFiles[path] = const BotReplyFile(
+        name: '成都近5日天气预报报告.pdf',
+        mime: 'application/pdf',
+        data: 'YWJj',
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(
+      () => container.read(botChatProvider).messages.any(
+        (m) => m.files.isNotEmpty,
+      ),
+    );
+    final bubble = container.read(botChatProvider).messages.single;
+    expect(bubble.files.single.name, '成都近5日天气预报报告.pdf');
+    expect(bubble.files.single.data, 'YWJj');
+    expect(api.desktopFileAsks, [path]);
+    // The old run-media probe must not also fire: this run staged nothing.
+    expect(api.pollCalls, 0);
+  });
+
+  test('a desktop file that cannot be read keeps the text and retries on demand', () async {
+    const path = '/home/desktop/work/bot/report.pdf';
+    final api = _FakeApi()
+      ..page = ConversationPage(
+        head: 1,
+        entries: [
+          ConversationEntry(
+            seq: 1,
+            createdSeq: 1,
+            botId: 'b1',
+            id: 'a1',
+            kind: 'message',
+            data: {
+              'role': 'assistant',
+              'content': 'PDF 已附在这条消息里',
+              'localFilePaths': [path],
+              'at': DateTime.now().toIso8601String(),
+            },
+          ),
+        ],
+      );
+    final container = _container(api);
+    addTearDown(container.dispose);
+    await _until(
+      () => !container.read(botChatProvider).loadingHistory,
+    );
+    await _until(() => api.desktopFileAsks.isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    var bubble = container.read(botChatProvider).messages.single;
+    expect(bubble.files, isEmpty);
+    expect(bubble.content, 'PDF 已附在这条消息里');
+    expect(bubble.localFilePaths, [path], reason: 'the path stays for retry');
+
+    api.desktopFiles[path] = const BotReplyFile(
+      name: 'report.pdf',
+      mime: 'application/pdf',
+      data: 'YWJj',
+    );
+    await container.read(botChatProvider.notifier).fetchLocalFiles('a1');
+    bubble = container.read(botChatProvider).messages.single;
+    expect(bubble.files.single.name, 'report.pdf');
   });
 }

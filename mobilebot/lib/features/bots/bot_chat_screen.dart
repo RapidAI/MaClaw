@@ -1706,6 +1706,10 @@ class _MessageBubble extends ConsumerWidget {
             ),
           for (final image in message.images) _ReplyImage(image: image),
           for (final file in message.files) _ReplyFileChip(file: file),
+          if (!isUser &&
+              message.files.isEmpty &&
+              message.localFilePaths.isNotEmpty)
+            _LocalFileRow(message: message),
           if (message.question.isAnswerable && !message.askResolved)
             isDesktopHandoffAsk(message)
                 ? _TakeoverCard(message: message, bot: bot)
@@ -1936,6 +1940,35 @@ class _FailedSendLine extends ConsumerWidget {
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(fontSize: 11, color: color),
+    );
+  }
+}
+
+/// A reply that delivered files on the computer, before this phone has their
+/// bytes. The banner is a chance to retry: the file stays on the desktop and
+/// is read on demand, so a failed read is not the end of it.
+class _LocalFileRow extends ConsumerWidget {
+  final ChatMessage message;
+
+  const _LocalFileRow({required this.message});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final count = message.localFilePaths.length;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: ActionChip(
+        key: const ValueKey('chat-local-file-row'),
+        avatar: Icon(Icons.attach_file, size: 18, color: theme.colorScheme.primary),
+        label: Text(
+          context.S.chatFilesOnDesktop(count),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        onPressed: () =>
+            ref.read(botChatProvider.notifier).fetchLocalFiles(message.id),
+      ),
     );
   }
 }

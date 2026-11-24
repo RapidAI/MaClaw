@@ -769,6 +769,20 @@ class BotApi {
     return BotReplyFile.fromJson(data);
   }
 
+  /// `POST /api/v1/bots/{id}/desktop-file` — read one file the reply left on
+  /// the computer, by the path the reply recorded (`local_file_paths`).
+  /// Hub only serves paths inside the desktop work tree or Desktop.
+  Future<BotReplyFile> desktopFile(String botId, String path) async {
+    final data = await _client.guard(
+      () => _client.dio.post<Map<String, dynamic>>(
+        _botPath(botId, '/desktop-file'),
+        data: {'path': path},
+        options: _client.opts(sendTimeout: const Duration(seconds: 20)),
+      ),
+    );
+    return BotReplyFile.fromJson(data);
+  }
+
   /// `GET /api/v1/bots/collab-features` — which collaboration parts are on:
   /// `{assignments, peer_review, say, rooms}`.
   Future<Map<String, bool>> collabFeatures() async {

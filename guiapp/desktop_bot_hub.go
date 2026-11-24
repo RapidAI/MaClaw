@@ -1671,6 +1671,12 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 		// Pictures and documents are saved on this machine. The bubble shows
 		// those local paths. A file that could not be saved stays an id.
 		shots, local, ids := landDesktopBotMedia(botID, result.Images, result.Files)
+		// The delivered files themselves used to live only here, as local
+		// paths on this computer. A phone watching the same conversation got
+		// the text that says a file is attached and no file — it cannot open a
+		// path on this disk. They travel as DesktopFiles (same fields as the
+		// delivery event), so every client can show the file it holds.
+		resp.DesktopFiles = cleanDesktopBotFiles(result.Files)
 		saved := append(append([]string{}, shots...), local...)
 		resp.Text = localizeDesktopPaths(resp.Text, saved)
 		resp.SendToUser = localizeDesktopPaths(resp.SendToUser, saved)

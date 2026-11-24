@@ -394,8 +394,14 @@ func TestFinishedReplyCarriesTheDocument(t *testing.T) {
 		desktopBotResultSink = nil
 	})
 	app.finishDesktopBotTask("desktop-bot-file", "alice:bot_1", "bot_1", "生成文档", "execute")
-	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 0 || len(got.LocalFilePaths) != 1 || len(got.DesktopAttachmentIDs) != 0 {
+	// The document travels twice on purpose: the path for this machine, and
+	// DesktopFiles so a phone watching the same conversation gets the bytes
+	// instead of a sentence that promises a file it cannot open.
+	if got == nil || got.Text != "文件已放在这条回复里" || len(got.DesktopFiles) != 1 || len(got.LocalFilePaths) != 1 || len(got.DesktopAttachmentIDs) != 0 {
 		t.Fatalf("reply=%#v", got)
+	}
+	if got.DesktopFiles[0].Name != "自我描述.docx" || got.DesktopFiles[0].Data != payload {
+		t.Fatalf("carried file=%#v", got.DesktopFiles[0])
 	}
 	if filepath.Base(got.LocalFilePaths[0]) != "自我描述.docx" {
 		t.Fatalf("local=%v", got.LocalFilePaths)

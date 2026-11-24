@@ -328,6 +328,10 @@ class BotChatController extends Notifier<ChatState> {
     if (next.files.isEmpty && current.files.isNotEmpty) {
       next = next.copyWith(files: current.files);
     }
+    // The paths are what fetches the bytes when they are missing locally.
+    if (next.localFilePaths.isEmpty && current.localFilePaths.isNotEmpty) {
+      next = next.copyWith(localFilePaths: current.localFilePaths);
+    }
     // The failure ending is local. A journal echo of the optimistic
     // projection must not clear it or put the spinner back.
     if (current.failed) {
@@ -467,6 +471,10 @@ class BotChatController extends Notifier<ChatState> {
           if (next.runId.isEmpty && incoming.runId.isNotEmpty) {
             next = next.copyWith(runId: incoming.runId);
           }
+          // And the paths of the files this turn left on the computer.
+          if (next.localFilePaths.isEmpty && incoming.localFilePaths.isNotEmpty) {
+            next = next.copyWith(localFilePaths: incoming.localFilePaths);
+          }
           if (!identical(next, current)) {
             messages[twin] = next;
             changed = true;
@@ -528,6 +536,9 @@ class BotChatController extends Notifier<ChatState> {
   ///    so reopening a chat does not poll the whole transcript — older runs
   ///    are reaped server-side anyway. `_fetchRunMedia` is a no-op for
   ///    text-only replies, and the run poll is authoritative for the rest.
+  ///  - a bubble that recorded desktop paths (`localFilePaths`) reads those
+  ///    files by path, whatever their age: the file lives on the bot's
+  ///    computer, not in a reaped run.
   static const mediaRestoreWindow = Duration(hours: 48);
 
   void _restoreSyncedMedia() {
@@ -536,6 +547,14 @@ class BotChatController extends Notifier<ChatState> {
     for (final m in state.messages) {
       if (m.role != 'assistant' || m.failed || m.ack) continue;
       if (m.images.isNotEmpty || m.files.isNotEmpty) continue;
+      // A desktop turn records the files it saved as paths on its own disk,
+      // not as bytes. The run poll cannot bring them (they were never staged
+      // as attachments), so the paths are read from the desktop directly.
+      if (m.localFilePaths.isNotEmpty) {
+        if (!_mediaFetches.add(m.id)) continue;
+        unawaited(_fetchLocalFiles(m.id, m.localFilePaths));
+        continue;
+      }
       if (m.runId.isEmpty) continue;
       if (m.attachmentIds.isEmpty &&
           (m.at == null || m.at!.isBefore(freshBefore))) {
@@ -544,6 +563,47 @@ class BotChatController extends Notifier<ChatState> {
       if (!_mediaFetches.add(m.id)) continue;
       unawaited(_fetchRunMedia(m.id, m.runId));
     }
+  }
+
+  /// The banner's retry: read the reply's desktop files again. A message
+  /// id with no paths on screen does nothing.
+  Future<void> fetchLocalFiles(String messageId) async {
+    final index = state.messages.indexWhere((m) => m.id == messageId);
+    if (index < 0 || state.messages[index].localFilePaths.isEmpty) return;
+    final paths = state.messages[index].localFilePaths;
+    _mediaFetches.add(messageId);
+    await _fetchLocalFiles(messageId, paths);
+  }
+
+  /// Reads the files a reply left on the computer and puts them on the
+  /// bubble, so a phone shows the same file the desktop shows. A path that
+  /// no longer exists or is outside the desktop folder is skipped — the
+  /// text of the reply stays.
+  Future<void> _fetchLocalFiles(String messageId, List<String> paths) async {
+    final fetched = <BotReplyFile>[];
+    for (final path in paths) {
+      if (_disposed) return;
+      try {
+        final file = await _api.desktopFile(state.botId, path);
+        if (file.data.isNotEmpty) fetched.add(file);
+      } on Object {
+        // One unreadable file must not stop the others.
+      }
+    }
+    if (_disposed || fetched.isEmpty) return;
+    final messages = [...state.messages];
+    final index = messages.indexWhere((m) => m.id == messageId);
+    if (index < 0) return;
+    final current = messages[index];
+    final known = {for (final f in current.files) '${f.name}|${f.mime}'};
+    final merged = [
+      ...current.files,
+      for (final f in fetched)
+        if (!known.contains('${f.name}|${f.mime}')) f,
+    ];
+    if (merged.length == current.files.length) return;
+    messages[index] = current.copyWith(files: merged);
+    state = state.copyWith(messages: messages);
   }
 
   Future<void> _fetchRunMedia(String messageId, String runId) async {
@@ -592,6 +652,7 @@ class BotChatController extends Notifier<ChatState> {
           question: reply.question,
           images: reply.images,
           files: reply.files,
+          localFilePaths: reply.localFilePaths,
           runId: delivery.runId,
           // The GUI twin-matches a delivery bubble on this request id.
           requestId: 'desktop-bot-deliver-${delivery.runId}',
@@ -1131,6 +1192,7 @@ class BotChatController extends Notifier<ChatState> {
         question: reply.question,
         images: reply.images,
         files: reply.files,
+        localFilePaths: reply.localFilePaths,
         requestId: state.activeRunId ?? '',
         runId: state.activeRunId ?? '',
         conversation: _sessionForRun,
@@ -1152,6 +1214,9 @@ class BotChatController extends Notifier<ChatState> {
       messages[shownAt] = shown.copyWith(
         images: shown.images.isEmpty ? reply.images : null,
         files: shown.files.isEmpty ? reply.files : null,
+        localFilePaths: shown.localFilePaths.isEmpty
+            ? reply.localFilePaths
+            : null,
       );
       state = state.copyWith(messages: messages);
     }

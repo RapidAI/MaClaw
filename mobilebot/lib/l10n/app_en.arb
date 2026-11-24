@@ -708,6 +708,8 @@
   "chatRunPlan": "Run this plan",
   "chatContinueTask": "Continue this task",
   "chatFileParseFailed": "Failed to parse the file",
+  "chatFilesOnDesktop": "{count, plural, =1{The file is on the computer — tap to load} other{{count} files are on the computer — tap to load}}",
+  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
   "chatSecretRequired": "“{name}” is required",
   "@chatSecretRequired": {
     "placeholders": {

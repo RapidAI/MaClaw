@@ -421,6 +421,8 @@
   "chatRunPlan": "按這個安排執行",
   "chatContinueTask": "繼續這個任務",
   "chatFileParseFailed": "文件解析失敗",
+  "chatFilesOnDesktop": "{count, plural, =1{檔案在電腦上，點此載入} other{{count} 個檔案在電腦上，點此載入}}",
+  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
   "chatSecretRequired": "需要輸入 {name}",
   "chatAnswerRequired": "需要你的回答",
   "chatSecretHint": "輸入密鑰（不會顯示在聊天中）",
