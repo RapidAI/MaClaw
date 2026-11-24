@@ -369,3 +369,48 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		t.Fatalf("running-task status=%d body=%s", task.Code, task.Body.String())
 	}
 }
+
+func TestBotSrvLinkHandlersNeverEchoTheSecret(t *testing.T) {
+	svc := botmgmt.NewService(&botSettingsMem{})
+	ctx := func(r *http.Request) *http.Request {
+		return r.WithContext(context.WithValue(r.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant-a"}))
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/admin/bots/srv-links", strings.NewReader(
+		`{"name":"srv-a","base_url":"https://a.example.com","admin_secret":"top-secret"}`))
+	rec := httptest.NewRecorder()
+	PutBotSrvLinkAdminHandler(svc, nil).ServeHTTP(rec, ctx(put))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "top-secret") {
+		t.Fatalf("secret leaked in response: %s", rec.Body.String())
+	}
+	var view struct {
+		ID             string `json:"id"`
+		AdminSecretSet bool   `json:"admin_secret_set"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&view); err != nil || view.ID == "" || !view.AdminSecretSet {
+		t.Fatalf("view=%+v err=%v", view, err)
+	}
+
+	// The settings payload lists the link without the secret.
+	get := httptest.NewRequest(http.MethodGet, "/api/admin/bots/settings", nil)
+	rec = httptest.NewRecorder()
+	GetBotSettingsAdminHandler(svc).ServeHTTP(rec, ctx(get))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "top-secret") ||
+		!strings.Contains(rec.Body.String(), `"srv_links"`) {
+		t.Fatalf("settings status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	del := ctx(httptest.NewRequest(http.MethodDelete, "/api/admin/bots/srv-links/"+view.ID, nil))
+	del.SetPathValue("id", view.ID)
+	rec = httptest.NewRecorder()
+	DeleteBotSrvLinkAdminHandler(svc, nil).ServeHTTP(rec, del)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if links := svc.SrvLinks(context.Background(), "tenant-a"); len(links) != 0 {
+		t.Fatalf("links after delete=%v", links)
+	}
+}

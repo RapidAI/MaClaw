@@ -162,7 +162,13 @@ func (s *Service) ensureSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE cloud_agents ADD COLUMN srv_node_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 		return err
 	}
-	return s.ensureLimits(ctx)
+	if err := s.ensureLimits(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE cloud_agent_limits ADD COLUMN srv_id TEXT`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 func newID(prefix string) string {
@@ -186,10 +192,16 @@ func (s *Service) AdminView(ctx context.Context, tenantID string) (AdminView, er
 	if err != nil {
 		return AdminView{}, err
 	}
-	return AdminView{CloudAgentsEnabled: enabled, MaxInstances: instances, MaxConcurrentTurns: turns}, nil
+	view := AdminView{CloudAgentsEnabled: enabled, MaxInstances: instances, MaxConcurrentTurns: turns}
+	pin, _, pinErr := s.ScopeSrvPin(ctx, tenantID, "")
+	if pinErr == nil && pin != nil {
+		view.SrvID = *pin
+	}
+	return view, nil
 }
 
-// SaveAdminSettings writes the tenant default row.
+// SaveAdminSettings writes the tenant default row. A nil SrvID keeps the
+// stored global pin; a set value replaces it.
 func (s *Service) SaveAdminSettings(ctx context.Context, tenantID string, in AdminSettings) (AdminView, error) {
 	if s == nil || s.db == nil {
 		return AdminView{}, fail(503, "UNAVAILABLE", "云端管理暂时不可用")
@@ -200,21 +212,48 @@ func (s *Service) SaveAdminSettings(ctx context.Context, tenantID string, in Adm
 	if *in.MaxInstances < 0 || *in.MaxConcurrentTurns < 0 {
 		return AdminView{}, failInvalid("上限不能是负数")
 	}
+	var srv sql.NullString
+	if in.SrvID != nil {
+		pin := strings.TrimSpace(*in.SrvID)
+		srv = sql.NullString{String: pin, Valid: true}
+		if pin != "" {
+			if err := s.checkSrvPin(ctx, tenantID, pin); err != nil {
+				return AdminView{}, err
+			}
+		}
+	}
 	tenantID = store.NormalizeTenantID(tenantID)
 	enabled := 0
 	if *in.CloudAgentsEnabled {
 		enabled = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, updated_at)
-		VALUES (?, 'global', '', ?, ?, ?, ?)
-		ON CONFLICT(tenant_id, scope, target_id) DO UPDATE SET
-			max_instances = excluded.max_instances,
-			max_concurrent_turns = excluded.max_concurrent_turns,
-			enabled = excluded.enabled,
-			updated_at = excluded.updated_at`,
-		tenantID, *in.MaxInstances, *in.MaxConcurrentTurns, enabled, formatTS(s.now()))
-	if err != nil {
-		return AdminView{}, err
+	srvArg := nullSrv(srv)
+	if in.SrvID == nil {
+		// Keep the stored pin: the UPDATE never touches srv_id.
+		_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, srv_id, updated_at)
+			VALUES (?, 'global', '', ?, ?, ?, NULL, ?)
+			ON CONFLICT(tenant_id, scope, target_id) DO UPDATE SET
+				max_instances = excluded.max_instances,
+				max_concurrent_turns = excluded.max_concurrent_turns,
+				enabled = excluded.enabled,
+				updated_at = excluded.updated_at`,
+			tenantID, *in.MaxInstances, *in.MaxConcurrentTurns, enabled, formatTS(s.now()))
+		if err != nil {
+			return AdminView{}, err
+		}
+	} else {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_limits (tenant_id, scope, target_id, max_instances, max_concurrent_turns, enabled, srv_id, updated_at)
+			VALUES (?, 'global', '', ?, ?, ?, ?, ?)
+			ON CONFLICT(tenant_id, scope, target_id) DO UPDATE SET
+				max_instances = excluded.max_instances,
+				max_concurrent_turns = excluded.max_concurrent_turns,
+				enabled = excluded.enabled,
+				srv_id = excluded.srv_id,
+				updated_at = excluded.updated_at`,
+			tenantID, *in.MaxInstances, *in.MaxConcurrentTurns, enabled, srvArg, formatTS(s.now()))
+		if err != nil {
+			return AdminView{}, err
+		}
 	}
 	return s.AdminView(ctx, tenantID)
 }
@@ -882,35 +921,42 @@ func (s *Service) SrvConnIsNode(ctx context.Context, tenantID, srvNodeID string)
 }
 
 // SrvAuth resolves an instance's srv binding once and answers both auth
-// questions the internal callbacks need: isNode says whether the conn is a
-// node srv (non-loopback callers allowed), authed says the presented admin
-// secret matches that conn.
+// questions the internal callbacks need: isNode says whether the conn is
+// a non-public srv (node or registered — non-loopback callers allowed),
+// authed says the presented admin secret matches that conn.
 func (s *Service) SrvAuth(ctx context.Context, tenantID, srvNodeID, got string) (isNode, authed bool) {
 	conn, err := s.srvConnForNode(ctx, tenantID, srvNodeID)
 	if err != nil {
 		return false, false
 	}
 	want := conn.AdminSecret
-	return conn.NodeID != "", want != "" && got != "" && len(want) == len(got) &&
+	return conn.LinkID != "", want != "" && got != "" && len(want) == len(got) &&
 		subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
 }
 
 type srvConn struct {
 	BaseURL     string
 	AdminSecret string
+	// LinkID is the registry id recorded on provisioned instances
+	// (srv_node_id). Empty is the public connection; a node link uses its
+	// node id and a registered srv link its own id.
+	LinkID string
 	// NodeID is set when this conn is a private node srv reached through the
 	// edge tunnel. Its BaseURL is a virtual srv.<id>.node.invalid host that
-	// only resolves through the NodeHTTP client.
+	// only resolves through the NodeHTTP client. A registered srv link has
+	// a LinkID but no NodeID: it dials its own base_url directly.
 	NodeID string
 }
 
 // srvRecord is the parsed maclawsrv connection document: the public
-// connection plus every node link and per-owner cloud pin.
+// connection plus every node link, every registered srv link, and the
+// per-owner cloud pins.
 type srvRecord struct {
 	baseURL        string
 	adminSecret    string
 	ownerCloudNode map[string]string
 	nodeLinks      map[string]srvConn
+	srvLinks       map[string]srvConn
 }
 
 // publicConn is the loopback system connection.
@@ -934,8 +980,25 @@ func (r srvRecord) nodeConn(nodeID string) (srvConn, error) {
 	return conn, nil
 }
 
+// linkConn resolves one pin: an empty string is the public connection,
+// then a registered srv link, then a node srv link. A named-but-missing
+// link fails closed.
+func (r srvRecord) linkConn(pin string) (srvConn, error) {
+	pin = strings.TrimSpace(pin)
+	if pin == "" {
+		return r.publicConn()
+	}
+	if conn, ok := r.srvLinks[pin]; ok {
+		if strings.TrimSpace(conn.BaseURL) == "" || strings.TrimSpace(conn.AdminSecret) == "" {
+			return srvConn{}, failOfflineDetail("no usable srv link for " + pin)
+		}
+		return conn, nil
+	}
+	return r.nodeConn(pin)
+}
+
 func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, error) {
-	rec := srvRecord{ownerCloudNode: map[string]string{}, nodeLinks: map[string]srvConn{}}
+	rec := srvRecord{ownerCloudNode: map[string]string{}, nodeLinks: map[string]srvConn{}, srvLinks: map[string]srvConn{}}
 	if s == nil || s.settings == nil {
 		return rec, failOfflineDetail("settings store unavailable")
 	}
@@ -956,6 +1019,11 @@ func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, er
 			BaseURL     string `json:"base_url"`
 			AdminSecret string `json:"admin_secret"`
 		} `json:"node_links"`
+		SrvLinks []struct {
+			ID          string `json:"id"`
+			BaseURL     string `json:"base_url"`
+			AdminSecret string `json:"admin_secret"`
+		} `json:"srv_links"`
 	}
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return rec, failOfflineDetail("maclawsrv record is not valid JSON")
@@ -975,40 +1043,58 @@ func (s *Service) srvRecord(ctx context.Context, tenantID string) (srvRecord, er
 			rec.nodeLinks[id] = srvConn{
 				BaseURL:     strings.TrimRight(strings.TrimSpace(link.BaseURL), "/"),
 				AdminSecret: link.AdminSecret,
+				LinkID:      id,
 				NodeID:      id,
+			}
+		}
+	}
+	for _, link := range doc.SrvLinks {
+		if id := strings.TrimSpace(link.ID); id != "" {
+			rec.srvLinks[id] = srvConn{
+				BaseURL:     strings.TrimRight(strings.TrimSpace(link.BaseURL), "/"),
+				AdminSecret: link.AdminSecret,
+				LinkID:      id,
 			}
 		}
 	}
 	return rec, nil
 }
 
-// srvConn resolves by the owner's current cloud pin. Provision uses it so a
-// newly created instance lands on the srv the user currently chose. A bot
-// owner_node pin is irrelevant here: no cloud pin means public, the
-// documented default.
+// srvConn resolves which maclawsrv a new instance provisions on. The chain
+// is: the admin's user-scope pin, then the owner's own private srv pin,
+// then the nearest department-scope pin, then the global-scope pin, then
+// the public connection. A named-but-missing link fails closed.
 func (s *Service) srvConn(ctx context.Context, tenantID, ownerID string) (srvConn, error) {
 	rec, err := s.srvRecord(ctx, tenantID)
 	if err != nil {
 		return srvConn{}, err
+	}
+	pin, userScoped, err := s.ScopeSrvPin(ctx, tenantID, ownerID)
+	if err != nil {
+		return srvConn{}, err
+	}
+	if pin != nil && userScoped {
+		return rec.linkConn(*pin)
 	}
 	if ownerID != "" {
 		if nodeID := rec.ownerCloudNode[ownerID]; nodeID != "" {
 			return rec.nodeConn(nodeID)
 		}
 	}
+	if pin != nil {
+		return rec.linkConn(*pin)
+	}
 	return rec.publicConn()
 }
 
-// srvConnForNode resolves the conn an existing instance runs on: the node
-// srv recorded on it at provision, or the public connection when empty.
-// Changing the user's pin does not move live instances.
+// srvConnForNode resolves the conn an existing instance runs on: the srv
+// link recorded on it at provision — a node srv or a registered srv — or
+// the public connection when empty. Changing pins does not move live
+// instances.
 func (s *Service) srvConnForNode(ctx context.Context, tenantID, srvNodeID string) (srvConn, error) {
 	rec, err := s.srvRecord(ctx, tenantID)
 	if err != nil {
 		return srvConn{}, err
 	}
-	if srvNodeID == "" {
-		return rec.publicConn()
-	}
-	return rec.nodeConn(srvNodeID)
+	return rec.linkConn(srvNodeID)
 }

@@ -52,7 +52,11 @@ var CLOUD_AGENT_QUOTA_I18N = {
     srvPrivate: 'Private',
     srvOnline: 'online',
     srvOffline: 'offline',
-    srvLoadFailed: 'Load bindings failed: {error}'
+    srvLoadFailed: 'Load bindings failed: {error}',
+    srvLabel: 'Default maclawsrv',
+    srvCol: 'maclawsrv',
+    srvDefault: 'System default',
+    srvInherit: 'Inherit'
   },
   zh: {
     nav: '\u4e91\u7aef Agent',
@@ -105,7 +109,11 @@ var CLOUD_AGENT_QUOTA_I18N = {
     srvPrivate: '\u79c1\u6709',
     srvOnline: '\u5728\u7ebf',
     srvOffline: '\u79bb\u7ebf',
-    srvLoadFailed: '\u8bfb\u53d6\u7ed1\u5b9a\u5931\u8d25\uff1a{error}'
+    srvLoadFailed: '\u8bfb\u53d6\u7ed1\u5b9a\u5931\u8d25\uff1a{error}',
+    srvLabel: '\u9ed8\u8ba4 maclawsrv',
+    srvCol: 'maclawsrv',
+    srvDefault: '\u7cfb\u7edf\u9ed8\u8ba4',
+    srvInherit: '\u7ee7\u627f'
   }
 };
 
@@ -120,6 +128,7 @@ var cagOrg = {
   memberLoads: {},
   memberFailed: {},
   expanded: {},
+  srvs: [],
   loaded: false,
   drafts: {},
   loadEpoch: 0,
@@ -146,6 +155,8 @@ function applyCloudAgentQuotaI18n() {
   set('cloudAgentQuotaEnabledLabel', t.enabled);
   set('cloudAgentQuotaInstancesLabel', t.instances);
   set('cloudAgentQuotaTurnsLabel', t.turns);
+  set('cloudAgentQuotaSrvLabel', t.srvLabel);
+  cagRenderQuotaSrv();
   set('cloudAgentQuotaSaveBtn', t.save);
   set('cloudAgentQuotaReloadBtn', t.reload);
   set('cloudAgentAccessTitle', t.accessTitle);
@@ -202,6 +213,7 @@ function cagEnsureStyle() {
     + '#tab-cloud-agents .cag-quota-fields{display:flex;gap:14px;flex-wrap:wrap}'
     + '#tab-cloud-agents .cag-field label{display:block;margin:0 0 5px;font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted,#667386)}'
     + '#tab-cloud-agents .cag-field input{width:120px;height:38px}'
+    + '#tab-cloud-agents .cag-field select{width:190px;height:38px}'
     + '#tab-cloud-agents .cag-quota-side{margin-left:auto;display:flex;align-items:center;gap:12px}'
     + '#tab-cloud-agents .cag-quota-side .cag-status{margin:0}'
     + '#tab-cloud-agents .cag-switch{display:inline-flex;align-items:center;gap:10px;padding-bottom:8px;cursor:pointer;font-size:13px;font-weight:650;color:var(--text,#202733)}'
@@ -233,7 +245,7 @@ function cagEnsureStyle() {
     + '#tab-cloud-agents .cag-filter input{width:100%;height:36px;padding-left:32px;border-radius:9px}'
     + '#tab-cloud-agents .cag-filter::before{content:"";position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;background:var(--icon-search) center/contain no-repeat;opacity:.4;pointer-events:none}'
     + '#tab-cloud-agents .cag-org-tree{max-height:480px;overflow:auto;border:1px solid var(--line,rgba(28,39,55,.11));border-radius:10px;padding:4px;background:var(--bg-2,#fbfcfe)}'
-    + '#tab-cloud-agents .cag-org-head,#tab-cloud-agents .cag-org-row{display:grid;grid-template-columns:minmax(0,1fr) 134px 92px 92px 72px;gap:8px;align-items:center;min-width:660px}'
+    + '#tab-cloud-agents .cag-org-head,#tab-cloud-agents .cag-org-row{display:grid;grid-template-columns:minmax(0,1fr) 126px 148px 92px 92px 72px;gap:8px;align-items:center;min-width:800px}'
     + '#tab-cloud-agents .cag-org-head{position:sticky;top:0;z-index:2;margin:0 2px;padding:7px 10px;border-bottom:1px solid var(--line,rgba(28,39,55,.11));background:var(--bg-2,#fbfcfe);font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted,#667386)}'
     + '#tab-cloud-agents .cag-org-row{min-height:38px;padding:2px 8px;border-radius:8px}'
     + '#tab-cloud-agents .cag-org-row:hover{background:#eef5ff}'
@@ -249,6 +261,7 @@ function cagEnsureStyle() {
     + '#tab-cloud-agents .cag-org-user .cag-org-name{font-size:12px;font-weight:400;color:var(--muted,#667386)}'
     + '#tab-cloud-agents .cag-org-dot{width:6px;height:6px;flex:0 0 auto;border-radius:50%;background:var(--primary,#2563eb)}'
     + '#tab-cloud-agents .cag-access-enabled{width:100%;height:30px;min-height:30px;font-size:12px;border-radius:8px}'
+    + '#tab-cloud-agents .cag-access-srv{width:100%;height:30px;min-height:30px;font-size:12px;border-radius:8px}'
     + '#tab-cloud-agents .cag-access-enabled.cag-state-on{border-color:rgba(20,125,88,.45);background:rgba(20,125,88,.07);color:var(--ok,#147d58);font-weight:650}'
     + '#tab-cloud-agents .cag-access-enabled.cag-state-off{border-color:rgba(194,65,58,.4);background:rgba(194,65,58,.06);color:var(--danger,#c2413a);font-weight:650}'
     + '#tab-cloud-agents .cag-access-instances,#tab-cloud-agents .cag-access-turns{width:100%;height:30px;min-height:30px;font-size:12px}'
@@ -304,6 +317,62 @@ function cagOption(value, label, current) {
   return '<option value="' + value + '"' + (value === current ? ' selected' : '') + '>' + cagEscape(label) + '</option>';
 }
 
+/* The name a srv pin shows. An empty id is the public system default;
+   an id no longer registered still renders as itself so a stale pin is
+   visible instead of silently reading as the default. */
+function cagSrvName(id) {
+  var t = cloudAgentQuotaText();
+  if (!id) return t.srvDefault;
+  var found = null;
+  (cagOrg.srvs || []).forEach(function (item) {
+    if (item && String(item.id || '') === String(id)) found = item;
+  });
+  if (!found) return String(id);
+  return String(found.name || found.id || '');
+}
+
+/* Picker options for one scope row: inherit, the system default, then
+   every registered srv and node srv. */
+function cagSrvOptions(current) {
+  var t = cloudAgentQuotaText();
+  var html = cagOption('inherit', t.srvInherit, current) + cagOption('', t.srvDefault, current);
+  (cagOrg.srvs || []).forEach(function (item) {
+    if (!item || !item.id) return;
+    var label = String(item.name || item.id);
+    if (item.kind === 'node' && item.online === false) label += ' (' + t.srvOffline + ')';
+    html += cagOption(String(item.id), label, current);
+  });
+  if (current !== 'inherit' && current !== '' && current != null) {
+    var seen = false;
+    (cagOrg.srvs || []).forEach(function (item) {
+      if (item && String(item.id || '') === String(current)) seen = true;
+    });
+    if (!seen) html += cagOption(String(current), String(current), current);
+  }
+  return html;
+}
+
+/* The global picker has no inherit level: default means the public srv. */
+function cagSrvOptionsGlobal(current) {
+  var t = cloudAgentQuotaText();
+  var html = cagOption('', t.srvDefault, current);
+  (cagOrg.srvs || []).forEach(function (item) {
+    if (!item || !item.id) return;
+    var label = String(item.name || item.id);
+    if (item.kind === 'node' && item.online === false) label += ' (' + t.srvOffline + ')';
+    html += cagOption(String(item.id), label, current);
+  });
+  return html;
+}
+
+function cagRenderQuotaSrv() {
+  var el = document.getElementById('cloudAgentQuotaSrv');
+  if (!el) return;
+  var current = el._cagSrv != null ? el._cagSrv : '';
+  el.innerHTML = cagSrvOptionsGlobal(current);
+  el.value = current;
+}
+
 function cagControls(scope, target) {
   var t = cloudAgentQuotaText();
   var row = cagOrg.access[cagKey(scope, target)] || {};
@@ -311,10 +380,14 @@ function cagControls(scope, target) {
   var enabled = draft ? draft.enabled : (row.enabled || 'inherit');
   var instances = draft ? draft.instances : (row.max_instances == null ? '' : String(row.max_instances));
   var turns = draft ? draft.turns : (row.max_concurrent_turns == null ? '' : String(row.max_concurrent_turns));
+  var srv = draft ? draft.srv : (row.srv_id == null ? 'inherit' : String(row.srv_id));
   return '<select class="cag-access-enabled cag-state-' + cagEscape(enabled) + '" aria-label="' + cagEscape(t.accessTitle) + '">'
     + cagOption('inherit', t.inherit, enabled)
     + cagOption('on', t.on, enabled)
     + cagOption('off', t.off, enabled)
+    + '</select>'
+    + '<select class="cag-access-srv" aria-label="' + cagEscape(t.srvCol) + '">'
+    + cagSrvOptions(srv)
     + '</select>'
     + '<input class="cag-access-instances" type="number" min="0" step="1" placeholder="' + cagEscape(t.limitInherit) + '" value="' + cagEscape(instances) + '" aria-label="' + cagEscape(t.instances) + '">'
     + '<input class="cag-access-turns" type="number" min="0" step="1" placeholder="' + cagEscape(t.limitInherit) + '" value="' + cagEscape(turns) + '" aria-label="' + cagEscape(t.turns) + '">'
@@ -323,7 +396,7 @@ function cagControls(scope, target) {
 
 function cagRowHasOverride(scope, target) {
   var saved = cagOrg.access[cagKey(scope, target)] || {};
-  return !!(saved.enabled && saved.enabled !== 'inherit') || saved.max_instances != null || saved.max_concurrent_turns != null;
+  return !!(saved.enabled && saved.enabled !== 'inherit') || saved.max_instances != null || saved.max_concurrent_turns != null || saved.srv_id != null;
 }
 
 function cagRow(scope, target, name, depth, userRow, toggle) {
@@ -478,15 +551,18 @@ function cagRowDraft(row) {
   if (!enabledEl) return null;
   var instEl = row.querySelector('.cag-access-instances');
   var turnEl = row.querySelector('.cag-access-turns');
+  var srvEl = row.querySelector('.cag-access-srv');
   var saved = cagOrg.access[cagKey(scope, target)] || {};
   var enabled = String(enabledEl.value || 'inherit');
   var instances = instEl ? String(instEl.value == null ? '' : instEl.value) : '';
   var turns = turnEl ? String(turnEl.value == null ? '' : turnEl.value) : '';
+  var srv = srvEl ? String(srvEl.value || 'inherit') : 'inherit';
   var savedEnabled = saved.enabled || 'inherit';
   var savedInstances = saved.max_instances == null ? '' : String(saved.max_instances);
   var savedTurns = saved.max_concurrent_turns == null ? '' : String(saved.max_concurrent_turns);
-  if (enabled === savedEnabled && instances === savedInstances && turns === savedTurns) return null;
-  return { scope: scope, target: target, enabled: enabled, instances: instances, turns: turns };
+  var savedSrv = saved.srv_id == null ? 'inherit' : String(saved.srv_id);
+  if (enabled === savedEnabled && instances === savedInstances && turns === savedTurns && srv === savedSrv) return null;
+  return { scope: scope, target: target, enabled: enabled, instances: instances, turns: turns, srv: srv };
 }
 
 function cagCaptureDrafts(root) {
@@ -527,6 +603,7 @@ function cagFocusMark(root) {
   var field = '';
   var classes = active.classList;
   if (classes && classes.contains('cag-access-enabled')) field = 'enabled';
+  else if (classes && classes.contains('cag-access-srv')) field = 'srv';
   else if (classes && classes.contains('cag-access-instances')) field = 'instances';
   else if (classes && classes.contains('cag-access-turns')) field = 'turns';
   if (!field) return null;
@@ -610,7 +687,7 @@ function renderCloudAgentAccessTree() {
   }
   var html = '';
   if (rows || extras) {
-    html = '<div class="cag-org-head"><span>' + cagEscape(t.colTarget) + '</span><span>' + cagEscape(t.colAccess) + '</span><span>' + cagEscape(t.instances) + '</span><span>' + cagEscape(t.turns) + '</span><span>' + cagEscape(t.colActions) + '</span></div>' + rows + extras;
+    html = '<div class="cag-org-head"><span>' + cagEscape(t.colTarget) + '</span><span>' + cagEscape(t.colAccess) + '</span><span>' + cagEscape(t.srvCol) + '</span><span>' + cagEscape(t.instances) + '</span><span>' + cagEscape(t.turns) + '</span><span>' + cagEscape(t.colActions) + '</span></div>' + rows + extras;
   }
   if (!html) html = '<div class="cag-org-note">' + cagEscape(t.empty) + '</div>';
   cagOrg.drafts = {};
@@ -720,7 +797,9 @@ function cagGrantRows() {
 
 function cagGrantMeta(row, t) {
   var value = function (v) { return v == null ? t.limitInherit : String(v); };
-  return t.instances + ' ' + value(row.max_instances) + ' \u00b7 ' + t.turns + ' ' + value(row.max_concurrent_turns);
+  var meta = t.instances + ' ' + value(row.max_instances) + ' \u00b7 ' + t.turns + ' ' + value(row.max_concurrent_turns);
+  if (row.srv_id != null) meta += ' \u00b7 ' + cagSrvName(row.srv_id);
+  return meta;
 }
 
 function cagBindGrants(root) {
@@ -804,7 +883,7 @@ function cagRevokeGrant(scope, target) {
   var t = cloudAgentQuotaText();
   var name = cagGrantName(scope, target) || String(target || '');
   var run = function () {
-    return saveCloudAgentAccessRow(scope, target, 'inherit', null, null, { ok: t.revoked, fail: t.revokeFailed });
+    return saveCloudAgentAccessRow(scope, target, 'inherit', null, null, null, { ok: t.revoked, fail: t.revokeFailed });
   };
   if (typeof AdminUI !== 'undefined' && AdminUI && typeof AdminUI.confirmDialog === 'function') {
     return AdminUI.confirmDialog(t.revokeConfirm.replace('{name}', name), { title: t.revokeTitle, confirmText: t.revoke, danger: true }).then(function (ok) {
@@ -868,6 +947,9 @@ async function loadCloudAgentAccess(discardDrafts) {
       api('/api/admin/users').then(function (data) { return data || { users: [] }; }, function () {
         usersFailed = true;
         return { users: [] };
+      }),
+      api('/api/admin/cloud-agents/srvs').then(function (data) { return (data && data.items) || []; }, function () {
+        return [];
       })
     ]);
     if (loadEpoch !== cagOrg.loadEpoch) return null;
@@ -883,6 +965,8 @@ async function loadCloudAgentAccess(discardDrafts) {
     cagOrg.tree = cagNormalize(Array.isArray(rawTree) ? rawTree : (rawTree ? [rawTree] : []));
     cagOrg.deptNames = cagBuildDeptNames(cagOrg.tree);
     cagIndexUsers((results[2] && results[2].users) || []);
+    cagOrg.srvs = Array.isArray(results[3]) ? results[3] : [];
+    cagRenderQuotaSrv();
     cagOrg.loaded = true;
     if (!Object.keys(cagOrg.expanded).length && cagOrg.tree[0]) cagOrg.expanded[cagOrg.tree[0].id] = true;
     renderCloudAgentAccessTree();
@@ -903,7 +987,7 @@ async function loadCloudAgentAccess(discardDrafts) {
   }
 }
 
-function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
+function cagWriteAccess(scope, target, enabled, instances, turns, srv, msgs) {
   var t = cloudAgentQuotaText();
   var okText = msgs && msgs.ok ? msgs.ok : t.accessSaved;
   var failText = msgs && msgs.fail ? msgs.fail : t.accessFailed;
@@ -911,6 +995,8 @@ function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
     if (typeof showToast === 'function') showToast(t.bad, 'error');
     return Promise.resolve();
   }
+  // 'inherit' maps to a null srv_id; '' pins the system default.
+  var srvId = srv === 'inherit' || srv === undefined ? null : srv;
   return api('/api/admin/cloud-agents/access', {
     method: 'PUT',
     body: JSON.stringify({
@@ -918,14 +1004,15 @@ function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
       target_id: target,
       enabled: enabled,
       max_instances: instances,
-      max_concurrent_turns: turns
+      max_concurrent_turns: turns,
+      srv_id: srvId
     })
   }).then(function (saved) {
     // A successful PUT means the row is written; applying the echo locally
     // avoids a full access+groups+users+members reload after every save.
     // The server deletes a non-global row that inherits with blank limits.
     var key = cagKey(scope, target);
-    var cleared = scope !== 'global' && (enabled === 'inherit' || enabled === '') && instances == null && turns == null;
+    var cleared = scope !== 'global' && (enabled === 'inherit' || enabled === '') && instances == null && turns == null && srvId == null;
     if (cleared || (saved && saved.deleted)) {
       delete cagOrg.access[key];
     } else {
@@ -934,7 +1021,8 @@ function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
         target_id: target,
         enabled: enabled || 'inherit',
         max_instances: instances == null ? null : instances,
-        max_concurrent_turns: turns == null ? null : turns
+        max_concurrent_turns: turns == null ? null : turns,
+        srv_id: srvId
       };
     }
     renderCloudAgentAccessTree();
@@ -946,9 +1034,9 @@ function cagWriteAccess(scope, target, enabled, instances, turns, msgs) {
   });
 }
 
-function saveCloudAgentAccessRow(scope, target, enabled, instances, turns, msgs) {
+function saveCloudAgentAccessRow(scope, target, enabled, instances, turns, srv, msgs) {
   var next = cagOrg.saveChain.then(function () {
-    return cagWriteAccess(scope, target, enabled, instances, turns, msgs);
+    return cagWriteAccess(scope, target, enabled, instances, turns, srv, msgs);
   });
   cagOrg.saveChain = next.then(function () {}, function () {});
   return next;
@@ -959,12 +1047,14 @@ function saveCloudAgentAccessFromRow(row) {
   var enabledEl = row.querySelector('.cag-access-enabled');
   var instEl = row.querySelector('.cag-access-instances');
   var turnEl = row.querySelector('.cag-access-turns');
+  var srvEl = row.querySelector('.cag-access-srv');
   return saveCloudAgentAccessRow(
     row.getAttribute('data-scope'),
     row.getAttribute('data-target'),
     enabledEl ? enabledEl.value : 'inherit',
     cagReadLimit(instEl ? instEl.value : ''),
-    cagReadLimit(turnEl ? turnEl.value : '')
+    cagReadLimit(turnEl ? turnEl.value : ''),
+    srvEl ? srvEl.value : 'inherit'
   );
 }
 
@@ -976,9 +1066,14 @@ async function loadCloudAgentQuota() {
     var enabled = document.getElementById('cloudAgentQuotaEnabled');
     var instances = document.getElementById('cloudAgentQuotaInstances');
     var turns = document.getElementById('cloudAgentQuotaTurns');
+    var srv = document.getElementById('cloudAgentQuotaSrv');
     if (enabled) enabled.checked = !!(data && data.cloud_agents_enabled);
     if (instances) instances.value = data && data.max_instances != null ? String(data.max_instances) : '3';
     if (turns) turns.value = data && data.max_concurrent_turns != null ? String(data.max_concurrent_turns) : '1';
+    if (srv) {
+      srv._cagSrv = data && data.srv_id != null ? String(data.srv_id) : '';
+      cagRenderQuotaSrv();
+    }
     if (status) status.textContent = '';
     await loadCloudAgentAccess(true);
     return data;
@@ -999,10 +1094,12 @@ async function saveCloudAgentQuota() {
     return;
   }
   var enabled = document.getElementById('cloudAgentQuotaEnabled');
+  var srv = document.getElementById('cloudAgentQuotaSrv');
   var body = {
     cloud_agents_enabled: !!(enabled && enabled.checked),
     max_instances: instances,
-    max_concurrent_turns: turns
+    max_concurrent_turns: turns,
+    srv_id: srv ? String(srv.value || '') : ''
   };
   var button = document.getElementById('cloudAgentQuotaSaveBtn');
   if (button) button.disabled = true;
@@ -1016,7 +1113,8 @@ async function saveCloudAgentQuota() {
         scope: 'global', target_id: '',
         enabled: body.cloud_agents_enabled ? 'on' : 'off',
         max_instances: body.max_instances,
-        max_concurrent_turns: body.max_concurrent_turns
+        max_concurrent_turns: body.max_concurrent_turns,
+        srv_id: body.srv_id
       };
       renderCloudAgentAccessTree();
       cagRenderGrants();

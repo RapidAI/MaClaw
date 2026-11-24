@@ -195,6 +195,11 @@ type record struct {
 	// their cloud tasks use are two choices. Absent means the public
 	// (system default) maclawsrv.
 	OwnerCloudNode map[string]string `json:"owner_cloud_node,omitempty"`
+	// SrvLinks are extra MaClawSrv connections the tenant admin registered
+	// by address in settings. They dial directly, not through the edge
+	// tunnel, so they share the pin id space with NodeLinks but are not
+	// node links.
+	SrvLinks []srvLink `json:"srv_links,omitempty"`
 	// DialNode is set on a record copied for one call into a node srv.
 	// It is not stored. save folds such a copy back onto NodeLinks.
 	DialNode string `json:"-"`
@@ -209,6 +214,9 @@ type SettingsView struct {
 	Grants                 []Grant         `json:"grants"`
 	DefaultDesktopBotLimit *int            `json:"default_desktop_bot_limit,omitempty"`
 	LLM                    LLMSettingsView `json:"llm"`
+	// SrvLinks is the registered extra maclawsrv list for the settings
+	// page. Secrets stay in the store; the view only reports they are set.
+	SrvLinks []SrvLinkView `json:"srv_links"`
 }
 
 // Service stores the tenant MaClawSrv connection and the bots created there.
@@ -1154,7 +1162,16 @@ func viewOf(rec record) SettingsView {
 		Grants:                 grants,
 		DefaultDesktopBotLimit: rec.DefaultDesktopBotLimit,
 		LLM:                    llmView(rec.LLM),
+		SrvLinks:               srvLinkViews(rec.SrvLinks),
 	}
+}
+
+func srvLinkViews(links []srvLink) []SrvLinkView {
+	out := make([]SrvLinkView, 0, len(links))
+	for _, link := range links {
+		out = append(out, srvLinkViewOf(link))
+	}
+	return out
 }
 
 func storageKey(tenantID string) string {

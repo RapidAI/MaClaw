@@ -700,6 +700,20 @@
           <div class="item-meta" id="maclawsrvConnectionStatus" style="margin-top:4px"></div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMaclawsrvConnection()" id="maclawsrvConnectionSaveBtn"></button><button class="btn-secondary" type="button" onclick="testMaclawsrvConnection()" id="maclawsrvConnectionTestBtn"></button></div>
         </div>
+        <div class="item" id="maclawsrvLinksCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" data-icon="cloud" id="maclawsrvLinksTitle"></div><div class="item-meta" id="maclawsrvLinksHint"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadMaclawsrvConnection()" id="maclawsrvLinksReloadBtn"></button>
+          </div>
+          <div id="maclawsrvLinksList" style="display:grid;gap:8px"></div>
+          <div class="grid2" style="margin-top:10px">
+            <div><label for="maclawsrvLinkName" id="maclawsrvLinkNameLabel"></label><input id="maclawsrvLinkName" autocomplete="off"></div>
+            <div><label for="maclawsrvLinkUrl" id="maclawsrvLinkUrlLabel"></label><input id="maclawsrvLinkUrl" autocomplete="off" spellcheck="false"></div>
+            <div style="grid-column:span 2"><label for="maclawsrvLinkSecret" id="maclawsrvLinkSecretLabel"></label><input id="maclawsrvLinkSecret" type="password" autocomplete="new-password" aria-describedby="maclawsrvLinkSecretHint"></div>
+          </div>
+          <div class="item-meta" id="maclawsrvLinkSecretHint" style="margin-top:8px"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMaclawsrvLink()" id="maclawsrvLinkSaveBtn"></button><button class="btn-secondary hidden" type="button" onclick="cancelMaclawsrvLinkEdit()" id="maclawsrvLinkCancelBtn"></button></div>
+        </div>
         <div class="item registration-auth-card" id="registrationAuthCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
             <div><div class="item-title" data-icon="key" id="registrationAuthTitle"></div><div class="item-meta" id="registrationAuthDesc"></div></div>
@@ -1663,6 +1677,7 @@
           <div class="cag-quota-body">
             <label class="cag-switch"><input id="cloudAgentQuotaEnabled" type="checkbox"><span class="cag-switch-track" aria-hidden="true"></span><span id="cloudAgentQuotaEnabledLabel"></span></label>
             <div class="cag-quota-fields">
+              <div class="cag-field"><label for="cloudAgentQuotaSrv" id="cloudAgentQuotaSrvLabel"></label><select id="cloudAgentQuotaSrv"></select></div>
               <div class="cag-field"><label for="cloudAgentQuotaInstances" id="cloudAgentQuotaInstancesLabel"></label><input id="cloudAgentQuotaInstances" type="number" min="0" step="1"></div>
               <div class="cag-field"><label for="cloudAgentQuotaTurns" id="cloudAgentQuotaTurnsLabel"></label><input id="cloudAgentQuotaTurns" type="number" min="0" step="1"></div>
             </div>

@@ -347,6 +347,55 @@ func cloudAgentUserSrv(reg *edgenode.Registry, broker *edgenode.Broker, bots *bo
 	}
 }
 
+// cloudAgentAdminSrvs serves GET /api/admin/cloud-agents/srvs: every
+// maclawsrv a scope pin can name — the public system default, each
+// registered srv link, and each node srv. The cloud-agent admin page loads
+// it for its assignment pickers.
+func cloudAgentAdminSrvs(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := AdminTenantID(r.Context())
+		items := []map[string]any{}
+		if bots != nil {
+			if view, err := bots.View(r.Context(), tenantID); err == nil {
+				items = append(items, map[string]any{
+					"id":         "",
+					"kind":       "public",
+					"name":       "系统默认",
+					"base_url":   view.BaseURL,
+					"configured": view.AdminSecretSet,
+				})
+			}
+			for _, link := range bots.SrvLinks(r.Context(), tenantID) {
+				items = append(items, map[string]any{
+					"id":         link.ID,
+					"kind":       "registered",
+					"name":       link.Name,
+					"base_url":   link.BaseURL,
+					"configured": link.AdminSecretSet,
+				})
+			}
+		}
+		if reg != nil {
+			if nodes, err := reg.List(r.Context(), tenantID); err == nil {
+				for _, node := range nodes {
+					if !node.HasSrv {
+						continue
+					}
+					if broker != nil {
+						broker.ApplyLive(&node)
+					}
+					view := srvNodeView(node)
+					view["id"] = view["node_id"]
+					view["kind"] = "node"
+					view["configured"] = true
+					items = append(items, view)
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
 // cloudAgentAdminSrvBindings serves GET /api/admin/cloud-agents/srv-bindings:
 // every user whose cloud agents are pinned to a private node srv. Users not
 // listed run on the public maclawsrv.

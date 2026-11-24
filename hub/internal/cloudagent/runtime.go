@@ -210,19 +210,19 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 	if err != nil {
 		return err
 	}
-	if conn.NodeID != inst.SrvNodeID {
-		if err := d.svc.setSrvNode(ctx, inst.ID, conn.NodeID); err != nil {
+	if conn.LinkID != inst.SrvNodeID {
+		if err := d.svc.setSrvNode(ctx, inst.ID, conn.LinkID); err != nil {
 			return err
 		}
-		inst.SrvNodeID = conn.NodeID
+		inst.SrvNodeID = conn.LinkID
 	}
 	loopback := hubLoopback()
 	origin := hubPublicOrigin()
-	if conn.NodeID != "" {
-		// A private srv cannot reach hub's loopback; it calls the public
-		// origin directly. Hub accepts its link secret from any address.
-		// Without a configured public origin the instance could never call
-		// back, so fail instead of provisioning a dead agent.
+	if conn.NodeID != "" || !loopbackBaseURL(conn.BaseURL) {
+		// A private or off-host srv cannot reach hub's loopback; it calls
+		// the public origin directly. Hub accepts its link secret from any
+		// address. Without a configured public origin the instance could
+		// never call back, so fail instead of provisioning a dead agent.
 		if origin == "" {
 			return fail(503, "OFFLINE", "私有 maclawsrv 需要 Hub 先配置 MACLAW_HUB_URL 公网地址")
 		}

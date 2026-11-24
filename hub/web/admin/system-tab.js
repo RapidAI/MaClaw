@@ -1370,6 +1370,24 @@ const MACLAWSRV_I18N = {
     adminSet: 'Admin secret saved',
     adminMissing: 'No admin secret saved',
     loadFailed: 'Load maclawsrv connection failed: {error}',
+    linksTitle: 'Extra maclawsrv',
+    linksHint: 'Registered servers can be assigned on the Cloud agents page as the default or to a department or user. The connection above stays the system default.',
+    linksEmpty: 'No extra maclawsrv registered yet.',
+    linksName: 'Name',
+    linksUrl: 'maclawsrv URL',
+    linksSecret: 'Admin secret',
+    linksSecretHint: 'Paste the MaClawSrv Root Admin API Secret for this server. Leave blank to keep the saved secret.',
+    linksAdd: 'Register',
+    linksUpdate: 'Save changes',
+    linksEdit: 'Edit',
+    linksCancel: 'Cancel',
+    linksDelete: 'Delete',
+    linksSecretSet: 'Secret saved',
+    linksSecretMissing: 'No secret saved',
+    linksSaved: 'Saved',
+    linksDeleted: 'Deleted',
+    linksConfirmDelete: 'Delete {name}? Cloud agent assignments that still point at it fail on the next creation.',
+    linksDeleteFailed: 'Delete maclawsrv failed: {error}',
     saveFailed: 'Save maclawsrv connection failed: {error}'
   },
   zh: {
@@ -1395,6 +1413,24 @@ const MACLAWSRV_I18N = {
     adminSet: '\u7ba1\u7406\u5bc6\u94a5\u5df2\u4fdd\u5b58',
     adminMissing: '\u5c1a\u672a\u4fdd\u5b58\u7ba1\u7406\u5bc6\u94a5',
     loadFailed: '\u8bfb\u53d6 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}',
+    linksTitle: '\u989d\u5916\u7684 maclawsrv',
+    linksHint: '\u6ce8\u518c\u7684 maclawsrv \u53ef\u4ee5\u5728\u300c\u4e91\u7aef Agent\u300d\u9875\u6307\u5b9a\u4e3a\u9ed8\u8ba4\uff0c\u6216\u6307\u5b9a\u7ed9\u67d0\u4e2a\u90e8\u95e8\u3001\u67d0\u4e2a\u7528\u6237\u3002\u4e0a\u65b9\u7684\u662f\u7cfb\u7edf\u9ed8\u8ba4\u3002',
+    linksEmpty: '\u8fd8\u6ca1\u6709\u6ce8\u518c\u7684\u989d\u5916 maclawsrv\u3002',
+    linksName: '\u540d\u79f0',
+    linksUrl: 'maclawsrv \u5730\u5740',
+    linksSecret: '\u7ba1\u7406\u5bc6\u94a5',
+    linksSecretHint: '\u7c98\u8d34\u8be5 MaClawSrv \u7684 Root Admin API Secret\uff0c\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5\u3002',
+    linksAdd: '\u6ce8\u518c',
+    linksUpdate: '\u4fdd\u5b58\u4fee\u6539',
+    linksEdit: '\u7f16\u8f91',
+    linksCancel: '\u53d6\u6d88',
+    linksDelete: '\u5220\u9664',
+    linksSecretSet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58',
+    linksSecretMissing: '\u672a\u4fdd\u5b58\u5bc6\u94a5',
+    linksSaved: '\u5df2\u4fdd\u5b58',
+    linksDeleted: '\u5df2\u5220\u9664',
+    linksConfirmDelete: '\u786e\u5b9a\u5220\u9664 {name}\uff1f\u4ecd\u6307\u5411\u5b83\u7684\u4e91\u7aef Agent \u6307\u5b9a\u4f1a\u5728\u4e0b\u6b21\u521b\u5efa\u65f6\u62a5\u9519\u3002',
+    linksDeleteFailed: '\u5220\u9664 maclawsrv \u5931\u8d25\uff1a{error}',
     saveFailed: '\u4fdd\u5b58 maclawsrv \u63a5\u5165\u5931\u8d25\uff1a{error}'
   }
 };
@@ -1426,6 +1462,7 @@ function applyMaclawsrvI18n() {
   set('maclawsrvConnectionSaveBtn', t.save);
   set('maclawsrvConnectionTestBtn', t.test);
   set('maclawsrvConnectionReloadBtn', t.reload);
+  applyMaclawsrvLinksI18n();
 }
 
 function maclawsrvUrlOk(value) {
@@ -1450,6 +1487,7 @@ async function loadMaclawsrvConnection() {
     if (admin) admin.value = '';
     const t = maclawsrvText();
     if (status) status.textContent = data && data.admin_secret_set ? t.adminSet : t.adminMissing;
+    renderMaclawsrvLinks(data && data.srv_links);
     return data;
   } catch (err) {
     const msg = maclawsrvText().loadFailed.replace('{error}', err.message);
@@ -1544,5 +1582,144 @@ async function testMaclawsrvConnection() {
     if (typeof showToast === 'function') showToast(msg, 'error');
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+// ---- Extra maclawsrv links ---------------------------------------------------
+// Registered srvs become assignable on the cloud-agents page; the public
+// connection above stays the system default. Same settings record and the
+// same write-only admin-secret rule as the public connection.
+
+let maclawsrvLinkEditID = '';
+let maclawsrvLinkList = [];
+
+function applyMaclawsrvLinksI18n() {
+  if (!document.getElementById('maclawsrvLinksCard')) return;
+  const t = maclawsrvText();
+  const set = function(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  set('maclawsrvLinksTitle', t.linksTitle);
+  set('maclawsrvLinksHint', t.linksHint);
+  set('maclawsrvLinkNameLabel', t.linksName);
+  set('maclawsrvLinkUrlLabel', t.linksUrl);
+  set('maclawsrvLinkSecretLabel', t.linksSecret);
+  set('maclawsrvLinkSecretHint', t.linksSecretHint);
+  set('maclawsrvLinksReloadBtn', t.reload);
+  set('maclawsrvLinkSaveBtn', maclawsrvLinkEditID ? t.linksUpdate : t.linksAdd);
+  set('maclawsrvLinkCancelBtn', t.linksCancel);
+  const cancel = document.getElementById('maclawsrvLinkCancelBtn');
+  if (cancel) cancel.classList.toggle('hidden', !maclawsrvLinkEditID);
+}
+
+function maclawsrvLinkNameOf(link) {
+  const name = String(link && link.name || '').trim();
+  return name || String(link && link.base_url || '').trim() || String(link && link.id || '');
+}
+
+function renderMaclawsrvLinks(links) {
+  const list = document.getElementById('maclawsrvLinksList');
+  if (!list) return;
+  const t = maclawsrvText();
+  const items = Array.isArray(links) ? links : [];
+  maclawsrvLinkList = items;
+  if (maclawsrvLinkEditID && !items.some(function(item) { return item && item.id === maclawsrvLinkEditID; })) {
+    maclawsrvLinkEditID = '';
+    applyMaclawsrvLinksI18n();
+  }
+  if (!items.length) {
+    list.innerHTML = '<div class="item-meta">' + escapeHtml(t.linksEmpty) + '</div>';
+    return;
+  }
+  list.innerHTML = items.map(function(link) {
+    const id = String(link && link.id || '');
+    const secret = link && link.admin_secret_set ? t.linksSecretSet : t.linksSecretMissing;
+    const secretCls = link && link.admin_secret_set ? 'ok' : 'warn';
+    return '<div class="item" style="display:flex;align-items:center;gap:10px;padding:10px 12px">'
+      + '<div style="min-width:0;flex:1">'
+      + '<div style="font-weight:700;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(maclawsrvLinkNameOf(link)) + '</div>'
+      + '<div class="item-meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(String(link && link.base_url || '')) + '</div>'
+      + '</div>'
+      + '<span class="badge ' + secretCls + '">' + escapeHtml(secret) + '</span>'
+      + '<button type="button" class="btn-ghost" style="min-height:30px;height:30px;padding:0 10px;font-size:11px" onclick="editMaclawsrvLink(&quot;' + escapeHtml(id) + '&quot;)">' + escapeHtml(t.linksEdit) + '</button>'
+      + '<button type="button" class="btn-danger" style="min-height:30px;height:30px;padding:0 10px;font-size:11px" onclick="deleteMaclawsrvLink(&quot;' + escapeHtml(id) + '&quot;)">' + escapeHtml(t.linksDelete) + '</button>'
+      + '</div>';
+  }).join('');
+}
+
+function editMaclawsrvLink(id) {
+  const link = (maclawsrvLinkList || []).filter(function(item) { return item && item.id === id; })[0];
+  if (!link) return;
+  maclawsrvLinkEditID = link.id;
+  const name = document.getElementById('maclawsrvLinkName');
+  const url = document.getElementById('maclawsrvLinkUrl');
+  const secret = document.getElementById('maclawsrvLinkSecret');
+  if (name) name.value = link.name || '';
+  if (url) url.value = link.base_url || '';
+  if (secret) secret.value = '';
+  applyMaclawsrvLinksI18n();
+  if (name) name.focus();
+}
+
+function cancelMaclawsrvLinkEdit() {
+  maclawsrvLinkEditID = '';
+  ['maclawsrvLinkName', 'maclawsrvLinkUrl', 'maclawsrvLinkSecret'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  applyMaclawsrvLinksI18n();
+}
+
+async function saveMaclawsrvLink() {
+  if (!canManageMaclawsrv()) return;
+  const t = maclawsrvText();
+  const urlEl = document.getElementById('maclawsrvLinkUrl');
+  const base = String(urlEl && urlEl.value || '').trim();
+  if (!base) {
+    if (typeof showToast === 'function') showToast(t.needUrl, 'error');
+    return;
+  }
+  if (!maclawsrvUrlOk(base)) {
+    if (typeof showToast === 'function') showToast(t.badUrl, 'error');
+    return;
+  }
+  const nameEl = document.getElementById('maclawsrvLinkName');
+  const body = {
+    id: maclawsrvLinkEditID,
+    name: String(nameEl && nameEl.value || '').trim(),
+    base_url: base
+  };
+  const secretEl = document.getElementById('maclawsrvLinkSecret');
+  const secret = String(secretEl && secretEl.value || '').trim();
+  if (secret !== '') body.admin_secret = secret;
+  const button = document.getElementById('maclawsrvLinkSaveBtn');
+  if (button) button.disabled = true;
+  try {
+    await api('/api/admin/bots/srv-links', { method: 'PUT', body: JSON.stringify(body) });
+    cancelMaclawsrvLinkEdit();
+    await loadMaclawsrvConnection();
+    if (typeof showToast === 'function') showToast(t.linksSaved, 'success');
+  } catch (err) {
+    const msg = t.saveFailed.replace('{error}', err.message);
+    if (typeof showToast === 'function') showToast(msg, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function deleteMaclawsrvLink(id) {
+  if (!canManageMaclawsrv()) return;
+  const t = maclawsrvText();
+  const link = (maclawsrvLinkList || []).filter(function(item) { return item && item.id === id; })[0];
+  if (!confirm(t.linksConfirmDelete.replace('{name}', maclawsrvLinkNameOf(link || { id: id })))) return;
+  try {
+    await api('/api/admin/bots/srv-links/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (maclawsrvLinkEditID === id) cancelMaclawsrvLinkEdit();
+    await loadMaclawsrvConnection();
+    if (typeof showToast === 'function') showToast(t.linksDeleted, 'success');
+  } catch (err) {
+    const msg = t.linksDeleteFailed.replace('{error}', err.message);
+    if (typeof showToast === 'function') showToast(msg, 'error');
   }
 }

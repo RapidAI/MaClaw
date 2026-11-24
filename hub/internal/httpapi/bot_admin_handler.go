@@ -252,6 +252,58 @@ func PatchBotSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRe
 	}
 }
 
+// PutBotSrvLinkAdminHandler PUT /api/admin/bots/srv-links registers or
+// updates one extra maclawsrv. The admin secret is write-only: omit it to
+// keep the stored one.
+func PutBotSrvLinkAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		var in botmgmt.SrvLinkInput
+		if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid srv link")
+			return
+		}
+		view, err := svc.SaveSrvLink(r.Context(), botTenantID(r), in)
+		if err != nil {
+			writeBotError(w, err)
+			return
+		}
+		// The secret is never written to the audit log — only its presence.
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.srv_link.update", map[string]any{
+			"srv_link_id":        view.ID,
+			"name":               view.Name,
+			"base_url":           view.BaseURL,
+			"admin_secret_set":   view.AdminSecretSet,
+			"admin_secret_saved": in.AdminSecret != nil,
+		})
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
+// DeleteBotSrvLinkAdminHandler DELETE /api/admin/bots/srv-links/{id}
+// unregisters one extra maclawsrv. Scope pins that still name it fail
+// closed on the next provision.
+func DeleteBotSrvLinkAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			return
+		}
+		id := strings.TrimSpace(r.PathValue("id"))
+		if err := svc.DeleteSrvLink(r.Context(), botTenantID(r), id); err != nil {
+			writeBotError(w, err)
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.srv_link.delete", map[string]any{
+			"srv_link_id": id,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
 // PutBotLLMSettingsAdminHandler PUT /api/admin/bots/llm
 func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

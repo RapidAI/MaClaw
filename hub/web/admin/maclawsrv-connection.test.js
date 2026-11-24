@@ -72,6 +72,7 @@ async function main() {
       return { ok: true };
     },
     showToast: function (message) { toasts.push(message); },
+    escapeHtml: function (s) { return String(s == null ? '' : s); },
     getCurrentLanguage: function () { return 'zh'; },
     URL: URL,
     console: console
@@ -159,6 +160,62 @@ async function main() {
   await context.saveMaclawsrvConnection();
   await context.testMaclawsrvConnection();
   assert(calls.length === callsBeforeScope, 'a global admin does not call the tenant maclawsrv route');
+
+  // ---- extra maclawsrv links -------------------------------------------
+  context.adminProfile = function () { return { scope: 'tenant' }; };
+  ['maclawsrvLinksCard', 'maclawsrvLinksTitle', 'maclawsrvLinksHint', 'maclawsrvLinkNameLabel',
+    'maclawsrvLinkUrlLabel', 'maclawsrvLinkSecretLabel', 'maclawsrvLinkSecretHint',
+    'maclawsrvLinksReloadBtn', 'maclawsrvLinkSaveBtn', 'maclawsrvLinkCancelBtn',
+    'maclawsrvLinkName', 'maclawsrvLinkUrl', 'maclawsrvLinkSecret', 'maclawsrvLinksList'
+  ].forEach(function (id) {
+    elements[id] = element(id);
+    elements[id].classList = { toggle: function () {} };
+    elements[id].focus = function () {};
+    elements[id].innerHTML = '';
+  });
+  assert(typeof context.saveMaclawsrvLink === 'function', 'link save is wired');
+  assert(typeof context.deleteMaclawsrvLink === 'function', 'link delete is wired');
+
+  // Rendering comes from the settings payload the connection load fetches.
+  context.renderMaclawsrvLinks([
+    { id: 'srv_a', name: 'node-a', base_url: 'https://a.example.com', admin_secret_set: true },
+    { id: 'srv_b', name: '', base_url: 'https://b.example.com', admin_secret_set: false }
+  ]);
+  const listHTML = String(elements.maclawsrvLinksList.innerHTML);
+  assert(listHTML.indexOf('node-a') !== -1, 'registered link shows its name');
+  assert(listHTML.indexOf('https://b.example.com') !== -1, 'an unnamed link shows its URL');
+  assert(listHTML.indexOf('\u672a\u4fdd\u5b58\u5bc6\u94a5') !== -1, 'a missing secret is marked');
+
+  elements.maclawsrvLinkName.value = 'backup';
+  elements.maclawsrvLinkUrl.value = 'https://srv-b.example.com';
+  elements.maclawsrvLinkSecret.value = 'sec-b';
+  await context.saveMaclawsrvLink();
+  const linkPuts = calls.filter(function (c) { return c.url === '/api/admin/bots/srv-links'; });
+  assert(linkPuts.length === 1 && linkPuts[0].opts.method === 'PUT', 'registering a link PUTs to srv-links');
+  const linkBody = JSON.parse(linkPuts[0].opts.body);
+  assert(linkBody.id === '' && linkBody.name === 'backup', 'a new link has a blank id for the server to fill');
+  assert(linkBody.base_url === 'https://srv-b.example.com' && linkBody.admin_secret === 'sec-b', 'link body carries url and secret');
+
+  // Edit mode keeps a blank secret out of the body but sends the id. The
+  // save above reloaded the settings, so seed the list again first.
+  context.renderMaclawsrvLinks([{ id: 'srv_a', name: 'node-a', base_url: 'https://a.example.com', admin_secret_set: true }]);
+  context.editMaclawsrvLink('srv_a');
+  assert(elements.maclawsrvLinkName.value === 'node-a' && elements.maclawsrvLinkUrl.value === 'https://a.example.com', 'edit fills the form');
+  elements.maclawsrvLinkUrl.value = 'https://a2.example.com';
+  await context.saveMaclawsrvLink();
+  const editBody = JSON.parse(linkPuts.length ? calls.filter(function (c) { return c.url === '/api/admin/bots/srv-links'; })[1].opts.body : '{}');
+  assert(editBody.id === 'srv_a', 'edit sends the existing id');
+  assert(!Object.prototype.hasOwnProperty.call(editBody, 'admin_secret'), 'blank secret keeps the stored one');
+
+  context.confirm = function () { return true; };
+  await context.deleteMaclawsrvLink('srv_b');
+  assert(calls.some(function (c) { return c.url === '/api/admin/bots/srv-links/srv_b' && c.opts && c.opts.method === 'DELETE'; }), 'delete hits srv-links/{id}');
+
+  const linkCallsBefore = calls.length;
+  context.adminProfile = function () { return { scope: 'global' }; };
+  await context.saveMaclawsrvLink();
+  await context.deleteMaclawsrvLink('srv_a');
+  assert(calls.length === linkCallsBefore, 'a global admin does not call the tenant srv-links route');
 
   console.log(passed + ' passed, ' + failed + ' failed');
   if (failed) process.exit(1);

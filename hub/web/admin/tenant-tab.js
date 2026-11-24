@@ -1044,6 +1044,8 @@
     if (registrationAuthCard) registrationAuthCard.classList.toggle('hidden', !tenantAdmin);
     var maclawsrvConnectionCard = byID('maclawsrvConnectionCard');
     if (maclawsrvConnectionCard) maclawsrvConnectionCard.classList.toggle('hidden', !tenantAdmin);
+    var maclawsrvLinksCard = byID('maclawsrvLinksCard');
+    if (maclawsrvLinksCard) maclawsrvLinksCard.classList.toggle('hidden', !tenantAdmin);
     var userReferralSystemCard = byID('userReferralSystemCard');
     if (userReferralSystemCard) userReferralSystemCard.classList.toggle('hidden', !tenantAdmin);
     ['systemRoutingCard','mailConfigCard','tlsConfigCard'].forEach(function(id) {

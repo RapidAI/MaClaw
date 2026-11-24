@@ -136,18 +136,24 @@ type Instance struct {
 }
 
 // AdminView is the tenant default the limits card reads and writes.
+// SrvID is the global maclawsrv pin: empty means the public connection.
 type AdminView struct {
-	CloudAgentsEnabled bool `json:"cloud_agents_enabled"`
-	MaxInstances       int  `json:"max_instances"`
-	MaxConcurrentTurns int  `json:"max_concurrent_turns"`
+	CloudAgentsEnabled bool   `json:"cloud_agents_enabled"`
+	MaxInstances       int    `json:"max_instances"`
+	MaxConcurrentTurns int    `json:"max_concurrent_turns"`
+	SrvID              string `json:"srv_id"`
 }
 
-// AdminSettings is the PATCH body. Every field is required so a partial
-// body cannot turn the feature on or clear a limit by omission.
+// AdminSettings is the PATCH body. The switch and both limits are required
+// so a partial body cannot turn the feature on or clear a limit by
+// omission. SrvID is optional: a nil pointer keeps the stored pin, an
+// empty string pins the public connection, anything else is a registered
+// srv link or node srv id.
 type AdminSettings struct {
-	CloudAgentsEnabled *bool `json:"cloud_agents_enabled"`
-	MaxInstances       *int  `json:"max_instances"`
-	MaxConcurrentTurns *int  `json:"max_concurrent_turns"`
+	CloudAgentsEnabled *bool   `json:"cloud_agents_enabled"`
+	MaxInstances       *int    `json:"max_instances"`
+	MaxConcurrentTurns *int    `json:"max_concurrent_turns"`
+	SrvID              *string `json:"srv_id"`
 }
 
 // UserLimits is an optional per-user numeric override. A null field inherits.
