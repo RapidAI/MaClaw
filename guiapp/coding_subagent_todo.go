@@ -58,6 +58,10 @@ type codingAgentTodoSnapshot struct {
 // payload cannot mutate a freshly rendered control-plane surface. Re-rendering
 // the same names keeps the current tokens. It is a local fence, not a durable
 // task revision: callers must not persist or derive it from request/runtime IDs.
+// A token restored with the transcript is already that generation. The first
+// render of the resumed surface must bind the same revision, or the model
+// writes the token it was shown and the turn dies as control_plane_stale
+// (BR-20261123-9BDD354BCE62).
 func (s *codingAgentTodoState) bindControlPlaneRevision(revision uint64) {
 	if s == nil {
 		return
@@ -68,6 +72,22 @@ func (s *codingAgentTodoState) bindControlPlaneRevision(revision uint64) {
 	}
 	s.revision = revision
 	s.mu.Unlock()
+}
+
+// restoreControlPlaneToken installs the CAS token the resumed transcript
+// already showed the model. It only fills a callback that has not rendered
+// or mutated a checklist; a live turn keeps the generation it already bound.
+func (s *codingAgentTodoState) restoreControlPlaneToken(revision, version uint64) {
+	if s == nil || revision == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != 0 || s.version != 0 || len(s.items) > 0 {
+		return
+	}
+	s.revision = revision
+	s.version = version
 }
 
 func (s *codingAgentTodoState) revisionVersion() (revision, version uint64) {

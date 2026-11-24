@@ -2998,6 +2998,30 @@
     font-variant-numeric: tabular-nums;
 }
 
+.desktop-bot-panel__desktopd {
+    border-top: 1px solid var(--theme-border, #e8eef5);
+}
+
+.desktop-bot-panel__desktopd summary {
+    color: var(--theme-text-muted, #657384);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.desktop-bot-panel__desktopd .desktop-bot-panel__sheet {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.desktop-bot-panel__desktopd-warn {
+    margin: 0;
+    color: var(--theme-warning, #b54708);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .desktop-bot-panel__badge {
     display: inline-flex;
     align-items: center;
@@ -3023,6 +3047,16 @@
 .desktop-bot-panel__badge.is-working {
     background: color-mix(in srgb, var(--theme-warning, #b45309) 14%, var(--theme-surface, #fff));
     color: var(--theme-warning, #b45309);
+}
+
+.desktop-bot-panel__badge.is-danger {
+    margin-left: 6px;
+    background: color-mix(in srgb, var(--theme-danger, #d92d20) 14%, var(--theme-surface, #fff));
+    color: var(--theme-danger, #b42318);
+}
+
+.desktop-bot-panel__badge.is-danger:first-child {
+    margin-left: 0;
 }
 
 .desktop-bot-panel__badge.is-working i {

@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { DesktopBotOptionChips } from './DesktopBotOptionChips';
 import { DesktopBotInquiryCard, askUserAllowsMultiple } from './DesktopBotInquiryCard';
 import { DesktopBotMaterialChips, DesktopBotMaterialStrip } from './DesktopBotMaterialStrip';
@@ -366,6 +366,19 @@ function intranetDesktopWhere(node: { mode?: string; host?: string; port?: numbe
     return (node.name || '').trim();
 }
 
+type DesktopNodeConn = {
+    node_id?: string;
+    mode?: string;
+    host?: string;
+    port?: number;
+    user?: string;
+    name?: string;
+    online?: boolean;
+    desktopd_url?: string;
+    desktopd_addr?: string;
+    desktopd_port?: number;
+};
+
 function computerPlaceLabel(
     bot: { desktopMode?: string; nodeId?: string } | null | undefined,
     nodes: Array<{ node_id?: string; mode?: string; host?: string; port?: number; user?: string; name?: string }>,
@@ -378,6 +391,211 @@ function computerPlaceLabel(
     const node = nodes.find(item => (item.node_id || '').trim() === nodeID);
     const where = intranetDesktopWhere(node);
     return where ? text.computerLocal(where) : text.computerLocalPlain;
+}
+
+function desktopdPortOf(node: DesktopNodeConn): number {
+    if (node.desktopd_port && node.desktopd_port > 0) return node.desktopd_port;
+    const raw = (node.desktopd_url || '').trim();
+    if (raw) {
+        try {
+            const parsed = new URL(raw.includes('://') ? raw : `http://${raw}`);
+            const port = Number(parsed.port);
+            if (port > 0) return port;
+        } catch { /* fall back */ }
+    }
+    const bind = /:(\d+)$/.exec((node.desktopd_addr || '').trim());
+    if (bind) {
+        const port = Number(bind[1]);
+        if (port > 0) return port;
+    }
+    return 0;
+}
+
+function desktopdBindHost(node: DesktopNodeConn): string {
+    const raw = (node.desktopd_addr || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('[')) {
+        const end = raw.indexOf(']');
+        return end > 0 ? raw.slice(1, end) : raw;
+    }
+    return raw.indexOf(':') === raw.lastIndexOf(':') ? raw.replace(/:\d+$/, '') : raw;
+}
+
+function desktopdLoopbackHost(host: string): boolean {
+    const value = host.toLowerCase().replace(/^::ffff:/, '');
+    return value === 'localhost' || value === '::1' || value === '0:0:0:0:0:0:0:1' || value.startsWith('127.');
+}
+
+// desktopdDialAddress is the address other machines can dial. A loopback bind
+// cannot be reached from here, so the caller shows a warning instead.
+function desktopdDialAddress(node: DesktopNodeConn): { address: string; unresolved: boolean } {
+    const url = (node.desktopd_url || '').trim();
+    if (url) {
+        try {
+            const parsed = new URL(url.includes('://') ? url : `http://${url}`);
+            if (parsed.hostname) {
+                const port = parsed.port ? `:${parsed.port}` : '';
+                const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
+                return { address: `${parsed.protocol}//${host}${port}`, unresolved: desktopdLoopbackHost(parsed.hostname) };
+            }
+        } catch { /* fall through to the bind */ }
+    }
+    const bind = desktopdBindHost(node);
+    const port = desktopdPortOf(node);
+    if (bind && desktopdLoopbackHost(bind)) {
+        return { address: port > 0 ? `${bind}:${port}` : bind, unresolved: true };
+    }
+    if (bind && bind !== '0.0.0.0' && bind !== '::') {
+        const host = bind.includes(':') ? `[${bind}]` : bind;
+        return { address: port > 0 ? `${host}:${port}` : host, unresolved: false };
+    }
+    const sshHost = (node.host || '').trim();
+    if (sshHost && port > 0 && !desktopdLoopbackHost(sshHost)) {
+        const host = sshHost.includes(':') ? `[${sshHost}]` : sshHost;
+        return { address: `${host}:${port}`, unresolved: false };
+    }
+    if (url || bind || sshHost) return { address: '', unresolved: true };
+    return { address: '', unresolved: false };
+}
+
+type DesktopdConnCopy = {
+    dash: string;
+    linkDirect: string;
+    linkHub: string;
+    linkCloud: string;
+    linkUnknown: string;
+    online: string;
+    offline: string;
+    modeShared: string;
+    modeIsolated: string;
+    modeNone: string;
+    warnOffline: string;
+    warnUnresolved: string;
+};
+
+type DesktopdConnView = {
+    kind: string;
+    address: string;
+    nodeId: string;
+    nodeName: string;
+    online: string;
+    onlineWarn: boolean;
+    addressWarn: boolean;
+    desktopMode: string;
+    warning: string;
+};
+
+function desktopdConnView(
+    bot: { desktopMode?: string; nodeId?: string } | null | undefined,
+    nodes: DesktopNodeConn[],
+    text: DesktopdConnCopy,
+): DesktopdConnView | null {
+    if (!bot) return null;
+    const mode = bot.desktopMode || '';
+    const desktopMode = mode === 'none' ? text.modeNone : mode === 'isolated' ? text.modeIsolated : mode === 'shared' || mode === '' ? text.modeShared : mode;
+    const nodeID = (bot.nodeId || '').trim();
+    if (!nodeID) {
+        return {
+            kind: text.linkCloud,
+            address: text.dash,
+            nodeId: text.dash,
+            nodeName: text.dash,
+            online: text.dash,
+            onlineWarn: false,
+            addressWarn: false,
+            desktopMode,
+            warning: '',
+        };
+    }
+    const node = nodes.find(item => (item.node_id || '').trim() === nodeID);
+    const dial = node ? desktopdDialAddress(node) : { address: '', unresolved: true };
+    const hasDesktopdAddr = !!node && !!(node.desktopd_url || node.desktopd_addr || node.desktopd_port);
+    const direct = !!node && (node.mode === 'direct' || (hasDesktopdAddr && !!dial.address && !dial.unresolved));
+    const who = node ? [node.name, node.user && node.host ? `${node.user}@${node.host}` : ''].filter(Boolean).join(' · ') : '';
+    const warning = [
+        node && node.online === false ? text.warnOffline : '',
+        !node || dial.unresolved ? text.warnUnresolved : '',
+    ].filter(Boolean).join(' ');
+    return {
+        kind: !node ? text.linkUnknown : direct ? text.linkDirect : text.linkHub,
+        address: dial.address || text.dash,
+        nodeId: nodeID,
+        nodeName: who || text.dash,
+        online: !node || typeof node.online !== 'boolean' ? text.dash : node.online ? text.online : text.offline,
+        onlineWarn: !!node && node.online === false,
+        addressWarn: !!dial.address && dial.unresolved,
+        desktopMode,
+        warning,
+    };
+}
+
+function DesktopdConnDetails({ bot, nodes, text }: {
+    bot: { desktopMode?: string; nodeId?: string };
+    nodes: DesktopNodeConn[];
+    text: {
+        desktopdConn: string;
+        desktopdLink: string;
+        desktopdAddress: string;
+        desktopdNodeId: string;
+        desktopdNodeName: string;
+        desktopdOnline: string;
+        desktopdMode: string;
+        desktopdDash: string;
+        desktopdDirect: string;
+        desktopdHub: string;
+        desktopdCloud: string;
+        desktopdUnknown: string;
+        desktopdOnlineYes: string;
+        desktopdOnlineNo: string;
+        desktopdWarnOffline: string;
+        desktopdWarnUnresolved: string;
+        desktopdTagOffline: string;
+        desktopdTagUnresolved: string;
+        modeShared: string;
+        modeIsolated: string;
+        modeNone: string;
+    };
+}) {
+    const view = desktopdConnView(bot, nodes, {
+        dash: text.desktopdDash,
+        linkDirect: text.desktopdDirect,
+        linkHub: text.desktopdHub,
+        linkCloud: text.desktopdCloud,
+        linkUnknown: text.desktopdUnknown,
+        online: text.desktopdOnlineYes,
+        offline: text.desktopdOnlineNo,
+        modeShared: text.modeShared,
+        modeIsolated: text.modeIsolated,
+        modeNone: text.modeNone,
+        warnOffline: text.desktopdWarnOffline,
+        warnUnresolved: text.desktopdWarnUnresolved,
+    });
+    if (!view) return null;
+    const tag = (label: string) => (
+        <span className="desktop-bot-panel__badge is-danger">{label}</span>
+    );
+    const rows: Array<[string, string, ReactNode]> = [
+        ['link', text.desktopdLink, view.kind],
+        ['address', text.desktopdAddress, view.addressWarn ? <>{view.address !== text.desktopdDash ? <span>{view.address}</span> : null}{tag(text.desktopdTagUnresolved)}</> : view.address],
+        ['node-id', text.desktopdNodeId, view.nodeId],
+        ['node-name', text.desktopdNodeName, view.nodeName],
+        ['online', text.desktopdOnline, view.onlineWarn ? tag(text.desktopdTagOffline) : view.online],
+        ['mode', text.desktopdMode, view.desktopMode],
+    ];
+    return (
+        <details className="desktop-bot-panel__field desktop-bot-panel__field--stack desktop-bot-panel__desktopd" data-testid="desktop-bot-desktopd" open>
+            <summary>{text.desktopdConn}</summary>
+            <dl className="desktop-bot-panel__sheet">
+                {rows.map(([id, label, value]) => (
+                    <div className="desktop-bot-panel__field" key={id}>
+                        <dt>{label}</dt>
+                        <dd data-testid={`desktop-bot-desktopd-${id}`}>{value}</dd>
+                    </div>
+                ))}
+            </dl>
+            {view.warning ? <p className="desktop-bot-panel__desktopd-warn" data-testid="desktop-bot-desktopd-warn" role="status">{view.warning}</p> : null}
+        </details>
+    );
 }
 
 function rolesFromBotLLM(choice: { roles?: unknown; Roles?: unknown } | null | undefined): BotLLMRolesSetting | null {
@@ -901,7 +1119,32 @@ function localizeBotCopy(lang: string, value: unknown): unknown {
     return value;
 }
 
+function desktopdWords(lang: string) {
+    const L = (en: string, zh: string, hant?: string) => localizeText(lang, en, zh, hant);
+    return {
+        desktopdConn: L('desktopd connection', 'desktopd 连接', 'desktopd 連線'),
+        desktopdLink: L('Link', '连接方式', '連線方式'),
+        desktopdAddress: L('Address', '地址', '位址'),
+        desktopdNodeId: L('node_id', 'node_id', 'node_id'),
+        desktopdNodeName: L('Node', '节点', '節點'),
+        desktopdOnline: L('Online', '在线状态', '線上狀態'),
+        desktopdMode: L('desktop_mode', 'desktop_mode', 'desktop_mode'),
+        desktopdDash: L('—', '—', '—'),
+        desktopdDirect: L('Direct', '直连', '直連'),
+        desktopdHub: L('Via Hub', '经 Hub 中转', '經 Hub 中轉'),
+        desktopdCloud: L('Cloud', '云端', '雲端'),
+        desktopdUnknown: L('Unknown', '未知', '未知'),
+        desktopdOnlineYes: L('Online', '在线', '線上'),
+        desktopdOnlineNo: L('Offline', '离线', '離線'),
+        desktopdWarnOffline: L('desktopd is offline.', 'desktopd 已离线。', 'desktopd 已離線。'),
+        desktopdWarnUnresolved: L('Address cannot be resolved.', '地址无法解析。', '位址無法解析。'),
+        desktopdTagOffline: L('Offline', '离线', '離線'),
+        desktopdTagUnresolved: L('Unresolved', '解析不到', '解析不到'),
+    };
+}
+
 function copy(lang: string) {
+    const desktopd = desktopdWords(lang);
     if (!isChineseLang(lang)) {
         const english = {
             listTitle: 'Bots',
@@ -934,6 +1177,7 @@ function copy(lang: string) {
             computerCloud: 'Cloud',
             computerLocal: (where: string) => `Local · ${where}`,
             computerLocalPlain: 'Local',
+            ...desktopd,
             serverLegend: 'Which computer',
             serverMissing: 'Choose a local computer',
             quotaUsed: (used: number, limit: number) => `Using ${used} / ${limit}`,
@@ -1199,6 +1443,7 @@ function copy(lang: string) {
             computerCloud: '雲端',
             computerLocal: (where: string) => `本地 · ${where}`,
             computerLocalPlain: '本地',
+            ...desktopd,
             serverLegend: '用哪台電腦',
             serverMissing: '請選擇一台本地電腦',
             quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
@@ -1462,6 +1707,7 @@ function copy(lang: string) {
         computerCloud: '云端',
         computerLocal: (where: string) => `本地 · ${where}`,
         computerLocalPlain: '本地',
+        ...desktopd,
         serverLegend: '用哪台电脑',
         serverMissing: '请选择一台本地电脑',
         quotaUsed: (used: number, limit: number) => `已用 ${used} / ${limit}`,
@@ -2445,7 +2691,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const text = copy(lang);
     const { showConfirm, showAlert } = useDialog();
     const [bots, setBots] = useState<DesktopBot[]>([]);
-    const [desktopNodes, setDesktopNodes] = useState<Array<{ node_id?: string; name?: string; mode?: string; host?: string; port?: number; user?: string }>>([]);
+    const [desktopNodes, setDesktopNodes] = useState<DesktopNodeConn[]>([]);
     const botsRef = useRef(bots);
     botsRef.current = bots;
     const pendingCrossNotes = useRef<Array<Record<string, unknown>>>([]);
@@ -8087,6 +8333,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <dt>{text.computer}</dt>
                                     <dd data-testid="desktop-bot-computer-place">{computerPlaceLabel(selected, desktopNodes, text)}</dd>
                                 </div>
+                                <DesktopdConnDetails bot={selected} nodes={desktopNodes} text={text} />
                                 <div className="desktop-bot-panel__field">
                                     <dt>{text.created}</dt>
                                     <dd>{formatCreated(selected.createdAt) || '—'}</dd>

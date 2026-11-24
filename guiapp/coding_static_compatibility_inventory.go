@@ -238,6 +238,16 @@ func replaceCodingStaticCompatibilitySurface(mu *sync.RWMutex, names *map[string
 	}
 	next := codingStaticCompatibilitySurfaceNames(definitions)
 	mu.Lock()
+	// A resumed transcript restores the generation the model already holds
+	// before this callback has rendered any names. That first render is the
+	// continuation of the restored generation, not a replacement: minting
+	// revision 1 here makes the replayed todo_write control_plane_stale.
+	if *names == nil && *revision > 0 {
+		*names = next
+		out := *revision
+		mu.Unlock()
+		return out
+	}
 	*revision, *names = installCodingStaticCompatibilitySurface(*revision, *names, next)
 	out := *revision
 	mu.Unlock()

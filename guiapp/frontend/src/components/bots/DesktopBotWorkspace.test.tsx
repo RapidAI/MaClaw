@@ -33,7 +33,7 @@ const recallSecret = vi.hoisted(() => vi.fn(async (_name?: string) => false));
 const fillSecret = vi.hoisted(() => vi.fn(async (_botId?: string, _name?: string) => ({ filled: 'SITE_PASSWORD' })));
 type HubDesktopBot = { id: string; title: string; description: string; instance_id: string; created_at?: string; primary?: boolean; color?: string; shape?: string; desktop_mode?: string; node_id?: string };
 const listBots = vi.hoisted(() => vi.fn(async (): Promise<HubDesktopBot[]> => []));
-const listDesktopNodes = vi.hoisted(() => vi.fn(async () => ({ enabled: false, nodes: [] as Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; active?: boolean; node_id?: string; with_srv?: boolean }> })));
+const listDesktopNodes = vi.hoisted(() => vi.fn(async () => ({ enabled: false, nodes: [] as Array<{ id: string; name: string; mode: string; host?: string; port?: number; user?: string; status: string; active?: boolean; node_id?: string; with_srv?: boolean; desktopd_url?: string; desktopd_addr?: string; desktopd_port?: number; online?: boolean }> })));
 const createBot = vi.hoisted(() => vi.fn(async (name: string, description: string, _nodeID?: string): Promise<HubDesktopBot> => ({ id: 'bot_1', title: name, description, instance_id: '' })));
 const setAppearance = vi.hoisted(() => vi.fn(async (_botId?: string, _color?: string, _shape?: string): Promise<{ color?: string; shape?: string }> => ({})));
 const renameBot = vi.hoisted(() => vi.fn(async (_id: string, _name: string, _description: string) => undefined));
@@ -3541,6 +3541,58 @@ describe('DesktopBotWorkspace', () => {
         expect((await openDetails('bot_cloud')).textContent).toBe('云端');
         expect((await openDetails('bot_local')).textContent).toBe('本地 · znsoft@192.168.1.49');
         expect((await openDetails('bot_none')).textContent).toBe('无电脑');
+    });
+
+    it('lists desktopd connection under computer, with a warning when offline or unresolved', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_direct', title: '直连', description: '', instance_id: 'inst_d', node_id: 'dn_direct', desktop_mode: 'isolated' },
+            { id: 'bot_hub', title: '中转', description: '', instance_id: 'inst_h', node_id: 'dn_hub', desktop_mode: 'shared' },
+            { id: 'bot_down', title: '离线', description: '', instance_id: 'inst_o', node_id: 'dn_down', desktop_mode: 'shared' },
+        ]);
+        listDesktopNodes.mockResolvedValue({
+            enabled: true,
+            nodes: [
+                { id: 'n1', name: 'lab', mode: 'direct', host: '10.0.0.9', user: 'znsoft', status: 'ready', node_id: 'dn_direct', desktopd_url: 'http://10.0.0.9:18082', online: true },
+                { id: 'n2', name: 'relay', mode: 'ssh', host: '192.168.1.8', user: 'ops', status: 'ready', node_id: 'dn_hub', online: true },
+                { id: 'n3', name: 'loop', mode: 'ssh', host: '192.168.1.9', user: 'ops', status: 'ready', node_id: 'dn_down', desktopd_addr: '127.0.0.1:18081', online: false },
+            ],
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        const openConn = async (botId: string) => {
+            const row = await screen.findByTestId('desktop-bot-' + botId);
+            fireEvent.click(row.querySelector('button.desktop-bot-workspace__open') as HTMLButtonElement);
+            fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+            fireEvent.click(await screen.findByTestId('desktop-bot-tab-details'));
+            expect(screen.getByTestId('desktop-bot-computer-place')).toBeTruthy();
+            return screen.findByTestId('desktop-bot-desktopd');
+        };
+        const direct = await openConn('bot_direct');
+        expect(direct.compareDocumentPosition(screen.getByTestId('desktop-bot-computer-place')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-desktopd-link').textContent).toBe('直连');
+        expect(screen.getByTestId('desktop-bot-desktopd-address').textContent).toBe('http://10.0.0.9:18082');
+        expect(screen.getByTestId('desktop-bot-desktopd-node-id').textContent).toBe('dn_direct');
+        expect(screen.getByTestId('desktop-bot-desktopd-node-name').textContent).toContain('lab');
+        expect(screen.getByTestId('desktop-bot-desktopd-node-name').textContent).toContain('znsoft@10.0.0.9');
+        expect(screen.getByTestId('desktop-bot-desktopd-online').textContent).toBe('在线');
+        expect(screen.getByTestId('desktop-bot-desktopd-online').querySelector('.desktop-bot-panel__badge.is-danger')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-desktopd-mode').textContent).toBe('电脑·独立');
+        expect(screen.queryByTestId('desktop-bot-desktopd-warn')).toBeNull();
+
+        await openConn('bot_hub');
+        expect(screen.getByTestId('desktop-bot-desktopd-link').textContent).toBe('经 Hub 中转');
+        expect(screen.getByTestId('desktop-bot-desktopd-address').textContent).toBe('—');
+        expect(screen.getByTestId('desktop-bot-desktopd-node-id').textContent).toBe('dn_hub');
+        expect(screen.getByTestId('desktop-bot-computer-place').textContent).toBe('本地 · ops@192.168.1.8');
+
+        await openConn('bot_down');
+        expect(screen.getByTestId('desktop-bot-desktopd-link').textContent).toBe('经 Hub 中转');
+        const offlineTag = screen.getByTestId('desktop-bot-desktopd-online').querySelector('.desktop-bot-panel__badge.is-danger');
+        const unresolvedTag = screen.getByTestId('desktop-bot-desktopd-address').querySelector('.desktop-bot-panel__badge.is-danger');
+        expect(offlineTag?.textContent).toBe('离线');
+        expect(unresolvedTag?.textContent).toBe('解析不到');
+        expect(offlineTag?.textContent).not.toMatch(/\p{Extended_Pictographic}/u);
+        expect(screen.getByTestId('desktop-bot-desktopd-warn').textContent).toContain('已离线');
+        expect(screen.getByTestId('desktop-bot-desktopd-warn').textContent).toContain('无法解析');
     });
 
     it('does not ask Hub for the screen of a bot with no computer', async () => {

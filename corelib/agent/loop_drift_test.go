@@ -365,6 +365,22 @@ func TestRepeatedStalledRemoteCommandStopsWithoutACallCount(t *testing.T) {
 	if _, seen = repeatedStalledContinuousCall(reordered); seen != 3 {
 		t.Fatalf("key order hid the stalled remote command, seen=%d", seen)
 	}
+	cut := "line\n\n... (已截断，共 20000 字节) ...\n\nline"
+	truncated := repeatToolCalls("ssh_bash", `{"command":"tail -n 200 app.log"}`, cut, true, true, 4)
+	if _, seen = repeatedStalledContinuousCall(truncated); seen != 1 {
+		t.Fatalf("a truncated remote preview must not count as the same result, seen=%d", seen)
+	}
+	if driftFailureHint(truncated) {
+		t.Fatal("a truncated remote preview must not hint a dead loop")
+	}
+	spilled := repeatToolCalls("ssh", `{"command":"journalctl -n 80"}`, "ok\n[tool_result_handle]\nid: h1\n", true, true, 4)
+	if driftFailureHint(spilled) {
+		t.Fatal("a spilled remote page must not hint a dead loop")
+	}
+	word := repeatToolCalls("ssh", `{"command":"echo done"}`, "日志已截断，但命令已结束", true, true, 3)
+	if _, seen = repeatedStalledContinuousCall(word); seen != 3 {
+		t.Fatalf("a finished observation that merely says 已截断 must still stall, seen=%d", seen)
+	}
 }
 
 func itoa(n int) string {
