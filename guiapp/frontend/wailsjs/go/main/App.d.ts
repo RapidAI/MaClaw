@@ -3367,3 +3367,9 @@ export function GetCloudSrvChoice():Promise<{ node_id: string; nodes: Array<{ no
 export function SetCloudSrvChoice(arg1:string):Promise<{ node_id: string; nodes: Array<{ node_id: string; name: string; address: string; online: boolean }> }>;
 
 export function ProbeCloudSrvSSH(arg1:{ name?: string; host: string; port?: number; user: string; password: string; with_srv?: boolean }):Promise<{ ok: boolean; method?: string; message: string; host_key?: string }>;
+
+export function ListCloudAgents():Promise<{ instances: Array<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>; enabled: boolean }>;
+
+export function SetCloudAgentLLM(arg1:string, arg2:{ url: string; key: string; model: string; label: string }):Promise<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>;
+
+export function ResetCloudAgentLLM(arg1:string):Promise<{ id: string; name: string; kind: string; status: string; runtime_status?: string; llm_mode: string; llm_label?: string; llm_model?: string }>;

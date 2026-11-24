@@ -533,6 +533,18 @@ func (s *Service) Patch(ctx context.Context, tenantID, userID, id string, in Pat
 			return Instance{}, failInvalid("LLM 模式无效")
 		}
 	}
+	// Switching back to official must reach maclawsrv: its llm.json overrides
+	// the mode, so a Hub-only write would show official while turns still run
+	// on the custom endpoint.
+	if mode == LLMOfficial && inst.LLMMode == LLMCustom {
+		conn, err := s.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
+		if err != nil {
+			return Instance{}, failOffline()
+		}
+		if _, err := s.disp.call(ctx, http.MethodDelete, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/llm", nil); err != nil {
+			return Instance{}, failOffline()
+		}
+	}
 	label := inst.LLMLabel
 	if in.LLMLabel != nil {
 		label = strings.TrimSpace(*in.LLMLabel)

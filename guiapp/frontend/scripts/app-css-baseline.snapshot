@@ -23106,6 +23106,370 @@ button.tbk-pill {
     }
 }
 
+/* Cloud agent settings panel (settings → 云端智能体).
+ * Sections, choice cards, instance rows, install dialog.
+ * Tokens only; no !important; font-weight ladder 400/500/600/700.
+ */
+
+.cloud-agent-settings {
+    display: grid;
+    gap: 14px;
+}
+
+/* --- Section header: icon tile + title + subtitle --- */
+
+.cloud-agent-section-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.cloud-agent-section-icon {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 25%, var(--theme-border));
+    border-radius: var(--radius-md);
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+}
+
+.cloud-agent-section-head__text {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.cloud-agent-section-title {
+    margin: 0;
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.cloud-agent-section-sub {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.76rem;
+    line-height: 1.55;
+}
+
+/* --- Connection mode choice cards --- */
+
+.cloud-agent-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.cloud-agent-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 11px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.cloud-agent-choice:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+}
+
+.cloud-agent-choice[data-active="true"] {
+    border-color: var(--theme-primary);
+    background: var(--theme-info-bg);
+    box-shadow: 0 0 0 1px var(--theme-primary);
+}
+
+.cloud-agent-choice input {
+    margin: 2px 0 0;
+    accent-color: var(--theme-primary);
+}
+
+.cloud-agent-choice__body {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.cloud-agent-choice__title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+.cloud-agent-choice__desc {
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--theme-text-muted);
+}
+
+.cloud-agent-choice:focus-within {
+    border-color: var(--theme-primary);
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+/* --- Node picker row with live status --- */
+
+.cloud-agent-node-picker {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.cloud-agent-node-picker select {
+    flex: 1 1 240px;
+    min-width: 0;
+}
+
+.cloud-agent-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 35%, var(--theme-border));
+    border-radius: 999px;
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.cloud-agent-status__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--theme-success);
+}
+
+.cloud-agent-status[data-online="false"] {
+    border-color: color-mix(in srgb, var(--theme-danger) 35%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+.cloud-agent-status[data-online="false"] .cloud-agent-status__dot {
+    background: var(--theme-danger);
+}
+
+/* --- Banners (error / ok / info) --- */
+
+.cloud-agent-banner {
+    display: block;
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    font-size: 0.76rem;
+    line-height: 1.55;
+    color: var(--theme-text-muted);
+    background: var(--theme-surface-muted);
+}
+
+.cloud-agent-banner--error {
+    border-color: color-mix(in srgb, var(--theme-danger) 30%, var(--theme-border));
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+.cloud-agent-banner--ok {
+    border-color: color-mix(in srgb, var(--theme-success) 30%, var(--theme-border));
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+}
+
+.cloud-agent-banner--info {
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border));
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+}
+
+/* --- Instance model rows --- */
+
+.cloud-agent-instance-list {
+    display: grid;
+    gap: 8px;
+}
+
+.cloud-agent-instance {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+}
+
+.cloud-agent-instance__meta {
+    display: grid;
+    gap: 5px;
+    min-width: 150px;
+    flex: 0 1 auto;
+}
+
+.cloud-agent-instance__name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+    overflow-wrap: anywhere;
+}
+
+.cloud-agent-instance__tags {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.cloud-agent-chip {
+    display: inline-block;
+    max-width: 260px;
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border);
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-text-muted);
+    font-size: 0.68rem;
+    font-weight: 500;
+    line-height: 1.5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cloud-agent-chip--current {
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border));
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+}
+
+.cloud-agent-instance__controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+    justify-content: flex-end;
+}
+
+.cloud-agent-select {
+    width: auto;
+    min-width: 180px;
+}
+
+/* --- Private deployment entry row --- */
+
+.cloud-agent-deploy-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.cloud-agent-deploy-count {
+    flex: 1 1 auto;
+    font-size: 0.76rem;
+    color: var(--theme-text-muted);
+}
+
+/* --- Install dialog --- */
+
+.cloud-agent-install-modal {
+    width: min(520px, calc(100vw - 36px));
+    max-height: min(84vh, 720px);
+    overflow: auto;
+    text-align: left;
+    padding: 20px 22px;
+    display: grid;
+    gap: 14px;
+}
+
+.cloud-agent-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.cloud-agent-modal-head h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.cloud-agent-install-modal .modal-close {
+    position: static;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+    font-size: 1.1rem;
+}
+
+.cloud-agent-install-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.cloud-agent-field {
+    display: grid;
+    gap: 5px;
+    align-content: start;
+    min-width: 0;
+}
+
+.cloud-agent-field--wide {
+    grid-column: 1 / -1;
+}
+
+.cloud-agent-field label {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+/* --- Action rows --- */
+
+.cloud-agent-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.cloud-agent-actions--start {
+    justify-content: flex-start;
+}
+
+@media (max-width: 560px) {
+    .cloud-agent-install-form {
+        grid-template-columns: 1fr;
+    }
+
+    .cloud-agent-instance__controls {
+        margin-left: 0;
+        justify-content: flex-start;
+    }
+}
+
 .im-settings-token-row input {
     flex: 1 1 220px;
     min-width: 0;
@@ -34079,6 +34443,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .stsm-task-folder + .stsm-task-folder {
   margin-top: 4px;
+}
+/* 云端页签的分组容器：只负责把 place 标签和 会话/编程 文件夹聚成一个
+   testid 范围，display:contents 让它在布局里透明。 */
+.stsm-task-cloud-group {
+  display: contents;
 }
 .stsm-task-folder__head {
   display: flex;

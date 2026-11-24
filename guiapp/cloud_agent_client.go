@@ -17,6 +17,8 @@ type CloudAgentRow struct {
 	Status        string    `json:"status"`
 	RuntimeStatus string    `json:"runtime_status"`
 	LLMMode       string    `json:"llm_mode"`
+	LLMLabel      string    `json:"llm_label"`
+	LLMModel      string    `json:"llm_model"`
 	CreatedAt     time.Time `json:"created_at,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
@@ -84,6 +86,40 @@ func (a *App) OpenCloudAgentGrant(instanceID string) (string, error) {
 		return "", errors.New("没有打开云端控制")
 	}
 	return payload.GrantID, nil
+}
+
+// CloudLLMSet is one cloud instance's custom model choice. Key travels only
+// to the user's own maclawsrv (hub forwards it without storing).
+type CloudLLMSet struct {
+	URL   string `json:"url"`
+	Key   string `json:"key"`
+	Model string `json:"model"`
+	Label string `json:"label"`
+}
+
+// SetCloudAgentLLM pins a cloud instance to one of the desktop's configured
+// providers. The secret is stored only on the instance's srv.
+func (a *App) SetCloudAgentLLM(instanceID string, in CloudLLMSet) (CloudAgentRow, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudAgentRow{}, errors.New("缺少云端实例")
+	}
+	var row CloudAgentRow
+	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/llm", in, &row)
+	return row, err
+}
+
+// ResetCloudAgentLLM returns a cloud instance to the Hub's official model.
+func (a *App) ResetCloudAgentLLM(instanceID string) (CloudAgentRow, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return CloudAgentRow{}, errors.New("缺少云端实例")
+	}
+	var row CloudAgentRow
+	err := a.remoteControlJSON(http.MethodPatch, "/api/v1/cloud-agents/"+url.PathEscape(instanceID), map[string]string{
+		"llm_mode": "official",
+	}, &row)
+	return row, err
 }
 
 // CloudGitConnect is the programming-instance repository form.

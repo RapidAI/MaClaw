@@ -6814,3 +6814,15 @@ export function SetCloudSrvChoice(arg1) {
 export function ProbeCloudSrvSSH(arg1) {
   return window['go']['main']['App']['ProbeCloudSrvSSH'](arg1);
 }
+
+export function ListCloudAgents() {
+  return window['go']['main']['App']['ListCloudAgents']();
+}
+
+export function SetCloudAgentLLM(arg1, arg2) {
+  return window['go']['main']['App']['SetCloudAgentLLM'](arg1, arg2);
+}
+
+export function ResetCloudAgentLLM(arg1) {
+  return window['go']['main']['App']['ResetCloudAgentLLM'](arg1);
+}
