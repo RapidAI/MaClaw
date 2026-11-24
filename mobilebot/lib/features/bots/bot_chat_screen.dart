@@ -58,7 +58,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   String _uploadingName = '';
   bool _listening = false;
   AsrEngine _activeAsr = AsrEngine.system;
-  bool _asrFellBack = false;
   bool _recognizing = false;
 
   /// Live PCM level for the composer meter. Null on the system path.
@@ -231,12 +230,12 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     await _fallbackVoiceToLocal();
   }
 
+  /// Engine at work, never a reason why another was skipped: the local
+  /// engine taking over is the normal path here, not an error. A failure
+  /// with no engine left is a toast.
   String? _listenStatusText() {
-    if (!_listening && !_recognizing && !_asrFellBack) return null;
+    if (!_listening && !_recognizing) return null;
     final S = context.S;
-    if (_asrFellBack && _activeAsr == AsrEngine.local) {
-      return S.chatListenFallbackLocal;
-    }
     if (_recognizing) {
       return _activeAsr == AsrEngine.local
           ? S.chatRecognizingLocal
@@ -247,21 +246,18 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
         : S.chatListenSystem;
   }
 
-  void _beginListen(AsrEngine engine, {bool fellBack = false}) {
+  void _beginListen(AsrEngine engine) {
     _listenUiReset = false;
     setState(() {
       _listening = true;
       _recognizing = false;
       _activeAsr = engine;
-      if (fellBack) _asrFellBack = true;
-      if (!fellBack && engine == AsrEngine.system) _asrFellBack = false;
     });
   }
 
   /// On-device speech-to-text: words land straight in the composer so the
   /// person can edit before sending.
   Future<void> _toggleListening() async {
-    if (!_listening) _asrFellBack = false;
     if (_listening) {
       _noteListenCallback();
       await _speech.stop();
@@ -331,7 +327,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   /// 系统听写没起来。本地就绪才采集；否则后台拉模型并明确提示。
   Future<void> _fallbackComposerToLocal() async {
-    _asrFellBack = true;
     _activeAsr = AsrEngine.local;
     if (mounted) setState(() {});
     final engine = ref.read(voiceEngineProvider);
@@ -465,7 +460,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _voiceCaptured = '';
     _listening = false;
     _recognizing = false;
-    _asrFellBack = false;
     if (mounted) _listenLevel.value = null;
     _ttsBusy = false;
     _speech.stop();
@@ -526,7 +520,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
 
   /// 系统路径已经静默失败。本地没就绪时明确提示并退出，不能只停麦。
   Future<void> _fallbackVoiceToLocal() async {
-    _asrFellBack = true;
     _activeAsr = AsrEngine.local;
     if (mounted) setState(() {});
     final engine = ref.read(voiceEngineProvider);
@@ -543,7 +536,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 聆听一轮：最终识别结果非空→自动发送；空（静默/超时）→稍后重新聆听。
   Future<void> _voiceListen() async {
     if (!_voiceMode || _listening || _ttsBusy) return;
-    _asrFellBack = false;
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
     final localReady = await engine.localAsrReady();
@@ -831,7 +823,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       return null;
     }
     if (mounted) {
-      _beginListen(AsrEngine.local, fellBack: _asrFellBack);
+      _beginListen(AsrEngine.local);
       _listenLevel.value = 0;
     }
     final buf = BytesBuilder(copy: false);

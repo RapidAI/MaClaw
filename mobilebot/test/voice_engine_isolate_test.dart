@@ -14,7 +14,7 @@ import 'package:mobilebot/core/voice_engine.dart';
 /// creates an `AudioPlayer` in its constructor; without this every test that
 /// constructs the engine dies on a MissingPluginException before reaching the
 /// logic it means to check.
-class _FakePlayers extends AudioplayersPlatformInterface
+class FakePlayers extends AudioplayersPlatformInterface
     with MockPlatformInterfaceMixin {
   final Map<String, StreamController<AudioEvent>> events = {};
 
@@ -96,7 +96,7 @@ class _FakePlayers extends AudioplayersPlatformInterface
       ).stream;
 }
 
-class _FakeGlobal extends GlobalAudioplayersPlatformInterface
+class FakeGlobal extends GlobalAudioplayersPlatformInterface
     with MockPlatformInterfaceMixin {
   @override
   Future<void> init() async {}
@@ -114,7 +114,7 @@ class _FakeGlobal extends GlobalAudioplayersPlatformInterface
   Stream<GlobalAudioEvent> getGlobalEventStream() => const Stream.empty();
 }
 
-class _FakePathProvider extends PathProviderPlatform
+class FakePathProvider extends PathProviderPlatform
     with MockPlatformInterfaceMixin {
   @override
   Future<String?> getApplicationSupportPath() async =>
@@ -137,9 +137,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    PathProviderPlatform.instance = _FakePathProvider();
-    AudioplayersPlatformInterface.instance = _FakePlayers();
-    GlobalAudioplayersPlatformInterface.instance = _FakeGlobal();
+    PathProviderPlatform.instance = FakePathProvider();
+    AudioplayersPlatformInterface.instance = FakePlayers();
+    GlobalAudioplayersPlatformInterface.instance = FakeGlobal();
   });
 
   // A local transcription on a real phone used to die with
