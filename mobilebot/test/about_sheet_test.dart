@@ -72,11 +72,11 @@ void main() {
     expect(find.text('https://www.maclaw.top'), findsOneWidget);
     final year = DateTime.now().year;
     expect(
-      find.textContaining('© $year MaclawGo'),
+      find.textContaining('© $year mwclaw.top'),
       findsOneWidget,
     );
     expect(
-      find.textContaining('© $year MaclawGo\nhttps://www.maclaw.top'),
+      find.textContaining('© $year mwclaw.top\nhttps://www.maclaw.top'),
       findsOneWidget,
     );
   });

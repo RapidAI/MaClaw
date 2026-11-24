@@ -188,7 +188,7 @@ class _AboutSheetState extends ConsumerState<_AboutSheet> {
             ),
             const SizedBox(height: AppSpacing.lg),
             Text(
-              '© ${DateTime.now().year} MaclawGo\n$kOfficialWebsiteUrl',
+              '© ${DateTime.now().year} mwclaw.top\n$kOfficialWebsiteUrl',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
