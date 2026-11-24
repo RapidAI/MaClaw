@@ -241,9 +241,27 @@ func (rt *Runtime) SaveLLM(id string, in CustomLLM) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	inst.meta.LLMMode = llmCustom
-	if in.Model != "" {
-		inst.meta.LLMModel = in.Model
+	// Always store the model, including empty: a provider switch without a
+	// model must not keep the previous endpoint's model name.
+	inst.meta.LLMModel = in.Model
+	return writeMeta(inst.dir, inst.meta)
+}
+
+// ClearLLM returns the instance to the official model: llm.json is removed
+// and the saved custom model name is dropped so the official provider falls
+// back to its own default instead of a foreign model id.
+func (rt *Runtime) ClearLLM(id string) error {
+	inst, err := rt.instance(id)
+	if err != nil {
+		return err
 	}
+	if err := os.Remove(filepathJoinLLM(inst.dir)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	inst.meta.LLMMode = llmOfficial
+	inst.meta.LLMModel = ""
 	return writeMeta(inst.dir, inst.meta)
 }
 

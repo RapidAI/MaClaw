@@ -260,7 +260,7 @@ func TestSessionOfficialTurn(t *testing.T) {
 	}
 }
 
-func TestSecondSendWhileRunningIsRejected(t *testing.T) {
+func TestSecondSendWhileRunningIsQueued(t *testing.T) {
 	g, srv, release := newGate(t, officialSessionReply, true)
 	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
 	rt := openRuntime(t)
@@ -268,23 +268,38 @@ func TestSecondSendWhileRunningIsRejected(t *testing.T) {
 	requestID, _ := send(t, rt, spec.ID, "client-hold", "hold-this-turn")
 	waitCall(t, g)
 
-	_, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_send_message", []byte(`{"client_message_id":"client-next","text":"another turn"}`))
-	if !errors.Is(err, errBusy) {
-		t.Fatalf("second send err=%v", err)
+	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_send_message", []byte(`{"client_message_id":"client-next","text":"another turn"}`))
+	if err != nil {
+		t.Fatalf("queued send err=%v", err)
 	}
-	_, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_send_message", []byte(`{"text":"no client id"}`))
-	if !errors.Is(err, errBusy) {
-		t.Fatalf("empty client id err=%v", err)
+	var ack struct {
+		Accepted bool   `json:"accepted"`
+		Queued   bool   `json:"queued"`
+		QueueID  string `json:"queue_id"`
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-agents/"+spec.ID+"/control", strings.NewReader(`{"op":"cloud_send_message","body":{"client_message_id":"client-next","text":"another turn"},"owner_user_id":"user-a"}`))
+	if err := json.Unmarshal(raw, &ack); err != nil || !ack.Accepted || !ack.Queued || ack.QueueID == "" {
+		t.Fatalf("queued ack=%s err=%v", raw, err)
+	}
+	// The same client id stays parked: no second row, no second model call.
+	raw, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_send_message", []byte(`{"client_message_id":"client-next","text":"another turn"}`))
+	if err != nil {
+		t.Fatalf("queued dedup err=%v", err)
+	}
+	var dup struct {
+		QueueID string `json:"queue_id"`
+	}
+	if err := json.Unmarshal(raw, &dup); err != nil || dup.QueueID != ack.QueueID {
+		t.Fatalf("dedup ack=%s err=%v", raw, err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-agents/"+spec.ID+"/control", strings.NewReader(`{"op":"cloud_send_message","body":{"client_message_id":"client-other","text":"via http"},"owner_user_id":"user-a"}`))
 	req.SetPathValue("id", spec.ID)
 	rec := httptest.NewRecorder()
 	rt.ServeControl(rec, req)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "这个实例正在跑一轮") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"queued":true`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if g.hits.Load() != 1 {
-		t.Fatalf("rejected send still called the model: %d", g.hits.Load())
+		t.Fatalf("queued send still called the model: %d", g.hits.Load())
 	}
 	again, _ := send(t, rt, spec.ID, "client-hold", "hold-this-turn")
 	if again != requestID {
@@ -304,6 +319,31 @@ func TestSecondSendWhileRunningIsRejected(t *testing.T) {
 	if status != "finished" {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
+	// The finish drains the queue: both parked turns run in order.
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if g.hits.Load() >= 3 {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if g.hits.Load() != 3 {
+		t.Fatalf("queued turns did not run after the first finished: %d calls", g.hits.Load())
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok, _ := inst.book.PeekOldest(); !ok {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if _, ok, _ := inst.book.PeekOldest(); ok {
+		t.Fatal("queue did not drain")
+	}
 	deadline = time.Now().Add(5 * time.Second)
 	var notice string
 	for time.Now().Before(deadline) {
@@ -322,14 +362,23 @@ func TestSecondSendWhileRunningIsRejected(t *testing.T) {
 	if notice == "" {
 		t.Fatal("finished turn did not tell Hub")
 	}
-	if g.hits.Load() != 1 {
+	if g.hits.Load() != 3 {
 		t.Fatalf("finish notice was counted as a model call: %d", g.hits.Load())
 	}
-	inst, err := rt.instance(spec.ID)
-	if err != nil {
-		t.Fatal(err)
+	// A fresh send begins once every queued turn has finished.
+	deadline = time.Now().Add(30 * time.Second)
+	var next string
+	var created bool
+	for time.Now().Before(deadline) {
+		next, created, err = inst.book.Begin("client-after", "", "after-finish", time.Now())
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errBusy) {
+			t.Fatalf("follow-up begin err=%v", err)
+		}
+		time.Sleep(30 * time.Millisecond)
 	}
-	next, created, err := inst.book.Begin("client-after", "", "after-finish", time.Now())
 	if err != nil || !created || next == "" || next == requestID {
 		t.Fatalf("follow-up request=%s created=%v err=%v", next, created, err)
 	}

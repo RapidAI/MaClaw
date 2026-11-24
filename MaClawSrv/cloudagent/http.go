@@ -107,6 +107,15 @@ func (rt *Runtime) ServeLLM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// ServeLLMDelete returns the instance to the official model.
+func (rt *Runtime) ServeLLMDelete(w http.ResponseWriter, r *http.Request) {
+	if err := rt.ClearLLM(r.PathValue("id")); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(dest); err != nil {

@@ -2,6 +2,7 @@ package cloudagent
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
@@ -82,6 +83,13 @@ CREATE TABLE IF NOT EXISTS commit_pending (
 	fingerprint TEXT NOT NULL,
 	nonce TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS queued_turns (
+	queue_id TEXT PRIMARY KEY,
+	task_id TEXT NOT NULL,
+	text TEXT NOT NULL,
+	client_message_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';`)
@@ -150,6 +158,75 @@ func (b *book) Begin(clientID, taskID, text string, now time.Time) (requestID st
 		return "", false, err
 	}
 	return requestID, true, nil
+}
+
+// queuedTurn is one pre-typed message waiting for the running turn to end.
+type queuedTurn struct {
+	QueueID  string
+	TaskID   string
+	Text     string
+	ClientID string
+}
+
+// queuedTurnsMax bounds one instance's pending input.
+const queuedTurnsMax = 200
+
+var errQueueFull = errors.New("预输入队列已满")
+
+// Enqueue parks a message while a turn is running. A client message id the
+// queue or the turns already know returns its row instead of duplicating.
+func (b *book) Enqueue(clientID, taskID, text string, now time.Time) (string, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID != "" {
+		var existing string
+		err := b.db.QueryRow(`SELECT request_id FROM client_messages WHERE client_message_id = ?`, clientID).Scan(&existing)
+		if err == nil {
+			return existing, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", err
+		}
+		err = b.db.QueryRow(`SELECT queue_id FROM queued_turns WHERE client_message_id = ?`, clientID).Scan(&existing)
+		if err == nil {
+			return existing, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", err
+		}
+	}
+	var count int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM queued_turns`).Scan(&count); err != nil {
+		return "", err
+	}
+	if count >= queuedTurnsMax {
+		return "", errQueueFull
+	}
+	queueID := newID("que_")
+	if _, err := b.db.Exec(`INSERT INTO queued_turns (queue_id, task_id, text, client_message_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		queueID, strings.TrimSpace(taskID), text, clientID, formatTS(now)); err != nil {
+		return "", err
+	}
+	return queueID, nil
+}
+
+// PeekOldest returns the first queued message in FIFO order without removing it.
+func (b *book) PeekOldest() (queuedTurn, bool, error) {
+	var msg queuedTurn
+	err := b.db.QueryRow(`SELECT queue_id, task_id, text, client_message_id FROM queued_turns ORDER BY rowid LIMIT 1`).
+		Scan(&msg.QueueID, &msg.TaskID, &msg.Text, &msg.ClientID)
+	if err == sql.ErrNoRows {
+		return queuedTurn{}, false, nil
+	}
+	if err != nil {
+		return queuedTurn{}, false, err
+	}
+	return msg, true, nil
+}
+
+// DropQueued removes a queued row once its turn has begun.
+func (b *book) DropQueued(queueID string) error {
+	_, err := b.db.Exec(`DELETE FROM queued_turns WHERE queue_id = ?`, strings.TrimSpace(queueID))
+	return err
 }
 
 func (b *book) TaskOf(requestID string) (string, error) {

@@ -16,6 +16,7 @@ func (s *HTTPServer) registerCloudAgentRoutes() {
 	s.mux.HandleFunc("POST /api/v1/cloud-agents/{id}/stop", s.cloudAdmin(s.cloudRuntime.ServeStop))
 	s.mux.HandleFunc("POST /api/v1/cloud-agents/{id}/resume", s.cloudAdmin(s.cloudRuntime.ServeResume))
 	s.mux.HandleFunc("PUT /api/v1/cloud-agents/{id}/llm", s.cloudAdmin(s.cloudRuntime.ServeLLM))
+	s.mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}/llm", s.cloudAdmin(s.cloudRuntime.ServeLLMDelete))
 	s.mux.HandleFunc("GET /api/v1/cloud-agents/{id}/git", s.cloudAdmin(s.cloudRuntime.ServeGitGet))
 	s.mux.HandleFunc("PUT /api/v1/cloud-agents/{id}/git", s.cloudAdmin(s.cloudRuntime.ServeGitPut))
 	s.mux.HandleFunc("DELETE /api/v1/cloud-agents/{id}/git", s.cloudAdmin(s.cloudRuntime.ServeGitDelete))

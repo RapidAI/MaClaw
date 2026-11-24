@@ -30,6 +30,52 @@ func TestHistoryReportsErrorFlagWithoutChangingLines(t *testing.T) {
 	}
 }
 
+func TestQueuedTurnsFIFOAndDedup(t *testing.T) {
+	b, err := openBook(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := b.Enqueue("c1", "task_1", "第一条", now); err != nil {
+		t.Fatal(err)
+	}
+	second, err := b.Enqueue("c2", "task_1", "第二条", now.Add(time.Second))
+	if err != nil || second == "" {
+		t.Fatalf("enqueue second %q %v", second, err)
+	}
+	dup, err := b.Enqueue("c1", "task_1", "第一条", now.Add(2*time.Second))
+	if err != nil || dup == "" {
+		t.Fatalf("enqueue dup %q %v", dup, err)
+	}
+	msg, ok, err := b.PeekOldest()
+	if err != nil || !ok || msg.Text != "第一条" {
+		t.Fatalf("peek %#v %v %v", msg, ok, err)
+	}
+	msg, ok, err = b.PeekOldest()
+	if err != nil || !ok || msg.Text != "第一条" {
+		t.Fatalf("peek twice %#v %v %v", msg, ok, err)
+	}
+	if err := b.DropQueued(msg.QueueID); err != nil {
+		t.Fatal(err)
+	}
+	msg, ok, err = b.PeekOldest()
+	if err != nil || !ok || msg.Text != "第二条" || msg.QueueID != second {
+		t.Fatalf("peek second %#v %v %v", msg, ok, err)
+	}
+	// A begun turn dedups through client_messages, not the queue.
+	if _, _, err := b.Begin("c2", "task_1", "第二条", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	back, err := b.Enqueue("c2", "task_1", "第二条", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back == "" {
+		t.Fatal("enqueue after begin returned empty id")
+	}
+}
+
 func TestCancelLeavesUserLineAndTurnStatus(t *testing.T) {
 	b, err := openBook(t.TempDir())
 	if err != nil {

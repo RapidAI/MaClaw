@@ -131,6 +131,13 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 		return nil, errors.New("请输入要发送的内容")
 	}
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
+	if errors.Is(err, errBusy) {
+		queueID, qerr := inst.book.Enqueue(payload.ClientMessageID, payload.TaskID, text, time.Now())
+		if qerr != nil {
+			return nil, qerr
+		}
+		return json.Marshal(map[string]any{"accepted": true, "queued": true, "queue_id": queueID, "task_id": payload.TaskID})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +147,36 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 		go rt.runSession(ctx, inst, requestID, taskID, text)
 	}
 	return json.Marshal(map[string]any{"accepted": true, "request_id": requestID, "task_id": taskID})
+}
+
+// drainSessionQueue starts the next parked message once the running turn is
+// done. Parked rows survive a GUI shutdown and an srv restart because they
+// live in this instance's transcript db; Recover kicks the drain back up.
+func (rt *Runtime) drainSessionQueue(inst *instance) {
+	for {
+		if got, err := rt.instance(inst.meta.ID); err != nil || got != inst {
+			return
+		}
+		msg, ok, err := inst.book.PeekOldest()
+		if err != nil || !ok {
+			return
+		}
+		requestID, taskID, created, err := rt.begin(inst, msg.ClientID, msg.TaskID, msg.Text)
+		if err != nil {
+			return
+		}
+		if !created {
+			_ = inst.book.DropQueued(msg.QueueID)
+			continue
+		}
+		if err := inst.book.DropQueued(msg.QueueID); err != nil {
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		rt.track(requestID, cancel)
+		go rt.runSession(ctx, inst, requestID, taskID, msg.Text)
+		return
+	}
 }
 
 func (rt *Runtime) begin(inst *instance, clientID, taskID, text string) (requestID, gotTask string, created bool, err error) {
@@ -177,6 +214,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 	// sessionResult owns the terminal response frame — publishing another
 	// here would give viewers two "response" events for one turn.
 	rt.finishTurn(inst, requestID, taskID, content, asError, time.Now())
+	rt.drainSessionQueue(inst)
 }
 
 // sessionResult runs the session turn through the same agent kernel the

@@ -217,9 +217,15 @@ func (rt *Runtime) pulse(ctx context.Context, now time.Time) {
 }
 
 // Recover marks every running turn interrupted and does not replay it.
+// Messages parked in an instance's input queue still resume in order.
 func (rt *Runtime) Recover() error {
 	ids, err := rt.interrupt(time.Now(), restartNote, time.Time{})
 	rt.cancelIDs(ids)
+	for _, inst := range rt.snapshot() {
+		if inst.meta.Kind == KindSession {
+			go rt.drainSessionQueue(inst)
+		}
+	}
 	return err
 }
 
