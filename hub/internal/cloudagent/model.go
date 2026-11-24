@@ -4,6 +4,7 @@ package cloudagent
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -42,6 +43,9 @@ type Failure struct {
 	HTTP    int
 	Code    string
 	Message string
+	// detail is the server-side reason for a generic failure. It stays out
+	// of Message so it never reaches the client, but logDetail surfaces it.
+	detail string
 }
 
 func (f *Failure) Error() string {
@@ -85,6 +89,27 @@ func failSessionGit() error {
 
 func failOffline() error {
 	return fail(503, "OFFLINE", "云端运行时不可用")
+}
+
+// failOfflineDetail is failOffline with a server-side reason. The client
+// still sees only the generic message; the reason is for logs.
+func failOfflineDetail(detail string) error {
+	f := failOffline().(*Failure)
+	f.detail = detail
+	return f
+}
+
+// logDetail renders an error for the server log, surfacing the hidden
+// detail an OFFLINE Failure carries.
+func logDetail(err error) string {
+	var f *Failure
+	if errors.As(err, &f) && f.detail != "" {
+		return f.detail
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Instance is one user's cloud agent. Kind is fixed at creation.

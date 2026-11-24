@@ -62,6 +62,35 @@ func (rt *Runtime) ServeControl(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
+func (rt *Runtime) ServeStop(w http.ResponseWriter, r *http.Request) {
+	if err := rt.Stop(r.PathValue("id")); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (rt *Runtime) ServeResume(w http.ResponseWriter, r *http.Request) {
+	if _, err := rt.instance(r.PathValue("id")); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (rt *Runtime) ServeDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := rt.Stop(id); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	if err := rt.Delete(id); err != nil {
+		writeRuntimeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (rt *Runtime) ServeLLM(w http.ResponseWriter, r *http.Request) {
 	var in CustomLLM
 	if !decodeJSON(w, r, &in) {

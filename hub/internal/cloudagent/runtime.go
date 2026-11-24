@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,19 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 	if inst.Status == StatusStopped && op == remotecontrol.OpCloudSendMessage {
 		return nil, &remotecontrol.StatusError{Code: "FORBIDDEN", Message: "实例已停止"}
 	}
+	// A provision that never landed — a failed attempt or a stale
+	// "provisioning" row from a crashed one — retries here: the runtime PUT
+	// is idempotent. Without it the row stayed dead until delete+recreate.
+	reprovisioned := false
+	if inst.Status == StatusProvisionFailed || inst.Status == StatusProvisioning {
+		if err := d.provision(ctx, &inst); err != nil {
+			log.Printf("[cloud-agent] re-provision %s: %s", inst.ID, logDetail(err))
+			return nil, offlineStatus()
+		}
+		_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
+		inst.Status = StatusIdle
+		reprovisioned = true
+	}
 	if op == remotecontrol.OpCloudSendMessage {
 		// The Hub row stays running until the heartbeat window closes, which is
 		// after maclawsrv has already finished. Forward the send. The runtime
@@ -69,17 +83,27 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			}
 		}
 	}
-	conn, err := d.svc.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
-	if err != nil {
-		_ = d.svc.MarkProvisionFailed(ctx, inst.ID)
-		return nil, offlineStatus()
-	}
-	raw, err := d.call(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/control", map[string]any{
+	payload := map[string]any{
 		"op":            op,
 		"body":          json.RawMessage(bodyOrEmpty(body)),
 		"owner_user_id": grant.TargetUserID,
 		"grant_id":      grant.ID,
-	})
+	}
+	raw, err := d.control(ctx, &inst, payload)
+	if err != nil {
+		var client *Failure
+		if errors.As(err, &client) && client.HTTP == http.StatusNotFound && !reprovisioned {
+			// The runtime no longer has the instance (wiped data, a node
+			// replaced under it): re-provision once and retry.
+			if perr := d.provision(ctx, &inst); perr != nil {
+				log.Printf("[cloud-agent] re-provision %s after 404: %s", inst.ID, logDetail(perr))
+				return nil, offlineStatus()
+			}
+			_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
+			inst.Status = StatusIdle
+			raw, err = d.control(ctx, &inst, payload)
+		}
+	}
 	if err != nil {
 		var client *Failure
 		if errors.As(err, &client) && client.HTTP >= 400 && client.HTTP < 500 && client.Code != "OFFLINE" {
@@ -97,6 +121,19 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 		_ = d.svc.setStatus(ctx, inst.ID, StatusIdle)
 	}
 	return raw, nil
+}
+
+// control resolves the conn the instance's recorded srv binding points at
+// and posts the op. A conn failure marks the row provision_failed so the
+// next op retries provisioning.
+func (d *Dispatcher) control(ctx context.Context, inst *Instance, payload map[string]any) (json.RawMessage, error) {
+	conn, err := d.svc.srvConnForNode(ctx, inst.TenantID, inst.SrvNodeID)
+	if err != nil {
+		_ = d.svc.MarkProvisionFailed(ctx, inst.ID)
+		log.Printf("[cloud-agent] instance %s conn: %s", inst.ID, logDetail(err))
+		return nil, err
+	}
+	return d.call(ctx, http.MethodPost, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID)+"/control", payload)
 }
 
 func offlineStatus() error {
@@ -148,16 +185,21 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		inst.SrvNodeID = conn.NodeID
 	}
 	loopback := hubLoopback()
+	origin := hubPublicOrigin()
 	if conn.NodeID != "" {
 		// A private srv cannot reach hub's loopback; it calls the public
 		// origin directly. Hub accepts its link secret from any address.
 		// Without a configured public origin the instance could never call
 		// back, so fail instead of provisioning a dead agent.
-		origin := hubPublicOrigin()
 		if origin == "" {
 			return fail(503, "OFFLINE", "私有 maclawsrv 需要 Hub 先配置 MACLAW_HUB_URL 公网地址")
 		}
 		loopback = origin
+	}
+	if origin == "" {
+		// With MACLAW_HUB_URL unset, the only origin a co-located srv can
+		// same-origin match against its own env is the loopback we send.
+		origin = loopback
 	}
 	_, err = d.call(ctx, http.MethodPut, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), map[string]any{
 		"id":            inst.ID,
@@ -167,7 +209,7 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		"kind":          inst.Kind,
 		"llm_mode":      inst.LLMMode,
 		"llm_model":     inst.LLMModel,
-		"hub_origin":    hubPublicOrigin(),
+		"hub_origin":    origin,
 		"hub_loopback":  loopback,
 	})
 	return err

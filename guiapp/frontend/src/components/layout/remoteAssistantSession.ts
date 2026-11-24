@@ -96,6 +96,8 @@ export type RemoteAssistantSession = {
     machineName: string;
     projectPath: string;
     taskName: string;
+    /** Cloud agent task projected through this channel — the UI says 云端, not 对方电脑. */
+    cloud?: boolean;
     canSend: boolean;
     offline: boolean;
     error: string;
@@ -839,6 +841,7 @@ function sessionKey(session: RemoteAssistantSession | null) {
         session.offline ? '1' : '0',
         session.loading ? '1' : '0',
         session.busy ? '1' : '0',
+        session.cloud ? 'cloud' : '',
         session.machineName,
         session.taskName,
         session.error,

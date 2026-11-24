@@ -24,6 +24,7 @@ const (
 
 	restartNote   = "云端运行时已重启，这一轮没有跑完。"
 	heartbeatNote = "云端心跳中断，这一轮没有跑完。"
+	stopNote      = "云端实例已停止，这一轮没有跑完。"
 	missWindow    = 90 * time.Second
 )
 
@@ -216,6 +217,17 @@ func (rt *Runtime) Recover() error {
 // InterruptMissed marks running turns whose updated_at is older than 90s.
 func (rt *Runtime) InterruptMissed(now time.Time) error {
 	ids, err := rt.interrupt(now, heartbeatNote, now.Add(-missWindow))
+	rt.cancelIDs(ids)
+	return err
+}
+
+// Stop interrupts every running turn of one instance. The workspace stays.
+func (rt *Runtime) Stop(id string) error {
+	inst, err := rt.instance(id)
+	if err != nil {
+		return err
+	}
+	ids, err := inst.book.interrupt(time.Now(), stopNote, time.Time{})
 	rt.cancelIDs(ids)
 	return err
 }
