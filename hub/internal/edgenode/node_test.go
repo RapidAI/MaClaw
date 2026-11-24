@@ -397,6 +397,23 @@ func TestPersonalDesktopKeepsAHubTokenOnlyWithSrv(t *testing.T) {
 	}
 }
 
+func TestPersonalSrvOnlyEnrollKeepsTheHubToken(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	reg := NewRegistry(&memSettings{})
+	code, err := reg.IssueOwnedCode(context.Background(), "tenant-a", "alice", "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 私有云端服务: no desktopd, just the tunnelled maclawsrv.
+	out, err := reg.Enroll(context.Background(), code.Code, "", "admin-secret", "v1", false, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.HubToken == "" {
+		t.Fatal("a srv-only personal node needs the hub token")
+	}
+}
+
 func TestEnrollRequiresAService(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := NewRegistry(&memSettings{})

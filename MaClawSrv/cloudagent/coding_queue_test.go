@@ -28,9 +28,17 @@ func putCoding(t *testing.T, rt *Runtime, loopback string) Spec {
 	if err := rt.Put(spec); err != nil {
 		t.Fatal(err)
 	}
-	// jailRoot needs a checked-out repo: any workspace dir with a .git dir.
-	repo := filepath.Join(instanceDir(rt, spec), "workspace", "repo", ".git")
+	// jailRoot needs a bound checkout: the git.json binding is what makes
+	// the workspace/repo directory authoritative — a bare .git is not.
+	dir := instanceDir(rt, spec)
+	repo := filepath.Join(dir, "workspace", "repo", ".git")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGit(dir, gitSecret{Token: "bind-token-01234567", Clone: "https://github.com/acme/repo.git", Repo: "acme/repo"}); err != nil {
 		t.Fatal(err)
 	}
 	return spec

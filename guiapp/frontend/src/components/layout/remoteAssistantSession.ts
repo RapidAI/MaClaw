@@ -108,6 +108,8 @@ export type RemoteAssistantSession = {
     taskName: string;
     /** Cloud agent task projected through this channel — the UI says 云端, not 对方电脑. */
     cloud?: boolean;
+    /** Coding-instance repository binding; absent for session instances. */
+    cloudGit?: { connected: boolean; repo?: string };
     canSend: boolean;
     offline: boolean;
     error: string;

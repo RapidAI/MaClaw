@@ -13,6 +13,7 @@ import {
     ListExperts,
     ListLatexTemplates,
     ListManagedIndustryExperts,
+    GetCloudSrvChoice,
     GetMaclawLLMProfilePanelState,
     ListWorkflowTemplateSummaries,
     SelectWorkingDir,
@@ -193,6 +194,8 @@ export interface TaskConfigPanelModel {
     remoteMachines?: RemoteMachineOption[];
     /** 浏览对方电脑上的目录（remote_control list_dirs）；缺省 = 远控未就绪。 */
     onListRemoteDirs?: (grantId: string, path: string) => Promise<RemoteDirListing>;
+    /** 位置 = 云端时工作空间 chip 的服务器说明（maclawsrv 选择）。 */
+    cloudServerLabel?: string;
     /** 模型分配 catalog. The chip follows the row for the current task type. */
     modelCatalog?: TaskModelCatalog | null;
 }
@@ -376,6 +379,36 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     useEffect(() => {
         void loadTaskConfigCloudWorkspaces();
     }, [loadTaskConfigCloudWorkspaces]);
+
+    // 云端任务运行所在的 maclawsrv（公有默认或私有节点）。位置切到云端时刷新一次，
+    // 设置面板里改过选择后重新选云端也能拿到最新值；读取失败只留空标签。
+    const [cloudSrvLabel, setCloudSrvLabel] = useState("");
+    const cloudPlaceSelected = taskConfigDraft.place === 'cloud' && !taskConfigDraft.machine?.grantId;
+    useEffect(() => {
+        if (!cloudPlaceSelected) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                if (typeof GetCloudSrvChoice !== "function") return;
+                const next = await GetCloudSrvChoice();
+                if (cancelled) return;
+                const nodeId = String(next?.node_id || "").trim();
+                const nodes = Array.isArray(next?.nodes) ? next.nodes : [];
+                if (!nodeId) {
+                    setCloudSrvLabel(tailText(lang ?? "", "Public maclawsrv (default)", "公有 maclawsrv（默认）"));
+                    return;
+                }
+                const node = nodes.find((n) => String(n?.node_id || "") === nodeId);
+                const name = String(node?.name || "").trim() || nodeId;
+                const address = String(node?.address || "").trim();
+                const offline = node && !node.online ? ` · ${tailText(lang ?? "", "offline", "离线")}` : "";
+                setCloudSrvLabel(`${tailText(lang ?? "", "Private maclawsrv", "私有 maclawsrv")} · ${name}${address ? ` · ${address}` : ""}${offline}`);
+            } catch {
+                if (!cancelled) setCloudSrvLabel("");
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [cloudPlaceSelected, lang]);
 
     // The new-task picker collects a name before creating, so Hub does not
     // allocate a placeholder 工作区 N. The popover stays open; the new
@@ -1239,11 +1272,12 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             operate: m.operate,
         })),
         onListRemoteDirs: handleListRemoteDirs,
+        cloudServerLabel: cloudSrvLabel,
         modelCatalog: taskModelCatalog,
     }), [
         taskConfigDraft, taskConfigExperts, taskConfigWorkflows, taskConfigLatexTemplates, loadTaskConfigLatexTemplates, taskConfigCloudWorkspaces, taskConfigRecentPaths,
         handleTaskConfigBrowseLocal, handleTaskConfigCreateCloud, handleTaskConfigRenameCloud, handleListRemoteDirs, inputLocked, wizardOverlay, taskConfigSending, taskConfigError,
-        isNewTaskWizardTabActive, machineTarget.machines, taskModelCatalog,
+        isNewTaskWizardTabActive, machineTarget.machines, cloudSrvLabel, taskModelCatalog,
     ]);
 
     return { taskConfig, handleSendWithTaskConfig, handleWelcomePromptSendWithTaskConfig, launchNewTaskFromText, wizardOverlay, dismissWizardOverlay };

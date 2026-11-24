@@ -194,12 +194,14 @@ func TestProgrammingGitCheckoutCommitAndGatedPush(t *testing.T) {
 	}
 	missing := filepath.Join(t.TempDir(), "missing.git")
 	gitOut(t, "-C", repo, "remote", "set-url", "origin", missing)
+	// origin now points at a dead path, but the push is pinned to the stored
+	// clone URL: it must still reach the real remote, not the configured one.
 	text, err = rt.Push(context.Background(), coding.ID, unknownTask)
-	if err == nil || !strings.Contains(err.Error(), "host_repo_mutate_push_receipt_unknown") || strings.Contains(text, second) {
-		t.Fatalf("unknown receipt text=%s err=%v", text, err)
+	if err != nil || !strings.Contains(text, second) {
+		t.Fatalf("pinned push text=%s err=%v", text, err)
 	}
-	if gitOut(t, "--git-dir", bare, "rev-parse", "refs/heads/main") != local {
-		t.Fatal("unknown receipt changed the remote")
+	if gitOut(t, "--git-dir", bare, "rev-parse", "refs/heads/main") != second {
+		t.Fatal("tampered origin redirected the push")
 	}
 
 	fresh := putKind(t, rt, KindCoding)
@@ -346,6 +348,120 @@ func treeContains(root, needle string) bool {
 		return nil
 	})
 	return found
+}
+
+func TestConnectGitMergesPreCheckoutWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	bare := seedBare(t)
+	pointCloneAt(t, bare)
+	rt := openRuntime(t)
+	coding := putKind(t, rt, KindCoding)
+	dir := instanceDir(rt, coding)
+	workspace := filepath.Join(dir, "workspace")
+	// Repo-less work: loose files plus a directory named exactly like the
+	// repository all have to survive the connect.
+	if err := os.MkdirAll(filepath.Join(workspace, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"main.cpp":       "int main(){}",
+		"notes/todo.txt": "ship it",
+		"demo/snake.cpp": "// snake",
+		"README.md":      "loose readme",
+	} {
+		path := filepath.Join(workspace, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A scripted .git directory masquerades as a checkout on disk, but
+	// git.json is the authority: the connect must still proceed and fold
+	// the impostor into the repo as ordinary data.
+	zombie := filepath.Join(workspace, "zombie", ".git")
+	if err := os.MkdirAll(zombie, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zombie, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ConnectGit(context.Background(), coding.ID, demoConnect()); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(workspace, "demo")
+	if info, err := os.Stat(filepath.Join(repo, "zombie", ".git", "HEAD")); err != nil || info.IsDir() {
+		t.Fatalf("impostor checkout not merged: %v", err)
+	}
+	for _, rel := range []string{"main.cpp", filepath.Join("notes", "todo.txt"), "snake.cpp"} {
+		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
+			t.Fatalf("merged %s: %v", rel, err)
+		}
+	}
+	// The clone's README keeps its name; the scratch copy is parked beside it
+	// inside the jail instead of being deleted or stranded in the workspace.
+	raw, err := os.ReadFile(filepath.Join(repo, "README.md"))
+	if err != nil || strings.TrimSpace(string(raw)) != "hello" {
+		t.Fatalf("README = %q err=%v", raw, err)
+	}
+	raw, err = os.ReadFile(filepath.Join(repo, "README.md.pre-checkout"))
+	if err != nil || strings.TrimSpace(string(raw)) != "loose readme" {
+		t.Fatalf("loose README = %q err=%v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("loose README stranded at workspace root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "demo", ".git")); err != nil {
+		t.Fatal("checkout lost its .git")
+	}
+	// The scaffold→connect→commit flow: merged files are untracked, so
+	// git_commit must stage them (-A), not just tracked updates.
+	receipt, err := rt.Commit(context.Background(), coding.ID, "scaffold")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(receipt, "commit ") {
+		t.Fatalf("receipt=%q", receipt)
+	}
+	if got := gitOut(t, "-C", repo, "ls-files", "--", "main.cpp"); got != "main.cpp" {
+		t.Fatalf("merged file not committed: %q", got)
+	}
+	if got := gitOut(t, "-C", repo, "log", "-1", "--format=%an"); got != "Ada" {
+		t.Fatalf("author=%q", got)
+	}
+}
+
+// A loose FILE named like the repository parks under a unique name instead
+// of blocking the connect or being deleted by the stash cleanup.
+func TestConnectGitParksLooseFileNamedLikeRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	bare := seedBare(t)
+	pointCloneAt(t, bare)
+	rt := openRuntime(t)
+	coding := putKind(t, rt, KindCoding)
+	dir := instanceDir(rt, coding)
+	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "demo"), []byte("binary-out"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ConnectGit(context.Background(), coding.ID, demoConnect()); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(workspace, "demo", "demo.pre-checkout-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("parked file glob=%v err=%v", matches, err)
+	}
+	if raw, err := os.ReadFile(matches[0]); err != nil || string(raw) != "binary-out" {
+		t.Fatalf("parked content: %q %v", raw, err)
+	}
 }
 
 func TestGitConnectSourceRoundTrip(t *testing.T) {

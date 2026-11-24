@@ -53,6 +53,8 @@ const (
 	OpCloudStat        = "cloud_stat"
 	OpCloudDeleteFile  = "cloud_delete_file"
 	OpCloudPackDir     = "cloud_pack_dir"
+	OpCloudWriteFile   = "cloud_write_file"
+	OpCloudMkdir       = "cloud_mkdir"
 
 	TargetKindDesktop    = "desktop"
 	TargetKindCloudAgent = "cloud_agent"
@@ -1305,7 +1307,8 @@ func permissionAllows(permission, op string) bool {
 		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudPackDir:
 		return permission == PermView || permission == PermOperate
 	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin,
-		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteFile:
+		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteFile,
+		OpCloudWriteFile, OpCloudMkdir:
 		return permission == PermOperate
 	default:
 		return false
@@ -1316,7 +1319,8 @@ func allowedOp(op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin,
 		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile,
-		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudDeleteFile, OpCloudPackDir:
+		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudDeleteFile, OpCloudPackDir,
+		OpCloudWriteFile, OpCloudMkdir:
 		return true
 	default:
 		return false

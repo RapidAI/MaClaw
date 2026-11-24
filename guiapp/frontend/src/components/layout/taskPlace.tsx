@@ -383,6 +383,7 @@ export function CloudAgentListRow({
     onRenameChange,
     onRenameBlur,
     onRenameKeyDown,
+    subtitle = 'kind',
 }: {
     item: CloudAgentListItem;
     lang: string;
@@ -396,13 +397,18 @@ export function CloudAgentListRow({
     onRenameChange?: (value: string) => void;
     onRenameBlur?: (event: FocusEvent<HTMLInputElement>) => void;
     onRenameKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
+    /** 'kind' shows 会话/编程 (plus status); 'status' shows only a non-idle
+     * status — for rows already sitting under a kind folder whose head names it. */
+    subtitle?: 'kind' | 'status';
 }) {
     const title = item.name || item.id;
     const kind = cloudAgentKindLabel(item.kind, lang);
     const running = useCloudTurnRunning(item.id, item.status);
     const statusKind = cloudAgentStatusKind(item.status, running);
     const statusText = cloudAgentStatusText(item.status, running, lang);
-    const kindLine = statusKind === 'idle' ? kind : `${kind} · ${statusText}`;
+    const subtitleLine = subtitle === 'status'
+        ? (statusKind === 'idle' ? '' : statusText)
+        : (statusKind === 'idle' ? kind : `${kind} · ${statusText}`);
     return (
         <div data-testid="cloud-agent-task-row" data-cloud-agent={item.id} style={order == null ? undefined : { order }}>
             <div
@@ -443,13 +449,15 @@ export function CloudAgentListRow({
                             {timeLabel ? <time className="mc-sidebar-task-time">{timeLabel}</time> : null}
                         </span>
                     )}
-                    <span
-                        data-testid="cloud-agent-kind"
-                        className="mc-task-working-dir"
-                        style={{ display: 'flex', alignItems: 'center', marginTop: 1, color: 'var(--theme-text-secondary)', fontSize: 12, lineHeight: 1.35 }}
-                    >
-                        {kindLine}
-                    </span>
+                    {subtitleLine ? (
+                        <span
+                            data-testid="cloud-agent-kind"
+                            className="mc-task-working-dir"
+                            style={{ display: 'flex', alignItems: 'center', marginTop: 1, color: 'var(--theme-text-secondary)', fontSize: 12, lineHeight: 1.35 }}
+                        >
+                            {subtitleLine}
+                        </span>
+                    ) : null}
                 </span>
             </div>
         </div>

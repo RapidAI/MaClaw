@@ -110,6 +110,10 @@ type DesktopNodeDeployRequest struct {
 	User     string `json:"user"`
 	Password string `json:"password"`
 	WithSrv  bool   `json:"with_srv"`
+	// SrvOnly installs MaClawSrv + the botnode tunnel and skips desktopd
+	// entirely (私有云端服务). No desktop_nodes record is written; completion
+	// is the new node registering on the Hub.
+	SrvOnly bool `json:"srv_only"`
 }
 
 type DesktopNodeDirectRequest struct {
@@ -538,7 +542,8 @@ func (a *App) ListDesktopNodes() (*DesktopNodesView, error) {
 
 // DeployDesktopNode starts a one-click deploy: the assistant agent installs
 // desktopd on the SSH target, then this GUI reads its token over SSH and
-// registers it on Hub for this user only.
+// registers it on Hub for this user only. SrvOnly (私有云端服务) skips
+// desktopd and installs MaClawSrv + the botnode tunnel instead.
 func (a *App) DeployDesktopNode(req DesktopNodeDeployRequest) (*DesktopNodeRecord, error) {
 	req.Host = strings.TrimSpace(req.Host)
 	req.User = strings.TrimSpace(req.User)
@@ -559,6 +564,9 @@ func (a *App) DeployDesktopNode(req DesktopNodeDeployRequest) (*DesktopNodeRecor
 	conn.Close()
 	if privErr != nil {
 		return nil, privErr
+	}
+	if req.SrvOnly {
+		return a.deployCloudSrvOnly(req, privilege, conn.hostKey)
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -1125,7 +1133,7 @@ func desktopNodeFatal(err error) bool {
 		return false
 	}
 	// The install is still running, or this probe is only a progress check.
-	if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") {
+	if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在升级") {
 		return false
 	}
 	return !strings.Contains(msg, "不可达") && !strings.Contains(msg, "正在重新连接") && !strings.Contains(msg, "正在重启")
@@ -1345,7 +1353,7 @@ func desktopNodeProbeStep(err error) string {
 		return "probe"
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在重启") || strings.Contains(msg, "正在重新连接") {
+	if strings.Contains(msg, "正在安装") || strings.Contains(msg, "还未完成") || strings.Contains(msg, "正在重启") || strings.Contains(msg, "正在重新连接") || strings.Contains(msg, "正在升级") {
 		return "wait"
 	}
 	return "probe"
@@ -2217,6 +2225,196 @@ func (a *App) clearDesktopNodeStamp(rec DesktopNodeRecord, password string, priv
 	defer cancel()
 	_, _ = conn.run(ctx, "rm -f "+shellQuote(dir+"/.upgrade-stamp"), privilege, password)
 }
+
+// ---------------------------------------------------------------------------
+// 私有云端服务: srv-only deploy (MaClawSrv + botnode tunnel, no desktopd)
+// ---------------------------------------------------------------------------
+
+// maclawsrvOnlyDocURL is the srv-only runbook served by the Hub. Public like
+// the botnode runbook; the install agent reads it on the target.
+func maclawsrvOnlyDocURL(hub string) string {
+	hub = strings.TrimRight(strings.TrimSpace(hub), "/")
+	if hub == "" {
+		return ""
+	}
+	return hub + "/docs/maclawsrv_only"
+}
+
+// deployCloudSrvOnly issues this user's enrollment code and starts the
+// srv-only install agent. No desktop_nodes record: the cloud settings panel
+// watches for the new node registering on the Hub instead. hostKey pins the
+// SSH fingerprint the first dial saw; every later dial refuses a change.
+func (a *App) deployCloudSrvOnly(req DesktopNodeDeployRequest, privilege desktopNodePrivilege, hostKey string) (*DesktopNodeRecord, error) {
+	hubURL, _, _ := a.getHubCredentials()
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if hubURL == "" {
+		return nil, fmt.Errorf("还没有连接 Hub")
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = req.User + "@" + req.Host
+	}
+	var code struct {
+		Code   string `json:"code"`
+		NodeID string `json:"node_id"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := a.desktopBotCall(ctx, http.MethodPost, "/api/v1/bots/desktop-node/code", map[string]string{"name": name}, &code, 20*time.Second); err != nil {
+		return nil, fmt.Errorf("Hub 拒绝了注册码申请: %v", err)
+	}
+	if strings.TrimSpace(code.Code) == "" {
+		return nil, fmt.Errorf("Hub 没有签发注册码")
+	}
+	// Persist the install target right away (node id follows once the
+	// enrollment lands) so 更新/删除 can reach this node later. The SSH
+	// password is never stored.
+	if err := a.saveCloudSrvRecord(CloudSrvNodeRecord{
+		Name: name, Host: req.Host, Port: req.Port, User: req.User,
+		HostKey: hostKey, HubURL: hubURL,
+	}); err != nil {
+		log.Printf("[cloud-srv] could not save record host=%s err=%v", req.Host, err)
+	}
+	// The machine lock, not a fresh id: a second install to the same server
+	// (the 180s failsafe releases the button) must never run two agents.
+	machine := cloudSrvMachineKey(req.Host, req.Port, req.User)
+	if !claimCloudSrvJob(machine) {
+		return nil, fmt.Errorf("这台服务器正在部署")
+	}
+	id := newDesktopNodeID()
+	rec := DesktopNodeRecord{
+		ID: id, Name: name, Mode: "ssh",
+		Host: req.Host, Port: req.Port, User: req.User, HostKey: hostKey,
+		DeployDir: "", HubURL: hubURL,
+		WithSrv: true, Status: desktopNodeStatusDeploying,
+		Message: "agent 正在部署 MaClawSrv",
+	}
+	go func() {
+		defer releaseCloudSrvJob(machine)
+		a.runCloudSrvOnlyJob(rec, req.Password, privilege, code.Code)
+	}()
+	return &rec, nil
+}
+
+// runCloudSrvOnlyJob drives the srv-only install. It mirrors the record job's
+// agent scaffolding, but completion is checked against the botnode tunnel and
+// the maclawsrv service instead of a desktopd enrollment.
+func (a *App) runCloudSrvOnlyJob(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege, code string) {
+	label := "maclaw-srvonly-" + strings.TrimPrefix(rec.ID, "dn_")
+	registerEphemeralSSHHost(corelib.SSHHostEntry{
+		Label: label, Host: rec.Host, Port: rec.Port, User: rec.User,
+		AuthMethod: "password", Password: password,
+	})
+	cleanupPrivilege := func() {}
+	if privilege.tempSudoers != "" {
+		cleanupPrivilege = func() {
+			conn, err := dialDesktopNodeSSH(rec.Host, rec.Port, rec.User, password, rec.HostKey)
+			if err != nil {
+				log.Printf("[desktop-node] could not remove temporary sudoers id=%s err=%s", rec.ID, scrubDesktopNodeDetail(err.Error()))
+				return
+			}
+			defer conn.Close()
+			if _, rmErr := conn.run(context.Background(), "rm -f "+privilege.tempSudoers, desktopNodePrivilege{su: true}, password); rmErr != nil {
+				log.Printf("[desktop-node] could not remove temporary sudoers id=%s err=%s", rec.ID, scrubDesktopNodeDetail(rmErr.Error()))
+			}
+		}
+	}
+	defer func() {
+		unregisterEphemeralSSHHost(label)
+		cleanupPrivilege()
+	}()
+
+	prompt := cloudSrvOnlyDeployPrompt(rec, password, privilege, code)
+	_, err := RunOpsAgent(a, OpsAgentJob{
+		Name:    "部署 MaClawSrv · " + rec.User + "@" + rec.Host,
+		Display: fmt.Sprintf("〔一键部署〕在 %s@%s 上部署 MaClawSrv", rec.User, rec.Host),
+		Prompt:  prompt,
+		Marker:  "MACLAWSRV_ONLY",
+		Budget:  desktopNodeDeployBudget,
+		Every:   desktopNodeProbeEvery,
+		Log:     func(step, detail string) { a.desktopNodeDetail(rec.ID, step, detail) },
+		Fatal:   desktopNodeFatal,
+		ProbeStep: func(perr error) string {
+			if perr != nil && strings.Contains(perr.Error(), "还未完成") {
+				return "wait"
+			}
+			return "probe"
+		},
+		Probe: func(agentDone bool, _ string) error {
+			if !agentDone {
+				// The install script writes the env files; do not read them
+				// while the run may still be going.
+				return fmt.Errorf("MaClawSrv 正在安装")
+			}
+			return a.finishCloudSrvOnly(rec, password, privilege)
+		},
+	})
+	if err != nil {
+		msg := scrubDesktopNodeDetail(err.Error())
+		a.desktopNodeDetail(rec.ID, "failed", msg)
+		log.Printf("[desktop-node] srv-only deploy failed id=%s err=%s", rec.ID, msg)
+	} else {
+		a.desktopNodeDetail(rec.ID, "ready", "MaClawSrv 已就绪 host="+rec.Host)
+	}
+}
+
+// finishCloudSrvOnly verifies over SSH that the botnode tunnel enrolled, the
+// Hub token reached maclawsrv.env, and both services are active. Errors are
+// worded so desktopNodeFatal keeps probing (还未完成).
+func (a *App) finishCloudSrvOnly(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege) error {
+	conn, err := dialDesktopNodeSSH(rec.Host, rec.Port, rec.User, password, rec.HostKey)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	state, err := conn.run(ctx, "cat /var/lib/maclaw/botnode.json", privilege, password)
+	if err != nil || !strings.Contains(state, "node_id") {
+		return fmt.Errorf("botnode 注册还未完成")
+	}
+	envText, err := conn.run(ctx, "cat /etc/maclaw/maclawsrv.env", privilege, password)
+	if err != nil || !envHasNonEmpty(envText, "MACLAW_DESKTOP_API_TOKEN") {
+		return fmt.Errorf("hub 令牌还未完成写入")
+	}
+	active, err := conn.run(ctx, "systemctl is-active maclaw-srv maclaw-botnode", privilege, password)
+	if err != nil || strings.Count(strings.TrimSpace(active), "active") != 2 {
+		return fmt.Errorf("maclaw-srv 正在安装")
+	}
+	// Link the enrolled node id into the srv-only record so 更新/删除 can
+	// find this install later.
+	a.noteCloudSrvNodeID(CloudSrvNodeRecord{
+		Name: rec.Name, Host: rec.Host, Port: rec.Port, User: rec.User, HubURL: rec.HubURL,
+	}, state)
+	return nil
+}
+
+func envHasNonEmpty(envText, key string) bool {
+	for _, line := range strings.Split(envText, "\n") {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func cloudSrvOnlyDeployPrompt(rec DesktopNodeRecord, password string, privilege desktopNodePrivilege, code string) string {
+	var b strings.Builder
+	b.WriteString("用 ssh 登录下面这台 Linux 服务器，按安装文档完成部署。\n\n")
+	b.WriteString(desktopNodeServerLines(rec, password, privilege, "部署"))
+	b.WriteString("要安装的组件：MaClawSrv 和 botnode（到 Hub 的隧道）\n")
+	b.WriteString("这次不要安装 desktopd，不要安装 Docker，不要构建或拉取桌面镜像 maclaw-gui:2，不要创建 maclaw-desktopd 服务。\n\n")
+	hub := strings.TrimRight(strings.TrimSpace(rec.HubURL), "/")
+	fmt.Fprintf(&b, "当前登录的 Hub：%s\n", hub)
+	fmt.Fprintf(&b, "安装文档：%s\n", maclawsrvOnlyDocURL(hub))
+	b.WriteString("文档里的 HUB_URL 用上面这个 Hub 地址，不要用文档里的示例域名。\n")
+	fmt.Fprintf(&b, "文档里的注册码（ENROLL_CODE）用这一个：%s\n", code)
+	b.WriteString("按文档做到第 8 节确认为止，最后按文档删掉环境文件里的注册码行。\n")
+	b.WriteString("不要在回复里复述密码、注册码和密钥。\n\n")
+	b.WriteString("完成后最后一行输出 `MACLAWSRV_ONLY: OK`；失败则输出 `MACLAWSRV_ONLY: FAILED <原因>`。")
+	return b.String()
+}
+
 
 // ---------------------------------------------------------------------------
 // SSH helper (GUI side only: probing, reading the token, enrolling)

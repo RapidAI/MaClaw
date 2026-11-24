@@ -1367,7 +1367,9 @@ func sanitizeCodingWorkbenchDownloadName(name string) string {
 
 func skipCodingWorkbenchDownloadName(name string) bool {
 	n := strings.TrimSpace(name)
-	return n == cloudWorkspaceCacheStateDir || n == ".maclaw-cloud"
+	// .git is protected too: the cloud jail refuses it outright, so carrying
+	// it through an upload would die mid-walk instead of being skipped here.
+	return n == cloudWorkspaceCacheStateDir || n == ".maclaw-cloud" || strings.EqualFold(n, ".git")
 }
 
 // latexSubmissionSkipName drops TeX build products and editor backups from a

@@ -1004,3 +1004,44 @@
   AmbiguousParameter (-o prefix-matches -OutVariable/-OutBuffer); the shim
   now captures the dir first and routes through `powershell -Command` with
   single-quoted tokens (space grouping preserved, `-o` passes through).
+
+## Cloud-agent workspace jail (MaClawSrv/cloudagent)
+
+- `jailRoot` for `KindCoding` is `workspace/<repo>` only when BOTH the
+  git.json binding exists AND `workspace/<name>/.git/HEAD` is present;
+  otherwise the bare `workspace/` is the root — repo-less coding is
+  allowed, so "还没有检出代码库" is no longer a possible send error.
+  The binding (written by ConnectGit after clone, outside the jail) is the
+  SOLE authority: a scripted `.git` dir — trivially minted through an
+  interpreter, since argv/path checks only cover their own arguments —
+  cannot shift the root, and unbound impostor dirs demote to ordinary
+  loose files merged into the real clone on connect.
+- Shell git is a READ-ONLY allowlist (`gitSubcommandBanned` in jail.go):
+  status/diff/log/show/etc only, and it is a GUIDE RAIL for a cooperative
+  model, not a boundary — a scripted subprocess can run git directly. The
+  hard invariants are: no token in `bashEnv`, the pinned push URL, and
+  `noHooks` on the srv's own ops. Flags that smuggle a path
+  (`--git-dir=`, `-Cdir`, `--work-tree=`, `--exec-path=`) are regex-scanned
+  in EVERY argv entry and inside decoded/`-Command` strings — they reach
+  outside the jail on their own, so a wrapper (`env git …`) or an inline
+  command string cannot dodge the check. Every whitespace-separated FIELD
+  of every argv entry gets the same jail treatment as a top-level arg
+  (quote-stripped secretBase/gitBase/path checks), because `cmd /c` and
+  `powershell -Command` take a whole command string as ONE argv element —
+  without field scanning `cd .. & type git.json` sails through as a
+  harmless-looking relative name while the invoked shell splits it and
+  leaks the inst.dir secrets.
+- `pushRepo` pushes to the stored `secret.Clone` URL with an explicit
+  `HEAD:refs/heads/<upstream-branch>` refspec — never to the configured
+  remote name — so remote-config tampering cannot redirect the askpass
+  token to an arbitrary host.
+- `ConnectGit` merges pre-connection workspace files into the fresh clone
+  (`mergeWorkspaceLoose`): loose top-level entries move into
+  `workspace/<repo>`, the clone keeps colliding names, and the loser lands
+  beside it as `<name>.pre-checkout`. Bare `.git` entries are never moved
+  into the clone (they would ride inside a stash dir as an embedded repo
+  instead). Nothing is deleted or stranded outside the new jail root.
+- `git_commit` stages with `git add -A`, not `-u`: merged scaffold files
+  are untracked, and scaffold→connect→commit is the whole point. The
+  `rejectSecretIndex` gate (.env/git.json/keys…) is what makes the wide
+  stage safe.

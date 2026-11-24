@@ -23230,6 +23230,69 @@ button.tbk-pill {
     min-width: 0;
 }
 
+/* Installed srv-only node rows (update / delete). */
+.cloud-agent-srv-list {
+    display: grid;
+    gap: 8px;
+}
+
+.cloud-agent-srv-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 9px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface-muted);
+}
+
+.cloud-agent-srv-row__meta {
+    display: grid;
+    gap: 3px;
+    min-width: 140px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.cloud-agent-srv-row__name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+    overflow-wrap: anywhere;
+}
+
+.cloud-agent-srv-row__addr {
+    font-size: 0.72rem;
+    color: var(--theme-text-muted);
+    overflow-wrap: anywhere;
+}
+
+.cloud-agent-srv-row__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+    justify-content: flex-end;
+}
+
+.cloud-agent-pw {
+    width: 170px;
+}
+
+@media (max-width: 560px) {
+    .cloud-agent-srv-row__actions {
+        margin-left: 0;
+        justify-content: flex-start;
+    }
+
+    .cloud-agent-pw {
+        width: 100%;
+        flex: 1 1 140px;
+    }
+}
+
 .cloud-agent-status {
     display: inline-flex;
     align-items: center;
@@ -23482,6 +23545,26 @@ button.tbk-pill {
 
 .cloud-agent-actions--start {
     justify-content: flex-start;
+}
+
+/* Inline progress spinner for the install button while the install agent
+ * runs on the server (deploying). */
+.cloud-agent-spinner {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    border: 2px solid color-mix(in srgb, var(--theme-primary) 30%, transparent);
+    border-top-color: var(--theme-primary);
+    border-radius: 50%;
+    animation: cloud-agent-spin 0.8s linear infinite;
+}
+
+@keyframes cloud-agent-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @media (max-width: 560px) {
@@ -34473,8 +34556,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .stsm-task-folder + .stsm-task-folder {
   margin-top: 4px;
 }
-/* 云端页签的分组容器：只负责把 place 标签和 会话/编程 文件夹聚成一个
-   testid 范围，display:contents 让它在布局里透明。 */
+/* 云端页签的分组容器：只负责把 会话/编程 文件夹聚成一个 testid 范围，
+   display:contents 让它在布局里透明。 */
 .stsm-task-cloud-group {
   display: contents;
 }

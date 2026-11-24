@@ -31,6 +31,8 @@ type turnBody struct {
 	Name            string `json:"name"`
 	Path            string `json:"path"`
 	MaxBytes        int64  `json:"max_bytes"`
+	DataBase64      string `json:"data_base64"`
+	Offset          int64  `json:"offset"`
 }
 
 func (b turnBody) text() string {
@@ -136,6 +138,10 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		return rt.browseDelete(inst, payload.Path)
 	case "cloud_pack_dir":
 		return rt.browsePackDir(inst, payload.Path)
+	case "cloud_write_file":
+		return rt.browseWriteFile(inst, payload.Path, payload.DataBase64, payload.Offset)
+	case "cloud_mkdir":
+		return rt.browseMkdir(inst, payload.Path)
 	default:
 		return nil, errors.New("不支持这个云端操作")
 	}

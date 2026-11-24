@@ -4102,8 +4102,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .stsm-task-folder + .stsm-task-folder {
   margin-top: 4px;
 }
-/* 云端页签的分组容器：只负责把 place 标签和 会话/编程 文件夹聚成一个
-   testid 范围，display:contents 让它在布局里透明。 */
+/* 云端页签的分组容器：只负责把 会话/编程 文件夹聚成一个 testid 范围，
+   display:contents 让它在布局里透明。 */
 .stsm-task-cloud-group {
   display: contents;
 }

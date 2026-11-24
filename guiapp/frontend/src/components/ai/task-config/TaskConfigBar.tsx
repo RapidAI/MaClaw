@@ -100,6 +100,8 @@ export interface TaskConfigBarProps {
     latexTemplates?: LatexTemplate[];
     /** Reload the catalogue when the template menu opens. */
     onPrepareLatexTemplates?: () => void;
+    /** 位置 = 云端时工作空间 chip 的服务器说明（maclawsrv 选择），tooltip 展示；chip 只读。 */
+    cloudServerLabel?: string;
     /**
      * 远控被控机器候选。非空，或 Hub 已开通云端任务时，显示「位置」chip。
      * 顺序是本机、云端（开通才有）、远控机器。两者都没有时位置恒为本机且不显示该 chip。
@@ -169,6 +171,7 @@ export function TaskConfigBar({
     onShowAllWorkflows,
     latexTemplates,
     onPrepareLatexTemplates,
+    cloudServerLabel,
     remoteMachines,
     onListRemoteDirs,
     variant = "chip",
@@ -231,6 +234,11 @@ export function TaskConfigBar({
     const cloudPlace = useCloudTaskPlace();
     const showMachineChip = (remoteMachines != null && remoteMachines.length > 0) || cloudPlace.enabled;
     const cloudPlaceSelected = draft.place === 'cloud' && !draft.machine?.grantId;
+    // 弹层开着时位置经外部路径切到云端（如跟随云端页签的草稿预填）：
+    // 工作空间 chip 已变只读，还开着的弹层必须关掉，否则还能改一个不可见的值。
+    useEffect(() => {
+        if (cloudPlaceSelected) setMenu(current => (current === 'workspace' ? null : current));
+    }, [cloudPlaceSelected]);
     // 专家任务不携带工作空间（§7）：指定专家时云端/远程位置锁定。
     const expertWorkspaceLocked = !workspaceKindsForExpert(draft).includes('cloud');
     const showLatexTemplate = expertNeedsSetup(draft);
@@ -330,7 +338,7 @@ export function TaskConfigBar({
         testId: string,
         keyLabel: string,
         value: ReactNode,
-        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean; valueMaxWidth?: number } = {},
+        options: { active?: boolean; locked?: boolean; warning?: boolean; title?: string; noMenu?: boolean; displayOnly?: boolean; valueMaxWidth?: number } = {},
     ) => {
         const valueColor = options.warning ? warnValueColor : options.active ? accent : t.text;
         const lead = configLeadIcon(key, draft, workflowLocked);
@@ -347,6 +355,7 @@ export function TaskConfigBar({
                     ...chipBase,
                     ...(options.active ? chipActive : {}),
                     ...(options.locked ? { opacity: 0.55 } : {}),
+                    ...(options.displayOnly && !disabled ? { cursor: "default" } : {}),
                 }}
             >
                 <span data-testid={`${testId}-label`} style={{ display: "inline-flex", alignItems: "center", gap: bare ? 4 : 5, flexShrink: 0 }}>
@@ -367,7 +376,7 @@ export function TaskConfigBar({
                 >
                     {value}
                 </span>
-                <TaskConfigIcon name="chevronDown" size={10} style={{ color: options.active ? accent : t.textMuted, flexShrink: 0 }} />
+                {!options.displayOnly && <TaskConfigIcon name="chevronDown" size={10} style={{ color: options.active ? accent : t.textMuted, flexShrink: 0 }} />}
             </button>
         );
     };
@@ -394,6 +403,10 @@ export function TaskConfigBar({
                 ? `${tailText(lang ?? "", "Follows assignment", "跟随分配")} · ${modelChip.text}`
                 : tailText(lang ?? "", "Model assignment", "模型分配");
     const workspaceLabel = workspaceSummaryLabel(draft, (lang || (isZh ? "zh-Hans" : "en")));
+    // 位置 = 云端：工作空间由云端实例托管，chip 只读展示「云端」，tooltip 给出 maclawsrv 服务器信息。
+    const cloudWorkspaceTitle = cloudServerLabel
+        ? `${tailText(lang ?? "", "Cloud server: ", "云端服务器：")}${cloudServerLabel}`
+        : tailText(lang ?? "", "Runs on the cloud server", "任务在云端服务器上执行");
 
     const moreLabel = moreOpen
         ? tailText(lang ?? "", "Less", "收起")
@@ -464,6 +477,8 @@ export function TaskConfigBar({
                     })}
                     {renderChip('workspace', "task-config-chip-workspace", tailText(lang ?? "", "Workspace", "工作空间"), remoteMachineLocked ? (
                         draft.machine?.workDir || tailText(lang ?? "", "Default on that computer", "对方电脑默认")
+                    ) : cloudPlaceSelected ? (
+                        <WorkspaceTypeBadge kind="cloud" label={tailText(lang ?? "", "Cloud", "云端")} />
                     ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: "100%" }}>
                             <WorkspaceTypeBadge
@@ -480,19 +495,22 @@ export function TaskConfigBar({
                             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspaceLabel}</span>
                         </span>
                     ), {
-                        active: remoteMachineLocked ? !!draft.machine?.workDir : (draft.workspace.kind !== 'local' || localPathMissing),
-                        warning: !remoteMachineLocked && localPathMissing,
+                        active: remoteMachineLocked ? !!draft.machine?.workDir : cloudPlaceSelected ? false : (draft.workspace.kind !== 'local' || localPathMissing),
+                        warning: !remoteMachineLocked && !cloudPlaceSelected && localPathMissing,
                         locked: remoteMachineLocked && !onListRemoteDirs,
-                        noMenu: remoteMachineLocked && !onListRemoteDirs,
+                        noMenu: (remoteMachineLocked && !onListRemoteDirs) || cloudPlaceSelected,
+                        displayOnly: cloudPlaceSelected,
                         title: remoteMachineLocked
                             ? (onListRemoteDirs
                                 ? tailText(lang ?? "", "Choose a working directory on that computer", "选择对方电脑上的工作目录")
                                 : REMOTE_LOCKED_TITLE)
-                            : localPathMissing
-                                ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
-                                : expertSpecified
-                                    ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
-                                    : undefined,
+                            : cloudPlaceSelected
+                                ? cloudWorkspaceTitle
+                                : localPathMissing
+                                    ? (tailText(lang ?? "", "Coding tasks need a local directory", "编程任务需要选择本地目录"))
+                                    : expertSpecified
+                                        ? (tailText(lang ?? "", "Choose a local working directory", "可选择本地工作目录"))
+                                        : undefined,
                     })}
                     <button
                         type="button"

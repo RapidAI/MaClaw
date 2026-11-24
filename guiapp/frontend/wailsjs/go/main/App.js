@@ -6815,6 +6815,18 @@ export function ProbeCloudSrvSSH(arg1) {
   return window['go']['main']['App']['ProbeCloudSrvSSH'](arg1);
 }
 
+export function ListCloudSrvNodes() {
+  return window['go']['main']['App']['ListCloudSrvNodes']();
+}
+
+export function UpgradeCloudSrvNode(arg1, arg2) {
+  return window['go']['main']['App']['UpgradeCloudSrvNode'](arg1, arg2);
+}
+
+export function DeleteCloudSrvNode(arg1) {
+  return window['go']['main']['App']['DeleteCloudSrvNode'](arg1);
+}
+
 export function DeleteCloudAgent(arg1) {
   return window['go']['main']['App']['DeleteCloudAgent'](arg1);
 }
@@ -6841,4 +6853,16 @@ export function StopCloudAgent(arg1) {
 
 export function ResumeCloudAgent(arg1) {
   return window['go']['main']['App']['ResumeCloudAgent'](arg1);
+}
+
+export function DownloadCloudAgentWorkspace(arg1, arg2) {
+  return window['go']['main']['App']['DownloadCloudAgentWorkspace'](arg1, arg2);
+}
+
+export function UploadFilesToCloudAgent(arg1) {
+  return window['go']['main']['App']['UploadFilesToCloudAgent'](arg1);
+}
+
+export function UploadDirectoryToCloudAgent(arg1) {
+  return window['go']['main']['App']['UploadDirectoryToCloudAgent'](arg1);
 }
