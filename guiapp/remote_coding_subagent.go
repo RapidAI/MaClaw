@@ -261,6 +261,8 @@ type RemoteCodingSubAgentResult struct {
 	VerificationSummary   string
 	VerifiedNoChange      bool
 	RecalledExperienceIDs []string
+
+	lastEditSeq uint64
 }
 
 // NewRemoteCodingSubAgent creates a SubAgent bound to an existing SSH session.
@@ -1014,6 +1016,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.FilesCreated = uniqueSortedSubAgentStrings(filesCreated)
 	result.Localization = c.localization.snapshot()
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
+	result.lastEditSeq = lastEditSeq
 	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
 
 	// A host success only records a goal phase when the store contains that
@@ -5893,7 +5896,9 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 10. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
 11. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
 12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，只在输入区是「用户确认」时等待用户确认；用户可选择本次放行或以后允许。以后允许后，当前任务内同类命令不再询问，直接放行；输入区已是完全控制或工作区信任时，宿主会直接放行，不要再提示用户去点确认。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
-13. 最终回复用工程师口吻：先给结果，再点名改过的路径和实际跑过的验证事实。不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题，没有真实风险时不要写 remaining risk。
+13. 最终回复遵循下面的自适应结构化汇报协议：
+
+` + codingagent.FinalAnswerPresentationContract() + `
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件

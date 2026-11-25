@@ -104,6 +104,18 @@ func (a *App) readTaskLLMPin(projectPath string) (providerID, model string, pinn
 	return providerID, model, providerID != "" && model != ""
 }
 
+// readTaskLLMPinIfStoreOpen reads the pin from an already-open store only.
+// Status/prefill polls call this on every tab focus; cold-initializing the
+// memory store here (ensureMemoryStore → LoadConfig) can re-enter path-bound
+// locks during startup and turns a cheap read into a model load.
+func (a *App) readTaskLLMPinIfStoreOpen(projectPath string) (providerID, model string, pinned bool) {
+	if a == nil || a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return "", "", false
+	}
+	providerID, model = a.memoryStore.ProjectIndex().TaskLLM(projectPath)
+	return providerID, model, providerID != "" && model != ""
+}
+
 func (a *App) taskPrefsIndex() (*memory.ProjectIndex, error) {
 	if a == nil {
 		return nil, fmt.Errorf("app unavailable")
@@ -214,6 +226,23 @@ func (a *App) taskBoundLLMConfig(projectPath, role string) (corelib.MaclawLLMCon
 		return corelib.MaclawLLMConfig{}, false
 	}
 	providerID, model, pinned := a.readTaskLLMPin(projectPath)
+	return a.taskBoundLLMConfigFromPin(role, providerID, model, pinned)
+}
+
+// taskBoundLLMConfigNoInit is taskBoundLLMConfig for read-only status/prefill
+// paths: it never cold-initializes the memory store. When the store is closed
+// (e.g. during startup or in bare-App tests) the pin is unavailable and the
+// caller falls back to the assignment.
+func (a *App) taskBoundLLMConfigNoInit(projectPath, role string) (corelib.MaclawLLMConfig, bool) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	providerID, model, pinned := a.readTaskLLMPinIfStoreOpen(projectPath)
+	return a.taskBoundLLMConfigFromPin(role, providerID, model, pinned)
+}
+
+func (a *App) taskBoundLLMConfigFromPin(role, providerID, model string, pinned bool) (corelib.MaclawLLMConfig, bool) {
 	if !pinned {
 		return corelib.MaclawLLMConfig{}, false
 	}

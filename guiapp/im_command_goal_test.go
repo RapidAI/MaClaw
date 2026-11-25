@@ -564,6 +564,95 @@ func TestCodingGoalBudgetLimitIsNotDelivery(t *testing.T) {
 	}
 }
 
+// TestGoalTurnOwnPlanReceiptIsDelivery pins the mechanism that failed in the
+// 2026-11-25 diagnostic: a planning turn saved its plan through the goal tool
+// yet was judged 目标尚未达成, because the delivery check only re-read the
+// store and the row was no longer visible under the same key. The turn's own
+// goal tool receipt is delivery evidence in its own right.
+func TestGoalTurnOwnPlanReceiptIsDelivery(t *testing.T) {
+	const userID = "desktop-user:E:/goal-own-receipt"
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	if created := h.toolGoalForUser(userID, map[string]interface{}{"action": "create", "objective": "提升推理性能"}); !strings.Contains(created, "目标已创建") {
+		t.Fatalf("create = %q", created)
+	}
+	sa := &CodingSubAgent{
+		handler:         h,
+		fullEnvironment: true,
+		loopCtx:         &LoopContext{UserID: userID},
+		exposeGoalTool:  true,
+	}
+	cb := &codingSubAgentCallbacks{subagent: sa}
+	res := cb.executeGoalTool(map[string]interface{}{
+		"action":              "plan",
+		"understanding":       "先测量再改 kernel",
+		"steps":               []interface{}{map[string]interface{}{"title": "复测并输出报告"}},
+		"acceptance_criteria": []interface{}{"整帧中位时间下降"},
+	})
+	if res.Outcome != codingToolOutcomeSuccess || !strings.HasPrefix(res.Text, "计划已保存") {
+		t.Fatalf("plan = %s %q", res.Outcome, res.Text)
+	}
+	if sa.goalPhaseReceipt != goalPhaseReceiptPlan {
+		t.Fatalf("receipt = %q", sa.goalPhaseReceipt)
+	}
+	// The store copy the check re-reads is gone (row moved, replaced, or read
+	// through another handler). The saved plan must still count as delivered.
+	sa.handler = &IMMessageHandler{goalStore: goal.NewStore("")}
+	planTask := &TaskItem{Description: "[系统续接][plan] 本轮只做规划"}
+	if blocked, why := codingGoalTurnIncomplete(sa, planTask, "", agent.LoopResult{Text: "计划已提交"}); blocked {
+		t.Fatalf("this turn's own saved plan must count as delivery: %q", why)
+	}
+}
+
+func TestGoalTurnProgressReportKeepsTheStepOpen(t *testing.T) {
+	const userID = "desktop-user:E:/goal-progress-not-delivery"
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	h.toolGoalForUser(userID, map[string]interface{}{"action": "create", "objective": "提升推理性能"})
+	sa := &CodingSubAgent{
+		handler:         h,
+		fullEnvironment: true,
+		loopCtx:         &LoopContext{UserID: userID},
+		exposeGoalTool:  true,
+	}
+	cb := &codingSubAgentCallbacks{subagent: sa}
+	if res := cb.executeGoalTool(map[string]interface{}{
+		"action":              "plan",
+		"understanding":       "先测量再改 kernel",
+		"steps":               []interface{}{map[string]interface{}{"title": "复测并输出报告"}},
+		"acceptance_criteria": []interface{}{"整帧中位时间下降"},
+	}); res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("plan = %s %q", res.Outcome, res.Text)
+	}
+	if res := cb.executeGoalTool(map[string]interface{}{
+		"action": "step",
+		"index":  1,
+		"status": "progress",
+		"result": "还在跑基线",
+	}); res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("progress = %s %q", res.Outcome, res.Text)
+	}
+	if sa.goalPhaseReceipt != goalPhaseReceiptStepProgress {
+		t.Fatalf("receipt = %q", sa.goalPhaseReceipt)
+	}
+	// A progress report does not deliver the step. The step stays open so the
+	// next continuation turn keeps the same cursor.
+	task := &TaskItem{Description: "[系统续接][execute] 按步骤执行目标：提升推理性能\n\n本轮只能提交步骤 1：复测并输出报告。"}
+	if blocked, why := codingGoalTurnIncomplete(sa, task, "", agent.LoopResult{Text: "还在跑基线"}); !blocked || !strings.Contains(why, "目标尚未达成") {
+		t.Fatalf("progress must keep the step open: blocked=%v why=%q", blocked, why)
+	}
+	// The done report on the same goal is delivery.
+	if res := cb.executeGoalTool(map[string]interface{}{
+		"action": "step",
+		"index":  1,
+		"status": "done",
+		"result": "报告已写",
+	}); res.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("done = %s %q", res.Outcome, res.Text)
+	}
+	if blocked, why := codingGoalTurnIncomplete(sa, task, "", agent.LoopResult{Text: "步骤 1 已完成"}); blocked {
+		t.Fatalf("done step must count as delivery: %q", why)
+	}
+}
+
 func TestRemoteGoalIterationBudgetIsNotSuccess(t *testing.T) {
 	cb := &remoteCodingCallbacks{task: "[系统续接][execute] 按步骤执行目标：提升推理性能"}
 	got := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{Status: "success", Error: "max iterations reached", Iterations: 249, ToolCalls: 271})

@@ -172,8 +172,8 @@ export async function launchRunWindowTask(task: RunWindowTaskRecord, lang = "zh-
                     { backgroundLaunch: true },
                 );
             },
-            createCloudAgentTask: async ({ name, kind, text }) => {
-                const created = await startCloudAgentFromNewTask(name, kind, text, lang);
+            createCloudAgentTask: async ({ name, kind, text, workflowTemplateId, workflowParams, expertId }) => {
+                const created = await startCloudAgentFromNewTask(name, kind, text, lang, { workflowTemplateId, workflowParams, expertId });
                 const id = String(created?.id || '').trim();
                 // This is the task identity the schedule row stores. It is not a
                 // local directory. An empty path is what tells the dispatcher

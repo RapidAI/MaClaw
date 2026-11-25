@@ -2503,11 +2503,189 @@ func TestStripCodingAgentAuditSectionsKeepsPlanApproval(t *testing.T) {
 		Status:  TaskExecPassed,
 		Summary: "Created hello.cpp.\n\n## \u9a8c\u8bc1\u7ed3\u679c\ncl passed",
 	})
-	if strings.Contains(got, "\u9a8c\u8bc1\u7ed3\u679c") || strings.Contains(got, "## ") {
-		t.Fatalf("delegate/IM answer still has audit headings: %q", got)
+	if strings.Contains(got, "验证结果") || !strings.Contains(got, "## 验证") {
+		t.Fatalf("delegate/IM answer should normalize verification evidence headings: %q", got)
 	}
-	if !strings.Contains(got, "Created hello.cpp.") {
-		t.Fatalf("delegate/IM answer lost engineer prose: %q", got)
+	if !strings.Contains(got, "Created hello.cpp.") || !strings.Contains(got, "cl passed") {
+		t.Fatalf("delegate/IM answer lost engineer prose or verification facts: %q", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsKeepsAdaptiveSemanticSections(t *testing.T) {
+	input := "已完成渲染窗口修复，改动集中在 2 个文件。\n\n" +
+		"## 修复的问题\n" +
+		"1. 占位高度被清零，滚动回跳时丢失锚点。\n\n" +
+		"## 优化\n" +
+		"- 合并重复的布局读取。\n\n" +
+		"## 质量审计\n" +
+		"PASS files=2 commands=1\n\n" +
+		"## 验证\n" +
+		"- `go test ./guiapp` 通过"
+	got := stripCodingAgentAuditSections(input)
+	for _, want := range []string{"## 修复的问题", "占位高度", "## 优化", "合并重复", "## 验证", "go test ./guiapp"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("adaptive semantic section %q was stripped:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "质量审计") || strings.Contains(got, "PASS files=") {
+		t.Fatalf("internal audit section leaked:\n%s", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsDropsBareFileLedger(t *testing.T) {
+	input := "已完成优化。\n\n## 涉及文件\nfoo.go\nbar.go\n\n## 验证\n`go test ./...` 通过"
+	got := stripCodingAgentAuditSections(input)
+	if strings.Contains(got, "涉及文件") || strings.Contains(got, "bar.go") {
+		t.Fatalf("bare file ledger leaked:\n%s", got)
+	}
+	if !strings.Contains(got, "## 验证") || !strings.Contains(got, "go test ./...") {
+		t.Fatalf("semantic section after file ledger was lost:\n%s", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsKeepsAdaptiveBoldHeadingAfterInternalSection(t *testing.T) {
+	summary := "已完成修复。\n\n" +
+		"**质量审计**\n" +
+		"PASS\n\n" +
+		"**修复的问题**\n" +
+		"修复了关闭时的空指针。"
+	got := stripCodingAgentAuditSections(summary)
+	if strings.Contains(got, "质量审计") || strings.Contains(got, "PASS") {
+		t.Fatalf("internal audit section leaked: %q", got)
+	}
+	if !strings.Contains(got, "## 修复的问题") || !strings.Contains(got, "空指针") {
+		t.Fatalf("adaptive bold semantic section was swallowed: %q", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsKeepsEnglishBoldSemanticHeadingAfterInternalSection(t *testing.T) {
+	summary := "Implemented the fix.\n\n" +
+		"**Quality audit**\n" +
+		"PASS\n\n" +
+		"**Fixed issues**\n" +
+		"Fixed the close-time nil dereference."
+	got := stripCodingAgentAuditSections(summary)
+	if strings.Contains(got, "Quality audit") || strings.Contains(got, "PASS") {
+		t.Fatalf("english internal audit section leaked: %q", got)
+	}
+	if !strings.Contains(got, "## Fixed issues") || !strings.Contains(got, "nil dereference") {
+		t.Fatalf("english adaptive bold semantic section was swallowed: %q", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsHandlesEnglishHeadingsInEnglish(t *testing.T) {
+	summary := "Implemented the fix.\n\n" +
+		"## Quality audit\n" +
+		"PASS\n\n" +
+		"## Verification\n" +
+		"`go test ./pkg` passed."
+	got := stripCodingAgentAuditSections(summary)
+	if strings.Contains(got, "Quality audit") || strings.Contains(got, "PASS") {
+		t.Fatalf("english internal audit section leaked: %q", got)
+	}
+	if !strings.Contains(got, "## Verification") || strings.Contains(got, "## 验证") {
+		t.Fatalf("english semantic heading was not preserved in english: %q", got)
+	}
+}
+
+func TestFormatCodingAgentResultParagraphAddsHostFileAndVerificationFacts(t *testing.T) {
+	got := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Status:        v2.TaskPassed,
+		Summary:       "已完成修复。",
+		FilesModified: []string{"pkg/fix.go"},
+		CommandsRun: []v2.TaskCommandRun{{
+			Command:        "go test ./pkg",
+			Succeeded:      true,
+			AfterFinalEdit: true,
+		}},
+	})
+	for _, want := range []string{"本轮实际改动", "pkg/fix.go", "实际验证", "`go test ./pkg` 通过"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("host fact fallback missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatCodingAgentResultParagraphDoesNotRepeatModelFacts(t *testing.T) {
+	summary := "已修复 pkg/fix.go 的重入问题。\n\n## 验证\n- `go test ./pkg` 通过"
+	got := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Status:        v2.TaskPassed,
+		Summary:       summary,
+		FilesModified: []string{"pkg/fix.go"},
+		CommandsRun: []v2.TaskCommandRun{{
+			Command:        "go test ./pkg",
+			Succeeded:      true,
+			AfterFinalEdit: true,
+		}},
+	})
+	if strings.Count(got, "pkg/fix.go") != 1 || strings.Count(got, "go test ./pkg") != 1 || strings.Contains(got, "本轮实际改动") || strings.Contains(got, "实际验证") {
+		t.Fatalf("host fact fallback repeated model facts:\n%s", got)
+	}
+}
+
+func TestStripCodingAgentAuditSectionsKeepsReviewAndIncompleteStructure(t *testing.T) {
+	review := "Review 完成，发现 2 个需要处理的问题。\n\n" +
+		"## 发现\n" +
+		"1. 关闭窗口时仍会读取已释放状态。\n\n" +
+		"## 审查过但不改的点\n" +
+		"- commit 阶段第二次读取布局成本较低，暂不调整。\n\n" +
+		"## 建议\n" +
+		"- 先补回归测试，再改状态所有权。"
+	got := stripCodingAgentAuditSections(review)
+	for _, want := range []string{"## 发现", "## 审查过但不改的点", "commit 阶段", "## 建议"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("review semantic section %q was stripped:\n%s", want, got)
+		}
+	}
+
+	incomplete := "未完成：修复已写入，但编译仍被缺少符号阻塞。\n\n" +
+		"## 当前状态\n" +
+		"parser.go 已补充入口。\n\n" +
+		"## 下一步\n" +
+		"先修复 parser_missing 符号。"
+	got = formatCodingAgentResultParagraph(v2.TaskRunResult{Status: v2.TaskFailed, Summary: incomplete})
+	if !strings.Contains(got, "## 当前状态") || !strings.Contains(got, "## 下一步") || !strings.Contains(got, "缺少符号阻塞") {
+		t.Fatalf("incomplete structured summary was not preserved:\n%s", got)
+	}
+}
+
+func TestFormatCodingAgentUserFinishKeepsMultiStepStructuredSummaries(t *testing.T) {
+	got := formatCodingAgentUserFinish([]v2.TaskRunResult{
+		{TaskIndex: 1, Title: "parser entry", Status: v2.TaskPassed, Summary: "第一步完成。\n\n## 实现\n新增解析入口。"},
+		{TaskIndex: 2, Title: "close crash", Status: v2.TaskPassed, Summary: "第二步完成。\n\n## 修复的问题\n修复关闭时的空指针。"},
+	}, false)
+	for _, want := range []string{"Finished all 2 steps.", "### Step 1: parser entry", "第一步完成", "## 实现", "### Step 2: close crash", "第二步完成", "## 修复的问题"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("multi-step finish missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasPrefix(got, "Finished all 2 steps.") {
+		t.Fatalf("multi-step outcome must lead the report:\n%s", got)
+	}
+}
+
+func TestFormatCodingAgentUserFinishExplainsSkippedAndBlockedSteps(t *testing.T) {
+	got := formatCodingAgentUserFinish([]v2.TaskRunResult{
+		{TaskIndex: 1, Status: v2.TaskPassed, Summary: "done"},
+		{TaskIndex: 2, Status: v2.TaskFailed, Summary: "failed"},
+		{TaskIndex: 3, Status: v2.TaskSkipped, Summary: "skipped"},
+		{TaskIndex: 4, Status: v2.TaskBlocked, Error: "dependency not met"},
+	}, false)
+	firstLine, _, _ := strings.Cut(got, "\n")
+	for _, want := range []string{"Finished 1 of 4 steps", "1 failed", "1 skipped", "1 not started"} {
+		if !strings.Contains(firstLine, want) {
+			t.Fatalf("mixed outcome first line missing %q: %q", want, firstLine)
+		}
+	}
+}
+
+func TestFormatCodingAgentUserFinishDoesNotCallCompletedRaceStopped(t *testing.T) {
+	got := formatCodingAgentUserFinish([]v2.TaskRunResult{
+		{TaskIndex: 1, Status: v2.TaskPassed, Summary: "done"},
+		{TaskIndex: 2, Status: v2.TaskPassed, Summary: "done"},
+	}, true)
+	if !strings.HasPrefix(got, "Finished all 2 steps.") || strings.Contains(got, "Stopped") {
+		t.Fatalf("cancel-after-completion race misreported: %q", got)
 	}
 }
 
@@ -2531,9 +2709,17 @@ func TestRemoteCodingStepToRunResultAndSkippedRemainder(t *testing.T) {
 		Summary:      "Created hello.cpp.",
 		Error:        "coding SubAgent quality audit failed: 1 command(s) failed: cl",
 		FilesCreated: []string{"hello.cpp"},
+		CommandsRun: []CodingSubAgentCommandResult{
+			{Command: "go test ./...", Succeeded: true, seq: 7},
+			{Command: "ls -la", Succeeded: true, seq: 8},
+		},
+		lastEditSeq: 6,
 	})
 	if got.Status != v2.TaskFailed || got.Title != "write hello" || got.FilesCreated[0] != "hello.cpp" {
 		t.Fatalf("unexpected run result: %#v", got)
+	}
+	if len(got.CommandsRun) != 1 || got.CommandsRun[0].Command != "go test ./..." || !got.CommandsRun[0].AfterFinalEdit {
+		t.Fatalf("verification evidence projection = %#v", got.CommandsRun)
 	}
 	results := appendCodingWorkbenchSkippedResults([]v2.TaskRunResult{got}, []*v2.TaskItem{
 		step,
@@ -2545,6 +2731,19 @@ func TestRemoteCodingStepToRunResultAndSkippedRemainder(t *testing.T) {
 	finish := formatCodingWorkbenchUserAnswer(codingRequestImplementation, results, false)
 	if strings.Contains(finish, "### T") || strings.Contains(finish, "SSH") || strings.Contains(finish, "执行报告") {
 		t.Fatalf("remote finish must match local engineer prose: %q", finish)
+	}
+}
+
+func TestCodingSubAgentVerificationEvidenceDoesNotTreatUnknownSequenceAsFresh(t *testing.T) {
+	got := codingSubAgentVerificationEvidence([]CodingSubAgentCommandResult{{
+		Command:   "go test ./...",
+		Succeeded: true,
+	}}, 6)
+	if len(got) != 1 {
+		t.Fatalf("verification evidence projection = %#v", got)
+	}
+	if got[0].AfterFinalEdit {
+		t.Fatalf("unknown command sequence must not be presented as post-final-edit evidence: %#v", got[0])
 	}
 }
 

@@ -209,17 +209,11 @@ func (i *desktopCodingCapabilityIssuer) closeRelationService() {
 	}
 }
 
+// beginIngress mints one bare request credential. It deliberately does not
+// decide semantic task boundaries or workspace authority: explicit cancel,
+// clear, and new-task paths fence separately, while the local dispatch path
+// binds the materialized execution surface atomically at consumption time.
 func (i *desktopCodingCapabilityIssuer) beginIngress(ownerID string) string {
-	return i.beginIngressWithWorkspace(ownerID, "")
-}
-
-// beginIngressWithWorkspace attaches a host-verified local workspace handle
-// to one ingress token. workspaceDir is accepted only from a Wails/desktop
-// host boundary after it resolved the active workbench directory; it is
-// never copied into semantic identity or exposed to the model.
-// Invalid/missing directories intentionally yield an ingress with no static
-// workspace binding, which makes S1-A catalog planning fail closed.
-func (i *desktopCodingCapabilityIssuer) beginIngressWithWorkspace(ownerID, workspaceDir string) string {
 	ownerID = strings.TrimSpace(ownerID)
 	if i == nil || !isDesktopCodingOwner(ownerID) {
 		return ""
@@ -228,10 +222,107 @@ func (i *desktopCodingCapabilityIssuer) beginIngressWithWorkspace(ownerID, works
 	if i.ingress == nil {
 		i.ingress = make(map[string]desktopCodingIngress)
 	}
-	workspace := i.issueStaticWorkspaceLocked(ownerID, workspaceDir, time.Now().UTC())
-	token := i.mintLocked(ownerID, workspace, desktopCodingRequestLease)
+	token := i.mintLocked(ownerID, codingStaticWorkspaceBinding{}, desktopCodingRequestLease)
 	i.mu.Unlock()
 	return token
+}
+
+// selectRootStepIngressLocked chooses the exact live ingress that may be
+// consumed for this root step: the presented request token itself, or the
+// pending continuation when the presented token is already consumed chain
+// proof. Callers must hold i.mu.
+func (i *desktopCodingCapabilityIssuer) selectRootStepIngressLocked(ownerID, presentedToken string, now time.Time) (string, desktopCodingIngress, bool) {
+	if ingress, ok := i.ingress[presentedToken]; ok {
+		if !i.ingressUsableLocked(ownerID, ingress, now) {
+			return "", desktopCodingIngress{}, false
+		}
+		return presentedToken, ingress, true
+	}
+	if _, ok := i.chainConsumed[ownerID][presentedToken]; !ok {
+		return "", desktopCodingIngress{}, false
+	}
+	continuation := strings.TrimSpace(i.continuationTokens[ownerID])
+	if continuation == "" {
+		return "", desktopCodingIngress{}, false
+	}
+	ingress, ok := i.ingress[continuation]
+	if !ok || !i.ingressUsableLocked(ownerID, ingress, now) {
+		return "", desktopCodingIngress{}, false
+	}
+	return continuation, ingress, true
+}
+
+// bindExecutionWorkspaceLocked retargets the request or pending continuation
+// ingress to the exact host-selected execution surface and returns the exact
+// ingress token that was bound. The directory may have been materialized only
+// after the turn token was minted. Callers must hold i.mu. A failed bind
+// clears stale workspace authority from that ingress before returning, so a
+// missing surface can never fall back to the previous step's directory.
+func (i *desktopCodingCapabilityIssuer) bindExecutionWorkspaceLocked(ownerID, presentedToken, workspaceDir string, now time.Time) (string, bool) {
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	surfaceValid := workspaceDir != ""
+	abs := ""
+	if surfaceValid {
+		var err error
+		abs, err = filepath.Abs(workspaceDir)
+		if err != nil {
+			surfaceValid = false
+		} else {
+			abs = normalizeProjectSessionPath(abs)
+		}
+	}
+
+	target, ingress, ok := i.selectRootStepIngressLocked(ownerID, presentedToken, now)
+	if !ok {
+		return "", false
+	}
+
+	if surfaceValid && i.refreshMatchingWorkspaceLocked(ownerID, ingress.workspace, abs, now) {
+		return target, true
+	}
+	ingress.workspace = codingStaticWorkspaceBinding{}
+	i.ingress[target] = ingress
+	if !surfaceValid {
+		return "", false
+	}
+	workspace := i.issueStaticWorkspaceLocked(ownerID, abs, now)
+	if !workspace.complete() {
+		return "", false
+	}
+	ingress.workspace = workspace
+	i.ingress[target] = ingress
+	return target, true
+}
+
+// ingressUsableLocked reports whether ingress is still the current generation
+// capability of ownerID. Callers must hold i.mu.
+func (i *desktopCodingCapabilityIssuer) ingressUsableLocked(ownerID string, ingress desktopCodingIngress, now time.Time) bool {
+	return ingress.ownerID == ownerID && ingress.generation == i.generations[ownerID] && now.Before(ingress.expiresAt)
+}
+
+// refreshMatchingWorkspaceLocked keeps one handle when the next step uses the
+// same directory. Reusing it preserves the continuation chain's stable
+// workspace identity; a different execution surface receives a fresh handle.
+// Callers must hold i.mu.
+func (i *desktopCodingCapabilityIssuer) refreshMatchingWorkspaceLocked(ownerID string, binding codingStaticWorkspaceBinding, workspaceDir string, now time.Time) bool {
+	handle := strings.TrimSpace(binding.WorkspaceHandle)
+	if !binding.complete() || handle == "" {
+		return false
+	}
+	workspace, ok := i.staticWorkspaces[handle]
+	if !ok || workspace.ownerID != ownerID || !sameNormalizedPath(workspace.directory, workspaceDir) || !now.Before(workspace.expiresAt) {
+		return false
+	}
+	info, err := os.Stat(workspace.directory)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	deadline := now.Add(desktopCodingRequestLease)
+	if workspace.expiresAt.Before(deadline) {
+		workspace.expiresAt = deadline
+		i.staticWorkspaces[handle] = workspace
+	}
+	return true
 }
 
 // mintLocked records a fresh single-use ingress token for ownerID under the
@@ -275,36 +366,6 @@ func (i *desktopCodingCapabilityIssuer) mintLocked(ownerID string, workspace cod
 	return token
 }
 
-// beginIngressForRequest is the only desktop request boundary that may mint
-// a Coding ingress token. An explicit "start new task" is a semantic-root
-// boundary, not merely a transcript preference: it first fences the prior
-// relation and every unconsumed ingress token for that owner, then creates a
-// token for the new request. Text similarity, a project path, or a new
-// RequestID must never be used as an implicit substitute for this action.
-func (i *desktopCodingCapabilityIssuer) beginIngressForRequest(dataDir, ownerID string, startNewTask bool) string {
-	return i.beginIngressForRequestWithWorkspace(dataDir, ownerID, "", startNewTask)
-}
-
-// beginIngressForRequestWithWorkspace is the local Coding variant of the
-// authenticated desktop request boundary. It keeps the workspace handle on
-// the short-lived ingress token instead of deriving it later from a
-// LoopContext, runtime task, task text, or project path.
-func (i *desktopCodingCapabilityIssuer) beginIngressForRequestWithWorkspace(dataDir, ownerID, workspaceDir string, startNewTask bool) string {
-	if startNewTask {
-		i.fence(dataDir, ownerID, true)
-	}
-	return i.beginIngressWithWorkspace(ownerID, workspaceDir)
-}
-
-func (i *desktopCodingCapabilityIssuer) endIngress(token string) {
-	if i == nil {
-		return
-	}
-	i.mu.Lock()
-	delete(i.ingress, strings.TrimSpace(token))
-	i.mu.Unlock()
-}
-
 // endIngressForOwner closes every outstanding ingress capability of one
 // desktop owner at the end of its request: the request token (usually
 // already consumed), any unused chained continuation token, and the
@@ -317,6 +378,14 @@ func (i *desktopCodingCapabilityIssuer) endIngressForOwner(ownerID string) {
 	}
 	ownerID = strings.TrimSpace(ownerID)
 	i.mu.Lock()
+	// Turn end is an ingress-generation fence too. It does not revoke the
+	// owner's durable semantic relation — the next turn may continue it — but
+	// no capability minted inside this turn may recreate the chain after the
+	// sweep, including a consumption whose rearm was still in flight.
+	if i.generations == nil {
+		i.generations = make(map[string]uint64)
+	}
+	i.generations[ownerID]++
 	for token, ingress := range i.ingress {
 		if ingress.ownerID == ownerID {
 			delete(i.ingress, token)
@@ -357,23 +426,25 @@ func (i *desktopCodingCapabilityIssuer) ingressOverdue(token string) (time.Durat
 // nextRootStepRelation resolves the verified relation for one root coding
 // step of an authenticated desktop request. The request token authorizes the
 // first root step; every successful bind re-arms exactly one single-use
-// continuation token (same owner, same host-issued workspace binding,
-// current generation) so a multi-step plan — which dispatches each root step
-// as its own R1 entry within one request — gets one verified turn per step
-// on the same semantic root. Each token is still consumed exactly once; a
+// continuation token (same owner, current generation) so a multi-step plan —
+// which dispatches each root step as its own R1 entry within one request —
+// gets one verified turn per step on the same semantic root. The workspace
+// binding is carried only as lease continuity until the host dispatch
+// boundary rebinds that pending continuation to the exact surface selected
+// for the next step. Each token is still consumed exactly once; a
 // replayed or stale token fails closed; popping the continuation slot
 // requires presenting a token already consumed on this chain, so the owner
 // string alone never suffices; concurrent dispatches race for the single
 // slot so at most one of them binds, exactly as before.
 func (i *desktopCodingCapabilityIssuer) nextRootStepRelation(dataDir, token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
 	token = strings.TrimSpace(token)
-	service, subject, handle, workspace, ok := i.nextRelationWithWorkspace(dataDir, token, ownerID)
+	service, subject, handle, workspace, consumedIngress, ok := i.nextRelationWithWorkspaceAndIngress(dataDir, token, ownerID)
 	if !ok {
 		continuation := i.takeContinuationToken(ownerID, token)
 		if continuation == "" {
 			return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 		}
-		service, subject, handle, workspace, ok = i.nextRelationWithWorkspace(dataDir, continuation, ownerID)
+		service, subject, handle, workspace, consumedIngress, ok = i.nextRelationWithWorkspaceAndIngress(dataDir, continuation, ownerID)
 		if !ok {
 			// The bind failed after the slot was popped (for example a fence
 			// landed in between, the continuation's request lease elapsed, or
@@ -391,7 +462,66 @@ func (i *desktopCodingCapabilityIssuer) nextRootStepRelation(dataDir, token, own
 		}
 		token = continuation
 	}
-	i.rearmContinuationToken(ownerID, token, workspace)
+	i.rearmContinuationToken(ownerID, token, workspace, consumedIngress.generation)
+	return service, subject, handle, workspace, true
+}
+
+// nextRootStepRelationForExecution is the local writable-dispatch consumption
+// path. Binding the selected surface and consuming the single-use request or
+// continuation token happen in the same issuer-critical section. That closes
+// the race where two dispatched steps could otherwise retarget the pending
+// ingress between a separate bind and consume, leaving one step with another
+// step's workspace authority. A bind failure happens before the continuation
+// slot is popped, so the chain remains retryable; a relation failure after
+// consumption follows the existing single-use semantics and does not retry a
+// consumed token. Read-only steps pass writableSurface=false: they consume the
+// semantic relation but strip any stale workspace authority first.
+func (i *desktopCodingCapabilityIssuer) nextRootStepRelationForExecution(dataDir, token, ownerID, workspaceDir string, writableSurface bool) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
+	ownerID = strings.TrimSpace(ownerID)
+	token = strings.TrimSpace(token)
+	if i == nil || !isDesktopCodingOwner(ownerID) || token == "" {
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+	}
+	i.mu.Lock()
+	now := time.Now().UTC()
+	target := ""
+	ingress := desktopCodingIngress{}
+	ok := false
+	if writableSurface {
+		target, ok = i.bindExecutionWorkspaceLocked(ownerID, token, workspaceDir, now)
+		if ok {
+			ingress, ok = i.ingress[target]
+		}
+	} else {
+		// Inquiry and plan-phase steps are read-only by contract. They still
+		// consume the semantic relation, but stale workspace authority carried
+		// for continuation lease continuity is stripped before consumption.
+		target, ingress, ok = i.selectRootStepIngressLocked(ownerID, token, now)
+		if ok {
+			ingress.workspace = codingStaticWorkspaceBinding{}
+			i.ingress[target] = ingress
+		}
+	}
+	if !ok {
+		i.mu.Unlock()
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+	}
+	// The consumed continuation must leave its slot even when the caller
+	// presented that continuation token directly rather than presenting the
+	// previous consumed token as chain proof. A slot may only ever name a
+	// live, unconsumed continuation.
+	if i.continuationTokens[ownerID] == target {
+		delete(i.continuationTokens, ownerID)
+	}
+	delete(i.ingress, target)
+	workspace := ingress.workspace
+	i.mu.Unlock()
+
+	service, subject, handle, _, ok := i.issueRelationForConsumedIngress(dataDir, ownerID, ingress)
+	if !ok {
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+	}
+	i.rearmContinuationToken(ownerID, target, workspace, ingress.generation)
 	return service, subject, handle, workspace, true
 }
 
@@ -407,7 +537,8 @@ func (i *desktopCodingCapabilityIssuer) restoreContinuationToken(ownerID, token 
 		return
 	}
 	i.mu.Lock()
-	if _, live := i.ingress[token]; !live {
+	ingress, live := i.ingress[token]
+	if !live || !i.ingressUsableLocked(ownerID, ingress, time.Now().UTC()) {
 		i.mu.Unlock()
 		return
 	}
@@ -421,17 +552,21 @@ func (i *desktopCodingCapabilityIssuer) restoreContinuationToken(ownerID, token 
 }
 
 // rearmContinuationToken mints the next single-use ingress for the current
-// verified request after a successful bind and records the just-consumed
+// verified request after a successful bind, provided the consumed ingress
+// generation is still current, and records the just-consumed
 // token as chain proof for the next step. The workspace binding is carried
-// over from the just-consumed ingress; it is never reconstructed from
-// project paths, runtime tasks, or task text. The workspace lease slides on
+// over from the just-consumed ingress only so its lease continuity never
+// depends on a path lookup; before the next step consumes the continuation,
+// the host dispatch boundary must rebind it to that step's exact execution
+// surface. It is never reconstructed from project paths, runtime tasks, or
+// task text inside the subagent. The workspace lease slides on
 // this bind even when the continuation budget refuses another turn: the step
 // that just bound still has to resolve its directory. The new token, when
 // minted, keeps the request lease until the next step consumes it or the
 // request ends. When the plan runner armed a continuation budget for this
 // owner, minting stops once the budget is exhausted so a dispatch bug cannot
 // mint unbounded turns from one request.
-func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumedToken string, workspace codingStaticWorkspaceBinding) {
+func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumedToken string, workspace codingStaticWorkspaceBinding, consumedGeneration uint64) {
 	ownerID = strings.TrimSpace(ownerID)
 	consumedToken = strings.TrimSpace(consumedToken)
 	if i == nil || !isDesktopCodingOwner(ownerID) || consumedToken == "" {
@@ -439,6 +574,13 @@ func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumed
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	// The relation was issued before this rearm. A cancel/clear/new-task fence
+	// or turn-end sweep may have landed in that gap; because the generation
+	// check and mint share this critical section, the old request cannot
+	// recreate a continuation chain after the fence.
+	if i.generations[ownerID] != consumedGeneration {
+		return
+	}
 	// This bind already extended the semantic relation. Refresh the directory
 	// handle before the budget gate: a step that is allowed to run still needs
 	// the workspace when the chain is not allowed to mint another turn.
@@ -534,28 +676,15 @@ func (i *desktopCodingCapabilityIssuer) armContinuationBudget(ownerID string, st
 	i.mu.Unlock()
 }
 
-// nextRelation is the first production R1 ingress. It is intentionally
-// restricted to desktop session owners created by the Wails host. IM user
-// IDs, LoopContext IDs, request IDs, project paths and remote SSH session
-// IDs never reach this function as semantic identity values.
-//
-// Desktop is a locally authenticated installation: tenant/principal are host
-// constants, while the session ID is generated once per UI owner. The UI
-// owner only selects which host session record to load; it is not copied
-// into TenantID, PrincipalID, SessionID or RootTaskID.
-func (i *desktopCodingCapabilityIssuer) nextRelation(dataDir, token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, bool) {
-	service, subject, handle, _, ok := i.nextRelationWithWorkspace(dataDir, token, ownerID)
-	return service, subject, handle, ok
-}
-
-// nextRelationWithWorkspace is the one atomic consumption path for an
-// authenticated desktop Coding ingress. The returned workspace is an opaque,
-// host-issued binding from that same request, not a lookup made using the
-// just-created semantic relation or runtime attempt.
-func (i *desktopCodingCapabilityIssuer) nextRelationWithWorkspace(dataDir, token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
+// nextRelationWithWorkspaceAndIngress consumes one ingress and returns the
+// consumed ingress facts needed by the root-step chain. The generation must
+// travel with the consumption result: a fence can land after relation issuance
+// but before the continuation is rearmed, and using the then-current generation
+// would mistakenly let the old request recreate a chain after that fence.
+func (i *desktopCodingCapabilityIssuer) nextRelationWithWorkspaceAndIngress(dataDir, token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, desktopCodingIngress, bool) {
 	ownerID = strings.TrimSpace(ownerID)
 	if i == nil || !isDesktopCodingOwner(ownerID) {
-		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, desktopCodingIngress{}, false
 	}
 	i.mu.Lock()
 	token = strings.TrimSpace(token)
@@ -563,17 +692,24 @@ func (i *desktopCodingCapabilityIssuer) nextRelationWithWorkspace(dataDir, token
 	currentGeneration := i.generations[ownerID]
 	if !permitted || ingress.ownerID != ownerID || ingress.generation != currentGeneration || !time.Now().UTC().Before(ingress.expiresAt) {
 		i.mu.Unlock()
-		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, desktopCodingIngress{}, false
 	}
 	// Consume before issuing a relation. A request-scoped token is a
 	// capability to enter R1 exactly once, not a lookup key: allowing two
 	// local/remote dispatch paths to read it would mint consecutive turns for
-	// one request and invalidate whichever handle binds second. Its
-	// generation is checked again below while holding the relation lock, so a
-	// new-task/cancel fence racing after consumption cannot let this old
-	// request resurrect a relation.
+	// one request and invalidate whichever handle binds second.
 	delete(i.ingress, token)
 	i.mu.Unlock()
+	service, subject, handle, workspace, ok := i.issueRelationForConsumedIngress(dataDir, ownerID, ingress)
+	return service, subject, handle, workspace, ingress, ok
+}
+
+// issueRelationForConsumedIngress creates or continues the owner's durable
+// semantic relation for an ingress token already consumed by the caller. The
+// ingress generation is checked again while holding the relation lock, so a
+// new-task/cancel fence racing after consumption cannot let this old request
+// resurrect a relation.
+func (i *desktopCodingCapabilityIssuer) issueRelationForConsumedIngress(dataDir, ownerID string, ingress desktopCodingIngress) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
 	service, err := i.relationService(dataDir)
 	if err != nil || service == nil {
 		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
@@ -779,27 +915,6 @@ func (a *App) beginDesktopCodingTaskIngress(ownerID string) string {
 	return a.codingCaps.beginIngress(ownerID)
 }
 
-func (a *App) beginDesktopCodingTaskIngressWithWorkspace(ownerID, workspaceDir string) string {
-	if a == nil {
-		return ""
-	}
-	return a.codingCaps.beginIngressWithWorkspace(ownerID, workspaceDir)
-}
-
-func (a *App) beginDesktopCodingTaskIngressForRequest(ownerID string, startNewTask bool) string {
-	if a == nil {
-		return ""
-	}
-	return a.codingCaps.beginIngressForRequest(a.GetDataDir(), ownerID, startNewTask)
-}
-
-func (a *App) beginDesktopCodingTaskIngressForRequestWithWorkspace(ownerID, workspaceDir string, startNewTask bool) string {
-	if a == nil {
-		return ""
-	}
-	return a.codingCaps.beginIngressForRequestWithWorkspace(a.GetDataDir(), ownerID, workspaceDir, startNewTask)
-}
-
 // attachDesktopCodingIngressForTurn mints the turn-scoped desktop Coding
 // credential for one foreground turn of a desktop coding workbench owner.
 //
@@ -831,26 +946,26 @@ func (a *App) attachDesktopCodingIngressForTurn(msg *IMUserMessage) string {
 	if !a.isDesktopCodingWorkbenchSession(msg.UserID, projectPath) {
 		return ""
 	}
-	workspaceDir := ""
-	if dir, active, blocked := a.repoMaintGuardForOwner(msg.UserID); active {
-		if blocked {
-			return ""
-		}
-		workspaceDir = dir
-	} else if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) {
-		workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+	// StartNewTask is fenced again at the ordered turn boundary. The transport
+	// fence stops the old chain immediately, but this request may queue behind
+	// earlier turns of the same owner; one of those turns could otherwise
+	// recreate a relation in the gap. At this point every earlier turn has
+	// completed, this window is held, and no later turn can mint until this
+	// one ends. This explicit destruction is not skipped by repo maintenance:
+	// the maintenance guard only decides whether the new turn may receive a
+	// fresh credential.
+	if msg.StartNewTask {
+		a.revokeDesktopCodingTaskRelation(msg.UserID)
 	}
-	// startNewTask is always false: an in-process turn continues the owner's
-	// current relation. The "new task" fence belongs to the authenticated
-	// request boundary, which runs it before this turn can even be queued.
-	return a.beginDesktopCodingTaskIngressForRequestWithWorkspace(msg.UserID, workspaceDir, false)
-}
-
-func (a *App) endDesktopCodingTaskIngress(token string) {
-	if a == nil {
-		return
+	if _, active, blocked := a.repoMaintGuardForOwner(msg.UserID); active && blocked {
+		return ""
 	}
-	a.codingCaps.endIngress(token)
+	// The workspace is deliberately not bound here. At turn-start the host
+	// has not yet chosen or materialized the step surface (primary checkout,
+	// exclusive copy, or isolated worktree); the local runner consumes the
+	// relation through an atomic bind of that exact surface. An ordinary
+	// in-process turn continues the owner's current relation.
+	return a.beginDesktopCodingTaskIngress(msg.UserID)
 }
 
 func (a *App) endDesktopCodingTaskIngressForOwner(ownerID string) {
@@ -867,18 +982,13 @@ func (a *App) nextDesktopCodingRootStepRelation(token, ownerID string) (*codingT
 	return a.codingCaps.nextRootStepRelation(a.GetDataDir(), token, ownerID)
 }
 
-func (a *App) nextDesktopCodingTaskRelation(token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, bool) {
-	if a == nil {
-		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, false
-	}
-	return a.codingCaps.nextRelation(a.GetDataDir(), token, ownerID)
-}
-
-func (a *App) nextDesktopCodingTaskRelationWithWorkspace(token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
+// nextDesktopCodingRootStepRelationForExecution atomically binds the exact
+// materialized local execution surface and consumes one root-step relation.
+func (a *App) nextDesktopCodingRootStepRelationForExecution(token, ownerID, workspaceDir string, writableSurface bool) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
 	if a == nil {
 		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 	}
-	return a.codingCaps.nextRelationWithWorkspace(a.GetDataDir(), token, ownerID)
+	return a.codingCaps.nextRootStepRelationForExecution(a.GetDataDir(), token, ownerID, workspaceDir, writableSurface)
 }
 
 func (a *App) armDesktopCodingContinuationBudget(ownerID string, steps int) {

@@ -129,8 +129,8 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "no-change tasks") || !strings.Contains(prompt, "project-context evidence for new files") {
 		t.Error("prompt should describe no-change and created-file evidence requirements")
 	}
-	if !strings.Contains(prompt, "## Final answer") || !strings.Contains(prompt, "do not use audit headings") || !strings.Contains(prompt, "验证结果") || !strings.Contains(prompt, "remaining risk") {
-		t.Error("prompt should describe engineer-prose final answer without audit headings")
+	if !strings.Contains(prompt, "## Final answer") || !strings.Contains(prompt, "not a fixed template") || !strings.Contains(prompt, "修复的问题") || !strings.Contains(prompt, "优化") || !strings.Contains(prompt, "Do not use internal audit headings") {
+		t.Error("prompt should describe the adaptive structured final-answer contract")
 	}
 	if !strings.Contains(prompt, "Do not invent EXPLORED / PASS / FAILED banners") || !strings.Contains(prompt, "no tests found") || !strings.Contains(prompt, "0 tests") {
 		t.Error("prompt should prevent unsupported verification claims and empty-success verification")
@@ -785,11 +785,11 @@ func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
 		"retry context",
 		"After the last edit",
 		"Do not present pre-edit verification as final verification",
-		"Write the final answer as an engineer",
-		"name real files",
-		"verification commands in prose",
-		"Do not emit audit headings",
-		"remaining risk",
+		"adaptive structured-summary contract",
+		"lead with the result",
+		"sections useful for this task",
+		"name real files and verification facts",
+		"omit audit headings or boilerplate",
 	} {
 		if !strings.Contains(userMsg, want) {
 			t.Fatalf("task user message missing %q: %q", want, userMsg)
@@ -4468,9 +4468,11 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"git status --short && git diff --stat",
 		"不要用分号、管道或 || 拆开",
 		"不要附带 git log",
-		"最终回复用工程师口吻",
-		"不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题",
-		"没有真实风险时不要写 remaining risk",
+		"最终回复遵循下面的自适应结构化汇报协议",
+		"not a fixed template",
+		"修复的问题",
+		"优化",
+		"Do not use internal audit headings",
 		"文件改写必须使用 ssh_edit_file/ssh_write_file",
 		"必须用 ssh_check_task 跟进直到得到明确状态/exit_code",
 		"git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f",
@@ -6369,7 +6371,6 @@ func TestBuildCodingSubAgentSystemPromptIncludesWindowsShellContract(t *testing.
 		}
 	}
 }
-
 
 func TestBuildCodingSubAgentSystemPromptDiagramCueIsOnDemand(t *testing.T) {
 	ordinary := buildCodingSubAgentSystemPrompt(&TaskItem{Index: 1, Title: "实现 Player 类"}, `D:\tmp\proj`, "", "", nil)

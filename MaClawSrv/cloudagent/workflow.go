@@ -99,7 +99,7 @@ func (rt *Runtime) workflowCreate(inst *instance, taskID, templateID string, par
 	slog.Info("cloudagent workflow created",
 		slog.String("instance", inst.meta.ID), slog.String("task", taskID),
 		slog.String("type", templateID), slog.String("workflow", state.ID))
-	rt.publishWorkflowState(inst, taskID, machine.GetActive(taskID))
+	rt.publishWorkflowState(inst, taskID, workflowLatest(machine, taskID))
 	return nil
 }
 
@@ -155,6 +155,16 @@ type turnRoute struct {
 // phase prompt injected, gates answer directly.
 func (rt *Runtime) workflowRoute(inst *instance, taskID, text string) *turnRoute {
 	route := &turnRoute{modelText: text}
+	// Same guard as workflowSnapshot: until the store file exists no workflow
+	// can be active, so ordinary chat never pays for opening it.
+	inst.wfMu.Lock()
+	loaded := inst.workflow != nil
+	inst.wfMu.Unlock()
+	if !loaded {
+		if _, err := os.Stat(workflowStorePath(inst.dir)); err != nil {
+			return route
+		}
+	}
 	machine, err := rt.workflowMachine(inst)
 	if err != nil {
 		slog.Warn("cloudagent workflow machine unavailable",
@@ -211,6 +221,15 @@ func (rt *Runtime) workflowRoute(inst *instance, taskID, text string) *turnRoute
 			return route
 		}
 		route.phasePrompt = v2.BuildPhasePrompt(hr.State)
+		if strings.TrimSpace(hr.ModifyHint) != "" {
+			// The desktop appends the feedback to the phase prompt for BOTH
+			// phase kinds — the user-slot text alone drops it on doc phases.
+			if workflowIsArtifactPhase(phase) {
+				route.phasePrompt += "\n\n## 用户修改意见\n\n" + hr.ModifyHint + "\n\n请根据以上修改意见重新生成最终产物文件，不要改为输出文档或需求澄清。"
+			} else {
+				route.phasePrompt += "\n\n## 用户修改意见\n\n" + hr.ModifyHint + "\n\n请根据以上修改意见重新生成本阶段文档。"
+			}
+		}
 		route.modelText = workflowPhaseUserText(phase, hr.ModifyHint)
 		route.phaseRan = true
 		rt.publishWorkflowState(inst, taskID, hr.State)
@@ -260,12 +279,12 @@ func workflowPhaseUserText(phase *v2.Phase, modifyHint string) string {
 	artifact := workflowIsArtifactPhase(phase)
 	if modifyHint != "" {
 		if artifact {
-			return fmt.Sprintf("立即执行「%s」产物生成：系统提示中已提供所有前序阶段的权威内容，直接据此生成并发送最终文件。\n\n用户修改意见：%s。直接重新生成并发送最终文件。", phase.Name, modifyHint)
+			return fmt.Sprintf("立即执行「%s」产物生成：系统提示中已提供所有前序阶段的权威内容，直接据此生成并发送最终文件。不要询问主题、受众、页数或要点；不要搜索项目目录、PDF、记忆或历史对话来补充上下文；不要输出计划或 Markdown 文档。必须调用适当的生成工具（PPT 阶段优先运行 pptx-generator），成功后发送最终 .pptx 文件。\n\n用户修改意见：%s。直接重新生成并发送最终文件。", phase.Name, modifyHint)
 		}
 		return fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
 	}
 	if artifact {
-		return fmt.Sprintf("立即执行「%s」产物生成：系统提示中已提供所有前序阶段的权威内容，直接据此生成并发送最终文件。不要询问主题、受众、页数或要点；不要搜索项目目录、PDF、记忆或历史对话来补充上下文；不要输出计划或 Markdown 文档。", phase.Name)
+		return fmt.Sprintf("立即执行「%s」产物生成：系统提示中已提供所有前序阶段的权威内容，直接据此生成并发送最终文件。不要询问主题、受众、页数或要点；不要搜索项目目录、PDF、记忆或历史对话来补充上下文；不要输出计划或 Markdown 文档。必须调用适当的生成工具（PPT 阶段优先运行 pptx-generator），成功后发送最终 .pptx 文件。", phase.Name)
 	}
 	if phase.FormData != nil && len(phase.FormData) > 0 {
 		var sb strings.Builder
@@ -295,7 +314,7 @@ func (rt *Runtime) workflowRecordOutput(inst *instance, taskID, output string) {
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID), slog.Any("err", err))
 		return
 	}
-	rt.publishWorkflowState(inst, taskID, machine.GetActive(taskID))
+	rt.publishWorkflowState(inst, taskID, workflowLatest(machine, taskID))
 }
 
 // submitWorkflowForm backs cloud_submit_workflow_form: store the values on
@@ -325,10 +344,18 @@ func (rt *Runtime) submitWorkflowForm(ctx context.Context, inst *instance, paylo
 	if err := machine.SubmitForm(taskID, cleaned); err != nil {
 		return nil, err
 	}
-	rt.publishWorkflowState(inst, taskID, machine.GetActive(taskID))
+	rt.publishWorkflowState(inst, taskID, workflowLatest(machine, taskID))
 	next := payload
 	next.Text = "继续"
 	return rt.send(ctx, inst, next)
+}
+
+// workflowLatest loads the task's workflow regardless of status. GetActive
+// filters to StatusActive, which would blank the panel the moment a flow
+// completes or is cancelled — the desktop keeps that board visible.
+func workflowLatest(machine *v2.StateMachine, taskID string) *v2.WorkflowState {
+	state, _ := machine.GetStore().Load(taskID)
+	return state
 }
 
 // workflowSnapshotOf serializes a workflow for the wire — the same field
@@ -396,7 +423,7 @@ func (rt *Runtime) workflowSnapshot(inst *instance, taskID string) map[string]an
 	if err != nil {
 		return nil
 	}
-	return workflowSnapshotOf(machine.GetActive(taskID))
+	return workflowSnapshotOf(workflowLatest(machine, taskID))
 }
 
 // publishWorkflowState streams the task's workflow snapshot. requestID can be

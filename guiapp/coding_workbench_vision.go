@@ -122,11 +122,13 @@ func (h *IMMessageHandler) routeLLMConfigForCodingVision(cfg corelib.MaclawLLMCo
 // primaryMaclawModelName is the model a coding turn starts from. A task pin
 // replaces the coding assignment. An empty session keeps the assignment, which
 // is also the route-capability cache fingerprint when no task is open.
+// Status-only caller (codingRouteCapabilities): must not cold-init the memory
+// store for the pin read.
 func (h *IMMessageHandler) primaryMaclawModelName(userID string) string {
 	if h == nil {
 		return ""
 	}
-	return strings.TrimSpace(h.codingLLMConfigForSession(userID).Model)
+	return strings.TrimSpace(h.codingLLMConfigForSessionNoInit(userID).Model)
 }
 
 func (h *IMMessageHandler) modelRouterHasReasoning() bool {

@@ -2,65 +2,109 @@ package guiapp
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
-
-var codingAgentPlanStepHeading = regexp.MustCompile(`(?m)^### T\d+`)
-
-var codingAgentUserHiddenHeadings = []string{
-	"## \u8d28\u91cf\u5ba1\u8ba1", "## \u9a8c\u8bc1\u72b6\u6001", "## \u63a2\u7d22\u72b6\u6001", "## Diff \u81ea\u68c0", "## \u6587\u4ef6\u53d8\u66f4",
-	"## \u5b89\u5168\u8fb9\u754c", "## \u547d\u4ee4\u9a8c\u8bc1", "## \u52a8\u6001\u5de5\u5177", "## \u6b65\u9aa4\u6e05\u5355",
-	"## \u8fdc\u7a0b Diff \u81ea\u68c0", "## \u786e\u8ba4\u72b6\u6001", "## \u547d\u4ee4\u72b6\u6001", "## \u65e0\u6539\u52a8\u8bc1\u636e",
-	"## \u9a8c\u8bc1\u7ed3\u679c", "## \u6d89\u53ca\u6587\u4ef6", "## \u6458\u8981", "## \u9a8c\u8bc1\u547d\u4ee4",
-	"**\u9a8c\u8bc1\u7ed3\u679c**", "**\u6d89\u53ca\u6587\u4ef6**", "**\u6458\u8981**",
-	"## Execution report", "## \u6267\u884c\u62a5\u544a", "## \u57f7\u884c\u5831\u544a",
-	"## Verification", "## Involved files", "## Files involved", "## Summary",
-	"## Coding Task Execution Report", "## Coding Execution Report", "## Execution Stats",
-	"### Failed Tasks",
-	"### \u8ba1\u5212\u6267\u884c\u7ed3\u679c",
-	"## \u6309\u5df2\u6279\u51c6\u8ba1\u5212\u6267\u884c",
-	"\u6267\u884c\u6b65\u9aa4\uff1a",
-}
 
 func formatCodingAgentUserFinish(results []v2.TaskRunResult, cancelled bool) string {
 	if len(results) == 0 {
 		if cancelled {
-			return codingExecText("Stopped before any coding step ran.", "Stopped before any coding step ran.", "Stopped before any coding step ran.")
+			return codingExecText("Stopped before any coding step ran.", "在任何编程步骤运行前已停止。", "在任何編程步驟運行前已停止。")
 		}
 		return ""
 	}
 	parts := make([]string, 0, len(results)+2)
-	if cancelled {
-		parts = append(parts, codingExecText("Stopped before finishing.", "Stopped before finishing.", "Stopped before finishing."))
+	multiStep := len(results) > 1
+	if multiStep {
+		parts = append(parts, codingAgentMultiStepOutcomeLine(results, cancelled))
+	} else if cancelled && results[0].Status != v2.TaskPassed {
+		parts = append(parts, codingExecText("Stopped before finishing.", "未完成便已停止。", "未完成便已停止。"))
 	}
-	passed, failed := 0, 0
+	for i, result := range results {
+		if paragraph := formatCodingAgentResultParagraph(result); paragraph != "" {
+			if multiStep {
+				paragraph = codingAgentStepResultHeading(result, i+1) + "\n\n" + paragraph
+			}
+			parts = append(parts, paragraph)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func codingAgentMultiStepOutcomeLine(results []v2.TaskRunResult, cancelled bool) string {
+	passed, failed, skipped, blocked := 0, 0, 0, 0
 	for _, result := range results {
 		switch result.Status {
 		case v2.TaskPassed:
 			passed++
 		case v2.TaskFailed:
 			failed++
-		}
-		if paragraph := formatCodingAgentResultParagraph(result); paragraph != "" {
-			parts = append(parts, paragraph)
+		case v2.TaskSkipped:
+			skipped++
+		case v2.TaskBlocked:
+			blocked++
 		}
 	}
-	if !cancelled && len(results) > 1 && failed > 0 && passed > 0 {
-		parts = append(parts, fmt.Sprintf(codingExecText(
-			"Finished %d of %d steps; %d still failed.",
-			"Finished %d of %d steps; %d still failed.",
-			"Finished %d of %d steps; %d still failed.",
-		), passed, len(results), failed))
+	total := len(results)
+	if passed == total {
+		return fmt.Sprintf(codingExecText(
+			"Finished all %d steps.",
+			"已完成全部 %d 个步骤。",
+			"已完成全部 %d 個步驟。",
+		), total)
 	}
-	return strings.Join(parts, "\n\n")
+	if failed == total {
+		return fmt.Sprintf(codingExecText(
+			"Not finished: all %d steps failed.",
+			"未完成：%d 个步骤均失败。",
+			"未完成：%d 個步驟均失敗。",
+		), total)
+	}
+	details := make([]string, 0, 3)
+	if failed > 0 {
+		details = append(details, fmt.Sprintf(codingExecText("%d failed", "%d 个失败", "%d 個失敗"), failed))
+	}
+	if skipped > 0 {
+		details = append(details, fmt.Sprintf(codingExecText("%d skipped", "%d 个跳过", "%d 個跳過"), skipped))
+	}
+	if blocked > 0 {
+		details = append(details, fmt.Sprintf(codingExecText("%d not started", "%d 个未开始", "%d 個未開始"), blocked))
+	}
+	detail := ""
+	if len(details) > 0 {
+		detail = "; " + strings.Join(details, "; ")
+	}
+	if cancelled {
+		return fmt.Sprintf(codingExecText(
+			"Stopped: finished %d of %d steps%s.",
+			"已停止：完成 %d/%d 个步骤%s。",
+			"已停止：完成 %d/%d 個步驟%s。",
+		), passed, total, detail)
+	}
+	return fmt.Sprintf(codingExecText(
+		"Finished %d of %d steps%s.",
+		"完成 %d/%d 个步骤%s。",
+		"完成 %d/%d 個步驟%s。",
+	), passed, total, detail)
+}
+
+func codingAgentStepResultHeading(result v2.TaskRunResult, ordinal int) string {
+	number := result.TaskIndex
+	if number <= 0 {
+		number = ordinal
+	}
+	if title := codingAgentResultTitle(result.Title); title != "" {
+		return fmt.Sprintf(codingExecText("### Step %d: %s", "### 步骤 %d：%s", "### 步驟 %d：%s"), number, title)
+	}
+	return fmt.Sprintf(codingExecText("### Step %d", "### 步骤 %d", "### 步驟 %d"), number)
 }
 
 func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	summary := stripCodingAgentAuditSections(result.Summary)
+	summary = codingagent.AppendFinalAnswerHostFacts(summary, result.FilesCreated, result.FilesModified, codingTaskRunVerificationFacts(result.CommandsRun))
 	err := formatCodingAgentVisibleError(result.Error)
 	title := codingAgentResultTitle(result.Title)
 	files := formatCodingAgentTouchedFiles(result.FilesCreated, result.FilesModified)
@@ -663,28 +707,8 @@ func formatCodingAgentFailedCommand(detail string) string {
 	return fmt.Sprintf("`%s` failed.", cmd)
 }
 
-func codingAgentTextIsPlanApproval(text string) bool {
-	return strings.Contains(text, "## \u9700\u8981\u786e\u8ba4\u6267\u884c\u8ba1\u5212") ||
-		strings.Contains(text, "/plan approve")
-}
-
 func stripCodingAgentAuditSections(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	if codingAgentTextIsPlanApproval(text) {
-		return text
-	}
-	for _, heading := range codingAgentUserHiddenHeadings {
-		if idx := strings.Index(text, heading); idx >= 0 {
-			text = strings.TrimSpace(text[:idx])
-		}
-	}
-	if loc := codingAgentPlanStepHeading.FindStringIndex(text); loc != nil {
-		text = strings.TrimSpace(text[:loc[0]])
-	}
-	return text
+	return codingagent.StripFinalAnswerAuditSections(text)
 }
 
 func formatCodingSubAgentUserAnswer(result *CodingSubAgentResult) string {
@@ -697,6 +721,7 @@ func formatCodingSubAgentUserAnswer(result *CodingSubAgentResult) string {
 		Error:         result.Error,
 		FilesCreated:  result.FilesCreated,
 		FilesModified: result.FilesModified,
+		CommandsRun:   codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq),
 	})
 }
 
@@ -741,6 +766,48 @@ func codingAgentSummaryLooksSuccessful(summary string) bool {
 		strings.Contains(summary, "\u5df2\u5b8c\u6210") ||
 		strings.Contains(summary, "\u7f16\u8bd1\u901a\u8fc7") ||
 		strings.Contains(summary, "\u7f16\u8bd1\u8fd0\u884c")
+}
+
+func codingTaskRunVerificationFacts(commands []v2.TaskCommandRun) []codingagent.FinalAnswerVerificationFact {
+	if len(commands) == 0 {
+		return nil
+	}
+	out := make([]codingagent.FinalAnswerVerificationFact, 0, len(commands))
+	for _, cmd := range commands {
+		out = append(out, codingagent.FinalAnswerVerificationFact{
+			Command:        cmd.Command,
+			Succeeded:      cmd.Succeeded,
+			AfterFinalEdit: cmd.AfterFinalEdit,
+		})
+	}
+	return out
+}
+
+// codingSubAgentVerificationEvidence projects the bounded command audit into
+// workflow result facts. Only verifier-shaped commands are exported; reads,
+// probes and implementation commands remain internal audit detail.
+func codingSubAgentVerificationEvidence(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []v2.TaskCommandRun {
+	if len(commands) == 0 {
+		return nil
+	}
+	out := make([]v2.TaskCommandRun, 0, len(commands))
+	for _, cmd := range commands {
+		if !isSubAgentVerificationCommand(cmd.Command) {
+			continue
+		}
+		afterFinalEdit := lastEditSeq == 0 || (cmd.seq > 0 && cmd.seq >= lastEditSeq)
+		out = append(out, v2.TaskCommandRun{
+			Command:        strings.TrimSpace(cmd.Command),
+			WorkingDir:     strings.TrimSpace(cmd.WorkingDir),
+			Summary:        strings.Join(strings.Fields(cmd.Summary), " "),
+			Succeeded:      cmd.Succeeded,
+			AfterFinalEdit: afterFinalEdit,
+		})
+	}
+	if len(out) > 4 {
+		out = out[len(out)-4:]
+	}
+	return out
 }
 
 func formatCodingAgentTouchedFiles(created, modified []string) string {
@@ -882,6 +949,7 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 	rr.Summary = result.Summary
 	rr.FilesCreated = append([]string{}, result.FilesCreated...)
 	rr.FilesModified = append([]string{}, result.FilesModified...)
+	rr.CommandsRun = codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq)
 	rr.RuntimeTaskID = result.RuntimeTaskID
 	rr.Children = cloneChildTaskViews(result.Children)
 	return rr

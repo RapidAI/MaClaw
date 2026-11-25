@@ -3315,11 +3315,12 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 			ExpertID: expertID,
 		}
 	}
-	// This request boundary owns only the semantic "start new task" fence. The
-	// Coding credential itself is minted and swept by the turn that actually
-	// runs (see attachDesktopCodingIngressForTurn): this request may wait on
-	// the owner's turn lock for up to a minute, and a token minted before that
-	// window could be swept by the turn still running.
+	// The request boundary applies the immediate semantic "start new task"
+	// fence so the current chain stops authorizing further steps as soon as the
+	// user chooses that boundary. The serialized turn fences again immediately
+	// before minting its own credential: this request may queue behind earlier
+	// turns of the same owner, and the second fence prevents one of those older
+	// turns from recreating the relation that the new-task turn replaces.
 	if req.StartNewTask && a.isDesktopCodingWorkbenchSession(userID, projectPath) {
 		a.revokeDesktopCodingTaskRelation(userID)
 	}

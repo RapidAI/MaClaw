@@ -173,6 +173,55 @@ func TestIterationLimitIsNotShownAsATaskError(t *testing.T) {
 	}
 }
 
+// TestGoalOpenTurnNeverAsksForAnotherMessage pins the 2026-11-25 report: a
+// goal turn whose phase the host keeps open was answered with the iteration
+// handoff even though no budget was spent, which made the person send the
+// message the goal scheduler was already about to send.
+func TestGoalOpenTurnNeverAsksForAnotherMessage(t *testing.T) {
+	open := v2.TaskRunResult{
+		Status:  v2.TaskFailed,
+		Error:   goalTurnOpenError,
+		Summary: "已完成规划，下一轮只执行第 1 步。",
+	}
+	shown := formatCodingAgentResultParagraph(open)
+	if strings.Contains(shown, "迭代上限") || strings.Contains(shown, "再发一条消息") || strings.Contains(shown, "目标尚未达成") {
+		t.Fatalf("goal-open turn answered with the budget handoff: %q", shown)
+	}
+	if !strings.Contains(shown, "已完成规划") {
+		t.Fatalf("goal-open turn dropped its own progress text: %q", shown)
+	}
+
+	continued := formatCodingWorkbenchUserAnswer(codingRequestImplementation, codingWorkbenchResultsForReport([]v2.TaskRunResult{open}, false), false)
+	if strings.TrimSpace(continued) == "" {
+		t.Fatal("goal-open turn lost its answer entirely")
+	}
+	if strings.Contains(continued, "迭代上限") || strings.Contains(continued, "再发一条消息") {
+		t.Fatalf("continued report kept the handoff: %q", continued)
+	}
+
+	fallback := formatCodingAgentResultParagraph(v2.TaskRunResult{Status: v2.TaskFailed, Error: goalTurnOpenError})
+	if strings.Contains(fallback, "迭代上限") || strings.Contains(fallback, "再发一条消息") {
+		t.Fatalf("fallback answer asked for a message: %q", fallback)
+	}
+	if fallback != codingGoalStepContinuesParagraph() {
+		t.Fatalf("fallback answer = %q", fallback)
+	}
+
+	// The bare host note is not a delivery and must not become sticky memory;
+	// a real summary still carries.
+	if carried := codingWorkbenchCarrySteps([]v2.TaskRunResult{
+		{Status: v2.TaskFailed, Error: goalTurnOpenError},
+		{Status: v2.TaskPassed, Summary: "上一轮的真实结论。"},
+	}); len(carried) != 1 || carried[0] != "上一轮的真实结论。" {
+		t.Fatalf("carry steps = %q", carried)
+	}
+	if carried := codingWorkbenchCarrySteps([]v2.TaskRunResult{
+		{Status: v2.TaskFailed, Error: goalTurnOpenError, Summary: "已完成规划。"},
+	}); len(carried) != 1 || carried[0] != "已完成规划。" {
+		t.Fatalf("real summary was dropped from carry: %q", carried)
+	}
+}
+
 func TestCodingLoopRefillsIterationsInTheSameConversation(t *testing.T) {
 	root := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
 	if got := root.ExtendIterationBudget(80, 0); got != 0 {

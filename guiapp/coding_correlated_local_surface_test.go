@@ -229,17 +229,20 @@ func TestRefuseUnboundWritableSurfaceAfterHandleWithoutAnchor(t *testing.T) {
 	impl := &TaskItem{RequestKind: codingRequestImplementation}
 	inquiry := &TaskItem{RequestKind: codingRequestInquiry}
 	unbound := &CodingSubAgent{loopCtx: loopCtx, verifiedTaskHandle: handle}
-	if got := unbound.refuseUnboundWritableSurface(impl); got != desktopCodingWritableSurfaceBindFailedDiagnostic {
+	if got := unbound.refuseUnboundWritableSurface(impl, ""); got != desktopCodingWritableSurfaceBindFailedDiagnostic {
 		t.Fatalf("implementation with an unbound handle must refuse the read-only loop, got %q", got)
 	}
-	if got := unbound.refuseUnboundWritableSurface(inquiry); got != "" {
+	if got := unbound.refuseUnboundWritableSurface(inquiry, ""); got != "" {
 		t.Fatalf("inquiry stays on the read-only surface, got %q", got)
 	}
+	if got := unbound.refuseUnboundWritableSurface(impl, "[系统续接][plan] 本轮只做规划"); got != "" {
+		t.Fatalf("goal plan phase stays on the read-only surface, got %q", got)
+	}
 	unbound.correlatedLocalExecution = true
-	if got := unbound.refuseUnboundWritableSurface(impl); got != "" {
+	if got := unbound.refuseUnboundWritableSurface(impl, ""); got != "" {
 		t.Fatalf("correlated surface must run, got %q", got)
 	}
-	if got := (&CodingSubAgent{loopCtx: loopCtx}).refuseUnboundWritableSurface(impl); got != "" {
+	if got := (&CodingSubAgent{loopCtx: loopCtx}).refuseUnboundWritableSurface(impl, ""); got != "" {
 		t.Fatalf("a missing handle belongs to the pre-dispatch gate, got %q", got)
 	}
 }

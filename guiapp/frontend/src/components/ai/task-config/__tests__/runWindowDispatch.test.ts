@@ -104,14 +104,17 @@ describe('dispatchDueRunWindows', () => {
             id: 'rw-cloud',
             prompt: '整理这个仓库',
             initialMessage: '整理这个仓库',
-            draft: { ...due.draft, taskType: 'coding', place: 'cloud' },
+            draft: { ...due.draft, taskType: 'coding', place: 'cloud', workflowTemplateId: 'coding', expertId: 'expert-1' },
         };
         startCloud.mockResolvedValue({ id: instanceID });
         list.mockResolvedValue([cloudDue]);
         claim.mockResolvedValue(cloudDue);
         await dispatchDueRunWindows(task => launchRunWindowTask(task, 'zh-Hans'), now);
         expect(startCloud).toHaveBeenCalledTimes(1);
-        expect(startCloud).toHaveBeenCalledWith('整理这个仓库', 'coding', '整理这个仓库', 'zh-Hans');
+        // The wizard picks ride the scheduled launch too — workflow template
+        // and expert id must reach startCloudAgentFromNewTask's setup arg.
+        expect(startCloud).toHaveBeenCalledWith('整理这个仓库', 'coding', '整理这个仓库', 'zh-Hans',
+            expect.objectContaining({ workflowTemplateId: 'coding', expertId: 'expert-1' }));
         expect(markStarted).toHaveBeenCalledWith('rw-cloud', `cloud-agent:${instanceID}`);
         expect(release).not.toHaveBeenCalled();
         expect(markFailed).not.toHaveBeenCalled();

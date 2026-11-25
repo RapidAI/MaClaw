@@ -127,6 +127,13 @@ func noteHubServiceStatusFailure(hubURL, viewerToken string, err error) {
 		hubServiceStatusCache.viewerTok != strings.TrimSpace(viewerToken) {
 		// Failure streak is per identity; switching Hub starts a new streak.
 		hubServiceStatusCache.failures = 0
+		// The cached status snapshot belongs to the previous Hub identity.
+		// Re-tagging the cache entry with the new identity while keeping the
+		// old snapshot would let the "return stale cache on transient failure"
+		// and backoff paths hand out another account's entitlements as if they
+		// were fresh for this Hub. Drop the snapshot with the identity switch.
+		hubServiceStatusCache.valid = false
+		hubServiceStatusCache.status = HubLLMServiceStatus{}
 	}
 	hubServiceStatusCache.failures++
 	hubServiceStatusCache.failedAt = time.Now()

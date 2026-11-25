@@ -120,9 +120,10 @@ describe("conversationRenderLoadStart", () => {
     });
 });
 
-function Probe({ messages }: { messages: Row[] }) {
+function Probe({ messages, latched }: { messages: Row[]; latched?: boolean }) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const scrolledUpRef = useRef(false);
+    if (latched !== undefined) scrolledUpRef.current = latched;
     const window = useConversationRenderWindow({
         containerRef,
         messages,
@@ -145,7 +146,7 @@ function Probe({ messages }: { messages: Row[] }) {
 }
 
 /** 500px viewport, 100px per mounted row: four screens is 2000px. */
-function mockPaneLayout(container: HTMLElement) {
+function mockPaneLayout(container: HTMLElement, bodyTop = 0) {
     Object.defineProperty(container, "clientHeight", { configurable: true, value: 500 });
     Object.defineProperty(container, "scrollHeight", {
         configurable: true,
@@ -153,7 +154,7 @@ function mockPaneLayout(container: HTMLElement) {
             + (parseFloat((container.querySelector('[data-testid="spacer"]') as HTMLElement).style.height) || 0),
     });
     const body = container.querySelector(".mc-conversation-body") as HTMLElement;
-    body.getBoundingClientRect = () => ({ top: 0, bottom: 4000, left: 0, right: 0, width: 0, height: 4000, x: 0, y: 0, toJSON: () => ({}) });
+    body.getBoundingClientRect = () => ({ top: bodyTop, bottom: bodyTop + 4000, left: 0, right: 0, width: 0, height: 4000, x: 0, y: 0, toJSON: () => ({}) });
     container.getBoundingClientRect = () => ({ top: 0, bottom: 500, left: 0, right: 0, width: 0, height: 500, x: 0, y: 0, toJSON: () => ({}) });
 }
 
@@ -193,5 +194,21 @@ describe("useConversationRenderWindow", () => {
         // The 25 unmounted rows above the old window carried 2500px; the 10
         // left above the revealed turn keep their share instead of zeroing.
         expect(screen.getByTestId("spacer").style.height).toBe("1000px");
+    });
+
+    it("mounts the whole prefix when the reader drags into the spacer", async () => {
+        const messages = userRows(40);
+        const view = render(<Probe messages={messages} />);
+        mockPaneLayout(screen.getByTestId("scroll"));
+        view.rerender(<Probe messages={[...messages]} />);
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("25"));
+
+        // Parked 4000px below the body top: inside the spacer itself.
+        mockPaneLayout(screen.getByTestId("scroll"), 4000);
+        view.rerender(<Probe messages={[...messages]} latched />);
+
+        await waitFor(() => expect(screen.getByTestId("start").textContent).toBe("0"));
+        expect(screen.getByTestId("row-m0")).toBeTruthy();
+        expect(screen.getByTestId("spacer").style.height).toBe("0px");
     });
 });

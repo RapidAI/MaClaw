@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -80,14 +81,39 @@ func TestHostTurnBoundarySweepsCodingChainAtTurnEnd(t *testing.T) {
 	assertNoOwnerCodingCapabilities(t, app, owner)
 }
 
+func TestHostTurnIngressLeavesWorkspaceUnboundUntilExecutionSurface(t *testing.T) {
+	app, handler, owner := newHostTurnIngressHandler(t)
+	boundary := handler.enterIMMessageSerializationBoundary(IMUserMessage{
+		RequestID: "desktop-send", UserID: owner, Platform: desktopPlatform, Text: "实现优化",
+	}, nil, nil, nil, explicitTaskSlotDecision{})
+	token := boundary.CodingIngressToken
+	if token == "" {
+		boundary.Unlock()
+		t.Fatal("host turn reached the loop without a desktop Coding ingress")
+	}
+	app.codingCaps.mu.Lock()
+	ingress, ok := app.codingCaps.ingress[token]
+	workspace := ingress.workspace
+	app.codingCaps.mu.Unlock()
+	if !ok {
+		boundary.Unlock()
+		t.Fatal("turn ingress token is not live inside its owner window")
+	}
+	if workspace.complete() {
+		boundary.Unlock()
+		t.Fatalf("turn ingress bound workspace %q before the execution surface was selected", workspace.WorkspaceHandle)
+	}
+	boundary.Unlock()
+}
+
 // A message that still carries a token from an earlier boundary is not
 // trusted: the turn mints its own credential inside its window, and the
 // turn-end sweep closes every token of the owner, including the carried one.
 func TestHostTurnBoundaryReplacesStaleCarriedToken(t *testing.T) {
 	app, handler, owner := newHostTurnIngressHandler(t)
-	stale := app.beginDesktopCodingTaskIngressForRequest(owner, false)
+	stale := app.beginDesktopCodingTaskIngress(owner)
 	if stale == "" {
-		t.Fatal("request boundary did not mint a token")
+		t.Fatal("pre-turn token fixture was not minted")
 	}
 
 	boundary := handler.enterIMMessageSerializationBoundary(IMUserMessage{
@@ -106,6 +132,46 @@ func TestHostTurnBoundaryReplacesStaleCarriedToken(t *testing.T) {
 	boundary.Unlock()
 	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(stale, owner); ok {
 		t.Fatal("turn-end sweep left the carried token bindable")
+	}
+}
+
+// StartNewTask also fences inside the serialized turn window, immediately
+// before that turn's credential is minted. Even when the transport boundary
+// already applied the immediate fence, this second fence closes the gap in
+// which an earlier queued turn could otherwise recreate the relation that the
+// new-task turn is supposed to replace.
+func TestHostTurnStartNewTaskFencesInsideOrderedTurnBoundary(t *testing.T) {
+	app, handler, owner := newHostTurnIngressHandler(t)
+	service, subject, prior, ok := app.nextDesktopCodingTaskRelation(app.beginDesktopCodingTaskIngress(owner), owner)
+	if !ok {
+		t.Fatal("prior desktop relation was not issued")
+	}
+	preFenceToken := app.beginDesktopCodingTaskIngress(owner)
+	if preFenceToken == "" {
+		t.Fatal("pre-fence token fixture was not minted")
+	}
+
+	boundary := handler.enterIMMessageSerializationBoundary(IMUserMessage{
+		RequestID: "new-task", UserID: owner, Platform: desktopPlatform, Text: "重新实现",
+		StartNewTask: true,
+	}, nil, nil, nil, explicitTaskSlotDecision{})
+	token := boundary.CodingIngressToken
+	if token == "" {
+		boundary.Unlock()
+		t.Fatal("new-task turn did not receive a desktop Coding ingress")
+	}
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(preFenceToken, owner); ok {
+		boundary.Unlock()
+		t.Fatal("pre-fence ingress survived the ordered new-task boundary")
+	}
+	_, nextSubject, next, _, ok := app.nextDesktopCodingRootStepRelation(token, owner)
+	if !ok || next.rootTaskID == prior.rootTaskID || nextSubject.sessionID == subject.sessionID {
+		boundary.Unlock()
+		t.Fatalf("ordered new-task boundary did not establish an independent relation: prior=%#v next=%#v subjects=%#v/%#v ok=%v", prior, next, subject, nextSubject, ok)
+	}
+	boundary.Unlock()
+	if _, err := service.VerifyCodingContinuation(subject, prior, time.Now().UTC(), time.Hour); !errors.Is(err, errCodingTaskHandleRevoked) {
+		t.Fatalf("prior relation survived ordered new-task boundary: %v", err)
 	}
 }
 
