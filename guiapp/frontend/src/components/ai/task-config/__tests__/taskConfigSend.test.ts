@@ -460,6 +460,8 @@ describe('cloud place', () => {
             name: '整理这个仓库',
             kind: 'coding',
             text: '整理这个仓库',
+            workflowTemplateId: '',
+            expertId: 'exp-1',
         });
         expect(bindings.createTaskUnified).not.toHaveBeenCalled();
         expect(bindings.openTaskLaunch).not.toHaveBeenCalled();

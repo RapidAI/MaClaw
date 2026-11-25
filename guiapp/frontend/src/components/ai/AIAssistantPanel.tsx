@@ -36,6 +36,7 @@ import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { ChatSessionLocator } from "./ChatSessionLocator";
 import { chatSessionLocatorTurns } from "./chatSessionLocatorModel";
 import { useConversationViewArchive } from "./useConversationViewArchive";
+import { useConversationRenderWindow } from "./useConversationRenderWindow";
 import { useNewTaskGuideDraft } from "./useNewTaskGuideDraft";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory, type ComposerAttachmentSnapshot } from "./useAssistantInputHistory";
@@ -5953,10 +5954,35 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
     const wizardScrollSuspendRef = useRef(false);
     const { clearScrolledUp, handleScroll, handleUserScrollIntent, jumpToUserTurn, outputContainerRef, outputEndRef, scrolledUp, scrollToBottom, unreadTail, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, conversationKey: remoteChat ? `remote:${remoteChat.grantId}:${remoteChat.projectPath}` : activeTab.id, hasConversation: remoteChat ? remoteTranscript.length > 0 : hasConversation, messages: remoteChat ? remoteTranscript : displayMessages, ready: remoteChat ? true : ready, scrollToTopSeq, suspendedRef: wizardScrollSuspendRef });
+    // Screen-based DOM window over the live transcript: pinned at the bottom
+    // only the viewport plus two read screens stay mounted.
+    const conversationRenderWindow = useConversationRenderWindow({
+        containerRef: outputContainerRef,
+        messages: transcriptMessages,
+        conversationKey: remoteChat ? `remote-render:${remoteChat.grantId}:${remoteChat.projectPath}` : `render:${activeTab.id}`,
+        scrolledUpRef: userScrolledUpRef,
+        suspendedRef: wizardScrollSuspendRef,
+        enabled: !remoteChat && ready,
+    });
+    const renderWindowStart = conversationRenderWindow.windowStart;
+    const pendingLocatorJumpRef = useRef("");
     const jumpToLocatorTurn = useCallback((id: string) => {
         if (jumpToUserTurn(id)) return;
+        // The row may be unmounted by the render window; expand it first and
+        // retry once the DOM commit lands.
+        if (conversationRenderWindow.revealMessage(id)) {
+            pendingLocatorJumpRef.current = id;
+            return;
+        }
         conversationArchive.revealArchiveMessage(id);
-    }, [conversationArchive.revealArchiveMessage, jumpToUserTurn]);
+    }, [conversationArchive.revealArchiveMessage, conversationRenderWindow.revealMessage, jumpToUserTurn]);
+    useEffect(() => {
+        const id = pendingLocatorJumpRef.current;
+        if (!id) return;
+        pendingLocatorJumpRef.current = "";
+        if (jumpToUserTurn(id)) return;
+        conversationArchive.revealArchiveMessage(id);
+    }, [conversationArchive.revealArchiveMessage, jumpToUserTurn, renderWindowStart]);
     const scrollTranscriptBy = useCallback((deltaY: number) => {
         const scroller = outputContainerRef.current;
         if (!scroller || !deltaY) return;
@@ -7022,7 +7048,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // token walks the tall transcript and freezes the new-task page.
         const coveredOther = coveredOtherNodesRef.current;
         if (taskConfigWiring.wizardOverlay && coveredOther && coveredOther.length > 0) return coveredOther;
-        const coveredNodes = transcriptMessages.map((msg: ChatMessage, idx: number) => {
+        // Rows above the render window stay out of the tree entirely: no
+        // Markdown parse, no bubbles. `idx` keeps the absolute transcript
+        // index so last-message and branch lookups still line up.
+        const windowedTranscript = renderWindowStart > 0 ? transcriptMessages.slice(renderWindowStart) : transcriptMessages;
+        const coveredNodes = windowedTranscript.map((msg: ChatMessage, offset: number) => {
+            const idx = renderWindowStart + offset;
             // The floating GoalChecklistOverlay owns the 目标清单 card while
             // it is mounted. Once it retires (goal finished/cleared or the
             // view is covered), the normal path renders it inline —
@@ -7189,7 +7220,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         if (coveredNodes.length > 0) coveredOtherNodesRef.current = coveredNodes;
         return coveredNodes;
-    }, [transcriptMessages, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, goalChecklistFloatActive, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
+    }, [transcriptMessages, renderWindowStart, panelExecuteAction, t, lastAssistantIdx, lastAssistantOwnsLiveActivity, savedFileLabel, lang, isBusy, activeSessionHasWork, liveWorkStreaming, liveReasoningKind, liveReasoningLabel, liveReasoningObject, branchPointByDisplayIndex, goalChecklistFloatActive, handleRecordingComplete, isPureCodingEnvironment, activeTab.expertId, taskConfigWiring.wizardOverlay]);
     // Only rows already on the live assistant's timeline leave the feed.
     // A previous answer's timeline must not hide the next continuation.
     const renderedProgressMessages = useMemo(() => {
@@ -7959,6 +7990,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <ExpertTabEmptyBanner activeTab={activeTab} lang={lang} theme={t} />
                     ) : null}
                     {remoteChat || !showPureCodingEmptyState ? null : pureCodingEmptyContent}
+                    {/* Stand-in for the unmounted head of the transcript. Its
+                        height is the exact height the removed rows had, so the
+                        scrollbar and the reader's position survive trimming. */}
+                    {remoteChat ? null : (
+                        <div
+                            ref={conversationRenderWindow.spacerRef}
+                            data-testid="ai-transcript-window-spacer"
+                            aria-hidden="true"
+                            style={{ height: conversationRenderWindow.spacerPx, flexShrink: 0, pointerEvents: "none" }}
+                        />
+                    )}
                     <ChatBubblesProvider enabled={chatBubblesEnabled !== false}>
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
                     <AssistantConversationBody emptyContent={remoteChat ? remoteEmptyContent : (isPureCodingEnvironment ? null : undefined)} initLabel={initLabel} initStatus={initStatus} lang={lang} messages={remoteChat ? remoteTranscript : (displayMessages.length > 0 || conversationArchive.earlierCount === 0 ? displayMessages : ARCHIVED_VIEW_MESSAGES)} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={remoteChat ? [] : pinnedNews} ready={remoteChat ? true : ready} renderedOtherMessages={remoteChat ? remoteRenderedMessages : renderedOtherMessages} renderedProgressMessages={remoteChat ? remoteRenderedProgress : renderedProgressMessages} liveActivityLabel={remoteChat ? undefined : standaloneLiveActivityLabel} liveActivityObject={remoteChat ? undefined : (standaloneLiveActivityLabel ? liveReasoningObject : undefined)} busyAccessory={remoteChat ? <RemoteAssistantActivity session={remoteChat} lang={lang} theme={t} /> : (hideWorkingTrail ? null : codingWorkingTrail)} theme={t} brandId={brandId} brandDisplayName={brandDisplayName} brandDisplayNameCN={brandDisplayNameCN} />

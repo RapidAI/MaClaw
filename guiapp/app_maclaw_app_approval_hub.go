@@ -774,7 +774,16 @@ func (a *App) reconcileMaclawAppApprovalProjections(limit int) maclawAppApproval
 			continue
 		}
 		// Hub has a view of this instance — project status/lane/node forward when final or node moved.
+		// mergeMaclawAppApprovalInstance keeps the incoming record's identity, and
+		// here the incoming record is the Hub's synthetic projection
+		// (hub-<instance>-<node>). Renaming the local row would orphan it: the
+		// later Hub-only upsert pass no longer matches it by HubInstanceID and
+		// writes a second row onto the same position. Only Hub state flows in.
 		updated := mergeMaclawAppApprovalInstance(local, hub)
+		updated.InstanceID = local.InstanceID
+		if strings.TrimSpace(local.AppID) != "" {
+			updated.AppID = local.AppID
+		}
 		// Prefer Hub final states.
 		hubStatus := normalizeMaclawAppApprovalStatus(hub.Status)
 		hubLane := normalizeMaclawAppApprovalLane(hub.Lane)

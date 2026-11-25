@@ -501,6 +501,13 @@ func (a *App) openPetRearingDBLocked() {
 		log.Printf("[pet-rearing] open: %v", err)
 		return
 	}
+	// Under test the app is discarded without the exit flush that closes this
+	// handle, and Windows then fails t.TempDir removal with a locked
+	// pet-rearing.db. Idle connections must not survive a statement so the
+	// file is released as soon as the call returns.
+	if testing.Testing() {
+		db.SetMaxIdleConns(0)
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS pet_rearing (
 		pack_id TEXT PRIMARY KEY,
 		loaded_ms INTEGER NOT NULL,

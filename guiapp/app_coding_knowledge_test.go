@@ -35,10 +35,18 @@ func recordCodingKnowledgeAppTestOutcome(t *testing.T, app *App, experienceID st
 	if err != nil {
 		return err
 	}
-	if _, err := ledger.AppendEvent(attempt.AttemptID, "test", "verification", fmt.Sprintf("sha256:knowledge-outcome-%d", sequence), now); err != nil {
+	digest := fmt.Sprintf("sha256:knowledge-outcome-%d", sequence)
+	if _, err := ledger.AppendEvent(attempt.AttemptID, "test", "verification", digest, now); err != nil {
 		return err
 	}
-	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, now); err != nil {
+	// Honest completion: the ledger refuses a TaskCompleted write without the
+	// verified evidence digest and the CAS token read with the attempt.
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{
+		Status:          codingruntime.TaskCompleted,
+		SideEffectState: codingruntime.SideEffectConfirmed,
+		EvidenceDigest:  digest,
+		ExpectedVersion: attempt.Version,
+	}, now); err != nil {
 		return err
 	}
 	provenance, err := codingruntime.ResolveExperienceProvenance(ledger, task.TaskID)
@@ -208,7 +216,12 @@ func TestCodingKnowledgeConfirmRevalidatesRuntimeProvenance(t *testing.T) {
 	if _, err := ledger.AppendEvent(attempt.AttemptID, "test", "verification", "sha256:verified", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, now); err != nil {
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{
+		Status:          codingruntime.TaskCompleted,
+		SideEffectState: codingruntime.SideEffectConfirmed,
+		EvidenceDigest:  "sha256:verified",
+		ExpectedVersion: attempt.Version,
+	}, now); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := codingruntime.ResolveExperienceProvenance(ledger, task.TaskID)
@@ -268,7 +281,12 @@ func TestCodingKnowledgeRecordRecallOutcomeRevalidatesRuntimeEvidence(t *testing
 	if _, err := ledger.AppendEvent(attempt.AttemptID, "test", "verification", "sha256:recall", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectConfirmed}, now); err != nil {
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test", codingruntime.FinishInput{
+		Status:          codingruntime.TaskCompleted,
+		SideEffectState: codingruntime.SideEffectConfirmed,
+		EvidenceDigest:  "sha256:recall",
+		ExpectedVersion: attempt.Version,
+	}, now); err != nil {
 		t.Fatal(err)
 	}
 	provenance, err := codingruntime.ResolveExperienceProvenance(ledger, task.TaskID)

@@ -635,7 +635,8 @@ const extractedFileLineLimits = [
   // 8200 -> 8250 (2026-11-24): remote assistant activity and cloud agent wiring measured 8209 lines.
   // 8250 -> 8300 (2026-11-25): GitHub/GitLab credential sync & LLM provider failover
   // wiring measured 8263 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8300],
+  // 8300 -> 8350 (2026-11-25): cloud workflow/conversation-render-window work measured 8305 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8350],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

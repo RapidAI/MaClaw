@@ -1459,7 +1459,10 @@ func TestScanSkillZipBeforeInstallParsesSkillYAMLRisk(t *testing.T) {
 		}, "\n"),
 	})
 
-	app := &App{testHomeDir: t.TempDir()}
+	// The assertion is that skill.yaml steps are parsed into a critical report,
+	// so pin strict policy: standard mode records critical installs and allows
+	// them by design (see skillInstallPolicyActionForSource).
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
 	report, err := app.scanSkillZipBeforeInstall(zipPath, "", "")
 	if err == nil {
 		t.Fatalf("scanSkillZipBeforeInstall() allowed dangerous skill.yaml; report=%+v", report)

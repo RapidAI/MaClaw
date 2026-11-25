@@ -18,7 +18,19 @@ import (
 // its phase record. The prefix is load-bearing: the scheduler treats
 // codingLoopIterationExhausted as "keep this step and run another turn"
 // instead of closing the goal.
-const goalTurnOpenError = "max iterations reached；目标尚未达成"
+const goalTurnOpenError = "max iterations reached" + goalTurnOpenMark
+
+// goalTurnOpenMark is the host's keep-this-step-open marker inside
+// goalTurnOpenError. It is not a spent loop budget: the goal keeps its step
+// and the next continuation turn is armed, so the transcript must not answer
+// it with the "send another message" handoff.
+const goalTurnOpenMark = "；目标尚未达成"
+
+// codingGoalTurnStillOpen reports the host's keep-this-step-open signal, as
+// opposed to a loop that actually spent its iteration budget.
+func codingGoalTurnStillOpen(errText string) bool {
+	return strings.Contains(strings.TrimSpace(errText), goalTurnOpenMark)
+}
 
 // isGoalSystemContinuation reports a host-owned goal turn. The text is the
 // continuation engine's phase contract (plan, or one execute step), not a
@@ -2630,7 +2642,19 @@ func codingGoalTurnIncomplete(s *CodingSubAgent, task *TaskItem, reqCtx string, 
 	if phase == "" {
 		return false, ""
 	}
-	return goalTurnDeliveryIncomplete(codingGoalForSubAgent(s), phase, goalContinuationStepIndex(source), result.Error)
+	blocked, why := goalTurnDeliveryIncomplete(codingGoalForSubAgent(s), phase, goalContinuationStepIndex(source), result.Error)
+	if !blocked {
+		return false, ""
+	}
+	// This turn's own goal tool call is delivery evidence too. The store
+	// re-read can miss a row that moved to another key, was replaced while
+	// the turn ran, or lives on another handler's store; failing the turn
+	// there answered work that was already saved with 目标尚未达成.
+	if s != nil && s.goalPhaseDeliveredFor(phase) {
+		log.Printf("[coding-subagent] task T%d goal %s phase delivered by this turn's own receipt", taskDisplayNumber(task), phase)
+		return false, ""
+	}
+	return true, why
 }
 
 // goalContinuationStepIndex reads the step number the execute prompt told the
@@ -2729,7 +2753,10 @@ func goalTurnDeliveryIncomplete(g *goal.Goal, phase string, stepIndex int, loopE
 		return true, goalTurnOpenError
 	}
 	if codingLoopIterationExhausted(loopErr) {
-		return true, "max iterations reached"
+		// A spent budget ends this turn, not the step. The next continuation
+		// keeps the same cursor, and the transcript must not ask the person
+		// for a message the host is already about to send.
+		return true, goalTurnOpenError
 	}
 	return false, ""
 }
