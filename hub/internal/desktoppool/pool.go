@@ -1487,14 +1487,29 @@ func wakeTimedOut(err error) bool {
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
 	owner, botID := desktop.SplitDesktopUser(userID)
 	if nodeID, ok := computerNodeOf(ctx); ok {
-		return p.resolveComputer(ctx, tenantID, owner, nodeID)
+		return p.resolveComputerOrAssigned(ctx, tenantID, owner, nodeID)
 	}
 	if botID != "" && p != nil && p.Home != nil {
 		if nodeID, ok := p.Home(ctx, tenantID, owner, botID); ok {
-			return p.resolveComputer(ctx, tenantID, owner, nodeID)
+			return p.resolveComputerOrAssigned(ctx, tenantID, owner, nodeID)
 		}
 	}
 	return p.resolveAssigned(ctx, tenantID, owner)
+}
+
+// resolveComputerOrAssigned is resolveComputer plus the assignment fallback.
+// A computer pin that names a node no desktop server is attached to — a node
+// the DesktopComputerNode hook reported but no server registered, or one the
+// admin removed — must not erase the user's assignments: with no own or
+// department match, the scope=global assignment still resolves. A computer
+// that does resolve is returned untouched, and a user assignment pointing at
+// the same node keeps winning through the normal resolveAssigned chain.
+func (p *Pool) resolveComputerOrAssigned(ctx context.Context, tenantID, userID, nodeID string) (Server, error) {
+	server, err := p.resolveComputer(ctx, tenantID, userID, nodeID)
+	if err == nil || !errors.Is(err, ErrNotAssigned) || strings.TrimSpace(nodeID) == "" {
+		return server, err
+	}
+	return p.resolveAssigned(ctx, tenantID, userID)
 }
 
 // resolveAssigned is the user's current computer: their assignment, then

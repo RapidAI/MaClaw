@@ -579,3 +579,131 @@ print([g["display"] for g in got], sorted(v["display"] for v in reg.values()), s
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A connected viewer keeps the bot's own picture chain up. Idle stop was
+// tearing down an extra display (:24) a person was watching, leaving only :20.
+// Without a viewer the idle limit still stops it.
+func TestSupervisorBotWatcherKeepsDisplayWhileViewed(t *testing.T) {
+	out := runSupervisorPython(t, `
+import time
+owner = "ab" * 8
+bot = owner + "11" * 8
+sup.save_registry({"users": {owner: {"display": 20}, bot: {"display": 24, "token": "a" * 32, "bot": True, "last_used": 1}}})
+(sup.ROOT / bot).mkdir()
+sup.touch_bot_file(bot, "activity", force=True)
+old = time.time() - 3600
+os.utime(sup.ROOT / bot / "activity", (old, old))
+print(sup.bot_viewer_present(bot))
+sup.touch_bot_file(bot, "viewer_seen", force=True)
+print(sup.bot_viewer_present(bot))
+os.utime(sup.ROOT / bot / "viewer_seen", (old, old))
+print(sup.bot_viewer_present(bot))
+`, botOwner)
+	want := "False\nTrue\nFalse"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// The watch_bot loop is what actually tears down :24. It re-checks
+// desktop_running each iteration, then idles the display only when there is
+// no takeover, no viewer heartbeat, and last activity is older than the idle
+// limit. A viewer's lease_loop touches viewer_seen every 0.5s while someone
+// watches — that heartbeat does not count as activity, so the container can
+// still sleep, but it must stop watch_bot from dismantling the picture chain
+// under the person's eyes (the original :24-after-~10min symptom). This
+// drives the loop end to end: fake sleep collapses the 5s cycle and the 600s
+// idle limit so a real viewer_seen file, written the way lease_loop writes
+// it, is exercised against a real stop_desktop.
+func TestSupervisorBotWatchLoopKeepsDisplayWhileViewed(t *testing.T) {
+	out := runSupervisorPython(t, `
+import time, threading
+owner = "ab" * 8
+bot = owner + "11" * 8
+sup.save_registry({"users": {owner: {"display": 20}, bot: {"display": 24, "token": "a" * 32, "bot": True, "last_used": 1}}})
+(sup.ROOT / bot).mkdir()
+# The bot's last real activity is long past; only a viewer keeps this display.
+old = time.time() - 3600
+sup.touch_bot_file(bot, "activity", force=True)
+os.utime(sup.ROOT / bot / "activity", (old, old))
+# Collapse the loop: 5s cycle and the 600s idle limit both pass instantly.
+sup.time.sleep = lambda *_a, **_k: None
+# Everything the loop calls that is not the idle-stop decision is stubbed;
+# stop_desktop is real so a wrong stop is observable, not just counted.
+sup.ensure_gates = lambda: None
+sup.keep_screen_awake = lambda *_a: None
+sup.ensure_bot_panel = lambda *_a, **_k: None
+sup.heal_browser_window = lambda *_a, **_k: None
+sup.reap_children = lambda: None
+sup.takeover_expire_if_idle = lambda *_a, **_k: None
+sup.flush_browser = lambda *_a: None
+sup.profiles_of = lambda *_a: []
+sup.browser_pid = lambda *_a: 0
+running = {bot}
+sup.desktop_running = lambda key: key in running
+stopped = []
+real_stop = sup.stop_desktop
+def stop(key):
+    stopped.append(key)
+    running.discard(key)
+    return real_stop(key)
+sup.stop_desktop = stop
+sup.env_int = lambda name, default: 0
+sup.touch_bot_file(bot, "viewer_seen", force=True)
+thread = threading.Thread(target=sup.watch_bot, args=(bot, 24), daemon=True)
+thread.start()
+thread.join(10)
+print("after_viewer", sorted(stopped))
+`, botOwner)
+	// With a live viewer the loop must never call stop_desktop; it only exits
+	// when desktop_running goes false, which nothing here flips, so the thread
+	// is still alive (join timed out) and nothing was stopped.
+	want := "after_viewer []"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// Same loop, no viewer: the idle limit still stops the bot display. This is
+// the control that proves the test above is not just a loop that never stops
+// anything.
+func TestSupervisorBotWatchLoopStopsDisplayWithoutViewer(t *testing.T) {
+	out := runSupervisorPython(t, `
+import time, threading
+owner = "ab" * 8
+bot = owner + "11" * 8
+sup.save_registry({"users": {owner: {"display": 20}, bot: {"display": 24, "token": "a" * 32, "bot": True, "last_used": 1}}})
+(sup.ROOT / bot).mkdir()
+old = time.time() - 3600
+sup.touch_bot_file(bot, "activity", force=True)
+os.utime(sup.ROOT / bot / "activity", (old, old))
+sup.time.sleep = lambda *_a, **_k: None
+sup.ensure_gates = lambda: None
+sup.keep_screen_awake = lambda *_a: None
+sup.ensure_bot_panel = lambda *_a, **_k: None
+sup.heal_browser_window = lambda *_a, **_k: None
+sup.reap_children = lambda: None
+sup.takeover_expire_if_idle = lambda *_a, **_k: None
+sup.flush_browser = lambda *_a: None
+sup.profiles_of = lambda *_a: []
+sup.browser_pid = lambda *_a: 0
+running = {bot}
+sup.desktop_running = lambda key: key in running
+stopped = []
+def stop(key):
+    stopped.append(key)
+    running.discard(key)
+sup.stop_desktop = stop
+sup.env_int = lambda name, default: 0
+# No viewer_seen file: nobody is watching.
+thread = threading.Thread(target=sup.watch_bot, args=(bot, 24), daemon=True)
+thread.start()
+thread.join(10)
+print("after_idle", sorted(stopped))
+`, botOwner)
+	// watch_bot prints the idle line to stderr before calling stop_desktop;
+	// CombinedOutput carries it, so match on the trailing verdict line.
+	if !strings.HasSuffix(out, "after_idle ['abababababababab1111111111111111']") {
+		t.Fatalf("got:\n%s\nwant the bot stopped after idle", out)
+	}
+}

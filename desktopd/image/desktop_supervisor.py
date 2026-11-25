@@ -5690,6 +5690,9 @@ class H264Viewer:
                     touch_viewer_takeover(self.key)
                 # Watching alone must not refresh activity / block idle-sleep.
                 # human_input (real keys/pointer) still counts via handle().
+                # The viewer heartbeat only protects the display chain.
+                if self.key and is_bot_key(self.key):
+                    touch_bot_file(self.key, "viewer_seen")
                 self.screen.expire()
                 self.tick_lease()
         except OSError:
@@ -5913,6 +5916,19 @@ def bot_last_activity(key):
         except OSError:
             pass
     return last
+
+
+BOT_VIEWER_SEEN_SECONDS = 15
+
+
+def bot_viewer_present(key):
+    """A player is connected to this bot display right now (heartbeat from
+    the H.264 lease loop). Watching never counts as activity, so it does not
+    keep the container awake, but it must not let watch_bot tear down the
+    picture chain a person is looking at: that is an idle stop nobody asked
+    for, and the extra display silently dropped back to :20 only."""
+    age = bot_file_age(key, "viewer_seen")
+    return age is not None and age < BOT_VIEWER_SEEN_SECONDS
 
 
 def bot_busy(key):
@@ -6839,7 +6855,8 @@ def watch_bot(key, display):
                     heal_browser_window(key, display, "watch", wait_ticks=1)
                 except Exception as exc:  # never break the watcher
                     print("window heal: %s" % exc, file=sys.stderr)
-                if takeover_state(key) is None and time.time() - bot_last_activity(key) >= idle_limit:
+                if (takeover_state(key) is None and not bot_viewer_present(key)
+                        and time.time() - bot_last_activity(key) >= idle_limit):
                     print("bot display %s idle, stopping" % key, file=sys.stderr)
                     log_event("display_idle_timeout", key=key, idle_limit=idle_limit)
                     stop_desktop(key)

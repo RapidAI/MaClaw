@@ -60,6 +60,24 @@ func nodeLinkOffline(err error) bool {
 	return strings.Contains(err.Error(), "node is offline")
 }
 
+// nodeLinkUnready reports a pinned node that has no srv to dial yet — the link
+// was never provisioned (no nodeLink/BaseURL) or its admin secret is not saved.
+// Like a brief tunnel drop this is transient: the node is expected to come up
+// or be configured, so a message pinned to it should park and retry rather than
+// die as a bare service error. It is intentionally narrower than nodeLinkOffline
+// and only applies where a NodeID is already known, so a cloud bot's generic
+// ErrSrv still fails fast.
+func nodeLinkUnready(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAdminSecretMissing) {
+		return true
+	}
+	// finishNodeOwnerToken/ensureNodeOwnerToken: "这个节点还没有 srv".
+	return errors.Is(err, ErrSrv) && strings.Contains(err.Error(), "还没有 srv")
+}
+
 // nodeSessionMissing reports a desktop read that never found a tunnel.
 // A stream that fails after the session is up wraps edgenode.ErrOffline.
 // That failure is this one call, and a message for srv still goes out.

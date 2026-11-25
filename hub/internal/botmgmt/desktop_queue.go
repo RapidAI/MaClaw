@@ -634,7 +634,12 @@ func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenant
 // turn the queue will not take — returns ErrNodeOffline so the person sees
 // the same sentence.
 func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string, err error) (BotAdmission, error, bool) {
-	if err == nil || strings.TrimSpace(nodeID) == "" || !nodeLinkOffline(err) {
+	// A pinned node that is briefly unreachable (nodeLinkOffline) or simply not
+	// provisioned yet (nodeLinkUnready — no link/srv or no admin secret) is the
+	// same transient class: the message parks and retries. Without this, the
+	// "no srv on node" token error was returned as a bare failure and the GUI
+	// message was dropped before any run or queue existed.
+	if err == nil || strings.TrimSpace(nodeID) == "" || (!nodeLinkOffline(err) && !nodeLinkUnready(err)) {
 		return BotAdmission{}, nil, false
 	}
 	if !desktopReplay(ctx) {
@@ -642,7 +647,15 @@ func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID
 			return parked, nil, true
 		}
 	}
-	return BotAdmission{}, ErrNodeOffline, false
+	// A real tunnel drop that could not be parked (sync send, replay, or a
+	// queue that will not take it) reads as the offline sentence. An unready
+	// node keeps its own error — "no srv on this node" / "admin secret missing"
+	// — so the surface tells the owner to link or configure the node, not that
+	// it merely dropped.
+	if nodeLinkOffline(err) {
+		return BotAdmission{}, ErrNodeOffline, false
+	}
+	return BotAdmission{}, err, false
 }
 
 // failAdmit ends a desktop send that stopped before the message was posted.
