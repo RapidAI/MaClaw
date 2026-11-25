@@ -11166,6 +11166,7 @@ export namespace main {
 	    scopes?: string;
 	    client_id: string;
 	    custom_client_id: boolean;
+	    github_app_token?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new GitHubConnectionStatus(source);
@@ -11181,6 +11182,7 @@ export namespace main {
 	        this.scopes = source["scopes"];
 	        this.client_id = source["client_id"];
 	        this.custom_client_id = source["custom_client_id"];
+	        this.github_app_token = source["github_app_token"];
 	    }
 	}
 	export class GitHubCopilotDeviceInfo {
@@ -11244,6 +11246,7 @@ export namespace main {
 	    email?: string;
 	    token?: string;
 	    repo_scope: boolean;
+	    github_app_token?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new CloudAgentGitHubAccount(source);
@@ -11257,6 +11260,7 @@ export namespace main {
 	        this.email = source["email"];
 	        this.token = source["token"];
 	        this.repo_scope = source["repo_scope"];
+	        this.github_app_token = source["github_app_token"];
 	    }
 	}
 	export class CloudAgentGitLabAccount {

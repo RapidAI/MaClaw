@@ -633,7 +633,9 @@ const extractedFileLineLimits = [
   // 8100 -> 8160 (2026-11-19): chat session locator & conversation view archive measured 8126 lines.
   // 8160 -> 8200 (2026-11-20): chat session locator & live activity updates measured 8175 lines.
   // 8200 -> 8250 (2026-11-24): remote assistant activity and cloud agent wiring measured 8209 lines.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8250],
+  // 8250 -> 8300 (2026-11-25): GitHub/GitLab credential sync & LLM provider failover
+  // wiring measured 8263 lines.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 8300],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],

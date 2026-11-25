@@ -208,6 +208,14 @@ func GitHubAppClientID(id string) bool {
 	return strings.HasPrefix(id, "iv1.") || strings.HasPrefix(id, "lv1.")
 }
 
+// GitHubAppUserToken reports a GitHub App user-to-server token ("ghu_").
+// Those tokens carry no OAuth scopes at all — their repository access would
+// come from the app's configuration — so a missing-scope verdict on them
+// means "re-login with an OAuth App", never "reconnect to add the scope".
+func GitHubAppUserToken(token string) bool {
+	return strings.HasPrefix(strings.TrimSpace(token), "ghu_")
+}
+
 // GitHubEffectiveScopes is the scope list to store. The /user response
 // header is the live grant. The token response is the fallback, because a
 // GitHub App leaves the header empty and an OAuth App still lists the grant

@@ -102,10 +102,24 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 		}
 		result.RetryCount++
 		cfg, rotated := h.maybeRefreshLLMAuthForRetry(reqCtx, cfg, result.Err, &didAuthRefresh)
+		failovered := false
+		if !rotated {
+			before := cfg
+			if next, ok := h.workerRoleFailoverLLMConfig(cfg, result.Err); ok {
+				cfg = next
+				rotated = true
+				failovered = true
+				reportLLMFailoverInFlight(onProgress, retryAttempt+1, before, cfg)
+			}
+		}
 		if rotated {
-			log.Printf("[LLM] AdaptiveRetry: token-validation error, retrying immediately after credential refresh (%d): %v", retryAttempt+1, result.Err)
-			reportLLMAuthRefresh(onProgress)
-			reportLLMRetryInFlight(onProgress, retryAttempt+1)
+			if failovered {
+				log.Printf("[LLM] AdaptiveRetry: %s endpoint unavailable, switched to %q (%d): %v", cfg.Profile, cfg.Model, retryAttempt+1, result.Err)
+			} else {
+				log.Printf("[LLM] AdaptiveRetry: token-validation error, retrying immediately after credential refresh (%d): %v", retryAttempt+1, result.Err)
+				reportLLMAuthRefresh(onProgress)
+				reportLLMRetryInFlight(onProgress, retryAttempt+1)
+			}
 		} else {
 			adaptiveRetry.RecordFailure("llm_request", category, decision)
 			log.Printf("[LLM] AdaptiveRetry: %s error, retry after %v (%d): %v", string(category), decision.Delay, retryAttempt+1, result.Err)
@@ -169,10 +183,24 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 	for retryAttempt := 0; retryAttempt < retryMax && result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
 		result.RetryCount++
 		cfg, rotated := h.maybeRefreshLLMAuthForRetry(reqCtx, cfg, result.Err, &didAuthRefresh)
+		failovered := false
+		if !rotated {
+			before := cfg
+			if next, ok := h.workerRoleFailoverLLMConfig(cfg, result.Err); ok {
+				cfg = next
+				rotated = true
+				failovered = true
+				reportLLMFailoverInFlight(onProgress, retryAttempt+1, before, cfg)
+			}
+		}
 		if rotated {
-			log.Printf("[LLM] token-validation error, retrying immediately after credential refresh (%d/%d): %v", retryAttempt+1, retryMax, result.Err)
-			reportLLMAuthRefresh(onProgress)
-			reportLLMRetryInFlight(onProgress, retryAttempt+1)
+			if failovered {
+				log.Printf("[LLM] %s endpoint unavailable, switched to %q (%d/%d): %v", cfg.Profile, cfg.Model, retryAttempt+1, retryMax, result.Err)
+			} else {
+				log.Printf("[LLM] token-validation error, retrying immediately after credential refresh (%d/%d): %v", retryAttempt+1, retryMax, result.Err)
+				reportLLMAuthRefresh(onProgress)
+				reportLLMRetryInFlight(onProgress, retryAttempt+1)
+			}
 		} else {
 			log.Printf("[LLM] request failed, retry after %v (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, result.Err)
 			result.RetryWaitElapsed += retryDelay
@@ -255,6 +283,19 @@ func reportLLMRetryInFlight(onProgress tool.ProgressCallback, attempt int) {
 		return
 	}
 	onProgress(agent.LLMRetryInFlightStatus(attempt))
+}
+
+// reportLLMFailoverInFlight keeps the named switch on the retry row. Emitting
+// a generic in-flight line after it would overwrite the only explanation of
+// why the model changed.
+func reportLLMFailoverInFlight(onProgress tool.ProgressCallback, attempt int, from, to corelib.MaclawLLMConfig) {
+	if status, ok := agent.LLMRetrySwitchedInFlightStatus(attempt, from, to); ok {
+		if onProgress != nil {
+			onProgress(status)
+		}
+		return
+	}
+	reportLLMRetryInFlight(onProgress, attempt)
 }
 
 func reportLLMAuthRefresh(onProgress tool.ProgressCallback) {

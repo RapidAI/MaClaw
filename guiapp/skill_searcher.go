@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -745,6 +746,10 @@ func (s *SkillSearcher) SearchAndInstallForTask(ctx context.Context, query strin
 			}
 		}
 	}
+	// An explicit package name must fall through to the next source when this
+	// source returned only other identities. Keeping a fuzzy first hit here
+	// would install the wrong package before ClawHub/GitHub are consulted.
+	results = filterSkillSearchResultsForExplicitInstall(query, results)
 	if len(results) == 0 && isAllowedSkillSourceList("clawhub", allowedSources) {
 		if ok, reason := s.allowSearchSource("clawhub", cskill.ClawHubMirrorURL, query); !ok {
 			blocked = append(blocked, "clawhub: "+reason)
@@ -754,6 +759,7 @@ func (s *SkillSearcher) SearchAndInstallForTask(ctx context.Context, query strin
 			results = s.searchClawHubMirror(ctx, query)
 		}
 	}
+	results = filterSkillSearchResultsForExplicitInstall(query, results)
 	if len(results) == 0 && isAllowedSkillSourceList("github", allowedSources) {
 		if ok, reason := s.allowSearchSource("github", "https://github.com", query); !ok {
 			blocked = append(blocked, "github: "+reason)
@@ -793,6 +799,11 @@ func (s *SkillSearcher) SearchAndInstallForTask(ctx context.Context, query strin
 	results = filterSkillSearchResultsForIntent(taskText, results)
 	if len(results) == 0 {
 		log.Printf("[skill-search] no intent-compatible results for query: %s", query)
+		return nil, nil
+	}
+	results = filterSkillSearchResultsForExplicitInstall(query, results)
+	if len(results) == 0 {
+		log.Printf("[skill-search] no identity-compatible results for explicit install query: %s", query)
 		return nil, nil
 	}
 	results = skipUnrunnableInstalledResults(s.app, results)
@@ -895,6 +906,130 @@ func filterSkillSearchResultsForIntent(query string, results []SkillSearchResult
 		}
 	}
 	return filtered
+}
+
+// filterSkillSearchResultsForExplicitInstall keeps an explicitly named
+// package install from becoming a fuzzy capability recommendation. Selecting
+// a different identity would install and adopt the wrong procedure, which then
+// closes search_and_install_skill and leaves the turn with no recovery path.
+// Capability searches such as "install a skill for diagnosis" stay fuzzy.
+func filterSkillSearchResultsForExplicitInstall(query string, results []SkillSearchResult) []SkillSearchResult {
+	identity := explicitSkillInstallIdentity(query)
+	if identity == "" || len(results) == 0 {
+		return results
+	}
+	filtered := make([]SkillSearchResult, 0, len(results))
+	for _, result := range results {
+		if skillSearchResultMatchesIdentity(result, identity) {
+			filtered = append(filtered, result)
+			continue
+		}
+		log.Printf("[skill-search] rejected identity-mismatched skill candidate %q (id=%q) for explicit install %q", result.Name, result.ID, identity)
+	}
+	return filtered
+}
+
+// skillSearchResultMatchesIdentity checks the market package id, display name,
+// and Maclaw App name against the requested identity. These are the names the
+// installer and Apps surface can later expose for the same package.
+func skillSearchResultMatchesIdentity(result SkillSearchResult, identity string) bool {
+	for _, name := range []string{result.ID, result.Name, result.MaclawAppName} {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if (&corelib.NLSkillEntry{Name: name}).MatchesName(identity) {
+			return true
+		}
+	}
+	return false
+}
+
+// explicitSkillInstallIdentity recognizes the bare package name in requests
+// such as "安装 lemo-opuscar skill" and "install lemo-opuscar skill". A
+// multi-word task, an article-led capability request, or descriptive Chinese
+// wording is not a package identity and retains the normal intent matching.
+func explicitSkillInstallIdentity(query string) string {
+	lower := strings.ToLower(strings.TrimSpace(query))
+	if !isExplicitSkillCapabilitySearchRequest(lower) || (!strings.Contains(lower, "安装") && !containsASCIIWord(lower, "install")) {
+		return ""
+	}
+	for _, marker := range []string{"skill for", "capability for", "一个", "一种", "一款", "某个", "任何"} {
+		if strings.Contains(lower, marker) {
+			return ""
+		}
+	}
+	identity := strings.Trim(strings.TrimSpace(skillSearchCompatibilityTaskText(query)), " \t\r\n`'\"“”‘’")
+	for _, prefix := range []string{"麻烦帮我", "帮我", "麻烦"} {
+		identity = strings.TrimSpace(strings.TrimPrefix(identity, prefix))
+	}
+	for _, suffix := range []string{"这个", "那个", "一下"} {
+		identity = strings.TrimSpace(strings.TrimSuffix(identity, suffix))
+	}
+	identity = explicitSkillInstallCandidate(identity)
+	if identity == "" {
+		return ""
+	}
+	// Match capability phrases, not the single character 能: valid package
+	// names such as 智能诊断 and 全能助手 contain it.
+	for _, marker := range []string{"能做", "能够", "可以", "用于", "的", "适合"} {
+		if strings.Contains(identity, marker) {
+			return ""
+		}
+	}
+	if strings.Contains(identity, "://") || strings.HasPrefix(identity, "/") || strings.HasPrefix(identity, `\`) ||
+		strings.HasPrefix(identity, "./") || strings.HasPrefix(identity, "../") ||
+		(len(identity) >= 3 && unicode.IsLetter(rune(identity[0])) && identity[1] == ':' && (identity[2] == '/' || identity[2] == '\\')) {
+		return ""
+	}
+	hasLetter := false
+	for _, r := range identity {
+		switch {
+		case unicode.IsLetter(r):
+			hasLetter = true
+		case unicode.IsDigit(r), strings.ContainsRune("-_.:@/", r):
+		default:
+			return ""
+		}
+	}
+	if !hasLetter {
+		return ""
+	}
+	return identity
+}
+
+// explicitSkillInstallCandidate selects the package name from the compatibility
+// text. A single token is the whole request. When the user adds a task, only a
+// unique slug-like token is accepted; two different slugs are ambiguous and
+// keep the normal capability search.
+func explicitSkillInstallCandidate(text string) string {
+	parts := strings.FieldsFunc(strings.TrimSpace(text), func(r rune) bool {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		return strings.ContainsRune("，。！？；、,!?;", r)
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) == 1 {
+		return strings.Trim(parts[0], " \t\r\n`'\"“”‘’")
+	}
+	candidates := make(map[string]struct{}, 1)
+	for _, part := range parts {
+		part = strings.Trim(part, " \t\r\n`'\"“”‘’")
+		if !strings.ContainsAny(part, "-_.:@/") {
+			continue
+		}
+		candidates[part] = struct{}{}
+	}
+	if len(candidates) != 1 {
+		return ""
+	}
+	for candidate := range candidates {
+		return candidate
+	}
+	return ""
 }
 
 // searchClawHubMirror queries the ClawHub China mirror for skills.

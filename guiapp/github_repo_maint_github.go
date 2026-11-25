@@ -56,12 +56,17 @@ func gitHubHookBody(spec gitHubHookSpec) map[string]any {
 }
 
 // canonicalGitHubOwnerRepo parses owner and repo from the canonical clone URL.
-// normalizeGitHubCloneURL only returns the repo name; comparing that alone
-// would treat another owner's same-named repo as this checkout.
+// normalizeForgeCloneURL only returns the repo name; comparing that alone
+// would treat another owner's same-named repo as this checkout. This is the
+// GitHub webhook path, so GitLab origins stay refused even when a GitLab
+// account is connected (empty gitlabOrigin).
 func canonicalGitHubOwnerRepo(raw string) (owner, repo string, err error) {
-	cloneURL, repoName, err := normalizeGitHubCloneURL(raw)
+	cloneURL, repoName, service, err := normalizeForgeCloneURL(raw, "")
 	if err != nil {
 		return "", "", err
+	}
+	if service != cloneServiceGitHub {
+		return "", "", fmt.Errorf("仅支持克隆 github.com 仓库")
 	}
 	parsed, err := url.Parse(cloneURL)
 	if err != nil {

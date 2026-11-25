@@ -71,6 +71,59 @@ func TestFilterSkillSearchResultsForIntent_UsesOriginalTaskNotSearchQuery(t *tes
 	}
 }
 
+func TestFilterSkillSearchResultsForExplicitInstallRequiresTheNamedIdentity(t *testing.T) {
+	const query = "安装 lemo-opuscar skill"
+	wrong := SkillSearchResult{
+		ID: "kwaishop-intelligent-diagnosis-skill_test", Name: "域名测试", Description: "智能诊断",
+	}
+	matched := SkillSearchResult{ID: "market-entry-1", Name: "Lemo Opuscar", Description: "目标能力"}
+	filtered := filterSkillSearchResultsForExplicitInstall(query, []SkillSearchResult{wrong, matched})
+	if len(filtered) != 1 || filtered[0].ID != matched.ID {
+		t.Fatalf("explicit install selected %#v, want only the named skill", filtered)
+	}
+	if got := filterSkillSearchResultsForExplicitInstall(query, []SkillSearchResult{wrong}); len(got) != 0 {
+		t.Fatalf("identity mismatch survived explicit install filtering: %#v", got)
+	}
+	byID := SkillSearchResult{ID: "lemo-opuscar", Name: "Unrelated Display Name"}
+	if got := filterSkillSearchResultsForExplicitInstall(query, []SkillSearchResult{wrong, byID}); len(got) != 1 || got[0].ID != byID.ID {
+		t.Fatalf("package id identity was not matched: %#v", got)
+	}
+	for query, want := range map[string]string{
+		query:                              "lemo-opuscar",
+		"安装 `lemo-opuscar` skill":          "lemo-opuscar",
+		"安装 “lemo-opuscar” skill":          "lemo-opuscar",
+		"安装 智能诊断 skill":                    "智能诊断",
+		"帮我安装 lemo-opuscar 这个技能":           "lemo-opuscar",
+		"安装 lemo-opuscar skill 然后读取网页":     "lemo-opuscar",
+		"安装 lemo-opuscar 这个技能，然后读取网页":      "lemo-opuscar",
+		"安装 lemo-opuscar 和 baz-qux skill":  "",
+		"安装 C:/tmp/foo.zip skill":          "",
+		"安装 https://example.com/foo skill": "",
+	} {
+		if identity := explicitSkillInstallIdentity(query); identity != want {
+			t.Fatalf("explicit install identity for %q = %q, want %q", query, identity, want)
+		}
+	}
+}
+
+func TestFilterSkillSearchResultsForExplicitInstallKeepsCapabilitySearchFuzzy(t *testing.T) {
+	candidate := SkillSearchResult{ID: "diagnosis", Name: "智能诊断", Description: "诊断服务器"}
+	for _, query := range []string{
+		"安装一个能做智能诊断的 skill",
+		"安装能做智能诊断的 skill",
+		"install a skill for intelligent diagnosis",
+		"search and install a server diagnosis skill",
+	} {
+		if identity := explicitSkillInstallIdentity(query); identity != "" {
+			t.Fatalf("capability query %q produced identity %q", query, identity)
+		}
+		got := filterSkillSearchResultsForExplicitInstall(query, []SkillSearchResult{candidate})
+		if len(got) != 1 || got[0].ID != candidate.ID {
+			t.Fatalf("capability query %q lost its compatible candidate: %#v", query, got)
+		}
+	}
+}
+
 func TestSkipUnrunnableInstalledKeepsALaterRunnableHit(t *testing.T) {
 	shop := corelib.NLSkillEntry{
 		Name:     "域名测试",

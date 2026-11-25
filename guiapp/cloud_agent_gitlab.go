@@ -78,6 +78,14 @@ func (a *App) syncCloudAgentGitLabCredentials() {
 		return
 	}
 	token := strings.TrimSpace(cred.AccessToken)
+	// An introspected scope list that definitively lacks api and
+	// write_repository cannot give the instances a working credential — the
+	// srv-side clone would fail on every one of them. (An empty list means
+	// the scope could not be read and stays optimistic, like the form check.)
+	if !oauth.GitLabScopesHaveRepo(cred.Scopes) {
+		log.Printf("[cloud-agent] gitlab credential sync skipped: token has no repository scope")
+		return
+	}
 	accountHost := hostOfOrigin(cred.BaseURL)
 	list, err := a.ListCloudAgents()
 	if err != nil {

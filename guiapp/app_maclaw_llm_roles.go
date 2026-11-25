@@ -72,8 +72,10 @@ func (a *App) resolveLoopRole(role string, cfg corelib.AppConfig, providers []co
 }
 
 // assistantOwnedRole is the assistant switch applied before a bot-model cache.
-// Computer use stays on the bot or Hub model when this assistant cannot see,
-// even if the Hub snapshot is empty: the cached bot role can still see.
+// Every role, computer use included, is whatever the current assistant is: no
+// cached bot role or Hub snapshot may replace the provider the person switched
+// to. Desktop computer use runs text-primary (OmniParser + OCR) when that model
+// cannot see, so a missing vision probe is not a reason to leave the provider.
 func (a *App) assistantOwnedRole(role string, cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (corelib.MaclawLLMConfig, bool) {
 	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, current)
 	if err != nil || profiles == nil {
@@ -81,14 +83,10 @@ func (a *App) assistantOwnedRole(role string, cfg corelib.AppConfig, providers [
 	}
 	snapshot := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
 	provider, model, selErr := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, cfg, providers, current, profiles)
-	if selErr != nil || !roleUsesAssistantSelection(role, provider, model, snapshot) {
+	if selErr != nil || !assistantSelectionOwnsRole(provider, model, snapshot) {
 		return corelib.MaclawLLMConfig{}, false
 	}
-	assistant := ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider))
-	if role == maclawLLMRoleComputerUse && !assistant.SupportsVision {
-		return corelib.MaclawLLMConfig{}, false
-	}
-	return assistant, true
+	return ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider)), true
 }
 
 // resolveMaclawLLMRoleFromConfig resolves one role from the config and provider
@@ -114,15 +112,14 @@ func (a *App) resolveMaclawLLMRoleFromConfig(role string, cfg corelib.AppConfig,
 	snapshot := normalizeDesktopRoleModel(hubRoleModel(cfg.HubRoleModels, role))
 	if profiles != nil {
 		provider, model, selErr := effectiveMaclawLLMProfileSelection(maclawLLMProfileAssistant, cfg, providers, current, profiles)
-		if selErr == nil && roleUsesAssistantSelection(role, provider, model, snapshot) {
-			// Official auto borrows vision. A third-party auto model keeps the
-			// probe stored on its provider.
-			assistant := ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider))
-			// Computer use needs a model that sees the screenshots; a
-			// text-only assistant leaves that role on the Hub snapshot.
-			if role != maclawLLMRoleComputerUse || assistant.SupportsVision || snapshot == "" {
-				return assistant, nil
-			}
+		if selErr == nil && assistantSelectionOwnsRole(provider, model, snapshot) {
+			// Every role is whatever the current assistant is, computer use
+			// included. Official auto borrows vision; a third-party auto model
+			// keeps the probe stored on its provider. Desktop computer use
+			// runs text-primary (OmniParser + OCR) when that model cannot see,
+			// so the Hub snapshot must never replace the person's provider for
+			// a desktop task.
+			return ensureHubAutoRoleVision(a.materializeMaclawLLMSelection(role, provider, model), providerIsHubService(provider)), nil
 		}
 	}
 	if snapshot != "" {
@@ -283,20 +280,6 @@ func providerIsHubService(provider corelib.MaclawLLMProvider) bool {
 	return provider.IsHubService || isHubServiceProviderName(provider.Name)
 }
 
-// roleUsesAssistantSelection: an empty role follows the person's current
-// (assistant) model, and the Hub snapshot only when that model is MaClaw
-// official on auto. Foreground always follows a custom assistant. Background
-// follows it too (before 2026-10-21 it kept the Hub snapshot, so a
-// custom-model user's worker loops ran on Hub auto). Computer use follows it
-// only when that model can see images (checked by the caller after
-// materializing); a text-only assistant keeps the Hub snapshot there.
-func roleUsesAssistantSelection(role string, provider corelib.MaclawLLMProvider, model, snapshot string) bool {
-	if !foregroundUsesAssistantSelection(provider, model, snapshot) {
-		return false
-	}
-	return role == maclawLLMRoleForeground || role == maclawLLMRoleBackground || role == maclawLLMRoleComputerUse
-}
-
 // ResolveHubLLMRole is the Hub's shared model for one role, ignoring the
 // person's own settings. Callers use it only as the last attempt after the
 // person's own model failed.
@@ -320,13 +303,20 @@ func (a *App) ResolveHubLLMRole(role string) (corelib.MaclawLLMConfig, error) {
 	return a.materializeResolvedRole(role, provider, model), nil
 }
 
-// foregroundUsesAssistantSelection reports that interactive chat should call
-// the assistant assignment. Any non-official provider wins. On the official
-// provider, an explicit model other than auto wins over the Hub band. Auto
-// keeps the band so an untouched assistant profile still follows Hub.
-// mid and official-mid are the same band: the assignment UI stores the short
-// name, while Hub's snapshot stores the official-* id.
-func foregroundUsesAssistantSelection(provider corelib.MaclawLLMProvider, model, snapshot string) bool {
+// assistantSelectionOwnsRole reports that an inherited loop role (foreground,
+// background, or computer use) should call the assistant assignment. All three
+// roles share this one rule since 2026-11-25: before that, background kept the
+// Hub snapshot until 2026-10-21 and computer use kept it until 2026-11-25, so a
+// custom-model user's worker loops called another provider than the one the
+// agent was set to. Desktop computer use runs text-primary, so a missing vision
+// probe is not a reason to change providers.
+//
+// Any non-official provider wins. On the official provider, an explicit model
+// other than auto wins over the Hub band. Auto keeps the band so an untouched
+// assistant profile still follows Hub. mid and official-mid are the same band:
+// the assignment UI stores the short name, while Hub's snapshot stores the
+// official-* id.
+func assistantSelectionOwnsRole(provider corelib.MaclawLLMProvider, model, snapshot string) bool {
 	if !providerIsHubService(provider) {
 		return true
 	}

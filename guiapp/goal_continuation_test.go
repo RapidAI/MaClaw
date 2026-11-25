@@ -1464,9 +1464,17 @@ func TestGoalContinuationSharedLoopKeepsLifecycleGoal(t *testing.T) {
 }
 
 func TestGoalExecuteSkipsRemoteFileAudit(t *testing.T) {
+	const userID = "desktop-user:E:/remote-goal-audit"
+	s := openGoalForFinishTest(t, userID)
+	done := s.handler.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step", "index": 1, "status": "done", "result": "环境已检查",
+	})
+	if !strings.Contains(done, "步骤 1 已完成") {
+		t.Fatalf("step = %q", done)
+	}
 	cb := &remoteCodingCallbacks{
-		agent: &RemoteCodingSubAgent{},
-		task:  "[系统续接][execute] 按步骤执行目标：登录",
+		agent: &RemoteCodingSubAgent{handler: s.handler, loopCtx: s.loopCtx},
+		task:  "[系统续接][execute] 按步骤执行目标：登录\n\n本轮只能提交步骤 1：检查环境。",
 	}
 	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status: "success", Summary: "步骤已提交", ToolCalls: 1,
@@ -1561,8 +1569,8 @@ func TestGoalContinuationKeepsWorkingWhenTheIterationBudgetIsSpent(t *testing.T)
 	remote := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status: "failed", Error: "max iterations reached", Summary: "第 1 步完成。", ToolCalls: 4,
 	})
-	if remote == nil || remote.Status != "success" || remote.Error != "" {
-		t.Fatalf("remote goal turn = %#v", remote)
+	if remote == nil || remote.Status != "failed" || !codingLoopIterationExhausted(remote.Error) {
+		t.Fatalf("a spent budget must stay a continuation failure, not success: %#v", remote)
 	}
 }
 

@@ -2725,6 +2725,58 @@ func TestRunLoopFailoverSameEndpointDoesNotClaimASwitch(t *testing.T) {
 	}
 }
 
+// failoverDialErrorTransport fails the primary host at the transport layer and
+// delegates the live fallback host to the test server's transport, so an
+// environment HTTP proxy cannot make this test flaky.
+type failoverDialErrorTransport struct {
+	live http.RoundTripper
+}
+
+func (t failoverDialErrorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.EqualFold(req.URL.Host, "dead.invalid") {
+		return nil, fmt.Errorf("dial tcp 127.0.0.1:1: connectex: connection refused")
+	}
+	return t.live.RoundTrip(req)
+}
+
+func TestRunLoopFailsOverOnNetworkFailure(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	live := corelib.MaclawLLMConfig{ProviderName: "Backup", Model: "live-model"}
+	var sawLive atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		if payload.Model == live.Model {
+			sawLive.Store(true)
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+			return
+		}
+		http.Error(w, "unexpected model", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	live.URL = server.URL
+
+	cb := &failoverProgressCallbacks{retryProgressCallbacks: retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:    corelib.MaclawLLMConfig{URL: "http://dead.invalid/v1", ProviderName: "Primary", Model: "dead-model"},
+			maxIter:   1,
+			sysPrompt: "sys",
+		},
+		ctx: context.Background(),
+	}}, next: live}
+	result := RunLoop(cb, "test", nil, &http.Client{Transport: failoverDialErrorTransport{live: server.Client().Transport}})
+	if result.Error != "" || result.Text != "done" || !sawLive.Load() {
+		t.Fatalf("result=%+v sawLive=%v progress=%q", result, sawLive.Load(), cb.progress)
+	}
+	joined := strings.Join(cb.progress, "\n")
+	if !strings.Contains(joined, "已从「Primary/dead-model」改用「Backup/live-model」") {
+		t.Fatalf("progress=%q, want a named failover on the transport error", cb.progress)
+	}
+}
+
 type authRefreshProgressCallbacks struct {
 	retryProgressCallbacks
 }
@@ -9191,10 +9243,10 @@ func TestRunLoopSameToolHardStopNamesTheCause(t *testing.T) {
 			Model: "test",
 			Key:   "test-key",
 		},
-		maxIter:     20,
-		sysPrompt:   "test",
-		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
-		toolResult:  "[错误] working_dir missing",
+		maxIter:    20,
+		sysPrompt:  "test",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
+		toolResult: "[错误] working_dir missing",
 		// A plain business failure (test assertion, compile error, lint) no
 		// longer trips this breaker: the model is debugging, not stuck. The
 		// stop under test is the unrecoverable one, so use the timeout

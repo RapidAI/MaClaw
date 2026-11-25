@@ -201,9 +201,13 @@ func (a *App) lookupTaskLLMProvider(providerID string) (corelib.MaclawLLMProvide
 }
 
 // taskBoundLLMConfig is the pinned model for this task, with Profile set to
-// the loop role so usage stays on that role. A missing provider, an empty
-// path, or a text-only pin on a computer-use turn returns false and the loop
-// keeps resolving the role.
+// the loop role so usage stays on that role. A missing provider or an empty
+// path returns false and the loop keeps resolving the role.
+//
+// The pin covers every role that belongs to the task, the desktop helper
+// included: desktop computer use runs text-primary (OmniParser + OCR), so a
+// pin without a vision probe is still usable. Refusing it only made the helper
+// call a provider the composer did not show.
 func (a *App) taskBoundLLMConfig(projectPath, role string) (corelib.MaclawLLMConfig, bool) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
@@ -220,9 +224,6 @@ func (a *App) taskBoundLLMConfig(projectPath, role string) (corelib.MaclawLLMCon
 	}
 	cfg := a.materializeMaclawLLMSelection(role, provider, model)
 	if strings.TrimSpace(cfg.Model) == "" {
-		return corelib.MaclawLLMConfig{}, false
-	}
-	if role == maclawLLMRoleComputerUse && !cfg.SupportsVision {
 		return corelib.MaclawLLMConfig{}, false
 	}
 	return cfg, true

@@ -8,10 +8,12 @@ import (
 )
 
 // agentLoopLLMRole picks the frozen model for this loop.
-// Computer use is vision and desktop work, including inside a chat task.
-// A desktop chat task otherwise stays on the background role even though
-// its Kind remains chat: that Kind owns iteration limits and does not pause
-// on ContinueC. Everything else is the foreground planning turn.
+// Computer use is desktop work (a chat task's helper included). A desktop chat
+// task otherwise stays on the background role even though its Kind remains
+// chat: that Kind owns iteration limits and does not pause on ContinueC.
+// Everything else is the foreground planning turn. All three roles resolve to
+// whatever the current assistant is; the role only decides the call surface
+// (screenshots, cost route) and the usage profile.
 // The caller string is intentionally not consulted: the scheduler lane and
 // this role are different decisions.
 func agentLoopLLMRole(h *IMMessageHandler, ctx *LoopContext) string {
@@ -41,10 +43,15 @@ func agentLoopUsesComputerUse(h *IMMessageHandler, ctx *LoopContext) bool {
 
 func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.MaclawLLMConfig {
 	// Resolve the role first so a pinned MCP model cannot skip the computer-use
-	// gate. Computer use keeps its vision model. A background loop keeps the
-	// background model. The pin still covers the user-visible turn, including a
-	// chat task whose model role is background.
+	// gate. Every role then resolves to the current assistant (a task pin or an
+	// MCP caller pin may replace it for its own turn). A worker role running on
+	// a dead endpoint starts on the foreground model instead.
 	role := agentLoopLLMRole(h, ctx)
+	cfg := h.resolveAgentLoopBaseLLMConfig(ctx, role)
+	return h.applyWorkerRoleStartFallback(cfg, role)
+}
+
+func (h *IMMessageHandler) resolveAgentLoopBaseLLMConfig(ctx *LoopContext, role string) corelib.MaclawLLMConfig {
 	if mcpPinnedModelAllowed(role, ctx) && ctx != nil && h != nil && h.app != nil {
 		// The live run is the model send_command just wrote. The create-time
 		// pin is only the fallback when that run has no complete pair.
@@ -83,8 +90,8 @@ func (h *IMMessageHandler) resolveAgentLoopLLMConfig(ctx *LoopContext) corelib.M
 const mcpCallerModelRoute = "mcp-caller"
 
 // mcpPinnedModelAllowed reports whether this loop should use the model the
-// MCP client chose for the task. Computer use needs its own vision model, and
-// a background loop is housekeeping rather than the task the person is watching.
+// MCP client chose for the task. That pin belongs to the caller's own turn; a
+// desktop helper and housekeeping work follow the assistant instead.
 func mcpPinnedModelAllowed(role string, ctx *LoopContext) bool {
 	if role == maclawLLMRoleComputerUse {
 		return false

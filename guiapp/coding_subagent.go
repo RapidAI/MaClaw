@@ -787,6 +787,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// Nested explorer/reviewer are inspection-only — do not run write-oriented
 	// post-loop verify/fix cycles or the full implementation quality matrix.
 	if s.nestDepth > 0 && (s.role == codingRoleExplorer || s.role == codingRoleReviewer) {
+		// Seal the reconciled prompt so the trajectory does not preserve the
+		// provider's partial (uncached) leg.
+		result.Usage.LastPromptTokens = cb.contextMeter.preferPrompt(result.Usage.LastPromptTokens)
 		sealSubAgentTrajectory(traj, result)
 		if s.handler != nil {
 			accumulateLoopResultUsage(s.handler.app, s.cfg, result)
@@ -841,6 +844,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			}
 		}
 	}
+	// The provider's final prompt can be the uncached/incremental leg only.
+	// Publish the reconciled outbound fill so the sealed trajectory and
+	// task-end status writes do not repaint a collapsed meter.
+	result.Usage.LastPromptTokens = cb.contextMeter.preferPrompt(result.Usage.LastPromptTokens)
 	sealSubAgentTrajectory(traj, result)
 	// Accumulate after post-loop so fix-loop token usage is not dropped.
 	if s.handler != nil {
@@ -1246,11 +1253,15 @@ type codingSubAgentCallbacks struct {
 	subagent *CodingSubAgent
 	// compactor receives each provider prompt size so compaction follows the
 	// real window, not only the byte estimate. buildLoopHooks sets it.
-	compactor   *SubAgentCompactor
-	task        *TaskItem
-	reqCtx      string
-	designCtx   string
-	prevOutputs []string
+	compactor *SubAgentCompactor
+	// contextMeter reconciles the provider prompt count with the outbound
+	// estimate for the same request. A provider that reports only incremental
+	// input tokens must not shrink the meter or the compaction trigger.
+	contextMeter outboundContextMeter
+	task         *TaskItem
+	reqCtx       string
+	designCtx    string
+	prevOutputs  []string
 	// acceptanceBrief is the record-only script from submit_interactive_acceptance.
 	// Nil means the model did not submit one. A console target still uses the default keys.
 	acceptanceBrief *codingAcceptanceBrief

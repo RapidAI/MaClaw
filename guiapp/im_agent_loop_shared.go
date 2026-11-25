@@ -2137,6 +2137,9 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx  *LoopContext
 	userID   string
 	userText string
+	// contextMeter keeps the host's outbound estimate authoritative for this
+	// request when the provider reports only a partial input count.
+	contextMeter outboundContextMeter
 	// contentRetrievalMemoryDone and contentRetrievalKnowledgeDone record the
 	// discovery ladder for this turn. A call in the same batch sees the flag
 	// set by the earlier call. Checkpoint history is the copy used when the
@@ -11959,14 +11962,22 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 		model = c.llmCfg.Model
 	}
 	c.handler.recordLLMCost(model, inputTokens, outputTokens)
-	if inputTokens > 0 {
-		c.handler.publishContextWindowUsage(c.userID, inputTokens, c.llmCfg.EffectiveContextTokens())
+	fill, sampleMax, fromEstimate := c.contextMeter.providerFill(inputTokens)
+	if fill > 0 {
+		window := c.llmCfg.EffectiveContextTokens()
+		if sampleMax > 0 {
+			window = sampleMax
+		}
+		c.handler.publishContextWindowUsageEstimate(c.userID, fill, window, fromEstimate)
 	}
 }
 
 func (c *sharedAgentLoopCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
 	if c == nil || c.handler == nil {
 		return
+	}
+	if estimated {
+		c.contextMeter.observeEstimate(usedTokens, maxTokens)
 	}
 	c.handler.publishContextWindowUsageEstimate(c.userID, usedTokens, maxTokens, estimated)
 }

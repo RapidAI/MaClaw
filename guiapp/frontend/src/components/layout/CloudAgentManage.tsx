@@ -11,6 +11,7 @@ import {
     subscribeCloudAgentRounds,
 } from './cloudAgentSession';
 import { cloudAgentCatalog, cloudAssistantInstanceId, sendShownCloudAgent, stopShownCloudAgent } from './cloudAgentAssistant';
+import { noRepoScopeNote } from '../../utils/githubScopes';
 import { noteCloudTurn } from './taskPlace';
 
 type CloudAgentRow = {
@@ -58,7 +59,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
     const [draft, setDraft] = useState('');
     const [choices, setChoices] = useState<Array<{ label: string; command: string }>>([]);
     const [pickedKind, setPickedKind] = useState('');
-    const [gitNote, setGitNote] = useState('');
+    const [gitNote, setGitNote] = useState<{ text: string; warn?: boolean }>({ text: '' });
     const [git, setGit] = useState({
         service: 'github',
         origin: 'https://github.com',
@@ -126,7 +127,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         setTasks([]);
         setLive('');
         setChoices([]);
-        setGitNote('');
+        setGitNote({ text: '' });
         setPickedKind(row.kind);
         selected.current = { grant: '', instance: row.id, task: '', kind: row.kind };
         const open = appBinding('OpenCloudAgentGrant');
@@ -272,7 +273,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
                 return;
             }
-            setGitNote(String(view?.repo || ''));
+            setGitNote({ text: String(view?.repo || '') });
             setGit((prev) => ({ ...prev, token: '', source: '' }));
         } catch (err) {
             fail(err);
@@ -287,15 +288,16 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
             const view = await account() as {
                 connected?: boolean; login?: string; name?: string;
                 email?: string; origin?: string; token?: string; repo_scope?: boolean;
+                github_app_token?: boolean;
             };
             if (!view?.connected || !view.token) {
-                setGitNote(isGitLab
+                setGitNote({ text: isGitLab
                     ? text('Connect GitLab in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中连接 GitLab', '請先在 設定 → GitHub & GitLab 中連接 GitLab')
-                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub'));
+                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub') });
                 return;
             }
             if (!view.repo_scope) {
-                setGitNote(text('This token has no repo permission', '该令牌没有仓库权限', '該權杖沒有倉庫權限'));
+                setGitNote({ text: noRepoScopeNote(lang, isGitLab, view.github_app_token), warn: true });
                 return;
             }
             setGit((prev) => ({
@@ -306,7 +308,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 token: String(view.token),
                 source: 'account',
             }));
-            setGitNote(text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`));
+            setGitNote({ text: text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`) });
         } catch (err) {
             fail(err);
         }
@@ -399,12 +401,17 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                     }}
                     style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}
                 >
-                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => setGit((prev) => {
-                        const service = event.target.value;
-                        const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
-                        const untouched = !prev.origin.trim() || prev.origin === prevDefault;
-                        return { ...prev, service, source: '', origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin };
-                    })}>
+                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => {
+                        // A note about the old service (e.g. the GitHub App
+                        // warning) is wrong the moment the service changes.
+                        setGitNote({ text: '' });
+                        setGit((prev) => {
+                            const service = event.target.value;
+                            const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
+                            const untouched = !prev.origin.trim() || prev.origin === prevDefault;
+                            return { ...prev, service, source: '', origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin };
+                        });
+                    }}>
                         <option value="github">GitHub</option>
                         <option value="gitlab">GitLab</option>
                     </select>
@@ -419,7 +426,7 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                             : text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}
                     </button>
                     <button type="submit">{text('Connect', '连接', '連接')}</button>
-                    {gitNote ? <span>{gitNote}</span> : null}
+                    {gitNote.text ? <span style={{ color: gitNote.warn ? 'var(--theme-danger, #b42318)' : undefined }}>{gitNote.text}</span> : null}
                 </form>
             ) : null}
             <pre data-testid="cloud-agent-live">{live}</pre>

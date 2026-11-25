@@ -1530,3 +1530,66 @@ func TestSubmitSkill_DoesNotUseDefaultHAPeerOutsideRegistration(t *testing.T) {
 		t.Fatalf("default HA peer hits = %d, want 0 (must not upload outside registration)", defaultPeerHits)
 	}
 }
+
+func TestSearchAndInstallForTaskRequiresTheExplicitlyNamedSkill(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{server.URL}})
+		case "/api/v1/skillmarket/search":
+			_ = json.NewEncoder(w).Encode(struct {
+				Results []SkillSearchResult `json:"results"`
+			}{Results: []SkillSearchResult{
+				{ID: "kwaishop-intelligent-diagnosis-skill_test", Name: "域名测试", Description: "智能诊断", Price: 0},
+				{ID: "market-entry-1", Name: "Lemo Opuscar", Description: "目标能力", Price: 0},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  server.URL,
+		RemoteHubCenterURLs: []string{server.URL},
+		SkillSourcesAllowed: []string{"skillhub"},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	searcher := NewSkillSearcher(NewSkillMarketClient(app))
+	query := "安装 lemo-opuscar skill"
+	best, err := searcher.SearchAndInstallForTask(context.Background(), query, skillSearchCompatibilityTaskText(query))
+	if err != nil {
+		t.Fatalf("SearchAndInstallForTask() error = %v", err)
+	}
+	if best == nil || best.ID != "market-entry-1" {
+		t.Fatalf("SearchAndInstallForTask() selected %+v, want the named Lemo Opuscar entry", best)
+	}
+
+	missing := "安装 missing-skill skill"
+	if best, err = searcher.SearchAndInstallForTask(context.Background(), missing, skillSearchCompatibilityTaskText(missing)); err != nil {
+		t.Fatalf("missing SearchAndInstallForTask() error = %v", err)
+	}
+	if best != nil {
+		t.Fatalf("an unrelated market hit was installed for %q: %+v", missing, best)
+	}
+}

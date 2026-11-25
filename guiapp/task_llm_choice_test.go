@@ -107,6 +107,9 @@ func TestPrepareAgentLoopConfigUsesTaskLLMPin(t *testing.T) {
 		t.Fatalf("chat pin = model %q profile %q provider %q", chat.Config.Model, chat.Config.Profile, chat.Config.ProviderID)
 	}
 
+	// A text-only pin still covers the desktop helper: computer use runs
+	// text-primary, so the helper must not call a provider the chip does not
+	// show.
 	helper := h.prepareAgentLoopConfig(&LoopContext{
 		Kind:                   LoopKindChat,
 		UserID:                 userID,
@@ -114,8 +117,8 @@ func TestPrepareAgentLoopConfigUsesTaskLLMPin(t *testing.T) {
 		ComputerUseActive:      true,
 		ComputerUseGateSettled: true,
 	})
-	if helper.Config.Model != "assistant-model" || helper.Config.Profile != maclawLLMRoleComputerUse {
-		t.Fatalf("text pin stole computer use: model %q profile %q", helper.Config.Model, helper.Config.Profile)
+	if helper.Config.Model != "text-only-model" || helper.Config.ProviderID != "local" || helper.Config.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("text pin on computer use = model %q provider %q profile %q", helper.Config.Model, helper.Config.ProviderID, helper.Config.Profile)
 	}
 
 	app.memoryStore.ProjectIndex().SetTaskLLM(path, "local", "vision-model")

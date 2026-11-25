@@ -363,6 +363,7 @@ func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedS
 	// when two entries share a name.
 	entries := exec.loadSkills()
 	agentDomain := corelib.NormalizeSkillExperienceDomain(domain)
+	installIdentity := explicitSkillInstallIdentity(userText)
 	type scored struct {
 		def           NLSkillDefinition
 		entry         corelib.NLSkillEntry
@@ -386,6 +387,15 @@ func admitLocalSkills(exec *SkillExecutor, userText, domain string) ([]admittedS
 				hidden = append(hidden, strings.TrimSpace(entry.Name))
 			}
 			continue
+		}
+		// "安装 X skill" names the package to install. An unrelated local
+		// workflow whose trigger is a generic word such as 安装 must not bind
+		// before the identity-checked market search runs.
+		if installIdentity != "" {
+			_, localIdentity, _ := preferredLocalSkillScore(view, installIdentity)
+			if !localIdentity {
+				continue
+			}
 		}
 		guided, runnable := skillCompleteForAdmission(entry)
 		if !guided && !runnable {
@@ -898,6 +908,33 @@ func (c *sharedAgentLoopCallbacks) republishAdoptedProcedure() {
 	}
 }
 
+// requestedSkillInstallIdentity reads the explicit package name from the same
+// compact task text the admitted search uses, not an attachment body or host
+// annotation that happened to mention an install sentence.
+func (c *sharedAgentLoopCallbacks) requestedSkillInstallIdentity() string {
+	if c == nil {
+		return ""
+	}
+	return explicitSkillInstallIdentity(skillAdmissionTaskText(c.userText))
+}
+
+// adoptInstalledProcedureForRequest is the install-result gate. A named
+// install must only pin the requested identity: adopting a different package
+// closes search_and_install_skill and leaves the turn unable to recover from
+// the mistake. Generic capability searches have no requested identity and keep
+// the installing result as the procedure. A mismatch reports false so the
+// caller returns a failure instead of telling the model to run the wrong skill.
+func (c *sharedAgentLoopCallbacks) adoptInstalledProcedureForRequest(dir, name string) bool {
+	identity := c.requestedSkillInstallIdentity()
+	name = strings.TrimSpace(name)
+	if identity != "" && (name == "" || !(&corelib.NLSkillEntry{Name: name}).MatchesName(identity)) {
+		log.Printf("[skill-admission] installed procedure %q does not match requested skill %q; keeping the market search open", name, identity)
+		return false
+	}
+	c.adoptInstalledProcedure(dir, name)
+	return true
+}
+
 // adoptInstalledProcedure pins a just-installed SKILL.md as this turn's procedure.
 // The directory has to exist and contain the document. A missing folder does
 // not open host file tools.
@@ -1100,8 +1137,10 @@ func (c *sharedAgentLoopCallbacks) executeAdmittedSkillHostCall(name, argsJSON s
 		}
 		result := c.handler.executeSkillSearchInstallAdmitted(args, nil, true)
 		c.admittedSkillSettled = true
-		if result.Success {
-			c.adoptInstalledProcedure(result.ProcedureDir, result.ProcedureName)
+		if result.Success && !c.adoptInstalledProcedureForRequest(result.ProcedureDir, result.ProcedureName) {
+			identity := c.requestedSkillInstallIdentity()
+			result.Success = false
+			result.Text = fmt.Sprintf("Installed Skill %q does not match requested skill %q; it was not adopted for this turn. Retry the exact package name.", result.ProcedureName, identity)
 		}
 		return result.Text, true, result.Success
 	}

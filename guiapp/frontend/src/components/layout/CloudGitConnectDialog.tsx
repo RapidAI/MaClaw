@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import { refreshCloudGit } from './cloudAgentAssistant';
+import { noRepoScopeNote } from '../../utils/githubScopes';
 
 type Binding = (...args: unknown[]) => Promise<unknown>;
 
@@ -13,6 +14,7 @@ function appBinding(name: string): Binding | null {
 type AccountView = {
     connected?: boolean; login?: string; name?: string;
     email?: string; origin?: string; token?: string; repo_scope?: boolean;
+    github_app_token?: boolean;
 };
 
 /**
@@ -35,7 +37,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
         source: '',
     });
     const [error, setError] = useState('');
-    const [note, setNote] = useState('');
+    const [note, setNote] = useState<{ text: string; warn?: boolean }>({ text: '' });
     const [busy, setBusy] = useState(false);
     const [accountBusy, setAccountBusy] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -71,17 +73,19 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
         const account = appBinding(isGitLab ? 'CloudAgentGitLabAccount' : 'CloudAgentGitHubAccount');
         if (!account) return;
         setAccountBusy(true);
-        setNote('');
+        setNote({ text: '' });
         try {
             const view = await account() as AccountView;
             if (!view?.connected || !view.token) {
-                setNote(isGitLab
+                setNote({ text: isGitLab
                     ? text('Connect GitLab in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中连接 GitLab', '請先在 設定 → GitHub & GitLab 中連接 GitLab')
-                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub'));
+                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub') });
                 return;
             }
             if (!view.repo_scope) {
-                setNote(text('This token has no repo permission', '该令牌没有仓库权限', '該權杖沒有倉庫權限'));
+                // A permission blocker, not trivia — render it like an error
+                // so the fix guidance is actually read.
+                setNote({ text: noRepoScopeNote(lang, isGitLab, view.github_app_token), warn: true });
                 return;
             }
             setGit((prev) => ({
@@ -92,7 +96,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
                 token: String(view.token),
                 source: 'account',
             }));
-            setNote(text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`));
+            setNote({ text: text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`) });
         } catch (err) {
             fail(err);
         } finally {
@@ -184,19 +188,24 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
                         aria-label={text('Service', '服务', '服務')}
                         value={git.service}
                         disabled={busy}
-                        onChange={(event) => setGit((prev) => {
+                        onChange={(event) => {
                             const service = event.target.value;
-                            // A github.com default must not follow the form into a
-                            // gitlab connect — the srv parses the repo against it.
-                            const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
-                            const untouched = !prev.origin.trim() || prev.origin === prevDefault;
-                            return {
-                                ...prev,
-                                service,
-                                source: '',
-                                origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin,
-                            };
-                        })}
+                            // A note about the old service (e.g. the GitHub App
+                            // warning) is wrong the moment the service changes.
+                            setNote({ text: '' });
+                            setGit((prev) => {
+                                // A github.com default must not follow the form into a
+                                // gitlab connect — the srv parses the repo against it.
+                                const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
+                                const untouched = !prev.origin.trim() || prev.origin === prevDefault;
+                                return {
+                                    ...prev,
+                                    service,
+                                    source: '',
+                                    origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin,
+                                };
+                            });
+                        }}
                         style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid var(--theme-border, #d0d5dd)' }}
                     >
                         <option value="github">GitHub</option>
@@ -238,7 +247,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose }: { lang: str
                         {busy ? text('Connecting…', '连接中…', '連接中…') : text('Connect', '连接', '連接')}
                     </button>
                 </form>
-                {note ? <span style={{ fontSize: 12, color: 'var(--theme-text-secondary, #667085)' }}>{note}</span> : null}
+                {note.text ? <span style={{ fontSize: 12, color: note.warn ? 'var(--theme-danger, #b42318)' : 'var(--theme-text-secondary, #667085)' }}>{note.text}</span> : null}
             </div>
         </div>
     );

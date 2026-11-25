@@ -22,16 +22,21 @@ type CloudAgentGitHubAccount struct {
 	// RepoScope is false when the token cannot read or push private repos
 	// (e.g. a GitHub App user token whose scope list comes back empty).
 	RepoScope bool `json:"repo_scope"`
+	// GithubAppToken is true for a "ghu_" GitHub App user token. Those carry
+	// no OAuth scopes by design, so the only fix is a fresh OAuth App login —
+	// the form says that instead of pointing at a scope checkbox.
+	GithubAppToken bool `json:"github_app_token,omitempty"`
 }
 
 // CloudAgentGitHubAccount exposes the connected GitHub account for the cloud
 // coding instance's git form. The caller must still click connect — nothing
 // is pushed to maclawsrv from here.
 func (a *App) CloudAgentGitHubAccount() (CloudAgentGitHubAccount, error) {
-	token := a.loadGitHubAccessToken()
-	if token == "" {
+	cred := a.loadGitHubCredential()
+	if cred == nil {
 		return CloudAgentGitHubAccount{Connected: false}, nil
 	}
+	token := strings.TrimSpace(cred.AccessToken)
 	if cfg, err := a.LoadConfig(); err == nil {
 		oauth.ApplyProxyFromAppConfig(cfg)
 	}
@@ -45,13 +50,19 @@ func (a *App) CloudAgentGitHubAccount() (CloudAgentGitHubAccount, error) {
 	if name == "" {
 		name = user.Login
 	}
+	// The /user header is the live grant; the stored grant covers the
+	// header-stripped edge (a proxy can drop X-OAuth-Scopes) so a healthy
+	// token is not reported scopeless. A non-empty header still wins, so a
+	// server-side revocation keeps outranking the stale stored grant.
+	repoScope := oauth.GitHubScopesHaveRepo(oauth.GitHubEffectiveScopes(headerScopes, cred.Scopes))
 	return CloudAgentGitHubAccount{
-		Connected: true,
-		Login:     user.Login,
-		Name:      name,
-		Email:     fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login),
-		Token:     token,
-		RepoScope: oauth.GitHubScopesHaveRepo(headerScopes),
+		Connected:      true,
+		Login:          user.Login,
+		Name:           name,
+		Email:          fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login),
+		Token:          token,
+		RepoScope:      repoScope,
+		GithubAppToken: oauth.GitHubAppUserToken(token),
 	}, nil
 }
 
@@ -60,8 +71,18 @@ func (a *App) CloudAgentGitHubAccount() (CloudAgentGitHubAccount, error) {
 // (source="account"). Called after a successful GitHub login; instances with
 // a manually pasted token are left alone.
 func (a *App) syncCloudAgentGitCredentials() {
-	token := a.loadGitHubAccessToken()
-	if token == "" {
+	cred := a.loadGitHubCredential()
+	if cred == nil {
+		return
+	}
+	token := strings.TrimSpace(cred.AccessToken)
+	// A login without the repo scope (Repositories unchecked on the
+	// authorization page, or the legacy ghu_ GitHub App token) cannot give
+	// the instances a working credential — the srv-side clone would fail on
+	// every one of them. The settings panel already tells the user to
+	// re-login; leave the account-bound instances untouched meanwhile.
+	if !oauth.GitHubScopesHaveRepo(cred.Scopes) {
+		log.Printf("[cloud-agent] github credential sync skipped: token has no repo scope")
 		return
 	}
 	list, err := a.ListCloudAgents()

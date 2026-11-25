@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudAgentManage } from '../CloudAgentManage';
+import { noRepoScopeNote } from '../../../utils/githubScopes';
 import { applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, expireCloudAgentCards, resetCloudAgentRounds } from '../cloudAgentSession';
 
 const streamHandlers: Array<(payload: unknown) => void> = [];
@@ -20,6 +21,16 @@ function setBindings(bindings: Record<string, (...args: never[]) => Promise<unkn
 }
 
 describe('cloud agent page', () => {
+    it('picks the no-repo-scope note by service and token kind', () => {
+        expect(noRepoScopeNote('zh', true)).toContain('write_repository');
+        expect(noRepoScopeNote('zh', false, true)).toContain('GitHub App 令牌');
+        expect(noRepoScopeNote('zh', false, true)).toContain('断开 GitHub 后重新登录');
+        expect(noRepoScopeNote('zh', false, false)).toContain('Repositories');
+        expect(noRepoScopeNote('zh', false)).toContain('Repositories');
+        expect(noRepoScopeNote('en', false, true)).toContain('GitHub App token');
+        expect(noRepoScopeNote('en', true)).toContain('write_repository');
+    });
+
     afterEach(() => {
         cleanup();
         resetCloudAgentRounds();
@@ -218,6 +229,49 @@ describe('cloud agent page', () => {
         fireEvent.click(screen.getByText('连接'));
         await waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
         expect(connect.mock.calls[0][1].source).toBeUndefined();
+    });
+
+    it('explains why the signed-in token has no repo permission and stays unfilled', async () => {
+        setBindings({
+            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
+            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
+            CloudAgentGitHubAccount: vi.fn(async () => ({
+                connected: true, login: 'ada', name: 'Ada',
+                email: '42+ada@users.noreply.github.com', token: 'ghu_legacy_token', repo_scope: false,
+                github_app_token: true,
+            })),
+        });
+        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
+        fireEvent.click(await screen.findByText('用 GitHub 账号'));
+        const form = await screen.findByTestId('cloud-agent-git');
+        await waitFor(() => expect(form.textContent).toContain('GitHub App 令牌'));
+        expect(form.textContent).toContain('断开 GitHub 后重新登录');
+        expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('');
+        // Switching the service invalidates a note about the old one.
+        fireEvent.change(screen.getByLabelText('服务'), { target: { value: 'gitlab' } });
+        await waitFor(() => expect(screen.getByLabelText('服务')).toBeTruthy());
+        expect(form.textContent).not.toContain('GitHub App 令牌');
+    });
+
+    it('points at the authorization checkbox when an OAuth token lacks repo scope', async () => {
+        setBindings({
+            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
+            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
+            CloudAgentGitHubAccount: vi.fn(async () => ({
+                connected: true, login: 'ada', name: 'Ada',
+                email: '42+ada@users.noreply.github.com', token: 'gho_scopeless', repo_scope: false,
+            })),
+        });
+        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
+        fireEvent.click(await screen.findByText('用 GitHub 账号'));
+        const form = await screen.findByTestId('cloud-agent-git');
+        await waitFor(() => expect(form.textContent).toContain('没有仓库权限'));
+        expect(form.textContent).toContain('Repositories');
+        expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('');
     });
 
     it('shows the push confirmation inside the round and sends the chosen answer', async () => {

@@ -822,6 +822,9 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 	}
 	loopResult = codingagent.Run(cb, userText, userContent, codingModelHistory(resume), r.httpClient, hooks)
 	result := loopResult
+	// Keep the reconciled outbound fill when the provider reports only its
+	// incremental prompt; task-end cost/status writes read this field.
+	result.Usage.LastPromptTokens = cb.contextMeter.preferPrompt(result.Usage.LastPromptTokens)
 	finishSubAgentTrajectory(traj, result)
 	if r.handler != nil {
 		accumulateLoopResultUsage(r.handler.app, r.cfg, result)
@@ -1013,19 +1016,24 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
 	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
 
-	// A goal turn that spends the iteration budget still has its step open.
-	// That is not success. Keep the loop error so the host retries the same
-	// step instead of recording the task as passed.
-	if c != nil && codingLoopIterationExhausted(result.Error) &&
-		(goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "") {
-		result.Status = "failed"
-		if strings.TrimSpace(result.Error) == "" {
-			result.Error = "max iterations reached"
-		}
-		result.QualityStatus = codingSubAgentQualityNotNeeded
-		result.QualitySummary = "goal continuation: iteration budget keeps this step open"
-		if blocked, why := remoteGoalTurnIncomplete(c); blocked && !strings.Contains(result.Error, why) {
-			result.Error = strings.TrimSpace(result.Error + "；" + why)
+	// A host success only records a goal phase when the store contains that
+	// phase's delivery. Model prose ("done") and a refused goal(action=complete)
+	// leave the step open; returning success here makes the scheduler mark the
+	// whole goal passed. The same applies when the loop spends its iteration
+	// budget, which the host uses as the keep-this-step-open signal.
+	goalTurn := c != nil && (goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "")
+	if goalTurn && (remoteCodingHostSuccess(result.Status) || codingLoopIterationExhausted(result.Error)) {
+		if blocked, why := remoteGoalTurnIncomplete(c); blocked {
+			if remoteCodingHostSuccess(result.Status) {
+				result.Status = "failed"
+			}
+			if strings.TrimSpace(result.Error) == "" {
+				result.Error = why
+			} else if codingLoopIterationExhausted(result.Error) && !strings.Contains(result.Error, why) {
+				result.Error = strings.TrimSpace(result.Error + "；" + why)
+			}
+			result.QualityStatus = codingSubAgentQualityNotNeeded
+			result.QualitySummary = "goal continuation: phase delivery keeps this turn open"
 		}
 	}
 
@@ -1042,7 +1050,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		}
 		return result
 	}
-	if c != nil && (goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "") {
+	if goalTurn {
 		if remoteCodingHostSuccess(result.Status) && strings.TrimSpace(result.Error) == "" {
 			result.QualityStatus = codingSubAgentQualityNotNeeded
 			result.QualitySummary = "goal continuation: file audit does not apply"
@@ -2201,6 +2209,9 @@ type remoteCodingCallbacks struct {
 	agent       *RemoteCodingSubAgent
 	task        string
 	taskContext string
+	// contextMeter reconciles provider prompt counts with the outbound
+	// estimate; some providers report only the incremental input leg.
+	contextMeter outboundContextMeter
 
 	workspaceWasEmptyAtStart bool
 	// qualityGateEnabled is resolved once for this turn. Nil means the caller
@@ -6537,13 +6548,14 @@ func (c *remoteCodingCallbacks) OnLLMUsage(model string, inputTokens, outputToke
 	if c == nil || c.compactor == nil {
 		return
 	}
-	if !c.compactor.notePromptTokens(inputTokens) {
+	fill, _, fromEstimate := c.contextMeter.providerFill(inputTokens)
+	if !c.compactor.notePromptTokens(fill) {
 		return
 	}
 	if c.agent == nil || c.agent.handler == nil {
 		return
 	}
-	c.agent.handler.noteCodingContextFill(codingSubAgentOwnerUserID(c.agent.loopCtx), inputTokens, outputTokens)
+	c.agent.handler.noteCodingContextFillEstimate(codingSubAgentOwnerUserID(c.agent.loopCtx), fill, outputTokens, fromEstimate)
 }
 
 func (c *remoteCodingCallbacks) PromptFillsContextWindow(promptTokens int) bool {
@@ -6561,6 +6573,9 @@ func (c *remoteCodingCallbacks) ContextCompactStalled() bool {
 func (c *remoteCodingCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
 	if c == nil || c.agent == nil || c.agent.handler == nil {
 		return
+	}
+	if estimated {
+		c.contextMeter.observeEstimate(usedTokens, maxTokens)
 	}
 	c.agent.handler.publishContextWindowUsageEstimate(codingSubAgentOwnerUserID(c.agent.loopCtx), usedTokens, maxTokens, estimated)
 }

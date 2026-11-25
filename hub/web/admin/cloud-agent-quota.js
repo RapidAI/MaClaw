@@ -433,13 +433,14 @@ function cagMembersReady(groupId) {
   return Object.prototype.hasOwnProperty.call(cagOrg.members, groupId);
 }
 
-function cagFindDept(nodes, id) {
+function cagFindDept(nodes, id, depth) {
+  if ((depth || 0) > 24) return null;
   var list = nodes || [];
   for (var i = 0; i < list.length; i += 1) {
     var node = list[i];
     if (!node) continue;
     if (node.id === id) return node;
-    var found = cagFindDept(node.children, id);
+    var found = cagFindDept(node.children, id, (depth || 0) + 1);
     if (found) return found;
   }
   return null;
@@ -534,8 +535,9 @@ function cagQueryWantsMembers(query) {
   return /[\u3400-\u9fff]/.test(query);
 }
 
-function cagDeptMatch(node, query) {
+function cagDeptMatch(node, query, depth) {
   if (!query) return true;
+  if ((depth || 0) > 24) return false;
   if (String(node.name || '').toLowerCase().indexOf(query) !== -1) return true;
   var members = cagMemberViews(node.id);
   for (var i = 0; i < members.length; i += 1) {
@@ -545,7 +547,7 @@ function cagDeptMatch(node, query) {
   }
   var children = node.children || [];
   for (var c = 0; c < children.length; c += 1) {
-    if (cagDeptMatch(children[c], query)) return true;
+    if (cagDeptMatch(children[c], query, (depth || 0) + 1)) return true;
   }
   return false;
 }
@@ -558,6 +560,7 @@ function cagMemberVisible(member, query, deptNameHit) {
 }
 
 function cagRenderNodes(nodes, depth, query) {
+  if (depth > 24) return '';
   var html = '';
   (nodes || []).forEach(function (node) {
     if (!cagDeptMatch(node, query)) return;
@@ -601,20 +604,21 @@ function cagMatchingUsers(query) {
 
 function cagVisibleUserIds(query) {
   var ids = {};
-  function walk(nodes) {
+  function walk(nodes, depth) {
+    if ((depth || 0) > 24) return;
     (nodes || []).forEach(function (node) {
       if (!cagDeptMatch(node, query)) return;
       var nameHit = !query || String(node.name || '').toLowerCase().indexOf(query) !== -1;
       var open = !!cagOrg.expanded[node.id] || !!query;
       if (!open) return;
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
       cagMembers(node.id).forEach(function (member) {
         if (!member.userId || !cagMemberVisible(member, query, nameHit)) return;
         ids[member.userId] = true;
       });
     });
   }
-  walk(cagOrg.tree);
+  walk(cagOrg.tree, 0);
   return ids;
 }
 
@@ -832,16 +836,17 @@ function cagWantFullTree(query) {
 function cagEnsureOpenMembers(query) {
   var ids = [];
   var scan = cagQueryWantsMembers(query);
-  function walk(nodes) {
+  function walk(nodes, depth) {
+    if ((depth || 0) > 24) return;
     (nodes || []).forEach(function (node) {
       if (!node || !cagDeptMatch(node, query)) return;
       var expanded = !!cagOrg.expanded[node.id];
       if (!expanded && !query) return;
       if ((expanded || scan) && !cagMembersReady(node.id) && !cagOrg.memberFailed[node.id] && !cagOrg.memberLoads[node.id]) ids.push(node.id);
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
     });
   }
-  walk(cagOrg.tree);
+  walk(cagOrg.tree, 0);
   if (!ids.length) return;
   var epoch = cagOrg.memberEpoch;
   Promise.all(ids.slice(0, 30).map(cagLoadMembers)).then(function () {
@@ -892,13 +897,14 @@ function cagLoadMembers(groupId) {
 
 function cagBuildDeptNames(nodes) {
   var map = {};
-  (function walk(list) {
+  (function walk(list, depth) {
+    if ((depth || 0) > 24) return;
     (list || []).forEach(function (node) {
       if (!node || !node.id) return;
       map[node.id] = node.name;
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
     });
-  })(nodes);
+  })(nodes, 0);
   return map;
 }
 
@@ -964,6 +970,13 @@ function cagBindGrants(root) {
   });
 }
 
+function cagSetHTML(el, html) {
+  if (!el) return;
+  if (el._cagDrawn === html) return;
+  el.innerHTML = html;
+  el._cagDrawn = html;
+}
+
 function cagRenderGrants() {
   var list = document.getElementById('cloudAgentGrantList');
   if (!list) return;
@@ -972,7 +985,7 @@ function cagRenderGrants() {
   var count = document.getElementById('cloudAgentGrantsCount');
   if (!cagOrg.loaded) {
     if (count) { count.textContent = '0'; count.hidden = true; }
-    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.loading) + '</div>';
+    cagSetHTML(list, '<div class="cag-grants-empty">' + cagEscape(t.loading) + '</div>');
     return;
   }
   var rows = cagGrantRows();
@@ -981,7 +994,7 @@ function cagRenderGrants() {
     count.hidden = !rows.length;
   }
   if (!rows.length) {
-    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.grantsEmpty) + '</div>';
+    cagSetHTML(list, '<div class="cag-grants-empty">' + cagEscape(t.grantsEmpty) + '</div>');
     return;
   }
   var html = '';
@@ -1001,7 +1014,7 @@ function cagRenderGrants() {
       + '<button type="button" class="btn-ghost cag-grant-revoke">' + cagEscape(t.revoke) + '</button>'
       + '</div>';
   });
-  list.innerHTML = html;
+  cagSetHTML(list, html);
 }
 
 function cagLocateGrant(scope, target) {

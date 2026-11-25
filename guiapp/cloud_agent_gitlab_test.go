@@ -86,3 +86,35 @@ func TestSyncCloudAgentGitLabCredentialsSkipsWithoutToken(t *testing.T) {
 	// No credential store and no token — must not even list instances.
 	app.syncCloudAgentGitLabCredentials()
 }
+
+func TestSyncCloudAgentGitLabCredentialsSkipsInsufficientScopes(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token", RemoteMachineToken: "machine-token", RemoteMachineID: "machine-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := oauth.NewFileCredentialStore(filepath.Join(app.testHomeDir, "credentials.json"))
+	// A definitively insufficient introspected grant (read-only) cannot push
+	// — the instances keep whatever token they already have.
+	if err := store.Modify(oauth.GitLabAccountProviderID, func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{Type: "token", AccessToken: "glpat-readonly", BaseURL: "https://gitlab.example.com", Login: "tux", Scopes: "read_user,read_repository"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.credentialStore = store
+
+	app.syncCloudAgentGitLabCredentials()
+
+	if hit {
+		t.Fatal("read-only token must not reach the hub — instances keep their working credential")
+	}
+}

@@ -10,6 +10,7 @@ import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 import { SidebarSystemStatus } from '../../layout/SidebarSystemStatus';
 import { publishSharedUnreadCount } from '../useNotifications';
+import { bindRemoteAssistantActions, publishRemoteAssistantSession } from '../../layout/remoteAssistantSession';
 import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
@@ -11758,5 +11759,162 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         });
         await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
         expect((screen.getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('half written');
+    });
+});
+
+describe('cloud task view in the main panel (local-task parity)', () => {
+    afterEach(() => {
+        cleanup();
+        // The remote session module is global; a leaked session would turn
+        // every later panel test into the covered-remote view.
+        publishRemoteAssistantSession(null);
+        bindRemoteAssistantActions(null);
+        window.localStorage.clear();
+    });
+
+    /** Publish a cloud task the way cloudAgentAssistant does, with a close
+        action that mirrors closeCloudAssistant's unpublish. */
+    function openCloudView(send: (text: string) => Promise<boolean> = async () => true) {
+        act(() => {
+            publishRemoteAssistantSession({
+                grantId: 'grant-cloud-1',
+                machineName: '云端',
+                projectPath: 'cloud-agent:inst-1',
+                taskName: '演唱会策划书',
+                cloud: true,
+                serverLabel: '官方云端服务',
+                canSend: true,
+                offline: false,
+                error: '',
+                busy: false,
+                messages: [
+                    { role: 'user', content: '做一份 演唱会策划书' },
+                    { role: 'assistant', content: '已经为你创建了一份完整的演唱会策划书。' },
+                ],
+            });
+            bindRemoteAssistantActions({
+                send,
+                stop: async () => true,
+                close: () => {
+                    publishRemoteAssistantSession(null);
+                    bindRemoteAssistantActions(null);
+                },
+            });
+        });
+    }
+
+    it('header keeps 暂停任务 and the local cluster, with no standalone 关闭', () => {
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView();
+        expect(screen.getByTestId('task-execution-header')).toBeTruthy();
+        expect(screen.getByRole('button', { name: '暂停任务' })).toBeTruthy();
+        expect(screen.getByTestId('task-tab-switcher-btn')).toBeTruthy();
+        expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();
+        expect(screen.queryByTestId('remote-task-chat-close')).toBeNull();
+        // Local-only affordances stay off the cloud header.
+        expect(screen.queryByTestId('task-share-btn')).toBeNull();
+    });
+
+    it('新建任务 opens the wizard over the covered cloud view', async () => {
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView();
+        expect(screen.getByTestId('task-execution-header')).toBeTruthy();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+        // The cloud transcript yields to the cover, and Back returns to it —
+        // opening the wizard must not tear the covered session down.
+        expect(screen.getAllByText('已经为你创建了一份完整的演唱会策划书。').some(el => el.closest('[hidden]'))).toBe(true);
+        fireEvent.click(screen.getByTestId('new-task-wizard-back'));
+        await waitFor(() => {
+            expect(screen.getAllByText('已经为你创建了一份完整的演唱会策划书。').every(el => !el.closest('[hidden]'))).toBe(true);
+        });
+    });
+
+    it('the covered wizard composer accepts text and creates a local task', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+        openCloudView();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        // Typing must land in the wizard composer (local draft), not the
+        // covered cloud session's draft that swallowed input before.
+        fireEvent.change(input, { target: { value: '整理本周周报' } });
+        expect(input.value).toBe('整理本周周报');
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('a wizard-typed reset command does not leak into the covered cloud task', async () => {
+        const remoteSend = vi.fn(async () => true);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(remoteSend);
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(remoteSend).not.toHaveBeenCalled();
+        });
+        // The command was dropped, not forwarded — the cover stays up.
+        expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+    });
+
+    it('opening a task while the cloud view is up retires the cover', async () => {
+        const controls: { openProject?: () => void } = {};
+        function Harness() {
+            const [pending, setPending] = useState<{ projectPath: string; taskTitle: string; autoSend: boolean } | null>(null);
+            const base = defaultPanelProps();
+            controls.openProject = () => setPending({ projectPath: 'D:/tasks/cloud-cover-task', taskTitle: 'Covered task', autoSend: false });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    lang="zh-Hans"
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        render(<Harness />, { wrapper: DialogProvider });
+        openCloudView();
+        expect(screen.getByTestId('task-execution-header')).toBeTruthy();
+
+        // resumeTask / a wizard launch funnel through pendingProjectTabOpen;
+        // the tab activation underneath the cover must retire it.
+        act(() => controls.openProject?.());
+        await waitFor(() => {
+            expect(screen.queryByText('已经为你创建了一份完整的演唱会策划书。')).toBeNull();
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+        });
     });
 });

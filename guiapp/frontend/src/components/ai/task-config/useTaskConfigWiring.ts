@@ -37,7 +37,7 @@ import { buildOutgoingMessageMulti } from "../useAIAssistant";
 import { codingDirectoryRequired, defaultTaskDraft, draftFromWizardSeed, hasWizardSeedContent, isDraftDefault, withCloudWorkspace, withExpert, withMachine, withTaskPlace, withTaskType, type MachineTarget, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { startCloudAgentFromNewTask } from "../../layout/cloudAgentAssistant";
 import { cloudTaskPlaceSnapshot } from "../../layout/taskPlace";
-import { remoteMachineTargetSnapshot, remoteOpenTask, useRemoteMachineTarget } from "../../layout/remoteAssistantSession";
+import { remoteAssistantActive, remoteMachineTargetSnapshot, remoteOpenTask, useRemoteMachineTarget } from "../../layout/remoteAssistantSession";
 import { suggestedExpertForDraft, type NewTaskExpertSuggestion } from "./taskExpertSuggest";
 import { mismatchedTaskType, taskTypeMismatchCopy, type NewTaskTypeSuggestion } from "./taskTypeSuggest";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
@@ -916,6 +916,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
 
     // Reset wipes this page inside handleSend. /branch is sent so the backend can rewind.
     const sendOnCurrentPage = useCallback((raw: string, separateScreen: boolean) => {
+        // A remote/cloud session covers the panel: a wizard-typed reset command
+        // must not leak into the covered session. It drops, like the covered
+        // local-guide case in handleWelcomePromptSend.
+        if (remoteAssistantActive()) return;
         if (wizardOverlayRef.current && raw) {
             if (separateScreen) handleSend(raw);
             else handleSend();
@@ -1005,12 +1009,17 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const commandText = trimmed.startsWith("／") ? `/${trimmed.slice(1)}` : trimmed;
         if (wizardActive || isLocalTabActive) {
             if (commandText && (isHistoryResetCommandText(commandText) || isConversationBranchCommandText(commandText))) {
-                if (wizardOverlayRef.current && !isLocalTabActive) {
+                // A remote session covers the panel: the command must not leak
+                // into the covered session; it drops like the local-active case.
+                if (wizardOverlayRef.current && !isLocalTabActive && !remoteAssistantActive()) {
                     handleSend(commandText);
                     dismissWizardOverlayRef.current();
                     clearGuideDraft?.();
                     return;
                 }
+                // Covered by a remote session: drop the command AND keep the
+                // cover — dismissing here would just reveal the covered view.
+                if (remoteAssistantActive()) return;
                 const pending = handleWelcomePromptSend(commandText, meta);
                 if (wizardOverlayRef.current) {
                     dismissWizardOverlayRef.current();
@@ -1061,6 +1070,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const localTab = getTabs().find(tab => tab.type === "local");
         if (!localTab) return;
         const separate = !isLocalTabActive;
+        // A remote/cloud session covers whatever tab is active, including the
+        // local guide. The guide-focus paths below only work when the guide is
+        // actually on screen, so a covered panel always gets the overlay.
+        const covering = remoteAssistantActive();
         const applySeed = () => {
             if (hasWizardSeedContent(seed)) {
                 setTaskConfigDraft(draftFromWizardSeed(seed));
@@ -1098,7 +1111,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             focusGuide();
             return;
         }
-        if (localGuideVisible) {
+        if (!covering && localGuideVisible) {
             if (assistantBusy) setWizardOverlay(true);
             saveTabState(localTab.id, { newTaskWizard: true });
             applySeed();
@@ -1117,7 +1130,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             return;
         }
         // One draft slot. Move the follow-up out so the new task starts empty.
-        const coverLocalConversation = isLocalTabActive && (localHasConversation || assistantBusy);
+        const coverLocalConversation = isLocalTabActive && (localHasConversation || assistantBusy || covering);
         if (coverLocalConversation) {
             if (!composerStashRef.current) {
                 composerStashRef.current = {

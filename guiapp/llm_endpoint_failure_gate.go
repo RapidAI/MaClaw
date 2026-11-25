@@ -187,6 +187,17 @@ func (a *App) shouldSkipLightweightLLM(cfg corelib.MaclawLLMConfig, category str
 	return gate.shouldSkip(cfg, category)
 }
 
+// llmEndpointRecentlyFailed lets a caller choose another configured endpoint
+// instead of spending the first request on one the gate still bans.
+func (a *App) llmEndpointRecentlyFailed(cfg corelib.MaclawLLMConfig, category string) bool {
+	gate := a.getLLMEndpointFailureGate()
+	if gate == nil {
+		return false
+	}
+	_, skip := gate.shouldSkip(cfg, category)
+	return skip
+}
+
 func (a *App) observeLLMEndpointResult(cfg corelib.MaclawLLMConfig, category string, budgetFired bool, err error) {
 	if gate := a.getLLMEndpointFailureGate(); gate != nil {
 		gate.observe(cfg, category, budgetFired, err)

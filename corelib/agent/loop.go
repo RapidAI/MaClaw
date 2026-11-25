@@ -162,9 +162,12 @@ type LLMAuthRefresh interface {
 }
 
 // LLMProviderFailover lets a host switch the turn to another configured
-// provider when the current one answers HTTP 429, instead of waiting out a
-// fixed backoff against the same exhausted key. The host owns cooldowns and
-// ordering; ok=false means no other provider is available right now.
+// provider when the current endpoint cannot serve it: HTTP 429, a gateway
+// 5xx, or a transport failure such as a dial timeout / reset. Without this a
+// background role pinned to an unreachable service keeps backing off against
+// the same dead endpoint while a healthy configured model sits unused. The
+// host owns cooldowns and ordering; ok=false means no other provider is
+// available right now.
 type LLMProviderFailover interface {
 	FailoverLLMProvider(ctx context.Context, current corelib.MaclawLLMConfig, err error) (corelib.MaclawLLMConfig, bool)
 }
@@ -2557,17 +2560,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						}
 					}
 				}
-				if !rotated && llmErrStatus(err) == http.StatusTooManyRequests {
+				if !rotated && llm.ProviderFailoverEligible(err) {
 					if fo, ok := cb.(LLMProviderFailover); ok {
 						if next, changed := fo.FailoverLLMProvider(requestCtx, cfg, err); changed && LLMSelectionChanged(cfg, next) {
-							log.Printf("[agent-loop] HTTP 429 from provider %q, failing over to %q", cfg.ProviderName, next.ProviderName)
+							if status := llmErrStatus(err); status > 0 {
+								log.Printf("[agent-loop] provider %q unavailable (status %d), failing over to %q", cfg.ProviderName, status, next.ProviderName)
+							} else {
+								log.Printf("[agent-loop] provider %q transport failure, failing over to %q", cfg.ProviderName, next.ProviderName)
+							}
 							rememberLLMSwitch(cfg, next, &switchedFrom, &haveSwitch)
 							cfg = next
 							aggCFG = next
 							rotated = true
 							switchedSelection = true
 						} else if changed {
-							log.Printf("[agent-loop] HTTP 429 failover from %q did not change the model endpoint", cfg.ProviderName)
+							log.Printf("[agent-loop] failover from %q did not change the model endpoint", cfg.ProviderName)
 						}
 					}
 				}

@@ -137,6 +137,8 @@ import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRun
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_EXPERT_TASK_DELETED, EVENT_EXPERT_TASK_RETIRED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED, EVENT_PROJECT_TASK_HISTORY_UPDATED } from "../../constants/events";
 import { useProjectTaskActivateEvent } from "./useProjectTaskActivateEvent";
+import { useRemoteCoverRetireOnTabActivate } from "./useRemoteCoverRetireOnTabActivate";
+import { useComposerClipboardGuards } from "./useComposerClipboardGuards";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
@@ -317,7 +319,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [codingSessionCost, setCodingSessionCost] = useState("");
     const [codingContextUsedTokens, setCodingContextUsedTokens] = useState(0);
     const [codingContextMaxTokens, setCodingContextMaxTokens] = useState(0);
-    const contextUsageBySession = useContextWindowUsage();
+    const { usageBySession: contextUsageBySession, resetSession: resetContextWindowUsage } = useContextWindowUsage();
     const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
     const [codingRouteInfo, setCodingRouteInfo] = useState("");
     const [codingConflictCount, setCodingConflictCount] = useState(0);
@@ -2566,7 +2568,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         codingStepsClockRef.current = { seq: 0, unix: 0, started: false };
         setCodingStepStatuses([]);
         setCodingExecutionStatus("");
-    }, []);
+        setCodingContextUsedTokens(0);
+        setCodingContextMaxTokens(0);
+        resetContextWindowUsage(projectSessionKey(projectPath));
+    }, [resetContextWindowUsage]);
     const projectStreamHistoryRef = useRef<{ tabId: string; messages: ChatMessage[] } | null>(null);
     const activeSessionStreamingRef = useRef(false);
     const clearActiveHistory = useCallback(async () => {
@@ -2577,6 +2582,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (activeTab.type === "project") {
             // Transcript and the coding plan checklist are separate React
             // trees; backend /clear already drops sticky workbench memory.
+            // Match the exact key the meter reads: a project task owned by an
+            // expert uses an expert task session, not the bare project key.
+            const clearedSessionKey = activeTab.sessionKey || expertSessionForProjectTask(taskListProp, activeTab.projectPath) || projectSessionKey(activeTab.projectPath || "");
+            const projectContextKey = projectSessionKey(activeTab.projectPath || "");
+            resetContextWindowUsage(clearedSessionKey);
+            if (projectContextKey && projectContextKey !== clearedSessionKey) {
+                resetContextWindowUsage(projectContextKey);
+            }
             if (activeTab.agentMode === "coding_dev" || activeTab.agentMode === "remote_coding_dev") {
                 resetCodingWorkbenchTurnUI(activeTab.projectPath || "");
             }
@@ -2666,6 +2679,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const sessionKey = expertTaskSessionKey(activeTab.expertId, activeTab.projectPath);
             if (sessionKey) {
                 forgetAIAssistantSessionRounds(sessionKey);
+                resetContextWindowUsage(sessionKey);
                 ClearAIAssistantHistoryForSession(sessionKey).catch(() => {});
             }
             return;
@@ -2674,8 +2688,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setQueueInteractionStarted(false);
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
+        resetContextWindowUsage("desktop-user");
         await clearHistory();
-    }, [activeTab.agentMode, activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, resetCodingWorkbenchTurnUI, taskListProp]);
+    }, [activeTab.agentMode, activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared, resetCodingWorkbenchTurnUI, resetContextWindowUsage, taskListProp]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
@@ -4152,6 +4167,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // landed in the cache after the empty snapshot.
         paintTranscriptIfViewEmpty(tabId, getTabState(tabId)?.history);
     }, [activateTab, getTabState, paintTranscriptIfViewEmpty]);
+    // Any tab activation retires the covered remote view (see hook doc).
+    useRemoteCoverRetireOnTabActivate(tabState.activeTabId);
     const createProjectTabFromSearch = useCallback((
         projectPath: string,
         taskTitle: string,
@@ -5044,6 +5061,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const remoteChat = useRemoteAssistantSession();
     const remoteChatRef = useRef(remoteChat);
     remoteChatRef.current = remoteChat;
+    // Wizard cover sits ABOVE the remote view; composer writes are local then.
+    const wizardCoverActiveRef = useRef(false);
     const cloudShareReadOnlyRef = useRef(cloudShareReadOnly);
     cloudShareReadOnlyRef.current = cloudShareReadOnly;
     const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
@@ -5178,29 +5197,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         () => isRecordingInputLocked(displayMessages, activeSessionIsStreaming),
         [activeSessionIsStreaming, displayMessages],
     );
-    // Block paste/drop attachments while mic is live (composer hard-lock alone is not enough).
-    const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
-            event.preventDefault();
-            return;
-        }
-        handlePasteBase(event);
-    }, [handlePasteBase, recordingActive]);
-    const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "none";
-            return;
-        }
-        handleDragOverBase(event);
-    }, [handleDragOverBase, recordingActive]);
-    const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
-        if (recordingActive || cloudShareReadOnlyRef.current || blockComposerFilesRef.current || remoteAssistantActive()) {
-            event.preventDefault();
-            return;
-        }
-        handleDropBase(event);
-    }, [handleDropBase, recordingActive]);
+    // Paste/drop guards: mic-live and covered-remote blocks (see hook doc).
+    const { handlePaste, handleDragOver, handleDrop } = useComposerClipboardGuards({
+        recordingActive, cloudShareReadOnlyRef, blockComposerFilesRef, wizardCoverActiveRef,
+        handlePasteBase, handleDragOverBase, handleDropBase,
+    });
     const isACPMirrorTabActive = activeTab.type === "project" && isACPAssistantSessionKey(activeTab.sessionKey);
     const inputLocked = remoteChat ? !remoteChat.canSend : (liveWorkActive || cancelPending || !codingTaskReadyForIntents || recordingActive || isACPMirrorTabActive || cloudShareReadOnly);
     // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
@@ -5571,7 +5572,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => { setRemoteDraft(''); }, [remoteDraftKey]);
     const composerValue = remoteChat ? remoteDraft : inputValue;
     const updateInputValue = useCallback((nextValue: string, options?: { deferParent?: boolean }) => {
-        if (remoteChatRef.current) {
+        if (remoteChatRef.current && !wizardCoverActiveRef.current) {
             setRemoteDraft(nextValue);
             return;
         }
@@ -6125,6 +6126,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [updateInputValue]);
     const fireSlashInFlightRef = useRef(false);
     const handleFireSlashCommand = useCallback(async (command: FireSlashCommand) => {
+        // Under the wizard cover a palette pick must not leak into the covered
+        // remote session; typed slashes still launch through the wiring on Enter.
+        if (wizardCoverActiveRef.current) return;
         if (remoteAssistantActive()) {
             if (!remoteAssistantCanSend() || remoteAssistantSending()) return;
             setRemoteDraft("");
@@ -6154,7 +6158,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [activeSessionKey, addEntry, clearScrolledUp, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
-        if (remoteAssistantActive()) {
+        if (remoteChatRef.current && !wizardCoverActiveRef.current) {
             setRemoteDraft("");
             return;
         }
@@ -6475,7 +6479,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const taskConfigWiring = useTaskConfigWiring({
         activeTab, isLocalTabActive, lang, taskListProp, inputRef, inputValue,
         composeAction, inputLocked, assistantBusy: isBusy || cancelPending, keepExecutionSurface: recordingActive || isACPMirrorTabActive, localGuideVisible: showWelcomeViewBase && isLocalTabActive,
-        pendingAttachments, selectedFilePaths, showComposerText: updateInputValue, replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
+        pendingAttachments, selectedFilePaths,
+        // Stash restore runs while the cover flag is still up; the text is the local composer's.
+        showComposerText: (text) => { wizardCoverActiveRef.current = false; updateInputValue(text); },
+        replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
         activeChatVisible: conversationArchive.earlierCount > 0 || otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
         handleSend, handleWelcomePromptSend,
         clearComposerDraft, guideInputValue: guideDraft.guideInputValue, guideInputRef: guideDraft.guideInputRef,
@@ -6485,11 +6492,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         showAlert, showConfirm,
     });
     launchNewTaskFromTextRef.current = taskConfigWiring.launchNewTaskFromText;
+    wizardCoverActiveRef.current = taskConfigWiring.wizardOverlay;
     const composerExpert = composerExpertForOpenTab(activeTab, taskListProp, taskConfigWiring.taskConfig.experts);
     dismissCoveredNewTaskRef.current = taskConfigWiring.wizardOverlay ? taskConfigWiring.dismissWizardOverlay : null;
     wizardScrollSuspendRef.current = taskConfigWiring.wizardOverlay;
     const showWelcomeView = remoteChat ? false : showWelcomeViewBase;
-    const wizardScreen = taskConfigWiring.wizardOverlay && ready && !showWelcomeViewBase;
+    // A visible local welcome page is still hidden under the remote view, so
+    // the wizard overlay must paint over it instead of relying on the guide.
+    const wizardScreen = taskConfigWiring.wizardOverlay && ready && (!showWelcomeViewBase || !!remoteChat);
     const newTaskHome = showWelcomeView || wizardScreen;
     const separateGuide = wizardScreen && !isLocalTabActive;
     const warmupChrome = !ready && !onboardingIncomplete && !showWelcomeView;
@@ -7230,8 +7240,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const creatingTask = taskConfigWiring.taskConfig.sending;
     blockComposerFilesRef.current = creatingTask;
     const handleWelcomePlusMenuAction = useCallback((actionId: PlusMenuActionId) => { if (wizardComposerUnlocked && actionId === "newConversation") return; handlePlusMenuAction(actionId); }, [handlePlusMenuAction, wizardComposerUnlocked]);
+    // The wizard composer sends the LOCAL draft; panel `canSend` may key off
+    // the covered remote session's draft, so enable by the welcome-page rule.
+    const wizardComposerCanSend = ready && !recordingActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const newTaskWelcomeComposer: WelcomeComposerProps = {
-        browseFile, canSend: creatingTask ? false : canSend, cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession: creatingTask ? undefined : cancelSession, clearSelectedFile, composeAction,
+        browseFile, canSend: creatingTask ? false : (wizardComposerUnlocked ? wizardComposerCanSend : canSend), cancelPending: wizardComposerUnlocked ? false : cancelPending, cancelSession: creatingTask ? undefined : cancelSession, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend: taskConfigWiring.handleSendWithTaskConfig, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave,
         hardLockInput: creatingTask, inputLocked: creatingTask || (wizardComposerUnlocked ? false : inputLocked), inputRef, inputValue, isBusy: creatingTask || (wizardComposerUnlocked ? false : inputVisualBusy),
@@ -7920,7 +7933,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                         {remoteChat ? <>
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={() => { void handleCancel(); }} disabled={!remoteChat.canSend || !!remoteChat.activity?.stopping} aria-busy={!!remoteChat.activity?.stopping} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{remoteChat.activity?.stopping ? localizeText(lang, "Stopping…", "正在停止…", "正在停止…") : localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
-                        <button className="task-share-btn" data-testid="remote-task-chat-close" type="button" onClick={() => remoteAssistantClose()}>{localizeText(lang, "Close", "关闭", "關閉")}</button>
+                        {/* Leaving the covered view lives in the switcher (tab activation retires it). */}
+                        <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
+                        <BugReportButton lang={lang} />
                         </> : startupWarmup ? null : <>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
@@ -8032,10 +8047,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     hosts the chip, files alone must not mount an empty section.
                     A retired checklist still mounts for that chip but stripped
                     to it — the finished steps do not come back with it. */}
-                {!showWelcomeView && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
+                {!showWelcomeView && !wizardScreen && remoteChat ? <RemoteCodingPlanChecklist session={remoteChat} lang={lang} theme={t} /> : null}
                 {/* Cloud workflow surface: phases + form/review gates mirrored
                     from the instance's V2 machine via workflow_state frames. */}
-                {!showWelcomeView && remoteChat ? <CloudWorkflowPanel session={remoteChat} lang={lang} theme={t} /> : null}
+                {!showWelcomeView && !wizardScreen && remoteChat ? <CloudWorkflowPanel session={remoteChat} lang={lang} theme={t} /> : null}
                 {!showWelcomeView && !remoteChat && isPureCodingEnvironment && ((!codingChecklistRetired && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement)) || (codingTurnFiles.files.length > 0 && !goalQuickBarVisible)) && (
                     <CodingAgentPlanChecklist
                         lang={lang}

@@ -58,3 +58,16 @@ func TestGitHubScopesHaveRepo(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubAppUserToken(t *testing.T) {
+	for _, token := range []string{"ghu_abc123", " ghu_abc123 ", "ghu_"} {
+		if !GitHubAppUserToken(token) {
+			t.Fatalf("%q should be a GitHub App user token", token)
+		}
+	}
+	for _, token := range []string{"", "gho_abc123", "ghp_abc123", "github_pat_abc123", "6c1Fabcdefgh"} {
+		if GitHubAppUserToken(token) {
+			t.Fatalf("%q must not count as a GitHub App user token", token)
+		}
+	}
+}

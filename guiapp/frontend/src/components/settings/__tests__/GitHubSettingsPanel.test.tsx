@@ -140,6 +140,75 @@ describe('GitHubSettingsPanel', () => {
         expect(screen.queryByLabelText('访问令牌')).toBeNull();
     });
 
+    it('adds a self-hosted GitLab server via the origin switch', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        // Default is gitlab.com — the custom origin input stays hidden.
+        expect(screen.queryByLabelText('自建 GitLab 地址')).toBeNull();
+        fireEvent.click(screen.getByText('自建实例'));
+        const originInput = screen.getByLabelText('自建 GitLab 地址');
+        // An empty self-hosted origin keeps both actions disabled.
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByText('连接 GitLab') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.change(originInput, { target: { value: 'https://gitlab.example.com' } });
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenCalledWith('https://gitlab.example.com');
+        // A scheme-less intranet host stays usable — the backend adds the
+        // https scheme and validates the form itself. (Checked BEFORE
+        // connecting: once connected the origin field unmounts. The token-page
+        // button is gated by the origin alone, the connect button also by the
+        // still-empty token.)
+        fireEvent.change(screen.getByLabelText('自建 GitLab 地址'), { target: { value: 'gitlab.corp' } });
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.change(screen.getByLabelText('访问令牌'), { target: { value: 'glpat-self' } });
+        fireEvent.click(screen.getByText('连接 GitLab'));
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenLastCalledWith('gitlab.corp', 'glpat-self'));
+    });
+
+    it('switching back to gitlab.com restores the default origin', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        fireEvent.click(screen.getByText('自建实例'));
+        fireEvent.change(screen.getByLabelText('自建 GitLab 地址'), { target: { value: 'https://stale.example.com' } });
+        fireEvent.click(screen.getByText('gitlab.com'));
+        expect(screen.queryByLabelText('自建 GitLab 地址')).toBeNull();
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenLastCalledWith('https://gitlab.com');
+    });
+
+    it('connects GitLab on Enter in the token field', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        const tokenInput = screen.getByLabelText('访问令牌');
+        fireEvent.change(tokenInput, { target: { value: 'glpat-enter' } });
+        // IME 组合中的回车是候选确认，不提交。
+        fireEvent.keyDown(tokenInput, { key: 'Enter', isComposing: true } as any);
+        expect(ConnectGitLab).not.toHaveBeenCalled();
+        fireEvent.keyDown(tokenInput, { key: 'Enter' });
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenCalledWith('https://gitlab.com', 'glpat-enter'));
+    });
+
+    it('clones on Enter in the repository field', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitHubConnection).toHaveBeenCalled());
+        const urlInput = screen.getByPlaceholderText('仓库地址或 owner/repo');
+        fireEvent.change(urlInput, { target: { value: 'octocat/Hello-World' } });
+        fireEvent.keyDown(urlInput, { key: 'Enter' });
+        await waitFor(() => expect(GitHubCloneRepository).toHaveBeenCalledWith('octocat/Hello-World', ''));
+    });
+
+    it('tags a connected self-hosted origin as 自建', async () => {
+        vi.mocked(GetGitLabConnection).mockResolvedValue({
+            connected: true, login: 'tux', name: 'Tux',
+            html_url: 'https://gitlab.example.com/tux', origin: 'https://gitlab.example.com', scopes: 'api',
+        } as any);
+        renderPanel();
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        expect(screen.getByText('https://gitlab.example.com')).toBeTruthy();
+        expect(screen.getByText('自建')).toBeTruthy();
+    });
+
     it('disconnects GitLab after confirm', async () => {
         vi.mocked(GetGitLabConnection).mockResolvedValue({
             connected: true, login: 'tux', name: 'Tux',
@@ -156,7 +225,7 @@ describe('GitHubSettingsPanel', () => {
         renderPanel();
         await waitFor(() => expect(GetGitHubConnection).toHaveBeenCalled());
         fireEvent.change(screen.getByPlaceholderText('仓库地址或 owner/repo'), { target: { value: 'octocat/Hello-World' } });
-        fireEvent.click(screen.getByText('克隆仓库'));
+        fireEvent.click(screen.getByRole('button', { name: '克隆仓库' }));
         await waitFor(() => expect(GitHubCloneRepository).toHaveBeenCalledWith('octocat/Hello-World', ''));
         await waitFor(() => expect(screen.getByText('在文件夹中显示')).toBeTruthy());
         fireEvent.click(screen.getByText('在文件夹中显示'));

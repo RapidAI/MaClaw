@@ -83,8 +83,10 @@ func TestResolveMaclawLLMRoleForegroundFollowsThirdPartyAssistant(t *testing.T) 
 	}
 }
 
-// A text-only assistant leaves an empty computer-use role on the Hub.
-func TestResolveMaclawLLMRoleComputerUseTextAssistantKeepsHub(t *testing.T) {
+// A text-only third-party assistant keeps an inherited computer-use role. Its
+// desktop work runs text-primary (OmniParser + OCR), and the Hub snapshot must
+// not move a background desktop task to another provider.
+func TestResolveMaclawLLMRoleTextAssistantKeepsComputerUseOnItsProvider(t *testing.T) {
 	providers := roleTestProviders()
 	providers[1].SupportsVision = false
 	providers[1].VisionModels = nil
@@ -99,12 +101,56 @@ func TestResolveMaclawLLMRoleComputerUseTextAssistantKeepsHub(t *testing.T) {
 		},
 	})
 	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
-	if err != nil || cu.ProviderID != "hub" || cu.Model != "auto" {
-		t.Fatalf("computer_use = %+v err %v", cu, err)
+	if err != nil || cu.ProviderID != "local" || cu.Model != "assistant-model" {
+		t.Fatalf("computer_use must stay on the configured provider: %+v err %v", cu, err)
+	}
+	if cu.SupportsVision {
+		t.Fatalf("a text-only model must not claim screenshots: %+v", cu)
+	}
+	if cu.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("computer_use profile = %q", cu.Profile)
 	}
 	bg, err := app.ResolveMaclawLLMRole(maclawLLMRoleBackground)
 	if err != nil || bg.ProviderID != "local" {
 		t.Fatalf("background = %+v err %v", bg, err)
+	}
+}
+
+// Whatever the official assistant is, computer use is that too: an explicit
+// assistant model keeps its band on the same provider instead of the snapshot.
+func TestResolveMaclawLLMRoleOfficialAssistantComputerUseFollowsTheAssistant(t *testing.T) {
+	providers := roleTestProviders()
+	providers[0].VisionModels = []string{"other-vision"}
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{ComputerUse: "auto"},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "text-only-official"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+	if err != nil || cu.ProviderID != "hub" || cu.Model != "text-only-official" {
+		t.Fatalf("official computer_use = %+v err %v", cu, err)
+	}
+
+	// Official auto has no model of its own, so the Hub band decides — still
+	// the official provider, never a different vendor.
+	autoApp := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{ComputerUse: "official-high"},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "hub", Model: "auto"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	autoCU, err := autoApp.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+	if err != nil || autoCU.ProviderID != "hub" || autoCU.Model != "official-high" {
+		t.Fatalf("official auto computer_use = %+v err %v", autoCU, err)
 	}
 }
 
@@ -815,7 +861,11 @@ func TestGrounderBotChoiceWithoutRoleLeavesLocalPinUnused(t *testing.T) {
 	}
 }
 
-func TestResolveMaclawLLMRoleTextOnlyAssistantLeavesComputerUseOnBot(t *testing.T) {
+// Whatever the current assistant is, computer use is that too. A cached bot
+// (agent) role naming another provider does not override the assistant the
+// person is actually running: background did this before, computer use now
+// does the same.
+func TestResolveMaclawLLMRoleComputerUseFollowsAssistantOverBotPin(t *testing.T) {
 	app := newRoleTestApp(t, corelib.AppConfig{
 		RemoteUserID:             "alice",
 		MaclawLLMCurrentProvider: "Local",
@@ -848,8 +898,46 @@ func TestResolveMaclawLLMRoleTextOnlyAssistantLeavesComputerUseOnBot(t *testing.
 		t.Fatalf("background = %+v err=%v", bg, err)
 	}
 	cu, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
-	if err != nil || cu.Model != "glm-5.3-flash" || cu.ProviderName != "智谱编程" || !cu.SupportsVision {
-		t.Fatalf("computer_use = %+v err=%v", cu, err)
+	if err != nil || cu.Model != "text-model" || cu.ProviderName != "Local" || cu.SupportsVision {
+		t.Fatalf("computer_use must follow the assistant: %+v err=%v", cu, err)
+	}
+}
+
+// The cached bot view can carry Hub-resolved (administrator) roles instead of
+// the person's own pins. A custom assistant still owns every role: the
+// Hub-resolved official computer-use band must not move a desktop helper off
+// the provider the agent is set to.
+func TestResolveMaclawLLMRoleComputerUseIgnoresHubResolvedBotRole(t *testing.T) {
+	app := newRoleTestApp(t, corelib.AppConfig{
+		RemoteUserID:             "alice",
+		MaclawLLMCurrentProvider: "Local",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{ComputerUse: "auto"},
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "hub", Name: "MaClaw官方", IsHubService: true, URL: "https://hub.example/v1", Key: "viewer", Model: "auto", Protocol: "openai"},
+			{ID: "local", Name: "Local", URL: "https://local.example/v1", Key: "key", Model: "codegen-model", Protocol: "openai"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "codegen-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	app.rememberDesktopBotLLM("alice", DesktopBotLLM{
+		Mode: "default", Choice: "default", Stored: true,
+		Effective: &DesktopBotLLMRoles{
+			Foreground:  DesktopBotLLMRole{Official: true, Model: "auto"},
+			Background:  DesktopBotLLMRole{Official: true, Model: "auto"},
+			ComputerUse: DesktopBotLLMRole{Official: true, Model: "auto"},
+		},
+	})
+	for _, role := range []string{maclawLLMRoleForeground, maclawLLMRoleBackground, maclawLLMRoleComputerUse} {
+		got, err := app.ResolveMaclawLLMRole(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ProviderName != "Local" || got.Model != "codegen-model" {
+			t.Fatalf("%s = %+v, want the configured provider", role, got)
+		}
 	}
 }
 

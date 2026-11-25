@@ -770,18 +770,22 @@ func (c *codingSubAgentCallbacks) OnLLMUsage(model string, inputTokens, outputTo
 	if c == nil || c.compactor == nil {
 		return
 	}
-	if !c.compactor.notePromptTokens(inputTokens) {
+	fill, _, fromEstimate := c.contextMeter.providerFill(inputTokens)
+	if !c.compactor.notePromptTokens(fill) {
 		return
 	}
 	if c.subagent == nil || c.subagent.handler == nil {
 		return
 	}
-	c.subagent.handler.noteCodingContextFill(codingSubAgentOwnerUserID(c.subagent.loopCtx), inputTokens, outputTokens)
+	c.subagent.handler.noteCodingContextFillEstimate(codingSubAgentOwnerUserID(c.subagent.loopCtx), fill, outputTokens, fromEstimate)
 }
 
 func (c *codingSubAgentCallbacks) ReportContextWindowUsage(usedTokens, maxTokens int, estimated bool) {
 	if c == nil || c.subagent == nil || c.subagent.handler == nil {
 		return
+	}
+	if estimated {
+		c.contextMeter.observeEstimate(usedTokens, maxTokens)
 	}
 	c.subagent.handler.publishContextWindowUsageEstimate(codingSubAgentOwnerUserID(c.subagent.loopCtx), usedTokens, maxTokens, estimated)
 }

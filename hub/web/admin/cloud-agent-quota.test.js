@@ -260,6 +260,8 @@ async function main() {
     context.cagOrg.users = [];
     context.cagOrg.usersByEmail = {};
     context.cagOrg.usersById = {};
+    context.cagOrg.deptNames = {};
+    context.cagOrg.srvs = [];
     elements.cloudAgentAccessTree.innerHTML = '';
     elements.cloudAgentAccessTree._cagDrawn = '';
     elements.cloudAgentAccessStatus.textContent = '';
