@@ -1529,6 +1529,89 @@ func TestHostAdmittedSkillSearchUsesTheAdmittedTask(t *testing.T) {
 	}
 }
 
+func TestExplicitSkillInstallDoesNotBindAnUnrelatedLocalTrigger(t *testing.T) {
+	unrelated := corelib.NLSkillEntry{
+		Name:        "installer-helper",
+		Status:      "active",
+		Source:      "manual",
+		Description: "安装任意软件",
+		Triggers:    []string{"安装"},
+		SkillDir:    hostProcedureSkillDoc(t, 2),
+	}
+	requested := corelib.NLSkillEntry{
+		Name:        "Lemo Opuscar",
+		Status:      "active",
+		Source:      "manual",
+		Description: "目标 Skill",
+		Triggers:    []string{"Lemo Opuscar"},
+		SkillDir:    hostProcedureSkillDoc(t, 2),
+	}
+	app, _ := newSkillExecutorWithEntries(t, unrelated, requested)
+	h := &IMMessageHandler{app: app}
+	decision := h.skillAdmissionForTurn(generalFullLoop(), "安装 lemo-opuscar skill")
+	if decision.Mode != skillAdmissionGuided || len(decision.Guided) != 1 || decision.Guided[0].Name != requested.Name {
+		t.Fatalf("explicit install admission=%#v, want only %s", decision, requested.Name)
+	}
+
+	wrongOnly, _ := newSkillExecutorWithEntries(t, unrelated)
+	h = &IMMessageHandler{app: wrongOnly}
+	if decision := h.skillAdmissionForTurn(generalFullLoop(), "安装 lemo-opuscar skill"); decision.Mode != skillAdmissionRemote {
+		t.Fatalf("unrelated trigger bound instead of searching the market: %#v", decision)
+	}
+}
+
+func TestAdmittedSkillSearchOnlyAdoptsTheRequestedIdentity(t *testing.T) {
+	run := func(t *testing.T, installedName string) (*sharedAgentLoopCallbacks, string, string, bool) {
+		t.Helper()
+		dir := hostProcedureSkillDoc(t, 2)
+		h := &IMMessageHandler{
+			skillSearchInstallHandler: func(map[string]interface{}, tool.ProgressCallback) searchAndInstallSkillResult {
+				return searchAndInstallSkillResult{
+					Text:          "installed",
+					Success:       true,
+					ProcedureDir:  dir,
+					ProcedureName: installedName,
+				}
+			},
+		}
+		cb := &sharedAgentLoopCallbacks{
+			handler:                  h,
+			userText:                 "安装 lemo-opuscar skill",
+			skillRemoteSearchOffered: true,
+			semanticSurface:          &semanticCallSurface{},
+		}
+		text, handled, ok := cb.executeAdmittedSkillHostCall("search_and_install_skill", `{"query":"ignored"}`)
+		if !handled {
+			t.Fatalf("search was not handled, text=%q", text)
+		}
+		return cb, dir, text, ok
+	}
+
+	mismatched, _, text, ok := run(t, "kwaishop-intelligent-diagnosis-skill_test")
+	if ok || !strings.Contains(text, "does not match requested skill") {
+		t.Fatalf("mismatched install ok=%v text=%q", ok, text)
+	}
+	if mismatched.adoptedProcedureDir != "" {
+		t.Fatalf("mismatched install was adopted as the procedure: %q", mismatched.adoptedProcedureDir)
+	}
+	if blocked, reason := mismatched.skillSubstituteBlocked("search_and_install_skill"); blocked {
+		t.Fatalf("mismatched install kept market search closed: %s", reason)
+	}
+
+	unnamed, _, _, ok := run(t, "")
+	if ok || unnamed.adoptedProcedureDir != "" {
+		t.Fatalf("unverifiable install was adopted: ok=%v dir=%q", ok, unnamed.adoptedProcedureDir)
+	}
+
+	matched, dir, text, ok := run(t, "Lemo Opuscar")
+	if !ok {
+		t.Fatalf("requested install failed: %q", text)
+	}
+	if matched.adoptedProcedureDir != filepath.Clean(dir) {
+		t.Fatalf("requested install was not adopted: %q", matched.adoptedProcedureDir)
+	}
+}
+
 func TestModelCannotAdmitItsOwnSkillSearch(t *testing.T) {
 	result := (&IMMessageHandler{}).toolSearchAndInstallSkillResult(map[string]interface{}{
 		"query":         "修改这份表格的目录结构",

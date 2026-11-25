@@ -41,6 +41,7 @@ import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
 import { WorkspaceTypeBadge } from '../ai/task-config/WorkspaceTypeBadge';
 import { openNewTaskWizard } from '../ai/task-config/openNewTaskWizard';
+import { dismissNewTaskCover } from '../ai/task-config/newTaskCoverHold';
 import { TaskMachineBar } from './TaskMachineBar';
 import { useTaskRemoteControl } from './useTaskRemoteControl';
 import type { NewTaskWizardSeed } from '../ai/task-config/taskDraft';
@@ -3624,6 +3625,11 @@ export const SidebarTaskManagement = ({
     }, [openCloudId, openCloudFolderKind]);
     const openCloudRow = (item: CloudAgentListItem) => {
         remote.closeDetail();
+        // Cloud chats open on the shared remote surface, not an assistant
+        // tab — retire the new-task cover like a task-tab switch. Kept at the
+        // row gesture: startCloudAgentFromNewTask also opens an instance, and
+        // a scheduled launch must not drop the wizard the user is filling in.
+        dismissNewTaskCover();
         void openCloudAgent(item, lang);
     };
     const [cloudContextMenu, setCloudContextMenu] = useState<{ x: number; y: number; item: CloudAgentListItem } | null>(null);
@@ -5549,7 +5555,12 @@ export const SidebarTaskManagement = ({
      */
     const handleTaskRowClick = (task: TaskManagementItem) => {
         if (remoteRef.current.selected) {
-            if (remoteRef.current.selected.online !== false) remoteRef.current.openTask(task.project_path);
+            if (remoteRef.current.selected.online !== false) {
+                // Remote tasks open on the shared remote surface, not an
+                // assistant tab — retire the new-task cover like a tab switch.
+                dismissNewTaskCover();
+                remoteRef.current.openTask(task.project_path);
+            }
             return;
         }
         // A cloud task occupies the same panel. Opening a local task leaves it.
@@ -5593,7 +5604,10 @@ export const SidebarTaskManagement = ({
 
     const handleTaskDoubleClick = async (task: TaskManagementItem) => {
         if (remoteRef.current.selected) {
-            if (remoteRef.current.selected.online !== false) remoteRef.current.openTask(task.project_path);
+            if (remoteRef.current.selected.online !== false) {
+                dismissNewTaskCover();
+                remoteRef.current.openTask(task.project_path);
+            }
             return;
         }
         closeCloudAssistant();

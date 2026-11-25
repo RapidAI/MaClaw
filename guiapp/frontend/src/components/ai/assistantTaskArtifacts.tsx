@@ -250,6 +250,7 @@ export function RemoteTaskArtifacts({
     lang,
     onFetch,
     autoFetch = false,
+    onExportWorkspace,
 }: {
     paths: string[];
     messageId: string;
@@ -258,6 +259,12 @@ export function RemoteTaskArtifacts({
     onFetch: (filePath: string) => Promise<string>;
     /** Cloud artifacts download into Downloads as soon as they are listed. */
     autoFetch?: boolean;
+    /**
+     * Cloud task only: packs the whole workspace into "<name>.tar.gz" — the
+     * card-head 导出, same archive the task list's 打包下载 entry saves.
+     * Resolves to the saved path, or "" when the dialog was cancelled.
+     */
+    onExportWorkspace?: () => Promise<string>;
 }) {
     const [showAll, setShowAll] = useState(false);
     const [states, setStates] = useState<Record<string, RemoteArtifactState>>(() => {
@@ -392,6 +399,7 @@ export function RemoteTaskArtifacts({
                 <span className="mc-task-artifacts__glyph" aria-hidden="true">◈</span>
                 <span className="mc-task-artifacts__label">{chromeText(lang, "Artifacts", "产出物", "產出物")}</span>
                 <span className="mc-task-artifacts__count">{files.length}</span>
+                {onExportWorkspace && <WorkspaceExportButton lang={lang} onExport={onExportWorkspace} />}
             </div>
             <div className="mc-task-artifacts__row">
                 {visible.map((filePath, index) => {
@@ -469,6 +477,83 @@ export function RemoteTaskArtifacts({
                 </button>
             )}
         </div>
+    );
+}
+
+// Card-head export on a cloud task: packs the whole workspace into one
+// .tar.gz through the same op the task list's 打包下载 entry runs. The save
+// dialog lives in the shell, so a cancelled pick resolves "" and returns the
+// button to idle.
+function WorkspaceExportButton({ lang, onExport }: { lang: string; onExport: () => Promise<string> }) {
+    const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
+    const [detail, setDetail] = useState("");
+    // The pack can take a while on a big workspace: a same-tick double click
+    // must not run it twice, and an unmounted card must not set state.
+    const busyRef = useRef(false);
+    const aliveRef = useRef(true);
+    useEffect(() => {
+        aliveRef.current = true;
+        return () => {
+            aliveRef.current = false;
+        };
+    }, []);
+    const failLabel = chromeText(lang, "Export failed", "导出失败", "匯出失敗");
+    const label = status === "busy"
+        ? chromeText(lang, "Exporting...", "导出中...", "匯出中...")
+        : status === "done"
+            ? chromeText(lang, "Exported", "已导出", "已匯出")
+            : status === "error"
+                ? failLabel
+                : chromeText(lang, "Export", "导出", "匯出");
+    const title = status === "error"
+        ? (failLabel + (detail ? `: ${detail}` : ""))
+        : status === "done" && detail
+            ? chromeText(lang, `Saved to ${detail}`, `已保存到 ${detail}`, `已儲存到 ${detail}`)
+            : chromeText(lang, "Pack the whole workspace as .tar.gz and download it", "将整个工作目录打包为 .tar.gz 下载", "將整個工作目錄打包為 .tar.gz 下載");
+    const fail = (err: unknown) => {
+        busyRef.current = false;
+        if (!aliveRef.current) return;
+        const raw = err instanceof Error && err.message.trim() ? err.message : String(err || "").trim();
+        setDetail(localizeTaskResultExportError(raw || "export failed", lang));
+        setStatus("error");
+    };
+    const onClick = (event: React.MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (busyRef.current) return;
+        busyRef.current = true;
+        setStatus("busy");
+        setDetail("");
+        try {
+            void onExport().then((dest) => {
+                busyRef.current = false;
+                if (!aliveRef.current) return;
+                const saved = String(dest || "").trim();
+                if (!saved) {
+                    setStatus("idle");
+                    return;
+                }
+                setDetail(saved);
+                setStatus("done");
+            }).catch(fail);
+        } catch (err) {
+            fail(err);
+        }
+    };
+    return (
+        <button
+            type="button"
+            className="mc-task-artifacts__export"
+            data-status={status}
+            data-testid="remote-task-artifacts-export"
+            title={title}
+            aria-busy={status === "busy"}
+            aria-live="polite"
+            disabled={status === "busy"}
+            onClick={onClick}
+        >
+            {label}
+        </button>
     );
 }
 

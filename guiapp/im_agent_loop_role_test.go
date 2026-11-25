@@ -88,6 +88,38 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	}
 }
 
+// A desktop helper task ("给蓝信中的…发消息" dispatches a computer helper chat
+// task) must call the provider the person configured, not the Hub snapshot.
+func TestPrepareAgentLoopConfigComputerHelperKeepsConfiguredProvider(t *testing.T) {
+	providers := roleTestProviders()
+	providers[1].SupportsVision = false
+	providers[1].VisionModels = nil
+	app := newRoleTestApp(t, corelib.AppConfig{
+		MaclawLLMProviders:       providers,
+		MaclawLLMCurrentProvider: "Local",
+		HubRoleModels:            corelib.MaclawLLMHubRoleModels{Foreground: "auto", Background: "auto", ComputerUse: "auto"},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "local", Model: "assistant-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	})
+	h := &IMMessageHandler{app: app}
+	helper := h.prepareAgentLoopConfig(&LoopContext{
+		Kind:                   LoopKindChat,
+		ChatTaskID:             "ct-1",
+		ComputerHelper:         true,
+		ComputerUseActive:      true,
+		ComputerUseGateSettled: true,
+	})
+	if helper.Config.Profile != maclawLLMRoleComputerUse {
+		t.Fatalf("helper profile = %q, want the computer-use role", helper.Config.Profile)
+	}
+	if helper.Config.ProviderID != "local" || helper.Config.Model != "assistant-model" || helper.Config.URL != "https://local.example/v1" {
+		t.Fatalf("helper took another provider: %+v", helper.Config)
+	}
+}
+
 func TestApplyTurnModelRouteKeepsBackgroundAndComputerUseModels(t *testing.T) {
 	t.Setenv(cllm.CostRouteEnvKey, "on")
 	app := &App{}

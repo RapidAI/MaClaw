@@ -4407,7 +4407,17 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			defer cancelRun()
 		}
 	}
-	parallelTurn = h.beginCodingParallelTurn(userID, projectPath, requestKind, onProgress)
+	// A goal planning turn is read-only: its surface admits no write, no
+	// command and no contract tool other than goal. Taking the exclusive work
+	// root would queue the planning turn behind another task's writer for as
+	// long as that task runs (hours), and the goal would never receive the
+	// phase record that starts execution. Read the primary tree instead.
+	goalPlanTurn := goalContinuationPhase(userText) == "plan"
+	if goalPlanTurn {
+		log.Printf("[workflow-v2] pure coding: goal plan turn reads the primary tree; no writer queue user=%s", userID)
+	} else {
+		parallelTurn = h.beginCodingParallelTurn(userID, projectPath, requestKind, onProgress)
+	}
 	if parallelTurn != nil {
 		if parallelTurn.primary != "" {
 			sessionProject = parallelTurn.primary

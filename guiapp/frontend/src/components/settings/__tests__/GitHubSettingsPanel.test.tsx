@@ -9,10 +9,14 @@ const { showConfirmMock, clipboardMock } = vi.hoisted(() => ({
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelGitHubOAuth: vi.fn().mockResolvedValue(undefined),
+    ConnectGitLab: vi.fn().mockResolvedValue({ connected: true, login: 'tux', name: 'Tux', origin: 'https://gitlab.com', scopes: 'api' }),
     DisconnectGitHub: vi.fn().mockResolvedValue(undefined),
+    DisconnectGitLab: vi.fn().mockResolvedValue(undefined),
     GetGitHubConnection: vi.fn().mockResolvedValue({ connected: false, client_id: 'Iv1.b507a08c87ecfe98', custom_client_id: false }),
+    GetGitLabConnection: vi.fn().mockResolvedValue({ connected: false }),
     GitHubAPIRequest: vi.fn().mockResolvedValue('{"resources":{"core":{"limit":5000,"remaining":4999},"search":{"limit":30,"remaining":29}}}'),
     GitHubCloneRepository: vi.fn().mockResolvedValue({ output: 'Cloning into repo...', dest_dir: '/data/github/repo', repo_url: 'https://github.com/o/repo.git' }),
+    OpenGitLabTokenPage: vi.fn().mockResolvedValue(undefined),
     ShowItemInFolder: vi.fn().mockResolvedValue(undefined),
     StartGitHubOAuth: vi.fn().mockResolvedValue({ user_code: 'ABCD-1234', verification_uri: 'https://github.com/login/device', browser_opened: true }),
     WaitGitHubOAuth: vi.fn().mockResolvedValue({ connected: true, login: 'octocat', name: 'The Octocat', client_id: 'Iv1.b507a08c87ecfe98', custom_client_id: false }),
@@ -28,10 +32,14 @@ vi.mock('../../CustomDialog', () => ({
 
 import {
     CancelGitHubOAuth,
+    ConnectGitLab,
     DisconnectGitHub,
+    DisconnectGitLab,
     GetGitHubConnection,
+    GetGitLabConnection,
     GitHubAPIRequest,
     GitHubCloneRepository,
+    OpenGitLabTokenPage,
     ShowItemInFolder,
     StartGitHubOAuth,
     WaitGitHubOAuth,
@@ -119,11 +127,105 @@ describe('GitHubSettingsPanel', () => {
         await waitFor(() => expect(screen.getByText(/core 4999\/5000/)).toBeTruthy());
     });
 
+    it('connects GitLab from a pasted token and renders the account', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenCalledWith('https://gitlab.com');
+        fireEvent.change(screen.getByLabelText('访问令牌'), { target: { value: 'glpat-xyz' } });
+        fireEvent.click(screen.getByText('连接 GitLab'));
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenCalledWith('https://gitlab.com', 'glpat-xyz'));
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        // The token field unmounts once connected — the paste never lingers.
+        expect(screen.queryByLabelText('访问令牌')).toBeNull();
+    });
+
+    it('adds a self-hosted GitLab server via the origin switch', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        // Default is gitlab.com — the custom origin input stays hidden.
+        expect(screen.queryByLabelText('自建 GitLab 地址')).toBeNull();
+        fireEvent.click(screen.getByText('自建实例'));
+        const originInput = screen.getByLabelText('自建 GitLab 地址');
+        // An empty self-hosted origin keeps both actions disabled.
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByText('连接 GitLab') as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.change(originInput, { target: { value: 'https://gitlab.example.com' } });
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenCalledWith('https://gitlab.example.com');
+        // A scheme-less intranet host stays usable — the backend adds the
+        // https scheme and validates the form itself. (Checked BEFORE
+        // connecting: once connected the origin field unmounts. The token-page
+        // button is gated by the origin alone, the connect button also by the
+        // still-empty token.)
+        fireEvent.change(screen.getByLabelText('自建 GitLab 地址'), { target: { value: 'gitlab.corp' } });
+        expect((screen.getByText('打开令牌页面') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.change(screen.getByLabelText('访问令牌'), { target: { value: 'glpat-self' } });
+        fireEvent.click(screen.getByText('连接 GitLab'));
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenLastCalledWith('gitlab.corp', 'glpat-self'));
+    });
+
+    it('switching back to gitlab.com restores the default origin', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        fireEvent.click(screen.getByText('自建实例'));
+        fireEvent.change(screen.getByLabelText('自建 GitLab 地址'), { target: { value: 'https://stale.example.com' } });
+        fireEvent.click(screen.getByText('gitlab.com'));
+        expect(screen.queryByLabelText('自建 GitLab 地址')).toBeNull();
+        fireEvent.click(screen.getByText('打开令牌页面'));
+        expect(OpenGitLabTokenPage).toHaveBeenLastCalledWith('https://gitlab.com');
+    });
+
+    it('connects GitLab on Enter in the token field', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitLabConnection).toHaveBeenCalledWith(false));
+        const tokenInput = screen.getByLabelText('访问令牌');
+        fireEvent.change(tokenInput, { target: { value: 'glpat-enter' } });
+        // IME 组合中的回车是候选确认，不提交。
+        fireEvent.keyDown(tokenInput, { key: 'Enter', isComposing: true } as any);
+        expect(ConnectGitLab).not.toHaveBeenCalled();
+        fireEvent.keyDown(tokenInput, { key: 'Enter' });
+        await waitFor(() => expect(ConnectGitLab).toHaveBeenCalledWith('https://gitlab.com', 'glpat-enter'));
+    });
+
+    it('clones on Enter in the repository field', async () => {
+        renderPanel();
+        await waitFor(() => expect(GetGitHubConnection).toHaveBeenCalled());
+        const urlInput = screen.getByPlaceholderText('仓库地址或 owner/repo');
+        fireEvent.change(urlInput, { target: { value: 'octocat/Hello-World' } });
+        fireEvent.keyDown(urlInput, { key: 'Enter' });
+        await waitFor(() => expect(GitHubCloneRepository).toHaveBeenCalledWith('octocat/Hello-World', ''));
+    });
+
+    it('tags a connected self-hosted origin as 自建', async () => {
+        vi.mocked(GetGitLabConnection).mockResolvedValue({
+            connected: true, login: 'tux', name: 'Tux',
+            html_url: 'https://gitlab.example.com/tux', origin: 'https://gitlab.example.com', scopes: 'api',
+        } as any);
+        renderPanel();
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        expect(screen.getByText('https://gitlab.example.com')).toBeTruthy();
+        expect(screen.getByText('自建')).toBeTruthy();
+    });
+
+    it('disconnects GitLab after confirm', async () => {
+        vi.mocked(GetGitLabConnection).mockResolvedValue({
+            connected: true, login: 'tux', name: 'Tux',
+            html_url: 'https://gitlab.com/tux', origin: 'https://gitlab.com', scopes: 'api',
+        } as any);
+        renderPanel();
+        await waitFor(() => expect(screen.getByText('@tux')).toBeTruthy());
+        fireEvent.click(screen.getAllByText('断开连接').find((node) => node.closest('section')?.textContent?.includes('GitLab'))!);
+        await waitFor(() => expect(DisconnectGitLab).toHaveBeenCalled());
+        expect(showConfirmMock).toHaveBeenCalled();
+    });
+
     it('clones a repository and offers show-in-folder', async () => {
         renderPanel();
         await waitFor(() => expect(GetGitHubConnection).toHaveBeenCalled());
         fireEvent.change(screen.getByPlaceholderText('仓库地址或 owner/repo'), { target: { value: 'octocat/Hello-World' } });
-        fireEvent.click(screen.getByText('克隆仓库'));
+        fireEvent.click(screen.getByRole('button', { name: '克隆仓库' }));
         await waitFor(() => expect(GitHubCloneRepository).toHaveBeenCalledWith('octocat/Hello-World', ''));
         await waitFor(() => expect(screen.getByText('在文件夹中显示')).toBeTruthy());
         fireEvent.click(screen.getByText('在文件夹中显示'));

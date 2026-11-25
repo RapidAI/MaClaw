@@ -376,6 +376,40 @@
   guiapp 10-minute-idle heap release; `MACLAW_GO_MEMLIMIT_MB` sets a soft Go
   heap cap (same knob as MaClawSrv).
 
+## Cloud/remote task cover view (guiapp/frontend)
+
+- The remote/cloud session (`useRemoteAssistantSession`) COVERS whatever tab is
+  active — `activeTabId` stays underneath untouched. Any tab activation must
+  retire the cover (`useRemoteCoverRetireOnTabActivate`, panel-level
+  activeTabId-change effect): sidebar task-row clicks pre-close via
+  `activateSwitchingTab`, but resume/new-tab/wizard-launch paths only change
+  `activeTabId`, and without the effect the opened task sits invisibly under
+  the cover ("点了没反应"). A cloud→cloud handoff (the wizard creating the
+  next cloud task) publishes a new session without touching tabs, so it is
+  unaffected.
+- The task header's remote branch is `[暂停任务] [TaskTabSwitcher]
+  [BugReportButton]` — same cluster as the local header, NO standalone 关闭
+  (`remote-task-chat-close` removed 2026-11-25; do not re-add it — the
+  switcher is the escape, matching the local experience). 分享/更多 stay
+  local-only: cloud tasks have no save-as-task/clear-history mechanisms.
+- 新建任务 over the cover: `openNewTaskWizard` treats `remoteAssistantActive()`
+  as covering and always opens the wizard overlay — the `localGuideVisible`
+  early-return only fires when the guide is actually rendered, and under the
+  cover it never is (the remote view wins over the local welcome page).
+  `wizardScreen` therefore includes `|| !!remoteChat`. Composer wiring keys off
+  `wizardCoverActiveRef` (panel ref synced after `useTaskConfigWiring`):
+  typing/`handleClearInput`/paste-drop guards write the LOCAL draft while the
+  cover is up (otherwise keystrokes vanish into the covered session's
+  remoteDraft), the slash palette bails (`handleFireSlashCommand` returns while
+  the cover is up — palette picks must not leak into the covered session),
+  wizard-typed /clear-/new-/branch reset commands DROP in both send paths
+  (`sendOnCurrentPage` and the chip path `handleWelcomePromptSendWithTaskConfig`
+  return early with the cover KEPT up — they must neither leak into the covered
+  session nor dismiss the cover out from under the user),
+  `wizardComposerCanSend` replaces the remote-draft-keyed
+  `canSend`, and the wiring's `showComposerText` stash-restore clears the ref
+  first because it runs before the overlay-closed re-render.
+
 ## Markdown document preview (guiapp/frontend)
 
 - `MarkdownPreview` (`src/components/ai/CodePreviewMarkdown.tsx`) renders

@@ -1,19 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { localizeText } from '../../i18n';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { corelib, main } from '../../../wailsjs/go/models';
 import {
     CancelGitHubOAuth,
+    ConnectGitLab,
     DisconnectGitHub,
+    DisconnectGitLab,
     GetGitHubConnection,
+    GetGitLabConnection,
     GitHubAPIRequest,
     GitHubCloneRepository,
+    OpenGitLabTokenPage,
     ShowItemInFolder,
     StartGitHubOAuth,
     WaitGitHubOAuth,
 } from '../../../wailsjs/go/main/App';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import { scopesHaveRepo } from '../../utils/githubScopes';
 import { useDialog } from '../CustomDialog';
+import './GitHubSettingsPanel.css';
 
 type GitHubSettingsPanelProps = {
     config: corelib.AppConfig | null;
@@ -24,16 +30,72 @@ type GitHubSettingsPanelProps = {
 
 const t = (lang: string, en: string, hans: string, hant?: string) => localizeText(lang, en, hans, hant);
 
+const GitLabDefaultOrigin = 'https://gitlab.com';
+
+// isGitLabSaaSOrigin tells a saved/typed origin apart from the official
+// GitLab cloud service (drives the「自建」tag and the seg control seed).
+const isGitLabSaaSOrigin = (origin: string) => /^https:\/\/(www\.)?gitlab\.com\/?$/i.test(origin);
+
 const GitHubMark = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.42-2.69 5.39-5.25 5.68.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z" />
     </svg>
 );
 
+const GitLabMark = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M23.6 9.59l-.03-.08L20.2 2.1a.86.86 0 0 0-.86-.55.86.86 0 0 0-.82.55l-3.33 8.75H8.81L5.48 2.1a.85.85 0 0 0-.82-.55.85.85 0 0 0-.86.55L.44 9.51l-.04.08a5.83 5.83 0 0 0 1.93 6.72l.01.01.05.04 4.76 3.56 2.36 1.78 1.43 1.08a1 1 0 0 0 1.2 0l1.43-1.08 2.36-1.78 4.8-3.6.01-.02a5.83 5.83 0 0 0 1.93-6.72z" />
+    </svg>
+);
+
+// 卡片头行：品牌图标 + 名称 + 连接状态。
+const ProviderHead = ({ mark, name, status, lang }: { mark: ReactNode; name: string; status: 'connected' | 'disconnected'; lang: string }) => (
+    <div className="gh-settings-head">
+        <span className="gh-settings-head__brand">
+            <span className="gh-settings-head__mark">{mark}</span>
+            <strong>{name}</strong>
+        </span>
+        <ConnectionStatusBadge status={status} lang={lang} />
+    </div>
+);
+
+// 已连接账号行：头像 + 登录名 + 主页链接。
+const AccountRow = ({ avatarUrl, login, name, htmlUrl, lang }: { avatarUrl?: string; login?: string; name?: string; htmlUrl?: string; lang: string }) => (
+    <div className="gh-settings-account">
+        {avatarUrl ? (
+            <img src={avatarUrl} alt="" width={36} height={36} referrerPolicy="no-referrer" />
+        ) : (
+            <span className="gh-settings-account__fallback" aria-hidden="true">{(login || '?').slice(0, 1).toUpperCase()}</span>
+        )}
+        <span className="gh-settings-account__meta">
+            <strong>@{login}</strong>
+            {name ? <span className="gh-settings-account__name">{name}</span> : null}
+        </span>
+        {htmlUrl ? (
+            <a className="gh-settings-account__link" href={htmlUrl} onClick={(event) => { event.preventDefault(); BrowserOpenURL(htmlUrl); }}>
+                {t(lang, 'View profile', '查看主页', '檢視主頁')}
+            </a>
+        ) : null}
+    </div>
+);
+
+// GitLab 实例标识：域名 chip，自建实例加「自建」标签。
+const InstanceChip = ({ origin, lang }: { origin?: string; lang: string }) => {
+    if (!origin) return null;
+    const selfHosted = !isGitLabSaaSOrigin(origin);
+    return (
+        <span className="gh-settings-instance">
+            <span className="gh-settings-instance__host">{origin}</span>
+            {selfHosted ? <span className="gh-settings-instance__tag">{t(lang, 'Self-hosted', '自建', '自建')}</span> : null}
+        </span>
+    );
+};
+
 /**
  * GitHub 连接设置页：device-flow 登录、账号状态、API 连通性测试与仓库克隆。
  * token 存在后端 credentials.json（provider "github"），供 skill 搜索、
- * 更新检测与克隆共用。
+ * 更新检测与克隆共用。GitLab 卡片走浏览器辅助 PAT，支持 gitlab.com 与
+ * 自建实例（凭据里记录实例 origin）。
  */
 export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showToastMessage }: GitHubSettingsPanelProps) => {
     const { showConfirm } = useDialog();
@@ -50,6 +112,16 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
     const [cloneBusy, setCloneBusy] = useState(false);
     const [cloneResult, setCloneResult] = useState<{ ok: boolean; text: string; destDir?: string } | null>(null);
 
+    // GitLab 卡片：浏览器辅助 PAT 登录。自建实例先切到「自建 GitLab」再填
+    // origin；连接后 origin 固定显示账号所在实例。
+    const [gitlabConnection, setGitlabConnection] = useState<main.GitLabConnectionStatus | null>(null);
+    const [gitlabOrigin, setGitlabOrigin] = useState(GitLabDefaultOrigin);
+    const [gitlabSelfHosted, setGitlabSelfHosted] = useState(false);
+    const [gitlabToken, setGitlabToken] = useState('');
+    const [gitlabBusy, setGitlabBusy] = useState(false);
+    const [gitlabMessage, setGitlabMessage] = useState('');
+    const [gitlabError, setGitlabError] = useState('');
+
     // A pending device login must die with the panel — navigating away without
     // cancelling would leave the backend polling a code nobody can see.
     const pendingRef = useRef(false);
@@ -65,16 +137,30 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
         }
     }, []);
 
+    const loadGitLabStatus = useCallback(async (refresh: boolean) => {
+        try {
+            const status = await GetGitLabConnection(refresh);
+            setGitlabConnection(status);
+            if (status?.origin) {
+                setGitlabOrigin(status.origin);
+                setGitlabSelfHosted(!isGitLabSaaSOrigin(status.origin));
+            }
+        } catch {
+            /* status read is best-effort; UI shows disconnected */
+        }
+    }, []);
+
     useEffect(() => {
         pendingRef.current = deviceInfo != null;
     }, [deviceInfo]);
 
     useEffect(() => {
         void loadStatus(false);
+        void loadGitLabStatus(false);
         return () => {
             if (pendingRef.current) void CancelGitHubOAuth();
         };
-    }, [loadStatus]);
+    }, [loadStatus, loadGitLabStatus]);
 
     useEffect(() => {
         // Seed only once config has actually arrived — seeding on mount with a
@@ -147,12 +233,93 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
         }
     };
 
+    // 分段选择只在未连接时出现：切回 gitlab.com 时恢复默认地址。
+    const switchGitLabHost = (selfHosted: boolean) => {
+        setGitlabSelfHosted(selfHosted);
+        setGitlabOrigin(selfHosted ? '' : GitLabDefaultOrigin);
+        setGitlabError('');
+    };
+
+    const openGitLabTokenPage = () => {
+        setGitlabError('');
+        void OpenGitLabTokenPage(gitlabOrigin).catch((err: any) => {
+            setGitlabError(String(err?.message || err || t(lang, 'Could not open the token page', '无法打开令牌页面', '無法開啟權杖頁面')));
+        });
+    };
+
+    const connectGitLab = async () => {
+        setGitlabBusy(true);
+        setGitlabError('');
+        setGitlabMessage('');
+        try {
+            const status = await ConnectGitLab(gitlabOrigin, gitlabToken);
+            setGitlabConnection(status);
+            setGitlabToken('');
+            // 同步后端归一化后的地址：隐藏的表单里不留未归一化文本
+            // （gitlab.corp → https://gitlab.corp），断开重连不会复活旧输入。
+            if (status?.origin) {
+                setGitlabOrigin(status.origin);
+                setGitlabSelfHosted(!isGitLabSaaSOrigin(status.origin));
+            }
+            setGitlabMessage(t(lang, `GitLab connected as @${status.login}`, `已连接 GitLab 账号 @${status.login}`, `已連接 GitLab 帳號 @${status.login}`));
+        } catch (err: any) {
+            setGitlabError(String(err?.message || err || t(lang, 'GitLab connect failed', 'GitLab 连接失败', 'GitLab 連接失敗')));
+        } finally {
+            setGitlabBusy(false);
+        }
+    };
+
+    // Enter 直接连接。IME 组合中的回车是候选确认，不触发提交。
+    const handleGitLabTokenKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.nativeEvent.isComposing || event.key !== 'Enter') return;
+        if (gitlabBusy || !gitlabToken.trim() || !gitlabOriginReady) return;
+        event.preventDefault();
+        void connectGitLab();
+    };
+
+    const handleCloneUrlKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.nativeEvent.isComposing || event.key !== 'Enter') return;
+        if (cloneBusy || !cloneUrl.trim()) return;
+        event.preventDefault();
+        void cloneRepo();
+    };
+
+    const disconnectGitLab = async () => {
+        const ok = await showConfirm(
+            t(lang, 'Disconnect GitLab? Cloud coding instances keep their pushed token but will no longer get refreshed copies.', '断开 GitLab 连接？云端编程实例已推送的令牌仍然有效，但不会再自动更新。', '中斷 GitLab 連接？雲端編程實例已推送的權杖仍然有效，但不會再自動更新。'),
+            t(lang, 'Disconnect GitLab', '断开 GitLab', '中斷 GitLab'),
+        );
+        if (!ok) return;
+        setGitlabBusy(true);
+        setGitlabError('');
+        setGitlabMessage('');
+        try {
+            await DisconnectGitLab();
+            setGitlabConnection(null);
+            setGitlabOrigin(GitLabDefaultOrigin);
+            setGitlabSelfHosted(false);
+            setGitlabMessage(t(lang, 'GitLab disconnected', '已断开 GitLab 连接', '已中斷 GitLab 連接'));
+        } catch (err: any) {
+            setGitlabError(String(err?.message || err || t(lang, 'Disconnect failed', '断开失败', '中斷失敗')));
+        } finally {
+            setGitlabBusy(false);
+        }
+    };
+
     const refreshStatus = () => {
         setBusy(true);
         setError('');
         void loadStatus(true)
             .then(() => setMessage(t(lang, 'Status refreshed', '状态已刷新', '狀態已刷新')))
             .finally(() => setBusy(false));
+    };
+
+    const refreshGitLabStatus = () => {
+        setGitlabBusy(true);
+        setGitlabError('');
+        void loadGitLabStatus(true)
+            .then(() => setGitlabMessage(t(lang, 'Status refreshed', '状态已刷新', '狀態已刷新')))
+            .finally(() => setGitlabBusy(false));
     };
 
     const testConnection = async () => {
@@ -205,128 +372,254 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
     };
 
     const connected = connection?.connected === true;
+    const gitlabConnected = gitlabConnection?.connected === true;
+    // 自建实例只有在未连接时可配置；连接后的实例信息来自凭据。地址只做
+    // 非空检查——后端 NormalizeGitLabOrigin 接受无 scheme 的主机名并给出
+    // 精确报错，前端不重复实现校验规则。
+    const gitlabOriginReady = !gitlabSelfHosted || gitlabOrigin.trim().length > 0;
 
     return (
         <>
-            <section className="im-settings-card im-settings-channel">
-                <p className="im-settings-description">
-                    {t(lang,
-                        'Connect a GitHub account. The token powers skill search, update checks and code cloning, and private repositories become reachable.',
-                        '连接 GitHub 账号。令牌用于技能搜索、更新检测与代码克隆，并可访问私有仓库。',
-                        '連接 GitHub 帳號。權杖用於技能搜尋、更新檢測與程式碼複製，並可存取私有儲存庫。')}
-                </p>
-                <div className="im-settings-toolbar" style={{ alignItems: 'center' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <GitHubMark />
-                        <strong>GitHub</strong>
-                    </span>
-                    <ConnectionStatusBadge status={connected ? 'connected' : 'disconnected'} lang={lang} />
-                </div>
+            <p className="im-settings-description gh-settings-intro">
+                {t(lang,
+                    'Connect GitHub and GitLab accounts. The tokens power skill search, update checks and repository cloning — on gitlab.com or your own self-hosted GitLab.',
+                    '连接 GitHub 与 GitLab 账号。令牌用于技能搜索、更新检测与仓库克隆——gitlab.com 与自建 GitLab 均可。',
+                    '連接 GitHub 與 GitLab 帳號。權杖用於技能搜尋、更新檢測與儲存庫複製——gitlab.com 與自建 GitLab 均可。')}
+            </p>
 
-                {connected && (
-                    <div className="im-settings-toolbar" style={{ alignItems: 'center', gap: 10 }}>
-                        {connection?.avatar_url ? (
-                            <img src={connection.avatar_url} alt="" width={32} height={32} referrerPolicy="no-referrer" style={{ borderRadius: '50%' }} />
-                        ) : null}
-                        <span>
-                            <strong>@{connection?.login}</strong>
-                            {connection?.name ? ` (${connection.name})` : ''}
-                        </span>
-                        {connection?.html_url ? (
-                            <a
-                                href={connection.html_url}
-                                onClick={(event) => { event.preventDefault(); BrowserOpenURL(connection.html_url!); }}
-                            >
-                                {t(lang, 'View profile', '查看主页', '檢視主頁')}
-                            </a>
-                        ) : null}
-                    </div>
-                )}
-                {connected && connection?.scopes ? (
-                    <p className="im-settings-description">Scopes: {connection.scopes}</p>
-                ) : null}
+            <div className="gh-settings-grid">
+                <section className="im-settings-card im-settings-channel gh-settings-provider">
+                    <ProviderHead mark={<GitHubMark />} name="GitHub" status={connected ? 'connected' : 'disconnected'} lang={lang} />
+                    <p className="im-settings-description">
+                        {t(lang,
+                            'Device-flow login. The token powers skill search, update checks and code cloning, and private repositories become reachable.',
+                            '设备码登录。令牌用于技能搜索、更新检测与代码克隆，并可访问私有仓库。',
+                            '裝置碼登入。權杖用於技能搜尋、更新檢測與程式碼複製，並可存取私有儲存庫。')}
+                    </p>
 
-                {deviceInfo && (
-                    <div className="im-settings-card" style={{ marginTop: 8, padding: 12 }}>
-                        <p className="im-settings-description">
-                            {connection?.custom_client_id
-                                ? t(lang,
-                                    'Open the page below and enter this code to authorize:',
-                                    '打开下面的页面，输入此验证码完成授权：',
-                                    '打開下面的頁面，輸入此驗證碼完成授權：')
-                                : t(lang,
-                                    'Open the page below and enter this code. The built-in login is shown as GitHub CLI:',
-                                    '打开下面的页面，输入此验证码。内置登录的授权页名称是 GitHub CLI：',
-                                    '打開下面的頁面，輸入此驗證碼。內建登入的授權頁名稱是 GitHub CLI：')}
-                        </p>
-                        <p style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2, margin: '8px 0' }}>{deviceInfo.user_code}</p>
-                        <p className="im-settings-description">
-                            <a
-                                href={deviceInfo.verification_uri}
-                                onClick={(event) => { event.preventDefault(); BrowserOpenURL(deviceInfo.verification_uri); }}
-                            >
-                                {deviceInfo.verification_uri}
-                            </a>
-                            {deviceInfo.browser_opened
-                                ? ` — ${t(lang, 'opened in your browser', '已在浏览器中打开', '已在瀏覽器中打開')}`
-                                : ` — ${t(lang, 'the browser did not open, please open this page manually', '未能自动打开浏览器，请手动打开此页面', '未能自動開啟瀏覽器，請手動開啟此頁面')}`}
-                        </p>
-                        <div className="im-settings-toolbar">
-                            <button type="button" className="im-settings-button" onClick={copyCode}>
-                                {codeCopied
-                                    ? t(lang, 'Copied', '已复制', '已複製')
-                                    : t(lang, 'Copy code', '复制验证码', '複製驗證碼')}
-                            </button>
-                            <button type="button" className="im-settings-button" onClick={cancelLogin}>
-                                {t(lang, 'Cancel', '取消', '取消')}
-                            </button>
-                            <span className="im-settings-description">
-                                {t(lang, 'Waiting for authorization…', '等待授权中…', '等待授權中…')}
-                            </span>
-                        </div>
-                    </div>
-                )}
-
-                <div className="im-settings-toolbar">
-                    {!connected && !deviceInfo && (
-                        <button type="button" className="im-settings-button im-settings-button--accent" disabled={busy} onClick={startLogin}>
-                            {busy
-                                ? t(lang, 'Starting…', '正在启动…', '正在啟動…')
-                                : t(lang, 'Sign in with GitHub', '使用 GitHub 登录', '使用 GitHub 登入')}
-                        </button>
-                    )}
                     {connected && (
                         <>
-                            <button type="button" className="im-settings-button" disabled={busy} onClick={refreshStatus}>
-                                {t(lang, 'Refresh status', '刷新状态', '刷新狀態')}
-                            </button>
-                            <button type="button" className="im-settings-button" disabled={busy} onClick={testConnection}>
-                                {t(lang, 'Test API', '测试连接', '測試連接')}
-                            </button>
-                            <button type="button" className="im-settings-button" disabled={busy} onClick={() => void disconnect()}>
-                                {t(lang, 'Disconnect', '断开连接', '中斷連接')}
-                            </button>
+                            <AccountRow avatarUrl={connection?.avatar_url} login={connection?.login} name={connection?.name} htmlUrl={connection?.html_url} lang={lang} />
+                            {connection?.scopes ? <p className="im-settings-description">Scopes: {connection.scopes}</p> : null}
+                            {connection && !scopesHaveRepo(connection?.scopes) && (
+                                <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>
+                                    {connection?.github_app_token
+                                        ? t(lang,
+                                            'This token is a GitHub App token and carries no repository permission (usually left over from an older login). Disconnect, then sign in again to get a full token — cloud coding instances need it for repository checkout and push.',
+                                            '当前令牌是 GitHub App 令牌，不带仓库权限（通常是旧版登录遗留）。请断开后重新登录以获取完整令牌——云端编程实例检出和推送代码都需要它。',
+                                            '目前權杖是 GitHub App 權杖，不帶倉庫權限（通常是舊版登入遺留）。請中斷後重新登入以取得完整權杖——雲端編程實例檢出和推送程式碼都需要它。')
+                                        : t(lang,
+                                            'This token has no repository permission. Disconnect, then sign in again and keep Repositories checked on the authorization page — cloud coding instances need it for repository checkout and push.',
+                                            '当前令牌没有仓库权限。请断开后重新登录，并在授权页勾选 Repositories 权限——云端编程实例检出和推送代码都需要它。',
+                                            '目前權杖沒有倉庫權限。請中斷後重新登入，並在授權頁勾選 Repositories 權限——雲端編程實例檢出和推送程式碼都需要它。')}
+                                </p>
+                            )}
                         </>
                     )}
-                </div>
 
-                {message && <p className="im-settings-description">{message}</p>}
-                {error && <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>{error}</p>}
-            </section>
+                    {deviceInfo && (
+                        <div className="gh-settings-device-code">
+                            <p className="im-settings-description">
+                                {connection?.custom_client_id
+                                    ? t(lang,
+                                        'Open the page below and enter this code to authorize:',
+                                        '打开下面的页面，输入此验证码完成授权：',
+                                        '打開下面的頁面，輸入此驗證碼完成授權：')
+                                    : t(lang,
+                                        'Open the page below and enter this code. The built-in login is shown as GitHub CLI:',
+                                        '打开下面的页面，输入此验证码。内置登录的授权页名称是 GitHub CLI：',
+                                        '打開下面的頁面，輸入此驗證碼。內建登入的授權頁名稱是 GitHub CLI：')}
+                            </p>
+                            <button type="button" className="gh-settings-device-code__value" onClick={copyCode} title={t(lang, 'Copy code', '复制验证码', '複製驗證碼')}>
+                                {deviceInfo.user_code}
+                                <span className="gh-settings-device-code__hint">{codeCopied ? t(lang, 'Copied', '已复制', '已複製') : t(lang, 'Copy', '复制', '複製')}</span>
+                            </button>
+                            <p className="im-settings-description">
+                                <a
+                                    href={deviceInfo.verification_uri}
+                                    onClick={(event) => { event.preventDefault(); BrowserOpenURL(deviceInfo.verification_uri); }}
+                                >
+                                    {deviceInfo.verification_uri}
+                                </a>
+                                {deviceInfo.browser_opened
+                                    ? ` — ${t(lang, 'opened in your browser', '已在浏览器中打开', '已在瀏覽器中打開')}`
+                                    : ` — ${t(lang, 'the browser did not open, please open this page manually', '未能自动打开浏览器，请手动打开此页面', '未能自動開啟瀏覽器，請手動開啟此頁面')}`}
+                            </p>
+                            <div className="im-settings-toolbar">
+                                <button type="button" className="im-settings-button" onClick={cancelLogin}>
+                                    {t(lang, 'Cancel', '取消', '取消')}
+                                </button>
+                                <span className="im-settings-description">
+                                    {t(lang, 'Waiting for authorization…', '等待授权中…', '等待授權中…')}
+                                </span>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="im-settings-toolbar">
+                        {!connected && !deviceInfo && (
+                            <button type="button" className="im-settings-button im-settings-button--accent" disabled={busy} onClick={startLogin}>
+                                {busy
+                                    ? t(lang, 'Starting…', '正在启动…', '正在啟動…')
+                                    : t(lang, 'Sign in with GitHub', '使用 GitHub 登录', '使用 GitHub 登入')}
+                            </button>
+                        )}
+                        {connected && (
+                            <>
+                                <button type="button" className="im-settings-button" disabled={busy} onClick={refreshStatus}>
+                                    {t(lang, 'Refresh status', '刷新状态', '刷新狀態')}
+                                </button>
+                                <button type="button" className="im-settings-button" disabled={busy} onClick={testConnection}>
+                                    {t(lang, 'Test API', '测试连接', '測試連接')}
+                                </button>
+                                <button type="button" className="im-settings-button" disabled={busy} onClick={() => void disconnect()}>
+                                    {t(lang, 'Disconnect', '断开连接', '中斷連接')}
+                                </button>
+                            </>
+                        )}
+                    </div>
+
+                    {message && <p className="im-settings-description">{message}</p>}
+                    {error && <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>{error}</p>}
+                </section>
+
+                <section className="im-settings-card im-settings-channel gh-settings-provider">
+                    <ProviderHead mark={<GitLabMark />} name="GitLab" status={gitlabConnected ? 'connected' : 'disconnected'} lang={lang} />
+                    <p className="im-settings-description">
+                        {t(lang,
+                            'Paste a Personal Access Token minted in your browser — repository access on cloud coding instances rides on it. gitlab.com and self-hosted instances both work.',
+                            '在浏览器中创建访问令牌后粘贴到这里——云端编程实例的仓库访问会用到它。gitlab.com 与自建实例均可。',
+                            '在瀏覽器中建立存取權杖後貼到這裡——雲端編程實例的儲存庫存取會用到它。gitlab.com 與自建實例均可。')}
+                    </p>
+
+                    {gitlabConnected && (
+                        <>
+                            <AccountRow avatarUrl={gitlabConnection?.avatar_url} login={gitlabConnection?.login} name={gitlabConnection?.name} htmlUrl={gitlabConnection?.html_url} lang={lang} />
+                            <InstanceChip origin={gitlabConnection?.origin} lang={lang} />
+                            {gitlabConnection?.scopes ? <p className="im-settings-description">Scopes: {gitlabConnection.scopes}</p> : null}
+                        </>
+                    )}
+
+                    {!gitlabConnected && (
+                        <>
+                            <div className="gh-settings-field">
+                                <span className="gh-settings-field__label">{t(lang, 'GitLab server', 'GitLab 服务器', 'GitLab 伺服器')}</span>
+                                <div className="gh-settings-seg" role="group" aria-label={t(lang, 'GitLab server', 'GitLab 服务器', 'GitLab 伺服器')}>
+                                    <button
+                                        type="button"
+                                        className="gh-settings-seg__item"
+                                        aria-pressed={!gitlabSelfHosted}
+                                        disabled={gitlabBusy}
+                                        onClick={() => switchGitLabHost(false)}
+                                    >
+                                        gitlab.com
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="gh-settings-seg__item"
+                                        aria-pressed={gitlabSelfHosted}
+                                        disabled={gitlabBusy}
+                                        onClick={() => switchGitLabHost(true)}
+                                    >
+                                        {t(lang, 'Self-hosted', '自建实例', '自建實例')}
+                                    </button>
+                                </div>
+                                {gitlabSelfHosted && (
+                                    <input
+                                        className="form-input"
+                                        type="text"
+                                        value={gitlabOrigin}
+                                        disabled={gitlabBusy}
+                                        onChange={(event) => setGitlabOrigin(event.target.value)}
+                                        placeholder="https://gitlab.example.com"
+                                        aria-label={t(lang, 'Self-hosted GitLab origin', '自建 GitLab 地址', '自建 GitLab 位址')}
+                                    />
+                                )}
+                                <p className="im-settings-description gh-settings-field__hint">
+                                    {gitlabSelfHosted
+                                        ? t(lang, 'Any HTTPS self-hosted GitLab works — fill in the site root, e.g. https://gitlab.example.com.', '支持任意 HTTPS 自建 GitLab——填写站点根地址，例如 https://gitlab.example.com。', '支援任意 HTTPS 自建 GitLab——填寫站點根位址，例如 https://gitlab.example.com。')
+                                        : t(lang, 'The official GitLab cloud service.', 'GitLab 官方云服务。', 'GitLab 官方雲服務。')}
+                                </p>
+                            </div>
+                            <p className="im-settings-description">
+                                {t(lang,
+                                    '1. Open the token page and create a Personal Access Token with the api scope (minimal: read_user + read_repository + write_repository). 2. Paste it here.',
+                                    '1. 打开令牌页面，创建带 api 权限的访问令牌（最小权限：read_user + read_repository + write_repository）。2. 粘贴到这里。',
+                                    '1. 開啟權杖頁面，建立帶 api 權限的存取權杖（最小權限：read_user + read_repository + write_repository）。2. 貼到這裡。')}
+                            </p>
+                            <input
+                                className="form-input"
+                                type="password"
+                                value={gitlabToken}
+                                disabled={gitlabBusy}
+                                onChange={(event) => setGitlabToken(event.target.value)}
+                                onKeyDown={handleGitLabTokenKeyDown}
+                                placeholder="glpat-…"
+                                aria-label={t(lang, 'Personal access token', '访问令牌', '存取權杖')}
+                            />
+                        </>
+                    )}
+
+                    <div className="im-settings-toolbar">
+                        {!gitlabConnected && (
+                            <>
+                                <button type="button" className="im-settings-button" disabled={gitlabBusy || !gitlabOriginReady} onClick={openGitLabTokenPage}>
+                                    {t(lang, 'Open token page', '打开令牌页面', '開啟權杖頁面')}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="im-settings-button im-settings-button--accent"
+                                    disabled={gitlabBusy || !gitlabToken.trim() || !gitlabOriginReady}
+                                    onClick={() => void connectGitLab()}
+                                >
+                                    {gitlabBusy
+                                        ? t(lang, 'Verifying…', '验证中…', '驗證中…')
+                                        : t(lang, 'Connect GitLab', '连接 GitLab', '連接 GitLab')}
+                                </button>
+                            </>
+                        )}
+                        {gitlabConnected && (
+                            <>
+                                <button type="button" className="im-settings-button" disabled={gitlabBusy} onClick={refreshGitLabStatus}>
+                                    {t(lang, 'Refresh status', '刷新状态', '刷新狀態')}
+                                </button>
+                                <button type="button" className="im-settings-button" disabled={gitlabBusy} onClick={() => void disconnectGitLab()}>
+                                    {t(lang, 'Disconnect', '断开连接', '中斷連接')}
+                                </button>
+                            </>
+                        )}
+                    </div>
+
+                    {gitlabMessage && <p className="im-settings-description">{gitlabMessage}</p>}
+                    {gitlabError && <p className="im-settings-description" style={{ color: 'var(--theme-danger)' }}>{gitlabError}</p>}
+                </section>
+            </div>
 
             <section className="im-settings-card im-settings-channel">
+                <div className="gh-settings-head">
+                    <span className="gh-settings-head__brand">
+                        <span className="gh-settings-head__mark">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M21 10.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8.5" />
+                                <path d="M3 8.5 12 3l9 5.5-9 5.5z" />
+                            </svg>
+                        </span>
+                        <strong>{t(lang, 'Clone repository', '克隆仓库', '複製儲存庫')}</strong>
+                    </span>
+                </div>
                 <p className="im-settings-description">
                     {t(lang,
-                        'Clone a repository with the connected account. Leave the directory empty to use the default location.',
-                        '使用已连接的账号克隆仓库。目录留空时使用默认位置。',
-                        '使用已連接的帳號複製儲存庫。目錄留空時使用預設位置。')}
+                        'Clone with the connected account — github.com, gitlab.com and your connected self-hosted GitLab all work. Private repositories need the matching account. Leave the directory empty to use the default location.',
+                        '使用已连接的账号克隆仓库——github.com、gitlab.com 与已连接的自建 GitLab 均可，私有仓库需要对应账号。目录留空时使用默认位置。',
+                        '使用已連接的帳號複製儲存庫——github.com、gitlab.com 與已連接的自建 GitLab 均可，私有儲存庫需要對應帳號。目錄留空時使用預設位置。')}
                 </p>
-                <div className="im-settings-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                <div className="im-settings-toolbar gh-settings-form">
                     <input
                         className="form-input"
                         type="text"
                         value={cloneUrl}
                         onChange={(event) => setCloneUrl(event.target.value)}
+                        onKeyDown={handleCloneUrlKeyDown}
                         placeholder={t(lang, 'Repository URL or owner/repo', '仓库地址或 owner/repo', '儲存庫地址或 owner/repo')}
                     />
                     <input
@@ -377,7 +670,7 @@ export const GitHubSettingsPanel = ({ config, lang, saveRemoteConfigField, showT
                                 'OAuth Client ID。留空使用内置 GitHub OAuth 应用（授权页显示为 GitHub CLI）；粘贴你自己注册的 OAuth App 的 Client ID 可自定义授权页（该应用需开启 Device Flow）。',
                                 'OAuth Client ID。留空使用內建 GitHub OAuth 應用（授權頁顯示為 GitHub CLI）；貼上你自己註冊的 OAuth App 的 Client ID 可自訂授權頁（該應用需開啟 Device Flow）。')}
                         </p>
-                        <div className="im-settings-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+                        <div className="im-settings-toolbar gh-settings-form">
                             <input
                                 className="form-input"
                                 type="text"

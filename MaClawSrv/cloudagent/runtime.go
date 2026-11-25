@@ -72,6 +72,10 @@ type instance struct {
 	dir  string
 	meta Spec
 	book *book
+	// workflow is the lazily opened V2 workflow machine for this instance —
+	// one store file, workflows keyed by task id.
+	wfMu     sync.Mutex
+	workflow *workflowHolder
 }
 
 // Runtime is the in-process cloud-agent host. Open does not start tickers.
@@ -348,7 +352,9 @@ func (rt *Runtime) Delete(id string) error {
 	dest := filepath.Join(filepath.Dir(inst.dir), ".deleted-"+id+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
 	// Windows refuses to rename a directory while its sqlite handle is open,
 	// so the book closes first; a failed rename reopens it so the instance is
-	// not left broken in the map.
+	// not left broken in the map. The workflow store is a second sqlite
+	// handle in the same directory and must close for the same reason.
+	rt.workflowClose(inst)
 	_ = inst.book.Close()
 	if err := os.Rename(inst.dir, dest); err != nil {
 		if bk, openErr := openBook(inst.dir); openErr == nil {
@@ -405,6 +411,7 @@ func (rt *Runtime) Close() error {
 	}
 	var first error
 	for _, inst := range instances {
+		rt.workflowClose(inst)
 		if err := inst.book.Close(); err != nil && first == nil {
 			first = err
 		}

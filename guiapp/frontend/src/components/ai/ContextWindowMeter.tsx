@@ -8,6 +8,14 @@ export function formatContextWindowTokens(value: number): string {
     return String(Math.round(n));
 }
 
+export function formatContextWindowPercent(used: number, max: number): string {
+    if (!(max > 0) || !(used > 0)) return "0";
+    const pct = Math.max(0, Math.round((used / max) * 100));
+    // A non-zero fill must never read as 0%: that looks like the meter is
+    // broken and hides a tiny but real request (e.g. 192 / 102k).
+    return pct === 0 ? "<1" : String(pct);
+}
+
 export function ContextWindowMeter({
     lang,
     usedTokens,
@@ -24,6 +32,8 @@ export function ContextWindowMeter({
     if (!(maxTokens > 0)) return null;
     const used = Math.max(0, usedTokens || 0);
     const pct = Math.max(0, Math.round((used / maxTokens) * 100));
+    const pctLabel = formatContextWindowPercent(used, maxTokens);
+    const fillPct = used > 0 ? Math.max(1, Math.min(100, pct)) : 0;
     const label = localizeText(lang, "Context", "上下文", "上下文");
     const title = estimated
         ? localizeText(lang, "Current outbound request estimate / usable context window", "当前待发送请求估算 / 可用上下文窗口", "目前待發送請求估算 / 可用上下文視窗")
@@ -54,7 +64,7 @@ export function ContextWindowMeter({
         >
             <span>{label}</span>
             <span data-testid="context-window-meter-value">
-                {estimated ? "≈" : ""}{formatContextWindowTokens(used)} / {formatContextWindowTokens(maxTokens)} · {pct}%
+                {estimated ? "≈" : ""}{formatContextWindowTokens(used)} / {formatContextWindowTokens(maxTokens)} · {pctLabel}%
             </span>
             <span
                 aria-hidden="true"
@@ -70,7 +80,7 @@ export function ContextWindowMeter({
                     data-testid="context-window-meter-fill"
                     style={{
                         display: "block",
-                        width: `${Math.min(100, pct)}%`,
+                        width: `${fillPct}%`,
                         height: "100%",
                         borderRadius: "inherit",
                         background: pct >= 85 ? "var(--theme-warning, #b7791f)" : "currentColor",

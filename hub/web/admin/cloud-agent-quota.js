@@ -127,9 +127,13 @@ var cagOrg = {
   members: {},
   memberLoads: {},
   memberFailed: {},
+  deferredChildren: {},
   expanded: {},
   srvs: [],
   loaded: false,
+  fullTree: false,
+  fullTreeLoad: null,
+  fullTreeFailed: false,
   drafts: {},
   loadEpoch: 0,
   memberEpoch: 0,
@@ -285,6 +289,7 @@ function cagNormalize(nodes, ancestry, depth) {
     out.push({
       id: id,
       name: String(node.name || id).trim() || id,
+      hasChildren: !!node.has_children,
       children: cagNormalize(node.children, next, current + 1)
     });
     return out;
@@ -428,6 +433,72 @@ function cagMembersReady(groupId) {
   return Object.prototype.hasOwnProperty.call(cagOrg.members, groupId);
 }
 
+function cagFindDept(nodes, id, depth) {
+  if ((depth || 0) > 24) return null;
+  var list = nodes || [];
+  for (var i = 0; i < list.length; i += 1) {
+    var node = list[i];
+    if (!node) continue;
+    if (node.id === id) return node;
+    var found = cagFindDept(node.children, id, (depth || 0) + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/* The members response carries the department's direct child groups.
+   Splice them into the lazily grown tree, keeping any deeper subtrees
+   that an earlier load already attached. */
+function cagAttachChildren(groupId, rawChildren) {
+  if (cagOrg.fullTree) return;
+  var children = cagNormalize(rawChildren || []);
+  var node = cagFindDept(cagOrg.tree, groupId);
+  if (!node) {
+    // A reload reloads expanded departments in parallel; a child can
+    // resolve before the parent that would place it in the tree. Stash
+    // the subtrees and drain them when the parent attaches.
+    cagOrg.deferredChildren[groupId] = children;
+    return;
+  }
+  var prev = {};
+  (node.children || []).forEach(function (child) {
+    if (child && child.id) prev[child.id] = child;
+  });
+  children.forEach(function (child) {
+    var old = prev[child.id];
+    if (old) {
+      if (old.children && old.children.length) child.children = old.children;
+      child.hasChildren = child.hasChildren || !!old.hasChildren;
+    }
+    cagOrg.deptNames[child.id] = child.name;
+  });
+  node.children = children;
+  node.hasChildren = node.hasChildren || children.length > 0;
+  cagDrainDeferred(node);
+}
+
+function cagDrainDeferred(node, depth) {
+  if ((depth || 0) > 24) return;
+  (node.children || []).forEach(function (child) {
+    var deferred = cagOrg.deferredChildren[child.id];
+    if (deferred) {
+      child.children = deferred;
+      child.hasChildren = true;
+      delete cagOrg.deferredChildren[child.id];
+      cagRegisterDeptNames(child, (depth || 0) + 1);
+    }
+    cagDrainDeferred(child, (depth || 0) + 1);
+  });
+}
+
+function cagRegisterDeptNames(node, depth) {
+  if ((depth || 0) > 24) return;
+  (node.children || []).forEach(function (child) {
+    cagOrg.deptNames[child.id] = child.name;
+    cagRegisterDeptNames(child, (depth || 0) + 1);
+  });
+}
+
 function cagMemberView(email) {
   var raw = String(email || '').trim();
   var user = cagOrg.usersByEmail[raw.toLowerCase()];
@@ -464,8 +535,9 @@ function cagQueryWantsMembers(query) {
   return /[\u3400-\u9fff]/.test(query);
 }
 
-function cagDeptMatch(node, query) {
+function cagDeptMatch(node, query, depth) {
   if (!query) return true;
+  if ((depth || 0) > 24) return false;
   if (String(node.name || '').toLowerCase().indexOf(query) !== -1) return true;
   var members = cagMemberViews(node.id);
   for (var i = 0; i < members.length; i += 1) {
@@ -475,7 +547,7 @@ function cagDeptMatch(node, query) {
   }
   var children = node.children || [];
   for (var c = 0; c < children.length; c += 1) {
-    if (cagDeptMatch(children[c], query)) return true;
+    if (cagDeptMatch(children[c], query, (depth || 0) + 1)) return true;
   }
   return false;
 }
@@ -488,6 +560,7 @@ function cagMemberVisible(member, query, deptNameHit) {
 }
 
 function cagRenderNodes(nodes, depth, query) {
+  if (depth > 24) return '';
   var html = '';
   (nodes || []).forEach(function (node) {
     if (!cagDeptMatch(node, query)) return;
@@ -531,20 +604,21 @@ function cagMatchingUsers(query) {
 
 function cagVisibleUserIds(query) {
   var ids = {};
-  function walk(nodes) {
+  function walk(nodes, depth) {
+    if ((depth || 0) > 24) return;
     (nodes || []).forEach(function (node) {
       if (!cagDeptMatch(node, query)) return;
       var nameHit = !query || String(node.name || '').toLowerCase().indexOf(query) !== -1;
       var open = !!cagOrg.expanded[node.id] || !!query;
       if (!open) return;
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
       cagMembers(node.id).forEach(function (member) {
         if (!member.userId || !cagMemberVisible(member, query, nameHit)) return;
         ids[member.userId] = true;
       });
     });
   }
-  walk(cagOrg.tree);
+  walk(cagOrg.tree, 0);
   return ids;
 }
 
@@ -678,6 +752,7 @@ function renderCloudAgentAccessTree() {
     return;
   }
   var query = cagQuery();
+  cagWantFullTree(query);
   cagOrg.drafts = cagOrg.suspendDrafts ? {} : cagCaptureDrafts(root);
   var rows = cagRenderNodes(cagOrg.tree, 0, query);
   var shown = cagVisibleUserIds(query);
@@ -708,19 +783,70 @@ function renderCloudAgentAccessTree() {
   cagEnsureOpenMembers(query);
 }
 
+/* A saved department row whose name is not yet known needs the full
+   tree to label it - unless the access row already carries its
+   target_name from the server. */
+function cagGrantsNeedNames() {
+  var need = false;
+  Object.keys(cagOrg.access || {}).forEach(function (key) {
+    if (need) return;
+    var row = cagOrg.access[key];
+    if (!row || row.scope !== 'department') return;
+    if ((cagOrg.deptNames || {})[row.target_id]) return;
+    if (String(row.target_name || '').trim()) return;
+    need = true;
+  });
+  return need;
+}
+
+/* The tree starts as just the root and grows on expand. A search - or a
+   granted department whose name nothing loaded yet - needs the complete
+   tree, so it is fetched once in the background and swapped in. Members
+   still load per department. */
+function cagEnsureFullTree() {
+  if (cagOrg.fullTree || cagOrg.fullTreeFailed) return Promise.resolve();
+  if (cagOrg.fullTreeLoad) return cagOrg.fullTreeLoad;
+  var epoch = cagOrg.memberEpoch || 0;
+  var pending = api('/api/admin/security/groups').then(function (data) {
+    if (epoch !== cagOrg.memberEpoch) return;
+    var rawTree = data && data.tree;
+    cagOrg.tree = cagNormalize(Array.isArray(rawTree) ? rawTree : (rawTree ? [rawTree] : []));
+    cagOrg.deptNames = cagBuildDeptNames(cagOrg.tree);
+    cagOrg.deferredChildren = {};
+    cagOrg.fullTree = true;
+    delete cagOrg.fullTreeFailed;
+  }).catch(function () {
+    if (epoch !== cagOrg.memberEpoch) return;
+    cagOrg.fullTreeFailed = true;
+  }).then(function () {
+    if (cagOrg.fullTreeLoad === pending) cagOrg.fullTreeLoad = null;
+  });
+  cagOrg.fullTreeLoad = pending;
+  return pending;
+}
+
+function cagWantFullTree(query) {
+  if (cagOrg.fullTree || cagOrg.fullTreeFailed || cagOrg.fullTreeLoad) return;
+  if (!query && !cagGrantsNeedNames()) return;
+  cagEnsureFullTree().then(function () {
+    renderCloudAgentAccessTree();
+  });
+}
+
 function cagEnsureOpenMembers(query) {
   var ids = [];
   var scan = cagQueryWantsMembers(query);
-  function walk(nodes) {
+  function walk(nodes, depth) {
+    if ((depth || 0) > 24) return;
     (nodes || []).forEach(function (node) {
       if (!node || !cagDeptMatch(node, query)) return;
       var expanded = !!cagOrg.expanded[node.id];
       if (!expanded && !query) return;
       if ((expanded || scan) && !cagMembersReady(node.id) && !cagOrg.memberFailed[node.id] && !cagOrg.memberLoads[node.id]) ids.push(node.id);
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
     });
   }
-  walk(cagOrg.tree);
+  walk(cagOrg.tree, 0);
   if (!ids.length) return;
   var epoch = cagOrg.memberEpoch;
   Promise.all(ids.slice(0, 30).map(cagLoadMembers)).then(function () {
@@ -734,6 +860,7 @@ function cagInvalidateMembers() {
   cagOrg.members = {};
   cagOrg.memberFailed = {};
   cagOrg.memberLoads = {};
+  cagOrg.deferredChildren = {};
 }
 
 function cagLoadMembers(groupId) {
@@ -754,6 +881,7 @@ function cagLoadMembers(groupId) {
       seen[key] = true;
       return true;
     });
+    cagAttachChildren(id, (data && data.children) || []);
     delete cagOrg.memberFailed[id];
   }).catch(function () {
     if (epoch !== cagOrg.memberEpoch) return;
@@ -769,19 +897,25 @@ function cagLoadMembers(groupId) {
 
 function cagBuildDeptNames(nodes) {
   var map = {};
-  (function walk(list) {
+  (function walk(list, depth) {
+    if ((depth || 0) > 24) return;
     (list || []).forEach(function (node) {
       if (!node || !node.id) return;
       map[node.id] = node.name;
-      walk(node.children);
+      walk(node.children, (depth || 0) + 1);
     });
-  })(nodes);
+  })(nodes, 0);
   return map;
 }
 
+function cagAccessName(scope, target) {
+  var row = cagOrg.access[cagKey(scope, target)];
+  return row ? String(row.target_name || '').trim() : '';
+}
+
 function cagGrantName(scope, target) {
-  if (scope === 'department') return (cagOrg.deptNames || {})[target] || '';
-  if (scope === 'user') return cagUserLabel(cagOrg.usersById[target]);
+  if (scope === 'department') return (cagOrg.deptNames || {})[target] || cagAccessName(scope, target);
+  if (scope === 'user') return cagUserLabel(cagOrg.usersById[target]) || cagAccessName(scope, target);
   return '';
 }
 
@@ -836,6 +970,13 @@ function cagBindGrants(root) {
   });
 }
 
+function cagSetHTML(el, html) {
+  if (!el) return;
+  if (el._cagDrawn === html) return;
+  el.innerHTML = html;
+  el._cagDrawn = html;
+}
+
 function cagRenderGrants() {
   var list = document.getElementById('cloudAgentGrantList');
   if (!list) return;
@@ -844,7 +985,7 @@ function cagRenderGrants() {
   var count = document.getElementById('cloudAgentGrantsCount');
   if (!cagOrg.loaded) {
     if (count) { count.textContent = '0'; count.hidden = true; }
-    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.loading) + '</div>';
+    cagSetHTML(list, '<div class="cag-grants-empty">' + cagEscape(t.loading) + '</div>');
     return;
   }
   var rows = cagGrantRows();
@@ -853,7 +994,7 @@ function cagRenderGrants() {
     count.hidden = !rows.length;
   }
   if (!rows.length) {
-    list.innerHTML = '<div class="cag-grants-empty">' + cagEscape(t.grantsEmpty) + '</div>';
+    cagSetHTML(list, '<div class="cag-grants-empty">' + cagEscape(t.grantsEmpty) + '</div>');
     return;
   }
   var html = '';
@@ -873,7 +1014,7 @@ function cagRenderGrants() {
       + '<button type="button" class="btn-ghost cag-grant-revoke">' + cagEscape(t.revoke) + '</button>'
       + '</div>';
   });
-  list.innerHTML = html;
+  cagSetHTML(list, html);
 }
 
 function cagLocateGrant(scope, target) {
@@ -948,13 +1089,16 @@ async function loadCloudAgentAccess(discardDrafts) {
   if (!cagOrg.loaded && status) status.textContent = cloudAgentQuotaText().loading;
   try {
     var usersFailed = false;
+    // The user directory is only needed to map member emails onto
+    // accounts. It resolves in parallel but does not hold up the first
+    // paint of the tree.
+    var usersPending = api('/api/admin/users').then(function (data) { return data || { users: [] }; }, function () {
+      usersFailed = true;
+      return { users: [] };
+    });
     var results = await Promise.all([
       api('/api/admin/cloud-agents/access'),
-      api('/api/admin/security/groups'),
-      api('/api/admin/users').then(function (data) { return data || { users: [] }; }, function () {
-        usersFailed = true;
-        return { users: [] };
-      }),
+      api('/api/admin/security/groups/root'),
       api('/api/admin/cloud-agents/srvs').then(function (data) { return (data && data.items) || []; }, function () {
         return [];
       })
@@ -968,17 +1112,22 @@ async function loadCloudAgentAccess(discardDrafts) {
       if (!row || !row.scope) return;
       cagOrg.access[cagKey(row.scope, row.target_id)] = row;
     });
-    var rawTree = results[1] && results[1].tree;
-    cagOrg.tree = cagNormalize(Array.isArray(rawTree) ? rawTree : (rawTree ? [rawTree] : []));
+    var rawRoot = results[1] && results[1].root;
+    cagOrg.tree = rawRoot ? cagNormalize([rawRoot]) : [];
+    cagOrg.fullTree = false;
+    cagOrg.fullTreeFailed = false;
     cagOrg.deptNames = cagBuildDeptNames(cagOrg.tree);
-    cagIndexUsers((results[2] && results[2].users) || []);
-    cagOrg.srvs = Array.isArray(results[3]) ? results[3] : [];
+    cagOrg.srvs = Array.isArray(results[2]) ? results[2] : [];
     cagRenderQuotaSrv();
     cagOrg.loaded = true;
     if (!Object.keys(cagOrg.expanded).length && cagOrg.tree[0]) cagOrg.expanded[cagOrg.tree[0].id] = true;
     renderCloudAgentAccessTree();
     var open = Object.keys(cagOrg.expanded).filter(function (id) { return cagOrg.expanded[id]; });
-    await Promise.all(open.slice(0, 30).map(cagLoadMembers));
+    var membersReady = Promise.all(open.slice(0, 30).map(cagLoadMembers));
+    var usersData = await usersPending;
+    if (loadEpoch !== cagOrg.loadEpoch) return null;
+    cagIndexUsers((usersData && usersData.users) || []);
+    await membersReady;
     if (loadEpoch !== cagOrg.loadEpoch) return null;
     renderCloudAgentAccessTree();
     if (status) status.textContent = usersFailed ? cloudAgentQuotaText().usersFailed : '';
@@ -1023,13 +1172,15 @@ function cagWriteAccess(scope, target, enabled, instances, turns, srv, msgs) {
     if (cleared || (saved && saved.deleted)) {
       delete cagOrg.access[key];
     } else {
+      var prevName = cagAccessName(scope, target) || cagGrantName(scope, target);
       cagOrg.access[key] = {
         scope: scope,
         target_id: target,
         enabled: enabled || 'inherit',
         max_instances: instances == null ? null : instances,
         max_concurrent_turns: turns == null ? null : turns,
-        srv_id: srvId
+        srv_id: srvId,
+        target_name: (saved && saved.target_name) || prevName || ''
       };
     }
     renderCloudAgentAccessTree();

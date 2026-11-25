@@ -1609,7 +1609,7 @@ func NewRouter(
 			mux.HandleFunc("GET /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettingsGet(cloudSvc)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/settings", requireTenantAdmin(cloudAgentAdminSettings(cloudSvc, adminAudit)))
 			mux.HandleFunc("PATCH /api/admin/cloud-agents/users/{id}/limits", requireTenantAdmin(cloudAgentAdminUserLimits(cloudSvc, adminAudit)))
-			mux.HandleFunc("GET /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessGet(cloudSvc)))
+			mux.HandleFunc("GET /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessGet(cloudSvc, securitySvc)))
 			mux.HandleFunc("PUT /api/admin/cloud-agents/access", requireTenantAdmin(cloudAgentAdminAccessPut(cloudSvc, adminAudit)))
 			mux.HandleFunc("GET /api/admin/cloud-agents/srv-bindings", requireTenantAdmin(cloudAgentAdminSrvBindings(edgeRegistry, edgeBroker, botSvc)))
 			mux.HandleFunc("GET /api/admin/cloud-agents/srvs", requireTenantAdmin(cloudAgentAdminSrvs(edgeRegistry, edgeBroker, botSvc)))

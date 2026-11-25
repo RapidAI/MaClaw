@@ -119,7 +119,8 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 	}
 
 	// SkillMarket or ClawHub result 鈫?download and register locally.
-	sendStatus(fmt.Sprintf("猬囷笍 姝ｅ湪瀹夎: %s ...", best.Name))
+	sendStatus(fmt.Sprintf("猬囷笍 姝ｅ湪瀹夎: %s ...", best.Name))
+	requestedIdentity := explicitSkillInstallIdentity(query)
 
 	if best.SourceKind() == skillSearchSourceClawHub {
 		if h.app != nil {
@@ -136,6 +137,10 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		if dlErr != nil {
 			cskill.CleanupStaging(stagingDir)
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
+		}
+		if !downloadedSkillMatchesRequestedIdentity(skill, requestedIdentity) {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but the downloaded package does not match the requested skill %s", best.Name, requestedIdentity)}
 		}
 		skill.Source = "auto_clawhub"
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, policyOwnerID, sendStatus)
@@ -158,6 +163,10 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 	if dlErr != nil {
 		cskill.CleanupStaging(stagingDir)
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but download failed: %v", best.Name, dlErr)}
+	}
+	if !downloadedSkillMatchesRequestedIdentity(skill, requestedIdentity) {
+		cskill.CleanupStaging(stagingDir)
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but the downloaded package does not match the requested skill %s", best.Name, requestedIdentity)}
 	}
 	skill.Source = "auto_hub"
 	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", platform, userID, policyOwnerID, sendStatus)
@@ -525,11 +534,7 @@ func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *cor
 			// A list error is not an empty package. needs_setup would skip
 			// the skill after the directory can be read again.
 			log.Printf("[skill-auto] skip execute skill %s: %s", skill.Name, reason)
-			name := ""
-			if skill != nil {
-				name = skill.Name
-			}
-			return skillInstallExecutionResult{Text: skillInitialExecutionUnreadableNote(name)}
+			return skillInstallExecutionResult{Text: skillInitialExecutionUnreadableNote(skill.Name)}
 		}
 		log.Printf("[skill-auto] skip execute skill %s: %s", skill.Name, reason)
 		return h.finishInstalledSkillUnrunnable(skill, reason)
@@ -614,6 +619,35 @@ func installedSkillAutoRunRefusal(entry *corelib.NLSkillEntry) string {
 		return "package has no runnable program"
 	}
 	return ""
+}
+
+// downloadedSkillMatchesRequestedIdentity rejects a package whose downloaded
+// identity differs from an explicit "install <name>" request. This runs before
+// registration, so a mismatched marketplace or mirror response cannot leave a
+// wrong Skill installed merely because the search result looked compatible.
+// Generic capability searches have no requested identity and keep any package
+// the intent filter selected.
+func downloadedSkillMatchesRequestedIdentity(skill *corelib.NLSkillEntry, requested string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return true
+	}
+	if skill == nil {
+		return false
+	}
+	// Do not call skill.MatchesName directly: it also matches DirName and the
+	// SkillDir basename. Staging dirs are named from the searched package id,
+	// so that fallback would let a mismatched download pass by directory name.
+	for _, name := range []string{skill.Name, skill.SkillID, skill.HubSkillID} {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if (&corelib.NLSkillEntry{Name: name}).MatchesName(requested) {
+			return true
+		}
+	}
+	return false
 }
 
 func installedSkillInstructionResult(skill *corelib.NLSkillEntry) skillInstallExecutionResult {

@@ -108,6 +108,7 @@ async function main() {
   context.cagOrg.access = {};
   calls.length = 0;
   var accessItems = [{ scope: 'department', target_id: 'dept-1', enabled: 'on', max_instances: 2, max_concurrent_turns: null }];
+  var groupCalls = { root: 0, full: 0 };
   context.api = async function (url, opts) {
     calls.push({ url: url, opts: opts || null });
     if (opts && opts.method === 'PUT') {
@@ -119,15 +120,27 @@ async function main() {
     if (url === '/api/admin/cloud-agents/access') {
       return { items: accessItems };
     }
+    if (url === '/api/admin/security/groups/root') {
+      groupCalls.root += 1;
+      return { root: { id: 'root-1', name: 'Root', has_children: true } };
+    }
+    if (url === '/api/admin/security/groups/root-1/members') {
+      return { members: ['ada@example.com', 'ada.alias@example.com'], children: [{ id: 'dept-1', name: 'Engineering', has_children: true }] };
+    }
+    if (url === '/api/admin/security/groups/dept-1/members') {
+      return { members: [], children: [{ id: 'dept-2', name: 'Platform', has_children: false }] };
+    }
     if (url === '/api/admin/security/groups') {
-      return { tree: [{ id: 'dept-1', name: 'Engineering', children: [{ id: 'dept-2', name: 'Platform', children: [] }] }] };
+      groupCalls.full += 1;
+      return { tree: { id: 'root-1', name: 'Root', children: [{ id: 'dept-1', name: 'Engineering', children: [{ id: 'dept-2', name: 'Platform', children: [] }] }] } };
     }
     if (url === '/api/admin/users') return { users: [{ id: 'user-7', email: 'ada@example.com', emails: ['ada.alias@example.com'] }] };
-    if (url.indexOf('/members') !== -1) return { members: ['ada@example.com', 'ada.alias@example.com'] };
+    if (url.indexOf('/members') !== -1) return { members: [] };
     return { cloud_agents_enabled: false, max_instances: 3, max_concurrent_turns: 1 };
   };
   await context.loadCloudAgentAccess();
   const tree = elements.cloudAgentAccessTree.innerHTML;
+  assert(groupCalls.root === 1, 'the first paint asks for only the root department');
   assert(tree.includes('Engineering'), 'department is shown in the tree');
   assert(tree.includes('data-scope="department"') && tree.includes('data-target="dept-1"'), 'department row keeps its id');
   assert(tree.includes('value="on" selected'), 'saved department is marked open');
@@ -179,6 +192,7 @@ async function main() {
   elements.cloudAgentAccessFilter.value = '';
 
   elements.cloudAgentAccessFilter.value = 'eng';
+  context.cagOrg.expanded['dept-1'] = true;
   var expandedBefore = !!context.cagOrg.expanded['dept-1'];
   context.cagToggleDepartment('dept-1');
   assert(expandedBefore && context.cagOrg.expanded['dept-1'] === true, 'searching does not collapse a department that is already open');
@@ -186,6 +200,8 @@ async function main() {
   context.cagToggleDepartment('dept-1');
   assert(context.cagOrg.expanded['dept-1'] !== true, 'the toggle collapses a department when search is empty');
   context.cagOrg.expanded['dept-1'] = true;
+  await Promise.resolve();
+  assert(groupCalls.full <= 1, 'the full tree is fetched at most once across searches');
 
   var savedMembers = context.cagOrg.members;
   var savedExpanded = context.cagOrg.expanded;
@@ -235,11 +251,17 @@ async function main() {
     context.cagOrg.members = {};
     context.cagOrg.memberLoads = {};
     context.cagOrg.memberFailed = {};
+    context.cagOrg.deferredChildren = {};
+    context.cagOrg.fullTree = false;
+    context.cagOrg.fullTreeLoad = null;
+    context.cagOrg.fullTreeFailed = false;
     context.cagOrg.access = {};
     context.cagOrg.tree = [];
     context.cagOrg.users = [];
     context.cagOrg.usersByEmail = {};
     context.cagOrg.usersById = {};
+    context.cagOrg.deptNames = {};
+    context.cagOrg.srvs = [];
     elements.cloudAgentAccessTree.innerHTML = '';
     elements.cloudAgentAccessTree._cagDrawn = '';
     elements.cloudAgentAccessStatus.textContent = '';
@@ -250,7 +272,7 @@ async function main() {
   var usersFail = true;
   context.api = async function (url) {
     if (url === '/api/admin/cloud-agents/access') return { items: [] };
-    if (url === '/api/admin/security/groups') return { tree: [{ id: 'dept-1', name: 'Engineering', children: [] }] };
+    if (url === '/api/admin/security/groups/root') return { root: { id: 'dept-1', name: 'Engineering', has_children: false } };
     if (url === '/api/admin/users') {
       if (usersFail) throw new Error('users down');
       return { users: [{ id: 'user-7', email: 'ada@example.com' }] };
@@ -275,7 +297,7 @@ async function main() {
   memberCalls = 0;
   context.api = async function (url) {
     if (url === '/api/admin/cloud-agents/access') return { items: [] };
-    if (url === '/api/admin/security/groups') return { tree: [{ id: 'dept-1', name: 'Engineering', children: [] }] };
+    if (url === '/api/admin/security/groups/root') return { root: { id: 'dept-1', name: 'Engineering', has_children: false } };
     if (url === '/api/admin/users') return { users: [{ id: 'user-7', email: 'ada@example.com' }] };
     if (url.indexOf('/members') !== -1) {
       memberCalls += 1;
@@ -299,7 +321,7 @@ async function main() {
   context.api = async function (url, opts) {
     if (opts && opts.method === 'PUT') throw new Error('save down');
     if (url === '/api/admin/cloud-agents/access') return { items: [] };
-    if (url === '/api/admin/security/groups') return { tree: [] };
+    if (url === '/api/admin/security/groups/root') return { root: null };
     if (url === '/api/admin/users') return { users: [] };
     return {};
   };
@@ -323,7 +345,7 @@ async function main() {
       return { ok: true };
     }
     if (url === '/api/admin/cloud-agents/access') return { items: [] };
-    if (url === '/api/admin/security/groups') return { tree: [] };
+    if (url === '/api/admin/security/groups/root') return { root: null };
     if (url === '/api/admin/users') return { users: [] };
     return {};
   };
@@ -341,7 +363,7 @@ async function main() {
     if (url === '/api/admin/cloud-agents/access') {
       return { items: [{ scope: 'department', target_id: 'dept-1', enabled: memberWave === 0 ? 'off' : 'on', max_instances: null, max_concurrent_turns: null }] };
     }
-    if (url === '/api/admin/security/groups') return { tree: [{ id: 'dept-1', name: 'Engineering', children: [] }] };
+    if (url === '/api/admin/security/groups/root') return { root: { id: 'dept-1', name: 'Engineering', has_children: false } };
     if (url === '/api/admin/users') return { users: [{ id: 'user-7', email: 'ada@example.com' }] };
     if (url.indexOf('/members') !== -1) {
       memberWave += 1;
@@ -363,6 +385,38 @@ async function main() {
   assert(settled.indexOf('ada@example.com') !== -1, 'the newer membership stays on screen');
   assert(settled.indexOf('old@example.com') === -1, 'a late membership response does not replace it');
   assert(settled.indexOf('value="on" selected') !== -1, 'a late scope response does not replace the newer one');
+
+  resetOrg();
+  var lazyCalls = [];
+  context.api = async function (url) {
+    lazyCalls.push(url);
+    if (url === '/api/admin/cloud-agents/access') return { items: [] };
+    if (url === '/api/admin/security/groups/root') return { root: { id: 'root-1', name: 'Root', has_children: true } };
+    if (url === '/api/admin/security/groups/root-1/members') {
+      return { members: ['root@example.com'], children: [{ id: 'dept-1', name: 'Engineering', has_children: true }] };
+    }
+    if (url === '/api/admin/security/groups/dept-1/members') {
+      return { members: ['ada@example.com'], children: [{ id: 'dept-2', name: 'Platform', has_children: false }] };
+    }
+    if (url === '/api/admin/users') return { users: [{ id: 'user-7', email: 'ada@example.com' }, { id: 'user-9', email: 'root@example.com' }] };
+    return {};
+  };
+  await context.loadCloudAgentAccess();
+  assert(lazyCalls.indexOf('/api/admin/security/groups') === -1, 'loading the page does not fetch the full organization tree');
+  var lazyTree = elements.cloudAgentAccessTree.innerHTML;
+  assert(lazyTree.indexOf('Engineering') !== -1, 'the first-level department is shown after the root loads');
+  assert(lazyTree.indexOf('Platform') === -1, 'a grandchild department stays hidden until its parent expands');
+  context.cagToggleDepartment('dept-1');
+  for (var flush = 0; flush < 10; flush += 1) await Promise.resolve();
+  lazyTree = elements.cloudAgentAccessTree.innerHTML;
+  assert(lazyCalls.indexOf('/api/admin/security/groups/dept-1/members') !== -1, 'expanding a department reads its members and children');
+  assert(lazyTree.indexOf('Platform') !== -1, 'the child department appears once loaded');
+  assert(lazyTree.indexOf('ada@example.com') !== -1, 'the member appears once loaded');
+  context.cagToggleDepartment('dept-1');
+  for (var flush2 = 0; flush2 < 10; flush2 += 1) await Promise.resolve();
+  lazyTree = elements.cloudAgentAccessTree.innerHTML;
+  assert(lazyTree.indexOf('Platform') === -1, 'collapsing hides the loaded subtree again');
+  assert(lazyCalls.indexOf('/api/admin/security/groups/dept-1/members') !== -1 && lazyCalls.filter(function (u) { return u === '/api/admin/security/groups/dept-1/members'; }).length === 1, 'collapsing does not reload a loaded department');
 
   context.cagOrg.usersById = { 'user-7': { id: 'user-7', email: 'ada@example.com' } };
   context.api = async function (url) {

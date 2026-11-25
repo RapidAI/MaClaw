@@ -1,0 +1,221 @@
+/* GitHub & GitLab 设置页（gh-settings-*，仅本页使用）。
+   独立成文件而不是放进 App.css：设置页与其它会话共享 App.css 编辑冲突频发，
+   组件级引入（先例：AgentBrowserStage.css / DesktopBotWorkspace.css）互不干扰。 */
+
+/* 两张 provider 卡：宽窗口并排，窄窗口自动堆叠。 */
+.gh-settings-intro {
+    margin: 0 0 2px;
+}
+
+.gh-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 14px;
+    align-items: stretch;
+}
+
+.gh-settings-provider {
+    gap: 10px;
+}
+
+.gh-settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--theme-border);
+}
+
+.gh-settings-head__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gh-settings-head__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--theme-primary) 10%, transparent);
+    color: var(--theme-primary);
+}
+
+.gh-settings-account {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
+}
+
+.gh-settings-account img,
+.gh-settings-account__fallback {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.gh-settings-account__fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+}
+
+.gh-settings-account__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.gh-settings-account__name {
+    color: var(--theme-text-muted);
+    font-size: 0.76rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gh-settings-account__link {
+    margin-left: auto;
+    font-size: 0.76rem;
+    white-space: nowrap;
+}
+
+/* GitLab 实例 chip：域名 + 自建标签。 */
+.gh-settings-instance {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: fit-content;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--theme-border);
+    font-size: 0.74rem;
+    color: var(--theme-text-muted);
+}
+
+.gh-settings-instance__host {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gh-settings-instance__tag {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    color: var(--theme-primary);
+    background: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+}
+
+/* 设备码大按钮：整块可点击复制。 */
+.gh-settings-device-code {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border));
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--theme-primary) 5%, transparent);
+}
+
+.gh-settings-device-code__value {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: fit-content;
+    padding: 6px 14px;
+    border: 1px dashed color-mix(in srgb, var(--theme-primary) 45%, transparent);
+    border-radius: var(--radius-md, 8px);
+    background: transparent;
+    color: var(--theme-text-primary);
+    font-family: inherit;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+    cursor: pointer;
+}
+
+.gh-settings-device-code__value:hover {
+    background: color-mix(in srgb, var(--theme-primary) 10%, transparent);
+}
+
+.gh-settings-device-code__hint {
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--theme-text-muted);
+}
+
+/* GitLab 服务器分段选择 + 字段组。 */
+.gh-settings-field {
+    display: grid;
+    gap: 6px;
+}
+
+.gh-settings-field__label {
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.gh-settings-field__hint {
+    font-size: 0.72rem;
+}
+
+.gh-settings-seg {
+    display: inline-flex;
+    width: fit-content;
+    padding: 2px;
+    gap: 2px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 8px);
+    background: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+}
+
+.gh-settings-seg__item {
+    padding: 5px 14px;
+    border: none;
+    border-radius: calc(var(--radius-md, 8px) - 2px);
+    background: transparent;
+    color: var(--theme-text-muted);
+    font-family: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.gh-settings-seg__item[aria-pressed="true"] {
+    background: var(--theme-surface);
+    color: var(--theme-primary);
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+}
+
+.gh-settings-seg__item:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+/* 克隆表单：窄窗口下输入框保持整行。 */
+.gh-settings-form {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+
+@media (max-width: 720px) {
+    .gh-settings-grid {
+        grid-template-columns: 1fr;
+    }
+}

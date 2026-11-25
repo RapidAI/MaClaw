@@ -246,7 +246,7 @@ func writeMaclawAppApprovalRegistryTx(tx *sql.Tx, registry maclawAppApprovalRegi
 		if stored.signature == signature {
 			if reordered {
 				if _, err := tx.Exec(`UPDATE app_approval_instances SET position=? WHERE instance_id=?`, position, instance.InstanceID); err != nil {
-					return err
+					return fmt.Errorf("[dbg248] %w", err)
 				}
 				continue
 			}
@@ -297,12 +297,35 @@ func writeMaclawAppApprovalRegistryTx(tx *sql.Tx, registry maclawAppApprovalRegi
 }
 
 func writeMaclawAppApprovalInstance(tx *sql.Tx, instance maclawAppApprovalInstance, position int, signature string) error {
-	if _, err := tx.Exec(`INSERT INTO app_approval_instances(
+	exists := false
+	var storedID string
+	switch err := tx.QueryRow(`SELECT instance_id FROM app_approval_instances WHERE instance_id=?`, instance.InstanceID).Scan(&storedID); {
+	case err == nil:
+		exists = true
+	case errors.Is(err, sql.ErrNoRows):
+		exists = false
+	default:
+		return err
+	}
+	if exists {
+		// position is the table's rowid/PRIMARY KEY. An UPSERT whose conflict
+		// target is instance_id still trips "UNIQUE constraint failed:
+		// app_approval_instances.position" when the row already owns that
+		// position, so every in-place content update (status/lane/payload)
+		// silently failed to persist. Update the row instead. Reordering
+		// passes negate stored positions first, so moving onto the new
+		// position is free.
+		if _, err := tx.Exec(`UPDATE app_approval_instances SET position=?, signature=?, app_id=?, title=?, lane=?,
+			status=?, current_node=?, owner=?, approver=?, updated_at=?, record_id=?, approval_id=?
+			WHERE instance_id=?`,
+			position, signature, instance.AppID, instance.Title, instance.Lane, instance.Status,
+			instance.CurrentNode, instance.Owner, instance.Approver, instance.UpdatedAt, instance.RecordID, instance.ApprovalID,
+			instance.InstanceID); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(`INSERT INTO app_approval_instances(
 		position, instance_id, signature, app_id, title, lane, status, current_node, owner, approver, updated_at, record_id, approval_id)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET position=excluded.position,
-		signature=excluded.signature, app_id=excluded.app_id, title=excluded.title, lane=excluded.lane,
-		status=excluded.status, current_node=excluded.current_node, owner=excluded.owner, approver=excluded.approver,
-		updated_at=excluded.updated_at, record_id=excluded.record_id, approval_id=excluded.approval_id`,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		position, instance.InstanceID, signature, instance.AppID, instance.Title, instance.Lane, instance.Status,
 		instance.CurrentNode, instance.Owner, instance.Approver, instance.UpdatedAt, instance.RecordID, instance.ApprovalID); err != nil {
 		return err

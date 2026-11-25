@@ -1,11 +1,26 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EventsOn } from "../../../wailsjs/runtime";
 import { normalizeAssistantSessionKey } from "./aiAssistantPanelSessionUtils";
 import { parseWailsEventObject } from "./codingTaskMode";
 
 export type ContextWindowUsage = { used: number; max: number; estimated?: boolean };
 
-export function useContextWindowUsage(): Record<string, ContextWindowUsage> {
+/** Clear one session's live sample. Status fallback can then show the reset state. */
+export function removeContextWindowUsageForSession(
+    usageBySession: Record<string, ContextWindowUsage>,
+    sessionKey: string,
+): Record<string, ContextWindowUsage> {
+    const key = normalizeAssistantSessionKey(sessionKey);
+    if (!key || !(key in usageBySession)) return usageBySession;
+    const next = { ...usageBySession };
+    delete next[key];
+    return next;
+}
+
+export function useContextWindowUsage(): {
+    usageBySession: Record<string, ContextWindowUsage>;
+    resetSession: (sessionKey: string) => void;
+} {
     const [usageBySession, setUsageBySession] = useState<Record<string, ContextWindowUsage>>({});
     useEffect(() => {
         const off = EventsOn("ai-assistant-context-usage", (payload: unknown) => {
@@ -19,5 +34,8 @@ export function useContextWindowUsage(): Record<string, ContextWindowUsage> {
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
-    return usageBySession;
+    const resetSession = useCallback((sessionKey: string) => {
+        setUsageBySession(prev => removeContextWindowUsageForSession(prev, sessionKey));
+    }, []);
+    return { usageBySession, resetSession };
 }

@@ -290,3 +290,31 @@ func TestInstalledSkillResolutionToleratesRegisterNormalization(t *testing.T) {
 		t.Fatalf("resolved %q, want %q", target.Name, imported.Name)
 	}
 }
+
+func TestDownloadedSkillMatchesRequestedIdentity(t *testing.T) {
+	named := &corelib.NLSkillEntry{Name: "Lemo Opuscar"}
+	byHubID := &corelib.NLSkillEntry{Name: "Display Name", HubSkillID: "lemo-opuscar"}
+	wrong := &corelib.NLSkillEntry{Name: "域名测试", HubSkillID: "kwaishop-intelligent-diagnosis-skill_test"}
+	stagingTrap := &corelib.NLSkillEntry{
+		Name: "域名测试", SkillDir: `C:\temp\.skill-install-lemo-opuscar-1`, DirName: "lemo-opuscar",
+	}
+	for _, tc := range []struct {
+		name      string
+		skill     *corelib.NLSkillEntry
+		requested string
+		want      bool
+	}{
+		{name: "generic search accepts any downloaded package", skill: wrong, want: true},
+		{name: "missing package fails an explicit request", requested: "lemo-opuscar"},
+		{name: "display name matches", skill: named, requested: "lemo-opuscar", want: true},
+		{name: "hub id matches", skill: byHubID, requested: "lemo-opuscar", want: true},
+		{name: "different package fails", skill: wrong, requested: "lemo-opuscar"},
+		{name: "staging directory name does not impersonate the package", skill: stagingTrap, requested: "lemo-opuscar"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := downloadedSkillMatchesRequestedIdentity(tc.skill, tc.requested); got != tc.want {
+				t.Fatalf("downloadedSkillMatchesRequestedIdentity(%+v, %q) = %v, want %v", tc.skill, tc.requested, got, tc.want)
+			}
+		})
+	}
+}

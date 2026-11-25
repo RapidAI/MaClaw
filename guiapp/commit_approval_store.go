@@ -65,7 +65,9 @@ func newSQLiteCommitApprovalStore(dbPath string) (*sqliteCommitApprovalStore, er
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite ignores mattn-style _journal_mode/_busy_timeout —
+	// they must ride _pragma.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, err
 	}

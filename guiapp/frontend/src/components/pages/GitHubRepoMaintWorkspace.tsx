@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { tailText } from '../../i18n/mnTail';
+import { scopesHaveRepo } from '../../utils/githubScopes';
 
 type MaintRule = {
     id?: string;
@@ -66,10 +67,6 @@ function maintApp(): MaintApp | null {
 
 function text(lang: string, en: string, hans: string, hant: string): string {
     return tailText(lang, en, hans, hant);
-}
-
-function scopesHaveRepo(scopes?: string): boolean {
-    return String(scopes || '').split(/[\s,]+/).some((part) => part === 'repo');
 }
 
 function blankDraft(): MaintRule {

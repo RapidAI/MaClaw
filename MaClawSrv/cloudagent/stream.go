@@ -29,6 +29,8 @@ type liveSnapshot struct {
 	Cursor         uint64         `json:"cursor,omitempty"`
 	Terminal       map[string]any `json:"terminal,omitempty"`
 	LocalFilePaths []string       `json:"local_file_paths,omitempty"`
+	Workbench      map[string]any `json:"workbench,omitempty"`
+	Workflow       map[string]any `json:"workflow,omitempty"`
 }
 
 // streamCoalesce batches token deltas before a viewer frame is posted.
@@ -474,6 +476,11 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 	if snap.Parts == nil {
 		snap.Parts = []livePart{}
 	}
+	// The workbench is task state, not lane state: it is rebuilt from the
+	// book so a watcher also restores it after a srv restart. The workflow
+	// snapshot is the same — rebuilt from the machine's own store.
+	snap.Workbench = rt.workbenchSnapshot(inst, taskID)
+	snap.Workflow = rt.workflowSnapshot(inst, taskID)
 	instID := ""
 	if inst != nil {
 		instID = inst.meta.ID

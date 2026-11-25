@@ -18,6 +18,7 @@ func TestInstanceOwnerFindsTheOwningPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = svc.Close() })
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Name: "tenant"})
 	if err != nil {

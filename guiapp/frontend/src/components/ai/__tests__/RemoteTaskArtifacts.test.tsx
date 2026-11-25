@@ -160,6 +160,38 @@ describe('RemoteTaskArtifacts', () => {
         expect(screen.getByTestId('remote-task-artifact-2')).toBeTruthy();
     });
 
+    it('packs the whole workspace through the card-head export', async () => {
+        const onExport = vi.fn().mockResolvedValue('C:\\Users\\me\\Downloads\\snake.tar.gz');
+        render(<RemoteTaskArtifacts paths={['C:\\remote\\work\\a.pdf']} messageId="m-exp" lang="zh-Hans" onFetch={vi.fn()} onExportWorkspace={onExport} />);
+        fireEvent.click(screen.getByTestId('remote-task-artifacts-export'));
+        await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+        const button = await screen.findByText('已导出');
+        expect(button.getAttribute('title')).toContain('snake.tar.gz');
+    });
+
+    it('hides the workspace export without the cloud handler', () => {
+        render(<RemoteTaskArtifacts paths={['C:\\remote\\work\\a.pdf']} messageId="m-noexp" lang="zh-Hans" onFetch={vi.fn()} />);
+        expect(screen.queryByTestId('remote-task-artifacts-export')).toBeNull();
+    });
+
+    it('returns to idle when the save dialog is cancelled', async () => {
+        const onExport = vi.fn().mockResolvedValue('');
+        render(<RemoteTaskArtifacts paths={['C:\\remote\\work\\a.pdf']} messageId="m-cancel" lang="zh-Hans" onFetch={vi.fn()} onExportWorkspace={onExport} />);
+        fireEvent.click(screen.getByTestId('remote-task-artifacts-export'));
+        await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+        await screen.findByText('导出');
+    });
+
+    it('shows the workspace export error and allows retry', async () => {
+        const onExport = vi.fn().mockRejectedValueOnce(new Error('云端操作失败')).mockResolvedValueOnce('C:\\Users\\me\\Downloads\\retry.tar.gz');
+        render(<RemoteTaskArtifacts paths={['C:\\remote\\work\\a.pdf']} messageId="m-experr" lang="zh-Hans" onFetch={vi.fn()} onExportWorkspace={onExport} />);
+        fireEvent.click(screen.getByTestId('remote-task-artifacts-export'));
+        await screen.findByText('导出失败');
+        fireEvent.click(screen.getByTestId('remote-task-artifacts-export'));
+        await screen.findByText('已导出');
+        expect(onExport).toHaveBeenCalledTimes(2);
+    });
+
     it('renders nothing when the turn produced no files', () => {
         const { container } = render(<RemoteTaskArtifacts paths={[]} messageId="m3" lang="zh-Hans" onFetch={vi.fn()} />);
         expect(container.firstChild).toBeNull();

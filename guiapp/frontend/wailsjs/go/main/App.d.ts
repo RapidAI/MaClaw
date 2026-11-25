@@ -1875,6 +1875,8 @@ export function ListExperienceAudit():Promise<Array<experience.AuditEntry>>;
 
 export function ListExperts():Promise<string>;
 
+export function CloudAgentExpertProfile(arg1:string):Promise<string>;
+
 export function ListManagedIndustryExperts():Promise<string>;
 
 export function PurchaseAndInstallManagedIndustryExpert(arg1:string,arg2:string):Promise<void>;
@@ -2947,6 +2949,18 @@ export function WaitGitHubOAuth():Promise<main.GitHubConnectionStatus>;
 export function GetGitHubConnection(arg1:boolean):Promise<main.GitHubConnectionStatus>;
 
 export function DisconnectGitHub():Promise<void>;
+
+export function GetGitLabConnection(arg1:boolean):Promise<main.GitLabConnectionStatus>;
+
+export function ConnectGitLab(arg1:string,arg2:string):Promise<main.GitLabConnectionStatus>;
+
+export function DisconnectGitLab():Promise<void>;
+
+export function OpenGitLabTokenPage(arg1:string):Promise<void>;
+
+export function CloudAgentGitHubAccount():Promise<main.CloudAgentGitHubAccount>;
+
+export function CloudAgentGitLabAccount():Promise<main.CloudAgentGitLabAccount>;
 
 export function GitHubAPIRequest(arg1:string,arg2:string):Promise<string>;
 

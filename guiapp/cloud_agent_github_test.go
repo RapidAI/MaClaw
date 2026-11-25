@@ -54,7 +54,7 @@ func TestSyncCloudAgentGitCredentialsRefreshesOnlyAccountBound(t *testing.T) {
 	}
 	store := oauth.NewFileCredentialStore(filepath.Join(app.testHomeDir, "credentials.json"))
 	if err := store.Modify(oauth.GitHubAccountProviderID, func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
-		return &oauth.StoredCredential{Type: "oauth", AccessToken: "new-oauth-token", Login: "ada"}, nil
+		return &oauth.StoredCredential{Type: "oauth", AccessToken: "new-oauth-token", Login: "ada", Scopes: "repo"}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,4 +80,34 @@ func TestSyncCloudAgentGitCredentialsSkipsWithoutToken(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	// No credential store and no token — must not even list instances.
 	app.syncCloudAgentGitCredentials()
+}
+
+func TestSyncCloudAgentGitCredentialsSkipsScopelessToken(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token", RemoteMachineToken: "machine-token", RemoteMachineID: "machine-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := oauth.NewFileCredentialStore(filepath.Join(app.testHomeDir, "credentials.json"))
+	if err := store.Modify(oauth.GitHubAccountProviderID, func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{Type: "oauth", AccessToken: "ghu_legacy_or_scopeless", Login: "ada"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.credentialStore = store
+
+	app.syncCloudAgentGitCredentials()
+
+	if hit {
+		t.Fatal("scopeless token must not reach the hub — instances keep their working credential")
+	}
 }

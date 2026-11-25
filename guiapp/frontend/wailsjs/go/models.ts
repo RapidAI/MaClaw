@@ -11166,6 +11166,7 @@ export namespace main {
 	    scopes?: string;
 	    client_id: string;
 	    custom_client_id: boolean;
+	    github_app_token?: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new GitHubConnectionStatus(source);
@@ -11181,6 +11182,7 @@ export namespace main {
 	        this.scopes = source["scopes"];
 	        this.client_id = source["client_id"];
 	        this.custom_client_id = source["custom_client_id"];
+	        this.github_app_token = source["github_app_token"];
 	    }
 	}
 	export class GitHubCopilotDeviceInfo {
@@ -11211,6 +11213,78 @@ export namespace main {
 	        this.user_code = source["user_code"];
 	        this.verification_uri = source["verification_uri"];
 	        this.browser_opened = source["browser_opened"];
+	    }
+	}
+	export class GitLabConnectionStatus {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    avatar_url?: string;
+	    html_url?: string;
+	    origin?: string;
+	    scopes?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GitLabConnectionStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.avatar_url = source["avatar_url"];
+	        this.html_url = source["html_url"];
+	        this.origin = source["origin"];
+	        this.scopes = source["scopes"];
+	    }
+	}
+	export class CloudAgentGitHubAccount {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    email?: string;
+	    token?: string;
+	    repo_scope: boolean;
+	    github_app_token?: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudAgentGitHubAccount(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.email = source["email"];
+	        this.token = source["token"];
+	        this.repo_scope = source["repo_scope"];
+	        this.github_app_token = source["github_app_token"];
+	    }
+	}
+	export class CloudAgentGitLabAccount {
+	    connected: boolean;
+	    login?: string;
+	    name?: string;
+	    email?: string;
+	    origin?: string;
+	    token?: string;
+	    repo_scope: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudAgentGitLabAccount(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.login = source["login"];
+	        this.name = source["name"];
+	        this.email = source["email"];
+	        this.origin = source["origin"];
+	        this.token = source["token"];
+	        this.repo_scope = source["repo_scope"];
 	    }
 	}
 	export class GossipPost {

@@ -66,6 +66,17 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	files := formatCodingAgentTouchedFiles(result.FilesCreated, result.FilesModified)
 	switch result.Status {
 	case v2.TaskFailed:
+		if codingGoalTurnStillOpen(result.Error) {
+			// The host keeps this step open and arms the next goal turn
+			// itself. The budget handoff used to be shown here even though no
+			// budget was spent, and it asked the person to send the message
+			// the host was already about to send. Keep the turn's own progress
+			// text; say nothing about limits.
+			if summary != "" && !codingAgentSummaryIsIterationFallback(summary) {
+				return summary
+			}
+			return codingGoalStepContinuesParagraph()
+		}
 		if codingLoopIterationExhausted(result.Error) {
 			limit := codingIterationLimitParagraph()
 			if summary != "" && !codingAgentSummaryIsIterationFallback(summary) && !codingAgentSummaryLooksSuccessful(summary) {
@@ -181,7 +192,7 @@ func codingWorkbenchCarrySteps(results []v2.TaskRunResult) []string {
 		paragraph := strings.TrimSpace(strings.ReplaceAll(formatCodingAgentResultParagraph(result), codingSubAgentRecoveryMarker, ""))
 		// The host limit sentence is not a delivery. Storing it alone replaces
 		// the previous turn's results with "send another message".
-		if paragraph == "" || paragraph == codingIterationLimitParagraph() {
+		if paragraph == "" || paragraph == codingIterationLimitParagraph() || paragraph == codingGoalStepContinuesParagraph() {
 			continue
 		}
 		steps = append(steps, paragraph)
@@ -524,7 +535,9 @@ func emitCodingAgentFinishToken(onToken func(string), report string, results []v
 
 func codingAgentSummaryIsIterationFallback(summary string) bool {
 	summary = strings.TrimSpace(summary)
-	return strings.HasPrefix(summary, "任务运行错误") || strings.Contains(strings.ToLower(summary), "max iterations reached")
+	return strings.HasPrefix(summary, "任务运行错误") ||
+		strings.Contains(strings.ToLower(summary), "max iterations reached") ||
+		summary == codingGoalStepContinuesParagraph()
 }
 
 func codingIterationLimitParagraph() string {
@@ -532,6 +545,17 @@ func codingIterationLimitParagraph() string {
 		"This round hit the iteration limit. Send another message to continue.",
 		"这一轮到了迭代上限。再发一条消息可以接着做。",
 		"這一輪到了迭代上限。再發一條消息可以接著做。",
+	)
+}
+
+// codingGoalStepContinuesParagraph is the whole answer for a goal turn whose
+// step the host keeps open. It is host bookkeeping, not work, so the sticky
+// carry must not store it as the turn's result.
+func codingGoalStepContinuesParagraph() string {
+	return codingExecText(
+		"This step continues in the next round.",
+		"这一步还没交付，系统会继续推进。",
+		"這一步還沒交付，系統會繼續推進。",
 	)
 }
 

@@ -14,6 +14,24 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
+// goalTurnOpenError is the task error for a goal turn that has not delivered
+// its phase record. The prefix is load-bearing: the scheduler treats
+// codingLoopIterationExhausted as "keep this step and run another turn"
+// instead of closing the goal.
+const goalTurnOpenError = "max iterations reached" + goalTurnOpenMark
+
+// goalTurnOpenMark is the host's keep-this-step-open marker inside
+// goalTurnOpenError. It is not a spent loop budget: the goal keeps its step
+// and the next continuation turn is armed, so the transcript must not answer
+// it with the "send another message" handoff.
+const goalTurnOpenMark = "；目标尚未达成"
+
+// codingGoalTurnStillOpen reports the host's keep-this-step-open signal, as
+// opposed to a loop that actually spent its iteration budget.
+func codingGoalTurnStillOpen(errText string) bool {
+	return strings.Contains(strings.TrimSpace(errText), goalTurnOpenMark)
+}
+
 // isGoalSystemContinuation reports a host-owned goal turn. The text is the
 // continuation engine's phase contract (plan, or one execute step), not a
 // user request. Callers must not reclassify it as a fresh intent or as a
@@ -2612,29 +2630,133 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuationOwned(userID string, res
 	}
 }
 
-// codingGoalTurnIncomplete reports a host goal turn that must not be recorded
-// as passed. A landed complete or fail closes the goal. A prose stop, a
-// refused complete, an open step, or a spent iteration budget does not.
-// The returned text is the task error the host already knows how to continue
-// from when it starts with "max iterations reached".
+// codingGoalTurnIncomplete reports a host goal turn whose own phase delivery
+// is missing, so the host must not record it as passed. A landed plan, a
+// completed current step, or a landed complete/fail is delivery; model prose
+// alone is not. The returned text starts with "max iterations reached" because
+// that is the host's keep-this-step-open signal, not a claim that the model
+// actually exhausted its budget.
 func codingGoalTurnIncomplete(s *CodingSubAgent, task *TaskItem, reqCtx string, result agent.LoopResult) (bool, string) {
-	if goalContinuationPhase(goalContinuationSource(task, reqCtx)) == "" {
+	source := goalContinuationSource(task, reqCtx)
+	phase := goalContinuationPhase(source)
+	if phase == "" {
 		return false, ""
 	}
-	g := codingGoalForSubAgent(s)
+	blocked, why := goalTurnDeliveryIncomplete(codingGoalForSubAgent(s), phase, goalContinuationStepIndex(source), result.Error)
+	if !blocked {
+		return false, ""
+	}
+	// This turn's own goal tool call is delivery evidence too. The store
+	// re-read can miss a row that moved to another key, was replaced while
+	// the turn ran, or lives on another handler's store; failing the turn
+	// there answered work that was already saved with 目标尚未达成.
+	if s != nil && s.goalPhaseDeliveredFor(phase) {
+		log.Printf("[coding-subagent] task T%d goal %s phase delivered by this turn's own receipt", taskDisplayNumber(task), phase)
+		return false, ""
+	}
+	return true, why
+}
+
+// goalContinuationStepIndex reads the step number the execute prompt told the
+// model it may report this turn. Zero means the text carries no such cursor.
+func goalContinuationStepIndex(text string) int {
+	const marker = "本轮只能提交步骤 "
+	// The phase header embeds the goal objective, which may itself contain this
+	// sentence. The real cursor is the last full line carrying it.
+	start := strings.LastIndex(text, "\n"+marker)
+	offset := 1
+	if start < 0 && strings.HasPrefix(text, marker) {
+		start, offset = 0, 0
+	}
+	if start < 0 {
+		return 0
+	}
+	rest := text[start+offset+len(marker):]
+	index := 0
+	digits := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		index = index*10 + int(r-'0')
+		digits++
+		if digits > 9 {
+			return 0
+		}
+	}
+	return index
+}
+
+// goalPlanLanded reports the plan phase's only valid delivery. It deliberately
+// checks only the plan records: a missing plan cannot be treated as success
+// just because the model wrote a plan in prose.
+func goalPlanLanded(g *goal.Goal) bool {
+	return g != nil && len(g.Steps) > 0
+}
+
+// goalTurnTerminalDelivery reports the terminal statuses that already recorded
+// a final verdict for the goal. A budget limit is terminal for scheduling but
+// is not delivery: the step can still be incomplete when the budget runs out.
+func goalTurnTerminalDelivery(g *goal.Goal) bool {
 	if g == nil {
-		return true, "max iterations reached；目标尚未达成"
+		return false
 	}
-	if g.IsTerminal() {
+	return g.Status == goal.StatusComplete || g.Status == goal.StatusFailed
+}
+
+// goalStepDelivery reports whether the goal still contains the step this turn
+// was told to report, and whether that step reached done. A missing step is not
+// delivery: the host cannot attribute this turn's work to the current plan.
+func goalStepDelivery(g *goal.Goal, index int) (found, delivered bool) {
+	if g == nil || index <= 0 {
+		return false, false
+	}
+	for _, step := range g.Steps {
+		if step.Index == index {
+			return true, step.Status == goal.StepDone
+		}
+	}
+	return false, false
+}
+
+// goalTurnDeliveryIncomplete is the single delivery contract shared by local
+// and remote goal turns. A landed plan, a completed cursor step, or a terminal
+// complete/fail is delivery; prose alone is not.
+func goalTurnDeliveryIncomplete(g *goal.Goal, phase string, stepIndex int, loopErr string) (bool, string) {
+	if phase == "" {
 		return false, ""
+	}
+	if g == nil {
+		return true, goalTurnOpenError
+	}
+	if goalTurnTerminalDelivery(g) {
+		return false, ""
+	}
+	if phase == "plan" {
+		// The planning turn's delivery is the saved plan, not a completed step.
+		// Once steps exist the next continuation starts execute, even though the
+		// goal itself must stay active until every step is reported done.
+		if goalPlanLanded(g) {
+			return false, ""
+		}
+		return true, goalTurnOpenError
+	}
+	if stepIndex > 0 {
+		if found, delivered := goalStepDelivery(g, stepIndex); found {
+			if delivered {
+				return false, ""
+			}
+			return true, goalTurnOpenError
+		}
 	}
 	if _, open := g.CurrentStep(); open || !g.ReadyToComplete() || g.Status == goal.StatusActive || g.Status == goal.StatusPaused {
-		// Prefix matches codingLoopIterationExhausted so the host keeps this
-		// step and schedules the next turn. A plain failure closes the goal.
-		return true, "max iterations reached；目标尚未达成"
+		return true, goalTurnOpenError
 	}
-	if codingLoopIterationExhausted(result.Error) {
-		return true, "max iterations reached"
+	if codingLoopIterationExhausted(loopErr) {
+		// A spent budget ends this turn, not the step. The next continuation
+		// keeps the same cursor, and the transcript must not ask the person
+		// for a message the host is already about to send.
+		return true, goalTurnOpenError
 	}
 	return false, ""
 }
@@ -2654,11 +2776,18 @@ func codingGoalForSubAgent(s *CodingSubAgent) *goal.Goal {
 	return store.Get(s.handler.resolveGoalUserID(userID))
 }
 
-// remoteGoalTurnIncomplete is the same contract for a remote goal turn. The
-// remote callback does not own the goal store, so an open host phase is enough
-// to refuse passed. A missing store still refuses: absence is not completion.
+// remoteGoalTurnIncomplete is the same delivery contract for a remote goal
+// turn. The remote callback does not own the goal store, so a missing record
+// still refuses: absence is not evidence that the phase was delivered.
 func remoteGoalTurnIncomplete(c *remoteCodingCallbacks) (bool, string) {
-	if c == nil || (goalContinuationPhase(c.task) == "" && goalContinuationPhase(c.taskContext) == "") {
+	if c == nil {
+		return false, ""
+	}
+	phase := goalContinuationPhase(c.task)
+	if phase == "" {
+		phase = goalContinuationPhase(c.taskContext)
+	}
+	if phase == "" {
 		return false, ""
 	}
 	var g *goal.Goal
@@ -2670,8 +2799,9 @@ func remoteGoalTurnIncomplete(c *remoteCodingCallbacks) (bool, string) {
 			}
 		}
 	}
-	if g != nil && g.IsTerminal() {
-		return false, ""
+	stepIndex := goalContinuationStepIndex(c.task)
+	if stepIndex == 0 {
+		stepIndex = goalContinuationStepIndex(c.taskContext)
 	}
-	return true, "max iterations reached；目标尚未达成"
+	return goalTurnDeliveryIncomplete(g, phase, stepIndex, "")
 }

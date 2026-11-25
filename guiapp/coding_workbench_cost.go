@@ -96,6 +96,13 @@ func (h *IMMessageHandler) recordStickyCodingUsage(userID string, sessionInput, 
 // window fill. It does not add to the session total; that sum is recorded
 // once when the task finishes.
 func (h *IMMessageHandler) noteCodingContextFill(userID string, promptTokens, outputTokens int) {
+	h.noteCodingContextFillEstimate(userID, promptTokens, outputTokens, false)
+}
+
+// noteCodingContextFillEstimate records the prompt fill and marks it estimated
+// when the provider under-reported and the host's outbound estimate won the
+// reconciliation.
+func (h *IMMessageHandler) noteCodingContextFillEstimate(userID string, promptTokens, outputTokens int, estimated bool) {
 	if h == nil || userID == "" || promptTokens <= 0 {
 		return
 	}
@@ -111,14 +118,18 @@ func (h *IMMessageHandler) noteCodingContextFill(userID string, promptTokens, ou
 		}
 	})
 	mem := h.getStickyCodingWorkbenchMemory(userID)
-	h.publishContextWindowUsage(userID, mem.LastTurnInputTokens, window)
+	h.emitContextWindowUsage(userID, mem.LastTurnInputTokens, window, estimated)
 }
 
 func (h *IMMessageHandler) publishContextWindowUsage(userID string, usedTokens, maxTokens int) {
-	h.publishContextWindowUsageEstimate(userID, usedTokens, maxTokens, false)
+	h.emitContextWindowUsage(userID, usedTokens, maxTokens, false)
 }
 
 func (h *IMMessageHandler) publishContextWindowUsageEstimate(userID string, usedTokens, maxTokens int, estimated bool) {
+	h.emitContextWindowUsage(userID, usedTokens, maxTokens, estimated)
+}
+
+func (h *IMMessageHandler) emitContextWindowUsage(userID string, usedTokens, maxTokens int, estimated bool) {
 	if h == nil || h.app == nil || userID == "" || maxTokens <= 0 {
 		return
 	}

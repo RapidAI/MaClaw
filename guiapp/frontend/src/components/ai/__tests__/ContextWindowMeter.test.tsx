@@ -22,6 +22,18 @@ describe("ContextWindowMeter", () => {
         expect(screen.getByTestId("context-window-meter-fill").style.width).toBe("100%");
     });
 
+    it("never renders a non-zero fill as zero percent", () => {
+        render(<ContextWindowMeter lang="zh-Hans" usedTokens={192} maxTokens={102400} mutedColor="#667085" />);
+        expect(screen.getByTestId("context-window-meter-value").textContent).toBe("192 / 102k · <1%");
+        expect(screen.getByTestId("context-window-meter-fill").style.width).toBe("1%");
+    });
+
+    it("keeps an empty fill at zero percent", () => {
+        render(<ContextWindowMeter lang="zh-Hans" usedTokens={0} maxTokens={102400} mutedColor="#667085" />);
+        expect(screen.getByTestId("context-window-meter-value").textContent).toBe("0 / 102k · 0%");
+        expect(screen.getByTestId("context-window-meter-fill").style.width).toBe("0%");
+    });
+
     it("stays hidden without a resolved model window", () => {
         const { container } = render(<ContextWindowMeter lang="en" usedTokens={100} maxTokens={0} mutedColor="#667085" />);
         expect(container.firstChild).toBeNull();

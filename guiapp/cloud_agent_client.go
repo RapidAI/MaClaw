@@ -16,6 +16,9 @@ type CloudAgentRow struct {
 	Name          string    `json:"name"`
 	Kind          string    `json:"kind"`
 	Status        string    `json:"status"`
+	// SrvNodeID is the private node maclawsrv this instance was provisioned
+	// on; empty means the official (public) cloud service.
+	SrvNodeID     string    `json:"srv_node_id,omitempty"`
 	RuntimeStatus string    `json:"runtime_status"`
 	LLMMode       string    `json:"llm_mode"`
 	LLMLabel      string    `json:"llm_label"`

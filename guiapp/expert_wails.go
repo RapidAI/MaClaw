@@ -732,3 +732,24 @@ func expertProfileJSON(fields map[string]json.RawMessage) (string, error) {
 	}
 	return string(encoded), nil
 }
+
+// CloudAgentExpertProfile resolves the wizard's picked expert for a cloud
+// task. The picker's option list is a slim shape without the persona, so the
+// create flow resolves name + system_prompt here and ships both over the
+// cloud_create_task op — the instance then replays them in every turn's
+// system prompt.
+func (a *App) CloudAgentExpertProfile(expertID string) (string, error) {
+	def := loadExpertDefByID(strings.TrimSpace(expertID))
+	if def == nil || def.ID == "" {
+		return "", errors.New("专家不存在或已被移除")
+	}
+	out, err := json.Marshal(struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		SystemPrompt string `json:"system_prompt"`
+	}{ID: def.ID, Name: def.Name, SystemPrompt: def.SystemPrompt})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}

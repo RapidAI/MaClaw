@@ -4,6 +4,7 @@ import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, C
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
 import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withMachine, withRemoteWorkspace, withRunWindow, withTaskType, withWorkflow, WORKFLOW_AUTO } from '../taskDraft';
 import { bindRemoteTaskOpener, publishRemoteMachineTarget } from '../../../layout/remoteAssistantSession';
+import { dismissNewTaskCover } from '../newTaskCoverHold';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
@@ -1351,6 +1352,51 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         } finally {
             window.removeEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
         }
+    });
+
+    it('drops the cover when a remote or cloud task opens outside the tab strip', async () => {
+        const showComposerText = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            assistantBusy: true,
+            localGuideVisible: false,
+            activeChatVisible: false,
+            inputValue: 'follow up',
+            getTabState: () => ({ history: [] }),
+            showComposerText,
+        })));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(result.current.wizardOverlay).toBe(true));
+
+        act(() => {
+            dismissNewTaskCover();
+        });
+        expect(result.current.wizardOverlay).toBe(false);
+        expect(showComposerText).toHaveBeenCalledWith('follow up');
+    });
+
+    it('drops the cover when another assistant tab takes focus', async () => {
+        const { result, rerender } = renderHook(
+            ({ activeTab }) => useTaskConfigWiring(makeOptions({
+                activeTab,
+                isLocalTabActive: false,
+                assistantBusy: true,
+                inputValue: 'follow up',
+                getTabs: () => [{ id: 'tab-1', type: 'local' }, { id: 'proj-1', type: 'project' }, { id: 'proj-2', type: 'project' }],
+                getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+            })),
+            { initialProps: { activeTab: { id: 'proj-1', type: 'project' } } },
+        );
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(result.current.wizardOverlay).toBe(true));
+
+        rerender({ activeTab: { id: 'proj-2', type: 'project' } });
+        await waitFor(() => expect(result.current.wizardOverlay).toBe(false));
     });
 });
 

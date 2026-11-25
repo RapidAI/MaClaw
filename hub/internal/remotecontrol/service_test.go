@@ -540,6 +540,20 @@ func TestListDirsOpRequiresOperate(t *testing.T) {
 	}
 }
 
+func TestCloudSubmitWorkflowFormOpRequiresOperate(t *testing.T) {
+	// The form submit writes workflow state and runs a phase turn — an
+	// operate op, same as cloud_send_message it replaces for that gate.
+	if !allowedOp(OpCloudSubmitWorkflowForm) {
+		t.Fatal("cloud_submit_workflow_form must be a known op")
+	}
+	if permissionAllows(PermView, OpCloudSubmitWorkflowForm) {
+		t.Fatal("cloud_submit_workflow_form must reject view grants")
+	}
+	if !permissionAllows(PermOperate, OpCloudSubmitWorkflowForm) {
+		t.Fatal("cloud_submit_workflow_form must be allowed for operate grants")
+	}
+}
+
 func TestRevokeNotifiesTheOtherSide(t *testing.T) {
 	svc, _, _, notes := testService(t)
 	ctx := context.Background()

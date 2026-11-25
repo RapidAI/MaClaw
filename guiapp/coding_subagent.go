@@ -101,6 +101,14 @@ type CodingSubAgent struct {
 	// Ordinary coding turns keep the tool off the legacy compatibility belt.
 	exposeGoalTool bool
 
+	// goalPhaseReceipt is the phase record this turn itself wrote through the
+	// goal tool (plan saved, step done, complete/fail). The host judges a goal
+	// turn by its own receipt as well as by a store re-read: a row that moved,
+	// was replaced while the turn ran, or is read through another handler's
+	// store must not turn a delivered phase into 目标尚未达成. Written by the
+	// loop goroutine that executes tools and read after the loop returns.
+	goalPhaseReceipt string
+
 	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
 	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
 	nestDepth int
@@ -787,6 +795,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// Nested explorer/reviewer are inspection-only — do not run write-oriented
 	// post-loop verify/fix cycles or the full implementation quality matrix.
 	if s.nestDepth > 0 && (s.role == codingRoleExplorer || s.role == codingRoleReviewer) {
+		// Seal the reconciled prompt so the trajectory does not preserve the
+		// provider's partial (uncached) leg.
+		result.Usage.LastPromptTokens = cb.contextMeter.preferPrompt(result.Usage.LastPromptTokens)
 		sealSubAgentTrajectory(traj, result)
 		if s.handler != nil {
 			accumulateLoopResultUsage(s.handler.app, s.cfg, result)
@@ -841,6 +852,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			}
 		}
 	}
+	// The provider's final prompt can be the uncached/incremental leg only.
+	// Publish the reconciled outbound fill so the sealed trajectory and
+	// task-end status writes do not repaint a collapsed meter.
+	result.Usage.LastPromptTokens = cb.contextMeter.preferPrompt(result.Usage.LastPromptTokens)
 	sealSubAgentTrajectory(traj, result)
 	// Accumulate after post-loop so fix-loop token usage is not dropped.
 	if s.handler != nil {
@@ -1246,11 +1261,15 @@ type codingSubAgentCallbacks struct {
 	subagent *CodingSubAgent
 	// compactor receives each provider prompt size so compaction follows the
 	// real window, not only the byte estimate. buildLoopHooks sets it.
-	compactor   *SubAgentCompactor
-	task        *TaskItem
-	reqCtx      string
-	designCtx   string
-	prevOutputs []string
+	compactor *SubAgentCompactor
+	// contextMeter reconciles the provider prompt count with the outbound
+	// estimate for the same request. A provider that reports only incremental
+	// input tokens must not shrink the meter or the compaction trigger.
+	contextMeter outboundContextMeter
+	task         *TaskItem
+	reqCtx       string
+	designCtx    string
+	prevOutputs  []string
 	// acceptanceBrief is the record-only script from submit_interactive_acceptance.
 	// Nil means the model did not submit one. A console target still uses the default keys.
 	acceptanceBrief *codingAcceptanceBrief
@@ -3218,6 +3237,66 @@ func (c *codingSubAgentCallbacks) executeTodoWrite(argsJSON string) codingToolEx
 	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }
 
+// Goal phase receipts are the goal tool's own delivery vocabulary. They are
+// what this turn wrote, not what a later store read guesses.
+const (
+	goalPhaseReceiptPlan         = "plan"
+	goalPhaseReceiptStepDone     = "step_done"
+	goalPhaseReceiptStepProgress = "step_progress"
+	goalPhaseReceiptComplete     = "complete"
+	goalPhaseReceiptFail         = "fail"
+)
+
+// goalPhaseReceiptForArgs maps a goal tool call to the phase record it writes.
+// A step report is delivery only when it reports the step done.
+func goalPhaseReceiptForArgs(args map[string]interface{}) string {
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "plan":
+		return goalPhaseReceiptPlan
+	case "step":
+		status, _ := args["status"].(string)
+		if strings.EqualFold(strings.TrimSpace(status), "done") {
+			return goalPhaseReceiptStepDone
+		}
+		return goalPhaseReceiptStepProgress
+	case "complete":
+		return goalPhaseReceiptComplete
+	case "fail":
+		return goalPhaseReceiptFail
+	}
+	return ""
+}
+
+// noteGoalPhaseReceipt records the phase record this turn wrote. The last
+// non-empty receipt wins: a plan followed by a step report is still the
+// turn's own delivery evidence.
+func (s *CodingSubAgent) noteGoalPhaseReceipt(receipt string) {
+	if s == nil || strings.TrimSpace(receipt) == "" {
+		return
+	}
+	s.goalPhaseReceipt = receipt
+}
+
+// goalPhaseDeliveredFor reports a phase record this turn already wrote. Plan
+// accepts a saved plan; execute accepts a done step or a terminal complete/
+// fail. A progress report keeps the step open, so it is not delivery.
+func (s *CodingSubAgent) goalPhaseDeliveredFor(phase string) bool {
+	if s == nil {
+		return false
+	}
+	switch phase {
+	case "plan":
+		return s.goalPhaseReceipt == goalPhaseReceiptPlan
+	case "execute":
+		switch s.goalPhaseReceipt {
+		case goalPhaseReceiptStepDone, goalPhaseReceiptComplete, goalPhaseReceiptFail:
+			return true
+		}
+	}
+	return false
+}
+
 // executeGoalTool routes goal(action=...) through the host goal store using the
 // pure-coding session owner (loopCtx.UserID / project tab key).
 func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) codingToolExecutionResult {
@@ -3243,6 +3322,11 @@ func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) c
 	outcome := codingToolOutcomeSuccess
 	if goalToolCallFailed(text) {
 		outcome = codingToolOutcomeFailed
+	} else {
+		// Keep the turn's own receipt. The host phase check reads it after the
+		// loop, so a delivered plan/step is never re-judged from a store copy
+		// the turn cannot see.
+		c.subagent.noteGoalPhaseReceipt(goalPhaseReceiptForArgs(args))
 	}
 	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }

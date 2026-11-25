@@ -52,6 +52,10 @@ type AccessView struct {
 	MaxInstances       *int    `json:"max_instances"`
 	MaxConcurrentTurns *int    `json:"max_concurrent_turns"`
 	SrvID              *string `json:"srv_id"`
+	// TargetName labels the row for the admin page: the department name or
+	// the account email. The org tree now loads lazily, so the row carries
+	// its own name instead of waiting on a full-tree fetch.
+	TargetName string `json:"target_name,omitempty"`
 }
 
 type limitSlot struct {

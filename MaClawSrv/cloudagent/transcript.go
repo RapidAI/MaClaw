@@ -92,6 +92,16 @@ CREATE TABLE IF NOT EXISTS queued_turns (
 	client_message_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS plan_state (
+	task_id TEXT PRIMARY KEY,
+	state TEXT NOT NULL,
+	request TEXT NOT NULL DEFAULT '',
+	restatement TEXT NOT NULL DEFAULT '',
+	plan TEXT NOT NULL DEFAULT '',
+	steps TEXT NOT NULL DEFAULT '',
+	revision INTEGER NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';`)
@@ -102,6 +112,12 @@ CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status =
 	// the column here; a fresh CREATE already has it through the ALTER too.
 	if _, err := b.db.Exec(`ALTER TABLE messages ADD COLUMN files TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
+	}
+	// Task-scoped AI expert persona, shipped from the desktop at create time.
+	for _, col := range []string{"expert_name", "expert_prompt"} {
+		if _, err := b.db.Exec(`ALTER TABLE tasks ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
 	}
 	return nil
 }
@@ -478,6 +494,26 @@ func (b *book) Tasks() ([]taskRow, error) {
 func (b *book) Rename(id, title string) error {
 	_, err := b.db.Exec(`UPDATE tasks SET title = ? WHERE id = ?`, title, id)
 	return err
+}
+
+// SetPersona binds the task's AI expert persona: the desktop resolves the
+// picked expert to a name and system prompt and ships both at create time.
+func (b *book) SetPersona(id, name, prompt string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	_, err := b.db.Exec(`UPDATE tasks SET expert_name = ?, expert_prompt = ? WHERE id = ?`,
+		strings.TrimSpace(name), strings.TrimSpace(prompt), id)
+	return err
+}
+
+// Persona returns the expert name and system prompt stored for this task.
+func (b *book) Persona(id string) (name, prompt string) {
+	if strings.TrimSpace(id) == "" {
+		return "", ""
+	}
+	_ = b.db.QueryRow(`SELECT expert_name, expert_prompt FROM tasks WHERE id = ?`, id).Scan(&name, &prompt)
+	return name, prompt
 }
 
 func (b *book) Running() (taskID, requestID string) {

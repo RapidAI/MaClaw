@@ -494,10 +494,19 @@ func (a *App) openPetRearingDBLocked() {
 		return
 	}
 	path := filepath.Join(dir, petRearingDBFile)
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	// modernc.org/sqlite ignores the mattn-style _journal_mode/_busy_timeout
+	// params — they must ride _pragma.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		log.Printf("[pet-rearing] open: %v", err)
 		return
+	}
+	// Under test the app is discarded without the exit flush that closes this
+	// handle, and Windows then fails t.TempDir removal with a locked
+	// pet-rearing.db. Idle connections must not survive a statement so the
+	// file is released as soon as the call returns.
+	if testing.Testing() {
+		db.SetMaxIdleConns(0)
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS pet_rearing (
 		pack_id TEXT PRIMARY KEY,
