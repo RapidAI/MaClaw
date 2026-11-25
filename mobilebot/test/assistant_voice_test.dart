@@ -92,6 +92,48 @@ void main() {
       expect(systemListenOnDeviceUnsupported(''), isFalse);
     });
 
+    test('probe reason names why the system path could not start', () {
+      expect(
+        systemListenProbeReason(
+          const SystemListenProbe(permissionGranted: false, localeCount: 2),
+        ),
+        'mic permission denied',
+      );
+      expect(
+        systemListenProbeReason(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 0,
+            timedOut: true,
+          ),
+        ),
+        'recognizer did not answer',
+      );
+      expect(
+        systemListenProbeReason(
+          const SystemListenProbe(permissionGranted: true, localeCount: 0),
+        ),
+        'no languages offered',
+      );
+      expect(
+        systemListenProbeReason(
+          const SystemListenProbe(
+            permissionGranted: true,
+            localeCount: 1,
+            errorCode: 'recognizerNotAvailable',
+          ),
+        ),
+        'recognizerNotAvailable',
+      );
+      // A healthy probe reports nothing; the caller then uses its own wording.
+      expect(
+        systemListenProbeReason(
+          const SystemListenProbe(permissionGranted: true, localeCount: 1),
+        ),
+        '',
+      );
+    });
+
     test('partial hypotheses replace each other in the composer', () {
       expect(applyRecognitionHypothesis('', '你'), '你');
       expect(applyRecognitionHypothesis('', '你好'), '你好');

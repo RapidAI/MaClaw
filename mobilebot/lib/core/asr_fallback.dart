@@ -228,6 +228,18 @@ class SystemListenProbe {
   final String errorCode;
 }
 
+/// Short, user-facing form of a probe failure, so "点麦克风没反应" always comes
+/// with the reason instead of the tap looking dead. Never a full sentence: the
+/// caller wraps it in its own localized message.
+String systemListenProbeReason(SystemListenProbe probe) {
+  if (!probe.permissionGranted) return 'mic permission denied';
+  if (probe.timedOut) return 'recognizer did not answer';
+  if (probe.localeCount <= 0) return 'no languages offered';
+  final code = probe.errorCode.trim();
+  if (code.isNotEmpty) return code;
+  return probe.permanentError ? 'recognizer error' : '';
+}
+
 /// Whether [errorCode] is the platform refusing the on-device attempt rather
 /// than a finished empty turn. Those failures mean "this phone has no
 /// on-device model", so the caller retries once with the default recognizer

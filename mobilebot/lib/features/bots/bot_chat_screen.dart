@@ -24,6 +24,7 @@ import '../../core/speech_text.dart';
 import '../../core/voice_engine.dart';
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
+import '../../core/mic_recorder.dart';
 import '../../l10n/gen/app_localizations.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -79,6 +80,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   bool _relistenQueued = false;
   String _voiceCaptured = '';
   String _lastSpokenMsgId = '';
+  /// 进程内共享的采集器（见 core/mic_recorder.dart），页面只持有引用。
   AudioRecorder? _recorder;
 
   late final AppLifecycleListener _lifecycle;
@@ -122,7 +124,6 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _speech.stop();
     _recorder?.stop();
     _listenLevel.dispose();
-    _recorder?.dispose();
     super.dispose();
   }
 
@@ -230,6 +231,9 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     await _fallbackVoiceToLocal();
   }
 
+  /// 系统识别没起来时留下的具体原因。两条路都不通时必须说出来。
+  String _lastSystemListenReason = '';
+
   /// Engine at work, never a reason why another was skipped: the local
   /// engine taking over is the normal path here, not an error. A failure
   /// with no engine left is a toast.
@@ -330,11 +334,15 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     _activeAsr = AsrEngine.local;
     if (mounted) setState(() {});
     final engine = ref.read(voiceEngineProvider);
-    final unavailable = context.S.chatAsrUnavailableDownloading;
     if (!await engine.localAsrReady()) {
       if (!mounted) return;
       _ensureLocalVoiceModels();
-      _toast(unavailable);
+      // 本地也不可用时必须带上系统那侧的原因，否则点麦克风看着没反应。
+      _toast(
+        _lastSystemListenReason.isEmpty
+            ? context.S.chatAsrUnavailableDownloading
+            : context.S.chatAsrFailedWith(_lastSystemListenReason),
+      );
       return;
     }
     await _localDictate();
@@ -365,6 +373,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
       final before = await _probeSystemListen(fallbackLocaleId);
       if (!mounted) return false;
       if (systemListenUnavailable(before.probe)) {
+        _lastSystemListenReason = systemListenProbeReason(before.probe);
         _noteListenCallback();
         return false;
       }
@@ -406,7 +415,8 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
           if (result.recognizedWords.trim().isNotEmpty) _noteListenCallback();
         },
       );
-    } on Object {
+    } on Object catch (e) {
+      _lastSystemListenReason = '$e';
       _noteListenCallback();
       if (mounted) setState(() => _listening = false);
       return false;
@@ -415,6 +425,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     final after = await _probeSystemListen(fallbackLocaleId);
     if (!mounted) return false;
     if (systemListenUnavailable(after.probe)) {
+      _lastSystemListenReason = systemListenProbeReason(after.probe);
       _noteListenCallback();
       try {
         await _speech.stop();
@@ -804,7 +815,7 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   /// 20s 封顶收句。keepGoing 变 false 立即收句。失败已 toast，返回 null。
   Future<Uint8List?> _capturePcm({required bool Function() keepGoing}) async {
     final S = context.S;
-    final recorder = _recorder ??= AudioRecorder();
+    final recorder = _recorder ??= sharedRecorder();
     if (!await recorder.hasPermission()) {
       _toast(S.chatMicPermissionDenied);
       return null;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -21,6 +22,7 @@ import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
 import '../../core/speech_text.dart';
+import '../../core/mic_recorder.dart';
 import '../../core/voice_engine.dart';
 import 'assistant_api.dart';
 
@@ -100,9 +102,25 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   @override
   void initState() {
     super.initState();
+    if (supportsVoiceInput && Platform.isAndroid) {
+      // 先要一次录音权限：点麦克风时语音插件才串行申请权限，系统弹窗
+      // 出现前界面毫无变化，看起来就是「点了没反应」。
+      unawaited(_warmMic());
+    }
     if (supportsVoiceOutput) {
       _tts = FlutterTts();
       unawaited(_tts!.setLanguage('zh-CN').then((_) {}).catchError((_) {}));
+    }
+  }
+
+  /// 首次点麦克风前就把录音权限要到手。speech_to_text.initialize 与
+  /// record.hasPermission 都会自己申请，但助手页第一次点麦时这两步串行
+  /// 等待，系统弹窗出现前界面完全没变化，看起来就是「无反应」。
+  Future<void> _warmMic() async {
+    try {
+      await (_recorder ??= sharedRecorder()).hasPermission();
+    } on Object {
+      // 权限插件不可用时交给点麦时的正式路径处理。
     }
   }
 
@@ -332,8 +350,39 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     });
   }
 
+  /// 系统识别没起来时留下的具体原因（权限、语言列表为空、识别器报错）。
+  /// 两条路都不通时必须把它说出来，否则点麦克风看起来完全没反应。
+  String _lastSystemListenReason = '';
+
+  /// 一次点麦已经进到识别流程（含系统探测、权限申请）。第二次点麦不能再
+  /// 串行起一轮：上一轮结束时会把 _listening 清掉，看起来就是「电平也不动」。
+  bool _dictateBusy = false;
+
   Future<void> _dictate() async {
     if (!supportsVoiceInput || _listening) return;
+    // 上一轮还没跑完就把这一轮的聆听态收掉，否则新一轮的麦克风会被
+    // 上一轮收尾时切掉（电平不动、也不出字）。
+    if (_dictateBusy) {
+      // 上一轮还在探测/申请权限：作废它，本轮重新开始，不能两轮抢同一只麦。
+      _noteListenCallback();
+      _dictateBusy = false;
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _recognizing = false;
+        });
+      }
+    }
+    _dictateBusy = true;
+    try {
+      await _dictateOnce();
+    } finally {
+      _dictateBusy = false;
+    }
+  }
+
+  Future<void> _dictateOnce() async {
+    _lastSystemListenReason = '';
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
     final localReady = await engine.localAsrReady();
@@ -445,7 +494,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (mounted) setState(() {});
     if (!localReady) {
       if (!NativeVoice.usable) {
-        _toast(context.S.vsEngineMissing);
+        _toast(
+          _lastSystemListenReason.isEmpty
+              ? context.S.vsEngineMissing
+              : context.S.chatAsrFailedWith(_lastSystemListenReason),
+        );
         return;
       }
       final hub = ref.read(sessionProvider).active?.hubUrl;
@@ -512,8 +565,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       },
           )
           .timeout(kSystemListenProbeTimeout);
-    } on Object {
+    } on Object catch (e) {
       // recognizerNotAvailable / 通道挂起：没有识别器，立刻回退。
+      _lastSystemListenReason = '$e';
       _noteListenCallback();
       return false;
     }
@@ -529,6 +583,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       final before = await _probeSystemListen(fallbackLocaleId);
       if (!mounted) return false;
       if (systemListenUnavailable(before.probe)) {
+        _lastSystemListenReason = systemListenProbeReason(before.probe);
         _noteListenCallback();
         return false;
       }
@@ -581,6 +636,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final after = await _probeSystemListen(fallbackLocaleId);
     if (!mounted) return false;
     if (systemListenUnavailable(after.probe)) {
+      _lastSystemListenReason = systemListenProbeReason(after.probe);
       _noteListenCallback();
       try {
         await _speech.stop();
@@ -636,7 +692,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   Future<Uint8List?> _capturePcm() async {
     final S = context.S;
-    final recorder = _recorder ??= AudioRecorder();
+    final recorder = _recorder ??= sharedRecorder();
     if (!await recorder.hasPermission()) {
       _toast(S.chatMicPermissionDenied);
       return null;
@@ -723,7 +779,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
       if (!NativeVoice.usable) {
-        _toast(S.vsEngineMissing);
+        _toast(
+          _lastSystemListenReason.isEmpty
+              ? S.vsEngineMissing
+              : S.chatAsrFailedWith(_lastSystemListenReason),
+        );
         return;
       }
       final hub = ref.read(sessionProvider).active?.hubUrl;

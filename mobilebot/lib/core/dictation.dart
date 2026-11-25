@@ -27,6 +27,7 @@ import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'asr_fallback.dart';
+import 'mic_recorder.dart';
 import 'voice_engine.dart';
 
 /// Composer dictation for one page.
@@ -41,7 +42,7 @@ class ComposerDictation {
     required this.voiceInputSupported,
     required this.messages,
   }) : _speech = stt.SpeechToText(),
-       _recorder = AudioRecorder();
+       _recorder = sharedRecorder();
 
   final TextEditingController controller;
   final VoiceEngine engine;
@@ -447,7 +448,7 @@ class ComposerDictation {
   }
 
   Future<Uint8List?> _capturePcm() async {
-    final recorder = _recorder ??= AudioRecorder();
+    final recorder = _recorder ??= sharedRecorder();
     if (!await recorder.hasPermission()) {
       toast(messages().micPermission);
       return null;
