@@ -428,6 +428,8 @@ type CodingSubAgentResult struct {
 	// the bug-localization workflow.
 	Localization *CodingSubAgentLocalizationEvidence
 
+	lastEditSeq uint64
+
 	// CodingInteractiveAcceptance is the host console check after the model
 	// loop. It does not change Status.
 	CodingInteractiveAcceptance CodingInteractiveAcceptance
@@ -678,14 +680,14 @@ func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
 // a complete semantic anchor and a host workspace binding. Inquiry turns are
 // read-only on purpose. A missing handle is left to the earlier gate, which
 // already stops desktop implementation before the ledger starts.
-func (s *CodingSubAgent) refuseUnboundWritableSurface(task *TaskItem) string {
+func (s *CodingSubAgent) refuseUnboundWritableSurface(task *TaskItem, reqCtx string) string {
 	if s == nil || s.horizonPosture || s.correlatedLocalExecution || s.verifiedTaskHandle == nil {
 		return ""
 	}
 	if s.loopCtx == nil || !isDesktopCodingOwner(s.loopCtx.UserID) {
 		return ""
 	}
-	if codingTaskLooksInquiry(task) || taskIsGoalPlanPhase(task, "") {
+	if !codingTaskRequiresWritableSurface(task, reqCtx) {
 		return ""
 	}
 	return desktopCodingWritableSurfaceBindFailedDiagnostic
@@ -1144,6 +1146,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		GitDiffSummary:              diffSummary,
 		DiffStat:                    cb.getDiffStat(),
 		CommandsRun:                 commandsRun,
+		lastEditSeq:                 audit.LastEditSeq,
 		SearchesRun:                 searchesRun,
 		GuardrailViolations:         guardrailViolations,
 		DynamicToolsRun:             dynamicToolsRun,
@@ -17852,7 +17855,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 	} else {
 		b.WriteString("1. If you changed code, run a matching test or build when it helps. Pipes, redirection, and combined commands are fine. Do not hide a failure with || true or || echo.\n")
 	}
-	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n")
+	b.WriteString("2. Write the final answer with the adaptive structured-summary contract: lead with the result, choose only sections useful for this task, name real files and verification facts, and omit audit headings or boilerplate.\n")
 	b.WriteString("3. Do not use bash to inject keys into a blocking GUI or game. The host runs interactive acceptance after the turn. The final summary must not claim the environment cannot inject keys.\n\n")
 }
 
@@ -17912,6 +17915,14 @@ func codingTaskOperationalAcceptance(task *TaskItem) codingOperationalAcceptance
 
 func codingTaskLooksInquiry(task *TaskItem) bool {
 	return codingTaskRequestKind(task) == codingRequestInquiry
+}
+
+// codingTaskRequiresWritableSurface is the single local-surface privilege
+// decision used by both credential consumption and the fail-closed gates.
+// Inquiry and host plan-phase steps are read-only by contract; implementation
+// and operational steps require the exact writable execution surface.
+func codingTaskRequiresWritableSurface(task *TaskItem, reqCtx string) bool {
+	return !codingTaskLooksInquiry(task) && !taskIsGoalPlanPhase(task, reqCtx)
 }
 
 // codingTaskShouldEnableSourcePreview keeps the source/diff affordance scoped
@@ -19137,10 +19148,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available.
 
 ## Final answer
-- Lead with the result in 1-3 sentences.
-- Mention created or modified paths in prose or a short list; do not use audit headings such as 文件变更 / 质量审计 / 探索状态 / 验证状态 / 验证结果 / 涉及文件 / 执行报告.
-- State verification as a fact when you ran it, for example go test ./pkg passed. Do not invent EXPLORED / PASS / FAILED banners.
-- Call out remaining risk only when there is a real residual risk. Do not pad with "no known remaining risk".
+%s
 
 ## Quality audit gates
 - Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.
@@ -19160,7 +19168,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - Verification wrappers timeout/gtimeout, env/cross-env/time, cmd /c, powershell -Command, bash -lc are OK only when the wrapped command runs tests/build/lint/typecheck.
 - Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.
 - 验证命令不要追加 echo exit=$LASTEXITCODE 显示尾：bash 结果末尾自带 command exited with code N（含成功 0），此类尾巴会判 failure-suppressing 而失败。
-`))
+`, codingagent.FinalAnswerPresentationContract()))
 
 	// Goal phases carry their own contract. A prior measurement must not
 	// become a reason to skip the step the host just assigned.
@@ -20271,8 +20279,15 @@ func runTaskWithSubAgentRuntimeOptions(
 	// from the previous step's bind, so every root step of a multi-step plan
 	// inside one request enters R1 on the same semantic root.
 	verifiedBound := false
+	writableSurface := codingTaskRequiresWritableSurface(task, reqCtx)
 	if handler != nil && handler.app != nil && loopCtx != nil {
-		if service, subject, handle, workspace, ok := handler.app.nextDesktopCodingRootStepRelation(loopCtx.CodingTaskIngressToken, loopCtx.UserID); ok {
+		// The turn token is minted before the workflow knows whether this step
+		// will run in the primary checkout, an exclusive copy, or an isolated
+		// worktree. This host dispatch boundary is the first point where that
+		// execution surface is final and materialized. Binding that exact surface
+		// and consuming the single-use relation are one issuer-critical section;
+		// a missing/blocked surface never consumes the chain and fails closed below.
+		if service, subject, handle, workspace, ok := handler.app.nextDesktopCodingRootStepRelationForExecution(loopCtx.CodingTaskIngressToken, loopCtx.UserID, projectPath, writableSurface); ok {
 			sa.setVerifiedCodingTaskRelation(service, subject, handle)
 			sa.staticWorkspaceBinding = workspace
 			verifiedBound = true
@@ -20283,7 +20298,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	// by construction; running the model loop anyway burns a full turn of
 	// tokens and then fails. Fail fast here with an actionable host-side
 	// diagnostic instead. Inquiry steps are read-only by design and pass.
-	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && !taskIsGoalPlanPhase(task, reqCtx) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
+	if !verifiedBound && !sa.horizonPosture && writableSurface && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
 		taskTitle := ""
 		if task != nil {
 			taskTitle = task.Title
@@ -20400,7 +20415,7 @@ func runTaskWithSubAgentRuntimeOptions(
 		// and the workspace binding is complete. An implementation turn that
 		// misses either one used to enter the read-only compatibility loop,
 		// investigate for the whole turn, and then fail for writing nothing.
-		if diag := sa.refuseUnboundWritableSurface(task); diag != "" {
+		if diag := sa.refuseUnboundWritableSurface(task, reqCtx); diag != "" {
 			sa.writableSurfaceDenied = diag
 			userID := ""
 			if loopCtx != nil {

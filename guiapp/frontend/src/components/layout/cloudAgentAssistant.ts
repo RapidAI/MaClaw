@@ -595,6 +595,9 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
             const created = parseJSON<{ task_id?: string; workflow_warning?: string }>(
                 await op(current.grant, 'cloud_create_task', JSON.stringify({
                     title: Array.from(outgoing).slice(0, 48).join(''),
+                    // The full first instruction doubles as the workflow
+                    // summary — cancel-and-execute replays it verbatim.
+                    text: outgoing,
                     ...(setup?.workflowTemplateId ? {
                         workflow_template_id: setup.workflowTemplateId,
                         workflow_params: setup.workflowParams || {},

@@ -42,6 +42,21 @@ func ParseRole(raw string) (Role, error) {
 // ReadOnly reports whether a role is safe to admit as a read-only child.
 func (r Role) ReadOnly() bool { return r == RoleExplorer || r == RoleReviewer }
 
+// FinalAnswerPresentationContract is the shared user-facing summary contract
+// for every coding-agent execution surface. Hosts still own their environment
+// and tool instructions, but review/fix/optimize work must be reported with
+// the same adaptive structure everywhere.
+func FinalAnswerPresentationContract() string {
+	return `- Use the user's language. Lead with the outcome in 1-2 sentences: what was accomplished, the scope or file count when meaningful, and the verification state.
+- Organize the rest according to this task, not a fixed template. Choose only useful sections: 实现/接入/行为变化 for features, 修复的问题/根因与改法 for fix work, 优化/审查过但不改的点 for optimize or review-driven cleanup, 发现/证据/建议 for review or investigation, 执行结果/命令与输出 for operational work, and 当前状态/阻塞/下一步 for incomplete work.
+- Semantic Markdown headings such as ## 实现, ## 修复的问题, ## 优化, or ## 验证 are welcome for substantial work. A small confirmation or narrow edit stays 1-3 sentences without headings.
+- Group related work by behavior or problem. Mention paths inline (for example path/file.go) where they explain the change; never dump a bare file list or a tool-use log.
+- For multiple independent fixed problems or review findings, number them and make each item scannable: symptom or impact → root cause or evidence → fix or recommendation.
+- Under ## 验证, list only commands actually run after the final edit and their outcomes. If verification could not run, state the exact blocker. Do not invent EXPLORED / PASS / FAILED banners.
+- Call out remaining risk or next steps only when they are real. Omit empty sections and boilerplate. Do not use internal audit headings such as 文件变更 / 质量审计 / 探索状态 / 验证状态 / 验证结果 / 涉及文件 / 执行报告.
+`
+}
+
 // ToolPolicy binds a host-provided allow-list to a role. Tool definitions are
 // advisory, so hosts must enforce this same policy at execution time too.
 type ToolPolicy struct {

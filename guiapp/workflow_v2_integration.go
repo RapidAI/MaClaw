@@ -2141,6 +2141,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 			Summary:        v1Result.Summary,
 			FilesCreated:   v1Result.FilesCreated,
 			FilesModified:  v1Result.FilesModified,
+			CommandsRun:    codingSubAgentVerificationEvidence(v1Result.CommandsRun, v1Result.lastEditSeq),
 			Error:          v1Result.Error,
 			RuntimeTaskID:  v1Result.RuntimeTaskID,
 			RuntimeHandoff: v1Result.RuntimeHandoff,
@@ -2386,6 +2387,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 			Summary:        result.Summary,
 			FilesCreated:   result.FilesCreated,
 			FilesModified:  result.FilesModified,
+			CommandsRun:    codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq),
 			Error:          result.Error,
 			RuntimeTaskID:  result.RuntimeTaskID,
 			RuntimeHandoff: result.RuntimeHandoff,
@@ -2885,7 +2887,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, s
 		if result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "child-result review returned nil"}
 		}
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapLocalCodingSubAgentStatusForRetry(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapLocalCodingSubAgentStatusForRetry(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
 	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
@@ -2938,7 +2940,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 		if result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "remote child-result review returned nil"}
 		}
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapRemoteCodingSubAgentStatus(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapRemoteCodingSubAgentStatus(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
 	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
@@ -3002,7 +3004,7 @@ func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.Wo
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
 		status := mapLocalCodingSubAgentStatusForRetry(v1Result.Status)
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: v1Result.Summary, FilesCreated: v1Result.FilesCreated, FilesModified: v1Result.FilesModified, Error: v1Result.Error, RuntimeTaskID: v1Result.RuntimeTaskID, RuntimeHandoff: v1Result.RuntimeHandoff, Children: cloneChildTaskViews(v1Result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: v1Result.Summary, FilesCreated: v1Result.FilesCreated, FilesModified: v1Result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(v1Result.CommandsRun, v1Result.lastEditSeq), Error: v1Result.Error, RuntimeTaskID: v1Result.RuntimeTaskID, RuntimeHandoff: v1Result.RuntimeHandoff, Children: cloneChildTaskViews(v1Result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -3089,7 +3091,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "RemoteCodingSubAgent returned nil"}
 		}
 		status := mapRemoteCodingSubAgentStatus(result.Status)
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -4303,6 +4305,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					Summary:       summary,
 					FilesCreated:  v1Result.FilesCreated,
 					FilesModified: v1Result.FilesModified,
+					CommandsRun:   codingSubAgentVerificationEvidence(v1Result.CommandsRun, v1Result.lastEditSeq),
 					Error:         "pre_verify hook failed",
 				}
 			}
@@ -4348,6 +4351,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 						Summary:       summary,
 						FilesCreated:  v1Result.FilesCreated,
 						FilesModified: v1Result.FilesModified,
+						CommandsRun:   codingSubAgentVerificationEvidence(v1Result.CommandsRun, v1Result.lastEditSeq),
 						Error:         "step verification failed: " + vcmd,
 					}
 				}
@@ -4380,6 +4384,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			Summary:        summary,
 			FilesCreated:   v1Result.FilesCreated,
 			FilesModified:  v1Result.FilesModified,
+			CommandsRun:    codingSubAgentVerificationEvidence(v1Result.CommandsRun, v1Result.lastEditSeq),
 			Error:          resultErr,
 			RuntimeTaskID:  v1Result.RuntimeTaskID,
 			RuntimeHandoff: v1Result.RuntimeHandoff,

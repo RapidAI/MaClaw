@@ -24,7 +24,18 @@ export function CloudWorkflowPanel({ session, lang, theme: t }: { session: Remot
         if (!variants.length) return null;
         return variants.find(item => item.id === variantID) || variants[0];
     }, [schema, variantID]);
-    const fields: CloudWorkflowFormField[] = variant ? variant.fields : (schema?.fields || []);
+    // Schemas may mix top-level fields with per-variant fields (the coding
+    // template does): the machine validates BOTH sets, so the form renders
+    // and submits the union, deduped by name.
+    const fields: CloudWorkflowFormField[] = useMemo(() => {
+        const merged = [...(schema?.fields || []), ...(variant ? variant.fields : [])];
+        const seen = new Set<string>();
+        return merged.filter(field => {
+            if (!field.name || seen.has(field.name)) return false;
+            seen.add(field.name);
+            return true;
+        });
+    }, [schema, variant]);
     // A new gated phase replaces the draft — stale values from the previous
     // form must not leak onto the next schema's names.
     const formKey = `${workflow?.current_phase || ""}|${workflow?.awaiting_form ? "1" : "0"}`;
@@ -55,7 +66,8 @@ export function CloudWorkflowPanel({ session, lang, theme: t }: { session: Remot
         if (submitting || missingRequired.length) return;
         const values: Record<string, unknown> = {};
         for (const field of fields) {
-            if (field.type === "hidden") continue;
+            // Hidden fields are not rendered but still ship — they carry
+            // routing/preset data the machine validates like any other field.
             values[field.name] = fieldValue(field);
         }
         if (variant) values._agent_view_variant = variant.id;
@@ -152,7 +164,7 @@ export function CloudWorkflowPanel({ session, lang, theme: t }: { session: Remot
             // text/number/date/file — a file field types an instance path.
             const inputType = type === "number" ? "number" : type === "date" ? "date" : "text";
             const placeholder = field.placeholder || (type === "file" ? localizeText(lang, "Path inside the instance", "实例内的文件路径", "實例內的文件路徑") : "");
-            control = <input type={inputType} value={String(value ?? "")} placeholder={placeholder} onChange={event => setValue(field.name, type === "number" ? event.target.value : event.target.value)} style={inputStyle} />;
+            control = <input type={inputType} value={String(value ?? "")} placeholder={placeholder} onChange={event => setValue(field.name, event.target.value)} style={inputStyle} />;
         }
         return <div key={field.name} style={{ marginTop: 8 }}>{label}{control}</div>;
     };
@@ -207,7 +219,7 @@ export function CloudWorkflowPanel({ session, lang, theme: t }: { session: Remot
                                 <button
                                     key={item.id}
                                     type="button"
-                                    onClick={() => { setVariantID(item.id); setFormValues({}); }}
+                                    onClick={() => setVariantID(item.id)}
                                     style={{
                                         border: `1px solid ${item.id === (variant?.id || "") ? t.btnColor : t.fieldBorder}`,
                                         background: item.id === (variant?.id || "") ? `color-mix(in srgb, ${t.btnColor} 14%, ${t.fieldBg})` : t.fieldBg,

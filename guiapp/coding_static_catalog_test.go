@@ -139,7 +139,7 @@ func TestCodingStaticWorkspaceExecutorUsesOnlyTheBoundWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceB, "only-b.txt"), []byte("workspace B"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	token := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceA)
+	token := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceA)
 	_, _, _, binding, ok := app.nextDesktopCodingTaskRelationWithWorkspace(token, owner)
 	if !ok || !binding.complete() {
 		t.Fatalf("workspace binding=%#v ok=%v", binding, ok)
@@ -182,7 +182,7 @@ func TestCodingStaticWorkspaceExecutorRejectsBindingOrWorkspaceDrift(t *testing.
 	ownerA := projectSessionOwnerID("C:/workspace/a")
 	ownerB := projectSessionOwnerID("C:/workspace/b")
 	workspace := t.TempDir()
-	token := app.beginDesktopCodingTaskIngressWithWorkspace(ownerA, workspace)
+	token := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, ownerA, workspace)
 	_, _, _, binding, ok := app.nextDesktopCodingTaskRelationWithWorkspace(token, ownerA)
 	if !ok {
 		t.Fatal("workspace binding was not issued")
@@ -208,7 +208,7 @@ func TestDesktopCodingWorkspaceBindingIsRevokedWithNewTaskFence(t *testing.T) {
 	t.Cleanup(app.closeCodingTaskRelationService)
 	owner := projectSessionOwnerID("C:/workspace/a")
 	workspace := t.TempDir()
-	token := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspace)
+	token := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspace)
 	_, _, _, binding, ok := app.nextDesktopCodingTaskRelationWithWorkspace(token, owner)
 	if !ok || !binding.complete() {
 		t.Fatalf("workspace binding=%#v ok=%v", binding, ok)

@@ -19,6 +19,14 @@ import {
  * Heights are not measured per row: a trim/load commit is followed by a second
  * commit that corrects the spacer from the measured scrollHeight delta. Layout
  * effects cascade before paint, so neither commit is visible.
+ *
+ * Measurement caveats, both self-healing:
+ * - remounted rows sit offscreen at the 96px `content-visibility` placeholder
+ *   until they render, so a load correction can under-subtract the spacer
+ *   (cleared by the blank-area branch and by the nothing-unmounted invariant);
+ * - a trim measures rows that were rendered at least once, so their remembered
+ *   size keeps the delta accurate; when it is not, the spacer under-counts and
+ *   the next blank-area entry restores it.
  */
 interface ConversationRenderWindowOptions<T extends ConversationRenderWindowMessage> {
     containerRef: { readonly current: HTMLDivElement | null };
@@ -32,10 +40,13 @@ interface ConversationRenderWindowOptions<T extends ConversationRenderWindowMess
     enabled: boolean;
 }
 
-interface SpacerCorrection {
-    kind: "trim" | "load" | "trim-pin";
-    contentPx: number;
-}
+/**
+ * One window change is followed by a second commit that reconciles the spacer
+ * with the measured scrollHeight delta, then (for trims) re-pins the bottom.
+ */
+type SpacerCorrection =
+    | { kind: "trim" | "load"; contentPx: number }
+    | { kind: "trim-pin" };
 
 export interface ConversationRenderWindow<T extends ConversationRenderWindowMessage> {
     /** First message index that owns DOM nodes; always 0 or a user turn start. */
@@ -122,23 +133,36 @@ export function useConversationRenderWindow<T extends ConversationRenderWindowMe
         const list = messagesRef.current;
         const currentStart = indexOfRow(list, startIdRef.current);
         if (currentStart < 0) return;
-        const contentPx = Math.max(0, container.scrollHeight - spacerPxRef.current);
+        if (currentStart === 0 && spacerPxRef.current > 0) {
+            // Invariant: nothing unmounted means no spacer. Load corrections
+            // under-measure because remounted rows sit offscreen at the 96px
+            // content-visibility placeholder until they render, so the spacer
+            // can drift upward; left alone it becomes a phantom blank band at
+            // the very top of the transcript with nothing left to fill it.
+            setSpacerPx(0);
+            return;
+        }
+        const scrollHeight = container.scrollHeight;
+        const contentPx = Math.max(0, scrollHeight - spacerPxRef.current);
 
         if (!scrolledUpRef.current) {
             if (Date.now() < trimHoldUntilRef.current) return;
             const next = conversationRenderTrimStart({ messages: list, windowStart: currentStart, viewportPx, contentPx });
             if (next === null) return;
-            pendingRef.current = { kind: "trim", contentPx: container.scrollHeight };
+            pendingRef.current = { kind: "trim", contentPx: scrollHeight };
             setStartId(list[next].id);
             return;
         }
 
         if (currentStart <= 0) return;
         const offset = body.getBoundingClientRect().top - container.getBoundingClientRect().top;
-        if (offset > CONVERSATION_RENDER_BLANK_PX) {
+        // Blank means the viewport sits inside the spacer itself, so the spacer
+        // must be positive: padding plus the archive banner can push the body
+        // top past the threshold at scrollTop 0 without any blank area.
+        if (offset > CONVERSATION_RENDER_BLANK_PX && spacerPxRef.current > 0) {
             // The reader dragged past everything that is mounted. Batches would
             // leave them staring at the spacer, so put the rest back at once.
-            pendingRef.current = { kind: "load", contentPx: container.scrollHeight };
+            pendingRef.current = { kind: "load", contentPx: scrollHeight };
             setSpacerPx(0);
             setStartId(null);
             return;
@@ -146,7 +170,7 @@ export function useConversationRenderWindow<T extends ConversationRenderWindowMe
         if (offset <= -viewportPx) return;
         const next = conversationRenderLoadStart({ messages: list, windowStart: currentStart, viewportPx, contentPx });
         if (next === null) return;
-        pendingRef.current = { kind: "load", contentPx: container.scrollHeight };
+        pendingRef.current = { kind: "load", contentPx: scrollHeight };
         setStartId(next === 0 ? null : list[next].id);
     }, [bodyOf, containerRef, scrolledUpRef, suspendedRef]);
 
@@ -168,7 +192,7 @@ export function useConversationRenderWindow<T extends ConversationRenderWindowMe
                 if (removed > 0) setSpacerPx((prev) => prev + removed);
                 // The spacer setter re-commits; pin there so the bottom does not
                 // drift while the height is restored.
-                pendingRef.current = { kind: "trim-pin", contentPx };
+                pendingRef.current = { kind: "trim-pin" };
                 return;
             }
             if (pending.kind === "trim-pin") {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 )
 
 func putCoding(t *testing.T, rt *Runtime, loopback string) Spec {
@@ -357,6 +358,102 @@ func TestWatchSnapshotCarriesThinking(t *testing.T) {
 	}
 }
 
+func TestCodingSystemPromptUsesSharedFinalAnswerContract(t *testing.T) {
+	dir := t.TempDir()
+	bk, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bk.Close()
+	h := &agentHost{
+		coding: true,
+		inst:   &instance{dir: dir, meta: Spec{ID: "cag_t"}, book: bk},
+	}
+	prompt := h.BuildSystemPrompt("", false)
+	for _, want := range []string{
+		"## Final answer — coding-agent summary contract",
+		"not a fixed template",
+		"修复的问题",
+		"优化",
+		"commands actually run after the final edit",
+		"Do not use internal audit headings",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("cloud coding prompt missing shared contract fragment %q:\n%s", want, prompt)
+		}
+	}
+	session := &agentHost{inst: h.inst}
+	if strings.Contains(session.BuildSystemPrompt("", false), "Final answer — coding-agent summary contract") {
+		t.Fatal("non-coding cloud session prompt must not inherit the coding summary contract")
+	}
+}
+
+func TestCloudFinalAnswerTextUsesSharedAuditFilterAndHostFacts(t *testing.T) {
+	got := cloudFinalAnswerText(
+		"已完成修复。\n\n## 质量审计\nPASS\n\n## 修复的问题\n修复空指针。",
+		nil,
+		[]string{"pkg/fix.go"},
+		[]codingagent.FinalAnswerVerificationFact{{Command: "go test ./pkg", Succeeded: true, AfterFinalEdit: true}},
+	)
+	if strings.Contains(got, "质量审计") || strings.Contains(got, "PASS") {
+		t.Fatalf("cloud final answer leaked internal audit: %q", got)
+	}
+	for _, want := range []string{"## 修复的问题", "修复空指针", "实际验证", "`go test ./pkg` 通过"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("cloud final answer missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestCloudVerificationFactsOnlyMarkCommandsThatSawFinalWrites(t *testing.T) {
+	h := &agentHost{
+		writeCount: 2,
+		commands: []hostCommandRun{
+			{command: "go test ./pkg", succeeded: true, writeCountAt: 2},
+			{command: "go test ./pkg", succeeded: true, writeCountAt: 1},
+			{command: "ls -la", succeeded: true, writeCountAt: 2},
+		},
+	}
+	facts := h.verificationFacts()
+	if len(facts) != 2 || !facts[0].AfterFinalEdit || facts[1].AfterFinalEdit {
+		t.Fatalf("verification facts=%+v", facts)
+	}
+}
+
+func TestCloudBashMutationAdvancesWriteEpoch(t *testing.T) {
+	h := &agentHost{writeCount: 1}
+	h.recordBashCommand([]string{"go", "test", "./pkg"}, false)
+	if h.writeCount != 1 {
+		t.Fatalf("verification command must not advance write epoch: %d", h.writeCount)
+	}
+	h.recordBashCommand([]string{"ls", "-la"}, false)
+	if h.writeCount != 1 {
+		t.Fatalf("read-only command must not advance write epoch: %d", h.writeCount)
+	}
+	h.recordBashCommand([]string{"./scripts/generate.sh"}, false)
+	if h.writeCount != 2 {
+		t.Fatalf("workspace-writing script must advance write epoch: %d", h.writeCount)
+	}
+	facts := h.verificationFacts()
+	if len(facts) != 1 || facts[0].AfterFinalEdit {
+		t.Fatalf("verification before a bash mutation must not count as final evidence: %+v", facts)
+	}
+
+	h = &agentHost{}
+	for _, argv := range [][]string{
+		{"find", ".", "-name", "*.tmp", "-delete"},
+		{"npm", "install", "test"},
+		{"make", "install"},
+		{"cmake", "-S", ".", "-B", "build"},
+	} {
+		before := h.writeCount
+		h.recordBashCommand(argv, false)
+		if h.writeCount != before+1 {
+			t.Fatalf("%v must advance write epoch: before=%d after=%d", argv, before, h.writeCount)
+		}
+	}
+}
+
 func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
 	root := t.TempDir()
 	stale := filepath.Join(root, "stale.txt")
@@ -378,7 +475,7 @@ func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &agentHost{root: root, started: time.Now(), inst: &instance{meta: Spec{ID: "cag_t"}}}
-	h.noteFile(filepath.Join(root, "written.md"))
+	h.noteFile(filepath.Join(root, "written.md"), true)
 	got := h.producedFiles()
 	want := map[string]bool{"fresh.txt": true, "written.md": true}
 	if len(got) != len(want) {
@@ -388,6 +485,17 @@ func TestProducedFilesCollectsWriteTargetsAndMtimeWindow(t *testing.T) {
 		if !want[rel] {
 			t.Fatalf("unexpected artifact %q in %v", rel, got)
 		}
+	}
+}
+
+func TestExplicitFileChangesSeparateCreatedFromModified(t *testing.T) {
+	root := t.TempDir()
+	h := &agentHost{root: root, inst: &instance{meta: Spec{ID: "cag_t"}}}
+	h.noteFile(filepath.Join(root, "new.go"), true)
+	h.noteFile(filepath.Join(root, "existing.go"), false)
+	created, modified := h.explicitFileChanges()
+	if len(created) != 1 || created[0] != "new.go" || len(modified) != 1 || modified[0] != "existing.go" {
+		t.Fatalf("created=%v modified=%v", created, modified)
 	}
 }
 
@@ -419,5 +527,29 @@ func TestExtendIterationBudgetGrantsWavesUntilStopped(t *testing.T) {
 	cancel()
 	if got := h.ExtendIterationBudget(150, 8); got != 0 {
 		t.Fatalf("cancelled turn refill = %d, want 0", got)
+	}
+}
+
+func TestVerificationFactsCountOnlyCommandsAfterTheFinalWrite(t *testing.T) {
+	h := &agentHost{writeCount: 0}
+	// Read-only review: no writes at all — every command validates the tree.
+	h.commands = append(h.commands, hostCommandRun{command: "go vet ./...", succeeded: true, writeCountAt: 0})
+	facts := h.verificationFacts()
+	if len(facts) != 1 || !facts[0].AfterFinalEdit {
+		t.Fatalf("no-edit review command must count as after-final-edit: %+v", facts)
+	}
+
+	// Write-then-verify-then-write: the mid-turn verification never saw the final tree.
+	h = &agentHost{writeCount: 2}
+	h.commands = append(h.commands,
+		hostCommandRun{command: "go build ./...", succeeded: true, writeCountAt: 1},
+		hostCommandRun{command: "go test ./...", succeeded: true, writeCountAt: 2},
+	)
+	facts = h.verificationFacts()
+	if facts[0].AfterFinalEdit {
+		t.Fatalf("verification before the last write must not count: %+v", facts[0])
+	}
+	if !facts[1].AfterFinalEdit {
+		t.Fatalf("verification after the final write must count: %+v", facts[1])
 	}
 }

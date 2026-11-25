@@ -277,6 +277,12 @@ func TestCloudStopTaskCancelsWorkflow(t *testing.T) {
 	if err != nil || state == nil || state.Status != "cancelled" {
 		t.Fatalf("workflow not cancelled: %+v (err=%v)", state, err)
 	}
+	// The watch snapshot must keep reporting the terminal flow — GetActive's
+	// active-only filter would blank the panel on the next poll.
+	snap := rt.workflowSnapshot(inst, taskID)
+	if snap == nil || snap["status"] != "cancelled" {
+		t.Fatalf("snapshot lost terminal workflow: %+v", snap)
+	}
 }
 
 func min(a, b int) int {

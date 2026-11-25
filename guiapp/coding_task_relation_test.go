@@ -2,12 +2,57 @@ package guiapp
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
+
+// Test-only consumption helpers. Production coding dispatch must use the
+// root-step chain paths; these helpers model a bare single-token consumption
+// without making that shortcut available to production code.
+func (a *App) nextDesktopCodingTaskRelation(token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, bool) {
+	service, subject, handle, _, ok := a.nextDesktopCodingTaskRelationWithWorkspace(token, ownerID)
+	return service, subject, handle, ok
+}
+
+func (a *App) nextDesktopCodingTaskRelationWithWorkspace(token, ownerID string) (*codingTaskRelationService, verifiedCodingSubject, verifiedCodingTaskHandle, codingStaticWorkspaceBinding, bool) {
+	if a == nil {
+		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
+	}
+	service, subject, handle, workspace, _, ok := a.codingCaps.nextRelationWithWorkspaceAndIngress(a.GetDataDir(), token, ownerID)
+	return service, subject, handle, workspace, ok
+}
+
+// beginDesktopCodingTaskIngressWithWorkspaceForTest builds a workspace-bound
+// ingress with the same authority ordering production requires: mint a bare
+// request token first, then bind only an already materialized execution surface.
+func beginDesktopCodingTaskIngressWithWorkspaceForTest(app *App, ownerID, workspaceDir string) string {
+	token := app.beginDesktopCodingTaskIngress(ownerID)
+	if token != "" && strings.TrimSpace(workspaceDir) != "" {
+		app.codingCaps.bindExecutionWorkspace(ownerID, token, workspaceDir)
+	}
+	return token
+}
+
+// bindExecutionWorkspace is a test-only convenience over the issuer's locked
+// binder. Production dispatch must use nextRootStepRelationForExecution so the
+// bind and single-use consumption remain one issuer-critical section.
+func (i *desktopCodingCapabilityIssuer) bindExecutionWorkspace(ownerID, presentedToken, workspaceDir string) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	presentedToken = strings.TrimSpace(presentedToken)
+	if i == nil || !isDesktopCodingOwner(ownerID) || presentedToken == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ok := i.bindExecutionWorkspaceLocked(ownerID, presentedToken, workspaceDir, time.Now().UTC())
+	return ok
+}
 
 func TestCodingTaskRelationCreatesDistinctSemanticRootAndTurn(t *testing.T) {
 	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
@@ -298,10 +343,6 @@ func TestDesktopCodingTaskIngressIsOwnerBoundAndContinuesSameRoot(t *testing.T) 
 	if !ok || second.rootTaskID != first.rootTaskID || second.turnID == first.turnID || secondSubject.sessionID != subject.sessionID {
 		t.Fatalf("desktop continuation first=%#v second=%#v first_subject=%#v second_subject=%#v ok=%v", first, second, subject, secondSubject, ok)
 	}
-	app.endDesktopCodingTaskIngress(firstToken)
-	if _, _, _, ok := app.nextDesktopCodingTaskRelation(firstToken, owner); ok {
-		t.Fatal("ended desktop ingress token remained usable")
-	}
 }
 
 func TestDesktopCodingTaskIngressCarriesOnlyHostIssuedLocalWorkspaceBinding(t *testing.T) {
@@ -313,7 +354,7 @@ func TestDesktopCodingTaskIngressCarriesOnlyHostIssuedLocalWorkspaceBinding(t *t
 	workspaceB := t.TempDir()
 	ownerA := projectSessionOwnerID("C:/workspace/a")
 	ownerB := projectSessionOwnerID("C:/workspace/b")
-	tokenA := app.beginDesktopCodingTaskIngressWithWorkspace(ownerA, workspaceA)
+	tokenA := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, ownerA, workspaceA)
 	if tokenA == "" {
 		t.Fatal("workspace-bound ingress token was not issued")
 	}
@@ -327,7 +368,7 @@ func TestDesktopCodingTaskIngressCarriesOnlyHostIssuedLocalWorkspaceBinding(t *t
 	if _, ok := app.resolveDesktopCodingStaticWorkspace(ownerB, bindingA); ok {
 		t.Fatal("workspace binding crossed desktop owners")
 	}
-	tokenB := app.beginDesktopCodingTaskIngressWithWorkspace(ownerB, workspaceB)
+	tokenB := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, ownerB, workspaceB)
 	_, _, _, bindingB, ok := app.nextDesktopCodingTaskRelationWithWorkspace(tokenB, ownerB)
 	if !ok || !bindingB.complete() || bindingB.WorkspaceHandle == bindingA.WorkspaceHandle {
 		t.Fatalf("workspace B binding=%#v A=%#v ok=%v", bindingB, bindingA, ok)
@@ -343,7 +384,7 @@ func TestDesktopCodingTaskIngressRejectsUnverifiedWorkspaceDirectory(t *testing.
 		app.closeCodingTaskRelationService()
 	})
 	owner := projectSessionOwnerID("C:/workspace/a")
-	token := app.beginDesktopCodingTaskIngressWithWorkspace(owner, filepath.Join(t.TempDir(), "missing"))
+	token := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, filepath.Join(t.TempDir(), "missing"))
 	_, _, _, binding, ok := app.nextDesktopCodingTaskRelationWithWorkspace(token, owner)
 	if !ok {
 		t.Fatal("identity relation should remain available without a static workspace")
@@ -371,7 +412,7 @@ func TestDesktopCodingTaskRelationRevocationDropsFutureIngress(t *testing.T) {
 	}
 }
 
-func TestDesktopCodingTaskIngressForNewTaskFencesPriorRelationAndPendingTokens(t *testing.T) {
+func TestDesktopCodingNewTaskFenceDropsPriorRelationAndPendingTokens(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
 		app.closeCodingTaskRelationService()
@@ -382,7 +423,8 @@ func TestDesktopCodingTaskIngressForNewTaskFencesPriorRelationAndPendingTokens(t
 		t.Fatal("prior desktop relation was not issued")
 	}
 	lateOldToken := app.beginDesktopCodingTaskIngress(owner)
-	newToken := app.beginDesktopCodingTaskIngressForRequest(owner, true)
+	app.revokeDesktopCodingTaskRelation(owner)
+	newToken := app.beginDesktopCodingTaskIngress(owner)
 	if newToken == "" {
 		t.Fatal("new-task ingress token was not issued")
 	}
@@ -415,7 +457,8 @@ func TestDesktopCodingTaskIngressGenerationRejectsConsumedPreFenceToken(t *testi
 	// The host starts a new task while the old request is between consume and
 	// runtime binding. Reinsert only as a test model of the already-copied
 	// request capability: its old generation must still be rejected.
-	newToken := app.beginDesktopCodingTaskIngressForRequest(owner, true)
+	app.revokeDesktopCodingTaskRelation(owner)
+	newToken := app.beginDesktopCodingTaskIngress(owner)
 	app.codingCaps.mu.Lock()
 	app.codingCaps.ingress[oldToken] = oldIngress
 	app.codingCaps.mu.Unlock()
@@ -567,7 +610,7 @@ func TestDesktopCodingRootStepRelationContinuationCarriesWorkspaceBinding(t *tes
 	})
 	owner := projectSessionOwnerID("C:/workspace/a")
 	workspaceDir := t.TempDir()
-	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
 	_, _, _, firstWorkspace, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
 	if !ok || !firstWorkspace.complete() {
 		t.Fatalf("first root step workspace=%#v ok=%v", firstWorkspace, ok)
@@ -635,7 +678,7 @@ func TestDesktopCodingContinuationLeaseMatchesRelation(t *testing.T) {
 	})
 	owner := projectSessionOwnerID("C:/workspace/a")
 	workspaceDir := t.TempDir()
-	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
 	now := time.Now().UTC()
 	app.codingCaps.mu.Lock()
 	requestExpiry := app.codingCaps.ingress[requestToken].expiresAt
@@ -710,7 +753,7 @@ func TestDesktopCodingWorkspaceLeaseSlidesWhenContinuationBudgetIsExhausted(t *t
 	app.codingCaps.mu.Lock()
 	app.codingCaps.continuationBudget[owner] = 0
 	app.codingCaps.mu.Unlock()
-	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
 	app.codingCaps.mu.Lock()
 	var binding codingStaticWorkspaceBinding
 	for handle, workspace := range app.codingCaps.staticWorkspaces {
@@ -789,7 +832,7 @@ func TestDesktopCodingLiveIngressKeepsExpiredWorkspaceForNextSlide(t *testing.T)
 	owner := projectSessionOwnerID("C:/workspace/a")
 	other := projectSessionOwnerID("C:/workspace/b")
 	workspaceDir := t.TempDir()
-	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
 	app.codingCaps.mu.Lock()
 	var binding codingStaticWorkspaceBinding
 	for handle, workspace := range app.codingCaps.staticWorkspaces {
@@ -807,7 +850,7 @@ func TestDesktopCodingLiveIngressKeepsExpiredWorkspaceForNextSlide(t *testing.T)
 	// Another request's mint sweeps expired workspaces. This handle is still
 	// named by a live ingress, so the sweep must leave it for the next bind
 	// to slide.
-	if otherToken := app.beginDesktopCodingTaskIngressWithWorkspace(other, t.TempDir()); otherToken == "" {
+	if otherToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, other, t.TempDir()); otherToken == "" {
 		t.Fatal("other owner ingress was not issued")
 	}
 	app.codingCaps.mu.Lock()
@@ -821,6 +864,110 @@ func TestDesktopCodingLiveIngressKeepsExpiredWorkspaceForNextSlide(t *testing.T)
 	}
 	if resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); !ok || resolved != workspaceDir {
 		t.Fatalf("bind did not slide the kept workspace: resolved=%q ok=%v", resolved, ok)
+	}
+}
+
+func TestDesktopCodingContinuationRearmCannotCrossFence(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	token := app.beginDesktopCodingTaskIngress(owner)
+	if token == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	// Model the consume-to-rearm interleaving: the token has been consumed and
+	// the durable relation issued, then a cancel/clear/new-task fence lands
+	// before the chain is rearmed. The old generation must not recreate a
+	// continuation capability after that fence.
+	app.codingCaps.mu.Lock()
+	ingress, live := app.codingCaps.ingress[token]
+	delete(app.codingCaps.ingress, token)
+	app.codingCaps.mu.Unlock()
+	if !live {
+		t.Fatal("consumed ingress fixture was not live")
+	}
+	_, _, handle, _, ok := app.codingCaps.issueRelationForConsumedIngress(app.GetDataDir(), owner, ingress)
+	if !ok || !handle.complete() {
+		t.Fatalf("consumed ingress did not issue a relation handle=%#v ok=%v", handle, ok)
+	}
+	app.revokeDesktopCodingTaskRelation(owner)
+	app.codingCaps.rearmContinuationToken(owner, token, ingress.workspace, ingress.generation)
+	app.codingCaps.mu.Lock()
+	continuation := app.codingCaps.continuationTokens[owner]
+	_, chainProof := app.codingCaps.chainConsumed[owner][token]
+	ingressCount := 0
+	for _, candidate := range app.codingCaps.ingress {
+		if candidate.ownerID == owner {
+			ingressCount++
+		}
+	}
+	app.codingCaps.mu.Unlock()
+	if continuation != "" || chainProof || ingressCount != 0 {
+		t.Fatalf("fence-crossing rearm recreated capability continuation=%q proof=%v ingress=%d", continuation, chainProof, ingressCount)
+	}
+}
+
+func TestDesktopCodingContinuationRearmCannotCrossTurnEnd(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	token := app.beginDesktopCodingTaskIngress(owner)
+	if token == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	app.codingCaps.mu.Lock()
+	ingress, live := app.codingCaps.ingress[token]
+	delete(app.codingCaps.ingress, token) // model the consumption phase
+	app.codingCaps.mu.Unlock()
+	if !live {
+		t.Fatal("consumed ingress fixture was not live")
+	}
+	app.endDesktopCodingTaskIngressForOwner(owner)
+	app.codingCaps.rearmContinuationToken(owner, token, ingress.workspace, ingress.generation)
+	app.codingCaps.mu.Lock()
+	continuation := app.codingCaps.continuationTokens[owner]
+	_, chainProof := app.codingCaps.chainConsumed[owner][token]
+	ingressCount := 0
+	for _, candidate := range app.codingCaps.ingress {
+		if candidate.ownerID == owner {
+			ingressCount++
+		}
+	}
+	app.codingCaps.mu.Unlock()
+	if continuation != "" || chainProof || ingressCount != 0 {
+		t.Fatalf("turn-end-crossing rearm recreated capability continuation=%q proof=%v ingress=%d", continuation, chainProof, ingressCount)
+	}
+}
+
+func TestDesktopCodingContinuationRearmStillArmsInsideLiveTurn(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	token := app.beginDesktopCodingTaskIngress(owner)
+	if token == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	app.codingCaps.mu.Lock()
+	ingress, live := app.codingCaps.ingress[token]
+	delete(app.codingCaps.ingress, token) // model the consumption phase
+	app.codingCaps.mu.Unlock()
+	if !live {
+		t.Fatal("consumed ingress fixture was not live")
+	}
+	app.codingCaps.rearmContinuationToken(owner, token, ingress.workspace, ingress.generation)
+	app.codingCaps.mu.Lock()
+	continuation := app.codingCaps.continuationTokens[owner]
+	_, chainProof := app.codingCaps.chainConsumed[owner][token]
+	_, continuationLive := app.codingCaps.ingress[continuation]
+	app.codingCaps.mu.Unlock()
+	if continuation == "" || !chainProof || !continuationLive {
+		t.Fatalf("live turn did not rearm exactly one continuation continuation=%q proof=%v live=%v", continuation, chainProof, continuationLive)
 	}
 }
 
@@ -855,5 +1002,340 @@ func TestDesktopCodingRootStepRelationRestoresPoppedContinuationAfterFailedBind(
 	fresh := app.codingCaps.takeContinuationToken(owner, requestToken)
 	if fresh == "" || fresh == requestToken {
 		t.Fatalf("restored a consumed token into the continuation slot: %q", fresh)
+	}
+}
+
+func TestDesktopCodingContinuationRestoreRejectsStaleGeneration(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok {
+		t.Fatal("first root step did not bind")
+	}
+	popped := app.codingCaps.takeContinuationToken(owner, requestToken)
+	if popped == "" {
+		t.Fatal("chained continuation was not armed after the first bind")
+	}
+	// A fence normally deletes the ingress as it increments the generation.
+	// Keep the ingress artificially live here so the restore path itself must
+	// enforce the same generation boundary instead of relying only on deletion.
+	app.codingCaps.mu.Lock()
+	app.codingCaps.generations[owner]++
+	app.codingCaps.mu.Unlock()
+	app.codingCaps.restoreContinuationToken(owner, popped)
+	app.codingCaps.mu.Lock()
+	restored := app.codingCaps.continuationTokens[owner]
+	app.codingCaps.mu.Unlock()
+	if restored != "" {
+		t.Fatalf("stale-generation continuation was restored into the slot: %q", restored)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceBindsAfterSurfaceMaterializes(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	// The runner materializes detached/exclusive execution directories after
+	// the turn window mints the ingress token. The credential must bind at
+	// that later host dispatch point, not require the directory to exist early.
+	surface := filepath.Join(t.TempDir(), "exclusive", "task", "qmstampregv26")
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, surface)
+	if requestToken == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	if app.codingCaps.bindExecutionWorkspace(owner, requestToken, surface) {
+		t.Fatal("missing execution surface was accepted before materialization")
+	}
+	if err := os.MkdirAll(surface, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !app.codingCaps.bindExecutionWorkspace(owner, requestToken, surface) {
+		t.Fatal("materialized execution surface did not bind")
+	}
+	_, _, _, binding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !binding.complete() {
+		t.Fatalf("root step did not carry the materialized workspace binding=%#v ok=%v", binding, ok)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding)
+	if !ok || !sameNormalizedPath(resolved, surface) {
+		t.Fatalf("resolved workspace=%q ok=%v, want %q", resolved, ok, surface)
+	}
+}
+
+func TestDesktopCodingRunnerBindsExactMaterializedSurfaceBeforeConsumption(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		CloseAutoRecallStore()
+		closeCodingKnowledgeStore(t, app)
+		app.closeCodingTaskRelationService()
+	})
+	handler := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID("C:/workspace/a")
+	// Model the contended-work-root case from the incident: turn ingress is
+	// minted while the detached execution directory does not exist yet, and
+	// the workflow materializes that directory only when the step is dispatched.
+	surface := filepath.Join(t.TempDir(), "parallel-task", "QmStampRegV26")
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	if requestToken == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	if err := os.MkdirAll(surface, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loopCtx := NewLoopContext("coding-workbench", 1, nil)
+	loopCtx.UserID = owner
+	loopCtx.CodingTaskIngressToken = requestToken
+	// Cancel before the model loop so this integration test stops immediately
+	// after the host dispatch boundary; the assertion is about the capability
+	// state the runner established before consumption, not model behavior.
+	loopCtx.Cancel()
+	task := &TaskItem{Index: 1, Title: "implement neon optimization", Description: "write code", RequestKind: codingRequestImplementation}
+	result := runTaskWithSubAgentRuntimeOptions(handler, corelib.MaclawLLMConfig{}, nil, task, surface, "", "", nil, loopCtx, nil, nil, nil)
+	if result == nil {
+		t.Fatal("runner returned no result")
+	}
+
+	app.codingCaps.mu.Lock()
+	continuation := app.codingCaps.continuationTokens[owner]
+	ingress, ingressOK := app.codingCaps.ingress[continuation]
+	binding := ingress.workspace
+	app.codingCaps.mu.Unlock()
+	if continuation == "" || !ingressOK || !binding.complete() {
+		t.Fatalf("runner did not bind and chain the materialized workspace continuation=%q ingress=%v binding=%#v", continuation, ingressOK, binding)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding)
+	if !ok || !sameNormalizedPath(resolved, surface) {
+		t.Fatalf("runner-bound workspace=%q ok=%v, want exact dispatch surface %q", resolved, ok, surface)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceReplacesInitialSurfaceWithDispatchSurface(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	turnStartSurface := t.TempDir()
+	dispatchSurface := t.TempDir()
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, turnStartSurface)
+	if !app.codingCaps.bindExecutionWorkspace(owner, requestToken, dispatchSurface) {
+		t.Fatal("dispatch surface did not rebind a live request token")
+	}
+	_, _, _, binding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !binding.complete() {
+		t.Fatalf("root step did not carry rebound workspace binding=%#v ok=%v", binding, ok)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding)
+	if !ok || !sameNormalizedPath(resolved, dispatchSurface) {
+		t.Fatalf("workspace resolved to %q ok=%v, want dispatch surface %q rather than turn-start surface %q", resolved, ok, dispatchSurface, turnStartSurface)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceDoesNotFallBackToPriorSurface(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	priorSurface := t.TempDir()
+	missingSurface := filepath.Join(t.TempDir(), "missing-worktree")
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, priorSurface)
+	if app.codingCaps.bindExecutionWorkspace(owner, requestToken, missingSurface) {
+		t.Fatal("missing execution surface was accepted")
+	}
+	_, _, _, binding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok {
+		t.Fatal("semantic relation should still bind without a workspace")
+	}
+	if binding.complete() {
+		t.Fatalf("failed exact-surface bind fell back to prior workspace authority: %#v", binding)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceFailedAtomicBindDoesNotConsumeContinuation(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	missingSurface := filepath.Join(t.TempDir(), "missing-worktree")
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	_, _, _, firstBinding, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, workspaceA, true)
+	if !ok || !firstBinding.complete() {
+		t.Fatalf("first execution surface workspace=%#v ok=%v", firstBinding, ok)
+	}
+	// The production bind/consume pair is atomic: when the next materialized
+	// surface is invalid, the pending continuation stays in its slot instead of
+	// being consumed into a dead step or inheriting workspace A.
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, missingSurface, true); ok {
+		t.Fatal("missing execution surface consumed the pending continuation")
+	}
+	_, _, _, secondBinding, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, workspaceB, true)
+	if !ok || !secondBinding.complete() || secondBinding == firstBinding {
+		t.Fatalf("retried continuation first=%#v second=%#v ok=%v", firstBinding, secondBinding, ok)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, secondBinding)
+	if !ok || !sameNormalizedPath(resolved, workspaceB) {
+		t.Fatalf("retried continuation resolved workspace=%q ok=%v, want %q", resolved, ok, workspaceB)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceRebindsPendingContinuationToStepSurface(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceA)
+	_, _, _, firstBinding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !firstBinding.complete() {
+		t.Fatalf("first root step workspace=%#v ok=%v", firstBinding, ok)
+	}
+	// The original token is only chain proof after the first bind. Rebinding
+	// through it must retarget the pending continuation token, not resurrect
+	// the consumed request token or reuse the previous step's worktree.
+	if !app.codingCaps.bindExecutionWorkspace(owner, requestToken, workspaceB) {
+		t.Fatal("pending continuation did not bind the next execution surface")
+	}
+	_, _, _, secondBinding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !secondBinding.complete() || secondBinding == firstBinding {
+		t.Fatalf("second root step first=%#v second=%#v ok=%v", firstBinding, secondBinding, ok)
+	}
+	resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, secondBinding)
+	if !ok || !sameNormalizedPath(resolved, workspaceB) {
+		t.Fatalf("continuation resolved workspace=%q ok=%v, want %q", resolved, ok, workspaceB)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceReadOnlyStepDropsCarriedWorkspace(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceDir := t.TempDir()
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	_, _, _, firstBinding, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, workspaceDir, true)
+	if !ok || !firstBinding.complete() {
+		t.Fatalf("first writable step workspace=%#v ok=%v", firstBinding, ok)
+	}
+	// A read-only root step still consumes the semantic chain, but it must not
+	// inherit the previous writer's workspace merely because the continuation
+	// carried that handle for lease continuity.
+	_, _, _, readOnlyBinding, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, "", false)
+	if !ok {
+		t.Fatal("read-only root step did not consume the continuation")
+	}
+	if readOnlyBinding.complete() {
+		t.Fatalf("read-only root step carried writable workspace authority: %#v", readOnlyBinding)
+	}
+	_, _, _, nextWritableBinding, ok := app.nextDesktopCodingRootStepRelationForExecution(requestToken, owner, workspaceDir, true)
+	if !ok || !nextWritableBinding.complete() {
+		t.Fatalf("next writable step workspace=%#v ok=%v", nextWritableBinding, ok)
+	}
+}
+
+func TestDesktopCodingRunnerConsumesInquiryWithoutWritableWorkspace(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		CloseAutoRecallStore()
+		closeCodingKnowledgeStore(t, app)
+		app.closeCodingTaskRelationService()
+	})
+	handler := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID("C:/workspace/a")
+	surface := t.TempDir()
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	if requestToken == "" {
+		t.Fatal("request ingress was not issued")
+	}
+	loopCtx := NewLoopContext("coding-workbench", 1, nil)
+	loopCtx.UserID = owner
+	loopCtx.CodingTaskIngressToken = requestToken
+	loopCtx.Cancel()
+	task := &TaskItem{Index: 1, Title: "explain current implementation", Description: "answer read-only", RequestKind: codingRequestInquiry}
+	result := runTaskWithSubAgentRuntimeOptions(handler, corelib.MaclawLLMConfig{}, nil, task, surface, "", "", nil, loopCtx, nil, nil, nil)
+	if result == nil {
+		t.Fatal("runner returned no result")
+	}
+	app.codingCaps.mu.Lock()
+	continuation := app.codingCaps.continuationTokens[owner]
+	ingress, ingressOK := app.codingCaps.ingress[continuation]
+	binding := ingress.workspace
+	app.codingCaps.mu.Unlock()
+	if continuation == "" || !ingressOK {
+		t.Fatalf("inquiry step did not continue the semantic chain continuation=%q ingress=%v", continuation, ingressOK)
+	}
+	if binding.complete() {
+		t.Fatalf("inquiry step carried writable workspace authority into the chain: %#v", binding)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceReusesMatchingSurfaceHandle(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceDir := t.TempDir()
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
+	_, _, _, firstBinding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !firstBinding.complete() {
+		t.Fatalf("first root step workspace=%#v ok=%v", firstBinding, ok)
+	}
+	if !app.codingCaps.bindExecutionWorkspace(owner, requestToken, workspaceDir) {
+		t.Fatal("matching continuation surface did not bind")
+	}
+	_, _, _, secondBinding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || secondBinding != firstBinding {
+		t.Fatalf("matching surface must keep the stable workspace handle first=%#v second=%#v ok=%v", firstBinding, secondBinding, ok)
+	}
+}
+
+func TestDesktopCodingExecutionWorkspaceRebindFailsClosed(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	other := projectSessionOwnerID("C:/workspace/b")
+	workspaceDir := t.TempDir()
+	requestToken := beginDesktopCodingTaskIngressWithWorkspaceForTest(app, owner, workspaceDir)
+	if app.codingCaps.bindExecutionWorkspace(other, requestToken, workspaceDir) {
+		t.Fatal("foreign owner rebound a desktop coding workspace")
+	}
+	if app.codingCaps.bindExecutionWorkspace(owner, "coding-ingress-forged", workspaceDir) {
+		t.Fatal("forged chain proof rebound a desktop coding workspace")
+	}
+	expiredToken := app.beginDesktopCodingTaskIngress(owner)
+	if expiredToken == "" {
+		t.Fatal("expiry fixture ingress was not issued")
+	}
+	app.codingCaps.mu.Lock()
+	expiredIngress := app.codingCaps.ingress[expiredToken]
+	expiredIngress.expiresAt = time.Now().UTC().Add(-time.Minute)
+	app.codingCaps.ingress[expiredToken] = expiredIngress
+	app.codingCaps.mu.Unlock()
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelationForExecution(expiredToken, owner, workspaceDir, true); ok {
+		t.Fatal("expired ingress bound an execution workspace")
+	}
+	if !app.codingCaps.bindExecutionWorkspace(owner, requestToken, workspaceDir) {
+		t.Fatal("owner request surface did not bind")
+	}
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok {
+		t.Fatal("first root step did not bind")
+	}
+	app.endDesktopCodingTaskIngressForOwner(owner)
+	if app.codingCaps.bindExecutionWorkspace(owner, requestToken, workspaceDir) {
+		t.Fatal("turn-end sweep left a continuation surface rebindable")
 	}
 }

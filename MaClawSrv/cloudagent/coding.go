@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 )
 
@@ -227,6 +228,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	filesCreated, filesModified := host.explicitFileChanges()
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
@@ -252,13 +254,14 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	rt.emitCodingTaskStatus(inst, taskID, requestID, "completed", input)
 	rt.settlePlan(inst, taskID, requestID, false)
-	rt.publish(inst, taskID, requestID, "response", result.Text, map[string]any{
-		"terminal": attachFiles(map[string]any{"text": result.Text}, files),
+	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.verificationFacts())
+	rt.publish(inst, taskID, requestID, "response", finalText, map[string]any{
+		"terminal": attachFiles(map[string]any{"text": finalText}, files),
 	})
 	if phaseRan {
-		rt.workflowRecordOutput(inst, taskID, result.Text)
+		rt.workflowRecordOutput(inst, taskID, finalText)
 	}
-	return result.Text, false, files
+	return finalText, false, files
 }
 
 // planContinuationText recognizes the messages that resume a parked plan
@@ -334,6 +337,15 @@ func codingHistory(rows []string) []agent.ConversationEntry {
 // agentHost is the shared workspace host for both instance kinds — the
 // session loop and the coding loop run the same agent kernel, tools and
 // streaming; only the prompt and the git tool pair differ.
+// hostCommandRun is one bash execution the host observed. writeCountAt is the
+// turn's write count when the command ran; a later write means the command
+// never saw the final tree.
+type hostCommandRun struct {
+	command      string
+	succeeded    bool
+	writeCountAt int
+}
+
 type agentHost struct {
 	rt      *Runtime
 	inst    *instance
@@ -348,9 +360,12 @@ type agentHost struct {
 	plan *planRecord
 	// phasePrompt is the V2 workflow phase instruction; non-empty only on a
 	// turn the workflow router marked as a phase run.
-	phasePrompt string
-	started     time.Time
-	files       map[string]bool
+	phasePrompt  string
+	started      time.Time
+	files        map[string]bool
+	createdFiles map[string]bool
+	writeCount   int
+	commands     []hostCommandRun
 	// iterationExtensions counts the extra waves this turn was granted
 	// after spending its configured iteration budget.
 	iterationExtensions int
@@ -391,6 +406,41 @@ func (h *agentHost) ExtendIterationBudget(used, toolCalls int) int {
 		slog.Int("wave", h.iterationExtensions))
 	return extra
 }
+
+// cloudFinalAnswerText applies the same audit-section filter and host fact
+// fallback the desktop coding surfaces use; cloud must not drift into a
+// separate user-visible report shape.
+func cloudFinalAnswerText(text string, filesCreated, filesModified []string, verification []codingagent.FinalAnswerVerificationFact) string {
+	return codingagent.AppendFinalAnswerHostFacts(
+		codingagent.StripFinalAnswerAuditSections(text),
+		filesCreated,
+		filesModified,
+		verification,
+	)
+}
+
+// verificationFacts projects the command audit into final-answer facts. A
+// command counts as after-final-edit only when the write count never moved
+// after it — equal snapshots mean no write followed (including the no-edit
+// review case where both are zero).
+func (h *agentHost) verificationFacts() []codingagent.FinalAnswerVerificationFact {
+	if len(h.commands) == 0 {
+		return nil
+	}
+	out := make([]codingagent.FinalAnswerVerificationFact, 0, len(h.commands))
+	for _, cmd := range h.commands {
+		if !codingagent.LooksLikeVerificationCommand(cmd.command) {
+			continue
+		}
+		out = append(out, codingagent.FinalAnswerVerificationFact{
+			Command:        cmd.command,
+			Succeeded:      cmd.succeeded,
+			AfterFinalEdit: cmd.writeCountAt == h.writeCount,
+		})
+	}
+	return out
+}
+
 func (h *agentHost) BuildSystemPrompt(string, bool) string {
 	var base string
 	if !h.coding {
@@ -415,6 +465,9 @@ func (h *agentHost) BuildSystemPrompt(string, bool) string {
 		}
 		persona += "\n请始终以该专家身份回应，不越界处理无关事务。"
 		base = persona + "\n\n" + base
+	}
+	if h.coding {
+		base += "\n\n## Final answer — coding-agent summary contract\n" + codingagent.FinalAnswerPresentationContract()
 	}
 	if h.plan != nil && len(h.plan.Steps) > 0 {
 		base += "\n本次任务按用户已确认的计划执行：\n" + planTextOf(h.plan.Steps) +
@@ -499,19 +552,87 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	return result
 }
 
+// recordBashCommand stores the host-observed command and advances the write
+// epoch conservatively when the argv may mutate the workspace. Verification
+// commands do not advance it themselves; a later non-read-only command does,
+// so an earlier verification is no longer presented as evidence for the final
+// tree. Shell writes are supposed to use write_file, but code generators and
+// package-manager commands can also mutate files through bash.
+func (h *agentHost) recordBashCommand(argv []string, failed bool) {
+	command := strings.Join(argv, " ")
+	h.commands = append(h.commands, hostCommandRun{
+		command:      command,
+		succeeded:    !failed,
+		writeCountAt: h.writeCount,
+	})
+	if cloudBashMayWriteWorkspace(command) {
+		h.writeCount++
+	}
+}
+
+func cloudBashMayWriteWorkspace(command string) bool {
+	if codingagent.LooksLikeVerificationCommand(command) {
+		return false
+	}
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return false
+	}
+	base := strings.Trim(fields[0], "\"'`")
+	if slash := strings.LastIndexAny(base, `/\\`); slash >= 0 {
+		base = base[slash+1:]
+	}
+	base = strings.TrimSuffix(base, ".exe")
+	switch base {
+	case "ls", "cat", "pwd", "grep", "rg", "fd", "head", "tail", "wc", "which", "echo", "printf", "test":
+		return false
+	case "find":
+		for _, field := range fields[1:] {
+			if field == "-delete" || field == "-exec" || field == "-execdir" {
+				return true
+			}
+		}
+		return false
+	case "git":
+		if len(fields) > 1 {
+			switch fields[1] {
+			case "status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "branch":
+				return false
+			}
+		}
+		return true
+	case "go":
+		return len(fields) > 1
+	case "npm", "pnpm", "yarn", "bun", "python", "python3", "py", "node", "sh", "bash", "cmake", "make", "nmake":
+		return true
+	}
+	return true
+}
+
 // runTool returns the tool result and whether the call failed — the second
 // value feeds the tool_finished outcome, which a result string alone
 // cannot decide (an error body and output that mentions errors look alike).
 func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 	switch name {
 	case "bash":
-		return h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
+		out, failed := h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
+		var body struct {
+			Argv []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &body); err == nil && len(body.Argv) > 0 {
+			h.recordBashCommand(body.Argv, failed)
+		}
+		return out, failed
 	case "read_file":
 		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		out, path := h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		out, path, created := h.rt.execWriteFile(h.inst, h.root, argsJSON)
 		if path != "" {
-			h.noteFile(path)
+			h.writeCount++
+			h.noteFile(path, created)
 		}
 		return out, path == ""
 	case "git_commit":
@@ -568,16 +689,39 @@ func (h *agentHost) LLMRequestContext(int) (context.Context, func(error), error)
 
 // noteFile records one produced file under its canonical jail-relative path —
 // the same form producedPaths and the fetch whitelist compare against.
-func (h *agentHost) noteFile(abs string) {
+func (h *agentHost) noteFile(abs string, created bool) {
 	if h.files == nil {
 		h.files = map[string]bool{}
 	}
 	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
 		h.files[rel] = true
+		if created {
+			if h.createdFiles == nil {
+				h.createdFiles = map[string]bool{}
+			}
+			h.createdFiles[rel] = true
+		}
 		slog.Debug("cloudagent artifact noted",
 			slog.String("instance", h.inst.meta.ID), slog.String("task", h.task),
 			slog.String("request", h.request), slog.String("path", rel))
 	}
+}
+
+// explicitFileChanges is the precise write_file change set. Files merely
+// discovered by the artifact mtime scan remain attachments, but are not
+// promoted to created/modified summary facts because the scan cannot tell
+// whether they existed before the turn.
+func (h *agentHost) explicitFileChanges() (created, modified []string) {
+	for rel := range h.files {
+		if h.createdFiles[rel] {
+			created = append(created, rel)
+		} else {
+			modified = append(modified, rel)
+		}
+	}
+	sort.Strings(created)
+	sort.Strings(modified)
+	return created, modified
 }
 
 // canonicalArtifactRel is the stored artifact key: path relative to the jail
@@ -685,25 +829,28 @@ func (rt *Runtime) execReadFile(inst *instance, argsJSON string) (string, bool) 
 	return string(raw), false
 }
 
-// execWriteFile returns the tool result text and the resolved file path on
-// success — the host records that path as a produced artifact. A failed
-// write returns an empty path so pre-existing files are never counted.
-func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string) {
+// execWriteFile returns the tool result text, the resolved file path, and
+// whether the file was newly created on success — the host records that path
+// as a produced artifact. A failed write returns an empty path so pre-existing
+// files are never counted.
+func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string, bool) {
 	var body struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-		return "路径无效", ""
+		return "路径无效", "", false
 	}
 	path, err := resolveInJail(root, body.Path)
 	if err != nil {
-		return err.Error(), ""
+		return err.Error(), "", false
 	}
+	_, statErr := os.Stat(path)
+	created := os.IsNotExist(statErr)
 	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
-		return err.Error(), ""
+		return err.Error(), "", false
 	}
-	return "已写入 " + body.Path, path
+	return "已写入 " + body.Path, path, created
 }
 
 // cloudToolStatusLine renders one tool call as the "工具 · action (name)"

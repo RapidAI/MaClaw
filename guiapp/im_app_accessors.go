@@ -180,6 +180,17 @@ func (h *IMMessageHandler) getCodingLLMConfig() corelib.MaclawLLMConfig {
 // usage stays with coding. A session that is not a task, a pin whose provider
 // is gone, or a standalone host injector keeps the assignment.
 func (h *IMMessageHandler) codingLLMConfigForSession(userID string) corelib.MaclawLLMConfig {
+	return h.codingLLMConfigForSessionOpts(userID, false)
+}
+
+// codingLLMConfigForSessionNoInit never cold-initializes the memory store for
+// the task-pin read. Status/prefill paths (route capabilities, model-name
+// display) use this so a tab focus cannot trigger ensureMemoryStore.
+func (h *IMMessageHandler) codingLLMConfigForSessionNoInit(userID string) corelib.MaclawLLMConfig {
+	return h.codingLLMConfigForSessionOpts(userID, true)
+}
+
+func (h *IMMessageHandler) codingLLMConfigForSessionOpts(userID string, noInit bool) corelib.MaclawLLMConfig {
 	if h == nil {
 		return corelib.MaclawLLMConfig{}
 	}
@@ -194,7 +205,14 @@ func (h *IMMessageHandler) codingLLMConfigForSession(userID string) corelib.Macl
 		caller.RouteSource = mcpCallerModelRoute
 		return caller
 	}
-	pinned, ok := h.app.taskBoundLLMConfig(projectPathFromSessionOwnerID(userID), maclawLLMProfileCoding)
+	pinPath := projectPathFromSessionOwnerID(userID)
+	var pinned corelib.MaclawLLMConfig
+	var ok bool
+	if noInit {
+		pinned, ok = h.app.taskBoundLLMConfigNoInit(pinPath, maclawLLMProfileCoding)
+	} else {
+		pinned, ok = h.app.taskBoundLLMConfig(pinPath, maclawLLMProfileCoding)
+	}
 	if !ok {
 		return cfg
 	}

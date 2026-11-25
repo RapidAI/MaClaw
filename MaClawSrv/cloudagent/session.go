@@ -89,8 +89,14 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		if templateID := strings.TrimSpace(payload.WorkflowID); templateID != "" {
 			// The task is already recorded, so a bad template id degrades to a
 			// warning instead of leaving an orphan sidebar row — same contract
-			// the desktop's unified create keeps.
-			if err := rt.workflowCreate(inst, taskID, templateID, payload.WorkflowArgs, title); err != nil {
+			// the desktop's unified create keeps. The workflow summary is the
+			// full first instruction when the caller ships it — ActionCancel-
+			// AndExecute replays Summary, and the 48-char title would truncate it.
+			summary := payload.text()
+			if summary == "" {
+				summary = title
+			}
+			if err := rt.workflowCreate(inst, taskID, templateID, payload.WorkflowArgs, summary); err != nil {
 				slog.Warn("cloudagent workflow create failed",
 					slog.String("instance", inst.meta.ID), slog.String("task", taskID),
 					slog.String("template", templateID), slog.Any("err", err))
@@ -140,7 +146,7 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		if machine, werr := rt.workflowMachine(inst); werr == nil {
 			if state := machine.GetActive(payload.TaskID); state != nil && state.Status == v2.StatusActive {
 				if cerr := machine.Cancel(payload.TaskID); cerr == nil {
-					rt.publishWorkflowState(inst, payload.TaskID, machine.GetActive(payload.TaskID))
+					rt.publishWorkflowState(inst, payload.TaskID, workflowLatest(machine, payload.TaskID))
 				}
 			}
 		}

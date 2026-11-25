@@ -31,6 +31,17 @@ const (
 // reopen instead of counting finished.
 const dependencyBlockErrorText = "blocked: dependency not met"
 
+// TaskCommandRun is optional host execution evidence attached to a task
+// result. It lets user-facing formatters distinguish facts the host observed
+// from prose the model wrote, without exposing prompts or credentials.
+type TaskCommandRun struct {
+	Command        string `json:"command,omitempty"`
+	WorkingDir     string `json:"working_dir,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	Succeeded      bool   `json:"succeeded,omitempty"`
+	AfterFinalEdit bool   `json:"after_final_edit,omitempty"`
+}
+
 // TaskRunResult is the outcome of running a single task.
 type TaskRunResult struct {
 	TaskIndex     int           `json:"task_index"`
@@ -39,7 +50,11 @@ type TaskRunResult struct {
 	Summary       string        `json:"summary,omitempty"`
 	FilesCreated  []string      `json:"files_created,omitempty"`
 	FilesModified []string      `json:"files_modified,omitempty"`
-	Error         string        `json:"error,omitempty"`
+	// CommandsRun is in-memory presentation evidence only. It is deliberately
+	// not persisted in workflow checkpoints: command lines can carry tokens or
+	// other local secrets even when the host treats them as audit facts.
+	CommandsRun []TaskCommandRun `json:"-"`
+	Error       string           `json:"error,omitempty"`
 	// RuntimeTaskID is an opaque reference to the durable coding execution
 	// ledger. It deliberately excludes commands, prompts, credentials and any
 	// replay payload; host code uses it only to prepare an explicit recovery.
