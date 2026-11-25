@@ -161,6 +161,15 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
     // stale keeps the live frames' workbench instead.
     noteCloudAgentWorkbench(key, live.workbench);
     noteCloudAgentWorkflow(key, live.workflow);
+    // Rebuilding the same cursor is not a resync: every round-frame change
+    // allocates a fresh cursor, while rebuilding here would erase local
+    // expiration state (for example a confirmation card closed by the user's
+    // answer) and then put the stale card back. Task-level state above still
+    // refreshes because it is not cursor-owned.
+    if (stored && Number.isFinite(cursor) && cursor > 0 && cursor === storedLast && cursor === floor) {
+        notifyRounds();
+        return key;
+    }
     console.debug('[cloud-agent] watch snapshot apply', {
         sessionKey, cursor, responded: live.responded === true,
         parts: Array.isArray(live.parts) ? live.parts.length : 0,
@@ -168,6 +177,21 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
     });
     rounds.delete(key);
     if (!Number.isFinite(cursor) || cursor <= 0) {
+        // A srv restart drops the in-memory lane cursor, but the snapshot can
+        // still carry a durable gate card rebuilt from task state. That card
+        // is not round history — render it even when there is no cursor to
+        // rebuild, or the reopened panel has no way to answer the plan gate.
+        const terminal = live.terminal;
+        if (terminal && typeof terminal === 'object') {
+            const round = reduceCloudAgentEvent(emptyViewerState(), {
+                grant_id: grantID,
+                session_key: sessionKey,
+                project_path: '',
+                event: 'response',
+                terminal,
+            });
+            rounds.set(key, round);
+        }
         notifyRounds();
         return key;
     }

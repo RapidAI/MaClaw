@@ -76,6 +76,15 @@ type instance struct {
 	// one store file, workflows keyed by task id.
 	wfMu     sync.Mutex
 	workflow *workflowHolder
+	// drainMu keeps concurrent recovery/stop/finish drain triggers from
+	// promoting the same parked row twice.
+	drainMu sync.Mutex
+}
+
+type trackedCancel struct {
+	instanceID string
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 // Runtime is the in-process cloud-agent host. Open does not start tickers.
@@ -84,7 +93,7 @@ type Runtime struct {
 	adminSecret string
 	mu          sync.Mutex
 	instances   map[string]*instance
-	cancels     map[string]context.CancelFunc
+	cancels     map[string]trackedCancel
 	stop        context.CancelFunc
 	httpClient  *http.Client
 	exec        executor
@@ -107,7 +116,7 @@ func Open(dataRoot, adminSecret string) (*Runtime, error) {
 		root:        root,
 		adminSecret: adminSecret,
 		instances:   map[string]*instance{},
-		cancels:     map[string]context.CancelFunc{},
+		cancels:     map[string]trackedCancel{},
 	}
 	rt.httpClient = rt.newHTTPClient()
 	if err := rt.reload(); err != nil {
@@ -185,8 +194,10 @@ func (rt *Runtime) loop(ctx context.Context) {
 
 // finishTurn stores the reply and tells Hub the request is done, so the
 // concurrent-turn slot is released without waiting out the heartbeat window.
-// The finish beat retries: one lost POST must not pin the slot for the whole
-// miss window — that is how a finished turn still blocks the next send.
+// The finish beat retries asynchronously: one lost POST must not pin the slot
+// for the whole miss window, but a slow/dead Hub must not delay the durable
+// input queue either — the next turn's start beat independently retires any
+// older shadow row.
 func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string, asError bool, files []string, now time.Time) {
 	wrote, err := inst.book.Finish(requestID, content, asError, files, now)
 	slog.Debug("cloudagent finish turn",
@@ -197,12 +208,14 @@ func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string,
 	if err != nil || !wrote {
 		return
 	}
-	for attempt := 0; attempt < 4; attempt++ {
-		if _, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, true); ok {
-			return
+	go func() {
+		for attempt := 0; attempt < 4; attempt++ {
+			if _, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, true); ok {
+				return
+			}
+			time.Sleep(time.Duration(attempt+1) * time.Second)
 		}
-		time.Sleep(time.Duration(attempt+1) * time.Second)
-	}
+	}()
 }
 
 func (rt *Runtime) pulse(ctx context.Context, now time.Time) {
@@ -245,6 +258,18 @@ func (rt *Runtime) InterruptMissed(now time.Time) error {
 	ids, err := rt.interrupt(now, heartbeatNote, now.Add(-missWindow))
 	rt.cancelIDs(ids)
 	return err
+}
+
+// Resume lets a stopped instance continue with work that was already parked.
+// drainQueue waits for the interrupted goroutine to finish unwinding before
+// it promotes the oldest row.
+func (rt *Runtime) Resume(id string) error {
+	inst, err := rt.instance(id)
+	if err != nil {
+		return err
+	}
+	go rt.drainQueue(inst)
+	return nil
 }
 
 // Stop interrupts every running turn of one instance. The workspace stays.
@@ -398,13 +423,14 @@ func (rt *Runtime) Close() error {
 	instances := rt.instances
 	rt.instances = map[string]*instance{}
 	cancels := rt.cancels
-	rt.cancels = map[string]context.CancelFunc{}
+	rt.cancels = map[string]trackedCancel{}
 	rt.mu.Unlock()
 	if stop != nil {
 		stop()
 	}
-	for _, cancel := range cancels {
-		cancel()
+	for _, tracked := range cancels {
+		tracked.cancel()
+		close(tracked.done)
 	}
 	if exec != nil {
 		_ = exec.Close()
@@ -439,27 +465,83 @@ func (rt *Runtime) instance(id string) (*instance, error) {
 	return inst, nil
 }
 
-func (rt *Runtime) track(id string, cancel context.CancelFunc) {
+func (rt *Runtime) track(instanceID, id string, cancel context.CancelFunc) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	rt.cancels[id] = cancel
+	rt.cancels[id] = trackedCancel{instanceID: instanceID, cancel: cancel, done: make(chan struct{})}
+}
+
+func (rt *Runtime) instanceTurnWaits(instanceID string) []chan struct{} {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	var waits []chan struct{}
+	for _, tracked := range rt.cancels {
+		if tracked.instanceID == instanceID && tracked.cancel != nil {
+			waits = append(waits, tracked.done)
+		}
+	}
+	return waits
+}
+
+func (rt *Runtime) trackTurn(inst *instance, id string, cancel context.CancelFunc) {
+	rt.track(inst.meta.ID, id, cancel)
+	// Admit and cancel are asynchronous. If stop/interrupt won the tiny gap
+	// between the durable Begin commit and this tracking step, the context was
+	// not yet addressable by cancelIDs; honour the terminal row now instead of
+	// letting an untracked turn run anyway.
+	if inst != nil && inst.book != nil {
+		if status, err := inst.book.Status(id); err == nil && status != "running" {
+			cancel()
+		}
+	}
 }
 
 func (rt *Runtime) untrack(id string) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	delete(rt.cancels, id)
+	if tracked := rt.cancels[id]; tracked.cancel != nil {
+		close(tracked.done)
+		delete(rt.cancels, id)
+	}
 }
 
 func (rt *Runtime) cancelIDs(ids []string) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	for _, id := range ids {
-		if cancel := rt.cancels[id]; cancel != nil {
-			cancel()
-			delete(rt.cancels, id)
+		if tracked := rt.cancels[id]; tracked.cancel != nil {
+			tracked.cancel()
 		}
 	}
+}
+
+// cancelIDsAndDrain cancels the rows a user stopped, then drains parked input
+// only after those goroutines have actually unwound. Starting the next turn at
+// cancel time could overlap a tool that is still tearing down; never draining
+// it would strand the durable queue behind a cancelled row.
+func (rt *Runtime) cancelIDsAndDrain(ids []string, inst *instance) {
+	if len(ids) == 0 {
+		return
+	}
+	rt.mu.Lock()
+	waits := make([]chan struct{}, 0, len(ids))
+	for _, id := range ids {
+		if tracked := rt.cancels[id]; tracked.cancel != nil {
+			tracked.cancel()
+			waits = append(waits, tracked.done)
+		}
+	}
+	rt.mu.Unlock()
+	if len(waits) == 0 {
+		go rt.drainQueue(inst)
+		return
+	}
+	go func() {
+		for _, done := range waits {
+			<-done
+		}
+		rt.drainQueue(inst)
+	}()
 }
 
 // Messages returns the task transcript. cloud_get_task uses this.

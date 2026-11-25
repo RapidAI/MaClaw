@@ -95,6 +95,58 @@ func (b *book) planPendingTask() string {
 	return taskID
 }
 
+// planGateTask finds the newest plan a gate command can still act on. An
+// approved/failed/executing record is not pending anymore, but it is still
+// the task a bare "按计划开始" means; requiring pending here strands retries
+// after a restart on a brand-new empty task. Terminal records are only a
+// fallback: they make a duplicate click a harmless no-op instead of a new
+// empty task, but they must not hide an older failed plan that can retry.
+func (b *book) planGateTask() string {
+	taskID, _ := b.planGateTaskActionable()
+	return taskID
+}
+
+// planGateTaskActionable also reports whether the result can actually consume
+// the command. That distinction matters while another task is running: an
+// actionable gate wins over the running-task fallback, but a merely terminal
+// record must not capture ordinary approval-shaped text from the live task.
+func (b *book) planGateTaskActionable() (taskID string, actionable bool) {
+	rows, err := b.db.Query(`SELECT task_id, state, steps FROM plan_state ORDER BY updated_at DESC`)
+	if err != nil {
+		return "", false
+	}
+	defer rows.Close()
+	fallback := ""
+	for rows.Next() {
+		var taskID, state, stepsRaw string
+		if err := rows.Scan(&taskID, &state, &stepsRaw); err != nil {
+			continue
+		}
+		if fallback == "" {
+			fallback = taskID
+		}
+		actionable := false
+		switch state {
+		case planStatePending, planStateApproved, planStateRunning, planStateFailed:
+			actionable = true
+		case planStateDone:
+			var steps []planStep
+			if json.Unmarshal([]byte(stepsRaw), &steps) == nil {
+				for i := range steps {
+					if steps[i].Status == "failed" {
+						actionable = true
+						break
+					}
+				}
+			}
+		}
+		if actionable {
+			return taskID, true
+		}
+	}
+	return fallback, false
+}
+
 // --- plan answers ---
 
 const (
@@ -419,24 +471,35 @@ func (rt *Runtime) settlePlan(inst *instance, taskID, requestID string, asError 
 	}
 	now := time.Now().Unix()
 	for i := range rec.Steps {
-		switch {
-		case rec.Steps[i].Status == "running":
-			if asError {
-				rec.Steps[i].Status = "failed"
-			} else {
-				rec.Steps[i].Status = "passed"
-			}
-		case rec.Steps[i].Status == "pending" && !asError:
-			// A finished turn must not leave a stale pending row in a done
-			// plan: the model ended the work without touching it, which is a
-			// skip, not a step still to come.
-			rec.Steps[i].Status = "skipped"
-		default:
+		if rec.Steps[i].Status != "running" {
 			continue
+		}
+		if asError {
+			rec.Steps[i].Status = "failed"
+		} else {
+			rec.Steps[i].Status = "passed"
 		}
 		rec.Steps[i].UpdatedUnix = now
 	}
-	if asError {
+	hasFailed := false
+	for i := range rec.Steps {
+		if rec.Steps[i].Status == "failed" {
+			hasFailed = true
+			break
+		}
+	}
+	for i := range rec.Steps {
+		if rec.Steps[i].Status != "pending" || asError || hasFailed {
+			continue
+		}
+		// A cleanly finished turn must not leave a stale pending row in a
+		// done plan: the model ended the work without touching it, which is
+		// a skip, not a step still to come. When any row failed the plan is
+		// not done, so the untouched tail remains honestly pending instead.
+		rec.Steps[i].Status = "skipped"
+		rec.Steps[i].UpdatedUnix = now
+	}
+	if asError || hasFailed {
 		rec.State = planStateFailed
 	} else {
 		rec.State = planStateDone

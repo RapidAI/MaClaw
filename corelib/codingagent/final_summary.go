@@ -45,7 +45,7 @@ func AppendFinalAnswerHostFacts(summary string, filesCreated, filesModified []st
 // vocabulary used by surfaces that execute argv commands rather than the
 // desktop shell audit. It intentionally favors precision over recall.
 func LooksLikeVerificationCommand(command string) bool {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	fields := finalAnswerCommandWords(strings.ToLower(strings.TrimSpace(command)))
 	if len(fields) == 0 {
 		return false
 	}
@@ -272,7 +272,7 @@ func sanitizeFinalAnswerMentionedCommands(summary string, verification []FinalAn
 			continue
 		}
 		summary = strings.ReplaceAll(summary, raw, sanitized)
-		if normalizedRaw := strings.Join(strings.Fields(raw), " "); normalizedRaw != raw {
+		if normalizedRaw := strings.Join(finalAnswerCommandWords(raw), " "); normalizedRaw != raw {
 			summary = strings.ReplaceAll(summary, normalizedRaw, sanitized)
 		}
 	}
@@ -284,45 +284,74 @@ func sanitizeFinalAnswerMentionedCommands(summary string, verification []FinalAn
 // VAR=value assignments are execution noise; sensitive key=value arguments are
 // redacted in place, as are values passed as the argument after a sensitive flag.
 func sanitizeFinalAnswerCommand(command string) string {
-	fields := strings.Fields(strings.TrimSpace(command))
-	for len(fields) > 1 && finalAnswerEnvAssignment(fields[0]) {
-		fields = fields[1:]
+	tokens := finalAnswerCommandTokens(strings.TrimSpace(command))
+	for len(tokens) > 1 && finalAnswerEnvAssignment(tokens[0].value) {
+		tokens = tokens[1:]
 	}
-	for i, field := range fields {
-		field = redactFinalAnswerURLCredentials(field)
-		fields[i] = field
+	out := make([]string, len(tokens))
+	redactedValue := make(map[int]bool, len(tokens))
+	for i, token := range tokens {
+		if redactedValue[i] {
+			out[i] = "<redacted>"
+			continue
+		}
+		value := redactFinalAnswerInlineAuthorization(token.value)
+		value = redactFinalAnswerURLCredentials(value)
+		surface := token.surface
+		if value != token.value {
+			surface = finalAnswerShellToken(value)
+		}
+		out[i] = surface
 		// Flag forms carry leading dashes (--token=, -api-key=): the sensitive
 		// key starts after them, so compare on the stripped spelling. Header
 		// spellings often arrive as a separate token ending in a colon.
-		lower := strings.ToLower(strings.TrimLeft(strings.Trim(field, "\"'`"), "-"))
+		lower := strings.ToLower(strings.TrimLeft(value, "-"))
 		keyToken := strings.TrimSuffix(lower, ":")
 		for _, key := range finalAnswerSensitiveKeys {
 			if strings.HasPrefix(lower, key+"=") {
-				fields[i] = field[:strings.Index(field, "=")+1] + "<redacted>"
+				if eq := strings.Index(value, "="); eq >= 0 {
+					out[i] = value[:eq+1] + "<redacted>"
+				} else {
+					out[i] = "<redacted>"
+				}
 				break
 			}
-			if keyToken == key && i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "-") {
-				if strings.EqualFold(fields[i+1], "bearer") {
-					if i+2 < len(fields) && !strings.HasPrefix(fields[i+2], "-") {
-						fields[i+2] = "<redacted>"
+			if keyToken == key && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1].value, "-") {
+				if strings.EqualFold(tokens[i+1].value, "bearer") {
+					if i+2 < len(tokens) && !strings.HasPrefix(tokens[i+2].value, "-") {
+						out[i+2] = "<redacted>"
+						redactedValue[i+2] = true
 					}
 					break
 				}
-				fields[i+1] = "<redacted>"
+				out[i+1] = "<redacted>"
+				redactedValue[i+1] = true
 				break
 			}
 		}
-		if lower == "bearer" && i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "-") {
-			fields[i+1] = "<redacted>"
+		if lower == "bearer" && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1].value, "-") {
+			out[i+1] = "<redacted>"
+			redactedValue[i+1] = true
 		}
 	}
-	command = strings.Join(fields, " ")
+	command = strings.Join(out, " ")
 	const maxRunes = 140
 	runes := []rune(command)
 	if len(runes) > maxRunes {
 		command = string(runes[:maxRunes-1]) + "…"
 	}
 	return command
+}
+
+func redactFinalAnswerInlineAuthorization(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) < 2 || !strings.EqualFold(fields[0], "Authorization:") {
+		return value
+	}
+	if len(fields) >= 3 && strings.EqualFold(fields[1], "Bearer") {
+		return fields[0] + " " + fields[1] + " <redacted>"
+	}
+	return fields[0] + " <redacted>"
 }
 
 // redactFinalAnswerURLCredentials removes userinfo from URL authorities —
@@ -351,6 +380,120 @@ var finalAnswerSensitiveKeys = []string{
 	"access_key", "access-key", "private_key", "private-key", "authorization", "auth",
 }
 
+type finalAnswerCommandToken struct {
+	surface string
+	value   string
+}
+
+// finalAnswerCommandTokens splits a shell-like command display into words
+// while preserving each word's original surface. It understands the quoting
+// and backslash escaping the coding surfaces use in practice; it is a lexer
+// for redaction/display, not a shell executor.
+func finalAnswerCommandTokens(command string) []finalAnswerCommandToken {
+	var tokens []finalAnswerCommandToken
+	var value strings.Builder
+	start := -1
+	inSingle := false
+	inDouble := false
+	escaped := false
+	flush := func(end int) {
+		if start < 0 {
+			return
+		}
+		tokens = append(tokens, finalAnswerCommandToken{
+			surface: command[start:end],
+			value:   value.String(),
+		})
+		start = -1
+		value.Reset()
+	}
+	for i, r := range command {
+		if start < 0 {
+			if unicode.IsSpace(r) {
+				continue
+			}
+			start = i
+		}
+		if escaped {
+			value.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if r == '\'' {
+				inSingle = false
+			} else {
+				value.WriteRune(r)
+			}
+			continue
+		}
+		if inDouble {
+			if r == '\\' {
+				if finalAnswerBackslashEscapes(command, i, true) {
+					escaped = true
+				} else {
+					value.WriteRune(r)
+				}
+				continue
+			}
+			if r == '"' {
+				inDouble = false
+			} else {
+				value.WriteRune(r)
+			}
+			continue
+		}
+		switch {
+		case unicode.IsSpace(r):
+			flush(i)
+		case r == '\'':
+			inSingle = true
+		case r == '"':
+			inDouble = true
+		case r == '\\':
+			if finalAnswerBackslashEscapes(command, i, false) {
+				escaped = true
+			} else {
+				value.WriteRune(r)
+			}
+		default:
+			value.WriteRune(r)
+		}
+	}
+	flush(len(command))
+	return tokens
+}
+
+func finalAnswerBackslashEscapes(command string, slash int, inDouble bool) bool {
+	if slash+1 >= len(command) {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(command[slash+1:])
+	if inDouble {
+		return next == '$' || next == '`' || next == '"' || next == 92 || next == 10
+	}
+	return unicode.IsSpace(next) || next == 39 || next == '"' || next == 92 || next == '$' || next == '`'
+}
+
+func finalAnswerCommandWords(command string) []string {
+	tokens := finalAnswerCommandTokens(strings.TrimSpace(command))
+	words := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		words = append(words, token.value)
+	}
+	return words
+}
+
+func finalAnswerShellToken(text string) string {
+	if text == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(text, " \t\n\r\"'\\$`&|;<>*?[](){}") {
+		return text
+	}
+	return "'" + strings.ReplaceAll(text, "'", "'\\''") + "'"
+}
+
 func finalAnswerEnvAssignment(field string) bool {
 	eq := strings.Index(field, "=")
 	if eq <= 0 {
@@ -367,12 +510,70 @@ func finalAnswerEnvAssignment(field string) bool {
 
 func finalAnswerMentionsCommand(lowerSummary, rawCommand, sanitizedCommand string) bool {
 	for _, command := range []string{rawCommand, sanitizedCommand} {
-		normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(command)), " "))
-		if normalized != "" && strings.Contains(lowerSummary, normalized) {
-			return true
+		forms := []string{
+			strings.Join(finalAnswerCommandWords(strings.TrimSpace(command)), " "),
+			strings.Join(strings.Fields(strings.TrimSpace(command)), " "),
+		}
+		for _, normalized := range forms {
+			normalized = strings.ToLower(normalized)
+			if normalized != "" && finalAnswerContainsCommandToken(lowerSummary, normalized) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// finalAnswerContainsCommandToken matches a whole command mention. A plain
+// substring match would treat "go test ./pkg2" as evidence that the host's
+// "go test ./pkg" had already been reported.
+func finalAnswerContainsCommandToken(text, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	for offset := 0; offset < len(text); {
+		idx := strings.Index(text[offset:], needle)
+		if idx < 0 {
+			return false
+		}
+		start := offset + idx
+		end := start + len(needle)
+		if finalAnswerCommandBoundaryBefore(text, start) && finalAnswerCommandBoundaryAfter(text, end) {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func finalAnswerCommandBoundaryBefore(text string, start int) bool {
+	if start <= 0 {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(text[:start])
+	return !finalAnswerCommandRune(r)
+}
+
+func finalAnswerCommandBoundaryAfter(text string, end int) bool {
+	if end >= len(text) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(text[end:])
+	if r == '.' {
+		// A period immediately followed by another command character is part of
+		// a longer argument (pkg.test); otherwise it is much more often sentence
+		// punctuation after the command.
+		if end+1 >= len(text) {
+			return true
+		}
+		next, _ := utf8.DecodeRuneInString(text[end+1:])
+		return !unicode.IsLetter(next) && !unicode.IsDigit(next)
+	}
+	return !finalAnswerCommandRune(r)
+}
+
+func finalAnswerCommandRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-/", r) || r == 92
 }
 
 func finalAnswerMentionsPath(lowerSummary, path string, baseCounts map[string]int) bool {

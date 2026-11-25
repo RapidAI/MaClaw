@@ -11,7 +11,7 @@ import {
     subscribeCloudAgentRounds,
 } from './cloudAgentSession';
 import { cloudAgentCatalog, cloudAssistantInstanceId, sendShownCloudAgent, stopShownCloudAgent } from './cloudAgentAssistant';
-import { noRepoScopeNote } from '../../utils/githubScopes';
+import { CloudGitConnectDialog } from './CloudGitConnectDialog';
 import { noteCloudTurn } from './taskPlace';
 
 type CloudAgentRow = {
@@ -59,16 +59,8 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
     const [draft, setDraft] = useState('');
     const [choices, setChoices] = useState<Array<{ label: string; command: string }>>([]);
     const [pickedKind, setPickedKind] = useState('');
-    const [gitNote, setGitNote] = useState<{ text: string; warn?: boolean }>({ text: '' });
-    const [git, setGit] = useState({
-        service: 'github',
-        origin: 'https://github.com',
-        repo: '',
-        authorName: '',
-        authorEmail: '',
-        token: '',
-        source: '',
-    });
+    const [gitDialogOpen, setGitDialogOpen] = useState(false);
+    const [gitConnectedRepo, setGitConnectedRepo] = useState('');
     const selected = useRef({ grant: '', instance: '', task: '', kind: '' });
     const openGeneration = useRef(0);
 
@@ -127,7 +119,8 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         setTasks([]);
         setLive('');
         setChoices([]);
-        setGitNote({ text: '' });
+        setGitDialogOpen(false);
+        setGitConnectedRepo('');
         setPickedKind(row.kind);
         selected.current = { grant: '', instance: row.id, task: '', kind: row.kind };
         const open = appBinding('OpenCloudAgentGrant');
@@ -255,65 +248,6 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
         }
     };
 
-    const connectGit = async () => {
-        const connect = appBinding('ConnectCloudAgentGit');
-        const current = selected.current;
-        if (!connect || current.kind !== 'coding' || !current.instance) return;
-        try {
-            const view = await connect(current.instance, {
-                service: git.service,
-                origin: git.origin.trim(),
-                repo: git.repo.trim(),
-                author_name: git.authorName.trim(),
-                author_email: git.authorEmail.trim(),
-                token: git.token,
-                source: git.source || undefined,
-            }) as { repo?: string; token?: string };
-            if (view && view.token) {
-                setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
-                return;
-            }
-            setGitNote({ text: String(view?.repo || '') });
-            setGit((prev) => ({ ...prev, token: '', source: '' }));
-        } catch (err) {
-            fail(err);
-        }
-    };
-
-    const fillGitFromAccount = async () => {
-        const isGitLab = git.service === 'gitlab';
-        const account = appBinding(isGitLab ? 'CloudAgentGitLabAccount' : 'CloudAgentGitHubAccount');
-        if (!account) return;
-        try {
-            const view = await account() as {
-                connected?: boolean; login?: string; name?: string;
-                email?: string; origin?: string; token?: string; repo_scope?: boolean;
-                github_app_token?: boolean;
-            };
-            if (!view?.connected || !view.token) {
-                setGitNote({ text: isGitLab
-                    ? text('Connect GitLab in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中连接 GitLab', '請先在 設定 → GitHub & GitLab 中連接 GitLab')
-                    : text('Connect GitHub in Settings → GitHub & GitLab first', '请先在 设置 → GitHub & GitLab 中登录 GitHub', '請先在 設定 → GitHub & GitLab 中登入 GitHub') });
-                return;
-            }
-            if (!view.repo_scope) {
-                setGitNote({ text: noRepoScopeNote(lang, isGitLab, view.github_app_token), warn: true });
-                return;
-            }
-            setGit((prev) => ({
-                ...prev,
-                origin: isGitLab ? String(view.origin || 'https://gitlab.com') : 'https://github.com',
-                authorName: String(view.name || view.login || ''),
-                authorEmail: String(view.email || ''),
-                token: String(view.token),
-                source: 'account',
-            }));
-            setGitNote({ text: text(`Account ${view.login} filled`, `已填入账号 ${view.login}`, `已填入帳號 ${view.login}`) });
-        } catch (err) {
-            fail(err);
-        }
-    };
-
     const stop = async () => {
         const op = appBinding('RemoteControlOp');
         const current = selected.current;
@@ -393,41 +327,13 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 ))}
             </ul>
             {pickedKind === 'coding' ? (
-                <form
-                    data-testid="cloud-agent-git"
-                    onSubmit={(event) => {
-                        event.preventDefault();
-                        void connectGit();
-                    }}
-                    style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}
-                >
-                    <select aria-label={text('Service', '服务', '服務')} value={git.service} onChange={(event) => {
-                        // A note about the old service (e.g. the GitHub App
-                        // warning) is wrong the moment the service changes.
-                        setGitNote({ text: '' });
-                        setGit((prev) => {
-                            const service = event.target.value;
-                            const prevDefault = prev.service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com';
-                            const untouched = !prev.origin.trim() || prev.origin === prevDefault;
-                            return { ...prev, service, source: '', origin: untouched ? (service === 'gitlab' ? 'https://gitlab.com' : 'https://github.com') : prev.origin };
-                        });
-                    }}>
-                        <option value="github">GitHub</option>
-                        <option value="gitlab">GitLab</option>
-                    </select>
-                    <input aria-label={text('Origin', '地址', '位址')} value={git.origin} onChange={(event) => setGit((prev) => ({ ...prev, origin: event.target.value }))} />
-                    <input aria-label={text('Repository', '代码库', '程式庫')} value={git.repo} onChange={(event) => setGit((prev) => ({ ...prev, repo: event.target.value }))} />
-                    <input aria-label={text('Author name', '作者', '作者')} value={git.authorName} onChange={(event) => setGit((prev) => ({ ...prev, authorName: event.target.value }))} />
-                    <input aria-label={text('Author email', '邮箱', '郵箱')} value={git.authorEmail} onChange={(event) => setGit((prev) => ({ ...prev, authorEmail: event.target.value }))} />
-                    <input aria-label={text('Token', '令牌', '權杖')} type="password" value={git.token} onChange={(event) => setGit((prev) => ({ ...prev, token: event.target.value, source: '' }))} />
-                    <button type="button" onClick={() => void fillGitFromAccount()}>
-                        {git.service === 'gitlab'
-                            ? text('Use GitLab account', '用 GitLab 账号', '用 GitLab 帳號')
-                            : text('Use GitHub account', '用 GitHub 账号', '用 GitHub 帳號')}
-                    </button>
-                    <button type="submit">{text('Connect', '连接', '連接')}</button>
-                    {gitNote.text ? <span style={{ color: gitNote.warn ? 'var(--theme-danger, #b42318)' : undefined }}>{gitNote.text}</span> : null}
-                </form>
+                <div data-testid="cloud-agent-git" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, color: 'var(--theme-text-secondary, #667085)' }}>
+                        {text('Repository access reuses the GitHub/GitLab account connected in Settings.', '代码库连接会复用设置中已登录的 GitHub/GitLab 账号。', '程式庫連接會復用設定中已登入的 GitHub/GitLab 帳號。')}
+                    </span>
+                    <button type="button" onClick={() => setGitDialogOpen(true)}>{text('Connect repository', '连接代码库', '連接程式庫')}</button>
+                    {gitConnectedRepo ? <strong data-testid="cloud-agent-git-connected">{text('Connected', '已连接', '已連接')} {gitConnectedRepo}</strong> : null}
+                </div>
             ) : null}
             <pre data-testid="cloud-agent-live">{live}</pre>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -451,6 +357,9 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
                 <button type="button" onClick={() => { void deliver(draft); }}>{text('Send', '发送', '傳送')}</button>
                 <button type="button" onClick={() => { void stop(); }}>{text('Stop', '停止', '停止')}</button>
             </div>
+            {gitDialogOpen && selected.current.instance ? (
+                <CloudGitConnectDialog lang={lang} instanceId={selected.current.instance} onClose={() => setGitDialogOpen(false)} onConnected={setGitConnectedRepo} />
+            ) : null}
         </section>
     );
 }

@@ -69,8 +69,9 @@ func TestQueuedTurnsFIFOAndDedup(t *testing.T) {
 	if err != nil || !ok || msg.Text != "第二条" || msg.QueueID != second {
 		t.Fatalf("peek second %#v %v %v", msg, ok, err)
 	}
-	// A begun turn dedups through client_messages, not the queue.
-	if _, _, err := b.Begin("c2", "task_1", "第二条", now.Add(3*time.Second)); err != nil {
+	// The queue runner promotes through BeginDrain; external Begin is fenced
+	// behind parked rows, but the drain itself must not fence against its head.
+	if _, _, err := b.BeginDrain("c2", "task_1", "第二条", now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	back, err := b.Enqueue("c2", "task_1", "第二条", now.Add(4*time.Second))

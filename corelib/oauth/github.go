@@ -52,6 +52,76 @@ type GitHubUser struct {
 	HTMLURL   string `json:"html_url"`
 }
 
+// GitHubRepository is one repository visible to the connected account.
+type GitHubRepository struct {
+	FullName      string `json:"full_name"`
+	Description   string `json:"description"`
+	Private       bool   `json:"private"`
+	HTMLURL       string `json:"html_url"`
+	DefaultBranch string `json:"default_branch"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// FetchGitHubRepositories lists the repositories the token can use, ordered
+// by recent activity. The GitHub API caps a page at 100 rows.
+func FetchGitHubRepositories(ctx context.Context, token string, limit int) ([]GitHubRepository, error) {
+	return fetchGitHubRepositories(ctx, GitHubAPIBase, token, limit)
+}
+
+func fetchGitHubRepositories(ctx context.Context, apiBase, token string, limit int) ([]GitHubRepository, error) {
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	endpoint := strings.TrimRight(apiBase, "/") + "/user/repos?per_page=" + fmt.Sprint(limit) + "&sort=updated&affiliation=owner,collaborator,organization_member"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("github /user/repos: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return nil, fmt.Errorf("github /user/repos: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return nil, fmt.Errorf("github /user/repos: read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, gitHubHTTPError("github /user/repos", resp.StatusCode, body)
+	}
+	var rows []GitHubRepository
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("github /user/repos: parse response: %w", err)
+	}
+	out := rows[:0]
+	for _, row := range rows {
+		if strings.TrimSpace(row.FullName) == "" {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// gitHubHTTPError keeps GitHub's own explanation. A bare status/body length
+// hides the difference between a rate limit, a revoked grant, and a missing
+// permission, which made the repository dialog look randomly broken.
+func gitHubHTTPError(endpoint string, status int, body []byte) error {
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		if msg := strings.TrimSpace(payload.Message); msg != "" {
+			return fmt.Errorf("%s: HTTP %d: %s", endpoint, status, msg)
+		}
+	}
+	return fmt.Errorf("%s: HTTP %d", endpoint, status)
+}
+
 // RequestGitHubDeviceCodeWith is RequestGitHubDeviceCode parameterized by
 // client_id and scope, so account-level flows can reuse the same endpoint.
 func RequestGitHubDeviceCodeWith(ctx context.Context, clientID, scope string) (*DeviceCodeResponse, error) {
@@ -267,7 +337,7 @@ func FetchGitHubUser(ctx context.Context, token string) (*GitHubUser, string, er
 		return nil, "", fmt.Errorf("github /user: token is invalid or revoked")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("github /user: HTTP %d: body_len=%d", resp.StatusCode, len(body))
+		return nil, "", gitHubHTTPError("github /user", resp.StatusCode, body)
 	}
 
 	var user GitHubUser

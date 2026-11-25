@@ -369,6 +369,24 @@ func hostOnly(value string) string {
 
 var heartbeatHTTP = &http.Client{Timeout: 5 * time.Second}
 
+// noteTurnStarted gives Hub immediate evidence for a turn that began without
+// going through Hub's accept bookkeeping — chiefly a queued row drained after
+// the previous turn. The beat is asynchronous: control-plane latency must not
+// depend on a loopback POST, and a very fast turn is still ordered correctly
+// because Hub never resurrects a row already finished.
+func (rt *Runtime) noteTurnStarted(inst *instance, taskID, requestID string) {
+	if rt == nil || inst == nil || !hubCallable(inst.meta) || rt.adminSecret == "" {
+		return
+	}
+	go func() {
+		enabled, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, false)
+		if ok && !enabled {
+			ids, _ := inst.book.interrupt(time.Now(), heartbeatNote, time.Time{})
+			rt.cancelIDs(ids)
+		}
+	}()
+}
+
 // postHeartbeat reports whether Hub accepted the beat and the feature is still on.
 // A failed POST, a non-loopback hub, or a body without enabled does not count as a beat.
 func (rt *Runtime) postHeartbeat(ctx context.Context, inst *instance, taskID, requestID string, finished bool) (enabled bool, ok bool) {

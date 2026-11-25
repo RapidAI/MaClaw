@@ -136,6 +136,11 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			_ = d.svc.NoteAcceptedTurn(ctx, grant.TenantID, grant.TargetUserID, instanceID, taskID, requestID)
 		}
 	}
+	if op == remotecontrol.OpCloudStopTask {
+		if ids := cancelledTurnIDs(raw); len(ids) > 0 {
+			_ = d.svc.CancelTurns(ctx, instanceID, ids)
+		}
+	}
 	return raw, nil
 }
 
@@ -198,6 +203,27 @@ func bodyInstanceID(body json.RawMessage) string {
 	}
 	_ = json.Unmarshal(body, &head)
 	return strings.TrimSpace(head.InstanceID)
+}
+
+func cancelledTurnIDs(raw json.RawMessage) []string {
+	var ack struct {
+		Cancelled []string `json:"cancelled"`
+	}
+	_ = json.Unmarshal(raw, &ack)
+	out := make([]string, 0, len(ack.Cancelled))
+	seen := map[string]struct{}{}
+	for _, id := range ack.Cancelled {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func acceptedTurn(body, raw json.RawMessage) (taskID, requestID string, accepted bool) {

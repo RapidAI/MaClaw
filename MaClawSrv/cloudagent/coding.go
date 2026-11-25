@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -31,14 +32,36 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		return nil, errors.New("请输入要发送的内容")
 	}
 	taskID := strings.TrimSpace(payload.TaskID)
+	// A plan gate answer is control-plane input, not ordinary text for the
+	// currently running task. Resolve it before the running-task fallback:
+	// another task may be running while this gate is parked, and binding the
+	// answer to that running task would leave the gate open forever.
+	planAnswer := parsePlanAnswer(text)
+	terminalGateTask := ""
+	if taskID == "" && planAnswer != "" {
+		if planAnswer == planAnswerApprove {
+			if gateTask, actionable := inst.book.planGateTaskActionable(); actionable {
+				taskID = gateTask
+			} else {
+				terminalGateTask = gateTask
+			}
+		} else {
+			// Skip/reject only consume a still-open gate. In particular 拒绝 is
+			// also a commit-gate answer, so it must not steal priority from the
+			// live task merely because an older failed plan exists.
+			taskID = inst.book.planPendingTask()
+		}
+	}
 	if taskID == "" {
 		running, _ := inst.book.Running()
 		taskID = running
 	}
-	// A plan gate answers on the task that parked it, but that task has no
-	// running turn — the running-task fallback above misses it, and an
-	// empty task id would file the gate answer as a brand-new request on a
-	// new task while the parked plan stays open forever.
+	// With no running task to adopt it, a terminal plan is still a safer target
+	// for a duplicate gate click than a brand-new empty task: the turn becomes a
+	// harmless no-op. Plain text instead falls back to the open pending gate.
+	if taskID == "" && planAnswer != "" {
+		taskID = terminalGateTask
+	}
 	if taskID == "" {
 		taskID = inst.book.planPendingTask()
 	}
@@ -50,10 +73,8 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 			return nil, err
 		}
 	}
-	// A plan-gate command (按计划开始 / 不用计划，直接做 / 取消这个计划) moves
-	// the parked plan record before this send becomes a turn; a queued send
-	// re-enters here on drain and sees the record already decided.
-	rt.routePlanAnswer(inst, taskID, text)
+	inst.drainMu.Lock()
+	defer inst.drainMu.Unlock()
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
 	if errors.Is(err, errBusy) {
 		// Same parked-input semantics as the session kind: the message waits
@@ -64,14 +85,25 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		if qerr != nil {
 			return nil, qerr
 		}
+		// Move the gate only after the row is safely parked. If the queue is
+		// full the command is rejected as a whole; a half-applied approval would
+		// close the card without any turn that could execute it.
+		rt.routePlanAnswer(inst, payload.TaskID, text)
+		rt.kickDrainIfIdle(inst)
 		return json.Marshal(map[string]any{"accepted": true, "queued": true, "queue_id": queueID, "task_id": payload.TaskID})
 	}
 	if err != nil {
 		return nil, err
 	}
 	if created {
+		// A plan-gate command (按计划开始 / 不用计划，直接做 / 取消这个计划)
+		// moves the parked plan record before execution starts; a queued send
+		// re-enters here on drain and sees the record already decided. A deduped
+		// client-message retry is a no-op instead — otherwise replaying an old
+		// approval id could approve a newer, still-unconfirmed plan on the task.
+		rt.routePlanAnswer(inst, taskID, text)
 		turnCtx, cancel := context.WithCancel(context.Background())
-		rt.track(requestID, cancel)
+		rt.trackTurn(inst, requestID, cancel)
 		go rt.runCoding(turnCtx, inst, requestID, taskID, text)
 	}
 	_ = ctx
@@ -93,11 +125,13 @@ func (rt *Runtime) runCoding(ctx context.Context, inst *instance, requestID, tas
 	if ctx.Err() != nil {
 		return
 	}
+	rt.noteTurnStarted(inst, taskID, requestID)
 	content, asError, files := rt.codingResult(ctx, inst, taskID, requestID, text)
 	if ctx.Err() != nil {
 		return
 	}
 	rt.finishTurn(inst, requestID, taskID, content, asError, files, time.Now())
+	rt.untrack(requestID)
 	rt.drainQueue(inst)
 }
 
@@ -140,8 +174,18 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	// The user row and the display line carry what was typed; a gate answer
 	// runs the parked request instead — the model input is `input`, not text.
 	input := route.modelText
+	gateAnswer := parsePlanAnswer(text)
 	var plan *planRecord
-	if rec := inst.book.planLoadOrNil(taskID); rec != nil && !phaseRan {
+	planningSkipped := false
+	rec := inst.book.planLoadOrNil(taskID)
+	if rec != nil && rec.State == planStatePending && gateAnswer != "" && !phaseRan {
+		// Execution is the second, authoritative gate application point. Rows
+		// parked before this routing existed still consume the pending record
+		// instead of falling through as model text.
+		rt.routePlanAnswer(inst, taskID, text)
+		rec = inst.book.planLoadOrNil(taskID)
+	}
+	if rec != nil && !phaseRan {
 		switch rec.State {
 		case planStateRejected:
 			_ = inst.book.planClear(taskID)
@@ -153,26 +197,64 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			return note, false, nil
 		case planStateSkipped:
 			input = rec.Request
+			planningSkipped = true
 			_ = inst.book.planClear(taskID)
 			rt.publishWorkbench(inst, taskID, requestID, nil)
 		case planStateApproved:
 			input = rec.Request
 			rec.State = planStateRunning
-			if len(rec.Steps) > 0 && rec.Steps[0].Status == "pending" {
-				rec.Steps[0].Status = "running"
-				rec.Steps[0].UpdatedUnix = time.Now().Unix()
-			}
+			markPlanStepRunning(rec)
 			rec.Revision++
 			_ = inst.book.planSave(taskID, rec)
 			rt.publishWorkbench(inst, taskID, requestID, rec)
 			plan = rec
 		case planStateRunning:
 			// A parked turn mid-plan (crash, or a queued commit answer) picks
-			// the plan back up; a different ask closes it as failed.
-			if planContinuationText(input) {
+			// the plan back up; a different ask closes it as failed. A gate
+			// answer is control-plane input, never a new instruction for the
+			// model, so it resumes the request that created this plan.
+			if planContinuationText(input) || gateAnswer == planAnswerApprove {
+				if gateAnswer == planAnswerApprove {
+					input = rec.Request
+				}
+				// Crash/recovery ordering can leave the plan executing with no
+				// running row at all. Re-arm the earliest unfinished row before
+				// handing the plan back to the model; an intact cursor is a no-op.
+				if markPlanStepRunning(rec) {
+					rec.Revision++
+					_ = inst.book.planSave(taskID, rec)
+					rt.publishWorkbench(inst, taskID, requestID, rec)
+				}
 				plan = rec
 			} else {
 				rt.settlePlan(inst, taskID, requestID, true)
+			}
+		case planStateFailed:
+			// "按计划开始" after a failed step is an explicit retry request.
+			// Re-enter the failed step instead of teaching the model the gate
+			// sentence as if it were a fresh coding ask.
+			if gateAnswer == planAnswerApprove {
+				input = rec.Request
+				rec.State = planStateRunning
+				markPlanStepRunning(rec)
+				rec.Revision++
+				_ = inst.book.planSave(taskID, rec)
+				rt.publishWorkbench(inst, taskID, requestID, rec)
+				plan = rec
+			}
+		case planStateDone:
+			// A done record that still contains a failed row is inconsistent
+			// terminal state left by an older recovery bug, not a successful plan.
+			// Let the same explicit approval retry it; a cleanly done plan remains
+			// a no-op below so duplicate clicks never start duplicate work.
+			if gateAnswer == planAnswerApprove && planHasFailedStep(rec) {
+				input = rec.Request
+				rec.State = planStateRunning
+				markPlanStepRunning(rec)
+				rec.Revision++
+				_ = inst.book.planSave(taskID, rec)
+				rt.publishWorkbench(inst, taskID, requestID, rec)
+				plan = rec
 			}
 		case planStatePending:
 			// The gate answer raced a second send; the pending record is only
@@ -181,10 +263,20 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			rt.publishWorkbench(inst, taskID, requestID, nil)
 		}
 	}
+	if gateAnswer != "" && plan == nil && input == text && !phaseRan {
+		note := "当前没有等待确认的计划。"
+		if rec != nil {
+			note = "这个计划已经处理过，无需重复确认。"
+		}
+		rt.publish(inst, taskID, requestID, "response", note, map[string]any{
+			"terminal": map[string]any{"text": note},
+		})
+		return note, false, nil
+	}
 	// A workflow phase turn carries its own instructions — the plan gate must
 	// not park it for planning, or every phase would stall on a gate nobody
 	// can answer.
-	if plan == nil && input == text && !phaseRan {
+	if plan == nil && input == text && !planningSkipped && !phaseRan {
 		decision := rt.planDecisionFor(ctx, inst, cfg, input)
 		if ctx.Err() != nil {
 			return "", true, nil
@@ -262,6 +354,56 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		rt.workflowRecordOutput(inst, taskID, finalText)
 	}
 	return finalText, false, files
+}
+
+// markPlanStepRunning keeps exactly one executable cursor. The first
+// unfinished row in plan order owns the retry: an intact running row is kept,
+// a failed/pending row before it is re-armed, and any later stale running row
+// becomes pending again. Returns true when the record changed.
+func markPlanStepRunning(rec *planRecord) bool {
+	if rec == nil {
+		return false
+	}
+	chosen := -1
+	for i := range rec.Steps {
+		switch rec.Steps[i].Status {
+		case "running", "failed", "pending":
+			chosen = i
+		}
+		if chosen >= 0 {
+			break
+		}
+	}
+	if chosen < 0 {
+		return false
+	}
+	changed := false
+	now := time.Now().Unix()
+	for i := range rec.Steps {
+		switch {
+		case i == chosen && rec.Steps[i].Status != "running":
+			rec.Steps[i].Status = "running"
+			rec.Steps[i].UpdatedUnix = now
+			changed = true
+		case i != chosen && rec.Steps[i].Status == "running":
+			rec.Steps[i].Status = "pending"
+			rec.Steps[i].UpdatedUnix = now
+			changed = true
+		}
+	}
+	return changed
+}
+
+func planHasFailedStep(rec *planRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for i := range rec.Steps {
+		if rec.Steps[i].Status == "failed" {
+			return true
+		}
+	}
+	return false
 }
 
 // planContinuationText recognizes the messages that resume a parked plan
@@ -559,26 +701,32 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 // tree. Shell writes are supposed to use write_file, but code generators and
 // package-manager commands can also mutate files through bash.
 func (h *agentHost) recordBashCommand(argv []string, failed bool) {
-	command := strings.Join(argv, " ")
+	command := cloudArgvCommand(argv)
 	h.commands = append(h.commands, hostCommandRun{
 		command:      command,
 		succeeded:    !failed,
 		writeCountAt: h.writeCount,
 	})
-	if cloudBashMayWriteWorkspace(command) {
+	if cloudBashMayWriteWorkspace(argv, command) {
 		h.writeCount++
 	}
 }
 
-func cloudBashMayWriteWorkspace(command string) bool {
+func cloudBashMayWriteWorkspace(argv []string, command string) bool {
 	if codingagent.LooksLikeVerificationCommand(command) {
 		return false
 	}
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	fields := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		fields = append(fields, strings.ToLower(strings.TrimSpace(arg)))
+	}
 	for len(fields) > 0 && strings.Contains(fields[0], "=") {
 		fields = fields[1:]
 	}
 	if len(fields) == 0 {
+		return false
+	}
+	if len(fields) == 2 && (fields[1] == "--version" || fields[1] == "--help") {
 		return false
 	}
 	base := strings.Trim(fields[0], "\"'`")
@@ -605,6 +753,9 @@ func cloudBashMayWriteWorkspace(command string) bool {
 		}
 		return true
 	case "go":
+		if len(fields) == 2 && fields[1] == "version" {
+			return false
+		}
 		return len(fields) > 1
 	case "npm", "pnpm", "yarn", "bun", "python", "python3", "py", "node", "sh", "bash", "cmake", "make", "nmake":
 		return true
@@ -911,7 +1062,41 @@ func joinArgs(args map[string]any, key string) string {
 			parts = append(parts, s)
 		}
 	}
-	return strings.Join(parts, " ")
+	return cloudArgvCommand(parts)
+}
+
+// cloudArgvCommand renders an argv invocation without losing argument
+// boundaries. The tool executes argv directly, but the audit/final-answer
+// command line is shell-like text; quoting whitespace and metacharacters is
+// what keeps that text factual.
+func cloudArgvCommand(argv []string) string {
+	quoted := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		quoted = append(quoted, cloudArgvQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func cloudArgvQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	simple := true
+	for _, r := range arg {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '@', '%', '_', '+', '=', ',', ':', '.', '/', '-':
+			continue
+		}
+		simple = false
+		break
+	}
+	if simple {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
 
 func collapseToolDetail(detail string) string {

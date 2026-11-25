@@ -59,6 +59,17 @@ func TestLooksLikeVerificationCommandRequiresActualVerifierCommand(t *testing.T)
 	}
 }
 
+func TestFinalAnswerCommandWordsPreserveWindowsPathSeparators(t *testing.T) {
+	words := finalAnswerCommandWords(`scripts\goheavy.cmd go test ./pkg`)
+	if len(words) != 4 || words[0] != `scripts\goheavy.cmd` {
+		t.Fatalf("windows command path was treated as shell escaping: %#v", words)
+	}
+	words = finalAnswerCommandWords("go test ./pkg --token 'private value'")
+	if len(words) != 5 || words[4] != "private value" {
+		t.Fatalf("quoted command argument boundaries lost: %#v", words)
+	}
+}
+
 func TestAppendFinalAnswerHostFactsFillsMissingFileAndVerificationFacts(t *testing.T) {
 	got := AppendFinalAnswerHostFacts(
 		"已完成修复。",
@@ -103,6 +114,22 @@ func TestAppendFinalAnswerHostFactsIgnoresStaleCommands(t *testing.T) {
 	})
 	if strings.Contains(got, "实际验证") || strings.Contains(got, "go test") {
 		t.Fatalf("stale command leaked into facts: %q", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsDoesNotTreatLongerCommandAsMention(t *testing.T) {
+	for _, summary := range []string{
+		"已验证：`go test ./pkg2` 通过。",
+		"已验证：`go test ./pkg.test` 通过。",
+	} {
+		got := AppendFinalAnswerHostFacts(summary, nil, nil, []FinalAnswerVerificationFact{{
+			Command:        "go test ./pkg",
+			Succeeded:      true,
+			AfterFinalEdit: true,
+		}})
+		if !strings.Contains(got, "实际验证") || strings.Count(got, "`go test ./pkg`") != 1 {
+			t.Fatalf("longer command suppressed the actual verification fact: %q", got)
+		}
 	}
 }
 
@@ -171,6 +198,22 @@ func TestAppendFinalAnswerHostFactsRedactsSeparateSecretArguments(t *testing.T) 
 	}
 	if !strings.Contains(got, "--token <redacted>") {
 		t.Fatalf("separate secret argument was not redacted: %q", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsRedactsQuotedSecretsWithSpaces(t *testing.T) {
+	got := AppendFinalAnswerHostFacts("已完成验证。", nil, nil, []FinalAnswerVerificationFact{{
+		Command:        "go test ./pkg --token 'private value' -H 'Authorization: Bearer header secret'",
+		Succeeded:      true,
+		AfterFinalEdit: true,
+	}})
+	for _, leaked := range []string{"private value", "private", "header secret", "header"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("quoted secret fragment %q leaked into host facts: %q", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "--token <redacted>") || !strings.Contains(got, "'Authorization: Bearer <redacted>'") {
+		t.Fatalf("quoted secrets were not redacted cleanly: %q", got)
 	}
 }
 

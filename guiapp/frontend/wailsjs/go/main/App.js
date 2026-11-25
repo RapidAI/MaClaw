@@ -5935,6 +5935,10 @@ export function CloudAgentGitHubAccount() {
   return window['go']['main']['App']['CloudAgentGitHubAccount']();
 }
 
+export function CloudAgentGitRepositories(arg1) {
+  return window['go']['main']['App']['CloudAgentGitRepositories'](arg1);
+}
+
 export function CloudAgentGitLabAccount() {
   return window['go']['main']['App']['CloudAgentGitLabAccount']();
 }

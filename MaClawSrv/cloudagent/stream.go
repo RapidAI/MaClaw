@@ -159,6 +159,17 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 	// A response also ends the stream: stream_done goes out before the
 	// terminal frame, the same order the local loop produces.
 	emitDone := event == "response" && !lane.streamDone
+	if event == "workbench_steps" {
+		// A workbench decision retires the plan confirmation card even when the
+		// next execution turn is still queued. Otherwise a watch snapshot would
+		// keep resurrecting actions whose backing gate is already closed.
+		if terminal := lane.terminal; terminal != nil {
+			if confirmation, _ := terminal["confirmation"].(map[string]any); confirmation != nil &&
+				strings.HasPrefix(asString(confirmation["id"]), "plan-approval;") {
+				lane.terminal = nil
+			}
+		}
+	}
 	rt.noteLive(lane, requestID, event, text, extra)
 	if event == "token" || event == "thinking" {
 		if text == "" {
@@ -481,6 +492,15 @@ func (rt *Runtime) watchSnapshot(inst *instance, taskID string) (json.RawMessage
 	// snapshot is the same — rebuilt from the machine's own store.
 	snap.Workbench = rt.workbenchSnapshot(inst, taskID)
 	snap.Workflow = rt.workflowSnapshot(inst, taskID)
+	// The lane is process memory, but the plan gate is durable task state.
+	// After a srv restart a still-pending gate must come back with its
+	// actions; otherwise the user is left with a checklist that cannot be
+	// answered except by guessing the exact command text.
+	if snap.Terminal == nil && inst != nil && inst.book != nil {
+		if rec := inst.book.planLoadOrNil(taskID); rec != nil && rec.State == planStatePending {
+			snap.Terminal = planTerminal(taskID)
+		}
+	}
 	instID := ""
 	if inst != nil {
 		instID = inst.meta.ID

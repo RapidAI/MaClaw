@@ -148,38 +148,7 @@ describe('cloud agent page', () => {
         });
     });
 
-    it('connects GitHub from a coding instance and does not show the token again', async () => {
-        const connect = vi.fn(async (_id?: string, _opts?: any) => ({ connected: true, repo: 'acme/demo', author_name: 'Ada', author_email: 'ada@example.com' }));
-        setBindings({
-            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
-            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
-            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
-            ConnectCloudAgentGit: connect,
-        });
-        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
-        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
-        expect(await screen.findByTestId('cloud-agent-git')).toBeTruthy();
-        fireEvent.change(screen.getByLabelText('代码库'), { target: { value: 'acme/demo' } });
-        fireEvent.change(screen.getByLabelText('作者'), { target: { value: 'Ada' } });
-        fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'ada@example.com' } });
-        fireEvent.change(screen.getByLabelText('令牌'), { target: { value: 'real-token-not-shown' } });
-        fireEvent.click(screen.getByText('连接'));
-        await waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
-        expect(connect.mock.calls[0][0]).toBe('cag_9');
-        expect(connect.mock.calls[0][1]).toMatchObject({
-            service: 'github',
-            origin: 'https://github.com',
-            repo: 'acme/demo',
-            author_name: 'Ada',
-            author_email: 'ada@example.com',
-            token: 'real-token-not-shown',
-        });
-        await waitFor(() => expect(screen.getByTestId('cloud-agent-manage').textContent).toContain('acme/demo'));
-        expect(screen.getByTestId('cloud-agent-manage').textContent).not.toContain('real-token-not-shown');
-        expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('');
-    });
-
-    it('fills the git form from the signed-in GitHub account and marks it account-bound', async () => {
+    it('opens the shared repository dialog from a coding instance and connects through the settings account', async () => {
         const connect = vi.fn(async (_id?: string, _opts?: any) => ({ connected: true, repo: 'acme/demo' }));
         setBindings({
             ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
@@ -188,90 +157,35 @@ describe('cloud agent page', () => {
             ConnectCloudAgentGit: connect,
             CloudAgentGitHubAccount: vi.fn(async () => ({
                 connected: true, login: 'ada', name: 'Ada Lovelace',
-                email: '42+ada@users.noreply.github.com', token: 'ghu_acct_token', repo_scope: true,
+                email: '42+ada@users.noreply.github.com', repo_scope: true,
             })),
+            CloudAgentGitRepositories: vi.fn(async () => [
+                { name: 'acme/demo', description: 'Demo', private: true, default_branch: 'main' },
+            ]),
         });
         render(<CloudAgentManage lang="zh" onClose={() => {}} />);
         fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
-        expect(await screen.findByTestId('cloud-agent-git')).toBeTruthy();
-        fireEvent.click(screen.getByText('用 GitHub 账号'));
-        await waitFor(() => expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('ghu_acct_token'));
-        expect((screen.getByLabelText('作者') as HTMLInputElement).value).toBe('Ada Lovelace');
-        expect((screen.getByLabelText('邮箱') as HTMLInputElement).value).toBe('42+ada@users.noreply.github.com');
-        fireEvent.change(screen.getByLabelText('代码库'), { target: { value: 'acme/demo' } });
+        const launcher = await screen.findByTestId('cloud-agent-git');
+        expect(launcher.textContent).toContain('设置中已登录');
+        fireEvent.click(screen.getByText('连接代码库'));
+
+        expect(await screen.findByTestId('cloud-git-connect')).toBeTruthy();
+        expect(await screen.findByText('@ada')).toBeTruthy();
+        fireEvent.click(await screen.findByText('acme/demo'));
         fireEvent.click(screen.getByText('连接'));
         await waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+        expect(connect.mock.calls[0][0]).toBe('cag_9');
         expect(connect.mock.calls[0][1]).toMatchObject({
             service: 'github',
-            token: 'ghu_acct_token',
+            origin: 'https://github.com',
+            repo: 'acme/demo',
+            author_name: 'Ada Lovelace',
+            author_email: '42+ada@users.noreply.github.com',
             source: 'account',
         });
-    });
-
-    it('drops the account mark when the token is edited by hand', async () => {
-        const connect = vi.fn(async (_id?: string, _opts?: any) => ({ connected: true }));
-        setBindings({
-            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
-            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
-            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
-            ConnectCloudAgentGit: connect,
-            CloudAgentGitHubAccount: vi.fn(async () => ({
-                connected: true, login: 'ada', name: 'Ada',
-                email: '42+ada@users.noreply.github.com', token: 'ghu_acct_token', repo_scope: true,
-            })),
-        });
-        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
-        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
-        fireEvent.click(await screen.findByText('用 GitHub 账号'));
-        await waitFor(() => expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('ghu_acct_token'));
-        fireEvent.change(screen.getByLabelText('令牌'), { target: { value: 'manual-pat' } });
-        fireEvent.change(screen.getByLabelText('代码库'), { target: { value: 'acme/demo' } });
-        fireEvent.click(screen.getByText('连接'));
-        await waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
-        expect(connect.mock.calls[0][1].source).toBeUndefined();
-    });
-
-    it('explains why the signed-in token has no repo permission and stays unfilled', async () => {
-        setBindings({
-            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
-            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
-            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
-            CloudAgentGitHubAccount: vi.fn(async () => ({
-                connected: true, login: 'ada', name: 'Ada',
-                email: '42+ada@users.noreply.github.com', token: 'ghu_legacy_token', repo_scope: false,
-                github_app_token: true,
-            })),
-        });
-        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
-        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
-        fireEvent.click(await screen.findByText('用 GitHub 账号'));
-        const form = await screen.findByTestId('cloud-agent-git');
-        await waitFor(() => expect(form.textContent).toContain('GitHub App 令牌'));
-        expect(form.textContent).toContain('断开 GitHub 后重新登录');
-        expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('');
-        // Switching the service invalidates a note about the old one.
-        fireEvent.change(screen.getByLabelText('服务'), { target: { value: 'gitlab' } });
-        await waitFor(() => expect(screen.getByLabelText('服务')).toBeTruthy());
-        expect(form.textContent).not.toContain('GitHub App 令牌');
-    });
-
-    it('points at the authorization checkbox when an OAuth token lacks repo scope', async () => {
-        setBindings({
-            ListCloudAgents: vi.fn(async () => [{ id: 'cag_9', name: 'code', kind: 'coding', status: 'idle' }]),
-            OpenCloudAgentGrant: vi.fn(async () => 'grant-9'),
-            RemoteControlOp: vi.fn(async () => JSON.stringify({ tasks: [] })),
-            CloudAgentGitHubAccount: vi.fn(async () => ({
-                connected: true, login: 'ada', name: 'Ada',
-                email: '42+ada@users.noreply.github.com', token: 'gho_scopeless', repo_scope: false,
-            })),
-        });
-        render(<CloudAgentManage lang="zh" onClose={() => {}} />);
-        fireEvent.click(await screen.findByTestId('cloud-agent-instance-cag_9'));
-        fireEvent.click(await screen.findByText('用 GitHub 账号'));
-        const form = await screen.findByTestId('cloud-agent-git');
-        await waitFor(() => expect(form.textContent).toContain('没有仓库权限'));
-        expect(form.textContent).toContain('Repositories');
-        expect((screen.getByLabelText('令牌') as HTMLInputElement).value).toBe('');
+        expect(connect.mock.calls[0][1].token).toBe('');
+        await waitFor(() => expect(screen.queryByTestId('cloud-git-connect')).toBeNull());
+        expect(screen.getByTestId('cloud-agent-git-connected').textContent).toContain('acme/demo');
     });
 
     it('shows the push confirmation inside the round and sends the chosen answer', async () => {

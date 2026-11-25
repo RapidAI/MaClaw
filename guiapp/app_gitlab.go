@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,8 @@ func (a *App) GetGitLabConnection(refresh bool) GitLabConnectionStatus {
 		}
 		old.Login = user.Username
 		old.DisplayName = user.Name
+		old.UserID = strconv.FormatInt(user.ID, 10)
+		old.Email = strings.TrimSpace(user.Email)
 		old.AvatarURL = user.AvatarURL
 		old.HTMLURL = user.WebURL
 		return old, nil
@@ -137,6 +140,8 @@ func (a *App) ConnectGitLab(origin, token string) (GitLabConnectionStatus, error
 			BaseURL:     normalized,
 			Login:       user.Username,
 			DisplayName: user.Name,
+			UserID:      strconv.FormatInt(user.ID, 10),
+			Email:       strings.TrimSpace(user.Email),
 			AvatarURL:   user.AvatarURL,
 			HTMLURL:     user.WebURL,
 			Scopes:      scopes,

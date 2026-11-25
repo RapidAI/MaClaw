@@ -1,70 +1,88 @@
 package guiapp
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net/url"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
-// CloudAgentGitLabAccount is the signed-in GitLab credential view the cloud
-// git form needs to prefill itself. Token is included so the form can submit
-// it straight to maclawsrv; it never crosses the webview boundary otherwise.
+// CloudAgentGitLabAccount is the signed-in GitLab identity shown by the
+// cloud repository picker. The PAT deliberately stays in the desktop
+// credential store; ConnectCloudAgentGit injects it at the backend boundary.
 type CloudAgentGitLabAccount struct {
 	Connected bool   `json:"connected"`
 	Login     string `json:"login,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Email     string `json:"email,omitempty"`
 	Origin    string `json:"origin,omitempty"`
-	Token     string `json:"token,omitempty"`
 	// RepoScope is false when the PAT definitely cannot clone or push (its
 	// introspected scope list lacks api and write_repository).
 	RepoScope bool `json:"repo_scope"`
 }
 
 // CloudAgentGitLabAccount exposes the connected GitLab account for the cloud
-// coding instance's git form. The caller must still click connect — nothing
-// is pushed to maclawsrv from here.
+// coding instance's repository picker. Like the GitHub path this is a local
+// credential-store read; repository discovery performs the live API check.
 func (a *App) CloudAgentGitLabAccount() (CloudAgentGitLabAccount, error) {
 	cred := a.gitlabCredential()
 	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
 		return CloudAgentGitLabAccount{Connected: false}, nil
 	}
-	if cfg, err := a.LoadConfig(); err == nil {
-		oauth.ApplyProxyFromAppConfig(cfg)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	user, err := oauth.FetchGitLabUser(ctx, cred.BaseURL, strings.TrimSpace(cred.AccessToken))
-	if err != nil {
-		return CloudAgentGitLabAccount{}, fmt.Errorf("GitLab 账号信息获取失败: %w", err)
-	}
-	name := strings.TrimSpace(user.Name)
+	login := strings.TrimSpace(cred.Login)
+	name := strings.TrimSpace(cred.DisplayName)
 	if name == "" {
-		name = user.Username
-	}
-	email := strings.TrimSpace(user.Email)
-	if email == "" {
-		// GitLab's private commit address is <id>-<username>@noreply.<host>.
-		host := "gitlab.com"
-		if parsed, perr := url.Parse(cred.BaseURL); perr == nil && parsed.Host != "" {
-			host = parsed.Host
-		}
-		email = fmt.Sprintf("%d-%s@noreply.%s", user.ID, user.Username, host)
+		name = login
 	}
 	return CloudAgentGitLabAccount{
 		Connected: true,
-		Login:     user.Username,
+		Login:     login,
 		Name:      name,
-		Email:     email,
-		Origin:    cred.BaseURL,
-		Token:     strings.TrimSpace(cred.AccessToken),
+		Email:     cloudGitLabCommitEmail(cred),
+		Origin:    cloudGitLabDisplayOrigin(cred),
 		RepoScope: oauth.GitLabScopesHaveRepo(cred.Scopes),
 	}, nil
+}
+
+// cloudGitLabDisplayOrigin normalizes older credentials whose BaseURL
+// predates the always-normalized connect path. This fallback is display-only;
+// token injection and refresh require the stored origin itself to be valid so
+// a malformed credential can never become a wildcard or be sent to a guessed host.
+func cloudGitLabDisplayOrigin(cred *oauth.StoredCredential) string {
+	if cred == nil {
+		return ""
+	}
+	if origin := strings.TrimSpace(cred.BaseURL); origin != "" {
+		return origin
+	}
+	return oauth.GitLabDefaultOrigin
+}
+
+// cloudGitLabCommitEmail uses the stored private-commit address ingredients.
+// Older connections predate the numeric id, so they fall back to a stable
+// noreply-shaped address instead of failing the whole repository flow.
+func cloudGitLabCommitEmail(cred *oauth.StoredCredential) string {
+	if cred == nil {
+		return ""
+	}
+	if email := strings.TrimSpace(cred.Email); email != "" {
+		return email
+	}
+	login := strings.TrimSpace(cred.Login)
+	if login == "" {
+		return ""
+	}
+	host := "gitlab.com"
+	if parsed, err := url.Parse(cloudGitLabDisplayOrigin(cred)); err == nil && parsed.Hostname() != "" {
+		host = parsed.Hostname()
+	}
+	if id, err := strconv.ParseInt(strings.TrimSpace(cred.UserID), 10, 64); err == nil && id > 0 {
+		return fmt.Sprintf("%d-%s@users.noreply.%s", id, login, host)
+	}
+	return fmt.Sprintf("%s@users.noreply.%s", login, host)
 }
 
 // syncCloudAgentGitLabCredentials refreshes the git token on every coding
@@ -86,7 +104,12 @@ func (a *App) syncCloudAgentGitLabCredentials() {
 		log.Printf("[cloud-agent] gitlab credential sync skipped: token has no repository scope")
 		return
 	}
-	accountHost := hostOfOrigin(cred.BaseURL)
+	accountOrigin := strings.TrimSpace(cred.BaseURL)
+	accountHost := hostOfOrigin(accountOrigin)
+	if !accountHTTPSRootOrigin(accountOrigin) {
+		log.Printf("[cloud-agent] gitlab credential sync skipped: stored origin is not a valid HTTPS root")
+		return
+	}
 	list, err := a.ListCloudAgents()
 	if err != nil {
 		log.Printf("[cloud-agent] gitlab credential sync list failed: %v", err)
@@ -107,10 +130,10 @@ func (a *App) syncCloudAgentGitLabCredentials() {
 		}
 		// A PAT only works on the host it was minted on — skip instances
 		// bound to a different GitLab origin than the signed-in account.
-		if accountHost != "" && hostOfOrigin(view.Origin) != accountHost {
+		if !accountHTTPSRootOrigin(view.Origin) || accountHost == "" || hostOfOrigin(view.Origin) != accountHost {
 			continue
 		}
-		_, err = a.ConnectCloudAgentGit(row.ID, CloudGitConnect{
+		_, err = a.postCloudAgentGit(row.ID, CloudGitConnect{
 			Service:     "gitlab",
 			Origin:      view.Origin,
 			Repo:        view.Repo,

@@ -653,6 +653,19 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
         }
         const asked = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
         if (asked) expireCloudAgentCards(asked);
+        // cloud_send_message returns after the control-plane gate decision,
+        // but before a round_started stream frame necessarily exists. Pull
+        // one authoritative watch snapshot now so plan-gate buttons and the
+        // waiting state cannot remain stuck merely because the websocket
+        // frame was missed or the panel had not opened the stream yet.
+        const refreshSession = cloudAgentSessionKey(current.item.id, current.taskId);
+        const refreshBaseline = cloudAgentRound(asked).last;
+        void op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: current.taskId, session_key: refreshSession }))
+            .then((watchRaw) => {
+                applyWatchedTurn(current.item.id, current.grant, refreshSession, parseJSON(watchRaw, {}), refreshBaseline);
+                if (owner && owner.generation === gen) publishOwner();
+            })
+            .catch(() => undefined);
         current.historyEpoch += 1;
         current.history = [...current.history, `user\n${outgoing}`];
         current.error = '';
@@ -877,9 +890,10 @@ async function refreshCloudSrvNode(gen: number): Promise<void> {
  * Re-read the open instance's repository binding. The connect dialog calls
  * this after ConnectCloudAgentGit so the banner flips without a reopen.
  */
-export async function refreshCloudGit(): Promise<void> {
+export async function refreshCloudGit(instanceId = ''): Promise<void> {
     const current = owner;
     if (!current || current.item.kind !== 'coding') return;
+    if (instanceId && current.item.id !== instanceId) return;
     const get = binding('GetCloudAgentGit');
     if (!get) return;
     try {
