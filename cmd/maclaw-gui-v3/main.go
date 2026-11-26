@@ -21,6 +21,13 @@
 //	C6 second WebviewWindow + WebView2 profile cookie sharing
 //	C7 system tray with menu (+ optional file dialog via --dialog)
 //	C8 Go→JS→Go event round trip (emitEvent 通道的 v3 等价物)
+//
+// Platform builds (Phase 5 note): wails/v3 desktop targets require
+// CGO_ENABLED=1 — plain GOOS=darwin/linux cross-compiles fail in
+// internal/buildguard by design. Verified escape hatch: `-tags purego`
+// cross-compiles to darwin/arm64 and linux/amd64, but the v3 purego
+// backends carry caveats (see v3 PUREGO_LINUX.md / PUREGO_MACOS.md);
+// production mac/linux builds should prefer a native CGO toolchain.
 package main
 
 import (
