@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func repeatToolCalls(name, args, result string, success, poll bool, n int) []toolCallRecord {
@@ -561,6 +562,45 @@ func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
 	id, seen := repeatedSuccessfulCommit([]toolCallRecord{dotted, plain, ascii})
 	if seen != 2 || id != idPlain || repeatedCommitStops(nil, id, seen) {
 		t.Fatalf("I and i are one page; İ must not join them: id=%q seen=%d", id, seen)
+	}
+	// (?i) does not fold a rune outside regexp/syntax [minFold, maxFold].
+	// Pairing it with its SimpleFold partner made a third search the same page.
+	outside := rune(regexpFoldMax + 1)
+	partner := unicode.SimpleFold(outside)
+	if partner == outside {
+		for r := outside; r < outside+0x40; r++ {
+			if unicode.SimpleFold(r) != r {
+				outside = r
+				partner = unicode.SimpleFold(r)
+				break
+			}
+		}
+	}
+	if partner != outside {
+		left := toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(string(outside)) + `}`,
+			result:  searchReadResult("h", 0, string(outside), false),
+			success: true,
+		}
+		right := toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(string(partner)) + `}`,
+			result:  searchReadResult("h", 0, string(partner), false),
+			success: true,
+		}
+		idLeft, okLeft := spilledPageIdentity(left)
+		idRight, okRight := spilledPageIdentity(right)
+		if !okLeft || !okRight || idLeft == idRight {
+			t.Fatalf("rune outside (?i) fold range collapsed with its SimpleFold partner: %#U %#U %q %q", outside, partner, idLeft, idRight)
+		}
+		if _, seen := repeatedSuccessfulCommit([]toolCallRecord{left, right, plain}); seen != 1 {
+			t.Fatalf("an unfolded partner must not join the latest search, seen=%d", seen)
+		}
+	}
+	// minFoldRune('A') is 'A', not 'a'. 'a' and Kelvin still join that minimum.
+	if foldedSearchRune('@') != '@' || foldedSearchRune('A') != 'A' || foldedSearchRune('a') != 'A' || foldedSearchRune('\u212A') != 'K' {
+		t.Fatalf("fold bounds drifted: @=%#U A=%#U a=%#U kelvin=%#U", foldedSearchRune('@'), foldedSearchRune('A'), foldedSearchRune('a'), foldedSearchRune('\u212A'))
 	}
 }
 

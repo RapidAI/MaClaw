@@ -59,6 +59,6 @@ func annotateAdjustedReadLimit(requested, applied int, body string) string {
 	if requested <= 0 || requested == applied {
 		return body
 	}
-	return fmt.Sprintf("limit_applied: %d\nnote: requested limit %d is not one page; the page size is %d bytes. If truncated is false, stop. If truncated is true, set offset to the integer on the next_offset line and omit limit.\n%s",
+	return fmt.Sprintf("limit_applied: %d\nnote: requested limit %d is not one page; the page size is %d bytes. If truncated is false, stop. If truncated is true, set offset to the integer on the next_offset line, keep the query when the header names one, and omit limit.\n%s",
 		applied, requested, applied, body)
 }

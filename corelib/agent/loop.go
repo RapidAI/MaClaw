@@ -4626,7 +4626,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				log.Printf("[agent-loop] commit %q repeated with the same arguments; telling the model the result stands", name)
 				note := fmt.Sprintf("[系统] 工具 %s 已用相同参数成功执行，该结果仍然有效。不要用相同参数再调用它。若任务还要继续，改参数或做下一步；若已经完成，直接回答。", name)
 				if ImmutableToolResultRead(name) {
-					note = "[系统] read_tool_result 这一页已经返回。没有 query 时，不要用相同的 id 和 offset 再读。有 query 时，不要用相同的 id、query 和 offset 再读；换一个 query 是另一次搜索。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，保留原来的 query，并省略 limit。"
+					note = "[系统] read_tool_result 这一页已经返回。没有 query 时，不要用相同的 id 和 offset 再读。有 query 时，不要用相同的 id、query 和 offset 再读；换一个 query 是另一次搜索。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，保留 header 里的 query，并省略 limit。丢掉 query 会改成字节翻页，不是这次搜索的下一页。"
 				}
 				conversation = append(conversation, map[string]interface{}{
 					"role":    "user",
@@ -5843,11 +5843,24 @@ func normalizeSpilledSearchQuery(query string) string {
 	return b.String()
 }
 
-// foldedSearchRune is one representative of the regexp (?i) class.
-// (?i) walks unicode.SimpleFold. strings.ToLower(U+0130) is ASCII i, but
-// (?i) does not match those spellings. Final sigma and capital sigma are
-// one (?i) class and must stay one page.
+// regexpFoldMin and regexpFoldMax are the runes Go's regexp (?i) folds.
+// regexp/syntax.minFoldRune returns any rune outside that span unchanged,
+// even when unicode.SimpleFold has a partner. Folding those partners into
+// one page treats two searches as one observation.
+const (
+	regexpFoldMin rune = 0x0041
+	regexpFoldMax rune = 0x1e943
+)
+
+// foldedSearchRune is the representative regexp (?i) compiles for r.
+// That compiler walks unicode.SimpleFold and keeps the minimum, but only
+// inside [regexpFoldMin, regexpFoldMax]. strings.ToLower(U+0130) is ASCII i,
+// and (?i) does not match those spellings. Final sigma and capital sigma
+// are one (?i) class and must stay one page.
 func foldedSearchRune(r rune) rune {
+	if r < regexpFoldMin || r > regexpFoldMax {
+		return r
+	}
 	best := r
 	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
 		if next < best {

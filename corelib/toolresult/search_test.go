@@ -37,6 +37,25 @@ func TestReadQueryFindsKeywordAcrossChunksWithoutReturningPrefix(t *testing.T) {
 	}
 }
 
+func TestFormatReadResultKeepsQueryOnTruncatedSearchHint(t *testing.T) {
+	got := FormatReadResult(ReadResult{
+		ID:         "h",
+		Offset:     0,
+		Query:      "needle",
+		Truncated:  true,
+		NextOffset: 400,
+		Matches:    1,
+		Content:    "hit",
+	})
+	if !strings.Contains(got, `query "needle"`) || !strings.Contains(got, "offset=400") || !strings.Contains(got, "do not drop the query") {
+		t.Fatalf("truncated search hint dropped the query:\n%s", got)
+	}
+	bytePage := FormatReadResult(ReadResult{ID: "h", Offset: 0, Truncated: true, NextOffset: 16384})
+	if strings.Contains(bytePage, "query") {
+		t.Fatalf("byte page hint invented a query:\n%s", bytePage)
+	}
+}
+
 func TestReadQueryPaginatesMatchesByOffset(t *testing.T) {
 	root := t.TempDir()
 	projection, err := Project(ProjectOptions{
