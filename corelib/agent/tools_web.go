@@ -122,6 +122,14 @@ func ToolWebFetchWithProviderCtx(ctx context.Context, args map[string]interface{
 	}
 
 	opts := &websearch.FetchOptions{TimeoutS: corelib.DefaultAgentTimeoutSec}
+	switch strings.ToLower(strings.TrimSpace(StringArg(args, "format"))) {
+	case "", "text", "markdown":
+		// The readable extract is the existing text/markdown representation.
+	case "html":
+		opts.RawBody = true
+	default:
+		return "format 仅支持 text、markdown 或 html"
+	}
 	if v, ok := args["render_js"].(bool); ok {
 		opts.RenderJS = v
 	}
@@ -129,7 +137,7 @@ func ToolWebFetchWithProviderCtx(ctx context.Context, args map[string]interface{
 		opts.SavePath = ResolvePath(v)
 	}
 	if v, ok := args["timeout"].(float64); ok && v > 0 {
-		opts.TimeoutS = corelib.NormalizeAgentTimeoutSec(int(v))
+		opts.TimeoutS = corelib.NormalizeWebFetchTimeoutSec(int(v))
 	}
 	if v, ok := args["offset"].(float64); ok {
 		opts.Offset = int(v)

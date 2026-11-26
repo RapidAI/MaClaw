@@ -74,7 +74,7 @@ func TestRewriteOpenCodeAgentToolCallsOntoRenderedSurface(t *testing.T) {
 
 func TestOpenCodeFreeHostToolIgnoresPlannerSurface(t *testing.T) {
 	free := corelib.MaclawLLMConfig{URL: "https://opencode.ai/zen/v1", Model: "deepseek-v4.1-flash-free"}
-	for _, name := range []string{"bash", "web_fetch", "web_search", "read_file", "write_file"} {
+	for _, name := range []string{"bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "Glob", "ripgrep"} {
 		if !OpenCodeFreeHostTool(free, name) {
 			t.Fatalf("%s should run on a free OpenCode turn", name)
 		}
@@ -96,8 +96,8 @@ func TestRewriteOpenCodeShellWorkdirAndTimeout(t *testing.T) {
 	if strings.Contains(args, `"workdir"`) || !strings.Contains(args, `"working_dir":"D:\\oc-empty"`) {
 		t.Fatalf("workdir was not renamed: %s", args)
 	}
-	if !strings.Contains(args, `"timeout":120`) {
-		t.Fatalf("timeout stayed in milliseconds: %s", args)
+	if !strings.Contains(args, `"timeout":240`) {
+		t.Fatalf("timeout did not use the effective host floor: %s", args)
 	}
 }
 

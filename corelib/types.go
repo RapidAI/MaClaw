@@ -140,6 +140,20 @@ func NormalizeAgentTimeoutSec(seconds int) int {
 	return seconds
 }
 
+// NormalizeWebFetchTimeoutSec clamps one page fetch. Web fetches are short
+// network reads, not long-running agent commands: the fetch layer itself
+// caps public network reads at 60s and all reads at 600s, so applying the
+// 240s command floor would erase caller-requested 30-120s timeouts.
+func NormalizeWebFetchTimeoutSec(seconds int) int {
+	if seconds <= 0 {
+		return DefaultAgentTimeoutSec
+	}
+	if seconds > 600 {
+		return 600
+	}
+	return seconds
+}
+
 // MaxLongRunTimeoutSec is the ceiling for one explicit shell or coding
 // command. NormalizeAgentTimeoutSec stays at MaxAgentTimeoutSec, so a model
 // request that never returns headers still fails within minutes. A live SSE

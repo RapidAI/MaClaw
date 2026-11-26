@@ -105,7 +105,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	client = WrapAssistantHTTPClient(HTTPClientForRequestContext(ctx, client), cfg)
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	cfg.URL = corelib.OpenCodeUpstreamBaseFor(cfg.URL, openAIBodyModel(body), cfg.Key)
-	if resp, status, raw, err, handled := openCodeFreeDirect(ctx, cfg, body, client, onToken); handled {
+	if resp, status, raw, err, handled := openCodeFreeDirect(ctx, cfg, body, client, onToken, onReasoning); handled {
 		return resp, status, raw, err
 	}
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))

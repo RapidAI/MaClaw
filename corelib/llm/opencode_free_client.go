@@ -67,15 +67,30 @@ var openCodeFreeHTTP = &http.Client{
 // client. The caller body supplies the model id and the conversation. The
 // system prompt and tools are the ones the free endpoint accepts.
 func CompleteOpenCodeFreeClient(ctx context.Context, body []byte) (*Response, error) {
+	return completeOpenCodeFreeClient(ctx, body, nil)
+}
+
+func completeOpenCodeFreeClient(ctx context.Context, body []byte, onToken TokenCallback) (*Response, error) {
+	return completeOpenCodeFreeClientWithReasoning(ctx, body, onToken, nil)
+}
+
+func completeOpenCodeFreeClientWithReasoning(ctx context.Context, body []byte, onToken TokenCallback, onReasoning TokenCallback) (*Response, error) {
 	payload, err := openCodeFreeClientBody(body)
 	if err != nil {
 		return nil, err
 	}
 	payload = openCodeFreeApplyWorkspace(payload, openCodeFreeWorkspace(ctx))
-	return openCodeFreePost(ctx, payload)
+	return openCodeFreePost(ctx, payload, onToken, onReasoning)
 }
 
-func openCodeFreePost(ctx context.Context, payload []byte) (*Response, error) {
+func openCodeFreePost(ctx context.Context, payload []byte, callbacks ...TokenCallback) (*Response, error) {
+	var onToken, onReasoning TokenCallback
+	if len(callbacks) > 0 {
+		onToken = callbacks[0]
+	}
+	if len(callbacks) > 1 {
+		onReasoning = callbacks[1]
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -110,13 +125,13 @@ func openCodeFreePost(ctx context.Context, payload []byte) (*Response, error) {
 	}
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(contentType, "text/event-stream") || contentType == "" {
-		return parseSSEStreamWithReasoning(resp.Body, nil, nil)
+		return parseSSEStreamWithReasoningToolParserCompactNames(resp.Body, onToken, onReasoning, parseOpenCodeFreeContentToolCalls, openCodeFreeCompactToolName)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, err
 	}
-	return ParseNonStreamOpenAIResponseBody(raw)
+	return parseNonStreamOpenAIResponseBodyWithToolParser(raw, parseOpenCodeFreeContentToolCalls)
 }
 
 // OpenCodeFreeDirectTransport reports a client that dials opencode.ai itself.
@@ -142,7 +157,7 @@ func openCodeFreeUseDirect(client *http.Client) bool {
 // transport and for any model that is not a Zen free model, so those callers
 // keep their own HTTP client.
 func TryOpenCodeFreeClient(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback) (*Response, int, []byte, error, bool) {
-	return openCodeFreeDirect(ctx, cfg, body, client, onToken)
+	return openCodeFreeDirect(ctx, cfg, body, client, onToken, nil)
 }
 
 // openCodeFreeDirectApplies reports that this body should skip Go's TLS
@@ -156,11 +171,31 @@ func openCodeFreeDirectApplies(cfg corelib.MaclawLLMConfig, body []byte, client 
 // openCodeFreeDirect sends a Zen free chat with the identified client when
 // this process would otherwise dial opencode.ai and be rejected. handled is
 // false for test transports and for any other model.
-func openCodeFreeDirect(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback) (*Response, int, []byte, error, bool) {
+func openCodeFreeDirect(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error, bool) {
 	if !openCodeFreeDirectApplies(cfg, body, client) {
 		return nil, 0, nil, nil, false
 	}
-	resp, err := CompleteOpenCodeFreeClient(OpenCodeFreeCallContext(ctx, cfg.Key), body)
+	streamedVisible := false
+	streamToken := onToken
+	if onToken != nil {
+		streamToken = func(delta string) {
+			if strings.TrimSpace(delta) != "" {
+				streamedVisible = true
+			}
+			onToken(delta)
+		}
+	}
+	streamedReasoning := false
+	reasoningToken := onReasoning
+	if onReasoning != nil {
+		reasoningToken = func(delta string) {
+			if strings.TrimSpace(delta) != "" {
+				streamedReasoning = true
+			}
+			onReasoning(delta)
+		}
+	}
+	resp, err := completeOpenCodeFreeClientWithReasoning(OpenCodeFreeCallContext(ctx, cfg.Key), body, streamToken, reasoningToken)
 	if err != nil {
 		var httpErr *HTTPStatusError
 		if errors.As(err, &httpErr) {
@@ -172,8 +207,12 @@ func openCodeFreeDirect(ctx context.Context, cfg corelib.MaclawLLMConfig, body [
 		return nil, 0, nil, errOpenCodeEmptyResponse, true
 	}
 	// The identified client already reached the free endpoint. A second
-	// request on Go's TLS stack is rejected and spends another attempt.
-	openCodeFreeDeliverTokens(resp, onToken)
+	// request on Go's TLS stack is rejected and spends another attempt. Keep
+	// the reasoning-only fallback from the non-streaming path; a normal text
+	// answer already streamed and must not be delivered twice.
+	if !streamedVisible && !streamedReasoning {
+		openCodeFreeDeliverTokens(resp, onToken)
+	}
 	return resp, http.StatusOK, nil, nil, true
 }
 
@@ -641,7 +680,10 @@ func openCodeFreeConversation(role string, content json.RawMessage, calls []open
 			continue
 		}
 		args := openCodeFreeToolArguments(call.Function.Arguments)
-		if presented, ok := presentOpenCodeFreeHostCall(name, args); ok {
+		if official, officialArgs, ok := openCodeFreeOfficialReplayCall(name, args); ok {
+			name = official
+			args = officialArgs
+		} else if presented, ok := presentOpenCodeFreeHostCall(name, args); ok {
 			name = "execute"
 			args = presented
 		}

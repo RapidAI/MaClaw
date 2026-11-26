@@ -205,3 +205,62 @@ func TestReplaceTextPassageLFFileStaysLF(t *testing.T) {
 		t.Fatalf("got %q", got.Text)
 	}
 }
+
+func TestReplaceTextPassageFuzzyTypographicQuotes(t *testing.T) {
+	file := "name := “hello”\n"
+	got, err := ReplaceTextPassage(file, "\"hello\"", "\"world\"", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Matches != 1 || got.Text != "name := \"world\"\n" {
+		t.Fatalf("fuzzy quote edit got %+v %q", got, got.Text)
+	}
+}
+
+func TestReplaceTextPassageFuzzyTypographicDashAndSpace(t *testing.T) {
+	file := "a—b c\n"
+	got, err := ReplaceTextPassage(file, "a-b c", "x", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Matches != 1 || got.Text != "x\n" {
+		t.Fatalf("fuzzy dash/space edit got %+v %q", got, got.Text)
+	}
+}
+
+func TestReplaceTextPassageFuzzyTrailingWhitespace(t *testing.T) {
+	file := "alpha   \nomega\t\n"
+	got, err := ReplaceTextPassage(file, "alpha\nomega", "beta\ngamma", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Matches != 1 || got.Text != "beta\ngamma\n" {
+		t.Fatalf("fuzzy trailing edit got %+v %q", got, got.Text)
+	}
+}
+
+func TestReplaceTextPassageFuzzyCountsMultipleMatches(t *testing.T) {
+	file := "“x” and “x”\n"
+	got, err := ReplaceTextPassage(file, "\"x\"", "\"y\"", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Matches != 2 || got.Applied != 1 {
+		t.Fatalf("fuzzy multi match got %+v", got)
+	}
+	all, err := ReplaceTextPassage(file, "\"x\"", "\"y\"", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.Applied != 2 || all.Text != "\"y\" and \"y\"\n" {
+		t.Fatalf("fuzzy replaceAll got %+v %q", all, all.Text)
+	}
+}
+
+func TestReplaceTextPassageExactMatchDoesNotUseFuzzySpan(t *testing.T) {
+	file := "exact here\n"
+	got, err := ReplaceTextPassage(file, "exact", "done", false)
+	if err != nil || got.Text != "done here\n" {
+		t.Fatalf("exact path got %+v err=%v", got, err)
+	}
+}

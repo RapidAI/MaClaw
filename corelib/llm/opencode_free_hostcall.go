@@ -16,9 +16,10 @@ import (
 // turn. The system prompt bytes are part of the fingerprint and must stay
 // intact. A tail that already ends with the same note is left alone. A
 // failed execute is a short tool result, not a second copy of the note. A
-// host call already in the transcript is shown back as execute plus
+// host-only call already in the transcript is shown back as execute plus
 // MACLAW_CALL, so the next turn repeats the channel instead of a direct
-// host name.
+// host name. Calls that were adapted only for local execution cross the
+// bridge in the opposite direction and reappear under their official names.
 //
 // The goal example follows the host continuation phase of the latest user
 // message (guiapp goalContinuationPhase): the tag is a prefix, an execute
@@ -27,25 +28,43 @@ import (
 // taught step example records progress, so copying it does not finish the
 // step. One execute can carry several host calls. A goal action from the
 // other phase is dropped, and a string value that is only the example dots
-// is not a delivery. A MACLAW_CALL of shell, read, write, webfetch, or
+// is not a delivery. A MACLAW_CALL of shell, read, write, edit, glob, grep, webfetch, or
 // websearch is the same official call as a direct function and uses that
 // name bridge. tools.shell stays inside execute.
 
 const openCodeFreeHostCallToken = "MACLAW_CALL"
 
-// openCodeFreeOfficialTools is the function list in opencode_profile/tools.json.
-// A profile refresh that adds or drops a name has to update this set. A name
-// left out is advertised as a host extra and the model stops calling it directly.
-var openCodeFreeOfficialTools = map[string]struct{}{
-	"edit": {}, "execute": {}, "glob": {}, "grep": {}, "question": {},
-	"read": {}, "shell": {}, "skill": {}, "subagent": {},
-	"webfetch": {}, "websearch": {}, "write": {},
+// openCodeFreeOfficialTools is derived from the embedded fingerprint catalog.
+// Deriving it keeps a profile refresh from splitting the wire schema and the
+// host-extra classifier into two disagreeing tool lists.
+var openCodeFreeOfficialTools = loadOpenCodeFreeOfficialToolNames()
+
+func loadOpenCodeFreeOfficialToolNames() map[string]struct{} {
+	var tools []struct {
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal([]byte(openCodeFreeToolsJSON), &tools); err != nil {
+		return nil
+	}
+	out := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if name := strings.ToLower(strings.TrimSpace(tool.Function.Name)); name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
+}
+
+func openCodeFreeOfficialToolName(name string) bool {
+	_, ok := openCodeFreeOfficialTools[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // OpenCodeFreeHostExtras lists caller tools the official catalog cannot
-// express. shell/read/write/webfetch/websearch already rewrite onto bash,
-// read_file, write_file, web_fetch, and web_search, so those names are not
-// repeated here.
+// express. shell/read/write/edit/glob/grep/webfetch/websearch already rewrite
+// onto their Maclaw executors, so those names are not repeated here.
 func OpenCodeFreeHostExtras(names []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(names))
@@ -54,7 +73,7 @@ func OpenCodeFreeHostExtras(names []string) []string {
 		if name == "" {
 			continue
 		}
-		if _, ok := openCodeFreeOfficialTools[name]; ok || openCodeFreeMappedHost(name) {
+		if openCodeFreeOfficialToolName(name) || openCodeFreeMappedHost(name) {
 			continue
 		}
 		if _, ok := seen[name]; ok {
@@ -91,9 +110,30 @@ func openCodeFreeCallerHostNote(caller []byte) string {
 	return strings.TrimSuffix(note, "</system-reminder>") + extra + "</system-reminder>"
 }
 
+// parseOpenCodeFreeContentToolCalls recognizes the same compact serialization
+// openCodeFreeConversation writes back into the transcript, in addition to the
+// generic leaked-call formats. That serialization is context for the model,
+// but it also becomes an imitation surface. This is scoped to the OpenCode
+// free boundary because names such as read/write are too generic for the
+// cross-provider leaked-call parser.
+func parseOpenCodeFreeContentToolCalls(content string) ([]ToolCall, bool) {
+	return parseContentToolCallsDetailed(content, openCodeFreeCompactToolName)
+}
+
+func openCodeFreeCompactToolName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if _, ok := openCodeFreeOfficialTools[lower]; ok {
+		return true
+	}
+	if openCodeFreeMappedHost(lower) {
+		return true
+	}
+	return looksLikeLineOrientedToolName(name)
+}
+
 func openCodeFreeMappedHost(name string) bool {
 	for _, host := range openCodeFreeToolTargets {
-		if host == name {
+		if strings.EqualFold(host, name) {
 			return true
 		}
 	}
@@ -264,7 +304,7 @@ func joinOpenCodeFreeHostNote(content, note string) string {
 func OpenCodeFreeHostChannelRetry(rendered []string) string {
 	extras := OpenCodeFreeHostExtras(rendered)
 	if len(extras) == 0 {
-		return "Error: execute is not a host runtime on this turn. Call shell, read, write, webfetch, or websearch directly. Do not inspect the catalog."
+		return "Error: execute is not a host runtime on this turn. Call shell, read, write, edit, glob, grep, webfetch, or websearch directly. Do not inspect the catalog."
 	}
 	return "Error: this execute call did not deliver a host tool. Submit one return MACLAW_CALL statement. Host tools: " + openCodeFreeHostToolList(extras) + ". Do not inspect the catalog."
 }
@@ -318,7 +358,7 @@ func presentOpenCodeFreeHostCall(name, args string) (string, bool) {
 	if name == "" || !validOpenCodeFreeHostToolName(name) {
 		return "", false
 	}
-	if _, official := openCodeFreeOfficialTools[name]; official || openCodeFreeMappedHost(name) {
+	if openCodeFreeOfficialToolName(name) || openCodeFreeMappedHost(name) {
 		return "", false
 	}
 	args = strings.TrimSpace(args)
@@ -924,7 +964,7 @@ func openCodeFreeHostExtraName(name string) bool {
 	if !validOpenCodeFreeHostToolName(name) {
 		return false
 	}
-	if _, official := openCodeFreeOfficialTools[name]; official || openCodeFreeMappedHost(name) {
+	if openCodeFreeOfficialToolName(name) || openCodeFreeMappedHost(name) {
 		return false
 	}
 	return true
