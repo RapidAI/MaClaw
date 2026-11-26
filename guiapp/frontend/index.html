@@ -287,24 +287,40 @@
   // V3 service prefix must match the Go service registration (package
   // guiapp, type App); verify during the wails3 smoke run.
   if (!window.runtime) {
-    import(/* @vite-ignore */ '/wails' + '/runtime.js')
-      .then(function (m) {
-        var call = (m && m.Call) || (m && m.default && m.default.Call);
-        if (!call) throw new Error('wails3 runtime module has no Call namespace');
-        window.go = window.go || {};
-        window.go.main = window.go.main || {};
-        window.go.main.App = new Proxy(window.go.main.App || {}, {
-          get: function (_t, name) {
-            if (typeof name !== 'string' || name === 'then') return undefined;
-            return function () {
-              var args = Array.prototype.slice.call(arguments);
-              return call.ByName('guiapp.App.' + name, ...args);
-            };
-          },
+    // wails3 migration (Phase 2): install the window.go.main.App Proxy
+    // SYNCHRONOUSLY — the app bundle's first binding call can happen before
+    // any dynamic import resolves, and an undefined window.go.main.App
+    // crashes React to a white screen. The v3 runtime module is resolved
+    // lazily inside the first actual method call (async anyway).
+    // V3 service prefix must match the Go service registration (package
+    // guiapp, type App); verify during the wails3 smoke run.
+    var v3RuntimePromise = null;
+    function wails3Runtime() {
+      if (!v3RuntimePromise) {
+        v3RuntimePromise = import(/* @vite-ignore */ '/wails' + '/runtime.js').catch(function (err) {
+          console.error('[wails3-bridge] runtime module load failed:', err);
+          v3RuntimePromise = null;
+          throw err;
         });
-        console.info('[wails3-bridge] window.go.main.App installed');
-      })
-      .catch(function (err) { console.error('[wails3-bridge] failed:', err); });
+      }
+      return v3RuntimePromise;
+    }
+    window.go = window.go || {};
+    window.go.main = window.go.main || {};
+    window.go.main.App = new Proxy(window.go.main.App || {}, {
+      get: function (_t, name) {
+        if (typeof name !== 'string' || name === 'then') return undefined;
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          return wails3Runtime().then(function (m) {
+            var call = (m && m.Call) || (m && m.default && m.default.Call);
+            if (!call) throw new Error('wails3 runtime module has no Call namespace');
+            return call.ByName('guiapp.App.' + name, ...args);
+          });
+        };
+      },
+    });
+    console.info('[wails3-bridge] window.go.main.App proxy installed');
   }
   (function () {
     function aliasGoMain() {
