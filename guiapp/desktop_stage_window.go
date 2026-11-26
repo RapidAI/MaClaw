@@ -65,6 +65,11 @@ func (a *App) OpenDesktopStageWindow(width int, fps int) {
 		Frameless:        false,
 		BackgroundColour: application.RGBA{Red: 12, Green: 12, Blue: 12, Alpha: 255},
 		URL:              url,
+		// 远控观看用户恰好在 RDP 会话里：窗口托管在 RDP 下不呈现
+		// （与主窗口同一白屏根因），组合托管是官方修复路径。
+		Windows: application.WindowsWindow{
+			WebView2CompositionHosting: useVisualHostingWails3(),
+		},
 	})
 	if win == nil {
 		log.Printf("[desktop-stage] window creation returned nil")
