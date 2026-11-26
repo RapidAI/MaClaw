@@ -1,5 +1,3 @@
-//go:build wails3
-
 package runtime
 
 // v3 mode: implementation over the wails/v3 application objects. The

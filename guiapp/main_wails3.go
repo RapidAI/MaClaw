@@ -1,5 +1,3 @@
-//go:build wails3
-
 package guiapp
 
 // guiapp.Main under the wails3 build tag: the v3 bootstrap mirroring
@@ -52,12 +50,8 @@ func (a *App) ServiceShutdown() {
 	a.shutdown(a.ctx)
 }
 
-// wails3Enabled is the build-tag dispatch flag read by cmd/maclaw-gui.
-const wails3Enabled = true
-
-// Main3 is the wails3 entry point; the default build's Main3 (main_wails2.go)
-// forwards to the v2 Main.
-func Main3(v string) {
+// Main is the application entry point (wails3 runtime).
+func Main(v string) {
 	if v != "" {
 		version = v
 	}
@@ -154,9 +148,6 @@ func Main3(v string) {
 	v3app := application.New(application.Options{
 		Name: brand.Current().WindowTitle,
 		// Visual hosting over RDP (official wails3 RDP fix); no-op off RDP.
-		Windows: application.WindowsOptions{
-			UseVisualHosting: useVisualHostingWails3(),
-		},
 
 		Services: []application.Service{
 			application.NewService(app),
@@ -177,6 +168,7 @@ func Main3(v string) {
 		},
 	})
 	wruntime.SetApplication(v3app)
+	runningWails3App = v3app
 
 	// v2 EditMenu parity: without an application EditMenu, Ctrl+A in a
 	// WebView2 input selects the whole page instead of the input text. The
@@ -198,6 +190,12 @@ func Main3(v string) {
 			// Windows 11 keeps native DWM rounding (see main.go v2 comment);
 			// Windows 10 disables the decorations it cannot render.
 			DisableFramelessWindowDecorations: !app.IsNativeRoundedCorners(),
+			// THE fix for the RDP white screen: v3.1.0's app-level
+			// UseVisualHosting option is a no-op (its env var has no consumer
+			// in this version — verified against the vendored source). The
+			// live switch is per-window composition hosting
+			// (ICoreWebView2CompositionController + DirectComposition).
+			WebView2CompositionHosting: visualHosting,
 		},
 	})
 	wruntime.SetMainWindow(win)
@@ -276,6 +274,3 @@ func onSecondInstanceLaunch3(app *App, args []string) {
 		wruntime.WindowSetAlwaysOnTop(app.ctx, false)
 	}()
 }
-
-// Wails3Enabled reports whether this binary was built with the wails3 tag.
-func Wails3Enabled() bool { return wails3Enabled }

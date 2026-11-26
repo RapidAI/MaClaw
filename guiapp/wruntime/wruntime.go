@@ -9,12 +9,9 @@
 // the import path changes. The directory is named `wruntime` to avoid
 // confusion with the standard library's runtime.
 //
-// Build modes:
-//
-//	//go:build !wails3 (v2.go)  — pure delegation to the vendored
-//	                            — wails/v2/pkg/runtime (default, zero behavior change)
-//	//go:build wails3  (v3.go)  — implementation over wails/v3 application,
-//	                            — window, dialog, clipboard and event objects
+// The wails/v2 delegation mode (v2.go) was removed when the wails3 runtime
+// was promoted to the default (v2 retirement); v3.go is the sole
+// implementation.
 //
 // The option structs below mirror the v2 shapes field-for-field so existing
 // struct literals compile unchanged in both modes.

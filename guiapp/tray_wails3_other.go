@@ -1,4 +1,4 @@
-//go:build wails3 && !windows
+//go:build !windows
 
 package guiapp
 

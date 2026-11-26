@@ -1,5 +1,3 @@
-//go:build wails3
-
 package main
 
 // TigerProxy wails3 bootstrap: mirrors main2 (the v2 path) with the v3

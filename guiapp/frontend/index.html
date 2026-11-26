@@ -288,7 +288,7 @@
   // packagePath.typeName.methodName, pkgPath is the FULL import path —
   // verified against v3.1.0 bindings.go:229-245; only `package main` is
   // special-cased to the short name, which is why the spike worked).
-  if (!window.runtime) {
+  {
     // wails3 migration (Phase 2): install the window.go.main.App Proxy
     // SYNCHRONOUSLY — the app bundle's first binding call can happen before
     // any dynamic import resolves, and an undefined window.go.main.App

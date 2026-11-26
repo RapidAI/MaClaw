@@ -7,11 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
 //go:embed frontend/dist
@@ -64,46 +59,6 @@ func cleanOldLogs(dir string, maxDays int) {
 		if info.ModTime().Before(cutoff) {
 			_ = os.Remove(filepath.Join(dir, entry.Name()))
 		}
-	}
-}
-
-func main2() {
-	closeLog := initLogging()
-	defer closeLog()
-	log.Printf("[codexproxy] starting")
-
-	app := NewApp()
-	startHidden := hasStartHiddenArg(os.Args[1:])
-	app.shown = !startHidden
-	appOptions := &options.App{
-		Title:                    "CodexProxy",
-		Frameless:                true,
-		StartHidden:              startHidden,
-		Width:                    1080,
-		Height:                   780,
-		MinWidth:                 900,
-		MinHeight:                680,
-		EnableDefaultContextMenu: true,
-		BackgroundColour:         &options.RGBA{R: 244, G: 247, B: 251, A: 255},
-		AssetServer:              &assetserver.Options{Assets: assets},
-		OnStartup:                app.startup,
-		OnShutdown:               app.shutdown,
-		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "codexproxy-lock",
-			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
-				_ = secondInstanceData
-				go app.ShowMainWindow()
-			},
-		},
-		Bind: []interface{}{app},
-	}
-	// v2 EditMenu: Ctrl+A/C/V/X inside WebView2 input fields.
-	editMenu := menu.NewMenu()
-	editMenu.Append(menu.EditMenu())
-	appOptions.Menu = editMenu
-	setupTray(app)
-	if err := wails.Run(appOptions); err != nil {
-		log.Fatal(err)
 	}
 }
 

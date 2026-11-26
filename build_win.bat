@@ -9,12 +9,12 @@ echo [INFO] Starting the build process...
 REM -- /w3 switch: build the GUI with the wails3 runtime (branch
 REM    wails3-migration). Default remains the wails v2 runtime until the
 REM    wails3 promotion is signed off (AGENTS.md promotion checklist).
-set "WAILS3_GUI=0"
+set "WAILS3_GUI=1"
 for %%a in (%*) do (
     if /i "%%a"=="/w3" set "WAILS3_GUI=1"
 )
-if "%WAILS3_GUI%"=="1" echo [INFO] WAILS3_GUI=1 - GUI builds with -tags wails3 (requires CGO).
-set "GUI_TAGS=desktop,production"
+echo [INFO] GUI builds with -tags wails3 + CGO (promoted default; see AGENTS.md wails3 section).
+set "GUI_TAGS=wails3,desktop,production"
 
 
 REM -- Build mutex: dist\, guiapp\resource_windows_*.syso, guiapp\frontend\dist

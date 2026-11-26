@@ -7,9 +7,5 @@ var version = "dev"
 
 func main() {
 	guiapp.RegisterAgentHandlerFactory()
-	if guiapp.Wails3Enabled() {
-		guiapp.Main3(version)
-		return
-	}
 	guiapp.Main(version)
 }

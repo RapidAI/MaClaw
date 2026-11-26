@@ -1,5 +1,3 @@
-//go:build wails3
-
 package guiapp
 
 // Desktop-stage pop-out window: the wails3-native replacement for the
@@ -18,12 +16,14 @@ import (
 	"fmt"
 	"log"
 
-	wruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 var desktopStageWindow *application.WebviewWindow
+
+// runningWails3App 由 Main 在 application.New 后安装，供弹出窗口创建使用。
+var runningWails3App *application.App
 
 // desktopStageLastBounds remembers the pop-out window's last on-screen
 // geometry (physical px) so a reopen restores the user's resized/placed
@@ -36,7 +36,7 @@ var desktopStageLastW, desktopStageLastH int
 // the pop-out control; under wails/v2 builds the method is absent and the
 // probe fails closed.
 func (a *App) DesktopStageWindowSupported() bool {
-	return wails3Enabled
+	return true
 }
 
 // OpenDesktopStageWindow opens (or focuses) the standalone desktop-stage
@@ -57,7 +57,7 @@ func (a *App) OpenDesktopStageWindow(width int, fps int) {
 	if desktopStageLastW > 0 && desktopStageLastH > 0 {
 		w, h = desktopStageLastW, desktopStageLastH
 	}
-	win := wruntime.Application().Window.NewWithOptions(application.WebviewWindowOptions{
+	win := runningWails3App.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "MaClaw 桌面画面",
 		Name:             "desktop-stage",
 		Width:            w,
