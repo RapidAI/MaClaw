@@ -101,6 +101,16 @@ func Main3(v string) {
 	// companion variant and override the window geometry (v2
 	// applyDesktopLaunchOptions; HideWindowOnClose has no direct v3 field yet
 	// — tracked gap).
+	// GPU self-heal parity with v2 (main.go WebviewGpuIsDisabled): the paint
+	// watchdog records a marker after a blank window; the next launch disables
+	// WebView2 hardware acceleration. v3.1.0 exposes no Windows GPU toggle in
+	// application.Options, so use the WebView2 loader's supported env var,
+	// which create_core_webview2_environment reads at environment creation.
+	gpuDisabled := webviewGPUDisabled(defaultWebviewUserDataPath())
+	if gpuDisabled {
+		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-gpu")
+	}
+	bootLog("wails3 gpuDisabled=%v", gpuDisabled)
 	launch := classifyDesktopLaunch(args)
 	winWidth, winHeight := envCheckWidth, envCheckHeight
 	if launch.Mode == desktopLaunchFileCompanion {
@@ -122,6 +132,7 @@ func Main3(v string) {
 
 	v3app := application.New(application.Options{
 		Name: brand.Current().WindowTitle,
+
 		Services: []application.Service{
 			application.NewService(app),
 		},

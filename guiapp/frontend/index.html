@@ -294,16 +294,19 @@
     // lazily inside the first actual method call (async anyway).
     // V3 service prefix must match the Go service registration (package
     // guiapp, type App); verify during the wails3 smoke run.
-    var v3RuntimePromise = null;
+    // Preload at HTML-parse time: the app bundle's EventsOn registrations
+    // must land before Go emits early lifecycle events (env-check-done), or
+    // those events are missed and the splash never promotes.
+    window.__maclawV3Runtime = import(/* @vite-ignore */ '/wails' + '/runtime.js').catch(function (err) {
+      console.error('[wails3-bridge] runtime module load failed:', err);
+      window.__maclawV3Runtime = null;
+      throw err;
+    });
     function wails3Runtime() {
-      if (!v3RuntimePromise) {
-        v3RuntimePromise = import(/* @vite-ignore */ '/wails' + '/runtime.js').catch(function (err) {
-          console.error('[wails3-bridge] runtime module load failed:', err);
-          v3RuntimePromise = null;
-          throw err;
-        });
+      if (!window.__maclawV3Runtime) {
+        window.__maclawV3Runtime = import(/* @vite-ignore */ '/wails' + '/runtime.js');
       }
-      return v3RuntimePromise;
+      return window.__maclawV3Runtime;
     }
     window.go = window.go || {};
     window.go.main = window.go.main || {};

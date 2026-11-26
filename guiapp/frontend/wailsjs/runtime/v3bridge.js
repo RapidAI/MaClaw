@@ -16,7 +16,15 @@ let v3Promise = null;
 // is the module the v3 asset server serves to pages (see the Phase 0 spike).
 export function getV3() {
     if (!v3Promise) {
-        v3Promise = import(/* @vite-ignore */ '/wails' + '/runtime.js').then((m) => {
+        // Reuse the preload started at HTML-parse time when present, so
+        // module resolution completes before the app bundle's first
+        // EventsOn call (early-event race: Go emits env-check-done right
+        // after the react-ready ping).
+        const preloaded =
+            typeof window !== 'undefined' && window.__maclawV3Runtime
+                ? Promise.resolve(window.__maclawV3Runtime)
+                : import(/* @vite-ignore */ '/wails' + '/runtime.js');
+        v3Promise = preloaded.then((m) => {
             // Some builds expose the API spread on the module root; pick the
             // known namespaces with fallbacks so either shape works.
             return {
