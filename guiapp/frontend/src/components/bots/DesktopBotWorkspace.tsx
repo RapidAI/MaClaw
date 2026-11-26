@@ -3573,6 +3573,52 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             document.removeEventListener('visibilitychange', update);
         };
     }, [stageInteractive]);
+    // No generics here: nested type-parameter lists inside a .tsx arrow
+    // body are parsed as JSX by esbuild.
+    interface StagePopOutApp {
+        DesktopStageWindowSupported?: () => Promise<boolean>;
+        OpenDesktopStageWindow?: (width: number, fps: number) => Promise<void>;
+        CloseDesktopStageWindow?: () => Promise<void>;
+    }
+    const stagePopOutBinding = (): StagePopOutApp | undefined => {
+        const go = (window as unknown as { go?: { main?: { App?: unknown } } }).go;
+        return typeof go === 'object' && go !== null
+            ? ((go as { main?: { App?: StagePopOutApp } }).main?.App)
+            : undefined;
+    };
+    // wails3 pop-out: the standalone desktop-stage window (native second
+    // window) replaces the in-panel iframe while open, eliminating the
+    // cross-origin OOPIF renderer for watch mode. v2 builds (and any build
+    // without the binding) keep the iframe: the probe fails closed.
+    const [stagePoppedOut, setStagePoppedOut] = useState(false);
+    const [stagePopOutSupported, setStagePopOutSupported] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        const probe = async () => {
+            try {
+                const w3App = stagePopOutBinding();
+                const supported = await w3App?.DesktopStageWindowSupported();
+                if (!cancelled && supported) setStagePopOutSupported(true);
+            } catch { /* v2: binding absent — keep the iframe */ }
+        };
+        void probe();
+        return () => { cancelled = true; };
+    }, []);
+    const toggleStagePopOut = async () => {
+        const w3App = stagePopOutBinding();
+        if (!w3App) return;
+        if (stagePoppedOut) {
+            try { await w3App.CloseDesktopStageWindow(); } catch { /* window may already be gone */ }
+            setStagePoppedOut(false);
+            return;
+        }
+        // fps mirrors desktopFrameSource: watch-only streams at 10fps to
+        // save bandwidth; interactive keeps the server default.
+        try {
+            await w3App.OpenDesktopStageWindow(0, stageInteractive ? 0 : 10);
+            setStagePoppedOut(true);
+        } catch { /* probe race or window subsystem busy — keep the iframe */ }
+    };
     useEffect(() => {
         const botId = selectedId || '';
         const epoch = controlEpochRef.current + 1;
@@ -8374,7 +8420,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         ) : null}
                                     </div>
                                     <div className="desktop-bot-stage__frame">
-                                        {streamHidden ? null : (
+                                        {streamHidden || stagePoppedOut ? null : (
                                         <iframe
                                             key={frameMode + ':' + desktopViewer + ((takeover || screenExpanded) ? ':full' : '')}
                                             ref={handoffRef}
@@ -8439,6 +8485,18 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         >
                                             {desktopViewer === 'h264' ? text.viewerH264 : text.viewerVnc}
                                         </button>
+                                        {stagePopOutSupported && !screenExpanded ? (
+                                            <button
+                                                type="button"
+                                                className="desktop-bot-stage__mode-btn desktop-bot-stage__viewer"
+                                                data-testid="desktop-bot-stage-popout"
+                                                aria-pressed={stagePoppedOut}
+                                                title={stagePoppedOut ? '回到主窗口面板' : '弹出独立桌面窗口'}
+                                                onClick={() => { void toggleStagePopOut(); }}
+                                            >
+                                                {stagePoppedOut ? '回到主窗口' : '独立窗口'}
+                                            </button>
+                                        ) : null}
                                     </div>
                                 </div>
                             ) : ownerDesktopMissing && !ownPictureDown ? (
