@@ -4,7 +4,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 const dumpFrontendDOMJS = `(function(){
@@ -203,6 +203,12 @@ func (a *App) watchFirstPaintForGPUFailure() {
 		}
 		bootLog("first-paint watchdog: no frame after %s despite htmlReady=true assets=%d; recording GPU failure",
 			firstPaintGPUFailureGrace, frontendAssetRequests.Load())
+		if wails3Enabled {
+			// wails3: firstPaintMark 依赖渲染端经绑定通道上报，该通道在 wails3
+			// 下尚未实证；误写标记会让之后的 v2 启动无谓禁 GPU。只记录不写。
+			bootLog("first-paint watchdog: wails3 build — GPU marker suppressed (renderer report channel unverified)")
+			return
+		}
 		recordWebviewGPUFailure(defaultWebviewUserDataPath(), "no-first-paint")
 	}()
 }
