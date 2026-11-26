@@ -20,11 +20,7 @@ var frontendAssets embed.FS
 //go:embed assets/maclaw.ico
 var wails3TrayIcon []byte
 
-const wails3Enabled = true
-
 func main() { main3() }
-
-func Wails3Enabled() bool { return wails3Enabled }
 
 func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	a.startup(ctx)
