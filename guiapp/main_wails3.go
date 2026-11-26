@@ -75,6 +75,19 @@ func Main3(v string) {
 	}
 	// Preamble kept in sync with main.go Main().
 	app := NewApp()
+	// Dev subcommands, kept in sync with main.go Main (parity for wails3
+	// dev builds).
+	if len(args) > 1 {
+		if args[1] == "remote-smoke" {
+			os.Exit(runRemoteSmoke(app, args[2:]))
+		}
+		if args[1] == "generate-mobile-pwa-shell" {
+			os.Exit(runMobilePWAShellGenerator(app, args[2:]))
+		}
+		if args[1] == "generate-android-pwa-shell" {
+			os.Exit(runAndroidPWAShellGenerator(app, args[2:]))
+		}
+	}
 	app.applyInitialLanguage()
 	app.setPendingReferralHandoff(referralHandoffFromArgs(args))
 	if launch := cloudWorkspaceShareFromArgs(args); launch.Token != "" {
