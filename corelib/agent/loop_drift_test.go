@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -395,6 +396,150 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits[i:])
+}
+
+func TestBR696A70521E75DifferentSearchesDoNotStop(t *testing.T) {
+	// T4 read one spilled flutter log three times at offset 0. The queries
+	// and receipts differed, but the page key ignored the query, so the
+	// third read was the same page and the turn hard-exited.
+	handle := "20261126T093247_bash_ff5379d95f85feab"
+	queries := []string{
+		"No issues found|All tests passed|Error|error •",
+		"issues found",
+		"All tests passed",
+	}
+	receipts := []string{
+		searchReadResult(handle, 0, queries[0], false),
+		searchReadResult(handle, 0, queries[1], false) + "[match_offset: 2264]\nhit\n",
+		searchReadResult(handle, 0, queries[2], false),
+	}
+	calls := make([]toolCallRecord, len(queries))
+	for i, query := range queries {
+		calls[i] = toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"` + handle + `","query":` + strconv.Quote(query) + `}`,
+			result:  receipts[i],
+			success: true,
+			batch:   33,
+		}
+	}
+	if _, seen := repeatedSuccessfulCommit(calls); seen != 1 {
+		t.Fatalf("the third different search was counted as the same page, seen=%d", seen)
+	}
+	id, seen := mostRepeatedImmutableRead(calls, 33)
+	if seen != 1 || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("one batch of different searches must not hard-exit: id=%q seen=%d", id, seen)
+	}
+	again := append(calls, calls[2])
+	id, seen = mostRepeatedImmutableRead(again, 33)
+	if seen != 2 || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the first repeat of one search warns, it does not stop: seen=%d", seen)
+	}
+	third := append(again, calls[2])
+	id, seen = mostRepeatedImmutableRead(third, 33)
+	if seen != 3 || !repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the same search a third time must still stop: id=%q seen=%d", id, seen)
+	}
+}
+
+func TestDifferentSearchQueriesAreDifferentPages(t *testing.T) {
+	queries := []string{
+		"No issues found|All tests passed|Error|error •",
+		"issues found",
+		"All tests passed",
+	}
+	calls := make([]toolCallRecord, len(queries))
+	ids := make([]string, len(queries))
+	for i, query := range queries {
+		calls[i] = toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(query) + `}`,
+			result:  searchReadResult("h", 0, query, false),
+			success: true,
+		}
+		id, ok := spilledPageIdentity(calls[i])
+		if !ok {
+			t.Fatalf("query %q has no page identity", query)
+		}
+		ids[i] = id
+	}
+	if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+		t.Fatalf("different queries collapsed: %q", ids)
+	}
+	if _, seen := repeatedSuccessfulCommit(calls); seen != 1 {
+		t.Fatalf("different queries counted as one page, seen=%d", seen)
+	}
+	if repeatedCommitStops(nil, ids[2], 1) {
+		t.Fatal("a new query must not stop the turn")
+	}
+	same := []toolCallRecord{calls[2], calls[2], calls[2]}
+	id, seen := repeatedSuccessfulCommit(same)
+	if seen != 3 || !repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the same search must still stop: id=%q seen=%d", id, seen)
+	}
+}
+
+func TestSameSearchQueryIgnoresCaseLimitAndHandleSuffix(t *testing.T) {
+	one := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"NeEdLe","limit":1}`,
+		result:  searchReadResult("h", 0, "NeEdLe", false),
+		success: true,
+	}
+	two := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"offset":0,"id":"h.txt","query":"  needle  "}`,
+		result:  searchReadResult("h", 0, "needle", false),
+		success: true,
+	}
+	idOne, okOne := spilledPageIdentity(one)
+	idTwo, okTwo := spilledPageIdentity(two)
+	if !okOne || !okTwo || idOne != idTwo {
+		t.Fatalf("the same search was split: %q %q ok=%v %v", idOne, idTwo, okOne, okTwo)
+	}
+	bare := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0}`,
+		result:  "[tool_result_read]\nid: h\noffset: 0\ntruncated: false\n\n---\npage\n--- end ---\n",
+		success: true,
+	}
+	byteID, ok := spilledPageIdentity(bare)
+	if !ok || byteID == idOne || byteID != "read_tool_result\nh\n0" {
+		t.Fatalf("a byte page must stay id/offset only, got %q search %q", byteID, idOne)
+	}
+}
+
+func TestSearchContinuationKeepsTheQuery(t *testing.T) {
+	call := toolCallRecord{
+		name: "read_tool_result",
+		args: `{"id":"h","offset":0,"query":"needle"}`,
+		result: "[tool_result_read]\nid: h\noffset: 0\nquery: \"needle\"\nreturned_matches: 1\ntruncated: true\nnext_offset: 400\n\n---\nmatch\n--- end ---\n",
+		success: true,
+	}
+	next, ok := advertisedReadContinuation(call)
+	want, wantOK := spilledPageIdentity(toolCallRecord{
+		name: "read_tool_result", args: `{"id":"h","offset":400,"query":"needle"}`, result: "page", success: true,
+	})
+	if !ok || !wantOK || next != want {
+		t.Fatalf("continuation = %q ok=%v want %q", next, ok, want)
+	}
+	body := toolCallRecord{
+		name: "read_tool_result", args: `{"id":"h","offset":0}`,
+		result: "[tool_result_read]\noffset: 0\ntruncated: true\nnext_offset: 16384\n\n---\nquery: \"needle\"\n--- end ---\n",
+		success: true,
+	}
+	byteNext, ok := advertisedReadContinuation(body)
+	if !ok || byteNext != "read_tool_result\nh\n16384" {
+		t.Fatalf("body query must not join a byte page, got %q ok=%v", byteNext, ok)
+	}
+}
+
+func searchReadResult(id string, offset int, query string, truncated bool) string {
+	state := "truncated: false\n"
+	if truncated {
+		state = "truncated: true\nnext_offset: 400\n"
+	}
+	return "[tool_result_read]\nid: " + id + "\noffset: " + itoa(offset) + "\nquery: " + strconv.Quote(query) + "\nreturned_matches: 0\n" + state + "\n---\n\n--- end ---\n"
 }
 
 func TestRepeatedCommitResetsWhenThePayloadChanges(t *testing.T) {

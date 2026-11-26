@@ -4625,7 +4625,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				log.Printf("[agent-loop] commit %q repeated with the same arguments; telling the model the result stands", name)
 				note := fmt.Sprintf("[系统] 工具 %s 已用相同参数成功执行，该结果仍然有效。不要用相同参数再调用它。若任务还要继续，改参数或做下一步；若已经完成，直接回答。", name)
 				if ImmutableToolResultRead(name) {
-					note = "[系统] read_tool_result 这一页已经返回。不要用相同的 id 和 offset 再读。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，并省略 limit。"
+					note = "[系统] read_tool_result 这一页已经返回。没有 query 时，不要用相同的 id 和 offset 再读。有 query 时，不要用相同的 id、query 和 offset 再读；换一个 query 是另一次搜索。结果里 truncated 为 false 时，用已有内容继续任务。为 true 时，把 offset 设成结果里 next_offset 那一行的整数，保留原来的 query，并省略 limit。"
 				}
 				conversation = append(conversation, map[string]interface{}{
 					"role":    "user",
@@ -5619,23 +5619,16 @@ func advertisedReadContinuation(call toolCallRecord) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	rest, ok := strings.CutPrefix(page, "read_tool_result\n")
+	handle, current, query, ok := parseSpilledPageIdentity(page)
 	if !ok {
-		return "", false
-	}
-	handle, offsetText, ok := strings.Cut(rest, "\n")
-	if !ok || handle == "" {
-		return "", false
-	}
-	current, err := strconv.Atoi(offsetText)
-	if err != nil {
 		return "", false
 	}
 	next, ok := headerNextOffset(call.result)
 	if !ok || next <= current {
 		return "", false
 	}
-	return "read_tool_result\n" + handle + "\n" + strconv.Itoa(next), true
+	// The next search window is the same observation, not a byte page.
+	return formatSpilledPageIdentity(handle, next, query), true
 }
 
 // headerServedOffset is the offset line in a read_tool_result header.
@@ -5716,8 +5709,10 @@ func repeatedCommitStops(noted map[string]struct{}, id string, seen int) bool {
 // repeatedSuccessfulCommit reports that the latest call is a commit whose
 // arguments and receipt already occurred in this turn. Polls are ignored.
 // The identity is stable across JSON key order. A spilled page is the handle
-// plus the byte offset: limit is normalized away before the read, so a model
-// that alternates limit=1 and an omitted limit is still the same page.
+// plus the byte offset, and the normalized search query when one was used.
+// limit is normalized away before the read, so a model that alternates
+// limit=1 and an omitted limit is still the same page. A different query is
+// a different observation: search does not page by offset alone.
 func repeatedSuccessfulCommit(calls []toolCallRecord) (id string, seen int) {
 	if len(calls) == 0 {
 		return "", 0
@@ -5785,7 +5780,81 @@ func spilledPageIdentity(call toolCallRecord) (string, bool) {
 	if served, ok := headerServedOffset(call.result); ok && served < offset {
 		offset = served
 	}
-	return "read_tool_result\n" + id + "\n" + strconv.Itoa(offset), true
+	return formatSpilledPageIdentity(id, offset, spilledSearchQuery(args, call.result)), true
+}
+
+// formatSpilledPageIdentity is the stored page. A search is not a byte page:
+// the same handle and offset with a different query is a different observation.
+// An empty query keeps the historical id/offset identity so byte-page
+// continuation keys stay stable. The query is quoted so a newline inside it
+// cannot split the identity.
+func formatSpilledPageIdentity(id string, offset int, query string) string {
+	page := "read_tool_result\n" + id + "\n" + strconv.Itoa(offset)
+	if query == "" {
+		return page
+	}
+	return page + "\n" + strconv.Quote(query)
+}
+
+func parseSpilledPageIdentity(page string) (handle string, offset int, query string, ok bool) {
+	rest, found := strings.CutPrefix(page, "read_tool_result\n")
+	if !found {
+		return "", 0, "", false
+	}
+	handle, rest, found = strings.Cut(rest, "\n")
+	if !found || handle == "" {
+		return "", 0, "", false
+	}
+	offsetText, quoted, hasQuery := strings.Cut(rest, "\n")
+	n, err := strconv.Atoi(offsetText)
+	if err != nil {
+		return "", 0, "", false
+	}
+	if !hasQuery {
+		return handle, n, "", true
+	}
+	unquoted, err := strconv.Unquote(quoted)
+	if err != nil {
+		return "", 0, "", false
+	}
+	return handle, n, unquoted, true
+}
+
+// spilledSearchQuery is the observation readSearchOpened actually ran.
+// That search trims the query and matches case-insensitively, so those
+// spellings are one page. The header is the fallback when the args omit a
+// query that the result already names. Only the header is scanned.
+func spilledSearchQuery(args map[string]interface{}, result string) string {
+	query := toolresult.ParseArgsString(args, "query")
+	if strings.TrimSpace(query) == "" {
+		query = headerSearchQuery(result)
+	}
+	return normalizeSpilledSearchQuery(query)
+}
+
+func normalizeSpilledSearchQuery(query string) string {
+	return strings.ToLower(strings.TrimSpace(query))
+}
+
+func headerSearchQuery(result string) string {
+	fence := strings.Index(result, "\n---\n")
+	header := result
+	if fence >= 0 {
+		header = result[:fence]
+	}
+	for _, line := range strings.Split(header, "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, "query:")
+		if !ok {
+			continue
+		}
+		quoted := strings.TrimSpace(rest)
+		if unquoted, err := strconv.Unquote(quoted); err == nil {
+			return unquoted
+		}
+		return quoted
+	}
+	return ""
 }
 
 func commitIdentity(call toolCallRecord) string {
