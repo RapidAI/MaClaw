@@ -12,7 +12,7 @@ require (
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/energye/systray v1.0.2
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-audio/wav v1.1.0
@@ -41,17 +41,19 @@ require (
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.45.0
-	golang.org/x/image v0.37.0
-	golang.org/x/net v0.47.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.45.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.44.0
-	golang.org/x/term v0.37.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
 	pgregory.net/rapid v1.2.0
 )
+
+require github.com/wailsapp/wails/v3 v3.1.0 // indirect
 
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
@@ -82,7 +84,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.3.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/klauspost/compress v1.17.4
+	github.com/klauspost/compress v1.18.7
 	github.com/richardlehane/mscfb v1.0.7
 	github.com/richardlehane/msoleps v1.0.3 // indirect
 )
@@ -130,7 +132,7 @@ require (
 	github.com/leaanthony/slicer v1.6.0 // indirect
 	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/metakeule/fmtdate v1.1.2 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
@@ -152,9 +154,9 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yuin/goldmark v1.7.13
+	github.com/yuin/goldmark v1.7.17
 	go.mozilla.org/pkcs7 v0.9.0 // indirect
-	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
