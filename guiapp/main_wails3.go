@@ -170,6 +170,14 @@ func Main3(v string) {
 	})
 	wruntime.SetApplication(v3app)
 
+	// v2 EditMenu parity: without an application EditMenu, Ctrl+A in a
+	// WebView2 input selects the whole page instead of the input text. The
+	// Windows application menu is not rendered as a visible bar; it exists
+	// for the editing accelerators (same effect as the v2 setupTray attach).
+	editMenu := v3app.NewMenu()
+	editMenu.AddRole(application.EditMenu)
+	v3app.Menu.SetApplicationMenu(editMenu)
+
 	win := v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            brand.Current().WindowTitle,
