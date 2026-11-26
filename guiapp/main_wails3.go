@@ -131,6 +131,10 @@ func Main3(v string) {
 	})
 	wruntime.SetMainWindow(win)
 
+	// Tray: start after the single-instance lock is accepted (wails3 tag
+	// dispatches to the reused systray fork loop on Windows).
+	setupTray3(app, args[1:])
+
 	// v2 OnDomReady equivalent.
 	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(event *application.WindowEvent) {
 		go app.domReady(app.ctx)
