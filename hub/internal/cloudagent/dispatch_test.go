@@ -204,15 +204,17 @@ func TestDispatchUsesLoopbackAdminSecretOnly(t *testing.T) {
 	if _, err := svc.SaveAdminSettings(context.Background(), "tenant-a", AdminSettings{CloudAgentsEnabled: &on, MaxInstances: &three, MaxConcurrentTurns: &one}); err != nil {
 		t.Fatal(err)
 	}
-	set(`{"base_url":"http://maclawsrv.example","admin_secret":"sec-1","access_token":"bot-token-should-not-leak"}`)
+	// A record without a usable address fails closed: no dial, the op is
+	// offline, and the row is marked for re-provisioning.
+	set(`{"admin_secret":"sec-1","access_token":"bot-token-should-not-leak"}`)
 	_, err = rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudListTasks, json.RawMessage(`{"instance_id":"`+id+`"}`))
 	var status *remotecontrol.StatusError
 	if !errors.As(err, &status) || status.Code != "OFFLINE" || status.Message != "云端运行时不可用" {
-		t.Fatalf("public runtime: %v", err)
+		t.Fatalf("unusable record: %v", err)
 	}
 	mu.Lock()
 	if len(hits) != before {
-		t.Fatalf("public url called runtime: %v", hits)
+		t.Fatalf("unusable record called runtime: %v", hits)
 	}
 	mu.Unlock()
 	var instStatus string
@@ -448,9 +450,11 @@ func TestDispatchReprovisionsFailedInstance(t *testing.T) {
 	rc := remotecontrol.New(db, nopAccounts{}, ownMachines{}, nopSend{}, nopNote{})
 	rc.Cloud = svc.Dispatcher()
 	mux := userMux(svc, rc)
+	t.Setenv("MACLAW_HUB_URL", "")
 
-	// Create against a non-loopback base_url: the instance goes straight to
-	// provision_failed without a single runtime call.
+	// Create against a remote base_url with no public hub origin: the
+	// instance goes straight to provision_failed without a single runtime
+	// call — provision refuses an agent that could never call back.
 	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"https://maclawsrv.example","admin_secret":"sec-1"}`
 	enable(t, svc, "tenant-a", 3, 1)
 	created := call(mux, http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "会话", Kind: KindSession})

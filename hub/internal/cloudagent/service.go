@@ -402,7 +402,9 @@ func (s *Service) runtimeStatusFor(ctx context.Context, rec srvRecord, srvNodeID
 	if srvNodeID == "" {
 		conn, err = rec.publicConn()
 	} else {
-		conn, err = rec.nodeConn(srvNodeID)
+		// Recorded ids are registered srv links or edge node links;
+		// linkConn resolves both.
+		conn, err = rec.linkConn(srvNodeID)
 	}
 	if err != nil {
 		return "unreachable"
@@ -1012,15 +1014,20 @@ type srvRecord struct {
 	srvLinks       map[string]srvConn
 }
 
-// publicConn is the loopback system connection.
+// publicConn is the system connection registered on the hub settings
+// record — the address every unpinned cloud agent uses. It may be the
+// co-located srv's loopback address or a remote srv's http(s) address:
+// the admin saved it on the same record that carries the admin secret,
+// so it is dialed with that secret exactly like a registered srv link.
 func (r srvRecord) publicConn() (srvConn, error) {
-	if !loopbackBaseURL(r.baseURL) {
-		return srvConn{}, failOfflineDetail("base_url is not a loopback address: " + r.baseURL)
+	baseURL := strings.TrimRight(strings.TrimSpace(r.baseURL), "/")
+	if !dialableBaseURL(baseURL) {
+		return srvConn{}, failOfflineDetail("no usable maclawsrv address on the record: " + r.baseURL)
 	}
 	if strings.TrimSpace(r.adminSecret) == "" {
 		return srvConn{}, failOfflineDetail("admin_secret is not configured")
 	}
-	return srvConn{BaseURL: strings.TrimRight(strings.TrimSpace(r.baseURL), "/"), AdminSecret: r.adminSecret}, nil
+	return srvConn{BaseURL: baseURL, AdminSecret: r.adminSecret}, nil
 }
 
 // nodeConn is one node's srv link. A missing or incomplete link fails
