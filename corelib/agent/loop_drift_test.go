@@ -509,11 +509,66 @@ func TestSameSearchQueryIgnoresCaseLimitAndHandleSuffix(t *testing.T) {
 	}
 }
 
+func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
+	// strings.ToLower(U+0130) is ASCII i, but regexp (?i) does not match
+	// those spellings. Folding them together made the third different
+	// search the same page and hard-exited the turn.
+	dotted := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"İ"}`,
+		result:  searchReadResult("h", 0, "İ", false),
+		success: true,
+	}
+	plain := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"i"}`,
+		result:  searchReadResult("h", 0, "i", false),
+		success: true,
+	}
+	idDotted, okDotted := spilledPageIdentity(dotted)
+	idPlain, okPlain := spilledPageIdentity(plain)
+	if !okDotted || !okPlain || idDotted == idPlain {
+		t.Fatalf("dotted capital I and i collapsed: %q %q ok=%v %v", idDotted, idPlain, okDotted, okPlain)
+	}
+	ascii := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"I"}`,
+		result:  searchReadResult("h", 0, "I", false),
+		success: true,
+	}
+	idASCII, okASCII := spilledPageIdentity(ascii)
+	if !okASCII || idASCII != idPlain || idASCII == idDotted {
+		t.Fatalf("ASCII I must stay with i and apart from İ: ascii=%q plain=%q dotted=%q", idASCII, idPlain, idDotted)
+	}
+	// Final sigma and capital sigma are one (?i) search, so they are one page.
+	capital := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"Σ"}`,
+		result:  searchReadResult("h", 0, "Σ", false),
+		success: true,
+	}
+	final := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"ς"}`,
+		result:  searchReadResult("h", 0, "ς", false),
+		success: true,
+	}
+	idCapital, okCapital := spilledPageIdentity(capital)
+	idFinal, okFinal := spilledPageIdentity(final)
+	if !okCapital || !okFinal || idCapital != idFinal {
+		t.Fatalf("sigma case class split: %q %q ok=%v %v", idCapital, idFinal, okCapital, okFinal)
+	}
+	id, seen := repeatedSuccessfulCommit([]toolCallRecord{dotted, plain, ascii})
+	if seen != 2 || id != idPlain || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("I and i are one page; İ must not join them: id=%q seen=%d", id, seen)
+	}
+}
+
 func TestSearchContinuationKeepsTheQuery(t *testing.T) {
 	call := toolCallRecord{
-		name: "read_tool_result",
-		args: `{"id":"h","offset":0,"query":"needle"}`,
-		result: "[tool_result_read]\nid: h\noffset: 0\nquery: \"needle\"\nreturned_matches: 1\ntruncated: true\nnext_offset: 400\n\n---\nmatch\n--- end ---\n",
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"needle"}`,
+		result:  "[tool_result_read]\nid: h\noffset: 0\nquery: \"needle\"\nreturned_matches: 1\ntruncated: true\nnext_offset: 400\n\n---\nmatch\n--- end ---\n",
 		success: true,
 	}
 	next, ok := advertisedReadContinuation(call)
@@ -525,7 +580,7 @@ func TestSearchContinuationKeepsTheQuery(t *testing.T) {
 	}
 	body := toolCallRecord{
 		name: "read_tool_result", args: `{"id":"h","offset":0}`,
-		result: "[tool_result_read]\noffset: 0\ntruncated: true\nnext_offset: 16384\n\n---\nquery: \"needle\"\n--- end ---\n",
+		result:  "[tool_result_read]\noffset: 0\ntruncated: true\nnext_offset: 16384\n\n---\nquery: \"needle\"\n--- end ---\n",
 		success: true,
 	}
 	byteNext, ok := advertisedReadContinuation(body)

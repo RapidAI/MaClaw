@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -5821,9 +5822,9 @@ func parseSpilledPageIdentity(page string) (handle string, offset int, query str
 }
 
 // spilledSearchQuery is the observation readSearchOpened actually ran.
-// That search trims the query and matches case-insensitively, so those
-// spellings are one page. The header is the fallback when the args omit a
-// query that the result already names. Only the header is scanned.
+// That search trims the query and matches with regexp (?i), so spellings in
+// one SimpleFold class are one page. The header is the fallback when the
+// args omit a query that the result already names. Only the header is scanned.
 func spilledSearchQuery(args map[string]interface{}, result string) string {
 	query := toolresult.ParseArgsString(args, "query")
 	if strings.TrimSpace(query) == "" {
@@ -5833,7 +5834,27 @@ func spilledSearchQuery(args map[string]interface{}, result string) string {
 }
 
 func normalizeSpilledSearchQuery(query string) string {
-	return strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
+	var b strings.Builder
+	b.Grow(len(query))
+	for _, r := range query {
+		b.WriteRune(foldedSearchRune(r))
+	}
+	return b.String()
+}
+
+// foldedSearchRune is one representative of the regexp (?i) class.
+// (?i) walks unicode.SimpleFold. strings.ToLower(U+0130) is ASCII i, but
+// (?i) does not match those spellings. Final sigma and capital sigma are
+// one (?i) class and must stay one page.
+func foldedSearchRune(r rune) rune {
+	best := r
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < best {
+			best = next
+		}
+	}
+	return best
 }
 
 func headerSearchQuery(result string) string {
