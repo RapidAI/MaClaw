@@ -128,7 +128,12 @@ func Main3(v string) {
 	bootLog("wails3 gpuDisabled=%v", gpuDisabled)
 	launch := classifyDesktopLaunch(args)
 	winWidth, winHeight := envCheckWidth, envCheckHeight
+	hideOnClose := false
 	if launch.Mode == desktopLaunchFileCompanion {
+		// v2 HideWindowOnClose parity (main.go companion comment): Alt+F4
+		// must hide the companion so later open-file launches can re-show
+		// it — a destroyed window would strand the reopen relay.
+		hideOnClose = true
 		switch {
 		case launch.Quit:
 			app.seedFileCompanionQuit()
@@ -186,6 +191,7 @@ func Main3(v string) {
 		Width:            winWidth,
 		Height:           winHeight,
 		Frameless:        true,
+		HideOnClose:      hideOnClose,
 		BackgroundColour: application.RGBA{Red: 243, Green: 245, Blue: 247, Alpha: 255}, // #f3f5f7
 		Windows: application.WindowsWindow{
 			// Windows 11 keeps native DWM rounding (see main.go v2 comment);

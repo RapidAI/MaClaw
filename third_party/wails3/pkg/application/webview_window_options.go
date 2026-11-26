@@ -84,6 +84,13 @@ type WebviewWindowOptions struct {
 	// Title is the title of the window.
 	Title string
 
+	// HideOnClose makes the window hide instead of closing when the user
+	// closes it (Alt+F4 or a native close box). Local patch (wails3 fork):
+	// parity with wails/v2's HideWindowOnClose — file-companion launches
+	// must survive Alt+F4 so later open-file launches can re-show them.
+	// Default: false
+	HideOnClose bool
+
 	// Width is the starting width of the window.
 	Width int
 

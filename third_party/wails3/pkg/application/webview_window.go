@@ -380,6 +380,16 @@ func NewWindow(options WebviewWindowOptions) *WebviewWindow {
 		if !result.closeStarted.CompareAndSwap(false, true) {
 			return
 		}
+		// Local patch (wails3 fork): HideOnClose swaps destruction for
+		// hiding — the window stays alive for a later re-show (the
+		// file-companion reopen flow depends on this).
+		if result.options.HideOnClose {
+			if impl := result.impl; impl != nil {
+				InvokeSync(impl.hide)
+			}
+			result.closeStarted.Store(false)
+			return
+		}
 		atomic.StoreUint32(&result.unconditionallyClose, 1)
 		InvokeSync(result.markAsDestroyed)
 		InvokeSync(result.impl.close)
