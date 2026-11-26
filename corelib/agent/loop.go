@@ -5825,9 +5825,11 @@ func parseSpilledPageIdentity(page string) (handle string, offset int, query str
 }
 
 // spilledSearchQuery is the observation readSearchOpened actually ran.
-// That search trims the query and matches with regexp (?i), so spellings in
-// one SimpleFold class are one page. The header is the fallback when the
-// args omit a query that the result already names. Only the header is scanned.
+// That search trims, then matches and pages with the raw bytes. Case
+// spellings of one (?i) class are one page only when folding does not change
+// those bytes: a shorter fold shifts the overlap window and the next offset.
+// The header is the fallback when the args omit a query that the result
+// already names. Only the header is scanned.
 func spilledSearchQuery(args map[string]interface{}, result string) string {
 	query := toolresult.ParseArgsString(args, "query")
 	if strings.TrimSpace(query) == "" {
@@ -5846,6 +5848,12 @@ func normalizeSpilledSearchQuery(query string) string {
 		return query
 	}
 	folded := foldSpilledSearchQuery(query)
+	// Search pages by the raw query bytes, not the folded class. Kelvin is
+	// three bytes and folds to "K"; treating those as one page makes the
+	// next overlap window and next_offset look like the same observation.
+	if len(folded) != len(query) {
+		return query
+	}
 	// regexp.Compile("(?i)"+QuoteMeta(query)) is the observation. A local
 	// SimpleFold walk that disagrees with that compile, or that grows past
 	// the pattern-size limit and makes Compile fail, is not that page.
@@ -7223,9 +7231,10 @@ func classifyToolResult(result string) toolOutcome {
 			return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 		}
 	}
-	// Case-insensitive so "error:" from read_tool_result is the same failure
-	// as "Error:". A capital Error later in the line is ordinary prose.
-	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "error:") {
+	// read_tool_result and the isolated runtime emit lowercase "error:".
+	// Only that spelling and "Error:" are structured markers. EqualFold
+	// also matched "ERROR:", which successful command output can print.
+	if strings.HasPrefix(trimmed, "error:") || strings.HasPrefix(trimmed, "Error:") {
 		return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 	}
 	// Also check for [错误] appearing mid-result (e.g. bash output + error).

@@ -639,7 +639,27 @@ func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
 	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{recorded, acceptedCall, acceptedCall}); seen != 2 {
 		t.Fatal("a misclassified rejection must not join the accepted search")
 	}
-	// minFoldRune('A') is 'A', not 'a'. 'a' and Kelvin still join that minimum.
+	// Kelvin matches K under (?i), but search keeps the raw bytes for the
+	// overlap window. Folding 3 bytes to 1 made those pages one observation.
+	kelvinQuery := "\u212A"
+	kelvin := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(kelvinQuery) + `}`,
+		result:  searchReadResult("h", 0, kelvinQuery, false),
+		success: true,
+	}
+	kelvinID, okKelvin := spilledPageIdentity(kelvin)
+	asciiK := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"K"}`,
+		result:  searchReadResult("h", 0, "K", false),
+		success: true,
+	}
+	kID, okK := spilledPageIdentity(asciiK)
+	if !okKelvin || !okK || kelvinID == kID {
+		t.Fatalf("Kelvin must stay a distinct page from K: %q %q", kelvinID, kID)
+	}
+	// minFoldRune('A') is 'A', not 'a'. 'a' still joins that minimum.
 	if foldedSearchRune('@') != '@' || foldedSearchRune('A') != 'A' || foldedSearchRune('a') != 'A' || foldedSearchRune('\u212A') != 'K' {
 		t.Fatalf("fold bounds drifted: @=%#U A=%#U a=%#U kelvin=%#U", foldedSearchRune('@'), foldedSearchRune('A'), foldedSearchRune('a'), foldedSearchRune('\u212A'))
 	}
