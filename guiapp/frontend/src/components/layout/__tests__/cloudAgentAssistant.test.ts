@@ -211,6 +211,48 @@ describe('cloud agent assistant', () => {
         expect(cloudTurnRunning('cag_1', 'running')).toBe(false);
     });
 
+    it('refreshes the watch snapshot after a send so a decided plan gate closes', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let watchCalls = 0;
+        const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\n计划待确认'] });
+            if (name === 'cloud_watch_task') {
+                watchCalls += 1;
+                return JSON.stringify({
+                    request_id: 'req-1',
+                    session_key: session,
+                    cursor: 2,
+                    responded: true,
+                    parts: [{ kind: 'text', seq: 1, text: '计划待确认' }],
+                    workbench: {
+                        requirement_restatement: '做贪吃蛇',
+                        execution_plan: 'T1 实现游戏',
+                        pending_approval: watchCalls === 1,
+                        plan_dialogue: true,
+                        step_statuses: [{ index: 1, title: '实现游戏', status: 'pending' }],
+                    },
+                });
+            }
+            if (name === 'cloud_send_message') return '{}';
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(remoteAssistantSessionSnapshot()?.workbench?.pending_approval).toBe(true);
+
+        expect(await remoteAssistantSend('按计划开始')).toBe(true);
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(watchCalls).toBeGreaterThanOrEqual(2);
+        expect(remoteAssistantSessionSnapshot()?.workbench?.pending_approval).toBe(false);
+        const names = op.mock.calls.map(call => call[1]);
+        expect(names.lastIndexOf('cloud_watch_task')).toBeGreaterThan(names.indexOf('cloud_send_message'));
+    });
+
     it('a new request closes an ask left by the previous round', () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
         const key = applyCloudAgentWatch('grant-1', session, {
@@ -302,6 +344,29 @@ describe('cloud agent assistant', () => {
         expect(view?.messages.some(message => message.content.includes('stale'))).toBe(false);
         expect(view?.messages.some(message => message.content.includes('history'))).toBe(true);
         expect(cloudTurnRunning('cag_1', 'running')).toBe(false);
+    });
+
+    it('restores a durable plan gate even when a post-restart watch has no cursor', () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const key = applyCloudAgentWatch('grant-1', session, {
+            session_key: session,
+            cursor: 0,
+            parts: [],
+            terminal: {
+                text: '我先把这次任务拆成了执行计划，确认后开始实施。',
+                confirmation: { id: 'plan-approval;task-1' },
+                actions: [
+                    { label: '开始执行', command: '按计划开始' },
+                    { label: '跳过计划', command: '不用计划，直接做' },
+                    { label: '取消', command: '取消这个计划' },
+                ],
+            },
+        });
+        const round = cloudAgentRound(key);
+        const cards = round.cards.filter(card => !card.expired && card.kind === 'confirmation');
+        expect(cards).toHaveLength(1);
+        expect(cards[0].actions?.map(action => action.command)).toEqual(['按计划开始', '不用计划，直接做', '取消这个计划']);
+        expect(round.body).toContain('确认后开始实施');
     });
 
     it('a rejected send does not leave the task in progress', async () => {

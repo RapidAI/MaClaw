@@ -14,6 +14,66 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
+func TestCloseCodingRuntimeStoreIsTerminalAndFencesReopen(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if store := app.ensureCodingRuntimeStore(); store == nil {
+		t.Fatal("runtime store unavailable")
+	}
+	app.closeCodingRuntimeStore()
+	if store := app.ensureCodingRuntimeStore(); store != nil {
+		t.Fatalf("runtime store reopened after close: %#v", store)
+	}
+	if store := app.openExistingCodingRuntimeStore(); store != nil {
+		t.Fatalf("existing runtime store reopened after close: %#v", store)
+	}
+}
+
+func TestCodingRuntimeStoreFollowsDataDirReplacement(t *testing.T) {
+	firstBase := t.TempDir()
+	secondBase := t.TempDir()
+	app := &App{testHomeDir: firstBase}
+	t.Cleanup(func() { app.closeCodingRuntimeStore() })
+	first := app.ensureCodingRuntimeStore()
+	if first == nil {
+		t.Fatal("runtime store unavailable")
+	}
+	app.effectiveBaseDir.Store(secondBase)
+	second := app.ensureCodingRuntimeStore()
+	if second == nil {
+		t.Fatal("replacement runtime store unavailable")
+	}
+	if second == first {
+		t.Fatal("runtime store did not switch data directories")
+	}
+	if _, err := first.CreateTask(codingruntime.Task{ProjectRef: "project", Mode: "local"}); err == nil {
+		t.Fatal("retired runtime store still accepts task creation")
+	}
+	if _, err := os.Stat(filepath.Join(secondBase, "data", "coding_runtime.db")); err != nil {
+		t.Fatalf("replacement runtime ledger missing: %v", err)
+	}
+}
+
+func TestOpenExistingCodingRuntimeStoreDataDirReplacementDoesNotCreateLedger(t *testing.T) {
+	firstBase := t.TempDir()
+	secondBase := t.TempDir()
+	app := &App{testHomeDir: firstBase}
+	t.Cleanup(func() { app.closeCodingRuntimeStore() })
+	first := app.ensureCodingRuntimeStore()
+	if first == nil {
+		t.Fatal("runtime store unavailable")
+	}
+	app.effectiveBaseDir.Store(secondBase)
+	if store := app.openExistingCodingRuntimeStore(); store != nil {
+		t.Fatalf("openExisting created or reused a replacement ledger: %#v", store)
+	}
+	if _, err := os.Stat(filepath.Join(secondBase, "data", "coding_runtime.db")); !os.IsNotExist(err) {
+		t.Fatalf("openExisting invented replacement ledger, stat err=%v", err)
+	}
+	if _, err := first.CreateTask(codingruntime.Task{ProjectRef: "project", Mode: "local"}); err == nil {
+		t.Fatal("replaced runtime store still accepts task creation")
+	}
+}
+
 func TestConfirmGUICodingRuntimeRecoveryQueuesNewAttemptWithoutExecuting(t *testing.T) {
 	dir := initRecoveryGitFixture(t)
 	store := codingruntime.NewMemoryStore()

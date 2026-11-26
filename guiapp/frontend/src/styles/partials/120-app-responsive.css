@@ -439,12 +439,17 @@
    them through the same runtime variable as the drag handler so changing the
    pane width is reflected by both the pane and its outer window shell. */
 @media (min-width: 1201px) {
+  /* Collapse-aware shell width: AppSidebarShell always sets
+     --mc-sidebar-shell-width (mirroring these breakpoints, incl. collapsed
+     states where the rail/pane are unmounted); the fallback is the expanded
+     calc. Inline width alone can never win here — this !important block is
+     the AI-tab shell-width authority. */
   #App[data-nav-tab='ai'] > .mc-sidebar-drag-strip,
   #App[data-nav-tab='ai'] > .office-agent-shell,
   #App[data-nav-tab='ai'] > .sidebar {
-    width: calc(112px + var(--mc-task-pane-width, 308px) + 8px) !important;
-    min-width: calc(112px + var(--mc-task-pane-width, 308px) + 8px) !important;
-    flex: 0 0 calc(112px + var(--mc-task-pane-width, 308px) + 8px) !important;
+    width: var(--mc-sidebar-shell-width, calc(112px + var(--mc-task-pane-width, 308px) + 8px)) !important;
+    min-width: var(--mc-sidebar-shell-width, calc(112px + var(--mc-task-pane-width, 308px) + 8px)) !important;
+    flex: 0 0 var(--mc-sidebar-shell-width, calc(112px + var(--mc-task-pane-width, 308px) + 8px)) !important;
   }
   #App[data-nav-tab='ai'] .mc-sidebar-shell {
     width: var(--mc-task-pane-width, 308px) !important;
@@ -491,9 +496,9 @@
   #App[data-nav-tab='ai'] > .mc-sidebar-drag-strip,
   #App[data-nav-tab='ai'] > .office-agent-shell,
   #App[data-nav-tab='ai'] > .sidebar {
-    width: calc(84px + var(--mc-task-pane-width, 308px) + 8px) !important;
-    min-width: calc(84px + var(--mc-task-pane-width, 308px) + 8px) !important;
-    flex: 0 0 calc(84px + var(--mc-task-pane-width, 308px) + 8px) !important;
+    width: var(--mc-sidebar-shell-width, calc(84px + var(--mc-task-pane-width, 308px) + 8px)) !important;
+    min-width: var(--mc-sidebar-shell-width, calc(84px + var(--mc-task-pane-width, 308px) + 8px)) !important;
+    flex: 0 0 var(--mc-sidebar-shell-width, calc(84px + var(--mc-task-pane-width, 308px) + 8px)) !important;
   }
   #App[data-nav-tab='ai'] .mc-nav-rail {
     width: 84px !important;
@@ -523,16 +528,20 @@
   #App[data-nav-tab='ai'] > .mc-sidebar-drag-strip,
   #App[data-nav-tab='ai'] > .office-agent-shell,
   #App[data-nav-tab='ai'] > .sidebar {
-    width: 84px !important;
-    min-width: 84px !important;
-    flex: 0 0 84px !important;
+    width: var(--mc-sidebar-shell-width, 84px) !important;
+    min-width: var(--mc-sidebar-shell-width, 84px) !important;
+    flex: 0 0 var(--mc-sidebar-shell-width, 84px) !important;
   }
 }
 
 @media (max-width: 560px) {
   #App[data-nav-tab='ai'] > .mc-sidebar-drag-strip,
   #App[data-nav-tab='ai'] > .office-agent-shell,
-  #App[data-nav-tab='ai'] > .sidebar,
+  #App[data-nav-tab='ai'] > .sidebar {
+    width: var(--mc-sidebar-shell-width, 64px) !important;
+    min-width: var(--mc-sidebar-shell-width, 64px) !important;
+    flex-basis: var(--mc-sidebar-shell-width, 64px) !important;
+  }
   #App[data-nav-tab='ai'] .mc-nav-rail {
     width: 64px !important;
     min-width: 64px !important;

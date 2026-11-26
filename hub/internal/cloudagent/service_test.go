@@ -245,6 +245,49 @@ func TestQuotaAndKindImmutability(t *testing.T) {
 	}
 }
 
+func TestHeartbeatRegistersMissingAcceptedTurn(t *testing.T) {
+	base := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	svc := New(openTestDB(t), memSettings{kv: map[string]string{
+		SrvSettingsKey("tenant-a"): `{"base_url":"http://127.0.0.1:9","admin_secret":"sec-1"}`,
+	}})
+	svc.now = func() time.Time { return base }
+	enable(t, svc, "tenant-a", 3, 1)
+	inst, err := svc.Create(context.Background(), "tenant-a", "user-1", CreateInput{Name: "会话", Kind: KindSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := svc.TouchHeartbeat(context.Background(), inst.ID, "task-late", "req-late", base.Add(time.Second))
+	if err != nil || !enabled {
+		t.Fatalf("touch enabled=%v err=%v", enabled, err)
+	}
+	var turnStatus string
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE instance_id = ? AND request_id = ?`, inst.ID, "req-late").Scan(&turnStatus); err != nil {
+		t.Fatal(err)
+	}
+	if turnStatus != TurnRunning {
+		t.Fatalf("turn status=%s", turnStatus)
+	}
+	got, err := svc.getByID(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusRunning {
+		t.Fatalf("instance status=%s", got.Status)
+	}
+	if err := svc.FinishTurn(context.Background(), inst.ID, "task-late", "req-late", base.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.TouchHeartbeat(context.Background(), inst.ID, "task-late", "req-late", base.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE instance_id = ? AND request_id = ?`, inst.ID, "req-late").Scan(&turnStatus); err != nil {
+		t.Fatal(err)
+	}
+	if turnStatus != TurnFinished {
+		t.Fatalf("late heartbeat resurrected finished turn: %s", turnStatus)
+	}
+}
+
 func TestHeartbeatAndStaleTurn(t *testing.T) {
 	base := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	svc := New(openTestDB(t), memSettings{kv: map[string]string{
@@ -359,6 +402,45 @@ func TestFinishTurnReleasesTheSlot(t *testing.T) {
 	}
 	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE request_id = 'req-4'`).Scan(&status); err != nil || status != TurnCancelled {
 		t.Fatalf("cancelled turn status=%s err=%v", status, err)
+	}
+}
+
+func TestCancelTurnsSettlesOnlyReportedRequests(t *testing.T) {
+	base := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	svc := New(openTestDB(t), memSettings{kv: map[string]string{
+		SrvSettingsKey("tenant-a"): `{"base_url":"http://127.0.0.1:9","admin_secret":"sec-1"}`,
+	}})
+	svc.now = func() time.Time { return base }
+	enable(t, svc, "tenant-a", 3, 1)
+	inst, err := svc.Create(context.Background(), "tenant-a", "user-1", CreateInput{Name: "会话", Kind: KindSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.NoteAcceptedTurn(context.Background(), "tenant-a", "user-1", inst.ID, "task-1", "req-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CancelTurns(context.Background(), inst.ID, []string{"req-unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE request_id = 'req-1'`).Scan(&status); err != nil || status != TurnRunning {
+		t.Fatalf("unlisted request status=%s err=%v", status, err)
+	}
+	if err := svc.CancelTurns(context.Background(), inst.ID, []string{"req-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE request_id = 'req-1'`).Scan(&status); err != nil || status != TurnCancelled {
+		t.Fatalf("reported request status=%s err=%v", status, err)
+	}
+	if err := svc.FinishTurn(context.Background(), inst.ID, "task-1", "req-1", base.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE request_id = 'req-1'`).Scan(&status); err != nil || status != TurnCancelled {
+		t.Fatalf("late finish overwrote cancellation: status=%s err=%v", status, err)
+	}
+	var instStatus string
+	if err := svc.db.QueryRow(`SELECT status FROM cloud_agents WHERE id = ?`, inst.ID).Scan(&instStatus); err != nil || instStatus != StatusIdle {
+		t.Fatalf("instance status=%s err=%v", instStatus, err)
 	}
 }
 

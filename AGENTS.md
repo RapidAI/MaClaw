@@ -27,6 +27,18 @@
   stub FS and the app starts with a fake index.html — startup "works" but the UI never
   loads. Do not use a stub build for end-to-end checks.
 
+## Vendored Wails runtime JS
+
+- After editing `third_party/wails/internal/frontend/runtime/desktop/*.js`,
+  regenerate the embedded bundles from that directory with
+  `npm run build:runtime-desktop-prod` and `npm run build:runtime-desktop-debug`;
+  the Go binaries embed the generated `runtime_prod_desktop.js` /
+  `runtime_debug_desktop.js` files, not the source files directly. Run
+  `npx vitest run` there for the runtime tests. esbuild is pinned to exactly
+  0.15.6 on purpose: later 0.15.x releases rewrite the debug-bundle formatting
+  (short ifs join their condition line), which buries real changes under
+  cosmetic churn in the vendored diff — do not restore the caret range.
+
 ## File-companion process
 
 - `MaClaw.exe open-file <paths...>` runs the file-companion host. It uses its own
@@ -49,6 +61,13 @@
 
 ## Known test quirks
 
+- Frontend vitest must run from `guiapp/frontend/` (the `npm test` cwd), not
+  `frontend/src/`: several suites read CSS with
+  `join(process.cwd(), 'src/...')`, so a `src` cwd fails them with ENOENT on
+  the doubled `src\src\...` path (observed as ~24 phantom failures across the
+  layout/ai folders). The `filter:` path passed to `npx vitest --run` is
+  relative to the vitest root (`frontend/src`), which is why it accepts
+  `components/...` while the shell cwd stays at `frontend/`.
 - `TestKnowledgeSearchToolUsesLocalStore` is timing-flaky: an async
   `toolKnowledgeImportFiles` call can double-import the same file, producing an
   extra duplicate-card group. Re-run before assuming a regression.
@@ -409,6 +428,58 @@
   `wizardComposerCanSend` replaces the remote-draft-keyed
   `canSend`, and the wiring's `showComposerText` stash-restore clears the ref
   first because it runs before the overlay-closed re-render.
+
+## Sidebar collapse 功能栏/任务列表折叠 (guiapp/frontend)
+
+- State home: `src/components/layout/useSidebarCollapse.ts` — two booleans
+  persisted to `maclaw:task-pane-collapsed.v1` / `maclaw:nav-rail-collapsed.v1`
+  (localStorage, same family as `maclaw:task-pane-width`). Ctrl/Cmd+B toggles
+  the task pane (AI workbench tab only), Ctrl/Cmd+Shift+B toggles the nav rail
+  (every tab). The hook owns the global keydown listener; don't add another.
+- The toggle pair (`SidebarToggleCluster`, tests
+  `__tests__/SidebarToggleCluster.test.tsx`) is pinned to the LEADING EDGE of
+  three window-chrome headers — welcome `AssistantTitleBar`, execution
+  `.mc-task-execution-header`, non-AI `MainTopHeader` (rail toggle only there;
+  the pane does not exist off the AI tab). It lives OUTSIDE the collapsible
+  columns so it survives both being hidden (window top-left corner then,
+  WorkBuddy-style). The buttons are plain `<button>` (already excluded from
+  drag arming by `WINDOW_DRAG_EXCLUDE_SELECTOR`); their mousedown/double-click
+  stopPropagation keeps the header's drag + double-click-to-maximize intact.
+- Collapsing is UNMOUNT, not CSS: `AppSidebarShell` drops `SidebarNavRail` /
+  `SidebarAiPane` and recomputes
+  `shellWidth = railWidth + (paneVisible ? paneWidth + (railWidth ? GAP : 0) : 0)`
+  for both the shell div and the drag strip (`--mc-task-pane-width` itself is
+  untouched, so width survives collapse/restore; contract locked by
+  `__tests__/AppSidebarShell.test.tsx`).
+- **Shell-width authority**: the `!important` block in
+  `120-app-responsive.css` (four breakpoints, `#App[data-nav-tab='ai'] > …`)
+  beats any inline width, so collapsed widths reach it through the
+  `--mc-sidebar-shell-width` inline var (consumed with the expanded calc as
+  `var(--mc-sidebar-shell-width, <per-breakpoint calc>)`; never add new
+  `!important` — the css-discipline ratchet is at zero headroom, EDIT values
+  in place instead). `AppSidebarShell` mirrors the breakpoints in JS (rail
+  112 / 84 ≤1200 / 64 ≤560, pane hidden ≤900 via a bucket-only resize
+  listener — bucket changes re-render, pixel drags don't) and ALWAYS sets the
+  var; keep the JS mirror and the CSS block in lockstep when touching either.
+  Pane MOUNT stays manual-collapse-only (not window-width): unmounting on
+  narrow windows would kill the pane's event listeners.
+- `.sb-toggle-btn` colors must use `--theme-text-secondary` /
+  `--theme-text-primary` / `--theme-primary` — `--theme-text` is UNDEFINED
+  anywhere in the app and actively banned by
+  `utilitiesDarkModeContrast.test.ts` (a hover that falls back to its light
+  hex is black-on-black in dark schemes).
+- Because the pane unmounts, in-pane event consumers die with it. The hook
+  listens for `EVENT_OPEN_CREATE_CODING_TASK` WHILE collapsed, restores the
+  pane, and re-dispatches once via `setTimeout(0)` (after the pane's listeners
+  re-attach; the hook's own handler is gone by then, so exactly one retry).
+  Anything else that means "user intends to reach the workbench/task list"
+  must call `openTaskPane()`: rail 工作台 + 数字员工 items,
+  `createExpertTask`, `UtilitiesPage onOpenExpert`, TutorialPage back. Paths
+  that only open an execution tab (`openCodingTask`, `activateTaskInstance`,
+  VE/history opens from the list itself) intentionally do NOT force-restore.
+- Double-clicking the pane resize divider (`SidebarAiPane`) also toggles the
+  pane; the two resize start/stop cycles it produces leave no stuck state
+  (the drag effect cleanup unconditionally resets cursor/userSelect).
 
 ## Markdown document preview (guiapp/frontend)
 

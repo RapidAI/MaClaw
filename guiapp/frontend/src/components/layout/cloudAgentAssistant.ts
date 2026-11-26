@@ -7,6 +7,7 @@ import {
     cloudAgentRound,
     cloudAgentSessionKey,
     cloudAgentStoreKey,
+    cloudAgentTrail,
     cloudAgentWorkbench,
     cloudAgentWorkflow,
     expireCloudAgentCards,
@@ -327,6 +328,11 @@ function publishOwner() {
     const live = cloudLive(round);
     const liveText = (round?.visible || round?.body || '').trim();
     const reasoning = (round?.thinking || []).map(block => block.text).filter(Boolean).join('\n\n');
+    // Ordered thinking+tool trail of this round (frame order, tool_started
+    // merged with its tool_finished) — the same process timeline a local
+    // coding turn keeps on its bubble. It survives the round's own response
+    // until the next round opens, so the settled transcript row keeps it too.
+    const trail = storeKey ? cloudAgentTrail(storeKey) : null;
     // Styled progress rows become the same tool timeline a local turn keeps.
     const folded = remoteLiveToolCalls(live?.parts || [], liveText);
     const last = messages[messages.length - 1];
@@ -346,7 +352,7 @@ function publishOwner() {
     if (previousRound && last?.role === 'user') {
         const prior = messages.slice(0, -1);
         const seen = !!liveText && prior.some(message => message.role !== 'user' && message.content.trim() === liveText);
-        if (!seen && (liveText || reasoning || folded.toolCalls)) {
+        if (!seen && (liveText || reasoning || folded.toolCalls || trail)) {
             messages.splice(messages.length - 1, 0, {
                 role: 'assistant',
                 content: folded.content,
@@ -354,14 +360,16 @@ function publishOwner() {
                 remoteLive: true,
                 liveThinking: !!round?.thinking.some(block => !block.done),
                 toolCalls: folded.toolCalls,
+                codingTimeline: trail || undefined,
                 localFilePaths: producedFiles,
             });
         }
     } else if (liveText && last && last.role !== 'user' && last.content.trim() === liveText) {
         if (reasoning && !last.reasoning) last.reasoning = reasoning;
         if (folded.toolCalls && !last.toolCalls) last.toolCalls = folded.toolCalls;
+        if (trail && !last.codingTimeline) last.codingTimeline = trail;
         if (producedFiles && !last.localFilePaths) last.localFilePaths = producedFiles;
-    } else if (liveText || reasoning || folded.toolCalls) {
+    } else if (liveText || reasoning || folded.toolCalls || trail) {
         messages.push({
             role: 'assistant',
             content: folded.content,
@@ -369,6 +377,7 @@ function publishOwner() {
             remoteLive: true,
             liveThinking: !!round?.thinking.some(block => !block.done),
             toolCalls: folded.toolCalls,
+            codingTimeline: trail || undefined,
             localFilePaths: producedFiles,
         });
     }
@@ -653,6 +662,19 @@ async function sendCloud(gen: number, text: string): Promise<boolean> {
         }
         const asked = cloudAgentStoreKey(current.grant, cloudAgentSessionKey(current.item.id, current.taskId));
         if (asked) expireCloudAgentCards(asked);
+        // cloud_send_message returns after the control-plane gate decision,
+        // but before a round_started stream frame necessarily exists. Pull
+        // one authoritative watch snapshot now so plan-gate buttons and the
+        // waiting state cannot remain stuck merely because the websocket
+        // frame was missed or the panel had not opened the stream yet.
+        const refreshSession = cloudAgentSessionKey(current.item.id, current.taskId);
+        const refreshBaseline = cloudAgentRound(asked).last;
+        void op(current.grant, 'cloud_watch_task', JSON.stringify({ task_id: current.taskId, session_key: refreshSession }))
+            .then((watchRaw) => {
+                applyWatchedTurn(current.item.id, current.grant, refreshSession, parseJSON(watchRaw, {}), refreshBaseline);
+                if (owner && owner.generation === gen) publishOwner();
+            })
+            .catch(() => undefined);
         current.historyEpoch += 1;
         current.history = [...current.history, `user\n${outgoing}`];
         current.error = '';
@@ -877,9 +899,10 @@ async function refreshCloudSrvNode(gen: number): Promise<void> {
  * Re-read the open instance's repository binding. The connect dialog calls
  * this after ConnectCloudAgentGit so the banner flips without a reopen.
  */
-export async function refreshCloudGit(): Promise<void> {
+export async function refreshCloudGit(instanceId = ''): Promise<void> {
     const current = owner;
     if (!current || current.item.kind !== 'coding') return;
+    if (instanceId && current.item.id !== instanceId) return;
     const get = binding('GetCloudAgentGit');
     if (!get) return;
     try {

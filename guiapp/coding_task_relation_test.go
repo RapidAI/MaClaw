@@ -1,10 +1,12 @@
 package guiapp
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,9 +167,263 @@ func TestCodingTaskRelationPersistsAndRevocationSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestCodingTaskRelationCloseRetiresActiveHandlesDurable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relations.db")
+	service, err := newCodingTaskRelationService(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newCodingTaskRelationService(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.VerifyCodingContinuation(subject, handle, now.Add(time.Minute), time.Hour); !errors.Is(err, errCodingTaskHandleRevoked) {
+		t.Fatalf("retired handle continuation error=%v, want revoked", err)
+	}
+}
+
 func TestVerifiedCodingSubjectRejectsCollapsedPrincipalAndSession(t *testing.T) {
 	if _, err := newVerifiedCodingSubject("tenant-a", "same", "same"); !errors.Is(err, errVerifiedCodingSubjectInvalid) {
 		t.Fatalf("collapsed principal/session error=%v, want invalid", err)
+	}
+}
+
+func TestCodingTaskRelationServiceUsesOneSQLiteConnection(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	if got := service.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("max open connections = %d, want 1", got)
+	}
+	var foreignKeys int
+	if err := service.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+	}
+}
+
+func TestCodingTaskRelationServiceUsesImmediateTransactions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relations.db")
+	service, err := newCodingTaskRelationService(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	tx, err := service.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(50)&_txlock=immediate")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	defer other.Close()
+	other.SetMaxOpenConns(1)
+	conflicting, err := other.Begin()
+	if err == nil {
+		_ = conflicting.Rollback()
+		_ = tx.Rollback()
+		t.Fatal("a second immediate transaction started while the relation transaction was open; relation transactions are not immediate")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	conflicting, err = other.Begin()
+	if err != nil {
+		t.Fatalf("immediate transaction after relation rollback: %v", err)
+	}
+	if err := conflicting.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodingTaskRelationConcurrentContinuationAcrossServiceInstancesAllowsOneConsumer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relations.db")
+	firstService, err := newCodingTaskRelationService(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstService.Close()
+	secondService, err := newCodingTaskRelationService(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondService.Close()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := firstService.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		err error
+	}
+	results := make(chan result, 2)
+	for _, service := range []*codingTaskRelationService{firstService, secondService} {
+		go func(service *codingTaskRelationService) {
+			_, err := service.VerifyCodingContinuation(subject, handle, now.Add(time.Minute), time.Hour)
+			results <- result{err: err}
+		}(service)
+	}
+	first, second := <-results, <-results
+	successes, consumed := 0, 0
+	for _, result := range []result{first, second} {
+		switch {
+		case result.err == nil:
+			successes++
+		case errors.Is(result.err, errCodingTaskHandleConsumed):
+			consumed++
+		default:
+			t.Fatalf("unexpected concurrent continuation error: %v", result.err)
+		}
+	}
+	if successes != 1 || consumed != 1 {
+		t.Fatalf("concurrent continuations: successes=%d consumed=%d, want exactly one each", successes, consumed)
+	}
+}
+
+func TestRelationServiceDataDirResetFencesCapabilitiesAndReopens(t *testing.T) {
+	issuer := &desktopCodingCapabilityIssuer{}
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	ownerID := desktopUserID
+	token := issuer.beginIngress(ownerID)
+	if token == "" {
+		t.Fatal("ingress token unavailable")
+	}
+	first, err := issuer.relationService(firstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer.resetRelationServiceForDataDirChange()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.CreateCodingTask(subject, time.Now().UTC(), time.Hour); err == nil {
+		t.Fatal("retired relation service still accepts task creation")
+	}
+	if service, _, _, _, _, ok := issuer.nextRelationWithWorkspaceAndIngress(secondDir, token, ownerID); ok || service != nil {
+		t.Fatalf("pre-reset ingress survived data-dir reset: service=%#v ok=%v", service, ok)
+	}
+	second, err := issuer.relationService(secondDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == nil || second == first {
+		t.Fatalf("relation service was not replaced after data-dir reset: first=%#v second=%#v", first, second)
+	}
+	defer second.Close()
+}
+
+func TestRelationServiceDataDirResetFencesConsumedInFlightOwner(t *testing.T) {
+	issuer := &desktopCodingCapabilityIssuer{}
+	ownerID := desktopUserID
+	token := issuer.beginIngress(ownerID)
+	if token == "" {
+		t.Fatal("ingress token unavailable")
+	}
+	issuer.mu.Lock()
+	delete(issuer.ingress, token)
+	issuer.mu.Unlock()
+	issuer.resetRelationServiceForDataDirChange()
+	issuer.mu.Lock()
+	generation := issuer.generations[ownerID]
+	issuer.mu.Unlock()
+	if generation == 0 {
+		t.Fatal("data-dir reset did not advance the generation of a consumed in-flight owner")
+	}
+}
+
+func TestRelationServiceDataDirMismatchRetiresPreviousService(t *testing.T) {
+	issuer := &desktopCodingCapabilityIssuer{}
+	firstDir := filepath.Join(t.TempDir(), "first")
+	secondDir := filepath.Join(t.TempDir(), "second")
+	ownerID := desktopUserID
+	token := issuer.beginIngress(ownerID)
+	first, err := issuer.relationService(firstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := issuer.relationService(secondDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == nil || second == first {
+		t.Fatalf("relation service did not switch data directories: first=%#v second=%#v", first, second)
+	}
+	defer second.Close()
+	if service, _, _, _, _, ok := issuer.nextRelationWithWorkspaceAndIngress(secondDir, token, ownerID); ok || service != nil {
+		t.Fatalf("pre-mismatch ingress survived lazy data-dir replacement: service=%#v ok=%v", service, ok)
+	}
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.CreateCodingTask(subject, time.Now().UTC(), time.Hour); err == nil {
+		t.Fatal("mismatched relation service still accepts task creation")
+	}
+}
+
+func TestCloseRelationServiceFencesInFlightCriticalSectionAndLateUse(t *testing.T) {
+	issuer := &desktopCodingCapabilityIssuer{}
+	dataDir := t.TempDir()
+	service, err := issuer.relationService(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold the service lifecycle mutex as BindCodingAttempt does while it is
+	// crossing the relation/runtime stores. Close must wait for that critical
+	// section, and a caller must not be able to open a replacement service for
+	// the same database while the old one is still inside it.
+	service.mu.Lock()
+	closeDone := make(chan struct{})
+	go func() {
+		issuer.closeRelationService()
+		close(closeDone)
+	}()
+	// Once closeRelationService is inside Close it must still own relationsMu.
+	// If it drops relationsMu before waiting on service.mu (the old ordering),
+	// this TryLock succeeds and a replacement service could open underneath the
+	// in-flight cross-store critical section.
+	deadline := time.Now().Add(5 * time.Second)
+	for issuer.relationsMu.TryLock() {
+		issuer.relationsMu.Unlock()
+		if time.Now().After(deadline) {
+			service.mu.Unlock()
+			t.Fatal("close did not retain the issuer relation lock while waiting for the service critical section")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	service.mu.Unlock()
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("close did not finish after the in-flight critical section released")
+	}
+	if replacement, err := issuer.relationService(dataDir); err == nil || replacement != nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("relation service after terminal close replacement=%v err=%v, want closed failure", replacement != nil, err)
 	}
 }
 
@@ -217,6 +473,112 @@ func TestCodingTaskRelationBindsOnlyVerifiedHandleToOneRuntimeAttempt(t *testing
 	}
 	if _, err := service.BindCodingAttempt(subject, handle, store, codingruntime.ExecutionRequest{Task: *otherTask, Attempt: *otherAttempt}, now); !errors.Is(err, errCodingTaskHandleConsumed) {
 		t.Fatalf("second attempt binding error=%v, want consumed", err)
+	}
+}
+
+func TestBindCodingAttemptConcurrentAttemptsAreSerialized(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := codingruntime.NewMemoryStore()
+	policy := codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}
+	requests := make([]codingruntime.ExecutionRequest, 0, 2)
+	for _, work := range []string{"first", "second"} {
+		task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: work})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, policy, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt})
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(requests))
+	var wg sync.WaitGroup
+	for _, request := range requests {
+		wg.Add(1)
+		go func(request codingruntime.ExecutionRequest) {
+			defer wg.Done()
+			<-start
+			_, err := service.BindCodingAttempt(subject, handle, store, request, now)
+			results <- err
+		}(request)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	successes, consumed := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, errCodingTaskHandleConsumed):
+			consumed++
+		default:
+			t.Fatalf("concurrent bind returned unexpected error: %v", err)
+		}
+	}
+	if successes != 1 || consumed != 1 {
+		t.Fatalf("concurrent bind outcomes successes=%d consumed=%d, want exactly one winner and one consumed loser", successes, consumed)
+	}
+}
+
+func TestBindCodingAttemptRejectsTerminalAttemptEvenWhenAnchorAlreadyExists(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := codingruntime.NewMemoryStore()
+	task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterSemanticTaskAnchor(codingruntime.SemanticTaskAnchor{
+		RuntimeTaskID: task.TaskID, RuntimeAttemptID: attempt.AttemptID,
+		TenantID: handle.tenantID, PrincipalID: handle.principalID, SessionID: handle.sessionID,
+		RootTaskID: handle.rootTaskID, TurnID: handle.turnID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "owner", codingruntime.FinishInput{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain}, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BindCodingAttempt(subject, handle, store, codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}, now); !errors.Is(err, codingruntime.ErrInvalidTransition) {
+		t.Fatalf("terminal attempt bind error = %v, want ErrInvalidTransition", err)
+	}
+	var bindings int
+	if err := service.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 0 {
+		t.Fatalf("terminal attempt committed %d bridge rows, want 0", bindings)
 	}
 }
 
@@ -1337,5 +1699,175 @@ func TestDesktopCodingExecutionWorkspaceRebindFailsClosed(t *testing.T) {
 	app.endDesktopCodingTaskIngressForOwner(owner)
 	if app.codingCaps.bindExecutionWorkspace(owner, requestToken, workspaceDir) {
 		t.Fatal("turn-end sweep left a continuation surface rebindable")
+	}
+}
+
+type failFirstSemanticAnchorStore struct {
+	codingruntime.Store
+	failed bool
+}
+
+func (s *failFirstSemanticAnchorStore) RegisterSemanticTaskAnchor(anchor codingruntime.SemanticTaskAnchor) (*codingruntime.SemanticTaskAnchor, error) {
+	if !s.failed {
+		s.failed = true
+		return nil, errors.New("injected semantic anchor failure")
+	}
+	return s.Store.(codingruntime.SemanticTaskAnchorStore).RegisterSemanticTaskAnchor(anchor)
+}
+
+func (s *failFirstSemanticAnchorStore) ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID string) (*codingruntime.SemanticTaskAnchor, error) {
+	return s.Store.(codingruntime.SemanticTaskAnchorStore).ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID)
+}
+
+// Regression: the relation-service attempt fence and the runtime semantic
+// anchor are separate stores. Committing the fence first used to leave a
+// permanently half-bound handle when anchor registration failed. The anchor is
+// now the first durable fence; a transient failure must leave the relation row
+// absent so retrying the same attempt can complete the bridge atomically in
+// effect, rather than entombing a handle with no anchor.
+func TestBindCodingAttemptAnchorFailureDoesNotCommitAttemptFence(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &failFirstSemanticAnchorStore{Store: codingruntime.NewMemoryStore()}
+	task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}
+	if _, err := service.BindCodingAttempt(subject, handle, store, request, now); err == nil {
+		t.Fatal("injected anchor failure did not fail the bind")
+	}
+	var bindings int
+	if err := service.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 0 {
+		t.Fatalf("anchor failure committed %d attempt fence rows; want a retryable unbound handle", bindings)
+	}
+	if _, err := service.BindCodingAttempt(subject, handle, store, request, now.Add(time.Second)); err != nil {
+		t.Fatalf("same attempt bind did not heal after the transient anchor failure: %v", err)
+	}
+	if err := service.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 1 {
+		t.Fatalf("healed bind rows = %d, want 1", bindings)
+	}
+}
+
+type closeRelationsAfterAnchorStore struct {
+	codingruntime.Store
+	relationDB *sql.DB
+	closed     bool
+}
+
+func (s *closeRelationsAfterAnchorStore) RegisterSemanticTaskAnchor(anchor codingruntime.SemanticTaskAnchor) (*codingruntime.SemanticTaskAnchor, error) {
+	registered, err := s.Store.(codingruntime.SemanticTaskAnchorStore).RegisterSemanticTaskAnchor(anchor)
+	if err == nil && !s.closed {
+		s.closed = true
+		_ = s.relationDB.Close()
+	}
+	return registered, err
+}
+
+func (s *closeRelationsAfterAnchorStore) ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID string) (*codingruntime.SemanticTaskAnchor, error) {
+	return s.Store.(codingruntime.SemanticTaskAnchorStore).ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID)
+}
+
+// Regression for the inverse half-write: once the runtime anchor has been
+// committed, a relation-store failure must fail the bind closed but remain
+// retryable for the same attempt. The caller must not treat the orphaned anchor
+// as authorization before this bridge completes.
+func TestBindCodingAttemptBridgeFailureHealsOnRetry(t *testing.T) {
+	relationPath := filepath.Join(t.TempDir(), "relations.db")
+	service, err := newCodingTaskRelationService(relationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := codingruntime.NewMemoryStore()
+	task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}
+	closingStore := &closeRelationsAfterAnchorStore{Store: store, relationDB: service.db}
+	if _, err := service.BindCodingAttempt(subject, handle, closingStore, request, now); err == nil {
+		t.Fatal("relation bridge failure did not fail the bind")
+	}
+
+	reopened, err := newCodingTaskRelationService(relationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err := reopened.BindCodingAttempt(subject, handle, store, request, now.Add(time.Second)); err != nil {
+		t.Fatalf("same attempt did not heal after relation bridge failure: %v", err)
+	}
+	var bindings int
+	if err := reopened.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
+		t.Fatal(err)
+	}
+	if bindings != 1 {
+		t.Fatalf("healed bridge rows = %d, want 1", bindings)
+	}
+}
+
+func TestBindCodingAttemptAfterRelationServiceCloseFailsClosed(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := codingruntime.NewMemoryStore()
+	task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BindCodingAttempt(subject, handle, store, codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}, now); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("bind after close error = %v, want service unavailable", err)
 	}
 }

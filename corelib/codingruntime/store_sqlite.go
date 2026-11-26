@@ -20,7 +20,7 @@ type SQLiteStore struct{ db *sql.DB }
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	// modernc.org/sqlite ignores the mattn-style _journal_mode/_busy_timeout
 	// params — they must ride _pragma.
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +87,22 @@ CREATE INDEX IF NOT EXISTS coding_runtime_semantic_anchor_task ON coding_runtime
 	if err != nil {
 		return err
 	}
+	turnIndexExists, err := s.semanticAnchorTurnIndexExists()
+	if err != nil {
+		return err
+	}
+	if !turnIndexExists {
+		// Once the unique index exists, duplicates cannot have entered through
+		// SQLite afterward. Skip the whole-table repair scan on ordinary restarts;
+		// it is needed only for databases written before the invariant existed.
+		if err := s.deduplicateSemanticAnchorTurns(); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS coding_runtime_semantic_anchor_turn ON coding_runtime_semantic_anchors(tenant_id,principal_id,session_id,root_task_id,turn_id)`)
+	if err != nil {
+		return err
+	}
 	// Honest-completion columns are additive. Existing databases upgrade in
 	// place; rows that predate the columns keep version 0 / empty digest and
 	// are upgraded the first time they are finished through the CAS path.
@@ -94,6 +110,84 @@ CREATE INDEX IF NOT EXISTS coding_runtime_semantic_anchor_task ON coding_runtime
 		return err
 	}
 	return s.ensureAttemptColumn("evidence_digest", "TEXT NOT NULL DEFAULT ''")
+}
+
+func (s *SQLiteStore) semanticAnchorTurnIndexExists() (bool, error) {
+	var indexSQL sql.NullString
+	var tableName string
+	err := s.db.QueryRow(`SELECT tbl_name,sql FROM sqlite_master WHERE type='index' AND name='coding_runtime_semantic_anchor_turn'`).Scan(&tableName, &indexSQL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if tableName != "coding_runtime_semantic_anchors" || !indexSQL.Valid || !strings.Contains(strings.ToUpper(indexSQL.String), "CREATE UNIQUE INDEX") {
+		return false, fmt.Errorf("coding_runtime_semantic_anchor_turn exists but is not a unique index")
+	}
+	rows, err := s.db.Query(`SELECT name FROM pragma_index_info('coding_runtime_semantic_anchor_turn') ORDER BY seqno`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	columns := make([]string, 0, 5)
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return false, err
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	expected := []string{"tenant_id", "principal_id", "session_id", "root_task_id", "turn_id"}
+	if len(columns) != len(expected) {
+		return false, fmt.Errorf("coding_runtime_semantic_anchor_turn exists with %d columns, want the semantic turn identity columns", len(columns))
+	}
+	for i := range expected {
+		if columns[i] != expected[i] {
+			return false, fmt.Errorf("coding_runtime_semantic_anchor_turn exists with column %d %q, want %q", i, columns[i], expected[i])
+		}
+	}
+	return true, nil
+}
+
+// deduplicateSemanticAnchorTurns repairs databases written before the
+// one-turn/one-attempt invariant existed. Keeping the first inserted row is
+// deliberate: insertion order is the least ambiguous surviving evidence of the
+// original bind. Later duplicates must not keep executable authority, but they
+// are quarantined for audit rather than silently erased; leaving them active
+// would make CREATE UNIQUE INDEX fail every startup.
+func (s *SQLiteStore) deduplicateSemanticAnchorTurns() error {
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS coding_runtime_semantic_anchor_turn_conflicts (
+ runtime_attempt_id TEXT PRIMARY KEY, runtime_task_id TEXT NOT NULL,
+ tenant_id TEXT NOT NULL, principal_id TEXT NOT NULL, session_id TEXT NOT NULL,
+ root_task_id TEXT NOT NULL, turn_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+ quarantined_at INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	duplicateFilter := `WHERE rowid NOT IN (
+ SELECT MIN(rowid) FROM coding_runtime_semantic_anchors
+ GROUP BY tenant_id,principal_id,session_id,root_task_id,turn_id
+)`
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO coding_runtime_semantic_anchor_turn_conflicts(
+ runtime_attempt_id,runtime_task_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at,quarantined_at
+)
+SELECT runtime_attempt_id,runtime_task_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at,?
+FROM coding_runtime_semantic_anchors `+duplicateFilter, unixNanos(time.Now().UTC())); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM coding_runtime_semantic_anchors ` + duplicateFilter); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ensureAttemptColumn adds a column to coding_runtime_attempts only when it is
@@ -1596,8 +1690,8 @@ func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 		return nil, err
 	}
 	defer tx.Rollback()
-	var taskID string
-	if err = tx.QueryRow(`SELECT task_id FROM coding_runtime_attempts WHERE attempt_id=?`, normalized.RuntimeAttemptID).Scan(&taskID); errors.Is(err, sql.ErrNoRows) {
+	var taskID, attemptStatus string
+	if err = tx.QueryRow(`SELECT task_id,status FROM coding_runtime_attempts WHERE attempt_id=?`, normalized.RuntimeAttemptID).Scan(&taskID, &attemptStatus); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSemanticAnchorNotFound
 	} else if err != nil {
 		return nil, err
@@ -1605,12 +1699,15 @@ func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 	if taskID != normalized.RuntimeTaskID {
 		return nil, ErrSemanticAnchorNotFound
 	}
+	if TaskStatus(attemptStatus) != TaskRunning {
+		return nil, fmt.Errorf("%w: semantic anchor attempt is not running", ErrInvalidTransition)
+	}
 	var existing SemanticTaskAnchor
 	var createdAt int64
 	err = tx.QueryRow(`SELECT runtime_task_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at FROM coding_runtime_semantic_anchors WHERE runtime_attempt_id=?`, normalized.RuntimeAttemptID).Scan(&existing.RuntimeTaskID, &existing.TenantID, &existing.PrincipalID, &existing.SessionID, &existing.RootTaskID, &existing.TurnID, &createdAt)
 	if err == nil {
 		existing.RuntimeAttemptID, existing.CreatedAt = normalized.RuntimeAttemptID, fromUnixNanos(createdAt)
-		if existing.RuntimeTaskID == normalized.RuntimeTaskID && existing.TenantID == normalized.TenantID && existing.PrincipalID == normalized.PrincipalID && existing.SessionID == normalized.SessionID && existing.RootTaskID == normalized.RootTaskID && existing.TurnID == normalized.TurnID {
+		if semanticAnchorIdentityEqual(existing, normalized) {
 			if err = tx.Commit(); err != nil {
 				return nil, err
 			}
@@ -1623,6 +1720,12 @@ func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 	}
 	var conflict int
 	if err = tx.QueryRow(`SELECT COUNT(1) FROM coding_runtime_semantic_anchors WHERE runtime_task_id=? AND (tenant_id<>? OR principal_id<>? OR session_id<>? OR root_task_id<>?)`, normalized.RuntimeTaskID, normalized.TenantID, normalized.PrincipalID, normalized.SessionID, normalized.RootTaskID).Scan(&conflict); err != nil {
+		return nil, err
+	}
+	if conflict != 0 {
+		return nil, ErrSemanticAnchorConflict
+	}
+	if err = tx.QueryRow(`SELECT COUNT(1) FROM coding_runtime_semantic_anchors WHERE tenant_id=? AND principal_id=? AND session_id=? AND root_task_id=? AND turn_id=? AND runtime_attempt_id<>?`, normalized.TenantID, normalized.PrincipalID, normalized.SessionID, normalized.RootTaskID, normalized.TurnID, normalized.RuntimeAttemptID).Scan(&conflict); err != nil {
 		return nil, err
 	}
 	if conflict != 0 {

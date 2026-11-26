@@ -1,6 +1,12 @@
 package oauth
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestGitHubAccountClientHonorsRepoScope(t *testing.T) {
 	if GitHubAppClientID(GitHubAccountClientID) {
@@ -69,5 +75,55 @@ func TestGitHubAppUserToken(t *testing.T) {
 		if GitHubAppUserToken(token) {
 			t.Fatalf("%q must not count as a GitHub App user token", token)
 		}
+	}
+}
+
+func TestFetchGitHubRepositories(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user/repos" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer repo-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if got := r.URL.Query().Get("affiliation"); got != "owner,collaborator,organization_member" {
+			t.Fatalf("affiliation = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"full_name":"acme/app","description":"App","private":true,"html_url":"https://github.com/acme/app","default_branch":"main","updated_at":"2026-01-02T03:04:05Z"},
+			{"full_name":""},
+			{"full_name":"octo/lib","private":false}
+		]`))
+	}))
+	defer server.Close()
+
+	rows, err := fetchGitHubRepositories(context.Background(), server.URL, "repo-token", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].FullName != "acme/app" || !rows[0].Private || rows[1].FullName != "octo/lib" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestGitHubHTTPErrorKeepsAPIMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchGitHubRepositories(context.Background(), server.URL, "repo-token", 1)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "API rate limit exceeded") {
+		t.Fatalf("error hides GitHub message: %v", err)
+	}
+	if strings.Contains(err.Error(), "body_len=") {
+		t.Fatalf("error still uses opaque body length: %v", err)
 	}
 }

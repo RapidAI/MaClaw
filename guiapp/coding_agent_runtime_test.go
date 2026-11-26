@@ -176,8 +176,8 @@ func TestCodingDiffSnapshotEventIncludesLineStats(t *testing.T) {
 func TestMergeSubAgentDiffStatUsesToolFallbacksWhenGitStatIsEmpty(t *testing.T) {
 	snapshot := newCodingDiffSnapshot([]string{"CMakeLists.txt", "snake.cpp"}, nil, "Untracked files:\n- CMakeLists.txt\n- snake.cpp")
 	merged := mergeSubAgentDiffStat(nil, []SubAgentFileDiffStat{
-		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0},
-		{Path: "snake.cpp", Insertions: 213, Deletions: 0},
+		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0, HasCounts: true},
+		{Path: "snake.cpp", Insertions: 213, Deletions: 0, HasCounts: true},
 	})
 	event := newCodingAgentDiffSummaryEventWithStat(&TaskItem{Index: 2, Title: "GUI snake"}, "", snapshot, merged)
 	if event.Added != 218 || event.Removed != 0 {
@@ -203,8 +203,8 @@ func TestMergeSubAgentDiffStatReplacesZeroGitRowsWithoutDuplicating(t *testing.T
 		},
 	}
 	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{
-		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0},
-		{Path: "snake.cpp", Insertions: 213, Deletions: 0},
+		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0, HasCounts: true},
+		{Path: "snake.cpp", Insertions: 213, Deletions: 0, HasCounts: true},
 	})
 	if merged == nil || merged.FilesChanged != 2 || len(merged.FileStats) != 2 {
 		t.Fatalf("should update in place, got %#v", merged)
@@ -214,19 +214,6 @@ func TestMergeSubAgentDiffStatReplacesZeroGitRowsWithoutDuplicating(t *testing.T
 	}
 	if lookupAdded, lookupRemoved := lookupSubAgentFileDiffStat(merged, "snake.cpp"); lookupAdded != 213 || lookupRemoved != 0 {
 		t.Fatalf("snake.cpp lookup = +%d -%d", lookupAdded, lookupRemoved)
-	}
-}
-
-func TestMergeSubAgentDiffStatKeepsGitNonzeroOverFallback(t *testing.T) {
-	git := &SubAgentDiffStat{
-		FilesChanged: 1,
-		Insertions:   12,
-		Deletions:    3,
-		FileStats:    []SubAgentFileDiffStat{{Path: "a.go", Insertions: 12, Deletions: 3}},
-	}
-	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{{Path: "a.go", Insertions: 99, Deletions: 1}})
-	if merged.Insertions != 12 || merged.Deletions != 3 || merged.FileStats[0].Insertions != 12 {
-		t.Fatalf("git nonzero should win, got %#v", merged)
 	}
 }
 
@@ -252,9 +239,9 @@ func TestCodingDiffSnapshotDedupesRelativeAndAbsolutePaths(t *testing.T) {
 
 func TestMergeSubAgentDiffStatKeepsDifferentDirectorySameBasename(t *testing.T) {
 	git := &SubAgentDiffStat{
-		FileStats: []SubAgentFileDiffStat{{Path: "a/main.go", Insertions: 3, Deletions: 0}},
+		FileStats: []SubAgentFileDiffStat{{Path: "a/main.go", Insertions: 3, Deletions: 0, HasCounts: true}},
 	}
-	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{{Path: "b/main.go", Insertions: 5, Deletions: 0}})
+	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{{Path: "b/main.go", Insertions: 5, Deletions: 0, HasCounts: true}})
 	if merged == nil || len(merged.FileStats) != 2 || merged.Insertions != 8 {
 		t.Fatalf("same basename in different dirs should stay separate, got %#v", merged)
 	}

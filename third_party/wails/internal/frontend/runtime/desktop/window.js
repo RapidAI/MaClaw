@@ -58,6 +58,14 @@ export function WindowSetTitle(title) {
  * @export
  */
 export function WindowFullscreen() {
+    // Stop frameless edge tracking in this same JS turn, before the native
+    // transition can resize the window under the pointer and latch a sizing
+    // cursor. The Go side clears once more after the size change.
+    if (window.wails?.suspendResizeCursor) {
+        window.wails.suspendResizeCursor();
+    } else if (window.wails?.flags) {
+        window.wails.flags.enableResize = false;
+    }
     window.WailsInvoke('WF');
 }
 

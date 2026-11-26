@@ -240,6 +240,274 @@ func TestCodingRecoverDrainsQueue(t *testing.T) {
 	}
 }
 
+// A gate answer parked before its plan record existed is interpreted when it
+// drains, then executes the request that created the plan — never the control
+// sentence itself.
+func TestCodingQueuedPlanApprovalRunsOriginalRequest(t *testing.T) {
+	g, srv, _ := newGate(t, officialSessionReply, false)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "task-queued-plan-gate"
+	holdRequest, created, err := inst.book.Begin("client-hold", taskID, "hold this coding turn", time.Now())
+	if err != nil || !created || holdRequest == "" {
+		t.Fatalf("begin hold request=%s created=%v err=%v", holdRequest, created, err)
+	}
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-plan-gate","task_id":"`+taskID+`","text":"按计划开始"}`)
+	queuedAck(t, raw)
+	const original = "用 C++ 写一个贪吃蛇"
+	if err := inst.book.planSave(taskID, &planRecord{
+		State:    planStatePending,
+		Request:  original,
+		Steps:    []planStep{{Index: 1, Title: "实现游戏", Status: "pending"}},
+		Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.book.Finish(holdRequest, "held", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Recover(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitHits(t, g, 1)
+	deadline := time.Now().Add(30 * time.Second)
+	var rec *planRecord
+	for time.Now().Before(deadline) {
+		rec = inst.book.planLoadOrNil(taskID)
+		if rec != nil && rec.State == planStateDone {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if rec == nil || rec.State != planStateDone {
+		t.Fatalf("plan state=%+v", rec)
+	}
+	if len(rec.Steps) == 0 || rec.Steps[0].Status != "passed" {
+		t.Fatalf("approved plan did not execute its first step: %+v", rec.Steps)
+	}
+	g.mu.Lock()
+	body := ""
+	if len(g.calls) > 0 {
+		body = g.calls[0].Body
+	}
+	g.mu.Unlock()
+	if !strings.Contains(body, original) {
+		t.Fatalf("drained gate turn did not execute the parked request: %s", body)
+	}
+}
+
+// Recovery drains rows left by a srv restart. A queued "按计划开始" is a
+// control-plane decision for the already running plan, not a fresh ask that
+// should settle that plan as failed.
+func TestCodingRecoveredQueuedApprovalDoesNotFailRunningPlan(t *testing.T) {
+	g, srv, _ := newGate(t, officialSessionReply, false)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "task-recovered-plan"
+	const original = "实现一个可编译的贪吃蛇程序"
+	if err := inst.book.EnsureTask(taskID, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(taskID, &planRecord{
+		State:    planStateRunning,
+		Request:  original,
+		Steps:    []planStep{{Index: 1, Title: "实现游戏", Status: "running"}},
+		Revision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.book.Enqueue("client-recovered-gate", taskID, "按计划开始", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Recover(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitHits(t, g, 1)
+	deadline := time.Now().Add(30 * time.Second)
+	var rec *planRecord
+	for time.Now().Before(deadline) {
+		rec = inst.book.planLoadOrNil(taskID)
+		if rec != nil && rec.State == planStateDone {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if rec == nil || rec.State != planStateDone {
+		t.Fatalf("plan state=%+v", rec)
+	}
+	g.mu.Lock()
+	body := ""
+	if len(g.calls) > 0 {
+		body = g.calls[0].Body
+	}
+	g.mu.Unlock()
+	if !strings.Contains(body, original) {
+		t.Fatalf("recovered turn did not resume the original request: %s", body)
+	}
+}
+
+// A crash can preserve planStateRunning without any running step row. The
+// continuation must re-arm the earliest unfinished row; otherwise settlement
+// treats that row as merely untouched and skips work the user approved.
+func TestCodingRecoveredPlanRearmsMissingStepCursor(t *testing.T) {
+	g, srv, _ := newGate(t, officialSessionReply, false)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "task-recovered-missing-cursor"
+	const original = "实现并验证贪吃蛇"
+	if err := inst.book.EnsureTask(taskID, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(taskID, &planRecord{
+		State:   planStateRunning,
+		Request: original,
+		Steps: []planStep{
+			{Index: 1, Title: "搭建结构", Status: "passed"},
+			{Index: 2, Title: "完成验证", Status: "pending"},
+		},
+		Revision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.book.Enqueue("client-recovered-missing-cursor", taskID, "按计划开始", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Recover(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitHits(t, g, 1)
+	deadline := time.Now().Add(30 * time.Second)
+	var rec *planRecord
+	for time.Now().Before(deadline) {
+		rec = inst.book.planLoadOrNil(taskID)
+		if rec != nil && rec.State == planStateDone {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if rec == nil || rec.State != planStateDone {
+		t.Fatalf("plan state=%+v", rec)
+	}
+	if len(rec.Steps) < 2 || rec.Steps[1].Status != "passed" {
+		t.Fatalf("missing cursor was not rearmed: %+v", rec.Steps)
+	}
+}
+
+// An older recovery bug could close the plan as done while leaving a failed
+// row behind. That inconsistent terminal record is retriable through the same
+// explicit approval; a clean done plan still no-ops.
+func TestCodingApprovalRetriesInconsistentDonePlan(t *testing.T) {
+	g, srv, _ := newGate(t, officialSessionReply, false)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "task-inconsistent-done-plan"
+	const original = "修好贪吃蛇并完成验证"
+	if err := inst.book.EnsureTask(taskID, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(taskID, &planRecord{
+		State:   planStateDone,
+		Request: original,
+		Steps: []planStep{
+			{Index: 1, Title: "修复实现", Status: "failed"},
+			{Index: 2, Title: "运行验证", Status: "skipped"},
+		},
+		Revision: 6,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-retry-inconsistent","text":"按计划开始"}`)
+	var ack struct {
+		Accepted bool   `json:"accepted"`
+		TaskID   string `json:"task_id"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil || !ack.Accepted {
+		t.Fatalf("ack: %s err=%v", raw, err)
+	}
+	if ack.TaskID != taskID {
+		t.Fatalf("bare gate answer task=%s want %s", ack.TaskID, taskID)
+	}
+
+	waitHits(t, g, 1)
+	deadline := time.Now().Add(30 * time.Second)
+	var rec *planRecord
+	for time.Now().Before(deadline) {
+		rec = inst.book.planLoadOrNil(taskID)
+		if rec != nil && rec.State == planStateDone && len(rec.Steps) > 0 && rec.Steps[0].Status == "passed" {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if rec == nil || len(rec.Steps) == 0 || rec.Steps[0].Status != "passed" {
+		t.Fatalf("inconsistent plan was not retried: %+v", rec)
+	}
+	g.mu.Lock()
+	body := ""
+	if len(g.calls) > 0 {
+		body = g.calls[0].Body
+	}
+	g.mu.Unlock()
+	if !strings.Contains(body, original) {
+		t.Fatalf("retry did not execute the original request: %s", body)
+	}
+}
+
+// A turn started by draining the queue has no Hub accept bookkeeping. The
+// runtime therefore posts a start beat immediately instead of leaving Hub
+// falsely idle until the first periodic pulse.
+func TestCodingTurnPostsStartHeartbeat(t *testing.T) {
+	g, srv, release := newGate(t, officialSessionReply, true)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, srv.URL)
+	requestID, _ := send(t, rt, spec.ID, "client-start-beat", "write a small program")
+	waitCall(t, g)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		g.mu.Lock()
+		found := false
+		for _, body := range g.heartbeats {
+			if strings.Contains(body, requestID) && strings.Contains(body, `"finished":false`) {
+				found = true
+				break
+			}
+		}
+		g.mu.Unlock()
+		if found {
+			release()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	release()
+	t.Fatalf("no start heartbeat for %s", requestID)
+}
+
 func TestCloudToolStatusLine(t *testing.T) {
 	cases := []struct {
 		name, args, want string
@@ -393,12 +661,13 @@ func TestCloudFinalAnswerTextUsesSharedAuditFilterAndHostFacts(t *testing.T) {
 		"已完成修复。\n\n## 质量审计\nPASS\n\n## 修复的问题\n修复空指针。",
 		nil,
 		[]string{"pkg/fix.go"},
+		[]codingagent.FinalAnswerFileChangeFact{{Path: "pkg/fix.go", Added: 8, Removed: 2, HasCounts: true}},
 		[]codingagent.FinalAnswerVerificationFact{{Command: "go test ./pkg", Succeeded: true, AfterFinalEdit: true}},
 	)
 	if strings.Contains(got, "质量审计") || strings.Contains(got, "PASS") {
 		t.Fatalf("cloud final answer leaked internal audit: %q", got)
 	}
-	for _, want := range []string{"## 修复的问题", "修复空指针", "实际验证", "`go test ./pkg` 通过"} {
+	for _, want := range []string{"## 修复的问题", "修复空指针", "## 文件改动（1 个文件）", "| `pkg/fix.go` | 修改 | 8 | 2 |", "实际验证", "`go test ./pkg` 通过"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("cloud final answer missing %q: %q", want, got)
 		}
@@ -420,6 +689,17 @@ func TestCloudVerificationFactsOnlyMarkCommandsThatSawFinalWrites(t *testing.T) 
 	}
 }
 
+func TestCloudArgvCommandPreservesArgumentBoundaries(t *testing.T) {
+	got := cloudArgvCommand([]string{"python", "my script.py", "--token", "private value"})
+	want := "python 'my script.py' --token 'private value'"
+	if got != want {
+		t.Fatalf("argv command = %q, want %q", got, want)
+	}
+	if got := cloudArgvCommand([]string{"git", "status"}); got != "git status" {
+		t.Fatalf("simple argv command was over-quoted: %q", got)
+	}
+}
+
 func TestCloudBashMutationAdvancesWriteEpoch(t *testing.T) {
 	h := &agentHost{writeCount: 1}
 	h.recordBashCommand([]string{"go", "test", "./pkg"}, false)
@@ -429,6 +709,11 @@ func TestCloudBashMutationAdvancesWriteEpoch(t *testing.T) {
 	h.recordBashCommand([]string{"ls", "-la"}, false)
 	if h.writeCount != 1 {
 		t.Fatalf("read-only command must not advance write epoch: %d", h.writeCount)
+	}
+	h.recordBashCommand([]string{"python", "--version"}, false)
+	h.recordBashCommand([]string{"go", "version"}, false)
+	if h.writeCount != 1 {
+		t.Fatalf("version probes must not advance write epoch: %d", h.writeCount)
 	}
 	h.recordBashCommand([]string{"./scripts/generate.sh"}, false)
 	if h.writeCount != 2 {
@@ -552,4 +837,324 @@ func TestVerificationFactsCountOnlyCommandsAfterTheFinalWrite(t *testing.T) {
 	if !facts[1].AfterFinalEdit {
 		t.Fatalf("verification after the final write must count: %+v", facts[1])
 	}
+}
+
+// A bare gate command belongs to the parked plan even when another task on
+// the same instance is running. Otherwise the running-task fallback queues it
+// under the wrong task and the gate remains open forever.
+func TestCodingBarePlanApprovalPrefersGateOverOtherRunningTask(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const gateTask = "task-gate-parked"
+	const runningTask = "task-other-running"
+	if err := inst.book.EnsureTask(gateTask, "planned work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(gateTask, &planRecord{
+		State:    planStatePending,
+		Request:  "implement the planned work",
+		Steps:    []planStep{{Index: 1, Title: "implement", Status: "pending"}},
+		Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	holdRequest, created, err := inst.book.Begin("client-other-running", runningTask, "hold the instance", time.Now())
+	if err != nil || !created || holdRequest == "" {
+		t.Fatalf("begin hold request=%s created=%v err=%v", holdRequest, created, err)
+	}
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-bare-gate","text":"按计划开始"}`)
+	_, queuedTask := queuedAck(t, raw)
+	if queuedTask != gateTask {
+		t.Fatalf("bare gate queued task=%s want %s", queuedTask, gateTask)
+	}
+	if rec := inst.book.planLoadOrNil(gateTask); rec == nil || rec.State != planStateApproved {
+		t.Fatalf("gate state after bare approval: %+v", rec)
+	}
+	if _, err := inst.book.Finish(holdRequest, "held", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Terminal records are only duplicate-click fallbacks. While another task is
+// live they must not capture approval-shaped text that belongs to that task.
+func TestCodingBareApprovalTextUsesRunningTaskWhenPlanIsTerminal(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const doneTask = "task-terminal-plan"
+	const runningTask = "task-live"
+	if err := inst.book.EnsureTask(doneTask, "finished work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(doneTask, &planRecord{
+		State:    planStateDone,
+		Request:  "finished work",
+		Steps:    []planStep{{Index: 1, Title: "done", Status: "passed"}},
+		Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	holdRequest, created, err := inst.book.Begin("client-live", runningTask, "hold the instance", time.Now())
+	if err != nil || !created || holdRequest == "" {
+		t.Fatalf("begin hold request=%s created=%v err=%v", holdRequest, created, err)
+	}
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-live-approval-shaped","text":"按计划开始"}`)
+	_, queuedTask := queuedAck(t, raw)
+	if queuedTask != runningTask {
+		t.Fatalf("approval-shaped text queued task=%s want %s", queuedTask, runningTask)
+	}
+	if _, err := inst.book.Finish(holdRequest, "held", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 拒绝 is also the commit gate's negative answer. A failed plan is retriable
+// by 按计划开始, but it does not consume rejection while another task is live.
+func TestCodingBareRejectStaysWithRunningTaskOverFailedPlan(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const failedTask = "task-failed-plan"
+	const runningTask = "task-live-reject"
+	if err := inst.book.EnsureTask(failedTask, "failed work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(failedTask, &planRecord{
+		State:    planStateFailed,
+		Request:  "failed work",
+		Steps:    []planStep{{Index: 1, Title: "failed", Status: "failed"}},
+		Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	holdRequest, created, err := inst.book.Begin("client-live-reject", runningTask, "hold the instance", time.Now())
+	if err != nil || !created || holdRequest == "" {
+		t.Fatalf("begin hold request=%s created=%v err=%v", holdRequest, created, err)
+	}
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-bare-reject","text":"拒绝"}`)
+	_, queuedTask := queuedAck(t, raw)
+	if queuedTask != runningTask {
+		t.Fatalf("bare reject queued task=%s want %s", queuedTask, runningTask)
+	}
+	if _, err := inst.book.Finish(holdRequest, "held", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A rejected send must not half-apply its control-plane effect. When the
+// parked-input queue is full, the pending plan gate stays open so the user can
+// retry instead of losing the buttons without any execution turn.
+func TestCodingQueueFullDoesNotConsumePlanGate(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const gateTask = "task-gate-queue-full"
+	const runningTask = "task-live-queue-full"
+	if err := inst.book.EnsureTask(gateTask, "planned work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(gateTask, &planRecord{
+		State:    planStatePending,
+		Request:  "planned work",
+		Steps:    []planStep{{Index: 1, Title: "step", Status: "pending"}},
+		Revision: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	holdRequest, created, err := inst.book.Begin("client-live-queue-full", runningTask, "hold the instance", time.Now())
+	if err != nil || !created || holdRequest == "" {
+		t.Fatalf("begin hold request=%s created=%v err=%v", holdRequest, created, err)
+	}
+	for i := 0; i < queuedTurnsMax; i++ {
+		if _, err := inst.book.Enqueue(newID("client_fill_"), runningTask, "filled", time.Now()); err != nil {
+			t.Fatalf("fill queue %d: %v", i, err)
+		}
+	}
+
+	_, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_send_message", []byte(`{"client_message_id":"client-full-gate","text":"按计划开始"}`))
+	if err == nil || !strings.Contains(err.Error(), "预输入队列已满") {
+		t.Fatalf("send err=%v, want queue full", err)
+	}
+	if rec := inst.book.planLoadOrNil(gateTask); rec == nil || rec.State != planStatePending {
+		t.Fatalf("plan after rejected send=%+v, want pending", rec)
+	}
+	if _, err := inst.book.Finish(holdRequest, "held", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Client-message ids make retries idempotent. A replayed approval must not
+// become a fresh decision for a different plan that happens to be pending on
+// the same task later.
+func TestCodingReplayedApprovalDoesNotDecideNewPendingPlan(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const gateTask = "task-replayed-gate"
+	if err := inst.book.EnsureTask(gateTask, "planned work"); err != nil {
+		t.Fatal(err)
+	}
+	oldRequest, created, err := inst.book.Begin("client-replayed-approval", gateTask, "按计划开始", time.Now())
+	if err != nil || !created || oldRequest == "" {
+		t.Fatalf("seed old request=%s created=%v err=%v", oldRequest, created, err)
+	}
+	if _, err := inst.book.Finish(oldRequest, "already handled", false, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.planSave(gateTask, &planRecord{
+		State:    planStatePending,
+		Request:  "new planned work",
+		Steps:    []planStep{{Index: 1, Title: "new step", Status: "pending"}},
+		Revision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-replayed-approval","text":"按计划开始"}`)
+	var ack struct {
+		Accepted  bool   `json:"accepted"`
+		RequestID string `json:"request_id"`
+		TaskID    string `json:"task_id"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil || !ack.Accepted || ack.RequestID != oldRequest || ack.TaskID != gateTask {
+		t.Fatalf("replay ack=%s err=%v want request %s task %s", raw, err, oldRequest, gateTask)
+	}
+	if rec := inst.book.planLoadOrNil(gateTask); rec == nil || rec.State != planStatePending {
+		t.Fatalf("replayed approval changed plan: %+v", rec)
+	}
+}
+
+// The finish→drain handoff is not instantaneous. A send that lands in that
+// window must join the durable queue, not bypass every parked row merely
+// because the previous turn has already flipped finished.
+func TestCodingQueuedRowsFenceNewSendDuringDrainHandoff(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putCoding(t, rt, "")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstQueue, err := inst.book.Enqueue("client-parked-first", "task-parked-first", "parked first", time.Now())
+	if err != nil || firstQueue == "" {
+		t.Fatalf("seed queue=%s err=%v", firstQueue, err)
+	}
+	// The handoff state is not merely "no running row": the finished row's
+	// goroutine is still tracked while it unwinds. A queued row must fence the
+	// late send, and the drain must wait for that teardown instead of
+	// overlapping it or bypassing the parked head.
+	_, cancel := context.WithCancel(context.Background())
+	rt.track(spec.ID, "req-unwinding", cancel)
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-late-send","task_id":"task-late-send","text":"late send"}`)
+	_, queuedTask := queuedAck(t, raw)
+	if queuedTask != "task-late-send" {
+		t.Fatalf("late send queued task=%s", queuedTask)
+	}
+	head, ok, err := inst.book.PeekOldest()
+	if err != nil || !ok || head.QueueID != firstQueue || head.ClientID != "client-parked-first" {
+		t.Fatalf("queue head=%+v ok=%v err=%v, want seeded row %s", head, ok, err, firstQueue)
+	}
+	cancel()
+	rt.untrack("req-unwinding")
+	waitQueueEmpty(t, rt, spec.ID, "task-late-send")
+}
+
+func TestCloudWriteFileChangeFactsMeasureNetTurnDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{root: root}
+	write := func(content string) {
+		t.Helper()
+		out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"demo.txt","content":`+strconvQuote(content)+`}`)
+		if abs == "" || strings.Contains(out, "无效") {
+			t.Fatalf("write failed: %q", out)
+		}
+		host.noteFileChange(abs, created, added, removed, hasCounts)
+		host.noteFileBaseline(abs, baseline, baselineOK)
+	}
+	write("a\nx\n")
+	write("a\nx\ny\n")
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if !facts[0].HasCounts || facts[0].Added != 2 || facts[0].Removed != 1 {
+		t.Fatalf("net turn diff = %+v, want +2 -1", facts[0])
+	}
+}
+
+func TestCloudWriteFileChangeFactsCreatedFileCountsAddedOnly(t *testing.T) {
+	root := t.TempDir()
+	host := &agentHost{root: root, inst: &instance{}}
+	out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"new.txt","content":"x"}`)
+	if abs == "" || !created || strings.Contains(out, "无效") {
+		t.Fatalf("write failed: %q", out)
+	}
+	host.noteFile(abs, created)
+	host.noteFileChange(abs, created, added, removed, hasCounts)
+	host.noteFileBaseline(abs, baseline, baselineOK)
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if !facts[0].Created || !facts[0].HasCounts || facts[0].Added != 1 || facts[0].Removed != 0 {
+		t.Fatalf("created one-line file = %+v, want created +1 -0", facts[0])
+	}
+}
+
+func TestCloudRepeatedWriteWithoutFirstBaselineBecomesUnknown(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.bin")
+	// Invalid UTF-8 makes the first pre-write snapshot undiffable. The second
+	// write's pre-write bytes are text, but they are intermediate bytes and must
+	// not become a start-of-turn baseline.
+	if err := os.WriteFile(path, []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{root: root}
+	write := func(content string) {
+		t.Helper()
+		out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"demo.bin","content":`+strconvQuote(content)+`}`)
+		if abs == "" || strings.Contains(out, "无效") {
+			t.Fatalf("write failed: %q", out)
+		}
+		host.noteFileChange(abs, created, added, removed, hasCounts)
+		host.noteFileBaseline(abs, baseline, baselineOK)
+	}
+	write("a\n")
+	write("a\nb\n")
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if facts[0].HasCounts || facts[0].Added != 0 || facts[0].Removed != 0 {
+		t.Fatalf("repeated write without first baseline must be unknown, got %+v", facts[0])
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

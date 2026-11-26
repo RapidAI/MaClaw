@@ -1,15 +1,65 @@
 package guiapp
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const codingSubAgentReadFileExplicitMaxLines = 2000
+
+const (
+	codingLineDiffMaxBytes = 4 << 20
+	codingLineDiffMaxLines = 20000
+)
+
+// readCodingTextForDiff snapshots a text file for exact line-count reporting.
+// A missing file is an empty baseline, not an error: write_file uses it for
+// newly created files. Binary and very large files return ok=false rather than
+// paying an unbounded diff cost or inventing line semantics.
+func readCodingTextForDiff(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return "", true
+	}
+	if err != nil || info.IsDir() || info.Size() > codingLineDiffMaxBytes {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !utf8.Valid(data) {
+		return "", false
+	}
+	lines := bytes.Count(data, []byte{'\n'}) + 1
+	if len(data) == 0 {
+		lines = 0
+	}
+	if lines > codingLineDiffMaxLines {
+		return "", false
+	}
+	return string(data), true
+}
+
+func withCodingFileLineDiff(result codingToolExecutionResult, absPath, before string, beforeOK bool) codingToolExecutionResult {
+	if result.Outcome != codingToolOutcomeSuccess || !beforeOK {
+		return result
+	}
+	after, afterOK := readCodingTextForDiff(absPath)
+	if !afterOK {
+		return result
+	}
+	result.FileLineDeltaAdded, result.FileLineDeltaRemoved = codingagent.CountTextLineChanges(before, after)
+	result.HasFileLineDelta = true
+	result.FileLineDeltaPath = absPath
+	result.FileLineDeltaBaseline = before
+	result.HasFileLineDeltaBaseline = true
+	return result
+}
 
 func executeCodingReadFile(args map[string]interface{}) codingToolExecutionResult {
 	p, _ := args["path"].(string)
@@ -175,18 +225,21 @@ func executeCodingWriteFile(args map[string]interface{}) codingToolExecutionResu
 	if err != nil {
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
+	before, beforeOK := readCodingTextForDiff(absPath)
 	size, err := coretool.WriteTextFile(absPath, content, stringVal(args, "mode"))
 	if err != nil {
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
 	resolvedMode, _ := coretool.NormalizeWriteModeKind(stringVal(args, "mode"))
+	var result codingToolExecutionResult
 	if resolvedMode == coretool.WriteModeAppend {
-		return codingToolExecutionResult{Text: fmt.Sprintf("appended to %s (current %d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
+		result = codingToolExecutionResult{Text: fmt.Sprintf("appended to %s (current %d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
+	} else if content == "" {
+		result = codingToolExecutionResult{Text: fmt.Sprintf("cleared %s (%d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
+	} else {
+		result = codingToolExecutionResult{Text: fmt.Sprintf("wrote %s (%d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
 	}
-	if content == "" {
-		return codingToolExecutionResult{Text: fmt.Sprintf("cleared %s (%d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
-	}
-	return codingToolExecutionResult{Text: fmt.Sprintf("wrote %s (%d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
+	return withCodingFileLineDiff(result, absPath, before, beforeOK)
 }
 
 func executeCodingEditFile(args map[string]interface{}) codingToolExecutionResult {
@@ -201,14 +254,16 @@ func executeCodingEditFile(args map[string]interface{}) codingToolExecutionResul
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
 	replaceAll, _ := args["replace_all"].(bool)
+	before, beforeOK := readCodingTextForDiff(absPath)
 	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
 	if err != nil {
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	return codingToolExecutionResult{
+	result := codingToolExecutionResult{
 		Text:    fmt.Sprintf("edited %s (replaced %d occurrence(s), current %d bytes)", res.Path, res.Count, res.Size),
 		Outcome: codingToolOutcomeSuccess,
 	}
+	return withCodingFileLineDiff(result, absPath, before, beforeOK)
 }
 
 func executeCodingEditLines(args map[string]interface{}) codingToolExecutionResult {
@@ -233,13 +288,15 @@ func executeCodingEditLines(args map[string]interface{}) codingToolExecutionResu
 		endLine = int(v)
 	}
 	content, _ := args["content"].(string)
+	before, beforeOK := readCodingTextForDiff(absPath)
 	res, err := coretool.EditFileByLine(absPath, coretool.EditLineOperation(opStr), startLine, endLine, content)
 	if err != nil {
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
 	contextPreview := buildEditLineContext(absPath, startLine, res.TotalLines)
-	return codingToolExecutionResult{
+	result := codingToolExecutionResult{
 		Text:    fmt.Sprintf("edited %s (%s %d line(s), now %d lines, %d bytes)\n%s", res.Path, opStr, res.LinesChanged, res.TotalLines, res.Size, contextPreview),
 		Outcome: codingToolOutcomeSuccess,
 	}
+	return withCodingFileLineDiff(result, absPath, before, beforeOK)
 }

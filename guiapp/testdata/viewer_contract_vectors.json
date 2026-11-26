@@ -17,6 +17,13 @@
       "expect": {"thinking": [{"text": "先想想", "done": false}], "last": 3}
     },
     {
+      "name": "thinking-done-without-open-block",
+      "events": [
+        {"event": "thinking", "state": "done", "cursor": 1, "text": "落定的思考"}
+      ],
+      "expect": {"thinking": [{"text": "落定的思考", "done": true}], "last": 1}
+    },
+    {
       "name": "coding-agent-text",
       "events": [
         {"event": "progress", "cursor": 1, "text": "Coding Agent: running T2 - edit parser"}

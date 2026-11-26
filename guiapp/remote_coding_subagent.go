@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	pathpkg "path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,10 +141,6 @@ type RemoteCodingSubAgent struct {
 	// remote transport, not a semantic task/session identity, so it cannot be
 	// used to populate this field.
 	dynamicInvocationIdentity *trustedCodingInvocationIdentity
-	// See CodingSubAgent.verifiedInvocationIdentity. This is an ingress-only
-	// carrier until it is bound to the fresh runtime Attempt; SSH transport
-	// fields must never populate it.
-	verifiedInvocationIdentity *trustedCodingInvocationIdentity
 	// R1b relation inputs are populated only by an authenticated host ingress.
 	// SSH/session transport values must never fill them.
 	verifiedTaskRelationService *codingTaskRelationService
@@ -209,7 +206,6 @@ func (r *RemoteCodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request
 	}
 	service, subject, handle := r.verifiedTaskRelationService, r.verifiedTaskSubject, r.verifiedTaskHandle
 	r.dynamicInvocationIdentity = nil
-	r.verifiedInvocationIdentity = nil
 	r.verifiedTaskRelationService = nil
 	r.verifiedTaskSubject = verifiedCodingSubject{}
 	r.verifiedTaskHandle = nil
@@ -219,9 +215,6 @@ func (r *RemoteCodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request
 				r.dynamicInvocationIdentity = identity
 			}
 		}
-	}
-	if r.dynamicInvocationIdentity == nil {
-		r.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(r.runtimeStore, request)
 	}
 }
 
@@ -253,6 +246,7 @@ type RemoteCodingSubAgentResult struct {
 	RouteReason           string
 	FilesModified         []string
 	FilesCreated          []string
+	DiffStat              *SubAgentDiffStat
 	Localization          *CodingSubAgentLocalizationEvidence
 	CommandsRun           []CodingSubAgentCommandResult
 	QualityStatus         codingSubAgentQualityStatus
@@ -283,14 +277,6 @@ func NewRemoteCodingSubAgent(
 		commitTaskID: newInFlightRecoveryRunID(),
 		loopCtx:      loopCtx,
 	}
-}
-
-func (r *RemoteCodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
-	if r == nil || identity == nil || !identity.complete() {
-		return
-	}
-	copy := *identity
-	r.verifiedInvocationIdentity = &copy
 }
 
 func (r *RemoteCodingSubAgent) setVerifiedCodingTaskRelation(service *codingTaskRelationService, subject verifiedCodingSubject, handle verifiedCodingTaskHandle) {
@@ -570,9 +556,6 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		// unavailable.
 		if identity, ok := bindVerifiedCodingTaskHandle(execution.verifiedTaskRelationService, execution.verifiedTaskSubject, execution.verifiedTaskHandle, store, request); ok {
 			execution.dynamicInvocationIdentity = identity
-		} else {
-			_ = registerTrustedCodingInvocationIdentity(store, request, execution.verifiedInvocationIdentity)
-			execution.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
 		// The remote runtime runner itself is the host-verified ingress: it has
 		// already pinned the SSH target/session and created a fresh durable
@@ -600,7 +583,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity, execution.verifiedInvocationIdentity = nil, nil, nil, nil
+	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity = nil, nil, nil
 	execution.correlatedRemoteExecution = false
 	execution.verifiedTaskRelationService, execution.verifiedTaskHandle = nil, nil
 	execution.verifiedTaskSubject = verifiedCodingSubject{}
@@ -1014,6 +997,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	// Surface audit paths for sticky multi-turn memory / UI continuity.
 	result.FilesModified = uniqueSortedSubAgentStrings(filesModified)
 	result.FilesCreated = uniqueSortedSubAgentStrings(filesCreated)
+	result.DiffStat = filterSubAgentDiffStatToFiles(mergeSubAgentDiffStat(nil, append(c.getRemoteNetFileLineDeltas(), c.getRemoteFileLineDeltas()...)), result.FilesModified, result.FilesCreated)
 	result.Localization = c.localization.snapshot()
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
 	result.lastEditSeq = lastEditSeq
@@ -1944,6 +1928,267 @@ func (c *remoteCodingCallbacks) trackRemoteFileChanged(path string, created bool
 	}
 	c.lastEditSeq = seq
 	c.rememberRemotePathExistence(path, true)
+	if c.remoteFileMutationCount(path) > 1 && !c.hasRemoteFileLineBaseline(path) {
+		// A repeated mutation without a start-of-turn baseline can never be
+		// reconstructed into net line counts from operation diffs. Keep explicit
+		// unknown evidence even when the operation itself emitted no DIFF line.
+		c.invalidateRemoteFileLineDelta(path)
+	}
+}
+
+func (c *remoteCodingCallbacks) rememberRemoteToolFileLineDeltas(name string, changes []CodingAgentFileChange) {
+	if c == nil || len(changes) == 0 {
+		return
+	}
+	replace := codingToolLineDeltaReplacesFile(name)
+	for _, change := range changes {
+		if c.hasRemoteFileLineBaseline(change.Path) {
+			continue
+		}
+		if c.remoteFileMutationCount(change.Path) > 1 {
+			// A first operation diff is exact net evidence only while it remains
+			// the sole mutation. Without a start-of-turn baseline, a second
+			// operation cannot be combined into net line counts (the next diff
+			// starts from intermediate bytes), so downgrade the evidence instead
+			// of presenting stale precision.
+			c.invalidateRemoteFileLineDelta(change.Path)
+			continue
+		}
+		if c.hasRemoteFileLineDelta(change.Path) {
+			// The mutating tool may already have parsed exact DIFF evidence for
+			// this same operation before the deferred tool-finished event fires.
+			continue
+		}
+		c.rememberRemoteFileLineDelta(change.Path, change.Added, change.Removed, change.HasCounts, replace)
+	}
+}
+
+func (c *remoteCodingCallbacks) remoteFileMutationCount(path string) int {
+	if c == nil || len(c.fileEdits) == 0 {
+		return 0
+	}
+	key := remoteFileLineDeltaKey(path)
+	count := 0
+	for _, edit := range c.fileEdits {
+		if subAgentDiffEvidencePathsMatch(edit.Path, key) {
+			count++
+		}
+	}
+	return count
+}
+
+func (c *remoteCodingCallbacks) invalidateRemoteFileLineDelta(path string) {
+	if c == nil {
+		return
+	}
+	key := remoteFileLineDeltaKey(path)
+	if key == "" {
+		return
+	}
+	matched := false
+	for deltaKey, stat := range c.fileLineDeltas {
+		if deltaKey != key && !subAgentDiffEvidencePathsMatch(deltaKey, key) {
+			continue
+		}
+		matched = true
+		stat.Insertions = 0
+		stat.Deletions = 0
+		stat.HasCounts = false
+		c.fileLineDeltas[deltaKey] = stat
+	}
+	if !matched {
+		if c.fileLineDeltas == nil {
+			c.fileLineDeltas = make(map[string]SubAgentFileDiffStat)
+		}
+		c.fileLineDeltas[key] = SubAgentFileDiffStat{Path: c.displayRemoteProjectPath(key), HasCounts: false}
+	}
+}
+
+func (c *remoteCodingCallbacks) rememberRemoteFileLineDelta(path string, added, removed int, hasCounts, replace bool) {
+	path = strings.TrimSpace(path)
+	if path == "" || added < 0 || removed < 0 {
+		return
+	}
+	key := strings.ReplaceAll(path, "\\", "/")
+	if c.fileLineDeltas == nil {
+		c.fileLineDeltas = make(map[string]SubAgentFileDiffStat)
+	}
+	prev, ok := c.fileLineDeltas[key]
+	if replace || !ok {
+		c.fileLineDeltas[key] = SubAgentFileDiffStat{Path: c.displayRemoteProjectPath(key), Insertions: added, Deletions: removed, HasCounts: hasCounts}
+		return
+	}
+	c.fileLineDeltas[key] = SubAgentFileDiffStat{
+		Path:       c.displayRemoteProjectPath(key),
+		Insertions: prev.Insertions + added,
+		Deletions:  prev.Deletions + removed,
+		HasCounts:  prev.HasCounts && hasCounts,
+	}
+}
+
+func (c *remoteCodingCallbacks) hasRemoteFileLineDelta(path string) bool {
+	if c == nil || len(c.fileLineDeltas) == 0 {
+		return false
+	}
+	key := remoteFileLineDeltaKey(path)
+	if _, ok := c.fileLineDeltas[key]; ok {
+		return true
+	}
+	for deltaKey := range c.fileLineDeltas {
+		if subAgentDiffEvidencePathsMatch(deltaKey, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *remoteCodingCallbacks) getRemoteFileLineDeltas() []SubAgentFileDiffStat {
+	if c == nil || len(c.fileLineDeltas) == 0 {
+		return nil
+	}
+	out := make([]SubAgentFileDiffStat, 0, len(c.fileLineDeltas))
+	for _, stat := range c.fileLineDeltas {
+		out = append(out, stat)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func remoteFileLineDeltaKey(path string) string {
+	return strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+}
+
+func (c *remoteCodingCallbacks) displayRemoteProjectPath(path string) string {
+	path = remoteFileLineDeltaKey(path)
+	if c == nil || c.agent == nil {
+		return path
+	}
+	root := remoteFileLineDeltaKey(c.agent.projectDir)
+	if root == "" {
+		return path
+	}
+	if path == root {
+		return pathpkg.Base(path)
+	}
+	prefix := strings.TrimSuffix(root, "/") + "/"
+	if strings.HasPrefix(path, prefix) {
+		return strings.TrimPrefix(path, prefix)
+	}
+	return path
+}
+
+// captureRemoteFileLineBaseline snapshots the first complete pre-mutation text
+// when it is small enough for the preview channel. The final answer later
+// compares this baseline with the final remote bytes, so repeated writes report
+// net task churn rather than only the last write operation.
+func (c *remoteCodingCallbacks) captureRemoteFileLineBaseline(path string) {
+	if c == nil {
+		return
+	}
+	key := remoteFileLineDeltaKey(path)
+	if key == "" {
+		return
+	}
+	if c.fileLineBaselines != nil {
+		if _, exists := c.fileLineBaselines[key]; exists {
+			return
+		}
+		if len(c.fileLineBaselines) >= remoteMaxTrackedBaselineFiles {
+			return
+		}
+	}
+	content, available, truncated := c.readRemotePreviewContent(path)
+	if !available || truncated || remoteTextExceedsLineDiffCap(content) {
+		return
+	}
+	c.rememberRemoteFileLineBaseline(path, content)
+}
+
+// rememberRemoteFileLineBaseline bounds both memory and the number of final
+// remote re-reads. A file that misses the budget still has per-operation diff
+// evidence or an unavailable-count table row; it must not make the finalizer
+// perform unbounded serial SSH reads.
+func (c *remoteCodingCallbacks) rememberRemoteFileLineBaseline(path, text string) {
+	if c == nil {
+		return
+	}
+	key := remoteFileLineDeltaKey(path)
+	if key == "" {
+		return
+	}
+	if c.fileLineBaselines == nil {
+		c.fileLineBaselines = make(map[string]remoteFileLineBaseline)
+	}
+	if _, exists := c.fileLineBaselines[key]; exists {
+		return
+	}
+	if c.remoteFileMutationCount(path) > 0 {
+		return
+	}
+	if len(c.fileLineBaselines) >= remoteMaxTrackedBaselineFiles {
+		return
+	}
+	const maxTrackedBaselineBytes = 16 << 20
+	total := len(text)
+	for _, baseline := range c.fileLineBaselines {
+		total += len(baseline.Text)
+	}
+	if total <= maxTrackedBaselineBytes {
+		c.fileLineBaselines[key] = remoteFileLineBaseline{Path: path, Text: text}
+	}
+}
+
+func (c *remoteCodingCallbacks) rememberRemoteEmptyFileLineBaseline(path string) {
+	c.rememberRemoteFileLineBaseline(path, "")
+}
+
+func (c *remoteCodingCallbacks) hasRemoteFileLineBaseline(path string) bool {
+	if c == nil || len(c.fileLineBaselines) == 0 {
+		return false
+	}
+	key := remoteFileLineDeltaKey(path)
+	if _, ok := c.fileLineBaselines[key]; ok {
+		return true
+	}
+	for baselineKey := range c.fileLineBaselines {
+		if subAgentDiffEvidencePathsMatch(baselineKey, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteTextExceedsLineDiffCap(text string) bool {
+	if text == "" {
+		return false
+	}
+	return strings.Count(text, "\n")+1 > codingLineDiffMaxLines
+}
+
+func (c *remoteCodingCallbacks) getRemoteNetFileLineDeltas() []SubAgentFileDiffStat {
+	if c == nil || len(c.fileLineBaselines) == 0 {
+		return nil
+	}
+	out := make([]SubAgentFileDiffStat, 0, len(c.fileLineBaselines))
+	for _, baseline := range c.fileLineBaselines {
+		after, available, truncated := c.readRemotePreviewContent(baseline.Path)
+		if !available || truncated || remoteTextExceedsLineDiffCap(after) {
+			// A first complete baseline proves this turn touched the file. If the
+			// final remote bytes cannot be diffed, keep explicit unknown evidence
+			// rather than dropping the row or preserving stale operation precision.
+			out = append(out, SubAgentFileDiffStat{Path: c.displayRemoteProjectPath(baseline.Path), HasCounts: false})
+			continue
+		}
+		added, removed := codingagent.CountTextLineChanges(baseline.Text, after)
+		out = append(out, SubAgentFileDiffStat{
+			Path:       c.displayRemoteProjectPath(baseline.Path),
+			Insertions: added,
+			Deletions:  removed,
+			HasCounts:  true,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func (c *remoteCodingCallbacks) trackRemoteFileRead(path string) {
@@ -2208,6 +2453,13 @@ func remoteCodingTaskHeaderLines(result string) []string {
 
 // --- LoopCallbacks Implementation ---
 
+const remoteMaxTrackedBaselineFiles = 32
+
+type remoteFileLineBaseline struct {
+	Path string
+	Text string
+}
+
 type remoteCodingCallbacks struct {
 	agent       *RemoteCodingSubAgent
 	task        string
@@ -2227,16 +2479,18 @@ type remoteCodingCallbacks struct {
 	// when the next message restores a smaller limit.
 	iterationWaveSize int
 
-	eventSeq       uint64
-	firstReadSeq   uint64
-	firstSearchSeq uint64
-	firstEditSeq   uint64
-	lastEditSeq    uint64
-	filesModified  []string
-	filesCreated   []string
-	filesRead      []string
-	fileEdits      []remoteCodingFileAuditEvent
-	fileReads      []remoteCodingFileAuditEvent
+	eventSeq          uint64
+	firstReadSeq      uint64
+	firstSearchSeq    uint64
+	firstEditSeq      uint64
+	lastEditSeq       uint64
+	filesModified     []string
+	filesCreated      []string
+	filesRead         []string
+	fileEdits         []remoteCodingFileAuditEvent
+	fileReads         []remoteCodingFileAuditEvent
+	fileLineDeltas    map[string]SubAgentFileDiffStat
+	fileLineBaselines map[string]remoteFileLineBaseline
 	// knownExisting records probed paths: true if a read/write proved the file
 	// exists, false if a lookup proved it is absent. A missing key means
 	// unprobed and must not be treated as a new-file exemption.
@@ -3400,6 +3654,9 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				DurationMS: duration.Milliseconds(),
 			}
 			attachCodingToolFileChanges(&event, canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), nil)
+			if outcome == "success" {
+				c.rememberRemoteToolFileLineDeltas(canonicalName, event.FileChanges)
+			}
 			if outcome != "success" {
 				summary := result
 				if len([]rune(summary)) > 180 {
@@ -4701,7 +4958,7 @@ func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
 		limit = remoteReadFileMaxLines
 	}
 	script := fmt.Sprintf(strings.Join([]string{
-		"import pathlib, base64, sys",
+		"import pathlib, base64, sys, difflib",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"start = %d",
 		"limit = %d",
@@ -4743,6 +5000,14 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 
 	// Capture the existing remote content before mutation so the preview can show a diff.
 	original, originalAvailable, originalTruncated := c.readPreviewIfActive(path)
+	firstMutation := c.remoteFileMutationCount(path) == 0
+	if firstMutation {
+		if originalAvailable && !originalTruncated && !remoteTextExceedsLineDiffCap(original) {
+			c.rememberRemoteFileLineBaseline(path, original)
+		} else {
+			c.captureRemoteFileLineBaseline(path)
+		}
+	}
 
 	// For large content (>32KB), write in chunks to avoid PTY buffer overflow.
 	if len(content) > 32*1024 {
@@ -4767,6 +5032,12 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 	formatted := remoteWriteFileResult(path, len(content), result, false)
 	if remoteCodingToolOutcome(formatted) == "success" {
 		created := remoteWriteFileResultCreated(result)
+		if created && c.remoteFileMutationCount(path) == 0 {
+			c.rememberRemoteEmptyFileLineBaseline(path)
+		}
+		if added, removed, ok := remoteDiffStatFromCommandResult(result); ok && !c.hasRemoteFileLineBaseline(path) {
+			c.rememberRemoteFileLineDelta(path, added, removed, true, true)
+		}
 		c.trackRemoteFileChanged(path, created)
 		opType := "modify"
 		if created {
@@ -4775,6 +5046,19 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 		c.publishPreviewAfterMutation(path, original, opType, originalTruncated, !created && !originalAvailable)
 	}
 	return formatted
+}
+
+func remoteDiffStatFromCommandResult(commandResult string) (added, removed int, ok bool) {
+	for _, line := range strings.Split(commandResult, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "DIFF added=") {
+			continue
+		}
+		if n, err := fmt.Sscanf(line, "DIFF added=%d removed=%d", &added, &removed); err == nil && n == 2 {
+			return added, removed, true
+		}
+	}
+	return 0, 0, false
 }
 
 func remoteWriteFileResult(path string, contentLen int, commandResult string, chunked bool) string {
@@ -4814,12 +5098,47 @@ func remoteWriteFilePythonCommand(path, content string) string {
 	pathB64 := base64EncodeString(path)
 	contentB64 := base64EncodeString(content)
 	script := fmt.Sprintf(strings.Join([]string{
-		"import pathlib, base64",
+		"import pathlib, base64, difflib",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"created = not p.exists()",
 		"p.parent.mkdir(parents=True, exist_ok=True)",
-		"p.write_bytes(base64.b64decode('%s'))",
+		"data = base64.b64decode('%s')",
+		"before = p.read_bytes() if p.exists() else b''",
+		"def diff_lines(raw):",
+		"    try:",
+		"        text = raw.decode('utf-8')",
+		"    except UnicodeDecodeError:",
+		"        return None",
+		"    parts = text.split(chr(10))",
+		"    lines = [part + chr(10) for part in parts[:-1]]",
+		"    if parts[-1]:",
+		"        lines.append(parts[-1])",
+		"    return lines",
+		"def line_diff(a, b):",
+		"    if len(a) + len(b) > 4194304:",
+		"        return None",
+		"    al = diff_lines(a)",
+		"    bl = diff_lines(b)",
+		"    if al is None or bl is None:",
+		"        return None",
+		"    if len(al) > 20000 or len(bl) > 20000:",
+		"        return None",
+		"    added = 0",
+		"    removed = 0",
+		"    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, al, bl).get_opcodes():",
+		"        if tag == 'replace':",
+		"            removed += i2 - i1",
+		"            added += j2 - j1",
+		"        elif tag == 'delete':",
+		"            removed += i2 - i1",
+		"        elif tag == 'insert':",
+		"            added += j2 - j1",
+		"    return added, removed",
+		"p.write_bytes(data)",
 		"print('OK created=' + str(created).lower())",
+		"diff = line_diff(before, data)",
+		"if diff is not None:",
+		"    print('DIFF added=%%d removed=%%d' %% diff)",
 	}, "\n"), pathB64, contentB64)
 	return remotePythonCommand(script)
 }
@@ -4849,6 +5168,14 @@ func (c *remoteCodingCallbacks) sshWriteFileLarge(path, content string) string {
 	decodeCmd := remoteWriteFileLargeDecodeCommand(path, tmpPath)
 
 	result := c.execSSH(decodeCmd, 15)
+	if remoteWriteFileResultHasOK(result) {
+		if remoteWriteFileResultCreated(result) {
+			c.rememberRemoteEmptyFileLineBaseline(path)
+		}
+		if added, removed, ok := remoteDiffStatFromCommandResult(result); ok && !c.hasRemoteFileLineBaseline(path) {
+			c.rememberRemoteFileLineDelta(path, added, removed, true, true)
+		}
+	}
 	return remoteWriteFileResult(path, len(content), result, true)
 }
 
@@ -4864,14 +5191,48 @@ func remoteWriteFileLargeDecodeCommand(path, tmpPath string) string {
 	pathB64 := base64EncodeString(path)
 	tmpPathB64 := base64EncodeString(tmpPath)
 	script := fmt.Sprintf(strings.Join([]string{
-		"import pathlib, base64",
+		"import pathlib, base64, difflib",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"created = not p.exists()",
 		"p.parent.mkdir(parents=True, exist_ok=True)",
 		"tmp = base64.b64decode('%s').decode('utf-8')",
 		"data = base64.b64decode(open(tmp).read())",
+		"before = p.read_bytes() if p.exists() else b''",
+		"def diff_lines(raw):",
+		"    try:",
+		"        text = raw.decode('utf-8')",
+		"    except UnicodeDecodeError:",
+		"        return None",
+		"    parts = text.split(chr(10))",
+		"    lines = [part + chr(10) for part in parts[:-1]]",
+		"    if parts[-1]:",
+		"        lines.append(parts[-1])",
+		"    return lines",
+		"def line_diff(a, b):",
+		"    if len(a) + len(b) > 4194304:",
+		"        return None",
+		"    al = diff_lines(a)",
+		"    bl = diff_lines(b)",
+		"    if al is None or bl is None:",
+		"        return None",
+		"    if len(al) > 20000 or len(bl) > 20000:",
+		"        return None",
+		"    added = 0",
+		"    removed = 0",
+		"    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, al, bl).get_opcodes():",
+		"        if tag == 'replace':",
+		"            removed += i2 - i1",
+		"            added += j2 - j1",
+		"        elif tag == 'delete':",
+		"            removed += i2 - i1",
+		"        elif tag == 'insert':",
+		"            added += j2 - j1",
+		"    return added, removed",
 		"p.write_bytes(data)",
 		"print('OK created=' + str(created).lower())",
+		"diff = line_diff(before, data)",
+		"if diff is not None:",
+		"    print('DIFF added=%%d removed=%%d' %% diff)",
 	}, "\n"), pathB64, tmpPathB64)
 	return fmt.Sprintf("%s && rm -f %s", remotePythonCommand(script), remoteShellQuote(tmpPath))
 }
@@ -4890,6 +5251,14 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 
 	// Capture the existing remote content before mutation so the preview can show a diff.
 	original, originalAvailable, originalTruncated := c.readPreviewIfActive(path)
+	firstMutation := c.remoteFileMutationCount(path) == 0
+	if firstMutation {
+		if originalAvailable && !originalTruncated && !remoteTextExceedsLineDiffCap(original) {
+			c.rememberRemoteFileLineBaseline(path, original)
+		} else {
+			c.captureRemoteFileLineBaseline(path)
+		}
+	}
 
 	// Use base64 to safely transfer old/new strings without heredoc terminator conflicts.
 	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
@@ -4897,6 +5266,9 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 	result := c.execSSH(pyScript, 15)
 	formatted := remoteEditFileResult(path, result)
 	if remoteCodingToolOutcome(formatted) == "success" {
+		if added, removed, ok := remoteDiffStatFromCommandResult(result); ok && !c.hasRemoteFileLineBaseline(path) {
+			c.rememberRemoteFileLineDelta(path, added, removed, true, false)
+		}
 		c.trackRemoteFileChanged(path, false)
 		c.publishPreviewAfterMutation(path, original, "modify", originalTruncated, !originalAvailable)
 	}
@@ -5247,7 +5619,7 @@ func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
 	// tool.ReplaceTextPassage: a line break is one logical character, and
 	// only the inserted span adopts the matched span's convention.
 	script := fmt.Sprintf(strings.Join([]string{
-		"import pathlib, base64, sys",
+		"import pathlib, base64, sys, difflib",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"if not p.exists():",
 		"    print('ERROR: file not found: ' + str(p))",
@@ -5256,6 +5628,12 @@ func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
 		"    text = f.read()",
 		"old = base64.b64decode('%s').decode('utf-8')",
 		"new = base64.b64decode('%s').decode('utf-8')",
+		"def diff_lines(text):",
+		"    parts = text.split(chr(10))",
+		"    lines = [part + chr(10) for part in parts[:-1]]",
+		"    if parts[-1]:",
+		"        lines.append(parts[-1])",
+		"    return lines",
 		"def norm(s):",
 		"    return s.replace('\\r\\n', '\\n').replace('\\r', '\\n')",
 		"def uniform_ending(body):",
@@ -5360,6 +5738,21 @@ func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
 		"    with p.open('w', encoding='utf-8', newline='') as f:",
 		"        f.write(updated)",
 		"    print('OK: replaced 1 occurrence')",
+		"    if len(text) + len(updated) <= 4194304:",
+		"        al = diff_lines(text)",
+		"        bl = diff_lines(updated)",
+		"        if len(al) <= 20000 and len(bl) <= 20000:",
+		"            added = 0",
+		"            removed = 0",
+		"            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, al, bl).get_opcodes():",
+		"                if tag == 'replace':",
+		"                    removed += i2 - i1",
+		"                    added += j2 - j1",
+		"                elif tag == 'delete':",
+		"                    removed += i2 - i1",
+		"                elif tag == 'insert':",
+		"                    added += j2 - j1",
+		"            print('DIFF added=%%d removed=%%d' %% (added, removed))",
 	}, "\n"), pathB64, oldB64, newB64)
 	return remotePythonCommand(script)
 }

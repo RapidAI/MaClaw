@@ -174,8 +174,8 @@ function setResize(cursor) {
     window.wails.flags.resizeEdge = cursor;
 }
 
-// clearResizeCursor drops a sizing cursor left on the root element. Maximise
-// and fullscreen do not draw that cursor, so leaving it there hides the pointer.
+// clearResizeCursor drops a sizing cursor left on the root element. A
+// maximised or fullscreen outer window cannot be resized, so that cursor is stale.
 function clearResizeCursor() {
     const current = document.documentElement.style.cursor || "";
     if (!window.wails.flags.resizeEdge && !isResizeCursor(current)) return;

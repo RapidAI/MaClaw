@@ -267,7 +267,7 @@ func TestRepairCompletedCodingWorkflowProjectionDoesNotReplayExecutor(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "test-owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	app.repairCompletedCodingWorkflowProjections(wf, &workflowStartupSnapshot{
@@ -351,7 +351,7 @@ func TestRepairCompletedCodingWorkflowProjectionFailsClosedOnBindingMismatch(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.FinishAttempt(attempt.AttemptID, "owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted}, time.Now()); err != nil {
+	if _, err := ledger.FinishAttempt(attempt.AttemptID, "owner", codingruntime.FinishInput{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, ExpectedVersion: attempt.Version, EvidenceDigest: "sha256:done"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	app.repairCompletedCodingWorkflowProjections(wf, &workflowStartupSnapshot{

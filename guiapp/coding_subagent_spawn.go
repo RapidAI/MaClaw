@@ -776,6 +776,7 @@ func (c *codingSubAgentCallbacks) executeParallelIsolatedWorkerSpawn(specs []cod
 				if res.FilesCreated != nil {
 					res.FilesCreated = remapWorktreePaths(res.FilesCreated, items[i].spec.projectPath, parent.projectPath)
 				}
+				res.DiffStat = remapWorktreeDiffStat(res.DiffStat, items[i].spec.projectPath, parent.projectPath)
 				c.mergeSpawnedFileAudit(res.FilesModified, res.FilesCreated)
 				if !merged && strings.TrimSpace(items[i].mergeNote) == "" {
 					items[i].mergeNote = "worktree produced no mergeable file changes"
@@ -844,6 +845,7 @@ func (c *codingSubAgentCallbacks) runIsolatedOrInspectionSpawn(spec codingSpawnS
 	if result.FilesCreated != nil {
 		result.FilesCreated = remapWorktreePaths(result.FilesCreated, spec.projectPath, parent.projectPath)
 	}
+	result.DiffStat = remapWorktreeDiffStat(result.DiffStat, spec.projectPath, parent.projectPath)
 	c.mergeSpawnedFileAudit(result.FilesModified, result.FilesCreated)
 	if !merged && strings.TrimSpace(mergeNote) == "" {
 		mergeNote = "worktree produced no mergeable file changes"

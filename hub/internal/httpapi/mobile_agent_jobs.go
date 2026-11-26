@@ -46,6 +46,12 @@ type mobileAgentJobRecord struct {
 	Answer        string
 	Message       string
 	RequestID     string
+	// Progress is the live thinking trace while the job runs: one short line
+	// per tool call and per reasoning fragment. The phone polls the status
+	// endpoint and shows these under "thinking"; the finished answer replaces
+	// them in the UI.
+	Progress  []string
+	Reasoning strings.Builder
 	// Auth material to re-issue Hub LLM calls as the viewer (not returned to clients).
 	AuthHeader string
 	BaseScheme string
@@ -242,6 +248,18 @@ func mobileAgentJobPayload(job mobileAgentJobRecord) map[string]any {
 	if job.RequestID != "" {
 		m["llm_request_id"] = job.RequestID
 	}
+	// progress stays the 0..1 status fraction. Older clients (and the unified
+	// job list) read it as a number; replacing it with the trace array made
+	// those progress bars stop. The trace rides thinking, and only while the
+	// job is running.
+	if frac := mobileJobProgressFromStatus(job.Status); frac >= 0 {
+		m["progress"] = frac
+	}
+	if mobileJobIsActive(job.Status) && len(job.Progress) > 0 {
+		thinking := make([]string, len(job.Progress))
+		copy(thinking, job.Progress)
+		m["thinking"] = thinking
+	}
 	if job.Status == mobileAgentJobStatusReady && job.Answer != "" {
 		m["answer"] = job.Answer
 	}
@@ -371,7 +389,21 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 		return
 	}
 
-	answer, requestID, runErr := mobileRunAgentLoop(ctx, baseReq, principal, officialLLM, delegated, useDelegated, chatMessages, nil, mobileTrustedAgentAttachments(principal, job.DocumentID, job.RecordingID))
+	// Progress writer: the phone shows this as the thinking process while the
+	// job runs. Lines stay short — this is a live trace, not a log file.
+	emit := func(event string, data map[string]any) {
+		if jobID == "" {
+			return
+		}
+		line := mobileAgentProgressLine(event, data)
+		if line == "" {
+			return
+		}
+		mobileAgentJobUpdate(jobID, func(j *mobileAgentJobRecord) {
+			j.Progress = mobileAppendProgress(j.Progress, line)
+		})
+	}
+	answer, requestID, runErr := mobileRunAgentLoop(ctx, baseReq, principal, officialLLM, delegated, useDelegated, chatMessages, emit, mobileTrustedAgentAttachments(principal, job.DocumentID, job.RecordingID))
 	if runErr != nil {
 		msg := strings.TrimSpace(runErr.Error())
 		if msg == "" {
@@ -385,6 +417,8 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 			j.Status = mobileAgentJobStatusFailed
 			j.Message = msg
 			j.RequestID = requestID
+			j.Progress = nil
+			j.Reasoning.Reset()
 		})
 		return
 	}
@@ -395,6 +429,8 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 		j.Message = "ready"
 		j.Answer = answer
 		j.RequestID = requestID
+		j.Progress = nil
+		j.Reasoning.Reset()
 	})
 }
 
@@ -494,4 +530,45 @@ func mobileEnqueueAgentJobFromSearch(
 	mobileKnowledgePurgeState.RUnlock()
 	go mobileRunAgentJob(job.JobID, principal, officialLLM)
 	return job, nil
+}
+
+// mobileAgentProgressLine turns one agent event into a short trace line.
+// Delta events are reasoning carried on the same channel as visible text; a
+// partial line is buffered by the caller (mobileAppendProgress), so only
+// complete tool steps become new lines here.
+func mobileAgentProgressLine(event string, data map[string]any) string {
+	switch event {
+	case "tool_call":
+		name := strings.TrimSpace(fmt.Sprintf("%v", data["name"]))
+		if name == "" {
+			return ""
+		}
+		return "调用 " + name
+	case "tool_result":
+		name := strings.TrimSpace(fmt.Sprintf("%v", data["name"]))
+		result := mobileClipRunes(strings.TrimSpace(fmt.Sprintf("%v", data["result"])), 120)
+		if name == "" {
+			return ""
+		}
+		if result == "" {
+			return name + " 完成"
+		}
+		return name + " 完成：" + result
+	}
+	return ""
+}
+
+// mobileAgentProgressLimit caps the trace a job keeps. The phone shows the
+// tail; the point is what the agent is doing now, not a transcript.
+const mobileAgentProgressLimit = 40
+
+func mobileAppendProgress(lines []string, line string) []string {
+	if strings.TrimSpace(line) == "" {
+		return lines
+	}
+	lines = append(lines, line)
+	if len(lines) > mobileAgentProgressLimit {
+		lines = lines[len(lines)-mobileAgentProgressLimit:]
+	}
+	return lines
 }

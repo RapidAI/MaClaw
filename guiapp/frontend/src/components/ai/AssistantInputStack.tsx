@@ -22,6 +22,8 @@ interface AssistantInputStackProps {
     onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     cancelPending: boolean;
     cancelSession?: unknown;
+    /** Stop-button tooltip override — a mirrored remote/cloud task stops remotely. */
+    cancelTitle?: string;
     clearSelectedFile?: () => void;
     editingEntryId: string | null;
     exitHistoryBrowsing: () => boolean;
@@ -103,7 +105,7 @@ interface AssistantInputStackProps {
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
-        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction, editingEntryId,
+        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, cancelTitle, clearSelectedFile, composeAction, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
@@ -178,6 +180,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     canSend={canSend}
                     cancelPending={cancelPending}
                     cancelSession={cancelSession}
+                    cancelTitle={cancelTitle}
                     clearSelectedFile={clearSelectedFile}
                     composeAction={composeAction}
                     exitHistoryBrowsing={exitHistoryBrowsing}

@@ -11239,12 +11239,33 @@ export namespace main {
 	        this.scopes = source["scopes"];
 	    }
 	}
+	export class CloudAgentGitRepository {
+	    name: string;
+	    description?: string;
+	    web_url?: string;
+	    default_branch?: string;
+	    updated_at?: string;
+	    private?: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudAgentGitRepository(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.web_url = source["web_url"];
+	        this.default_branch = source["default_branch"];
+	        this.updated_at = source["updated_at"];
+	        this.private = source["private"];
+	    }
+	}
 	export class CloudAgentGitHubAccount {
 	    connected: boolean;
 	    login?: string;
 	    name?: string;
 	    email?: string;
-	    token?: string;
 	    repo_scope: boolean;
 	    github_app_token?: boolean;
 
@@ -11258,7 +11279,6 @@ export namespace main {
 	        this.login = source["login"];
 	        this.name = source["name"];
 	        this.email = source["email"];
-	        this.token = source["token"];
 	        this.repo_scope = source["repo_scope"];
 	        this.github_app_token = source["github_app_token"];
 	    }
@@ -11269,7 +11289,6 @@ export namespace main {
 	    name?: string;
 	    email?: string;
 	    origin?: string;
-	    token?: string;
 	    repo_scope: boolean;
 
 	    static createFrom(source: any = {}) {
@@ -11283,7 +11302,6 @@ export namespace main {
 	        this.name = source["name"];
 	        this.email = source["email"];
 	        this.origin = source["origin"];
-	        this.token = source["token"];
 	        this.repo_scope = source["repo_scope"];
 	    }
 	}

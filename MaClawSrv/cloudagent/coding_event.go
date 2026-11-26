@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 )
 
 // Cloud coding turns report tool and phase activity with the same
@@ -78,8 +80,10 @@ func (rt *Runtime) emitToolStarted(inst *instance, taskID, requestID, name, args
 
 // emitToolFinished reports the call's close. failed carries the host's
 // own verdict — a tool result string alone cannot tell an error body from
-// output that merely mentions one.
-func (rt *Runtime) emitToolFinished(inst *instance, taskID, requestID, name, argsJSON, result string, failed bool, duration time.Duration) {
+// output that merely mentions one. A non-empty write carries the write_file
+// call's canonical path and exact line counts, the same operand the
+// desktop's Edit cards show.
+func (rt *Runtime) emitToolFinished(inst *instance, taskID, requestID, name, argsJSON, result string, failed bool, duration time.Duration, write hostWriteEvent) {
 	event := cloudCodingEvent("tool_finished", "running")
 	event["detail"] = strings.TrimSpace(name)
 	cloudToolEventArgs(event, name, argsJSON)
@@ -90,6 +94,41 @@ func (rt *Runtime) emitToolFinished(inst *instance, taskID, requestID, name, arg
 	}
 	event["outcome"] = outcome
 	event["duration_ms"] = duration.Milliseconds()
+	if write.path != "" {
+		event["files"] = []string{write.path}
+		if write.hasCounts {
+			event["added"] = write.added
+			event["removed"] = write.removed
+		}
+	}
+	rt.emitCodingEvent(inst, taskID, requestID, event)
+}
+
+// emitCodingDiffSummary reports the turn's workspace change set — the same
+// summary row the desktop coding trail carries, so the viewer shows what
+// changed without opening the final answer.
+func (rt *Runtime) emitCodingDiffSummary(inst *instance, taskID, requestID string, changes []codingagent.FinalAnswerFileChangeFact) {
+	if len(changes) == 0 {
+		return
+	}
+	event := cloudCodingEvent("diff_summary", "result")
+	files := make([]string, 0, len(changes))
+	fileChanges := make([]map[string]any, 0, len(changes))
+	added, removed := 0, 0
+	for _, change := range changes {
+		files = append(files, change.Path)
+		fileChanges = append(fileChanges, map[string]any{
+			"path":    change.Path,
+			"added":   change.Added,
+			"removed": change.Removed,
+		})
+		added += change.Added
+		removed += change.Removed
+	}
+	event["files"] = files
+	event["file_changes"] = fileChanges
+	event["added"] = added
+	event["removed"] = removed
 	rt.emitCodingEvent(inst, taskID, requestID, event)
 }
 

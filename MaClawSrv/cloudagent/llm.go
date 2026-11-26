@@ -50,6 +50,20 @@ type CustomLLM struct {
 	ContextLength   int    `json:"context_length,omitempty"`
 	TimeoutSec      int    `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	// ThinkingMode is the owner's desktop thinking level ("" auto | low |
+	// high | max | none). SaveLLM mirrors it onto the instance spec so the
+	// official fallback branch applies it too.
+	ThinkingMode string `json:"thinking_mode,omitempty"`
+}
+
+// normalizeThinkingLevel folds a desktop thinking level to the values
+// ApplyGlobalThinkingLevel understands; anything else means auto.
+func normalizeThinkingLevel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low", "high", "max", "none":
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	return ""
 }
 
 func (rt *Runtime) newHTTPClient() *http.Client {
@@ -177,6 +191,10 @@ func (rt *Runtime) llmConfig(inst *instance) (corelib.AppConfig, error) {
 		// Zhipu default-model rename resolves to the current id.
 		model = corelib.MigrateZhipuCodingModel(strings.TrimSpace(secret.Label), model)
 		return corelib.AppConfig{
+			// The owner's thinking level rides the same field the desktop's
+			// global config uses — maclawCfg applies it with the same
+			// ApplyGlobalThinkingLevel call a local coding turn gets.
+			MaclawLLMThinkingMode: normalizeThinkingLevel(inst.meta.LLMThinkingMode),
 			MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 				Name:            strings.TrimSpace(secret.Label),
 				URL:             secret.URL,
@@ -201,6 +219,7 @@ func (rt *Runtime) llmConfig(inst *instance) (corelib.AppConfig, error) {
 	// Official turns speak the Responses API. Hub's loopback chat route
 	// reuses LLMV1ResponsesHandler, which rejects a chat-completions body.
 	return corelib.AppConfig{
+		MaclawLLMThinkingMode: normalizeThinkingLevel(inst.meta.LLMThinkingMode),
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
 			Name:     "hub-llm",
 			URL:      strings.TrimRight(inst.meta.HubLoopback, "/"),
@@ -277,6 +296,7 @@ func (rt *Runtime) SaveLLM(id string, in CustomLLM) error {
 	in.WireAPI = strings.ToLower(strings.TrimSpace(in.WireAPI))
 	in.AgentType = strings.TrimSpace(in.AgentType)
 	in.Label = strings.TrimSpace(in.Label)
+	in.ThinkingMode = normalizeThinkingLevel(in.ThinkingMode)
 	if in.ContextLength < 0 {
 		in.ContextLength = 0
 	}
@@ -314,6 +334,11 @@ func (rt *Runtime) SaveLLM(id string, in CustomLLM) error {
 	// Always store the model, including empty: a provider switch without a
 	// model must not keep the previous endpoint's model name.
 	inst.meta.LLMModel = in.Model
+	// The thinking level is owner preference state — it survives provider
+	// switches, so a save without it keeps the previous level.
+	if in.ThinkingMode != "" {
+		inst.meta.LLMThinkingMode = in.ThinkingMode
+	}
 	return writeMeta(inst.dir, inst.meta)
 }
 
@@ -368,6 +393,24 @@ func hostOnly(value string) string {
 }
 
 var heartbeatHTTP = &http.Client{Timeout: 5 * time.Second}
+
+// noteTurnStarted gives Hub immediate evidence for a turn that began without
+// going through Hub's accept bookkeeping — chiefly a queued row drained after
+// the previous turn. The beat is asynchronous: control-plane latency must not
+// depend on a loopback POST, and a very fast turn is still ordered correctly
+// because Hub never resurrects a row already finished.
+func (rt *Runtime) noteTurnStarted(inst *instance, taskID, requestID string) {
+	if rt == nil || inst == nil || !hubCallable(inst.meta) || rt.adminSecret == "" {
+		return
+	}
+	go func() {
+		enabled, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, false)
+		if ok && !enabled {
+			ids, _ := inst.book.interrupt(time.Now(), heartbeatNote, time.Time{})
+			rt.cancelIDs(ids)
+		}
+	}()
+}
 
 // postHeartbeat reports whether Hub accepted the beat and the feature is still on.
 // A failed POST, a non-loopback hub, or a body without enabled does not count as a beat.

@@ -5,6 +5,7 @@ package cloudagent
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -114,14 +115,18 @@ func logDetail(err error) string {
 
 // Instance is one user's cloud agent. Kind is fixed at creation.
 type Instance struct {
-	ID               string `json:"id"`
-	TenantID         string `json:"tenant_id"`
-	OwnerUserID      string `json:"owner_user_id"`
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	LLMMode          string `json:"llm_mode"`
-	LLMLabel         string `json:"llm_label"`
-	LLMModel         string `json:"llm_model"`
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id"`
+	OwnerUserID string `json:"owner_user_id"`
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	LLMMode     string `json:"llm_mode"`
+	LLMLabel    string `json:"llm_label"`
+	LLMModel    string `json:"llm_model"`
+	// LLMThinkingMode is create-time owner preference state forwarded to the
+	// srv provision; Hub does not persist it (the srv spec keeps the value
+	// and a re-provision without it preserves the old one).
+	LLMThinkingMode  string `json:"llm_thinking_mode,omitempty"`
 	Status           string `json:"status"`
 	CloudWorkspaceID string `json:"cloud_workspace_id"`
 	// SrvNodeID is the private node srv this instance was provisioned on.
@@ -165,9 +170,14 @@ type UserLimits struct {
 
 // CreateInput is the user create body.
 type CreateInput struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	LLMMode string `json:"llm_mode"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// ThinkingMode carries the creator's desktop thinking level
+	// ("" auto | low | high | max | none) so the srv requests reasoning
+	// exactly like the desktop's own coding agent. Not stored on Hub: the
+	// srv spec keeps it and a re-provision without it preserves the old value.
+	ThinkingMode string `json:"thinking_mode,omitempty"`
+	LLMMode      string `json:"llm_mode"`
 }
 
 // PatchInput renames an instance or switches its LLM mode. Kind is rejected.
@@ -191,6 +201,9 @@ type CustomLLM struct {
 	TimeoutSec      int    `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	Label           string `json:"label"`
+	// ThinkingMode rides to the srv untouched (the owner's desktop thinking
+	// level); Hub does not store it.
+	ThinkingMode string `json:"thinking_mode,omitempty"`
 }
 
 // GitConnect is forwarded to maclawsrv. The token is not written to Hub.
@@ -224,4 +237,15 @@ type GitPublic struct {
 // base URL and admin secret from that record and does not call botmgmt.
 type Settings interface {
 	Get(ctx context.Context, key string) (string, error)
+}
+
+// normalizeThinkingLevel folds a desktop thinking level to the values the
+// srv's ApplyGlobalThinkingLevel understands; anything else means auto.
+func normalizeThinkingLevel(value string) string {
+	level := strings.ToLower(strings.TrimSpace(value))
+	switch level {
+	case "low", "high", "max", "none":
+		return level
+	}
+	return ""
 }

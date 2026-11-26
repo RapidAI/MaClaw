@@ -311,16 +311,37 @@ const cursorJogBudget = 3
 // to be spread across the seconds the stuck state takes to settle.
 const cursorJogMinInterval = int64(900 * time.Millisecond)
 
-// checkWebViewCursorHidden detects a hidden or NULL cursor while the pointer
-// is over this window — the state the WebView2 browser process can leak
-// across controllers — and jogs the controllers into re-evaluating it. The
-// display count stays healthy in that state, so ShowCursor cannot reach it;
-// SetCursor from this process cannot either, because the cursor belongs to
-// the thread that owns the window under the pointer (the msedgewebview2
-// renderer). After the first few jogs the watch re-jogs only when the
-// pointer moved while invisible — the signature of the stuck state — so a
-// stationary legitimate hide is left alone. Runs on the window procedure
-// thread.
+// isSizingCursorHandle reports one of the shared Win32 resize cursors. System
+// cursors are shared handles, so comparing against LoadCursor is enough; the
+// loader is injected for tests.
+func isSizingCursorHandle(cursor w32.HCURSOR) bool {
+	return isSizingCursorHandleWith(cursor, w32.LoadCursorWithResourceID)
+}
+
+func isSizingCursorHandleWith(cursor w32.HCURSOR, loadCursor func(w32.HINSTANCE, uint16) w32.HCURSOR) bool {
+	if cursor == 0 || loadCursor == nil {
+		return false
+	}
+	for _, id := range []uint16{w32.IDC_SIZENWSE, w32.IDC_SIZENESW, w32.IDC_SIZEWE, w32.IDC_SIZENS} {
+		if loadCursor(0, id) == cursor {
+			return true
+		}
+	}
+	return false
+}
+
+// checkWebViewCursorHidden detects a hidden, NULL, or stuck sizing cursor
+// while the pointer is over this window — states the WebView2 browser process
+// can leak across controllers — and jogs the controllers into re-evaluating
+// it. The display count stays healthy in those states, so ShowCursor cannot
+// reach them; SetCursor from this process cannot either, because the cursor
+// belongs to the thread that owns the window under the pointer (the
+// msedgewebview2 renderer). A sizing cursor is included while maximized or
+// fullscreen: outer-window resizing is impossible there, so one latched during
+// the transition is stale input state rather than a cursor the user can act on.
+// After the first few jogs the watch re-jogs only when the pointer moved while
+// still in that state — the signature of the stuck state — so a stationary
+// legitimate hide is left alone. Runs on the window procedure thread.
 func (w *Window) checkWebViewCursorHidden() {
 	var info w32.CURSORINFO
 	if !w32.GetCursorInfo(&info) {
@@ -329,7 +350,8 @@ func (w *Window) checkWebViewCursorHidden() {
 	}
 	nullCursor := info.HCursor == 0
 	hidden := info.Flags&w32.CURSOR_SHOWING == 0
-	if !nullCursor && !hidden {
+	stuckSizing := (w.Form.IsFullScreen() || w.IsMaximised()) && isSizingCursorHandle(info.HCursor)
+	if !nullCursor && !hidden && !stuckSizing {
 		w.clearCursorHidden()
 		return
 	}
@@ -348,15 +370,21 @@ func (w *Window) checkWebViewCursorHidden() {
 	w.cursorHiddenStreak++
 	w.cursorJogNanos = now
 	if last := cursorJogLogNanos.Load(); now-last >= cursorRestoreLogInterval && cursorJogLogNanos.CompareAndSwap(last, now) {
-		log.Printf("[cursor] hidden over window at %d,%d (null=%v); jogging webviews", x, y, nullCursor)
+		log.Printf("[cursor] abnormal cursor over window at %d,%d (null=%v sizing=%v); jogging webviews", x, y, nullCursor, stuckSizing)
 	}
-	w.jogWebViewCursor()
+	inputSent := w.jogWebViewCursorInput(x, y)
+	// A sizing cursor can also belong to an in-page splitter, so that case gets
+	// only the lightweight input re-hit-test. Hidden/NULL cursor states need the
+	// controller resize that reproduces the user's manual restore workaround.
+	if hidden || nullCursor || !inputSent {
+		w.jogWebViewCursor()
+	}
 }
 
-// cursorJogShould reports whether a hidden-cursor detection tick should jog
-// the controllers. Within the episode budget every detection jogs; past it,
-// only a pointer that moved while still invisible — the stuck signature —
-// earns another jog.
+// cursorJogShould reports whether an abnormal-cursor detection tick should
+// jog the controllers. Within the episode budget every detection jogs; past
+// it, only a pointer that moved while still in that state — the stuck
+// signature — earns another jog.
 func cursorJogShould(streak int, moved bool) bool {
 	return streak < cursorJogBudget || moved
 }
@@ -374,6 +402,97 @@ func (w *Window) clearCursorHidden() {
 func (w *Window) pointOverWindow(x, y int) bool {
 	hit := w32.WindowFromPoint(w32.POINT{X: int32(x), Y: int32(y)})
 	return hit != 0 && w32.GetAncestor(hit, w32.GA_ROOT) == w.Handle()
+}
+
+// cursorMouseMoveLParam packs a client coordinate the way WM_MOUSEMOVE expects:
+// signed 16-bit lows, with negative coordinates preserved by the uint16 wrap.
+func cursorMouseMoveLParam(x, y int) uintptr {
+	return uintptr(uint32(uint16(x))) | uintptr(uint32(uint16(y)))<<16
+}
+
+// Mouse-message wParam bits. Win32 has no MK_* names here, so they are local.
+const (
+	mkLButton  = 0x0001
+	mkRButton  = 0x0002
+	mkShift    = 0x0004
+	mkControl  = 0x0008
+	mkMButton  = 0x0010
+	mkXButton1 = 0x0020
+	mkXButton2 = 0x0040
+)
+
+// cursorMouseMoveWParamWith builds the modifier word a real WM_MOUSEMOVE
+// carries. A zero word would tell the receiver no button is held even while
+// the user is mid-drag, which could break an in-progress drag gesture in the
+// page; the key state is injected for tests.
+func cursorMouseMoveWParamWith(keyState func(int) uint16) uintptr {
+	down := func(vk int) bool { return keyState(vk)&0x8000 != 0 }
+	var wp uintptr
+	if down(w32.VK_LBUTTON) {
+		wp |= mkLButton
+	}
+	if down(w32.VK_RBUTTON) {
+		wp |= mkRButton
+	}
+	if down(w32.VK_MBUTTON) {
+		wp |= mkMButton
+	}
+	if down(w32.VK_XBUTTON1) {
+		wp |= mkXButton1
+	}
+	if down(w32.VK_XBUTTON2) {
+		wp |= mkXButton2
+	}
+	if down(w32.VK_SHIFT) {
+		wp |= mkShift
+	}
+	if down(w32.VK_CONTROL) {
+		wp |= mkControl
+	}
+	return wp
+}
+
+func cursorMouseMoveWParam() uintptr {
+	return cursorMouseMoveWParamWith(w32.GetAsyncKeyState)
+}
+
+// cursorInputMessageTimeoutMS bounds the synchronous jog. WebView2 normally
+// answers these simple messages immediately; a hung renderer must not take the
+// host window procedure with it.
+const cursorInputMessageTimeoutMS = 150
+
+// smtoAbortIfHung is SendMessageTimeout's SMTO_ABORTIFHUNG flag.
+const smtoAbortIfHung = 0x0002
+
+// jogWebViewCursorInput asks the exact window under the pointer to re-run its
+// cursor hit-test. The controller Resize jog is enough for some stuck states,
+// but a fullscreen sizing cursor can remain selected after the page has already
+// cleared documentElement.style.cursor; the synthetic cursor/mouse pair makes
+// Chromium evaluate the current element instead of forcing any particular
+// cursor. Sending matches the proven recovery path; the short timeout plus a
+// posted fallback keeps a hung renderer from blocking this UI thread.
+func (w *Window) jogWebViewCursorInput(x, y int) bool {
+	hit := w32.WindowFromPoint(w32.POINT{X: int32(x), Y: int32(y)})
+	if hit == 0 || w32.GetAncestor(hit, w32.GA_ROOT) != w.Handle() {
+		return false
+	}
+	sent := false
+	setCursorLP := uintptr(w32.HTCLIENT | w32.WM_MOUSEMOVE<<16)
+	if _, ok := w32.SendMessageTimeout(hit, w32.WM_SETCURSOR, uintptr(hit), setCursorLP, smtoAbortIfHung, cursorInputMessageTimeoutMS); ok {
+		sent = true
+	} else {
+		sent = w32.PostMessage(hit, w32.WM_SETCURSOR, uintptr(hit), setCursorLP)
+	}
+	if clientX, clientY, ok := w32.ScreenToClient(hit, x, y); ok {
+		moveLP := cursorMouseMoveLParam(clientX, clientY)
+		moveWP := cursorMouseMoveWParam()
+		if _, ok := w32.SendMessageTimeout(hit, w32.WM_MOUSEMOVE, moveWP, moveLP, smtoAbortIfHung, cursorInputMessageTimeoutMS); ok {
+			sent = true
+		} else {
+			sent = w32.PostMessage(hit, w32.WM_MOUSEMOVE, moveWP, moveLP) || sent
+		}
+	}
+	return sent
 }
 
 // jogWebViewCursor replays what a manual window restore runs on the WebView2

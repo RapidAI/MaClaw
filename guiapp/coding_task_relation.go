@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
@@ -87,7 +88,15 @@ func (h verifiedCodingTaskHandle) complete() bool {
 // verified handle to a fresh runtime attempt and register SemanticTaskAnchor.
 // Keeping the boundary explicit prevents a runtime task from becoming a
 // backdoor creator of semantic roots.
-type codingTaskRelationService struct{ db *sql.DB }
+type codingTaskRelationService struct {
+	// mu linearizes close and handle lifecycle transitions with the cross-store
+	// attempt bind. SQLite serializes individual statements, but it cannot serialize
+	// "verify handle -> anchor runtime attempt -> record the bridge" as one
+	// in-process lifecycle decision. Cancellation and continuation must observe
+	// that decision either wholly before or wholly after the bind.
+	mu sync.Mutex
+	db *sql.DB
+}
 
 func newCodingTaskRelationService(dbPath string) (*codingTaskRelationService, error) {
 	dbPath = strings.TrimSpace(dbPath)
@@ -99,10 +108,14 @@ func newCodingTaskRelationService(dbPath string) (*codingTaskRelationService, er
 	}
 	// modernc.org/sqlite ignores mattn-style _journal_mode/_busy_timeout —
 	// they must ride _pragma.
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
+	// The service mutex already serializes lifecycle decisions; pin the pool to
+	// one connection as well so no pooled SQLite connection can retain an older
+	// read snapshot across the verify/bridge transaction boundary.
+	db.SetMaxOpenConns(1)
 	service := &codingTaskRelationService{db: db}
 	if err := service.migrate(); err != nil {
 		_ = db.Close()
@@ -145,15 +158,48 @@ CREATE INDEX IF NOT EXISTS coding_task_attempt_bindings_task ON coding_task_atte
 }
 
 func (s *codingTaskRelationService) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	db := s.db
+	s.db = nil
+	retireErr := retireActiveCodingTaskHandles(db, time.Now().UTC())
+	closeErr := db.Close()
+	if retireErr != nil {
+		return retireErr
+	}
+	return closeErr
+}
+
+func retireActiveCodingTaskHandles(db *sql.DB, now time.Time) error {
+	if db == nil {
+		return nil
+	}
+	now = normalizedCodingRelationTime(now)
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE coding_task_relations SET status=?,revoked_at=? WHERE status=?`, codingTaskRelationRevoked, now.UnixNano(), codingTaskRelationActive); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CreateCodingTask issues a new semantic root and first turn. RootTaskID and
 // TurnID are generated here, never accepted from the UI/agent/runtime.
 func (s *codingTaskRelationService) CreateCodingTask(subject verifiedCodingSubject, now time.Time, ttl time.Duration) (verifiedCodingTaskHandle, error) {
+	if s == nil {
+		return verifiedCodingTaskHandle{}, fmt.Errorf("coding task relation service is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validVerifiedCodingSubject(subject) {
 		return verifiedCodingTaskHandle{}, errVerifiedCodingSubjectInvalid
 	}
@@ -164,10 +210,15 @@ func (s *codingTaskRelationService) CreateCodingTask(subject verifiedCodingSubje
 // a fresh turn for the same root. This gives retry/amendment flows an explicit
 // continuation proof and makes replaying an old handle fail closed.
 func (s *codingTaskRelationService) VerifyCodingContinuation(subject verifiedCodingSubject, previous verifiedCodingTaskHandle, now time.Time, ttl time.Duration) (verifiedCodingTaskHandle, error) {
+	if s == nil {
+		return verifiedCodingTaskHandle{}, fmt.Errorf("coding task relation service is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validVerifiedCodingSubject(subject) {
 		return verifiedCodingTaskHandle{}, errVerifiedCodingSubjectInvalid
 	}
-	if s == nil || s.db == nil || !previous.complete() {
+	if s.db == nil || !previous.complete() {
 		return verifiedCodingTaskHandle{}, errCodingTaskHandleNotFound
 	}
 	now = normalizedCodingRelationTime(now)
@@ -186,8 +237,16 @@ func (s *codingTaskRelationService) VerifyCodingContinuation(subject verifiedCod
 	if err := authorizeCodingTaskHandle(subject, previous, current, status, now); err != nil {
 		return verifiedCodingTaskHandle{}, err
 	}
-	if _, err = tx.Exec(`UPDATE coding_task_relations SET status=?,consumed_at=? WHERE handle_id=? AND status=?`, codingTaskRelationConsumed, now.UnixNano(), current.handleID, codingTaskRelationActive); err != nil {
+	consumeResult, err := tx.Exec(`UPDATE coding_task_relations SET status=?,consumed_at=? WHERE handle_id=? AND status=?`, codingTaskRelationConsumed, now.UnixNano(), current.handleID, codingTaskRelationActive)
+	if err != nil {
 		return verifiedCodingTaskHandle{}, err
+	}
+	consumeAffected, err := consumeResult.RowsAffected()
+	if err != nil {
+		return verifiedCodingTaskHandle{}, err
+	}
+	if consumeAffected != 1 {
+		return verifiedCodingTaskHandle{}, errCodingTaskHandleConsumed
 	}
 	next := verifiedCodingTaskHandle{
 		handleID: uuid.NewString(), tenantID: subject.tenantID, principalID: subject.principalID, sessionID: subject.sessionID,
@@ -209,10 +268,15 @@ func (s *codingTaskRelationService) VerifyCodingContinuation(subject verifiedCod
 // TurnID. Parent handles remain active: one parent may admit several bounded
 // read-only children, each with its own child lineage record.
 func (s *codingTaskRelationService) IssueChildCodingTurn(subject verifiedCodingSubject, parent verifiedCodingTaskHandle, now time.Time, ttl time.Duration) (verifiedCodingTaskHandle, error) {
+	if s == nil {
+		return verifiedCodingTaskHandle{}, fmt.Errorf("coding task relation service is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validVerifiedCodingSubject(subject) {
 		return verifiedCodingTaskHandle{}, errVerifiedCodingSubjectInvalid
 	}
-	if s == nil || s.db == nil || !parent.complete() {
+	if s.db == nil || !parent.complete() {
 		return verifiedCodingTaskHandle{}, errCodingTaskHandleNotFound
 	}
 	now = normalizedCodingRelationTime(now)
@@ -248,10 +312,15 @@ func (s *codingTaskRelationService) IssueChildCodingTurn(subject verifiedCodingS
 // RevokeCodingTaskHandle is the R1a cancellation boundary. A revoked handle
 // cannot later be used for continuation or R1b attempt binding.
 func (s *codingTaskRelationService) RevokeCodingTaskHandle(subject verifiedCodingSubject, handle verifiedCodingTaskHandle, now time.Time) error {
+	if s == nil {
+		return fmt.Errorf("coding task relation service is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validVerifiedCodingSubject(subject) {
 		return errVerifiedCodingSubjectInvalid
 	}
-	if s == nil || s.db == nil || !handle.complete() {
+	if s.db == nil || !handle.complete() {
 		return errCodingTaskHandleNotFound
 	}
 	now = normalizedCodingRelationTime(now)
@@ -275,87 +344,160 @@ func (s *codingTaskRelationService) RevokeCodingTaskHandle(subject verifiedCodin
 	// after a parent was consumed into a later turn and must fence every active
 	// child descendant as well. Otherwise a child issued before cancellation
 	// could obtain a new runtime attempt after its parent task was stopped.
-	if _, err = tx.Exec(`WITH RECURSIVE descendants(handle_id) AS (
+	revokeResult, err := tx.Exec(`WITH RECURSIVE descendants(handle_id) AS (
  SELECT handle_id FROM coding_task_relations WHERE handle_id=?
  UNION ALL
  SELECT relation.handle_id FROM coding_task_relations relation
  JOIN descendants parent ON relation.parent_handle_id=parent.handle_id
 )
 UPDATE coding_task_relations SET status=?,revoked_at=?
-WHERE handle_id IN descendants AND status=?`, current.handleID, codingTaskRelationRevoked, now.UnixNano(), codingTaskRelationActive); err != nil {
+WHERE handle_id IN descendants AND status=?`, current.handleID, codingTaskRelationRevoked, now.UnixNano(), codingTaskRelationActive)
+	if err != nil {
 		return err
+	}
+	revokeAffected, err := revokeResult.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if revokeAffected == 0 && status == codingTaskRelationActive {
+		return errCodingTaskHandleConsumed
 	}
 	return tx.Commit()
 }
 
 // BindCodingAttempt is R1b's sole bridge from an authenticated task relation
 // to a runtime attempt. It verifies the opaque handle in its durable scope,
-// fences it to exactly one fresh attempt, and then registers the resulting
-// anchor. Neither the runtime nor the agent is allowed to supply root/turn
-// fields directly. Repeating the same binding is idempotent; any drift in the
-// attempt or anchor is rejected.
+// registers the turn-unique runtime anchor, and only then records the attempt
+// bridge. Neither the runtime nor the agent is allowed to supply root/turn
+// fields directly. Repeating the same binding is idempotent while the attempt
+// remains live; any drift in the attempt or anchor is rejected.
 func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubject, handle verifiedCodingTaskHandle, store codingruntime.Store, request codingruntime.ExecutionRequest, now time.Time) (*trustedCodingInvocationIdentity, error) {
 	if !validVerifiedCodingSubject(subject) {
 		return nil, errVerifiedCodingSubjectInvalid
 	}
-	if s == nil || s.db == nil || !handle.complete() || store == nil || strings.TrimSpace(request.Task.TaskID) == "" || strings.TrimSpace(request.Attempt.AttemptID) == "" || request.Attempt.TaskID != request.Task.TaskID {
+	if s == nil {
+		return nil, fmt.Errorf("coding task relation service is unavailable")
+	}
+	if !handle.complete() || store == nil || strings.TrimSpace(request.Task.TaskID) == "" || strings.TrimSpace(request.Attempt.AttemptID) == "" || request.Attempt.TaskID != request.Task.TaskID {
 		return nil, errCodingTaskHandleNotFound
+	}
+	if request.Attempt.Status != codingruntime.TaskRunning {
+		return nil, fmt.Errorf("%w: bind coding attempt is not running", codingruntime.ErrInvalidTransition)
 	}
 	anchors, ok := store.(codingruntime.SemanticTaskAnchorStore)
 	if !ok || anchors == nil {
 		return nil, fmt.Errorf("coding runtime semantic anchor store is unavailable")
 	}
 	now = normalizedCodingRelationTime(now)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil, fmt.Errorf("coding task relation service is unavailable")
+	}
+
+	// First verify the durable handle and inspect any existing bridge row. This
+	// preflight rejects an already-consumed handle before touching the runtime
+	// ledger; the authoritative write still happens after the anchor below.
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
 	current, status, err := loadCodingTaskHandle(tx, handle.handleID)
 	if err != nil {
+		_ = tx.Rollback()
 		return nil, err
 	}
 	if err := authorizeCodingTaskHandle(subject, handle, current, status, now); err != nil {
 		if errors.Is(err, errCodingTaskHandleExpired) && status == codingTaskRelationActive {
 			_, _ = tx.Exec(`UPDATE coding_task_relations SET status=? WHERE handle_id=? AND status=?`, codingTaskRelationExpired, current.handleID, codingTaskRelationActive)
 			_ = tx.Commit()
+		} else {
+			_ = tx.Rollback()
 		}
 		return nil, err
 	}
 	var boundTaskID, boundAttemptID string
+	bindErr := tx.QueryRow(`SELECT runtime_task_id,runtime_attempt_id FROM coding_task_attempt_bindings WHERE handle_id=?`, current.handleID).Scan(&boundTaskID, &boundAttemptID)
+	if bindErr == nil {
+		if boundTaskID != request.Task.TaskID || boundAttemptID != request.Attempt.AttemptID {
+			_ = tx.Rollback()
+			return nil, errCodingTaskHandleConsumed
+		}
+	} else if !errors.Is(bindErr, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return nil, bindErr
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	identity := &trustedCodingInvocationIdentity{
+		TenantID: current.tenantID, PrincipalID: current.principalID, SessionID: current.sessionID,
+		RootTaskID: current.rootTaskID, TurnID: current.turnID,
+	}
+	// The runtime anchor is the first durable fence. It is atomically unique for
+	// this semantic turn in the runtime store, so a failure here cannot leave the
+	// relation database claiming that the handle was already bound. The reverse
+	// ordering used to commit that relation row first and then lose the anchor to
+	// a transient runtime-store error, producing a permanent half-bound handle.
+	if _, err = anchors.RegisterSemanticTaskAnchor(codingruntime.SemanticTaskAnchor{
+		RuntimeTaskID: request.Task.TaskID, RuntimeAttemptID: request.Attempt.AttemptID,
+		TenantID: identity.TenantID, PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
+		RootTaskID: identity.RootTaskID, TurnID: identity.TurnID,
+	}); err != nil {
+		return nil, fmt.Errorf("register coding semantic task anchor: %w", err)
+	}
+	resolved, err := anchors.ResolveSemanticTaskAnchor(request.Task.TaskID, request.Attempt.AttemptID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve coding semantic task anchor: %w", err)
+	}
+	resolvedIdentity, ok := trustedCodingIdentityFromAnchor(resolved)
+	if !ok || resolvedIdentity == nil || *resolvedIdentity != *identity {
+		return nil, fmt.Errorf("resolve coding semantic task anchor")
+	}
+
+	// Revalidate and record the bridge only after the anchor exists. If this
+	// write fails, retrying the same attempt is safe: anchor registration is
+	// idempotent for that attempt, while a different attempt is rejected by the
+	// runtime turn-unique anchor before this relation row can drift.
+	tx, err = s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	current, status, err = loadCodingTaskHandle(tx, handle.handleID)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := authorizeCodingTaskHandle(subject, handle, current, status, now); err != nil {
+		if errors.Is(err, errCodingTaskHandleExpired) && status == codingTaskRelationActive {
+			_, _ = tx.Exec(`UPDATE coding_task_relations SET status=? WHERE handle_id=? AND status=?`, codingTaskRelationExpired, current.handleID, codingTaskRelationActive)
+			_ = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		return nil, err
+	}
+	boundTaskID, boundAttemptID = "", ""
 	err = tx.QueryRow(`SELECT runtime_task_id,runtime_attempt_id FROM coding_task_attempt_bindings WHERE handle_id=?`, current.handleID).Scan(&boundTaskID, &boundAttemptID)
 	if err == nil {
 		if boundTaskID != request.Task.TaskID || boundAttemptID != request.Attempt.AttemptID {
+			_ = tx.Rollback()
 			return nil, errCodingTaskHandleConsumed
 		}
 	} else if errors.Is(err, sql.ErrNoRows) {
 		if _, err = tx.Exec(`INSERT INTO coding_task_attempt_bindings(handle_id,runtime_task_id,runtime_attempt_id,bound_at) VALUES(?,?,?,?)`, current.handleID, request.Task.TaskID, request.Attempt.AttemptID, now.UnixNano()); err != nil {
+			_ = tx.Rollback()
 			return nil, errCodingTaskHandleConsumed
 		}
 	} else {
+		_ = tx.Rollback()
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	identity := &trustedCodingInvocationIdentity{
-		TenantID: current.tenantID, PrincipalID: current.principalID, SessionID: current.sessionID,
-		RootTaskID: current.rootTaskID, TurnID: current.turnID,
-	}
-	if !registerTrustedCodingInvocationIdentity(store, request, identity) {
-		// A same-attempt retry may arrive after the anchor was already created;
-		// stores use independently generated CreatedAt, so structural equality
-		// is not a safe idempotence test. Resolve and compare only the immutable
-		// semantic identity before deciding that the bind drifted.
-		if resolved, ok := resolveTrustedCodingInvocationIdentity(store, request); !ok || resolved == nil || *resolved != *identity {
-			return nil, fmt.Errorf("register coding semantic task anchor")
-		}
-	}
-	resolved, ok := resolveTrustedCodingInvocationIdentity(store, request)
-	if !ok || resolved == nil || *resolved != *identity {
-		return nil, fmt.Errorf("resolve coding semantic task anchor")
-	}
-	return resolved, nil
+	return resolvedIdentity, nil
 }
 
 func (s *codingTaskRelationService) insertHandle(subject verifiedCodingSubject, rootTaskID, turnID, parentHandleID string, now time.Time, ttl time.Duration) (verifiedCodingTaskHandle, error) {

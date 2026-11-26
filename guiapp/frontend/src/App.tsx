@@ -190,6 +190,7 @@ import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
+import { useSidebarCollapse } from './components/layout/useSidebarCollapse';
 import { isProjectTabOpen, type TaskContextMenu } from './components/layout/SidebarTaskManagement';
 import { buddyConfirmTarget, buddyFocusTarget, buildBuddySnapshot } from './components/layout/buddySnapshot';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
@@ -567,6 +568,9 @@ function App() {
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
     const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(readSavedTaskPaneWidth);
     const [isTaskManagementResizing, setIsTaskManagementResizing] = useState(false);
+    // Collapse toggles for 功能栏 (nav rail) + 任务列表 (task pane): title-bar buttons,
+    // Ctrl+B / Ctrl+Shift+B, divider double-click and the 工作台 nav item share this state.
+    const { navRailCollapsed, taskPaneCollapsed, toggleNavRailCollapsed, toggleTaskPaneCollapsed, openTaskPane } = useSidebarCollapse(navTab);
     const taskManagementResizeStartX = useRef(0);
     const taskManagementResizeStartWidth = useRef(308);
     const taskManagementResizePointerId = useRef<number | null>(null);
@@ -2421,6 +2425,8 @@ function App() {
         }
     }, [taskManagementPaneWidth, isTaskManagementResizing]);
 
+
+
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
@@ -3869,6 +3875,7 @@ function App() {
     const createExpertTask = useCallback((expert: ExpertDefinition, options?: LatexExpertTaskOptions) => {
         const id = String(expert?.id || "").trim();
         if (!id) return;
+        openTaskPane();
         switchTool('ai');
         openNewTaskWizard({
             expertId: id,
@@ -6379,6 +6386,10 @@ ${instruction}`;
                 settingsTab={resolvedSettingsTab}
                 settingsNavSoloTab={settingsNavSoloTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
+                taskPaneCollapsed={taskPaneCollapsed}
+                navRailCollapsed={navRailCollapsed}
+                onToggleTaskPane={toggleTaskPaneCollapsed}
+                onRequestTaskPaneOpen={openTaskPane}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
                 aiLightSchemeId={aiLightSchemeId}
@@ -6605,6 +6616,12 @@ ${instruction}`;
                                 onToggleMaximize: handleAIPanelMaximizeToggle,
                                 onHideWindow: () => { void callBackend(() => WindowHide()); },
                             }}
+                            sidebarToggles={{
+                                paneCollapsed: taskPaneCollapsed,
+                                railCollapsed: navRailCollapsed,
+                                onTogglePane: toggleTaskPaneCollapsed,
+                                onToggleRail: toggleNavRailCollapsed,
+                            }}
                     />
                     </div>
                     </Suspense>
@@ -6626,6 +6643,8 @@ ${instruction}`;
                     handleWindowHide={handleWindowHide}
                     handleWindowMaximizeToggle={handleWindowMaximizeToggle}
                     windowMaximized={windowMaximized}
+                    railCollapsed={navRailCollapsed}
+                    onToggleRail={toggleNavRailCollapsed}
                 />}
                 {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab} style={navTab === 'skills' || navTab === 'bots' ? { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } : undefined}>
                 {navTab === 'bots' && <BotsPageErrorBoundary lang={lang}><Suspense fallback={<div role="status">{localizeText('Loading bots…', '正在加载 Bot…', '正在載入 Bot…')}</div>}><DesktopBotWorkspace lang={lang} userId={desktopBotAccountId(config)} /></Suspense></BotsPageErrorBoundary>}
@@ -6743,7 +6762,7 @@ ${instruction}`;
                             refreshStatus={refreshStatus}
                             refreshKey={refreshKey}
                             tutorialContent={tutorialContent}
-                            switchTool={switchTool}
+                            switchTool={(tool) => { if (tool === 'ai') openTaskPane(); switchTool(tool); }}
                         />
                     )}
                     {navTab === 'gossip' && gossipAllowed && (
@@ -6916,6 +6935,7 @@ ${instruction}`;
                             </div>
                         }>
 							<UtilitiesPage mode={navTab === 'tools' ? 'tools' : 'experts'} lang={lang} active={navTab === 'utilities' || navTab === 'tools'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => {
+                                openTaskPane();
                                 switchTool('ai');
                                 openNewTaskWizard({ expertId: expert.id, expertName: expert.name });
                             }} onOpenVirtualRepositoryTask={(launch) => {

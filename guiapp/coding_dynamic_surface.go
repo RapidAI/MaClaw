@@ -27,9 +27,8 @@ type codingDynamicSurface struct {
 // Coding dynamic surface can enter the durable semantic lifecycle. It is kept
 // separate from LoopContext because LoopContext.ID, Runtime.RequestID,
 // codeSessionID, UserID and project paths are diagnostic/runtime values, not
-// a verified semantic task anchor. This package currently has no verified
-// Coding ingress that supplies all fields, so model-visible dynamic aliases
-// remain fail-closed until the ToolPlan/coordinator integration lands.
+// a verified semantic task anchor. The verified task-relation bind is the sole
+// production ingress that may create this handoff.
 type trustedCodingInvocationIdentity struct {
 	TenantID    string
 	PrincipalID string
@@ -56,50 +55,10 @@ func trustedCodingIdentityFromAnchor(anchor *codingruntime.SemanticTaskAnchor) (
 	return identity, true
 }
 
-func resolveTrustedCodingInvocationIdentity(store codingruntime.Store, request codingruntime.ExecutionRequest) (*trustedCodingInvocationIdentity, bool) {
-	anchors, ok := store.(codingruntime.SemanticTaskAnchorStore)
-	if !ok || anchors == nil {
-		return nil, false
-	}
-	anchor, err := anchors.ResolveSemanticTaskAnchor(request.Task.TaskID, request.Attempt.AttemptID)
-	if err != nil {
-		return nil, false
-	}
-	return trustedCodingIdentityFromAnchor(anchor)
-}
-
-// registerTrustedCodingInvocationIdentity is the sole Coding-host ingress for
-// a previously verified identity. The caller must have obtained identity from
-// authentication/task-relation infrastructure, not from a LoopContext or
-// model input. Registering it against the just-started runtime Attempt makes
-// the later resolver (and restart recovery) prove the linkage independently.
-//
-// Passing nil or an incomplete identity is intentionally a no-op. The caller
-// must subsequently resolve the anchor and remain fail-closed on every error.
-func registerTrustedCodingInvocationIdentity(store codingruntime.Store, request codingruntime.ExecutionRequest, identity *trustedCodingInvocationIdentity) bool {
-	if identity == nil || !identity.complete() {
-		return false
-	}
-	anchors, ok := store.(codingruntime.SemanticTaskAnchorStore)
-	if !ok || anchors == nil {
-		return false
-	}
-	_, err := anchors.RegisterSemanticTaskAnchor(codingruntime.SemanticTaskAnchor{
-		RuntimeTaskID: request.Task.TaskID, RuntimeAttemptID: request.Attempt.AttemptID,
-		TenantID: identity.TenantID, PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
-		RootTaskID: identity.RootTaskID, TurnID: identity.TurnID,
-	})
-	if err != nil {
-		log.Printf("[coding-runtime] semantic anchor register failed task=%s attempt=%s err=%v", request.Task.TaskID, request.Attempt.AttemptID, err)
-		return false
-	}
-	return true
-}
-
 // bindVerifiedCodingTaskHandle is the R1b runtime-start boundary. It accepts
 // the opaque host-issued task handle, not a semantic identity assembled by the
 // agent. The relation service revalidates subject scope and lifecycle before
-// it writes the attempt fence and durable SemanticTaskAnchor.
+// it writes the durable SemanticTaskAnchor and the attempt bridge.
 func bindVerifiedCodingTaskHandle(service *codingTaskRelationService, subject verifiedCodingSubject, handle *verifiedCodingTaskHandle, store codingruntime.Store, request codingruntime.ExecutionRequest) (*trustedCodingInvocationIdentity, bool) {
 	if service == nil || handle == nil {
 		return nil, false

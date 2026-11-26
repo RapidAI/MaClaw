@@ -30,6 +30,8 @@ interface AssistantInputActionsProps {
     browseFile: () => void;
     canSend: boolean;
     cancelSession?: unknown;
+    /** Stop-button tooltip override — a mirrored remote/cloud task stops remotely. */
+    cancelTitle?: string;
     composeAction?: ComposeAction | null;
     handleCancel: () => void;
     handleClearInput: () => void;
@@ -461,7 +463,7 @@ const TRAILING_ACTION_PAIR_STYLE: CSSProperties = { display: "inline-flex", alig
 // the hover target, sized to the button, so the shortcut sentence still appears.
 const SEND_TOOLTIP_HOST_STYLE: CSSProperties = { display: "inline-flex", flexShrink: 0 };
 
-export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle, sendShortcutTitle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle" | "sendShortcutTitle">) {
+export function AssistantInputActionsRight({ canSend, cancelSession, cancelTitle, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle, sendShortcutTitle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "cancelTitle" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle" | "sendShortcutTitle">) {
     const sendTitle = sendShortcutTitle || (localizeText(lang, "Send", "\u53d1\u9001") + " (Enter)");
     const sendButton = (
         <button type="button" className="ai-composer-send" onClick={handleSend} disabled={!canSend} style={{ ...getInputActionButtonStyle(t, themeMode, canSend ? "send" : "neutral", !canSend), ...sendButtonStyle, ...(canSend ? null : { pointerEvents: "none" }) }} title={canSend ? sendTitle : undefined} aria-label={localizeText(lang, "Send", "\u53d1\u9001")} data-testid={sendButtonTestId}>
@@ -476,7 +478,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
                 onClick={handleCancel}
                 data-testid="ai-cancel-progress"
                 style={getInputActionButtonStyle(t, themeMode, "cancel")}
-                title={localizeText(
+                title={cancelTitle || localizeText(
                     lang,
                     "Stop generation (also stops desktop Computer Use if active)",
                     "停止生成（若桌面 Computer Use 进行中会一并停止）",

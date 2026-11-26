@@ -189,6 +189,34 @@ func TestMobileAgentJobsCreateAndGetWithoutLLM(t *testing.T) {
 	})
 }
 
+func TestMobileAgentJobProgressStaysNumeric(t *testing.T) {
+	payload := mobileAgentJobPayload(mobileAgentJobRecord{
+		JobID:    "job-progress-shape",
+		Status:   mobileAgentJobStatusRunning,
+		Progress: []string{"调用 web_search"},
+	})
+	progress, ok := payload["progress"].(float64)
+	if !ok || progress != 0.5 {
+		t.Fatalf("progress = %#v, want numeric 0.5", payload["progress"])
+	}
+	thinking, ok := payload["thinking"].([]string)
+	if !ok || len(thinking) != 1 || thinking[0] != "调用 web_search" {
+		t.Fatalf("thinking = %#v, want the trace array", payload["thinking"])
+	}
+
+	done := mobileAgentJobPayload(mobileAgentJobRecord{
+		JobID:  "job-progress-done",
+		Status: mobileAgentJobStatusReady,
+		Answer: "ok",
+	})
+	if _, isNum := done["progress"].(float64); !isNum {
+		t.Fatalf("finished progress = %#v, want a number", done["progress"])
+	}
+	if _, exists := done["thinking"]; exists {
+		t.Fatalf("finished job leaked thinking: %#v", done["thinking"])
+	}
+}
+
 func TestMobileSearchAsyncEnqueuesJob(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, _ := issueViewerToken(t, identity, "mobile-search-async@example.com")

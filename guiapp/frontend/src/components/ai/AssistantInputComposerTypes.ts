@@ -21,6 +21,8 @@ export interface AssistantInputComposerProps {
     onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
     cancelPending: boolean;
     cancelSession?: unknown;
+    /** Stop-button tooltip override — a mirrored remote/cloud task stops remotely. */
+    cancelTitle?: string;
     clearSelectedFile?: () => void;
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;

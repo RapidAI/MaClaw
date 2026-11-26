@@ -137,7 +137,7 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		return json.Marshal(map[string]any{"ok": true})
 	case "cloud_stop_task":
 		ids, err := inst.book.CancelRunning(payload.TaskID, time.Now())
-		rt.cancelIDs(ids)
+		rt.cancelIDsAndDrain(ids, inst)
 		if err != nil {
 			return nil, err
 		}
@@ -191,12 +191,15 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 	if text == "" {
 		return nil, errors.New("请输入要发送的内容")
 	}
+	inst.drainMu.Lock()
+	defer inst.drainMu.Unlock()
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
 	if errors.Is(err, errBusy) {
 		queueID, qerr := inst.book.Enqueue(payload.ClientMessageID, payload.TaskID, text, time.Now())
 		if qerr != nil {
 			return nil, qerr
 		}
+		rt.kickDrainIfIdle(inst)
 		return json.Marshal(map[string]any{"accepted": true, "queued": true, "queue_id": queueID, "task_id": payload.TaskID})
 	}
 	if err != nil {
@@ -204,10 +207,19 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 	}
 	if created {
 		ctx, cancel := context.WithCancel(context.Background())
-		rt.track(requestID, cancel)
+		rt.trackTurn(inst, requestID, cancel)
 		go rt.runSession(ctx, inst, requestID, taskID, text)
 	}
 	return json.Marshal(map[string]any{"accepted": true, "request_id": requestID, "task_id": taskID})
+}
+
+func (rt *Runtime) kickDrainIfIdle(inst *instance) {
+	if inst == nil {
+		return
+	}
+	if _, requestID := inst.book.Running(); requestID == "" {
+		go rt.drainQueue(inst)
+	}
 }
 
 // drainQueue starts the next parked message once the running turn is
@@ -215,6 +227,11 @@ func (rt *Runtime) sendSession(inst *instance, payload turnBody) (json.RawMessag
 // live in this instance's transcript db; Recover kicks the drain back up.
 // The queue is per instance, so the runner is the instance's own kind.
 func (rt *Runtime) drainQueue(inst *instance) {
+	if got, err := rt.instance(inst.meta.ID); err != nil || got != inst {
+		return
+	}
+	inst.drainMu.Lock()
+	defer inst.drainMu.Unlock()
 	run := rt.runSession
 	if inst.meta.Kind == KindCoding {
 		run = rt.runCoding
@@ -227,7 +244,27 @@ func (rt *Runtime) drainQueue(inst *instance) {
 		if err != nil || !ok {
 			return
 		}
-		requestID, taskID, created, err := rt.begin(inst, msg.ClientID, msg.TaskID, msg.Text)
+		if _, running := inst.book.Running(); running != "" {
+			return
+		}
+		// A row can already be terminal in the book while its goroutine is
+		// still unwinding a tool call. Never overlap the next turn with that
+		// teardown. The wait happens under drainMu because that mutex is also
+		// the admission fence: a send cannot commit a durable row and then
+		// leave it untracked while a drain is already past this check.
+		if waits := rt.instanceTurnWaits(inst.meta.ID); len(waits) > 0 {
+			for _, done := range waits {
+				<-done
+			}
+			continue
+		}
+		if inst.meta.Kind == KindCoding {
+			// Gate interpretation belongs to the moment the message executes,
+			// not only to the moment it was accepted. This covers rows parked
+			// before a crash or before the planner had written its record.
+			rt.routePlanAnswer(inst, msg.TaskID, msg.Text)
+		}
+		requestID, taskID, created, err := rt.beginDrain(inst, msg.ClientID, msg.TaskID, msg.Text)
 		if err != nil {
 			return
 		}
@@ -239,14 +276,26 @@ func (rt *Runtime) drainQueue(inst *instance) {
 			return
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		rt.track(requestID, cancel)
+		rt.trackTurn(inst, requestID, cancel)
 		go run(ctx, inst, requestID, taskID, msg.Text)
 		return
 	}
 }
 
 func (rt *Runtime) begin(inst *instance, clientID, taskID, text string) (requestID, gotTask string, created bool, err error) {
-	requestID, created, err = inst.book.Begin(clientID, taskID, text, time.Now())
+	return rt.beginBook(inst, clientID, taskID, text, false)
+}
+
+func (rt *Runtime) beginDrain(inst *instance, clientID, taskID, text string) (requestID, gotTask string, created bool, err error) {
+	return rt.beginBook(inst, clientID, taskID, text, true)
+}
+
+func (rt *Runtime) beginBook(inst *instance, clientID, taskID, text string, draining bool) (requestID, gotTask string, created bool, err error) {
+	if draining {
+		requestID, created, err = inst.book.BeginDrain(clientID, taskID, text, time.Now())
+	} else {
+		requestID, created, err = inst.book.Begin(clientID, taskID, text, time.Now())
+	}
 	if err != nil || !created && requestID == "" {
 		return requestID, taskID, created, err
 	}
@@ -272,6 +321,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 	if ctx.Err() != nil {
 		return
 	}
+	rt.noteTurnStarted(inst, taskID, requestID)
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
 	route := rt.workflowRoute(inst, taskID, text)
 	var content string
@@ -296,6 +346,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 	// sessionResult owns the terminal response frame — publishing another
 	// here would give viewers two "response" events for one turn.
 	rt.finishTurn(inst, requestID, taskID, content, asError, files, time.Now())
+	rt.untrack(requestID)
 	rt.drainQueue(inst)
 }
 

@@ -1,24 +1,22 @@
 package guiapp
 
 import (
-	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
-// CloudAgentGitHubAccount is the signed-in GitHub credential view the cloud
-// git form needs to prefill itself. Token is included so the form can submit
-// it straight to maclawsrv; it never crosses the webview boundary otherwise.
+// CloudAgentGitHubAccount is the signed-in GitHub identity shown by the
+// cloud repository picker. The token deliberately stays in the desktop
+// credential store; ConnectCloudAgentGit injects it at the backend boundary.
 type CloudAgentGitHubAccount struct {
 	Connected bool   `json:"connected"`
 	Login     string `json:"login,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Email     string `json:"email,omitempty"`
-	Token     string `json:"token,omitempty"`
 	// RepoScope is false when the token cannot read or push private repos
 	// (e.g. a GitHub App user token whose scope list comes back empty).
 	RepoScope bool `json:"repo_scope"`
@@ -29,41 +27,55 @@ type CloudAgentGitHubAccount struct {
 }
 
 // CloudAgentGitHubAccount exposes the connected GitHub account for the cloud
-// coding instance's git form. The caller must still click connect — nothing
-// is pushed to maclawsrv from here.
+// coding instance's repository picker. This is a local credential-store read:
+// the picker must not fail just because a secondary /user refresh was rate
+// limited or a proxy returned 403. Repository discovery validates the token
+// against the API when it is actually needed.
 func (a *App) CloudAgentGitHubAccount() (CloudAgentGitHubAccount, error) {
 	cred := a.loadGitHubCredential()
 	if cred == nil {
 		return CloudAgentGitHubAccount{Connected: false}, nil
 	}
-	token := strings.TrimSpace(cred.AccessToken)
-	if cfg, err := a.LoadConfig(); err == nil {
-		oauth.ApplyProxyFromAppConfig(cfg)
+	return cloudGitHubAccountFromCredential(cred), nil
+}
+
+func cloudGitHubAccountFromCredential(cred *oauth.StoredCredential) CloudAgentGitHubAccount {
+	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+		return CloudAgentGitHubAccount{Connected: false}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	user, headerScopes, err := oauth.FetchGitHubUser(ctx, token)
-	if err != nil {
-		return CloudAgentGitHubAccount{}, fmt.Errorf("GitHub 账号信息获取失败: %w", err)
-	}
-	name := strings.TrimSpace(user.Name)
+	login := strings.TrimSpace(cred.Login)
+	name := strings.TrimSpace(cred.DisplayName)
 	if name == "" {
-		name = user.Login
+		name = login
 	}
-	// The /user header is the live grant; the stored grant covers the
-	// header-stripped edge (a proxy can drop X-OAuth-Scopes) so a healthy
-	// token is not reported scopeless. A non-empty header still wins, so a
-	// server-side revocation keeps outranking the stale stored grant.
-	repoScope := oauth.GitHubScopesHaveRepo(oauth.GitHubEffectiveScopes(headerScopes, cred.Scopes))
 	return CloudAgentGitHubAccount{
 		Connected:      true,
-		Login:          user.Login,
+		Login:          login,
 		Name:           name,
-		Email:          fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login),
-		Token:          token,
-		RepoScope:      repoScope,
-		GithubAppToken: oauth.GitHubAppUserToken(token),
-	}, nil
+		Email:          cloudGitHubCommitEmail(cred),
+		RepoScope:      oauth.GitHubScopesHaveRepo(cred.Scopes),
+		GithubAppToken: oauth.GitHubAppUserToken(cred.AccessToken),
+	}
+}
+
+// cloudGitHubCommitEmail prefers GitHub's id-based noreply address. Accounts
+// connected before the id was stored still get a deterministic fallback; a
+// commit email does not have to be a deliverable mailbox.
+func cloudGitHubCommitEmail(cred *oauth.StoredCredential) string {
+	if cred == nil {
+		return ""
+	}
+	if email := strings.TrimSpace(cred.Email); email != "" {
+		return email
+	}
+	login := strings.TrimSpace(cred.Login)
+	if login == "" {
+		return ""
+	}
+	if id, err := strconv.ParseInt(strings.TrimSpace(cred.UserID), 10, 64); err == nil && id > 0 {
+		return fmt.Sprintf("%d+%s@users.noreply.github.com", id, login)
+	}
+	return login + "@users.noreply.github.com"
 }
 
 // syncCloudAgentGitCredentials refreshes the git token on every coding
@@ -103,7 +115,10 @@ func (a *App) syncCloudAgentGitCredentials() {
 		if !view.Connected || view.Source != "account" || view.Service != "github" {
 			continue
 		}
-		_, err = a.ConnectCloudAgentGit(row.ID, CloudGitConnect{
+		if host := hostOfOrigin(view.Origin); !accountHTTPSRootOrigin(view.Origin) || (host != "github.com" && host != "www.github.com") {
+			continue
+		}
+		_, err = a.postCloudAgentGit(row.ID, CloudGitConnect{
 			Service:     "github",
 			Origin:      view.Origin,
 			Repo:        view.Repo,

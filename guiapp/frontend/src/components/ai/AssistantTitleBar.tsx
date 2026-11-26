@@ -8,6 +8,7 @@ import { dotBase, getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPa
 import { getWindowControlButtonStyle, hideWindowFromControlEvent, stopWindowControlEvent, toggleWindowOnce, windowHideLabel, windowMaximizeLabel } from "./aiAssistantControls";
 import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
+import { SidebarToggleCluster, type SidebarTogglesState } from "../layout/SidebarToggleCluster";
 import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
@@ -81,13 +82,15 @@ interface AssistantTitleBarProps {
     optimizeExpertBusy?: boolean;
     /** Cover over a live conversation. Renders 返回当前对话 in the header, not on the home canvas. */
     onReturnToCoveredConversation?: () => void;
+    /** Collapse/expand pair for the nav rail + task pane, rendered at the leading edge (inline only). */
+    sidebarToggles?: SidebarTogglesState;
 }
 const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     handler();
 };
-export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, bellHidden, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onReturnToCoveredConversation, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, hideNotifications, bellHidden, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onReturnToCoveredConversation, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, optimizeExpertBusy, previewPanelOpen, previewAvailable, refreshNews, showMaximizeToggle, sidebarToggles, theme: t, themeMode, title, trialReflectEnabled, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     // Keep title-bar state controls on the active shell palette in both schemes.
     const themeSuccess = "var(--theme-success, #11813a)";
     const rootStyle: WailsDragStyle = {
@@ -111,6 +114,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
         <>
         <div className="mc-ai-titlebar" data-testid="ai-title-bar" {...windowDragHandleProps(inline, rootStyle)} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }}>
             <div data-testid="ai-titlebar-leading" style={{ display: "flex", alignItems: "center", gap: inline ? "12px" : "10px", minWidth: 0, flex: "1 1 auto" }}>
+                {inline && sidebarToggles && <SidebarToggleCluster {...sidebarToggles} lang={lang} />}
                 {inline && <>
                     <span className="mc-header-brand" data-testid="ai-titlebar-brand" aria-label="MaClaw">
                         <span className="mc-header-brand-mark" aria-hidden="true">

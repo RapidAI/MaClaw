@@ -84,6 +84,55 @@ func TestDispatchReportsRuntimeClientError(t *testing.T) {
 	}
 }
 
+func TestDispatchStopTaskSettlesReportedTurn(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.HasSuffix(r.URL.Path, "/control") && strings.Contains(string(raw), "cloud_stop_task") {
+			_, _ = w.Write([]byte(`{"ok":true,"cancelled":["req-1"]}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			_, _ = w.Write([]byte(`{"accepted":true,"request_id":"req-1","task_id":"task-1"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer runtime.Close()
+
+	settings := memSettings{kv: map[string]string{}}
+	db := openTestDB(t)
+	svc := New(db, settings)
+	rc := remotecontrol.New(db, nopAccounts{}, ownMachines{}, nopSend{}, nopNote{})
+	rc.Cloud = svc.Dispatcher()
+	mux := userMux(svc, rc)
+	settings.kv[SrvSettingsKey("tenant-a")] = `{"base_url":"` + runtime.URL + `","admin_secret":"sec-1"}`
+	enable(t, svc, "tenant-a", 3, 1)
+	created := call(mux, http.MethodPost, "/api/v1/cloud-agents", CreateInput{Name: "会话", Kind: KindSession})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	id := decodeMap(t, created)["id"].(string)
+	grantRec := call(mux, http.MethodPost, "/api/v1/cloud-agents/"+id+"/control-grant", map[string]any{})
+	if grantRec.Code != http.StatusOK {
+		t.Fatalf("grant: %d %s", grantRec.Code, grantRec.Body.String())
+	}
+	grantID := decodeMap(t, grantRec)["grant_id"].(string)
+	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudSendMessage, json.RawMessage(`{"task_id":"task-1","text":"hi"}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := rc.Exec(context.Background(), "tenant-a", "user-1", "mac-1", grantID, remotecontrol.OpCloudStopTask, json.RawMessage(`{"task_id":"task-1"}`)); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM cloud_agent_turns WHERE instance_id = ? AND request_id = 'req-1'`, id).Scan(&status); err != nil || status != TurnCancelled {
+		t.Fatalf("turn status=%s err=%v", status, err)
+	}
+	var running int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cloud_agent_turns WHERE instance_id = ? AND status = ?`, id, TurnRunning).Scan(&running); err != nil || running != 0 {
+		t.Fatalf("running=%d err=%v", running, err)
+	}
+}
+
 func TestDispatchUsesLoopbackAdminSecretOnly(t *testing.T) {
 	var mu sync.Mutex
 	var hits []string

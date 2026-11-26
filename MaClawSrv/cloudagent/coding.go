@@ -1,6 +1,7 @@
 package cloudagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -31,14 +34,36 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		return nil, errors.New("请输入要发送的内容")
 	}
 	taskID := strings.TrimSpace(payload.TaskID)
+	// A plan gate answer is control-plane input, not ordinary text for the
+	// currently running task. Resolve it before the running-task fallback:
+	// another task may be running while this gate is parked, and binding the
+	// answer to that running task would leave the gate open forever.
+	planAnswer := parsePlanAnswer(text)
+	terminalGateTask := ""
+	if taskID == "" && planAnswer != "" {
+		if planAnswer == planAnswerApprove {
+			if gateTask, actionable := inst.book.planGateTaskActionable(); actionable {
+				taskID = gateTask
+			} else {
+				terminalGateTask = gateTask
+			}
+		} else {
+			// Skip/reject only consume a still-open gate. In particular 拒绝 is
+			// also a commit-gate answer, so it must not steal priority from the
+			// live task merely because an older failed plan exists.
+			taskID = inst.book.planPendingTask()
+		}
+	}
 	if taskID == "" {
 		running, _ := inst.book.Running()
 		taskID = running
 	}
-	// A plan gate answers on the task that parked it, but that task has no
-	// running turn — the running-task fallback above misses it, and an
-	// empty task id would file the gate answer as a brand-new request on a
-	// new task while the parked plan stays open forever.
+	// With no running task to adopt it, a terminal plan is still a safer target
+	// for a duplicate gate click than a brand-new empty task: the turn becomes a
+	// harmless no-op. Plain text instead falls back to the open pending gate.
+	if taskID == "" && planAnswer != "" {
+		taskID = terminalGateTask
+	}
 	if taskID == "" {
 		taskID = inst.book.planPendingTask()
 	}
@@ -50,10 +75,8 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 			return nil, err
 		}
 	}
-	// A plan-gate command (按计划开始 / 不用计划，直接做 / 取消这个计划) moves
-	// the parked plan record before this send becomes a turn; a queued send
-	// re-enters here on drain and sees the record already decided.
-	rt.routePlanAnswer(inst, taskID, text)
+	inst.drainMu.Lock()
+	defer inst.drainMu.Unlock()
 	requestID, taskID, created, err := rt.begin(inst, payload.ClientMessageID, payload.TaskID, text)
 	if errors.Is(err, errBusy) {
 		// Same parked-input semantics as the session kind: the message waits
@@ -64,14 +87,25 @@ func (rt *Runtime) sendCoding(ctx context.Context, inst *instance, payload turnB
 		if qerr != nil {
 			return nil, qerr
 		}
+		// Move the gate only after the row is safely parked. If the queue is
+		// full the command is rejected as a whole; a half-applied approval would
+		// close the card without any turn that could execute it.
+		rt.routePlanAnswer(inst, payload.TaskID, text)
+		rt.kickDrainIfIdle(inst)
 		return json.Marshal(map[string]any{"accepted": true, "queued": true, "queue_id": queueID, "task_id": payload.TaskID})
 	}
 	if err != nil {
 		return nil, err
 	}
 	if created {
+		// A plan-gate command (按计划开始 / 不用计划，直接做 / 取消这个计划)
+		// moves the parked plan record before execution starts; a queued send
+		// re-enters here on drain and sees the record already decided. A deduped
+		// client-message retry is a no-op instead — otherwise replaying an old
+		// approval id could approve a newer, still-unconfirmed plan on the task.
+		rt.routePlanAnswer(inst, taskID, text)
 		turnCtx, cancel := context.WithCancel(context.Background())
-		rt.track(requestID, cancel)
+		rt.trackTurn(inst, requestID, cancel)
 		go rt.runCoding(turnCtx, inst, requestID, taskID, text)
 	}
 	_ = ctx
@@ -93,11 +127,13 @@ func (rt *Runtime) runCoding(ctx context.Context, inst *instance, requestID, tas
 	if ctx.Err() != nil {
 		return
 	}
+	rt.noteTurnStarted(inst, taskID, requestID)
 	content, asError, files := rt.codingResult(ctx, inst, taskID, requestID, text)
 	if ctx.Err() != nil {
 		return
 	}
 	rt.finishTurn(inst, requestID, taskID, content, asError, files, time.Now())
+	rt.untrack(requestID)
 	rt.drainQueue(inst)
 }
 
@@ -140,8 +176,18 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	// The user row and the display line carry what was typed; a gate answer
 	// runs the parked request instead — the model input is `input`, not text.
 	input := route.modelText
+	gateAnswer := parsePlanAnswer(text)
 	var plan *planRecord
-	if rec := inst.book.planLoadOrNil(taskID); rec != nil && !phaseRan {
+	planningSkipped := false
+	rec := inst.book.planLoadOrNil(taskID)
+	if rec != nil && rec.State == planStatePending && gateAnswer != "" && !phaseRan {
+		// Execution is the second, authoritative gate application point. Rows
+		// parked before this routing existed still consume the pending record
+		// instead of falling through as model text.
+		rt.routePlanAnswer(inst, taskID, text)
+		rec = inst.book.planLoadOrNil(taskID)
+	}
+	if rec != nil && !phaseRan {
 		switch rec.State {
 		case planStateRejected:
 			_ = inst.book.planClear(taskID)
@@ -153,26 +199,64 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			return note, false, nil
 		case planStateSkipped:
 			input = rec.Request
+			planningSkipped = true
 			_ = inst.book.planClear(taskID)
 			rt.publishWorkbench(inst, taskID, requestID, nil)
 		case planStateApproved:
 			input = rec.Request
 			rec.State = planStateRunning
-			if len(rec.Steps) > 0 && rec.Steps[0].Status == "pending" {
-				rec.Steps[0].Status = "running"
-				rec.Steps[0].UpdatedUnix = time.Now().Unix()
-			}
+			markPlanStepRunning(rec)
 			rec.Revision++
 			_ = inst.book.planSave(taskID, rec)
 			rt.publishWorkbench(inst, taskID, requestID, rec)
 			plan = rec
 		case planStateRunning:
 			// A parked turn mid-plan (crash, or a queued commit answer) picks
-			// the plan back up; a different ask closes it as failed.
-			if planContinuationText(input) {
+			// the plan back up; a different ask closes it as failed. A gate
+			// answer is control-plane input, never a new instruction for the
+			// model, so it resumes the request that created this plan.
+			if planContinuationText(input) || gateAnswer == planAnswerApprove {
+				if gateAnswer == planAnswerApprove {
+					input = rec.Request
+				}
+				// Crash/recovery ordering can leave the plan executing with no
+				// running row at all. Re-arm the earliest unfinished row before
+				// handing the plan back to the model; an intact cursor is a no-op.
+				if markPlanStepRunning(rec) {
+					rec.Revision++
+					_ = inst.book.planSave(taskID, rec)
+					rt.publishWorkbench(inst, taskID, requestID, rec)
+				}
 				plan = rec
 			} else {
 				rt.settlePlan(inst, taskID, requestID, true)
+			}
+		case planStateFailed:
+			// "按计划开始" after a failed step is an explicit retry request.
+			// Re-enter the failed step instead of teaching the model the gate
+			// sentence as if it were a fresh coding ask.
+			if gateAnswer == planAnswerApprove {
+				input = rec.Request
+				rec.State = planStateRunning
+				markPlanStepRunning(rec)
+				rec.Revision++
+				_ = inst.book.planSave(taskID, rec)
+				rt.publishWorkbench(inst, taskID, requestID, rec)
+				plan = rec
+			}
+		case planStateDone:
+			// A done record that still contains a failed row is inconsistent
+			// terminal state left by an older recovery bug, not a successful plan.
+			// Let the same explicit approval retry it; a cleanly done plan remains
+			// a no-op below so duplicate clicks never start duplicate work.
+			if gateAnswer == planAnswerApprove && planHasFailedStep(rec) {
+				input = rec.Request
+				rec.State = planStateRunning
+				markPlanStepRunning(rec)
+				rec.Revision++
+				_ = inst.book.planSave(taskID, rec)
+				rt.publishWorkbench(inst, taskID, requestID, rec)
+				plan = rec
 			}
 		case planStatePending:
 			// The gate answer raced a second send; the pending record is only
@@ -181,10 +265,20 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			rt.publishWorkbench(inst, taskID, requestID, nil)
 		}
 	}
+	if gateAnswer != "" && plan == nil && input == text && !phaseRan {
+		note := "当前没有等待确认的计划。"
+		if rec != nil {
+			note = "这个计划已经处理过，无需重复确认。"
+		}
+		rt.publish(inst, taskID, requestID, "response", note, map[string]any{
+			"terminal": map[string]any{"text": note},
+		})
+		return note, false, nil
+	}
 	// A workflow phase turn carries its own instructions — the plan gate must
 	// not park it for planning, or every phase would stall on a gate nobody
 	// can answer.
-	if plan == nil && input == text && !phaseRan {
+	if plan == nil && input == text && !planningSkipped && !phaseRan {
 		decision := rt.planDecisionFor(ctx, inst, cfg, input)
 		if ctx.Err() != nil {
 			return "", true, nil
@@ -229,6 +323,9 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	files := host.producedFiles()
 	filesCreated, filesModified := host.explicitFileChanges()
+	// The change set lands on the trail before any terminal, so every
+	// ending (answer, ask, failure) carries what the turn wrote.
+	rt.emitCodingDiffSummary(inst, taskID, requestID, host.fileChangeFacts())
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
@@ -254,7 +351,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	rt.emitCodingTaskStatus(inst, taskID, requestID, "completed", input)
 	rt.settlePlan(inst, taskID, requestID, false)
-	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.verificationFacts())
+	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.fileChangeFacts(), host.verificationFacts())
 	rt.publish(inst, taskID, requestID, "response", finalText, map[string]any{
 		"terminal": attachFiles(map[string]any{"text": finalText}, files),
 	})
@@ -262,6 +359,56 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		rt.workflowRecordOutput(inst, taskID, finalText)
 	}
 	return finalText, false, files
+}
+
+// markPlanStepRunning keeps exactly one executable cursor. The first
+// unfinished row in plan order owns the retry: an intact running row is kept,
+// a failed/pending row before it is re-armed, and any later stale running row
+// becomes pending again. Returns true when the record changed.
+func markPlanStepRunning(rec *planRecord) bool {
+	if rec == nil {
+		return false
+	}
+	chosen := -1
+	for i := range rec.Steps {
+		switch rec.Steps[i].Status {
+		case "running", "failed", "pending":
+			chosen = i
+		}
+		if chosen >= 0 {
+			break
+		}
+	}
+	if chosen < 0 {
+		return false
+	}
+	changed := false
+	now := time.Now().Unix()
+	for i := range rec.Steps {
+		switch {
+		case i == chosen && rec.Steps[i].Status != "running":
+			rec.Steps[i].Status = "running"
+			rec.Steps[i].UpdatedUnix = now
+			changed = true
+		case i != chosen && rec.Steps[i].Status == "running":
+			rec.Steps[i].Status = "pending"
+			rec.Steps[i].UpdatedUnix = now
+			changed = true
+		}
+	}
+	return changed
+}
+
+func planHasFailedStep(rec *planRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for i := range rec.Steps {
+		if rec.Steps[i].Status == "failed" {
+			return true
+		}
+	}
+	return false
 }
 
 // planContinuationText recognizes the messages that resume a parked plan
@@ -283,6 +430,14 @@ func (rt *Runtime) maclawCfg(inst *instance) corelib.MaclawLLMConfig {
 	if err != nil {
 		return corelib.MaclawLLMConfig{}
 	}
+	// The owner's thinking level stamps the request the same way the
+	// desktop's global level stamps a local coding turn — without it the
+	// request body carries no reasoning field and most providers never
+	// stream reasoning deltas, which is why cloud turns showed no 思考.
+	return corelib.ApplyGlobalThinkingLevel(rt.maclawCfgFromProviders(cfg), cfg.MaclawLLMThinkingMode)
+}
+
+func (rt *Runtime) maclawCfgFromProviders(cfg corelib.AppConfig) corelib.MaclawLLMConfig {
 	if len(cfg.MaclawLLMProviders) > 0 {
 		item := cfg.MaclawLLMProviders[0]
 		return corelib.MaclawLLMConfig{
@@ -364,11 +519,31 @@ type agentHost struct {
 	started      time.Time
 	files        map[string]bool
 	createdFiles map[string]bool
-	writeCount   int
-	commands     []hostCommandRun
+	fileChanges  map[string]codingagent.FinalAnswerFileChangeFact
+	// fileBaselines holds the first pre-write text snapshot per path. Re-reading
+	// the final file against this baseline yields net turn counts instead of the
+	// last write operation's incremental counts.
+	fileBaselines   map[string]string
+	fileWriteCounts map[string]int
+	writeCount      int
+	commands        []hostCommandRun
+	// lastWrite carries the write_file operands of the call ExecuteTool just
+	// ran, so its tool_finished event can attach the same files/added/removed
+	// operand the desktop's Edit cards show.
+	lastWrite hostWriteEvent
 	// iterationExtensions counts the extra waves this turn was granted
 	// after spending its configured iteration budget.
 	iterationExtensions int
+}
+
+// hostWriteEvent is one write_file call's canonical path and exact line
+// counts, as computed by execWriteFile.
+type hostWriteEvent struct {
+	path      string
+	created   bool
+	added     int
+	removed   int
+	hasCounts bool
 }
 
 func (h *agentHost) GetLLMConfig() corelib.MaclawLLMConfig { return h.cfg }
@@ -410,11 +585,12 @@ func (h *agentHost) ExtendIterationBudget(used, toolCalls int) int {
 // cloudFinalAnswerText applies the same audit-section filter and host fact
 // fallback the desktop coding surfaces use; cloud must not drift into a
 // separate user-visible report shape.
-func cloudFinalAnswerText(text string, filesCreated, filesModified []string, verification []codingagent.FinalAnswerVerificationFact) string {
-	return codingagent.AppendFinalAnswerHostFacts(
+func cloudFinalAnswerText(text string, filesCreated, filesModified []string, fileChanges []codingagent.FinalAnswerFileChangeFact, verification []codingagent.FinalAnswerVerificationFact) string {
+	return codingagent.AppendFinalAnswerHostFactsWithFileChanges(
 		codingagent.StripFinalAnswerAuditSections(text),
 		filesCreated,
 		filesModified,
+		fileChanges,
 		verification,
 	)
 }
@@ -548,7 +724,8 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	h.rt.emitToolStarted(h.inst, h.task, h.request, name, argsJSON)
 	started := time.Now()
 	result, failed := h.runTool(name, argsJSON)
-	h.rt.emitToolFinished(h.inst, h.task, h.request, name, argsJSON, result, failed, time.Since(started))
+	h.rt.emitToolFinished(h.inst, h.task, h.request, name, argsJSON, result, failed, time.Since(started), h.lastWrite)
+	h.lastWrite = hostWriteEvent{}
 	return result
 }
 
@@ -559,26 +736,32 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 // tree. Shell writes are supposed to use write_file, but code generators and
 // package-manager commands can also mutate files through bash.
 func (h *agentHost) recordBashCommand(argv []string, failed bool) {
-	command := strings.Join(argv, " ")
+	command := cloudArgvCommand(argv)
 	h.commands = append(h.commands, hostCommandRun{
 		command:      command,
 		succeeded:    !failed,
 		writeCountAt: h.writeCount,
 	})
-	if cloudBashMayWriteWorkspace(command) {
+	if cloudBashMayWriteWorkspace(argv, command) {
 		h.writeCount++
 	}
 }
 
-func cloudBashMayWriteWorkspace(command string) bool {
+func cloudBashMayWriteWorkspace(argv []string, command string) bool {
 	if codingagent.LooksLikeVerificationCommand(command) {
 		return false
 	}
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	fields := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		fields = append(fields, strings.ToLower(strings.TrimSpace(arg)))
+	}
 	for len(fields) > 0 && strings.Contains(fields[0], "=") {
 		fields = fields[1:]
 	}
 	if len(fields) == 0 {
+		return false
+	}
+	if len(fields) == 2 && (fields[1] == "--version" || fields[1] == "--help") {
 		return false
 	}
 	base := strings.Trim(fields[0], "\"'`")
@@ -605,6 +788,9 @@ func cloudBashMayWriteWorkspace(command string) bool {
 		}
 		return true
 	case "go":
+		if len(fields) == 2 && fields[1] == "version" {
+			return false
+		}
 		return len(fields) > 1
 	case "npm", "pnpm", "yarn", "bun", "python", "python3", "py", "node", "sh", "bash", "cmake", "make", "nmake":
 		return true
@@ -616,6 +802,8 @@ func cloudBashMayWriteWorkspace(command string) bool {
 // value feeds the tool_finished outcome, which a result string alone
 // cannot decide (an error body and output that mentions errors look alike).
 func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
+	// A stale write operand must never attach to another tool's finished event.
+	h.lastWrite = hostWriteEvent{}
 	switch name {
 	case "bash":
 		out, failed := h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
@@ -629,10 +817,13 @@ func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 	case "read_file":
 		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		out, path, created := h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		out, path, created, added, removed, hasCounts, baseline, baselineOK := h.rt.execWriteFile(h.inst, h.root, argsJSON)
 		if path != "" {
 			h.writeCount++
 			h.noteFile(path, created)
+			h.noteFileChange(path, created, added, removed, hasCounts)
+			h.noteFileBaseline(path, baseline, baselineOK)
+			h.lastWrite = hostWriteEvent{path: path, created: created, added: added, removed: removed, hasCounts: hasCounts}
 		}
 		return out, path == ""
 	case "git_commit":
@@ -705,6 +896,94 @@ func (h *agentHost) noteFile(abs string, created bool) {
 			slog.String("instance", h.inst.meta.ID), slog.String("task", h.task),
 			slog.String("request", h.request), slog.String("path", rel))
 	}
+}
+
+// noteFileChange records exact write_file evidence under the same canonical
+// artifact key as noteFile. When a first-write baseline exists, fileChangeFacts
+// later replaces these per-operation counts with the net start-of-turn diff.
+func (h *agentHost) noteFileChange(abs string, created bool, added, removed int, hasCounts bool) {
+	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
+		if h.fileWriteCounts == nil {
+			h.fileWriteCounts = map[string]int{}
+		}
+		h.fileWriteCounts[rel]++
+		if h.fileChanges == nil {
+			h.fileChanges = map[string]codingagent.FinalAnswerFileChangeFact{}
+		}
+		h.fileChanges[rel] = codingagent.FinalAnswerFileChangeFact{
+			Path:      rel,
+			Created:   created,
+			Added:     added,
+			Removed:   removed,
+			HasCounts: hasCounts,
+		}
+	}
+}
+
+// noteFileBaseline stores only the first diffable pre-write snapshot. A file
+// written several times is then measured from the start of the turn to the
+// final bytes on disk, matching the net workspace change the user expects.
+func (h *agentHost) noteFileBaseline(abs, baseline string, ok bool) {
+	if !ok {
+		return
+	}
+	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
+		// Only the first successful write's pre-write bytes are a start-of-turn
+		// baseline. A later readable snapshot starts from intermediate bytes and
+		// must not be promoted into net evidence merely because the first write
+		// was too large or non-text to snapshot.
+		if h.fileWriteCounts[rel] != 1 {
+			return
+		}
+		if h.fileBaselines == nil {
+			h.fileBaselines = map[string]string{}
+		}
+		if _, exists := h.fileBaselines[rel]; !exists {
+			const maxTrackedBaselineBytes = 16 << 20
+			total := len(baseline)
+			for _, existing := range h.fileBaselines {
+				total += len(existing)
+			}
+			if total <= maxTrackedBaselineBytes {
+				h.fileBaselines[rel] = baseline
+			}
+		}
+	}
+}
+
+func (h *agentHost) fileChangeFacts() []codingagent.FinalAnswerFileChangeFact {
+	if len(h.fileChanges) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(h.fileChanges))
+	for key := range h.fileChanges {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]codingagent.FinalAnswerFileChangeFact, 0, len(keys))
+	for _, key := range keys {
+		fact := h.fileChanges[key]
+		// The created/modified audit is authoritative for status even when a
+		// file was written more than once during the turn.
+		fact.Created = h.createdFiles[key]
+		if baseline, exists := h.fileBaselines[key]; exists {
+			abs := filepath.Join(h.root, filepath.FromSlash(key))
+			if after, ok := cloudReadTextForDiff(abs); ok {
+				fact.Added, fact.Removed = codingagent.CountTextLineChanges(baseline, after)
+				fact.HasCounts = true
+			} else {
+				fact.Added, fact.Removed = 0, 0
+				fact.HasCounts = false
+			}
+		} else if h.fileWriteCounts[key] > 1 {
+			// Without a first-write baseline, per-operation diffs cannot be
+			// combined into turn-net line counts after a repeated write.
+			fact.Added, fact.Removed = 0, 0
+			fact.HasCounts = false
+		}
+		out = append(out, fact)
+	}
+	return out
 }
 
 // explicitFileChanges is the precise write_file change set. Files merely
@@ -829,28 +1108,63 @@ func (rt *Runtime) execReadFile(inst *instance, argsJSON string) (string, bool) 
 	return string(raw), false
 }
 
-// execWriteFile returns the tool result text, the resolved file path, and
-// whether the file was newly created on success — the host records that path
-// as a produced artifact. A failed write returns an empty path so pre-existing
-// files are never counted.
-func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string, bool) {
+// execWriteFile returns the tool result text, the resolved file path, whether
+// the file was newly created on success, and exact line counts when the file
+// is small enough text to diff safely, plus the pre-write baseline used for
+// net turn counts. A failed write returns an empty path so pre-existing files
+// are never counted.
+func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string, bool, int, int, bool, string, bool) {
 	var body struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-		return "路径无效", "", false
+		return "路径无效", "", false, 0, 0, false, "", false
 	}
 	path, err := resolveInJail(root, body.Path)
 	if err != nil {
-		return err.Error(), "", false
+		return err.Error(), "", false, 0, 0, false, "", false
 	}
 	_, statErr := os.Stat(path)
 	created := os.IsNotExist(statErr)
-	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
-		return err.Error(), "", false
+	before := ""
+	countable := true
+	if statErr == nil {
+		before, countable = cloudReadTextForDiff(path)
 	}
-	return "已写入 " + body.Path, path, created
+	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
+		return err.Error(), "", false, 0, 0, false, "", false
+	}
+	added, removed := 0, 0
+	hasCounts := countable && cloudTextDiffable([]byte(body.Content))
+	if hasCounts {
+		added, removed = codingagent.CountTextLineChanges(before, body.Content)
+	}
+	return "已写入 " + body.Path, path, created, added, removed, hasCounts, before, countable
+}
+
+const (
+	cloudLineDiffMaxBytes = 4 << 20
+	cloudLineDiffMaxLines = 20000
+)
+
+func cloudReadTextForDiff(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil || !cloudTextDiffable(data) {
+		return "", false
+	}
+	return string(data), true
+}
+
+func cloudTextDiffable(data []byte) bool {
+	if len(data) > cloudLineDiffMaxBytes || !utf8.Valid(data) {
+		return false
+	}
+	lines := bytes.Count(data, []byte{'\n'}) + 1
+	if len(data) == 0 {
+		lines = 0
+	}
+	return lines <= cloudLineDiffMaxLines
 }
 
 // cloudToolStatusLine renders one tool call as the "工具 · action (name)"
@@ -911,7 +1225,41 @@ func joinArgs(args map[string]any, key string) string {
 			parts = append(parts, s)
 		}
 	}
-	return strings.Join(parts, " ")
+	return cloudArgvCommand(parts)
+}
+
+// cloudArgvCommand renders an argv invocation without losing argument
+// boundaries. The tool executes argv directly, but the audit/final-answer
+// command line is shell-like text; quoting whitespace and metacharacters is
+// what keeps that text factual.
+func cloudArgvCommand(argv []string) string {
+	quoted := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		quoted = append(quoted, cloudArgvQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func cloudArgvQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	simple := true
+	for _, r := range arg {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '@', '%', '_', '+', '=', ',', ':', '.', '/', '-':
+			continue
+		}
+		simple = false
+		break
+	}
+	if simple {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
 
 func collapseToolDetail(detail string) string {

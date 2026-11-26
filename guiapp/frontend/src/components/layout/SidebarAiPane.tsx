@@ -124,6 +124,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement> | number) => void;
     isTaskManagementResizing: boolean;
+    /** Toggle task-pane collapse; fired by double-clicking the resize divider. */
+    onToggleTaskPane?: () => void;
     switchTool: (tool: string) => void;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
@@ -234,6 +236,7 @@ export const SidebarAiPane = ({
     codingAgentTurnSnapshot = null,
     handleTaskManagementResizeStart,
     isTaskManagementResizing,
+    onToggleTaskPane,
     switchTool,
     onOpenVEConversation,
     onOpenHistoryDiscussion,
@@ -364,7 +367,12 @@ export const SidebarAiPane = ({
                         handleTaskManagementResizeStart(event.key === 'Home' ? 180 : 460);
                     }
                 }}
-                title={localizeText(lang, 'Drag to resize middle panel', '拖动调整中间面板宽度', '拖動調整中間面板寬度')}
+                title={localizeText(lang, 'Drag to resize · double-click to collapse', '拖动调整宽度 · 双击收起任务列表', '拖動調整寬度 · 雙擊收起任務列表')}
+                onDoubleClick={(event) => {
+                    // Divider double-click mirrors the title-bar toggle / Ctrl+B.
+                    event.preventDefault();
+                    onToggleTaskPane?.();
+                }}
                 style={{ width: '12px', marginLeft: '-3px', marginRight: '-3px', position: 'relative', zIndex: 40, flexShrink: 0, cursor: 'col-resize', background: 'transparent', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', ['WebkitAppRegion' as any]: 'no-drag', ['--wails-draggable' as any]: 'no-drag', ['--mc-task-pane-divider-color' as any]: isTaskManagementResizing ? 'var(--theme-primary)' : undefined }}
             />
         </>

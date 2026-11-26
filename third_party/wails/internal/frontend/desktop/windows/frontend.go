@@ -308,9 +308,12 @@ func (f *Frontend) WindowFullscreen() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	f.mainWindow.Fullscreen()
-	// After the size change, including when this call is already on the UI
-	// thread and ExecJS runs inline. Queuing it first lets the resize handler
-	// paint a sizing cursor over the new frame and then freeze that cursor.
+	// Runs after the size change on purpose: a pre-resize ExecJS is not
+	// guaranteed to execute before the transition's mousemove tasks, while a
+	// post-change suspend still clears whatever they managed to paint. It also
+	// drops a sizing cursor latched before this call — e.g. the pointer resting
+	// on a resize edge when fullscreen is triggered. The guaranteed same-turn
+	// prevention lives in the JS WindowFullscreen API instead.
 	if f.frontendOptions.Frameless && f.frontendOptions.DisableResize == false {
 		f.ExecJS(framelessResizeSuspendJS)
 	}

@@ -2960,6 +2960,8 @@ export function OpenGitLabTokenPage(arg1:string):Promise<void>;
 
 export function CloudAgentGitHubAccount():Promise<main.CloudAgentGitHubAccount>;
 
+export function CloudAgentGitRepositories(arg1:string):Promise<Array<main.CloudAgentGitRepository>>;
+
 export function CloudAgentGitLabAccount():Promise<main.CloudAgentGitLabAccount>;
 
 export function GitHubAPIRequest(arg1:string,arg2:string):Promise<string>;

@@ -340,16 +340,17 @@ func (s *Service) Create(ctx context.Context, tenantID, userID string, in Create
 	}
 	now := formatTS(s.now())
 	inst := Instance{
-		ID:               newID("cag_"),
-		TenantID:         tenantID,
-		OwnerUserID:      userID,
-		Name:             name,
-		Kind:             kind,
-		LLMMode:          mode,
-		Status:           StatusProvisioning,
+		ID:              newID("cag_"),
+		TenantID:        tenantID,
+		OwnerUserID:     userID,
+		Name:            name,
+		Kind:            kind,
+		LLMMode:         mode,
+		LLMThinkingMode: normalizeThinkingLevel(in.ThinkingMode),
+		Status:          StatusProvisioning,
 		CloudWorkspaceID: "",
-		CreatedAt:        s.now(),
-		UpdatedAt:        s.now(),
+		CreatedAt:       s.now(),
+		UpdatedAt:       s.now(),
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO cloud_agents (
 		id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at
@@ -760,6 +761,32 @@ func (s *Service) NoteAcceptedTurn(ctx context.Context, tenantID, userID, instan
 	return s.releaseIdle(ctx, instanceID, now)
 }
 
+// CancelTurns settles exactly the request ids maclawsrv reported for a
+// cloud_stop_task. The response carries ids rather than a task-wide update so
+// a queued row that starts immediately after the stop cannot be cancelled in
+// Hub shadow state by accident.
+func (s *Service) CancelTurns(ctx context.Context, instanceID string, requestIDs []string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return nil
+	}
+	stamp := formatTS(s.now())
+	for _, requestID := range requestIDs {
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND request_id = ? AND status = ?`,
+			TurnCancelled, stamp, stamp, instanceID, requestID, TurnRunning); err != nil {
+			return err
+		}
+	}
+	return s.releaseIdle(ctx, instanceID, stamp)
+}
+
 func (s *Service) retireOtherRunning(ctx context.Context, instanceID, requestID, stamp string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET status = ?, finished_at = ?, updated_at = ? WHERE instance_id = ? AND status = ? AND request_id <> ?`,
 		TurnFinished, stamp, stamp, instanceID, TurnRunning, requestID)
@@ -836,9 +863,35 @@ func (s *Service) TouchHeartbeat(ctx context.Context, instanceID, taskID, reques
 		}
 		return false, nil
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE cloud_agent_turns SET updated_at = ? WHERE instance_id = ? AND task_id = ? AND request_id = ? AND status = ?`,
-		stamp, inst.ID, taskID, requestID, TurnRunning)
-	return enabled, err
+	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(requestID) == "" {
+		return enabled, nil
+	}
+	// A turn that was accepted while hub was unreachable can start
+	// heartbeating before its accept bookkeeping is ever replayed. The beat
+	// is itself proof the turn is running, so upsert the shadow row here;
+	// without it the instance remains falsely idle and the control plane may
+	// settle/reuse state it does not actually own.
+	res, err := s.db.ExecContext(ctx, `INSERT INTO cloud_agent_turns (
+		id, tenant_id, owner_user_id, instance_id, task_id, request_id, status, started_at, updated_at, finished_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+	ON CONFLICT(instance_id, request_id) DO UPDATE SET
+		task_id = excluded.task_id,
+		updated_at = excluded.updated_at
+	WHERE cloud_agent_turns.status = ?`,
+		newID("ctu_"), inst.TenantID, inst.OwnerUserID, inst.ID, taskID, requestID, TurnRunning, stamp, stamp, TurnRunning)
+	if err != nil {
+		return enabled, err
+	}
+	if rows, _ := res.RowsAffected(); rows > 0 {
+		// srv runs one turn per instance. If this beat is the first evidence
+		// hub has for that turn, older running rows are necessarily shadow
+		// state from a lost finish beat.
+		if err := s.retireOtherRunning(ctx, inst.ID, requestID, stamp); err != nil {
+			return enabled, err
+		}
+		_ = s.setStatus(ctx, inst.ID, StatusRunning)
+	}
+	return enabled, nil
 }
 
 // InterruptStale marks running turns with no heartbeat inside the miss window,

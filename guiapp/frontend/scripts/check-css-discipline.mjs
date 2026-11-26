@@ -57,7 +57,14 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // 3363 -> 3410 (2026-11-25): cloud git connect dialog, cloud workflow panel & gitlab settings measured 3403 inline styles.
 // 1596 -> 1598 (2026-11-19): in-flight expert-share-categories additions added
 // two !important uses; the pinned-message banner added none.
-const IMPORTANT_BASELINE = 1598
+// 1598 -> 1602 (2026-11-26): sidebar-collapse shell-width pass edited the four
+// breakpoint shell rules in 120-app-responsive.css to consume the
+// --mc-sidebar-shell-width var (collapsed columns unmount, so the hardcoded
+// calc used to force a dead column back). Editing kept those counts equal; the
+// +4 comes from splitting the ≤560px shared selector group so .mc-nav-rail
+// keeps its literal 64px while the shell trio is var-ized (3 new declarations
+// in the split-off rule + the moved group comment line).
+const IMPORTANT_BASELINE = 1602
 const INLINE_STYLE_BASELINE = 3410
 
 function countImportant(css) {

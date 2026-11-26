@@ -101,6 +101,12 @@ func (g *llmGate) handler(w http.ResponseWriter, r *http.Request) {
 func newGate(t *testing.T, reply string, block bool) (*llmGate, *httptest.Server, func()) {
 	t.Helper()
 	g := &llmGate{started: make(chan struct{}), reply: reply}
+	// srv.Close must REGISTER before the gate's release: cleanups run LIFO,
+	// so the handler parked at <-g.release is always freed before the server
+	// waits on outstanding connections — otherwise a failed assertion deadlocks
+	// Close instead of failing the test.
+	srv := httptest.NewServer(http.HandlerFunc(g.handler))
+	t.Cleanup(srv.Close)
 	release := func() {}
 	if block {
 		g.release = make(chan struct{})
@@ -108,8 +114,6 @@ func newGate(t *testing.T, reply string, block bool) (*llmGate, *httptest.Server
 		release = func() { once.Do(func() { close(g.release) }) }
 		t.Cleanup(release)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(g.handler))
-	t.Cleanup(srv.Close)
 	return g, srv, release
 }
 
@@ -593,8 +597,10 @@ func assertPulse(t *testing.T, disabled bool) {
 	g.release = make(chan struct{})
 	var once sync.Once
 	release := func() { once.Do(func() { close(g.release) }) }
-	t.Cleanup(release)
 	var beats atomic.Int32
+	// Register srv.Close BEFORE release: cleanups run LIFO, so the parked
+	// handler is freed before the server waits on outstanding connections.
+	// The old order deadlocked Close whenever an assertion fired early.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/internal/cloud-agents/heartbeat" {
 			beats.Add(1)
@@ -609,6 +615,7 @@ func assertPulse(t *testing.T, disabled bool) {
 		g.handler(w, r)
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(release)
 	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
 	rt := openRuntime(t)
 	spec := putSession(t, rt, srv.URL)
@@ -644,11 +651,22 @@ func assertTurnCancelled(t *testing.T, rt *Runtime, id, requestID, taskID string
 	if err != nil || status != "interrupted" {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
-	rt.mu.Lock()
-	_, live := rt.cancels[requestID]
-	rt.mu.Unlock()
-	if live {
-		t.Fatal("running turn was not cancelled")
+	// 871dd51d moved the cancels-entry delete to untrack, which runs when the
+	// turn goroutine has fully unwound — cancel itself is synchronous but the
+	// removal lands milliseconds later. Poll briefly instead of failing the
+	// instant pulse returns.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		rt.mu.Lock()
+		_, live := rt.cancels[requestID]
+		rt.mu.Unlock()
+		if !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("running turn was not cancelled")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	before := g.hits.Load()
 	text := transcript(t, rt, id, taskID)
@@ -895,4 +913,184 @@ func TestServeFileOnlyServesProducedPaths(t *testing.T) {
 	if _, err := rt.serveFile(inst, "stray.txt"); err == nil {
 		t.Fatal("an unrecorded file must not be served")
 	}
+}
+
+func waitQueueEmpty(t *testing.T, rt *Runtime, instanceID, taskID string) {
+	t.Helper()
+	inst, err := rt.instance(instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, parked, err := inst.book.PeekOldest()
+		if err == nil && !parked {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("queued row did not drain; transcript=%s", transcript(t, rt, instanceID, taskID))
+}
+
+// Admission and cancellation are separate control paths. Tracking a row that
+// stop already settled must immediately cancel its not-yet-started context.
+func TestTrackTurnHonoursAlreadyTerminalRow(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, created, err := inst.book.Begin("client-terminal-admit", "task-terminal-admit", "turn", time.Now())
+	if err != nil || !created {
+		t.Fatalf("begin request=%s created=%v err=%v", requestID, created, err)
+	}
+	if ids, err := inst.book.CancelRunning("task-terminal-admit", time.Now()); err != nil || len(ids) != 1 {
+		t.Fatalf("cancel ids=%v err=%v", ids, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	rt.trackTurn(inst, requestID, cancel)
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("terminal row was tracked without cancelling its context")
+	}
+	rt.untrack(requestID)
+}
+
+// An interrupted turn does not finish through the normal drain path. A later
+// send must still join the durable tail and kick the idle queue back up in
+// FIFO order instead of remaining fenced behind the older parked rows.
+func TestSendRevivesIdleDurableQueue(t *testing.T) {
+	g, srv, release := newGate(t, officialSessionReply, true)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putSession(t, rt, srv.URL)
+	requestID, taskID := send(t, rt, spec.ID, "client-revive-first", "first turn")
+	waitCall(t, g)
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-revive-second","task_id":"`+taskID+`","text":"second turn"}`)
+	queuedAck(t, raw)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := inst.book.interrupt(time.Now(), heartbeatNote, time.Time{})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("interrupt ids=%v err=%v", ids, err)
+	}
+	rt.cancelIDs(ids)
+	release()
+	if status, err := inst.book.Status(requestID); err != nil || status != "interrupted" {
+		t.Fatalf("first status=%s err=%v", status, err)
+	}
+
+	raw = sendRaw(t, rt, spec.ID, `{"client_message_id":"client-revive-third","task_id":"`+taskID+`","text":"third turn"}`)
+	queuedAck(t, raw)
+	waitHits(t, g, 3)
+	waitQueueEmpty(t, rt, spec.ID, taskID)
+	text := transcript(t, rt, spec.ID, taskID)
+	if !strings.Contains(text, "second turn") || !strings.Contains(text, "third turn") {
+		t.Fatalf("transcript=%s", text)
+	}
+}
+
+// Stopping the instance interrupts the live row without discarding parked
+// input. Resume is the explicit point where that durable input may continue,
+// after the interrupted goroutine has unwound.
+func TestResumeDrainsQueueAfterInstanceStop(t *testing.T) {
+	g, srv, release := newGate(t, officialSessionReply, true)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putSession(t, rt, srv.URL)
+	_, taskID := send(t, rt, spec.ID, "client-resume-first", "first turn")
+	waitCall(t, g)
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-resume-second","task_id":"`+taskID+`","text":"second turn"}`)
+	queuedAck(t, raw)
+	if err := rt.Stop(spec.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := rt.Resume(spec.ID); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	release()
+	waitHits(t, g, 2)
+	waitQueueEmpty(t, rt, spec.ID, taskID)
+}
+
+// Stopping the live row must not strand the user's parked input. The next
+// durable queue row is promoted only after the cancelled turn has unwound.
+func TestStopTaskDrainsQueuedSendAfterCancelledTurn(t *testing.T) {
+	g, srv, release := newGate(t, officialSessionReply, true)
+	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
+	rt := openRuntime(t)
+	spec := putSession(t, rt, srv.URL)
+	requestID, taskID := send(t, rt, spec.ID, "client-stop-first", "first turn")
+	waitCall(t, g)
+
+	raw := sendRaw(t, rt, spec.ID, `{"client_message_id":"client-stop-next","task_id":"`+taskID+`","text":"second turn"}`)
+	if _, queuedTask := queuedAck(t, raw); queuedTask != taskID {
+		t.Fatalf("queued task=%s want %s", queuedTask, taskID)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_stop_task", []byte(`{"task_id":"`+taskID+`"}`)); err != nil {
+		t.Fatalf("stop task: %v", err)
+	}
+	release()
+	waitHits(t, g, 2)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, parked, peekErr := inst.book.PeekOldest()
+		status, statusErr := inst.book.Status(requestID)
+		if peekErr == nil && !parked && statusErr == nil && status == "cancelled" {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	text := transcript(t, rt, spec.ID, taskID)
+	t.Fatalf("queued row did not drain after stop; transcript=%s", text)
+}
+
+// Finish bookkeeping is durable before the Hub beat. A dead or slow Hub may
+// retry in the background, but it must not hold back the next parked turn.
+func TestFinishTurnDoesNotBlockOnHubHeartbeatRetry(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/internal/cloud-agents/heartbeat" {
+			<-release
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true,"enabled":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(unblock)
+	rt := openRuntime(t)
+	spec := putSession(t, rt, srv.URL)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, created, err := inst.book.Begin("client-finish-async", "task-finish-async", "finish", time.Now())
+	if err != nil || !created || requestID == "" {
+		t.Fatalf("begin request=%s created=%v err=%v", requestID, created, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		rt.finishTurn(inst, requestID, "task-finish-async", "done", false, nil, time.Now())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("finishTurn blocked behind the Hub heartbeat retry")
+	}
+	unblock()
 }

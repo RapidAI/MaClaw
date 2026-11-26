@@ -2387,6 +2387,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 			Summary:        result.Summary,
 			FilesCreated:   result.FilesCreated,
 			FilesModified:  result.FilesModified,
+			FileChanges:    codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated),
 			CommandsRun:    codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq),
 			Error:          result.Error,
 			RuntimeTaskID:  result.RuntimeTaskID,
@@ -2887,7 +2888,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, s
 		if result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "child-result review returned nil"}
 		}
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapLocalCodingSubAgentStatusForRetry(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapLocalCodingSubAgentStatusForRetry(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, FileChanges: codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated), CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
 	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
@@ -2940,7 +2941,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 		if result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "remote child-result review returned nil"}
 		}
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapRemoteCodingSubAgentStatus(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: mapRemoteCodingSubAgentStatus(result.Status), Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, FileChanges: codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated), CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 0, TDDMode: false}
 	results := v2.NewTaskRunner(config, subAgentFn).RunAll(runCtx, tasksForSubsetRerun(targets), onToken, onProgress)
@@ -3091,7 +3092,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "RemoteCodingSubAgent returned nil"}
 		}
 		status := mapRemoteCodingSubAgentStatus(result.Status)
-		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, FileChanges: codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated), CommandsRun: codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq), Error: result.Error, RuntimeTaskID: result.RuntimeTaskID, RuntimeHandoff: result.RuntimeHandoff, Children: cloneChildTaskViews(result.Children)}
 	}
 	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -4174,6 +4175,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					}
 					result.FilesModified = remapWorktreePaths(result.FilesModified, wt.ProjectPath, projectPath)
 					result.FilesCreated = remapWorktreePaths(result.FilesCreated, wt.ProjectPath, projectPath)
+					result.DiffStat = remapWorktreeDiffStat(result.DiffStat, wt.ProjectPath, projectPath)
 					wt.cleanup(false)
 					return true, nil
 				},
@@ -4213,6 +4215,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					// Remap file paths from worktree → main before sticky merge.
 					v1Result.FilesModified = remapWorktreePaths(v1Result.FilesModified, wt.ProjectPath, projectPath)
 					v1Result.FilesCreated = remapWorktreePaths(v1Result.FilesCreated, wt.ProjectPath, projectPath)
+					v1Result.DiffStat = remapWorktreeDiffStat(v1Result.DiffStat, wt.ProjectPath, projectPath)
 					wt.cleanup(false)
 				}
 			} else {

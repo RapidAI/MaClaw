@@ -59,6 +59,17 @@ func TestLooksLikeVerificationCommandRequiresActualVerifierCommand(t *testing.T)
 	}
 }
 
+func TestFinalAnswerCommandWordsPreserveWindowsPathSeparators(t *testing.T) {
+	words := finalAnswerCommandWords(`scripts\goheavy.cmd go test ./pkg`)
+	if len(words) != 4 || words[0] != `scripts\goheavy.cmd` {
+		t.Fatalf("windows command path was treated as shell escaping: %#v", words)
+	}
+	words = finalAnswerCommandWords("go test ./pkg --token 'private value'")
+	if len(words) != 5 || words[4] != "private value" {
+		t.Fatalf("quoted command argument boundaries lost: %#v", words)
+	}
+}
+
 func TestAppendFinalAnswerHostFactsFillsMissingFileAndVerificationFacts(t *testing.T) {
 	got := AppendFinalAnswerHostFacts(
 		"已完成修复。",
@@ -103,6 +114,22 @@ func TestAppendFinalAnswerHostFactsIgnoresStaleCommands(t *testing.T) {
 	})
 	if strings.Contains(got, "实际验证") || strings.Contains(got, "go test") {
 		t.Fatalf("stale command leaked into facts: %q", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsDoesNotTreatLongerCommandAsMention(t *testing.T) {
+	for _, summary := range []string{
+		"已验证：`go test ./pkg2` 通过。",
+		"已验证：`go test ./pkg.test` 通过。",
+	} {
+		got := AppendFinalAnswerHostFacts(summary, nil, nil, []FinalAnswerVerificationFact{{
+			Command:        "go test ./pkg",
+			Succeeded:      true,
+			AfterFinalEdit: true,
+		}})
+		if !strings.Contains(got, "实际验证") || strings.Count(got, "`go test ./pkg`") != 1 {
+			t.Fatalf("longer command suppressed the actual verification fact: %q", got)
+		}
 	}
 }
 
@@ -171,6 +198,22 @@ func TestAppendFinalAnswerHostFactsRedactsSeparateSecretArguments(t *testing.T) 
 	}
 	if !strings.Contains(got, "--token <redacted>") {
 		t.Fatalf("separate secret argument was not redacted: %q", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsRedactsQuotedSecretsWithSpaces(t *testing.T) {
+	got := AppendFinalAnswerHostFacts("已完成验证。", nil, nil, []FinalAnswerVerificationFact{{
+		Command:        "go test ./pkg --token 'private value' -H 'Authorization: Bearer header secret'",
+		Succeeded:      true,
+		AfterFinalEdit: true,
+	}})
+	for _, leaked := range []string{"private value", "private", "header secret", "header"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("quoted secret fragment %q leaked into host facts: %q", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "--token <redacted>") || !strings.Contains(got, "'Authorization: Bearer <redacted>'") {
+		t.Fatalf("quoted secrets were not redacted cleanly: %q", got)
 	}
 }
 
@@ -248,5 +291,150 @@ func TestAppendFinalAnswerHostFactsEnglishSummaryKeepsLatinWhenHanIsMinor(t *tes
 	)
 	if !strings.Contains(got, "Actual file changes") || !strings.Contains(got, "Observed verification") {
 		t.Fatalf("latin facts were flipped to Chinese: %q", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsWithFileChangesRendersStructuredChineseTable(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges(
+		"已完成视觉优化，render.cpp 已在内文中说明。",
+		[]string{"new.js"},
+		[]string{"render.cpp", "large.bin"},
+		[]FinalAnswerFileChangeFact{
+			{Path: "render.cpp", Added: 24, Removed: 5, HasCounts: true},
+			{Path: "new.js", Created: true, Added: 40, Removed: 0, HasCounts: true},
+			{Path: "large.bin"},
+		},
+		nil,
+	)
+	for _, want := range []string{
+		"## 文件改动（3 个文件）",
+		"| 文件 | 状态 | 新增行 | 删除行 |",
+		"| `new.js` | 新建 | 40 | 0 |",
+		"| `render.cpp` | 修改 | 24 | 5 |",
+		"| `large.bin` | 修改 | — | — |",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("structured file table missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "本轮实际改动") {
+		t.Fatalf("structured table must replace the prose fallback, not duplicate it:\n%s", got)
+	}
+}
+
+func TestAppendFinalAnswerHostFactsWithFileChangesRendersEnglishTable(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges(
+		"Implemented the rendering update.",
+		nil,
+		[]string{"render.cpp"},
+		[]FinalAnswerFileChangeFact{{Path: "render.cpp", Added: 3, Removed: 1, HasCounts: true}},
+		nil,
+	)
+	for _, want := range []string{"## File changes (1 file)", "| File | Status | Added lines | Removed lines |", "| `render.cpp` | modified | 3 | 1 |"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("english structured file table missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCountTextLineChangesUsesUnifiedDiffSemantics(t *testing.T) {
+	added, removed := CountTextLineChanges("a\nb\nc\n", "a\nx\nc\nd\n")
+	if added != 2 || removed != 1 {
+		t.Fatalf("unexpected line diff counts: added=%d removed=%d", added, removed)
+	}
+	added, removed = CountTextLineChanges("same\n", "same\n")
+	if added != 0 || removed != 0 {
+		t.Fatalf("unchanged text must be an exact zero diff: added=%d removed=%d", added, removed)
+	}
+}
+
+func TestCountTextLineChangesMatchesGitNumstatEdgeCases(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		before, after  string
+		added, removed int
+	}{
+		{name: "empty to one line", before: "", after: "x", added: 1, removed: 0},
+		{name: "one line to empty", before: "x", after: "", added: 0, removed: 1},
+		{name: "add trailing newline", before: "x", after: "x\n", added: 1, removed: 1},
+		{name: "remove trailing newline", before: "x\n", after: "x", added: 1, removed: 1},
+		{name: "append blank line", before: "x\n", after: "x\n\n", added: 1, removed: 0},
+	} {
+		added, removed := CountTextLineChanges(tc.before, tc.after)
+		if added != tc.added || removed != tc.removed {
+			t.Fatalf("%s: CountTextLineChanges(%q, %q)=+%d -%d, want +%d -%d", tc.name, tc.before, tc.after, added, removed, tc.added, tc.removed)
+		}
+	}
+}
+
+func TestFileChangeTableOverflowDoesNotInventPartialTotals(t *testing.T) {
+	facts := make([]FinalAnswerFileChangeFact, 0, 13)
+	for i := 0; i < 12; i++ {
+		facts = append(facts, FinalAnswerFileChangeFact{Path: strings.Repeat("a", i+1) + ".go", Added: 1, HasCounts: true})
+	}
+	facts = append(facts, FinalAnswerFileChangeFact{Path: "zzunknown.bin"})
+	got := AppendFinalAnswerHostFactsWithFileChanges("已完成。", nil, nil, facts, nil)
+	if !strings.Contains(got, "| *其余 1 个文件* | — | — | — |") {
+		t.Fatalf("overflow row with unknown counts must stay unknown:\n%s", got)
+	}
+}
+
+func TestFileChangeTableOmitsNetZeroModifiedFiles(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("已完成。", nil, []string{"reverted.go"}, []FinalAnswerFileChangeFact{
+		{Path: "reverted.go", HasCounts: true},
+	}, nil)
+	if strings.Contains(got, "reverted.go") || strings.Contains(got, "文件改动") {
+		t.Fatalf("net-zero modified file should not appear as a changed file:\n%s", got)
+	}
+	got = AppendFinalAnswerHostFactsWithFileChanges("已完成。", []string{"empty.go"}, nil, []FinalAnswerFileChangeFact{
+		{Path: "empty.go", Created: true, HasCounts: true},
+	}, nil)
+	if !strings.Contains(got, "| `empty.go` | 新建 | 0 | 0 |") {
+		t.Fatalf("empty created file must remain visible:\n%s", got)
+	}
+}
+
+func TestStructuredFileChangeTableExistsEvenWhenCountsUnavailable(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("已完成。", []string{"new.bin"}, []string{"large.dat"}, nil, nil)
+	for _, want := range []string{"## 文件改动（2 个文件）", "| `large.dat` | 修改 | — | — |", "| `new.bin` | 新建 | — | — |"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("structured table missing unavailable-count row %q:\n%s", want, got)
+		}
+	}
+	compat := AppendFinalAnswerHostFacts("已完成。", []string{"new.bin"}, nil, nil)
+	if strings.Contains(compat, "| 文件 | 状态 |") {
+		t.Fatalf("compatibility wrapper must keep prose fallback rather than forcing a table:\n%s", compat)
+	}
+}
+
+func TestFileChangeTableDoesNotMergeCaseSensitivePaths(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("Implemented updates.", nil, nil, []FinalAnswerFileChangeFact{
+		{Path: "src/Config.go", Added: 1, HasCounts: true},
+		{Path: "src/config.go", Added: 2, HasCounts: true},
+	}, nil)
+	if !strings.Contains(got, "## File changes (2 files)") || !strings.Contains(got, "`src/Config.go`") || !strings.Contains(got, "`src/config.go`") {
+		t.Fatalf("case-sensitive paths were merged incorrectly:\n%s", got)
+	}
+}
+
+func TestFileChangeTableMergesAbsoluteAndProjectRelativeEvidence(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("Implemented updates.", []string{"/repo/main.py"}, nil, []FinalAnswerFileChangeFact{
+		{Path: "main.py", Added: 8, Removed: 2, HasCounts: true},
+	}, nil)
+	if strings.Contains(got, "(2 files)") || strings.Contains(got, "`/repo/main.py`") {
+		t.Fatalf("absolute/relative evidence produced duplicate rows:\n%s", got)
+	}
+	if !strings.Contains(got, "## File changes (1 file)") || !strings.Contains(got, "| `main.py` | created | 8 | 2 |") {
+		t.Fatalf("merged row missing relative exact evidence:\n%s", got)
+	}
+}
+
+func TestFileChangeTableDoesNotMergeIndependentlyMeasuredNestedSuffixes(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("Implemented updates.", nil, nil, []FinalAnswerFileChangeFact{
+		{Path: "src/main.py", Added: 1, HasCounts: true},
+		{Path: "other/src/main.py", Added: 2, HasCounts: true},
+	}, nil)
+	if !strings.Contains(got, "## File changes (2 files)") {
+		t.Fatalf("independent nested suffix files were merged:\n%s", got)
 	}
 }

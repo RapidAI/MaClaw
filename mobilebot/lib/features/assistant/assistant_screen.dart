@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -7,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/chat_ui.dart' show ChatComposer, ChatRole, MessageBubble;
 import '../../core/locale.dart';
+import '../../core/theme.dart';
 import '../../core/ui_kit.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -20,7 +22,8 @@ import '../../core/asr_fallback.dart';
 import '../../core/native_voice.dart';
 import '../../core/platform.dart';
 import '../../core/providers.dart';
-import '../../core/speech_text.dart';
+import '../../core/speech_readback.dart';
+import '../../core/mic_recorder.dart';
 import '../../core/voice_engine.dart';
 import 'assistant_api.dart';
 
@@ -30,6 +33,12 @@ class _Msg {
   String text;
   bool pending;
   bool failed = false;
+
+  /// Live thinking trace while the job runs (`progress` from the job status):
+  /// one short line per tool step. The answer replaces it, so it is cleared —
+  /// not kept — once the reply lands: the person asked for the result, not a
+  /// log of how it was produced.
+  List<String> thinking = const [];
 
   /// Bound document this user turn carried (displayed as a chip).
   final String attachment;
@@ -100,9 +109,25 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   @override
   void initState() {
     super.initState();
+    if (supportsVoiceInput && Platform.isAndroid) {
+      // 先要一次录音权限：点麦克风时语音插件才串行申请权限，系统弹窗
+      // 出现前界面毫无变化，看起来就是「点了没反应」。
+      unawaited(_warmMic());
+    }
     if (supportsVoiceOutput) {
       _tts = FlutterTts();
       unawaited(_tts!.setLanguage('zh-CN').then((_) {}).catchError((_) {}));
+    }
+  }
+
+  /// 首次点麦克风前就把录音权限要到手。speech_to_text.initialize 与
+  /// record.hasPermission 都会自己申请，但助手页第一次点麦时这两步串行
+  /// 等待，系统弹窗出现前界面完全没变化，看起来就是「无反应」。
+  Future<void> _warmMic() async {
+    try {
+      await (_recorder ??= sharedRecorder()).hasPermission();
+    } on Object {
+      // 权限插件不可用时交给点麦时的正式路径处理。
     }
   }
 
@@ -174,10 +199,18 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         await Future<void>.delayed(_pollInterval);
         if (!mounted) return;
         job = await api.getJob(job.jobId);
+        // The trace is shown only while the turn runs; it disappears with
+        // the answer so a finished reply reads as one block.
+        if (!mounted || !pending.pending) break;
+        if (job.progress.isNotEmpty &&
+            !_sameLines(pending.thinking, job.progress)) {
+          setState(() => pending.thinking = job.progress);
+        }
       }
       if (!mounted) return;
       setState(() {
         pending.pending = false;
+        pending.thinking = const [];
         if (job.isReady && job.answer.trim().isNotEmpty) {
           pending.text = job.answer;
         } else {
@@ -192,6 +225,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       if (!mounted) return;
       setState(() {
         pending.pending = false;
+        pending.thinking = const [];
         pending.failed = true;
         pending.text = error.toString();
       });
@@ -201,6 +235,15 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
         _scrollToEnd();
       }
     }
+  }
+
+  /// 轮询回来的进度只在变化时 setState，避免每 1.6 秒重建整页。
+  static bool _sameLines(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _retry(_Msg failed) {
@@ -332,8 +375,39 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     });
   }
 
+  /// 系统识别没起来时留下的具体原因（权限、语言列表为空、识别器报错）。
+  /// 两条路都不通时必须把它说出来，否则点麦克风看起来完全没反应。
+  String _lastSystemListenReason = '';
+
+  /// 一次点麦已经进到识别流程（含系统探测、权限申请）。第二次点麦不能再
+  /// 串行起一轮：上一轮结束时会把 _listening 清掉，看起来就是「电平也不动」。
+  bool _dictateBusy = false;
+
   Future<void> _dictate() async {
     if (!supportsVoiceInput || _listening) return;
+    // 上一轮还没跑完就把这一轮的聆听态收掉，否则新一轮的麦克风会被
+    // 上一轮收尾时切掉（电平不动、也不出字）。
+    if (_dictateBusy) {
+      // 上一轮还在探测/申请权限：作废它，本轮重新开始，不能两轮抢同一只麦。
+      _noteListenCallback();
+      _dictateBusy = false;
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _recognizing = false;
+        });
+      }
+    }
+    _dictateBusy = true;
+    try {
+      await _dictateOnce();
+    } finally {
+      _dictateBusy = false;
+    }
+  }
+
+  Future<void> _dictateOnce() async {
+    _lastSystemListenReason = '';
     final engine = ref.read(voiceEngineProvider);
     await engine.ensurePrefs();
     final localReady = await engine.localAsrReady();
@@ -445,7 +519,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (mounted) setState(() {});
     if (!localReady) {
       if (!NativeVoice.usable) {
-        _toast(context.S.vsEngineMissing);
+        _toast(
+          _lastSystemListenReason.isEmpty
+              ? context.S.vsEngineMissing
+              : context.S.chatAsrFailedWith(_lastSystemListenReason),
+        );
         return;
       }
       final hub = ref.read(sessionProvider).active?.hubUrl;
@@ -512,8 +590,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       },
           )
           .timeout(kSystemListenProbeTimeout);
-    } on Object {
+    } on Object catch (e) {
       // recognizerNotAvailable / 通道挂起：没有识别器，立刻回退。
+      _lastSystemListenReason = '$e';
       _noteListenCallback();
       return false;
     }
@@ -529,6 +608,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       final before = await _probeSystemListen(fallbackLocaleId);
       if (!mounted) return false;
       if (systemListenUnavailable(before.probe)) {
+        _lastSystemListenReason = systemListenProbeReason(before.probe);
         _noteListenCallback();
         return false;
       }
@@ -581,6 +661,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final after = await _probeSystemListen(fallbackLocaleId);
     if (!mounted) return false;
     if (systemListenUnavailable(after.probe)) {
+      _lastSystemListenReason = systemListenProbeReason(after.probe);
       _noteListenCallback();
       try {
         await _speech.stop();
@@ -636,7 +717,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   Future<Uint8List?> _capturePcm() async {
     final S = context.S;
-    final recorder = _recorder ??= AudioRecorder();
+    final recorder = _recorder ??= sharedRecorder();
     if (!await recorder.hasPermission()) {
       _toast(S.chatMicPermissionDenied);
       return null;
@@ -723,7 +804,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final engine = ref.read(voiceEngineProvider);
     if (!await engine.localAsrReady()) {
       if (!NativeVoice.usable) {
-        _toast(S.vsEngineMissing);
+        _toast(
+          _lastSystemListenReason.isEmpty
+              ? S.vsEngineMissing
+              : S.chatAsrFailedWith(_lastSystemListenReason),
+        );
         return;
       }
       final hub = ref.read(sessionProvider).active?.hubUrl;
@@ -797,19 +882,13 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   Future<void> _speakOnce(_Msg m) async {
     if (!_readOut || !supportsVoiceOutput || _spoken.contains(m.id)) return;
     _spoken.add(m.id);
-    final text = plainTextForSpeech(m.text);
-    if (text.isEmpty) return;
-    final engine = ref.read(voiceEngineProvider);
-    if (await engine.useKokoro) {
-      final err = await engine.speakKokoro(text, onDone: () {});
-      if (err == null) return;
-    }
-    try {
-      await _tts?.stop();
-      await _tts?.speak(text);
-    } on Object {
-      // TTS is best-effort — the answer is already on screen.
-    }
+    // 分段队列：边合成边播，第一段出声不再等整段合成完。
+    await speakReplyReadback(
+      ref.read(voiceEngineProvider),
+      m.text,
+      onDone: () {},
+      systemTts: () => _tts,
+    );
   }
 
   void _newChat() {
@@ -963,10 +1042,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               ),
             ),
           if (m.pending)
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+                if (m.thinking.isNotEmpty) ...[
+                  const SizedBox(width: AppSpacing.sm),
+                  Flexible(child: _ThinkingTrace(lines: m.thinking)),
+                ],
+              ],
             )
           else if (m.isUser)
             Text(m.text)
@@ -981,6 +1072,64 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// 等待期间的思考过程：一条浅色竖线上滚动的步骤行，最后一行高亮。
+/// 结果一落地这一块整个撤掉（调用方把 thinking 清空），不留日志。
+class _ThinkingTrace extends StatelessWidget {
+  const _ThinkingTrace({required this.lines});
+
+  final List<String> lines;
+
+  /// 同时显示的行数：再多就只保留末尾，避免气泡撑满整屏。
+  static const _visible = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final shown = lines.length > _visible
+        ? lines.sublist(lines.length - _visible)
+        : lines;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.psychology_outlined,
+              size: 13,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              context.S.rtThinkingStreaming,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.primary,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        for (var i = 0; i < shown.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              shown[i],
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: i == shown.length - 1
+                    ? scheme.onSurface
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

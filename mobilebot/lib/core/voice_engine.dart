@@ -58,6 +58,16 @@ String? pickAsrLocale(
   return 'zh_CN';
 }
 
+/// One spoken segment of a readback: its text, the synthesized WAV once it
+/// exists, or the error that stopped it.
+class _SpeechSegment {
+  _SpeechSegment(this.text);
+  final String text;
+  Uint8List? wav;
+  String? error;
+  Future<Uint8List?>? pending;
+}
+
 final voiceEngineProvider = Provider<VoiceEngine>((ref) => VoiceEngine());
 
 class VoiceEngine {
@@ -65,7 +75,7 @@ class VoiceEngine {
   void Function()? _onDone;
 
   VoiceEngine() {
-    _player.onPlayerComplete.listen((_) => _onDone?.call());
+    _player.onPlayerComplete.listen((_) => _onPlayerComplete());
   }
   final VoiceAssets assets = VoiceAssets();
 
@@ -225,6 +235,177 @@ class VoiceEngine {
     _asrPathSnapshot ??= await VoiceAssets.asrPath();
   }
 
+  // ---- Speech queue ------------------------------------------------------
+  // Long replies used to be one up-front synthesis of the whole text, so
+  // playback only started after every chunk had been generated, and a reply
+  // over `_speechTextLimit` was simply cut off. The queue speaks in segments:
+  // one segment is synthesized while the previous one plays, so the first
+  // audio starts after a single short inference.
+  final List<_SpeechSegment> _segments = [];
+  bool _speaking = false;
+  int _speechGen = 0;
+  double _speechSpeed = 1.0;
+
+  /// True while a segmented readback owns the player (queued, generating or
+  /// playing). The mic stays shut while this is true.
+  bool get speaking => _speaking;
+
+  /// Whether a segmented readback is in a lifecycle callback right now.
+  /// A completion arriving outside one belongs to a clip the queue has
+  /// already moved past — the single-clip path — and is ignored here.
+  bool _speechCallback = false;
+
+  void _onPlayerComplete() {
+    if (_speechCallback) return;
+    _onDone?.call();
+  }
+
+  /// Speak [segments] in order, reporting lifecycle changes through [onEvent]:
+  /// `start` once (audio is about to play — load and the first synthesis are
+  /// done), `idle` once when the queue drains, `failed` with a reason when
+  /// synthesis or playback breaks (later segments still play). A cancelled
+  /// queue (see [stopSpeaking]) fires no terminal event.
+  /// Returns the error of the first failed segment, or null when every segment
+  /// was spoken.
+  Future<String?> speakSegments(
+    List<String> segments, {
+    required void Function(String event, String detail) onEvent,
+    double speed = 1.0,
+  }) async {
+    final gen = ++_speechGen;
+    _segments
+      ..clear()
+      ..addAll(
+        segments.where((s) => s.trim().isNotEmpty).map(_SpeechSegment.new),
+      );
+    if (_segments.isEmpty) return null;
+    _speechSpeed = speed > 0 ? speed : 1.0;
+    _speaking = true;
+
+    await _snapshotPaths();
+    final loadErr = await _ensureTtsLoaded();
+    if (gen != _speechGen) {
+      return null;
+    }
+    if (loadErr != null) {
+      _speechCallback = true;
+      try {
+        _finishSpeech(gen, onEvent);
+      } finally {
+        _speechCallback = false;
+      }
+      return loadErr;
+    }
+    // The first clip replaces whatever the player holds; stop() can emit the
+    // PREVIOUS clip's completion asynchronously, so the callback flag is on
+    // for it.
+    _speechCallback = true;
+    try {
+      await _player.stop();
+    } on Object {
+      // A player with nothing to stop is not an error.
+    } finally {
+      _speechCallback = false;
+    }
+    final errors = <String>[];
+    var started = false;
+    for (var i = 0; gen == _speechGen && i < _segments.length; i++) {
+      final wav = await _synthesizeSegment(i);
+      if (gen != _speechGen) break;
+      if (wav == null) {
+        final err = _segments[i].error ?? 'kokoro synthesize failed';
+        errors.add(err);
+        onEvent('failed', err);
+        continue;
+      }
+      if (!started) {
+        started = true;
+        onEvent('start', '');
+      }
+      // Synthesize ahead: the next clip is ready while this one plays, so
+      // playback rarely waits on inference after the first segment.
+      if (i + 1 < _segments.length) unawaited(_synthesizeSegment(i + 1));
+      try {
+        await _playSegment(i, wav, gen, onEvent);
+      } on Object catch (e) {
+        errors.add('voice playback failed: $e');
+        onEvent('failed', 'voice playback failed: $e');
+      }
+    }
+    if (gen == _speechGen) {
+      _speechCallback = true;
+      try {
+        _finishSpeech(gen, onEvent);
+      } finally {
+        _speechCallback = false;
+      }
+    }
+    return errors.isEmpty ? null : errors.first;
+  }
+
+  /// Synthesizes segments ahead of playback, so the next clip is ready while
+  /// the current one is still playing. Failures are stored on the segment.
+  Future<Uint8List?> _synthesizeSegment(int idx) async {
+    final seg = _segments[idx];
+    if (seg.wav != null || seg.error != null) return seg.wav;
+    final pending = seg.pending;
+    if (pending != null) return pending;
+    final future = () async {
+      try {
+        final wav = await _runTts(seg.text, _speechSpeed);
+        seg.wav = wav;
+        return wav;
+      } on Object catch (e) {
+        seg.error = 'kokoro synthesize failed: $e';
+        return null;
+      }
+    }();
+    seg.pending = future;
+    return future;
+  }
+
+  /// Plays one synthesized segment and waits for the player to finish it.
+  /// The first segment replaces whatever the player holds, which is why
+  /// [speakSegments] stops the previous clip only once, up front.
+  Future<void> _playSegment(
+    int idx,
+    Uint8List wav,
+    int gen,
+    void Function(String, String) onEvent,
+  ) async {
+    final done = Completer<void>();
+    _speechCallback = true;
+    try {
+      _onDone = () {
+        if (!done.isCompleted) done.complete();
+      };
+      await _player.play(BytesSource(wav));
+    } finally {
+      _speechCallback = false;
+    }
+    await done.future;
+    _onDone = null;
+  }
+
+  void _finishSpeech(int gen, void Function(String, String) onEvent) {
+    if (gen != _speechGen) return;
+    _speaking = false;
+    _segments.clear();
+    _onDone = null;
+    onEvent('idle', '');
+  }
+
+  /// Cut a segmented readback short (mic press, page dispose, engine switch).
+  /// The pending `_playSegment` wait ends on the player's complete event; the
+  /// generation bump makes [speakSegments] drop the rest of the queue.
+  Future<void> stopSpeaking() async {
+    _speechGen++;
+    _speaking = false;
+    _segments.clear();
+    _onDone = null;
+    if (!_speechCallback) await _player.stop();
+  }
+
   /// Load the engine, synthesize, play WAV — completion fires [onDone].
   /// Returns an error string instead of playing on failure.
   Future<String?> speakKokoro(
@@ -255,8 +436,6 @@ class VoiceEngine {
     _onDone = onDone;
     return null;
   }
-
-  Future<void> stopSpeaking() => _player.stop();
 
   Future<String?> _ensureAsrLoaded() async {
     if (!NativeVoice.usable) return 'native voice unavailable';

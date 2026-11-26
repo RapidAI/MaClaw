@@ -3,6 +3,7 @@ import { getAllToolOptions, isToolTab, normalizeToolTab } from '../../config/too
 import { windowDragHandleProps } from '../../utils/windowDrag';
 import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
+import { SidebarToggleCluster } from './SidebarToggleCluster';
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './WindowControlIcons';
 import { localizeText } from '../../i18n';
 
@@ -25,6 +26,9 @@ interface MainTopHeaderProps {
     handleWindowHide: (e: ReactMouseEvent) => void;
     handleWindowMaximizeToggle: (e?: ReactMouseEvent) => void;
     windowMaximized: boolean;
+    /** 功能栏 (nav rail) collapse state for the leading toggle; the task pane does not exist on these tabs. */
+    railCollapsed?: boolean;
+    onToggleRail?: () => void;
 }
 
 const zhHans = {
@@ -71,6 +75,8 @@ export const MainTopHeader = ({
     handleWindowHide,
     handleWindowMaximizeToggle,
     windowMaximized,
+    railCollapsed = false,
+    onToggleRail,
 }: MainTopHeaderProps) => {
     const safeActiveTool = normalizeToolTab(activeTool);
     const toolOptions = getAllToolOptions();
@@ -78,6 +84,7 @@ export const MainTopHeader = ({
     return (
     <div className="top-header" {...windowDragHandleProps(true, { userSelect: 'none' })} onDoubleClick={() => handleWindowMaximizeToggle()}>
         <div className="mth-row">
+            <SidebarToggleCluster showPaneToggle={false} paneCollapsed={false} railCollapsed={railCollapsed} onToggleRail={onToggleRail} lang={lang} />
             <h2 className="mth-title">
                 <span className="mc-header-brand" aria-label="MaClaw">
                     <span>MaClaw</span>

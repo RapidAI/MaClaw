@@ -2,20 +2,23 @@ package guiapp
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 // CloudAgentRow is one cloud instance the task list can open.
 // It is not a desktop machine and not a bot.
 type CloudAgentRow struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Kind          string    `json:"kind"`
-	Status        string    `json:"status"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
 	// SrvNodeID is the private node maclawsrv this instance was provisioned
 	// on; empty means the official (public) cloud service.
 	SrvNodeID     string    `json:"srv_node_id,omitempty"`
@@ -58,9 +61,10 @@ func (a *App) CreateCloudAgent(name, kind string) (CloudAgentRow, error) {
 	}
 	var row CloudAgentRow
 	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents", map[string]string{
-		"name":     strings.TrimSpace(name),
-		"kind":     kind,
-		"llm_mode": "official",
+		"name":          strings.TrimSpace(name),
+		"kind":          kind,
+		"llm_mode":      "official",
+		"thinking_mode": a.cloudAgentThinkingLevel(),
 	}, &row)
 	if err != nil {
 		return row, err
@@ -102,19 +106,32 @@ func (a *App) cloudAgentDefaultLLM() (CloudLLMSet, bool) {
 			model = strings.TrimSpace(provider.Model)
 		}
 		return CloudLLMSet{
-			URL:           provider.URL,
-			Key:           provider.Key,
-			Model:         model,
-			Label:         name,
+			URL:             provider.URL,
+			Key:             provider.Key,
+			Model:           model,
+			Label:           name,
 			Protocol:        provider.Protocol,
 			WireAPI:         provider.WireAPI,
 			AgentType:       provider.AgentType,
 			ContextLength:   provider.ContextLength,
 			TimeoutSec:      provider.TimeoutSec,
 			MaxOutputTokens: provider.MaxOutputTokens,
+			// The same global level a local coding turn is stamped with —
+			// the srv applies it so cloud and local requests match.
+			ThinkingMode: a.cloudAgentThinkingLevel(),
 		}, true
 	}
 	return CloudLLMSet{}, false
+}
+
+// cloudAgentThinkingLevel reads the desktop's global thinking level — the
+// same setting ApplyGlobalThinkingLevel consumes for local coding turns.
+func (a *App) cloudAgentThinkingLevel() string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.MaclawLLMThinkingMode)
 }
 
 // RenameCloudAgent renames an instance.
@@ -193,16 +210,19 @@ func (a *App) OpenCloudAgentGrant(instanceID string) (string, error) {
 // fields must ride along: a provider like 智谱编程 is anthropic-protocol and
 // fails every turn when the srv falls back to chat/completions.
 type CloudLLMSet struct {
-	URL           string `json:"url"`
-	Key           string `json:"key"`
-	Model         string `json:"model"`
-	Label         string `json:"label"`
+	URL             string `json:"url"`
+	Key             string `json:"key"`
+	Model           string `json:"model"`
+	Label           string `json:"label"`
 	Protocol        string `json:"protocol,omitempty"`
 	WireAPI         string `json:"wire_api,omitempty"`
 	AgentType       string `json:"agent_type,omitempty"`
 	ContextLength   int    `json:"context_length,omitempty"`
 	TimeoutSec      int    `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	// ThinkingMode carries the desktop's global thinking level so the cloud
+	// coding turn requests reasoning exactly like a local turn does.
+	ThinkingMode string `json:"thinking_mode,omitempty"`
 }
 
 // SetCloudAgentLLM pins a cloud instance to one of the desktop's configured
@@ -240,8 +260,8 @@ type CloudGitConnect struct {
 	Token       string `json:"token,omitempty"`
 	AuthorName  string `json:"author_name"`
 	AuthorEmail string `json:"author_email"`
-	// Source "account" binds the instance to the signed-in GitHub account so
-	// syncCloudAgentGitCredentials can refresh the token after re-login.
+	// Source "account" binds the instance to the signed-in GitHub/GitLab
+	// account so the credential sync can refresh the token after re-login.
 	Source string `json:"source,omitempty"`
 }
 
@@ -263,9 +283,108 @@ func (a *App) ConnectCloudAgentGit(instanceID string, body CloudGitConnect) (Clo
 	if instanceID == "" {
 		return CloudGitPublic{}, errors.New("缺少云端实例")
 	}
+	if err := a.prepareCloudGitAccountConnect(&body); err != nil {
+		return CloudGitPublic{}, err
+	}
+	return a.postCloudAgentGit(instanceID, body)
+}
+
+// postCloudAgentGit is the trusted internal write path. Exported callers go
+// through ConnectCloudAgentGit first so source="account" cannot be forged
+// around a manually supplied token.
+func (a *App) postCloudAgentGit(instanceID string, body CloudGitConnect) (CloudGitPublic, error) {
 	var view CloudGitPublic
 	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents/"+url.PathEscape(instanceID)+"/git", body, &view)
 	return view, err
+}
+
+// prepareCloudGitAccountConnect resolves source="account" inside the backend.
+// The webview chooses a repository and submits no token; the credential store
+// is the only place where the GitHub/GitLab secret is read. This keeps the
+// simple path independent of a live /user refresh and prevents token round-trips
+// through the UI layer.
+func (a *App) prepareCloudGitAccountConnect(body *CloudGitConnect) error {
+	if body == nil || !strings.EqualFold(strings.TrimSpace(body.Source), "account") {
+		return nil
+	}
+	if strings.TrimSpace(body.Token) != "" {
+		return fmt.Errorf("使用已连接账号时不能同时提交手动令牌")
+	}
+	body.Source = "account"
+	switch strings.ToLower(strings.TrimSpace(body.Service)) {
+	case "github":
+		cred := a.loadGitHubCredential()
+		if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+			return fmt.Errorf("请先在设置中连接 GitHub")
+		}
+		if !oauth.GitHubScopesHaveRepo(cred.Scopes) {
+			return fmt.Errorf("当前 GitHub 连接没有仓库权限，请在设置中断开 GitHub 后重新登录")
+		}
+		account := cloudGitHubAccountFromCredential(cred)
+		body.Service = "github"
+		body.Token = strings.TrimSpace(cred.AccessToken)
+		if origin := strings.TrimSpace(body.Origin); origin == "" {
+			body.Origin = "https://github.com"
+		} else if !accountHTTPSRootOrigin(origin) {
+			return fmt.Errorf("GitHub 账号令牌只能用于 github.com 的 HTTPS 站点地址；自建地址请使用手动令牌")
+		} else if host := hostOfOrigin(origin); host != "github.com" && host != "www.github.com" {
+			return fmt.Errorf("GitHub 账号令牌只能用于 github.com；自建地址请使用手动令牌")
+		}
+		if strings.TrimSpace(body.AuthorName) == "" {
+			body.AuthorName = account.Name
+		}
+		if strings.TrimSpace(body.AuthorEmail) == "" {
+			body.AuthorEmail = account.Email
+		}
+	case "gitlab":
+		cred := a.gitlabCredential()
+		if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+			return fmt.Errorf("请先在设置中连接 GitLab")
+		}
+		if !oauth.GitLabScopesHaveRepo(cred.Scopes) {
+			return fmt.Errorf("当前 GitLab 令牌没有仓库写权限，请在设置中重新连接 GitLab")
+		}
+		body.Service = "gitlab"
+		body.Token = strings.TrimSpace(cred.AccessToken)
+		accountOrigin := strings.TrimSpace(cred.BaseURL)
+		accountHost := hostOfOrigin(accountOrigin)
+		if !accountHTTPSRootOrigin(accountOrigin) {
+			return fmt.Errorf("GitLab 连接缺少有效的 HTTPS 站点地址，请在设置中重新连接 GitLab")
+		}
+		if origin := strings.TrimSpace(body.Origin); origin == "" {
+			body.Origin = accountOrigin
+		} else if !accountHTTPSRootOrigin(origin) {
+			return fmt.Errorf("GitLab 账号令牌只能用于已连接实例的 HTTPS 站点地址；其他服务器请使用手动令牌")
+		} else if hostOfOrigin(origin) != accountHost {
+			return fmt.Errorf("GitLab 账号令牌只能用于已连接的实例；其他服务器请使用手动令牌")
+		}
+		if strings.TrimSpace(body.AuthorName) == "" {
+			body.AuthorName = strings.TrimSpace(cred.DisplayName)
+			if body.AuthorName == "" {
+				body.AuthorName = strings.TrimSpace(cred.Login)
+			}
+		}
+		if strings.TrimSpace(body.AuthorEmail) == "" {
+			body.AuthorEmail = cloudGitLabCommitEmail(cred)
+		}
+	default:
+		return fmt.Errorf("代码平台只支持 GitHub 或 GitLab")
+	}
+	return nil
+}
+
+// accountHTTPSRootOrigin is the fail-closed origin check for account-bound
+// credentials. The token may be embedded into the clone URL by the srv, so an
+// account token must never ride plaintext HTTP, userinfo, query strings, or a
+// non-root path even when the hostname happens to match.
+func accountHTTPSRootOrigin(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "https") &&
+		(parsed.Path == "" || parsed.Path == "/") &&
+		parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 // GetCloudAgentGit reads the instance's git view (no token) — which repo is

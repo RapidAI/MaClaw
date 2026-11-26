@@ -11774,7 +11774,10 @@ describe('cloud task view in the main panel (local-task parity)', () => {
 
     /** Publish a cloud task the way cloudAgentAssistant does, with a close
         action that mirrors closeCloudAssistant's unpublish. */
-    function openCloudView(send: (text: string) => Promise<boolean> = async () => true) {
+    function openCloudView(
+        send: (text: string) => Promise<boolean> = async () => true,
+        overrides: { busy?: boolean; stop?: () => Promise<boolean> } = {},
+    ) {
         act(() => {
             publishRemoteAssistantSession({
                 grantId: 'grant-cloud-1',
@@ -11786,7 +11789,7 @@ describe('cloud task view in the main panel (local-task parity)', () => {
                 canSend: true,
                 offline: false,
                 error: '',
-                busy: false,
+                busy: overrides.busy === true,
                 messages: [
                     { role: 'user', content: '做一份 演唱会策划书' },
                     { role: 'assistant', content: '已经为你创建了一份完整的演唱会策划书。' },
@@ -11794,7 +11797,7 @@ describe('cloud task view in the main panel (local-task parity)', () => {
             });
             bindRemoteAssistantActions({
                 send,
-                stop: async () => true,
+                stop: overrides.stop || (async () => true),
                 close: () => {
                     publishRemoteAssistantSession(null);
                     bindRemoteAssistantActions(null);
@@ -11916,5 +11919,92 @@ describe('cloud task view in the main panel (local-task parity)', () => {
         await waitFor(() => {
             expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
         });
+    });
+
+    it('a busy cloud round turns the send button into the remote stop button', async () => {
+        const stop = vi.fn(async () => true);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(async () => true, { busy: true, stop });
+        // The mirrored round owns the composer busy state: Stop + spinner
+        // replaces the send pair, exactly like a local running turn.
+        expect(screen.getByTestId('ai-cancel-progress')).toBeTruthy();
+        expect(screen.queryByTestId('ai-clear-input')).toBeNull();
+        expect((screen.getByTestId('ai-cancel-progress') as HTMLButtonElement).title).toBe('停止远端正在运行的任务');
+        fireEvent.click(screen.getByTestId('ai-cancel-progress'));
+        await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    });
+
+    it('an idle cloud task keeps the send button', () => {
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView();
+        expect(screen.queryByTestId('ai-cancel-progress')).toBeNull();
+        expect(screen.getByTestId('ai-clear-input')).toBeTruthy();
+    });
+
+    it('Enter while a cloud round runs queues the message instead of sending', async () => {
+        const send = vi.fn(async () => true);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(send, { busy: true });
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '顺手把README也补一下' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(screen.getByTestId('buffer-queue-panel')).toBeTruthy();
+        });
+        expect(screen.getByTestId('buffer-queue-panel').textContent).toContain('顺手把README也补一下');
+        // The send path never fired; the composer draft cleared like a local
+        // queue submit.
+        expect(send).not.toHaveBeenCalled();
+        await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('queued cloud entries drain automatically once the round idles', async () => {
+        const send = vi.fn(async () => true);
+        // The queue persists per remote session key; a controller reopening
+        // the task after a restart resumes its type-ahead entries.
+        window.localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'buf-remote-1',
+            text: '继续优化性能',
+            attachments: [],
+            createdAt: Date.now(),
+            autoDrain: true,
+            sessionKey: 'remote-control:grant-cloud-1:cloud-agent:inst-1',
+        }]));
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(send);
+        await waitFor(() => {
+            expect(send).toHaveBeenCalledWith('继续优化性能');
+        });
+        await waitFor(() => {
+            expect(screen.queryByTestId('buffer-queue-panel')).toBeNull();
+        });
+    });
+
+    it('editing a queued cloud entry re-queues the composer text on Enter', async () => {
+        const send = vi.fn(async () => true);
+        renderPanel({ lang: 'zh-Hans', state: { messages: [], sending: false, streaming: false, ready: true } });
+        openCloudView(send, { busy: true });
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '初稿指令' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(screen.getByTestId('buffer-queue-panel')).toBeTruthy();
+        });
+        // Edit extracts the entry into the composer (the tray row leaves).
+        const editButton = screen.getByTestId('buffer-queue-panel')
+            .querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement;
+        fireEvent.click(editButton);
+        await waitFor(() => {
+            expect(screen.queryByTestId('buffer-queue-panel')).toBeNull();
+        });
+        expect(input.value).toBe('初稿指令');
+        fireEvent.change(input, { target: { value: '编辑后的指令' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        // Busy round: the edited text re-queues instead of sending or being lost.
+        await waitFor(() => {
+            expect(screen.getByTestId('buffer-queue-panel').textContent).toContain('编辑后的指令');
+        });
+        expect(screen.getByTestId('buffer-queue-panel').textContent).not.toContain('初稿指令');
+        expect(send).not.toHaveBeenCalled();
     });
 });

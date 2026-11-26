@@ -38,9 +38,10 @@ type CodingAgentEvent struct {
 
 // CodingAgentFileChange is one row in the OpenCode-style changed-file table.
 type CodingAgentFileChange struct {
-	Path    string `json:"path"`
-	Added   int    `json:"added"`
-	Removed int    `json:"removed"`
+	Path      string `json:"path"`
+	Added     int    `json:"added"`
+	Removed   int    `json:"removed"`
+	HasCounts bool   `json:"has_counts,omitempty"`
 }
 
 func newCodingAgentTaskEvent(phase codingAgentEventPhaseKind, task *TaskItem, title string, runID string) CodingAgentEvent {

@@ -35,6 +35,7 @@ var (
 	procTranslateMessage              = moduser32.NewProc("TranslateMessage")
 	procDispatchMessage               = moduser32.NewProc("DispatchMessageW")
 	procSendMessage                   = moduser32.NewProc("SendMessageW")
+	procSendMessageTimeout            = moduser32.NewProc("SendMessageTimeoutW")
 	procPostMessage                   = moduser32.NewProc("PostMessageW")
 	procWaitMessage                   = moduser32.NewProc("WaitMessage")
 	procSetWindowText                 = moduser32.NewProc("SetWindowTextW")
@@ -380,6 +381,20 @@ func SendMessage(hwnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
 		lParam)
 
 	return ret
+}
+
+// SendMessageTimeout mirrors SendMessageTimeoutW. The boolean is the Win32
+// success flag; result is the receiver's LRESULT when the call succeeds.
+func SendMessageTimeout(hwnd HWND, msg uint32, wParam, lParam uintptr, flags uint32, timeoutMS uint32) (result uintptr, ok bool) {
+	ret, _, _ := procSendMessageTimeout.Call(
+		uintptr(hwnd),
+		uintptr(msg),
+		wParam,
+		lParam,
+		uintptr(flags),
+		uintptr(timeoutMS),
+		uintptr(unsafe.Pointer(&result)))
+	return result, ret != 0
 }
 
 func PostMessage(hwnd HWND, msg uint32, wParam, lParam uintptr) bool {

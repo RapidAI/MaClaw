@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,6 +162,7 @@ func (a *App) GetGitHubConnection(refresh bool) GitHubConnectionStatus {
 		}
 		old.Login = user.Login
 		old.DisplayName = user.Name
+		old.UserID = strconv.FormatInt(user.ID, 10)
 		old.AvatarURL = user.AvatarURL
 		old.HTMLURL = user.HTMLURL
 		if scopes != "" {
@@ -301,6 +303,7 @@ func (a *App) WaitGitHubOAuth() (GitHubConnectionStatus, error) {
 				AccessToken: token,
 				Login:       user.Login,
 				DisplayName: user.Name,
+				UserID:      strconv.FormatInt(user.ID, 10),
 				AvatarURL:   user.AvatarURL,
 				HTMLURL:     user.HTMLURL,
 				Scopes:      scopes,

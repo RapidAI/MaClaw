@@ -149,22 +149,17 @@ type CodingSubAgent struct {
 	// copies of the agent never copy a mutex value.
 	dynamicLifecycleOwner codingDynamicLifecycleOwner
 
-	// dynamicInvocationIdentity is populated only by a future verified task
-	// ingress. It intentionally has no public "best effort" constructor: a
+	// dynamicInvocationIdentity is populated only by the verified task-relation
+	// bind. It intentionally has no public "best effort" constructor: a
 	// loop ID, code session, project path, or user ID is not a RootTaskID and
 	// must never make a dynamic Skill/MCP alias executable.
 	dynamicInvocationIdentity *trustedCodingInvocationIdentity
 	// staticWorkspaceBinding is the host-issued local workspace binding carried
-	// by the same authenticated ingress as verifiedInvocationIdentity. It is
+	// by the same authenticated ingress as the verified task relation. It is
 	// used only to prepare an S1-A shadow catalog today; no static tool alias,
 	// grant or name dispatcher reads it yet.
 	staticWorkspaceBinding codingStaticWorkspaceBinding
 	staticShadowPlan       *codingStaticPlanPreparation
-	// verifiedInvocationIdentity is injected only by a host boundary that has
-	// already authenticated tenant/principal/session and resolved a semantic
-	// task relation. It is registered against the fresh runtime Attempt in
-	// onStart, then discarded; the durable anchor is the later source of truth.
-	verifiedInvocationIdentity *trustedCodingInvocationIdentity
 	// R1b accepts only an opaque relation handle plus independently verified
 	// subject. onStart binds it to the fresh runtime attempt; it never derives
 	// a semantic identity from loop/user/path/runtime fields.
@@ -274,7 +269,6 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 	}
 	service, subject, handle := s.verifiedTaskRelationService, s.verifiedTaskSubject, s.verifiedTaskHandle
 	s.dynamicInvocationIdentity = nil
-	s.verifiedInvocationIdentity = nil
 	s.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
 	setCodingStaticShadowPlan(s, nil)
 	s.verifiedTaskRelationService = nil
@@ -286,9 +280,6 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 				s.dynamicInvocationIdentity = identity
 			}
 		}
-	}
-	if s.dynamicInvocationIdentity == nil {
-		s.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(s.runtimeStore, request)
 	}
 	if s.dynamicInvocationIdentity != nil && s.dynamicInvocationIdentity.complete() {
 		setCodingStaticShadowPlan(s, prepareAdmittedLocalChildStaticShadowPlan(s, request))
@@ -377,8 +368,9 @@ type CodingSubAgentResult struct {
 	GitDiffChecked bool
 	GitDiffSummary string
 
-	// DiffStat holds structured diff statistics parsed from `git diff --stat`.
-	// Nil when diff was not checked or the project is not a git repo.
+	// DiffStat holds structured diff statistics parsed from `git diff --numstat`,
+	// merged with tool-observed line deltas when no git stat is available.
+	// Nil when neither source observed a file change.
 	DiffStat *SubAgentDiffStat
 
 	// CommandsRun records bash commands executed during the coding task.
@@ -495,6 +487,12 @@ type codingToolExecutionResult struct {
 	Text                          string
 	Outcome                       codingToolOutcome
 	SkipRejectedDynamicToolRecord bool
+	FileLineDeltaAdded            int
+	FileLineDeltaRemoved          int
+	HasFileLineDelta              bool
+	FileLineDeltaPath             string
+	FileLineDeltaBaseline         string
+	HasFileLineDeltaBaseline      bool
 }
 
 var codingSubAgentFreeformSecretPatterns = []*regexp.Regexp{
@@ -516,18 +514,6 @@ func NewCodingSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, h
 		commitTaskID: newInFlightRecoveryRunID(),
 		loopCtx:      loopCtx,
 	}
-}
-
-// setVerifiedCodingInvocationIdentity is intentionally package-private: GUI
-// ingress code may hand in a verified host object, but public/model-facing
-// callers cannot construct an execution scope from strings. It does not make
-// a dynamic alias executable; G2-G5 remain mandatory.
-func (s *CodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
-	if s == nil || identity == nil || !identity.complete() {
-		return
-	}
-	copy := *identity
-	s.verifiedInvocationIdentity = &copy
 }
 
 // setVerifiedCodingTaskRelation is the authenticated-host R1b ingress. It is
@@ -1144,7 +1130,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		FilesDriftedReadOnly:        audit.FilesDriftedReadOnly,
 		GitDiffChecked:              diffChecked,
 		GitDiffSummary:              diffSummary,
-		DiffStat:                    cb.getDiffStat(),
+		DiffStat:                    filterSubAgentDiffStatToFiles(mergeSubAgentDiffStat(cb.getDiffStat(), append(cb.getNetFileLineDeltas(), cb.getFileLineDeltas()...)), filesModified, filesCreated),
 		CommandsRun:                 commandsRun,
 		lastEditSeq:                 audit.LastEditSeq,
 		SearchesRun:                 searchesRun,
@@ -1258,6 +1244,11 @@ func collectSubAgentAudit(cb *codingSubAgentCallbacks) codingSubAgentAudit {
 	audit.FilesDriftedAfterWrite = limitSubAgentStringSlice(afterWrite, codingSubAgentResultFilesMax)
 	audit.FilesDriftedReadOnly = limitSubAgentStringSlice(readOnly, codingSubAgentResultFilesMax)
 	return audit
+}
+
+type codingFileLineBaseline struct {
+	Path string
+	Text string
 }
 
 type codingSubAgentCallbacks struct {
@@ -1418,23 +1409,25 @@ type codingSubAgentCallbacks struct {
 	// filesModified/filesCreated live in display-path space, so the end-of-task
 	// drift audit cannot reuse them to classify whether a changed snapshot was
 	// an agent-authored write.
-	filesWrittenCanonical map[string]bool
-	fileLineDeltas        map[string]SubAgentFileDiffStat
-	gitDiffChecked        bool
-	lastGitDiff           string
-	diffStat              *SubAgentDiffStat
-	commandsRun           []CodingSubAgentCommandResult
-	searchesRun           []CodingSubAgentSearchResult
-	recalledExperienceIDs []string
-	guardrails            []CodingSubAgentGuardrailViolation
-	dynamicTools          []CodingSubAgentDynamicToolResult
-	localization          codingSubAgentLocalizationState
-	eventSeq              uint64
-	firstEditSeq          uint64
-	lastEditSeq           uint64
-	firstReadSeq          uint64
-	firstSearchSeq        uint64
-	lastDiffSeq           uint64
+	filesWrittenCanonical  map[string]bool
+	fileLineDeltas         map[string]SubAgentFileDiffStat
+	fileLineBaselines      map[string]codingFileLineBaseline
+	fileLineMutationCounts map[string]int
+	gitDiffChecked         bool
+	lastGitDiff            string
+	diffStat               *SubAgentDiffStat
+	commandsRun            []CodingSubAgentCommandResult
+	searchesRun            []CodingSubAgentSearchResult
+	recalledExperienceIDs  []string
+	guardrails             []CodingSubAgentGuardrailViolation
+	dynamicTools           []CodingSubAgentDynamicToolResult
+	localization           codingSubAgentLocalizationState
+	eventSeq               uint64
+	firstEditSeq           uint64
+	lastEditSeq            uint64
+	firstReadSeq           uint64
+	firstSearchSeq         uint64
+	lastDiffSeq            uint64
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
@@ -2839,7 +2832,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	c.emitToolStartedEvent(name, argsJSON)
 	defer func() {
 		duration := time.Since(toolStartedAt)
-		c.emitToolFinishedEvent(name, argsJSON, toolResult.Text, toolResult.Outcome, duration)
+		c.emitToolFinishedEventWithExecutionResult(name, argsJSON, toolResult, duration)
 		if toolResult.Outcome != codingToolOutcomeSuccess {
 			logCodingSubAgentOperationFailure(c, name, argsJSON, toolResult, duration)
 			if !toolResult.SkipRejectedDynamicToolRecord {
@@ -5887,6 +5880,34 @@ func (c *codingSubAgentCallbacks) trackFile(path string) {
 			c.filesWrittenCanonical = make(map[string]bool)
 		}
 		c.filesWrittenCanonical[canonicalKey] = true
+		if c.fileLineMutationCounts == nil {
+			c.fileLineMutationCounts = make(map[string]int)
+		}
+		c.fileLineMutationCounts[canonicalKey]++
+		if c.fileLineMutationCounts[canonicalKey] > 1 {
+			if _, hasBaseline := c.fileLineBaselines[canonicalKey]; !hasBaseline {
+				// Exact per-operation evidence from the first mutation is net evidence
+				// only while it remains the sole mutation. Without a start-of-turn
+				// baseline, downgrade it before a later operation can look precise.
+				matched := false
+				for deltaKey, stat := range c.fileLineDeltas {
+					if !subAgentDiffEvidencePathsMatch(deltaKey, canonicalKey) {
+						continue
+					}
+					matched = true
+					stat.Insertions = 0
+					stat.Deletions = 0
+					stat.HasCounts = false
+					c.fileLineDeltas[deltaKey] = stat
+				}
+				if !matched {
+					if c.fileLineDeltas == nil {
+						c.fileLineDeltas = make(map[string]SubAgentFileDiffStat)
+					}
+					c.fileLineDeltas[filepath.ToSlash(canonicalKey)] = SubAgentFileDiffStat{Path: displayPath, HasCounts: false}
+				}
+			}
+		}
 	}
 	seq := c.nextEventSeqLocked()
 	if c.firstEditSeq == 0 {
@@ -6506,9 +6527,9 @@ func (c *codingSubAgentCallbacks) validateFinalGitDiffSummary(diffSummary string
 	return true, diffSummary
 }
 
-// ensureDiffStat runs `git diff --stat` and parses the output into structured
-// SubAgentDiffStat. Called after the main diff check to collect metrics without
-// blocking the quality gate (best-effort).
+// ensureDiffStat runs `git diff --numstat` and parses exact per-file
+// added/removed counts into structured SubAgentDiffStat. Called after the main
+// diff check to collect metrics without blocking the quality gate (best-effort).
 func (c *codingSubAgentCallbacks) ensureDiffStat() {
 	c.mu.Lock()
 	if c.diffStat != nil {
@@ -6525,7 +6546,7 @@ func (c *codingSubAgentCallbacks) ensureDiffStat() {
 	ctx, cancel := c.toolContext()
 	defer cancel()
 	result := executeCodingBashWithContext(ctx, map[string]interface{}{
-		"command":     "git diff --stat -- .",
+		"command":     "git diff --numstat --relative -- .",
 		"working_dir": workDir,
 		"timeout":     float64(15),
 	}, nil).toolResult()
@@ -6534,7 +6555,7 @@ func (c *codingSubAgentCallbacks) ensureDiffStat() {
 		return
 	}
 
-	stat := parseGitDiffStat(result.Text)
+	stat := parseGitDiffNumStat(result.Text)
 	if stat != nil {
 		c.mu.Lock()
 		c.diffStat = stat
@@ -6569,19 +6590,109 @@ func (c *codingSubAgentCallbacks) getFileLineDeltas() []SubAgentFileDiffStat {
 	return out
 }
 
+var codingMaxTrackedBaselineBytes = 16 << 20
+
+// rememberFileLineBaseline keeps the first diffable pre-write snapshot for a
+// file. Operation-level deltas are useful progress telemetry, but the final
+// user table must describe the net task diff; repeated writes can otherwise
+// show churn that was later reverted or replaced.
+func (c *codingSubAgentCallbacks) rememberFileLineBaseline(path, baseline string) bool {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	key := canonicalCodingPath(path)
+	if key == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fileLineBaselines == nil {
+		c.fileLineBaselines = make(map[string]codingFileLineBaseline)
+	}
+	if _, exists := c.fileLineBaselines[key]; exists {
+		return true
+	}
+	if c.fileLineMutationCounts[key] != 1 {
+		// Successful write/edit tracking runs before the finished event, so exactly
+		// one mutation means this snapshot is the first pre-write state. Zero means
+		// the mutation audit missed the path (for example because of inconsistent
+		// path forms); treating that as a baseline would invent turn-start evidence.
+		return false
+	}
+	total := len(baseline)
+	for _, baseline := range c.fileLineBaselines {
+		total += len(baseline.Text)
+	}
+	if total > codingMaxTrackedBaselineBytes {
+		return false
+	}
+	c.fileLineBaselines[key] = codingFileLineBaseline{Path: path, Text: baseline}
+	return true
+}
+
+func (c *codingSubAgentCallbacks) getNetFileLineDeltas() []SubAgentFileDiffStat {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	if len(c.fileLineBaselines) == 0 {
+		c.mu.Unlock()
+		return nil
+	}
+	baselines := make(map[string]codingFileLineBaseline, len(c.fileLineBaselines))
+	for key, baseline := range c.fileLineBaselines {
+		baselines[key] = baseline
+	}
+	c.mu.Unlock()
+	out := make([]SubAgentFileDiffStat, 0, len(baselines))
+	for _, baseline := range baselines {
+		after, ok := readCodingTextForDiff(baseline.Path)
+		if !ok {
+			// The file was measurably text at the first mutation, but its final
+			// bytes are missing, binary, or too large to diff. Keep explicit unknown
+			// evidence so merging cannot borrow HEAD-relative git precision.
+			out = append(out, SubAgentFileDiffStat{Path: c.displayProjectPath(baseline.Path), HasCounts: false})
+			continue
+		}
+		added, removed := codingagent.CountTextLineChanges(baseline.Text, after)
+		out = append(out, SubAgentFileDiffStat{
+			Path:       c.displayProjectPath(baseline.Path),
+			Insertions: added,
+			Deletions:  removed,
+			HasCounts:  true,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
 func (c *codingSubAgentCallbacks) rememberToolFileLineDeltas(name string, changes []CodingAgentFileChange) {
 	if c == nil || len(changes) == 0 {
 		return
 	}
 	replace := codingToolLineDeltaReplacesFile(name)
 	for _, change := range changes {
-		c.rememberFileLineDelta(change.Path, change.Added, change.Removed, replace)
+		c.rememberFileLineDelta(change.Path, change.Added, change.Removed, replace, change.HasCounts)
 	}
 }
 
-func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, removed int, replace bool) {
+func (c *codingSubAgentCallbacks) fileLineMutationCount(path string) int {
+	if c == nil {
+		return 0
+	}
+	key := canonicalCodingPath(path)
+	if key == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fileLineMutationCounts[key]
+}
+
+func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, removed int, replace bool, countedEvidence ...bool) {
+	hasCounts := len(countedEvidence) > 0 && countedEvidence[0]
 	path = strings.TrimSpace(path)
-	if path == "" || (added <= 0 && removed <= 0) {
+	if path == "" || added < 0 || removed < 0 {
 		return
 	}
 	c.mu.Lock()
@@ -6593,7 +6704,7 @@ func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, remo
 	prev, ok := c.fileLineDeltas[key]
 	if !ok {
 		for existing, stat := range c.fileLineDeltas {
-			if !subAgentDiffPathsMatch(existing, key) {
+			if !subAgentDiffEvidencePathsMatch(existing, key) {
 				continue
 			}
 			prev, ok = stat, true
@@ -6605,14 +6716,19 @@ func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, remo
 			break
 		}
 	}
+	displayPath := key
+	if c.subagent != nil && strings.TrimSpace(c.subagent.projectPath) != "" && subAgentDiffPathLooksAbsolute(key) {
+		displayPath = c.displayProjectPath(key)
+	}
 	if replace || !ok {
-		c.fileLineDeltas[key] = SubAgentFileDiffStat{Path: key, Insertions: added, Deletions: removed}
+		c.fileLineDeltas[key] = SubAgentFileDiffStat{Path: displayPath, Insertions: added, Deletions: removed, HasCounts: hasCounts}
 		return
 	}
 	c.fileLineDeltas[key] = SubAgentFileDiffStat{
-		Path:       key,
+		Path:       displayPath,
 		Insertions: prev.Insertions + added,
 		Deletions:  prev.Deletions + removed,
+		HasCounts:  prev.HasCounts && hasCounts,
 	}
 }
 
@@ -6810,18 +6926,26 @@ func codingFileSnapshotSummary(snap codingFileSnapshot) string {
 func codingSubAgentDriftNote(afterWrite, readOnly []string) string {
 	var b strings.Builder
 	if len(afterWrite) > 0 {
-		fmt.Fprintf(&b, "以下文件在写入后又发生了变化（可能是后续命令、格式化工具或外部修改）：%s", compactSubAgentFileList(afterWrite, 5))
+		fmt.Fprintf(&b, codingExecText(
+			"these files changed again after being written (possibly by a later command, formatter, or external actor): %s",
+			"以下文件在写入后又发生了变化（可能是后续命令、格式化工具或外部修改）：%s",
+			"以下檔案在寫入後又發生了變化（可能是後續命令、格式化工具或外部修改）：%s",
+		), compactSubAgentFileList(afterWrite, 5))
 	}
 	if len(readOnly) > 0 {
 		if b.Len() > 0 {
-			b.WriteString("；")
+			b.WriteString(codingExecText("; ", "；", "；"))
 		}
-		fmt.Fprintf(&b, "以下文件在读取后被外部改动：%s", compactSubAgentFileList(readOnly, 5))
+		fmt.Fprintf(&b, codingExecText(
+			"these files were externally modified after being read: %s",
+			"以下文件在读取后被外部改动：%s",
+			"以下檔案在讀取後被外部改動：%s",
+		), compactSubAgentFileList(readOnly, 5))
 	}
 	if b.Len() == 0 {
 		return ""
 	}
-	return "提示：" + b.String() + "。"
+	return codingExecText("**Note: ", "**提示：", "**提示：") + b.String() + codingExecText(".**", "。**", "。**")
 }
 
 func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
@@ -7383,11 +7507,19 @@ func subAgentDiffPathsMatch(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	if strings.EqualFold(a, b) {
+	caseInsensitive := subAgentDiffPathLooksWindowsAbsolute(a) || subAgentDiffPathLooksWindowsAbsolute(b)
+	if caseInsensitive {
+		if strings.EqualFold(a, b) {
+			return true
+		}
+	} else if a == b {
 		return true
 	}
-	al, bl := strings.ToLower(a), strings.ToLower(b)
-	return strings.HasSuffix(al, "/"+bl) || strings.HasSuffix(bl, "/"+al)
+	if caseInsensitive {
+		al, bl := strings.ToLower(a), strings.ToLower(b)
+		return strings.HasSuffix(al, "/"+bl) || strings.HasSuffix(bl, "/"+al)
+	}
+	return strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
 }
 
 func preferredSubAgentDiffPath(a, b string) string {
@@ -7400,7 +7532,10 @@ func preferredSubAgentDiffPath(a, b string) string {
 		return a
 	}
 	an, bn := normalizeSubAgentDiffPath(a), normalizeSubAgentDiffPath(b)
-	al, bl := strings.ToLower(an), strings.ToLower(bn)
+	al, bl := an, bn
+	if subAgentDiffPathLooksWindowsAbsolute(an) || subAgentDiffPathLooksWindowsAbsolute(bn) {
+		al, bl = strings.ToLower(an), strings.ToLower(bn)
+	}
 	if al == bl {
 		aClean := an == filepath.ToSlash(strings.TrimSpace(a))
 		bClean := bn == filepath.ToSlash(strings.TrimSpace(b))
@@ -16302,6 +16437,11 @@ func codingToolFinishedEventDetail(name, result string) string {
 }
 
 func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result string, outcome codingToolOutcome, duration time.Duration) {
+	c.emitToolFinishedEventWithExecutionResult(name, argsJSON, codingToolExecutionResult{Text: result, Outcome: outcome}, duration)
+}
+
+func (c *codingSubAgentCallbacks) emitToolFinishedEventWithExecutionResult(name, argsJSON string, toolResult codingToolExecutionResult, duration time.Duration) {
+	result, outcome := toolResult.Text, toolResult.Outcome
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -16316,7 +16456,34 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	event.Target = codingToolEventTarget(name, argsJSON, c.projectPath())
 	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
 	attachCodingToolFileChanges(&event, name, argsJSON, c.getDiffStat())
-	c.rememberToolFileLineDeltas(name, event.FileChanges)
+	if toolResult.HasFileLineDelta && len(event.Files) > 0 {
+		change := CodingAgentFileChange{
+			Path:      compactSubAgentPathText(event.Files[0]),
+			Added:     toolResult.FileLineDeltaAdded,
+			Removed:   toolResult.FileLineDeltaRemoved,
+			HasCounts: true,
+		}
+		event.Added = change.Added
+		event.Removed = change.Removed
+		event.FileChanges = []CodingAgentFileChange{change}
+	}
+	if outcome == codingToolOutcomeSuccess {
+		if toolResult.HasFileLineDeltaBaseline {
+			if !c.rememberFileLineBaseline(toolResult.FileLineDeltaPath, toolResult.FileLineDeltaBaseline) {
+				// A first operation diff is exact net evidence while it is the sole
+				// mutation, even if its baseline missed the memory budget. Once a
+				// later mutation occurs, trackFile downgrades it and this branch keeps
+				// explicit unknown evidence instead of intermediate-byte precision.
+				if toolResult.HasFileLineDelta && c.fileLineMutationCount(toolResult.FileLineDeltaPath) == 1 {
+					c.rememberFileLineDelta(toolResult.FileLineDeltaPath, toolResult.FileLineDeltaAdded, toolResult.FileLineDeltaRemoved, codingToolLineDeltaReplacesFile(name), true)
+				} else {
+					c.rememberFileLineDelta(toolResult.FileLineDeltaPath, 0, 0, false, false)
+				}
+			}
+		} else {
+			c.rememberToolFileLineDeltas(name, event.FileChanges)
+		}
+	}
 	event.Outcome = string(outcome)
 	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
@@ -20400,9 +20567,6 @@ func runTaskWithSubAgentRuntimeOptions(
 		// diagnostics: absent registration leaves dynamic capabilities closed.
 		if identity, ok := bindVerifiedCodingTaskHandle(sa.verifiedTaskRelationService, sa.verifiedTaskSubject, sa.verifiedTaskHandle, store, request); ok {
 			sa.dynamicInvocationIdentity = identity
-		} else {
-			_ = registerTrustedCodingInvocationIdentity(store, request, sa.verifiedInvocationIdentity)
-			sa.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
 		// The correlated local boundary exists only when the durable identity
 		// and the host-issued local workspace binding are both present. Either
@@ -20470,7 +20634,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity, sa.verifiedInvocationIdentity = nil, nil, nil, nil
+	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity = nil, nil, nil
 	sa.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
 	setCodingStaticShadowPlan(sa, nil)
 	sa.correlatedLocalExecution = false

@@ -59,6 +59,28 @@ class AccountScreen extends ConsumerWidget {
               children: [
                 ListTile(
                   leading: _SettingsIcon(
+                    icon: Icons.connected_tv_outlined,
+                    color: theme.colorScheme.primary,
+                  ),
+                  title: Text(context.S.tabRemote),
+                  subtitle: Text(context.S.rcMachineTasks),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => context.go('/remote'),
+                ),
+                const Divider(indent: 68),
+                ListTile(
+                  leading: _SettingsIcon(
+                    icon: Icons.cloud_outlined,
+                    color: const Color(0xFF3B82F6),
+                  ),
+                  title: Text(context.S.tabCloud),
+                  subtitle: Text(context.S.rcCloudTasks),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () => context.push('/cloud'),
+                ),
+                const Divider(indent: 68),
+                ListTile(
+                  leading: _SettingsIcon(
                     icon: Icons.psychology_alt_outlined,
                     color: theme.colorScheme.primary,
                   ),

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { EventsOn } from '../../../wailsjs/runtime';
+import { CodingAgentTrailBuilder, type CodingAgentTimelineItem } from '../ai/codingAgentTimeline';
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 import {
     appendToolCallMarker,
@@ -22,6 +23,8 @@ export type RemoteAssistantTranscriptMessage = {
     queued?: boolean;
     /** Tool calls folded from styled progress lines, same as a local turn. */
     toolCalls?: AssistantToolCall[];
+    /** Ordered thinking+tool trail of the mirrored coding round (frame order). */
+    codingTimeline?: CodingAgentTimelineItem[];
     fields?: Array<{ label: string; value: string }>;
     confirmation?: { id: string; summary?: string };
     actions?: Array<{ label: string; command: string }>;
@@ -229,6 +232,83 @@ function markKey(session: RemoteAssistantSession | null) {
 
 const liveRounds = new Map<string, RemoteLiveRound>();
 const viewerStates = new Map<string, ViewerReduceState>();
+// Ordered thinking+tool trails keyed like liveRounds. The reduced viewer
+// state keeps thinking and progress rows in separate lists, so the frame
+// stream is the only place the true interleave order survives — these
+// builders fold frames in arrival order with the local coding-timeline
+// rules (tool_finished replaces its tool_started), and the live row paints
+// the result as the same process timeline a local coding turn keeps.
+const trailBuilders = new Map<string, { requestId: string; builder: CodingAgentTrailBuilder }>();
+
+function trailBuilderOf(key: string): { requestId: string; builder: CodingAgentTrailBuilder } {
+    let trail = trailBuilders.get(key);
+    if (!trail) {
+        trail = { requestId: '', builder: new CodingAgentTrailBuilder() };
+        trailBuilders.set(key, trail);
+    }
+    return trail;
+}
+
+function remoteLiveTrail(key: string): CodingAgentTimelineItem[] | null {
+    const trail = trailBuilders.get(key);
+    if (!trail || trail.builder.length === 0) return null;
+    return trail.builder.snapshot();
+}
+
+/** Fold one stream frame into the key's trail. Returns the event name consumed. */
+function feedRemoteTrailFrame(key: string, eventName: string, requestId: string, seq: number, text: string, state: string): void {
+    if (!eventName || eventName === 'heartbeat' || eventName === 'workbench_steps' || eventName === 'card' || eventName === 'response' && !requestId) return;
+    const trail = trailBuilderOf(key);
+    if (eventName === 'round_started') {
+        if (requestId && trail.requestId && trail.requestId !== requestId) {
+            trail.builder.reset();
+        }
+        if (requestId) trail.requestId = requestId;
+        return;
+    }
+    if (requestId && trail.requestId && requestId !== trail.requestId) return;
+    if (requestId && !trail.requestId) trail.requestId = requestId;
+    switch (eventName) {
+        case 'thinking':
+            if (state === 'done') trail.builder.thinkingDone(text);
+            else if (state === 'started') trail.builder.thinkingStarted();
+            else trail.builder.thinkingDelta(text);
+            return;
+        case 'progress':
+            trail.builder.progress(text, seq > 0 ? seq : undefined);
+            return;
+        case 'token':
+        case 'new_round':
+        case 'stream_done':
+        case 'response':
+            trail.builder.sealThinking();
+            return;
+        default:
+            return;
+    }
+}
+
+/** Rebuild one trail from a watch snapshot's ordered parts (mid-turn join). */
+function rebuildRemoteTrailFromSnapshot(key: string, requestId: string, parts: unknown): void {
+    const trail = trailBuilderOf(key);
+    trail.requestId = requestId || trail.requestId;
+    trail.builder.reset();
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+        if (!part || typeof part !== 'object') continue;
+        const row = part as Record<string, unknown>;
+        const kind = String(row.kind || '');
+        const text = String(row.text || '');
+        if (!text) continue;
+        const seq = typeof row.seq === 'number' && row.seq > 0 ? row.seq : 0;
+        if (kind === 'thinking') {
+            if (row.done === true) trail.builder.thinkingDone(text);
+            else trail.builder.thinkingDelta(text);
+        } else if (kind === 'progress') {
+            trail.builder.progress(text, seq);
+        }
+    }
+}
 // Highest cursor reduced while this key's hole was open, and one follow-up
 // credit for the watch that rising edge started. A reply covers the hole
 // only when its watermark reaches that cursor. Clearing the gap latch when
@@ -388,6 +468,11 @@ export function applyRemoteStreamPayload(payload: unknown) {
         const next = reduceViewerEvent(prev, record);
         if (next === prev) return;
         viewerStates.set(key, next);
+        // The trail folds accepted frames only — a gapped frame is missing
+        // text and would leave a hole; the watch recovery reseeds instead.
+        if (!next.gap) {
+            feedRemoteTrailFrame(key, eventName, String(p.request_id || ''), cursor, String(p.text || ''), String(p.state || ''));
+        }
         // A rising hole means this controller missed a cursor. The account
         // broker's resync frame has no live body, and a dropped WebSocket
         // frame never arrives. The turn is only on the controlled desktop.
@@ -413,6 +498,7 @@ export function applyRemoteStreamPayload(payload: unknown) {
     const requestId = String(p.request_id || '');
     const seq = typeof p.seq === 'number' ? p.seq : 0;
     let round: RemoteLiveRound | undefined;
+    feedRemoteTrailFrame(key, eventName, requestId, seq, String(p.text || ''), String(p.state || ''));
     switch (eventName) {
         case 'round_started': {
             round = ensureLiveRound(key, requestId);
@@ -607,6 +693,16 @@ export function applyRemoteWatchSnapshot(grantId: string, projectPath: string, l
     if (workbench && typeof workbench === 'object') {
         workbenchByKey.set(key, workbench as RemoteWorkbenchState);
     }
+    // Same superset rule as the cloud trail: frames beat the snapshot's
+    // capped parts, so an existing same-request trail stays. Rebuild only
+    // joins a round this controller has no trail for.
+    const snapshotRequestId = String((p && p.request_id) || '');
+    const storedTrailRequestId = trailBuilders.get(key)?.requestId || '';
+    const hasStoredTrail = remoteLiveTrail(key) !== null;
+    const sameTrailRequest = !snapshotRequestId || !storedTrailRequestId || storedTrailRequestId === snapshotRequestId;
+    if (!(hasStoredTrail && sameTrailRequest)) {
+        rebuildRemoteTrailFromSnapshot(key, snapshotRequestId, p ? p.parts : undefined);
+    }
     if (!p || !String(p.request_id || '')) {
         const before = viewerStates.get(key)?.last || 0;
         seedViewerState(key, null, typeof cursor === 'number' ? cursor : 0);
@@ -731,6 +827,7 @@ function settleLiveRounds() {
         liveRounds.clear();
         viewerStates.clear();
         workbenchByKey.clear();
+        trailBuilders.clear();
         gapSeenCursor.clear();
         gapFollowCredit.clear();
         return;
@@ -740,6 +837,7 @@ function settleLiveRounds() {
         if (roundKey !== key) {
             liveRounds.delete(roundKey);
             viewerStates.delete(roundKey);
+            trailBuilders.delete(roundKey);
             forgetGapTracking(roundKey);
         }
     }
@@ -757,6 +855,7 @@ function settleLiveRounds() {
     if (Date.now() - (round.lastEventAt || 0) > staleMs) {
         liveRounds.delete(key);
         viewerStates.delete(key);
+        trailBuilders.delete(key);
         forgetGapTracking(key);
         return;
     }
@@ -771,6 +870,7 @@ function settleLiveRounds() {
     if (covered) {
         liveRounds.delete(key);
         viewerStates.delete(key);
+        trailBuilders.delete(key);
         forgetGapTracking(key);
     }
 }
@@ -884,7 +984,8 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
         if (reduced?.trialStatus) fields.push({ label: 'Recovery', value: reduced.trialStatus });
         if (reduced && reduced.trialFailures > 0) fields.push({ label: 'Failures', value: String(reduced.trialFailures) });
         const folded = remoteLiveToolCalls(round.parts, shown);
-        if (folded.content || thinking || liveThinking || fields.length || folded.toolCalls) {
+        const trail = remoteLiveTrail(key) || undefined;
+        if (folded.content || thinking || liveThinking || fields.length || folded.toolCalls || trail) {
             merged.push({
                 role: 'assistant',
                 content: folded.content,
@@ -894,6 +995,7 @@ function withEchoes(session: RemoteAssistantSession | null): RemoteAssistantSess
                 localFilePaths: carriedFiles,
                 fields: fields.length ? fields : undefined,
                 toolCalls: folded.toolCalls,
+                codingTimeline: trail,
             });
         }
         if (reduced) {

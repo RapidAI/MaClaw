@@ -1172,6 +1172,17 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
                           : theme.colorScheme.primary,
                     ),
                   ),
+                  // 列表上显示的状态，详情页也要显示同一份：受控端 get_task
+                  // 现在和 list_tasks 用同一套状态源，这里的徽标直接读它。
+                  if (taskStateBadge(context, task) case final badge?) ...[
+                    const SizedBox(width: AppSpacing.xs + 2),
+                    Flexible(
+                      child: _KindChip(
+                        label: badge.label,
+                        color: badge.color,
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -2294,6 +2305,46 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
 }
 
 /// 标题区类型芯片。宽度受限时省略，不把 AppBar 撑出屏幕。
+/// 任务状态徽标：列表卡片和详情页标题读同一个函数，避免两处各写一套
+/// 映射（详情页以前干脆不显示状态）。返回 null 表示没有任何结束痕迹——
+/// 那时不画徽标，而不是画「待开始」。
+({String label, Color color})? taskStateBadge(
+  BuildContext context,
+  RemoteTask task,
+) {
+  final scheme = Theme.of(context).colorScheme;
+  final S = context.S;
+  // 只认 status：phase 是阶段名（如「执行中」），把它当状态会把没跑过的
+  // 任务画成进行中。运行中的阶段由下面 running 分支显示。
+  final status = task.activeStatus.trim().toLowerCase();
+  if (task.running) {
+    return (
+      label: task.activePhase.isNotEmpty ? task.activePhase : S.rcStateRunning,
+      color: scheme.primary,
+    );
+  }
+  if (status.contains('fail') || status.contains('error')) {
+    return (label: S.stStateFailed, color: const Color(0xFFD64545));
+  }
+  if (status.contains('cancel')) {
+    return (label: S.rcStateCancelled, color: scheme.onSurfaceVariant);
+  }
+  if (status.contains('interrupt')) {
+    return (label: S.rcStateInterrupted, color: const Color(0xFFD97B42));
+  }
+  if (status.contains('completed') || status.contains('done')) {
+    return (label: S.stStateCompleted, color: const Color(0xFF6AA84F));
+  }
+  if (task.activeStatus.isNotEmpty) {
+    // 新状态值原样显示：吞掉会让人以为任务没跑过。
+    return (label: task.activeStatus, color: scheme.onSurfaceVariant);
+  }
+  if (task.hasOutput) {
+    return (label: S.stStateCompleted, color: const Color(0xFF6AA84F));
+  }
+  return null;
+}
+
 class _KindChip extends StatelessWidget {
   final String label;
   final Color color;

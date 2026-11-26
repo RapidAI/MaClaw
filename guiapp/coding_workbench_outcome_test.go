@@ -365,3 +365,155 @@ func TestWorkbenchOutcomeWinsSameSecondTie(t *testing.T) {
 		t.Fatalf("tied row = %#v, want the failed turn outcome", result.ActiveWorkflow)
 	}
 }
+
+// Phone list_tasks and the desktop sidebar must read one status pass. A coding
+// turn that ended without a ledger row is failed on both. A plain chat does
+// not inherit that workbench memory, so its snapshot stays empty.
+func TestRemoteListTasksSharesSearchTaskStatus(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	workDir := t.TempDir()
+	coding := app.CreateTaskWithMode("失败回合", workDir, "coding_dev")
+	plain := app.CreateTask("纯对话", "")
+	if coding.ProjectPath == "" || plain.ProjectPath == "" {
+		t.Fatalf("created coding=%q plain=%q", coding.ProjectPath, plain.ProjectPath)
+	}
+	handler := &IMMessageHandler{app: app}
+	now := time.Now().Unix()
+	handler.stickyCodingWorkbenchMemory.Store(projectSessionOwnerID(coding.ProjectPath), stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "failed", LastOutcomeAtUnix: now,
+	})
+	handler.stickyCodingWorkbenchMemory.Store(projectSessionOwnerID(plain.ProjectPath), stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "failed", LastOutcomeAtUnix: now,
+	})
+	app.imHandler = handler
+
+	sidebar := app.SearchTasks("", 50)
+	raw, err := app.executeRemoteControl("list_tasks", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("list_tasks payload type = %T", raw)
+	}
+	remote, ok := payload["tasks"].([]ProjectSearchResult)
+	if !ok {
+		t.Fatalf("list_tasks tasks type = %T", payload["tasks"])
+	}
+
+	if got, want := listedWorkflowStatus(sidebar, coding.ProjectPath), "failed"; got != want {
+		t.Fatalf("sidebar coding status = %q, want %q", got, want)
+	}
+	if got, want := listedWorkflowStatus(remote, coding.ProjectPath), "failed"; got != want {
+		t.Fatalf("list_tasks coding status = %q, want %q", got, want)
+	}
+	if got := listedWorkflowStatus(sidebar, plain.ProjectPath); got != "" {
+		t.Fatalf("sidebar plain chat status = %q, want empty", got)
+	}
+	if got := listedWorkflowStatus(remote, plain.ProjectPath); got != "" {
+		t.Fatalf("list_tasks plain chat status = %q, want empty", got)
+	}
+	for _, row := range remote {
+		if len(row.RecentArtifacts) != 0 || len(row.SourceURLs) != 0 {
+			t.Fatalf("list_tasks kept artifact bodies on %q", row.ProjectPath)
+		}
+	}
+}
+
+func listedWorkflowStatus(rows []ProjectSearchResult, projectPath string) string {
+	want := normalizeProjectSessionPath(projectPath)
+	for i := range rows {
+		if normalizeProjectSessionPath(rows[i].ProjectPath) != want {
+			continue
+		}
+		if rows[i].ActiveWorkflow == nil {
+			return ""
+		}
+		return rows[i].ActiveWorkflow.Status
+	}
+	return ""
+}
+
+// The remote task detail (get_task) reads its own record snapshot, so it could
+// show an empty or stale status while the phone list showed completed. The
+// detail row now runs the same collect + apply as the list for one record.
+func TestRemoteTaskDetailUsesTheListStatusSource(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	app.aiConversationMemory = memory
+
+	const workDir = "D:/repo"
+	created := app.createTaskRecordWithWorkingDir("detail task", "seed", []string{taskManagementTag, taskUserCreatedTag, "coding_dev"}, workDir, true)
+	projectPath := created.ProjectPath
+	if projectPath == "" {
+		t.Fatal("task record was not created")
+	}
+	owner := projectSessionOwnerID(projectPath)
+	handler := &IMMessageHandler{app: app}
+	handler.stickyCodingWorkbenchMemory.Store(owner, stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "completed", LastOutcomeAtUnix: time.Now().Unix(),
+	})
+	app.imHandler = handler
+
+	row := &ProjectSearchResult{
+		ProjectPath: projectPath,
+		Tags:        []string{"coding_dev", "working_dir:" + workDir},
+	}
+	app.applyTaskListStatusOne(row)
+	if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != "completed" {
+		t.Fatalf("detail row = %#v, want the workbench outcome the list shows", row.ActiveWorkflow)
+	}
+}
+
+// get_task used to count shares from the one row it opened. A directory that
+// the list already knows is shared then looked unique, so the idle detail
+// inherited the sibling's ledger run. The detail must use the same visible
+// task set the list counts.
+func TestRemoteTaskDetailDoesNotInheritSharedDirectoryRun(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// The list reads an already-open ledger only when its path matches this
+	// data dir. A bare assignment is closed and ignored, which hides the bug.
+	app.codingRuntimeStore = store
+	app.codingRuntimeStorePath = filepath.Clean(app.GetDataDir())
+
+	workingDir := filepath.Join(t.TempDir(), "shared-detail")
+	runningTask := app.CreateTaskWithMode("Running detail sibling", workingDir, "coding_dev")
+	idleTask := app.CreateTaskWithMode("Idle detail sibling", workingDir, "coding_dev")
+	if runningTask.ProjectPath == "" || idleTask.ProjectPath == "" || runningTask.ProjectPath == idleTask.ProjectPath {
+		t.Fatalf("task paths running=%q idle=%q", runningTask.ProjectPath, idleTask.ProjectPath)
+	}
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-detail-shared", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(runningTask.ProjectPath)
+	beginForegroundAgentOwner(owner)
+	defer endForegroundAgentOwner(owner)
+
+	listed := listedWorkflowStatus(app.ListTasks(50), idleTask.ProjectPath)
+	detail := app.remoteControlTaskSnapshot(idleTask.ProjectPath)
+	got := ""
+	if detail.ActiveWorkflow != nil {
+		got = detail.ActiveWorkflow.Status
+	}
+	if got != listed {
+		t.Fatalf("detail status = %q, list status = %q; get_task must not inherit the sibling run", got, listed)
+	}
+	if listed == string(codingruntime.TaskRunning) {
+		t.Fatalf("list marked the idle sibling running: %q", listed)
+	}
+}
+

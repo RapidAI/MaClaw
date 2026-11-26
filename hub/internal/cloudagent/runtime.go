@@ -136,6 +136,11 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			_ = d.svc.NoteAcceptedTurn(ctx, grant.TenantID, grant.TargetUserID, instanceID, taskID, requestID)
 		}
 	}
+	if op == remotecontrol.OpCloudStopTask {
+		if ids := cancelledTurnIDs(raw); len(ids) > 0 {
+			_ = d.svc.CancelTurns(ctx, instanceID, ids)
+		}
+	}
 	return raw, nil
 }
 
@@ -200,6 +205,27 @@ func bodyInstanceID(body json.RawMessage) string {
 	return strings.TrimSpace(head.InstanceID)
 }
 
+func cancelledTurnIDs(raw json.RawMessage) []string {
+	var ack struct {
+		Cancelled []string `json:"cancelled"`
+	}
+	_ = json.Unmarshal(raw, &ack)
+	out := make([]string, 0, len(ack.Cancelled))
+	seen := map[string]struct{}{}
+	for _, id := range ack.Cancelled {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 func acceptedTurn(body, raw json.RawMessage) (taskID, requestID string, accepted bool) {
 	var req struct {
 		TaskID string `json:"task_id"`
@@ -247,15 +273,16 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		origin = loopback
 	}
 	_, err = d.call(ctx, http.MethodPut, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), map[string]any{
-		"id":            inst.ID,
-		"tenant_id":     inst.TenantID,
-		"owner_user_id": inst.OwnerUserID,
-		"name":          inst.Name,
-		"kind":          inst.Kind,
-		"llm_mode":      inst.LLMMode,
-		"llm_model":     inst.LLMModel,
-		"hub_origin":    origin,
-		"hub_loopback":  loopback,
+		"id":                inst.ID,
+		"tenant_id":         inst.TenantID,
+		"owner_user_id":     inst.OwnerUserID,
+		"name":              inst.Name,
+		"kind":              inst.Kind,
+		"llm_mode":          inst.LLMMode,
+		"llm_model":         inst.LLMModel,
+		"llm_thinking_mode": inst.LLMThinkingMode,
+		"hub_origin":        origin,
+		"hub_loopback":      loopback,
 	})
 	return err
 }

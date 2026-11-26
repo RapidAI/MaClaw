@@ -6172,6 +6172,9 @@ func TestRemoteEditFilePythonReplacesALineWithoutABreak(t *testing.T) {
 	if err != nil || !strings.Contains(string(out), "OK: replaced 1 occurrence") {
 		t.Fatalf("python edit err=%v out=%s", err, out)
 	}
+	if added, removed, ok := remoteDiffStatFromCommandResult(string(out)); !ok || added != 1 || removed != 1 {
+		t.Fatalf("one-line replacement diff = +%d -%d presence=%v, out=%s", added, removed, ok, out)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -14688,6 +14691,12 @@ func TestSubAgentDiffPathsMatchRelativeAndAbsolute(t *testing.T) {
 	if subAgentDiffPathsMatch("scratch.txt", "main.go") {
 		t.Fatal("unrelated names")
 	}
+	if subAgentDiffPathsMatch("Foo.go", "foo.go") {
+		t.Fatal("case-distinct relative POSIX-style paths must not merge")
+	}
+	if !subAgentDiffPathsMatch(`C:/Repo/Foo.go`, `c:/repo/foo.go`) {
+		t.Fatal("Windows absolute paths should stay case-insensitive")
+	}
 	if got := preferredSubAgentDiffPath("./snake.cpp", "snake.cpp"); got != "snake.cpp" {
 		t.Fatalf("preferred path = %q", got)
 	}
@@ -14997,5 +15006,298 @@ func TestCodingLLMRetryParkReleasesForegroundSlot(t *testing.T) {
 	slot.mu.Unlock()
 	if held {
 		t.Fatal("finishing the round must release the resumed lease")
+	}
+}
+
+func TestRemoteDiffStatFromCommandResult(t *testing.T) {
+	added, removed, ok := remoteDiffStatFromCommandResult("OK created=false\nDIFF added=12 removed=3\n")
+	if !ok || added != 12 || removed != 3 {
+		t.Fatalf("remote diff stat parse = %d/%d/%v", added, removed, ok)
+	}
+	if _, _, ok := remoteDiffStatFromCommandResult("OK created=false\n"); ok {
+		t.Fatal("missing DIFF line must not invent counts")
+	}
+}
+
+func TestRememberFileLineDeltaDisplaysAbsolutePathProjectRelative(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.rememberFileLineDelta(path, 0, 0, false, false)
+	stats := cb.getFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("stats=%v", stats)
+	}
+	if stats[0].Path != "demo.txt" {
+		t.Fatalf("absolute evidence path should render project-relative, got %q", stats[0].Path)
+	}
+}
+
+func TestCodingSoleOperationExactSurvivesBaselineBudgetUntilSecondMutation(t *testing.T) {
+	oldBudget := codingMaxTrackedBaselineBytes
+	codingMaxTrackedBaselineBytes = 0
+	defer func() { codingMaxTrackedBaselineBytes = oldBudget }()
+
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root, onProgress: func(string) {}}}
+	emitWrite := func(added, removed int) {
+		t.Helper()
+		cb.emitToolFinishedEventWithExecutionResult("write_file", `{}`, codingToolExecutionResult{
+			Text:                     "wrote",
+			Outcome:                  codingToolOutcomeSuccess,
+			HasFileLineDeltaBaseline: true,
+			FileLineDeltaPath:        path,
+			FileLineDeltaBaseline:    "before\n",
+			HasFileLineDelta:         true,
+			FileLineDeltaAdded:       added,
+			FileLineDeltaRemoved:     removed,
+		}, time.Millisecond)
+	}
+
+	cb.trackFile(path)
+	emitWrite(2, 1)
+	stats := cb.getFileLineDeltas()
+	if len(stats) != 1 || !stats[0].HasCounts || stats[0].Insertions != 2 || stats[0].Deletions != 1 {
+		t.Fatalf("sole operation diff should remain exact when only the baseline budget is exhausted: %+v", stats)
+	}
+
+	cb.trackFile(path)
+	stats = cb.getFileLineDeltas()
+	if len(stats) != 1 || stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("second mutation without a baseline must downgrade exact operation evidence: %+v", stats)
+	}
+	emitWrite(1, 0)
+	stats = cb.getFileLineDeltas()
+	if len(stats) != 1 || stats[0].HasCounts {
+		t.Fatalf("later intermediate-byte operation diff must not restore precision: %+v", stats)
+	}
+}
+
+func TestCodingRejectedLateBaselineLeavesUnknownLineEvidence(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root, onProgress: func(string) {}}}
+	cb.trackFile(path)
+	cb.trackFile(path)
+	cb.emitToolFinishedEventWithExecutionResult("write_file", `{}`, codingToolExecutionResult{
+		Text:                     "wrote",
+		Outcome:                  codingToolOutcomeSuccess,
+		HasFileLineDeltaBaseline: true,
+		FileLineDeltaPath:        path,
+		FileLineDeltaBaseline:    "intermediate\n",
+		FileLineDeltaAdded:       1,
+		HasFileLineDelta:         true,
+	}, time.Millisecond)
+	stats := cb.getFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("rejected late baseline must leave unknown evidence, got %+v", stats)
+	}
+	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("rejected late baseline must not keep operation precision: %+v", stats[0])
+	}
+}
+
+func TestCodingZeroUnknownLineDeltaIsRetained(t *testing.T) {
+	cb := &codingSubAgentCallbacks{}
+	cb.rememberFileLineDelta("demo.go", 0, 0, false, false)
+	stats := cb.getFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("zero unknown line evidence must be retained, got %+v", stats)
+	}
+	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("zero unknown line evidence mutated: %+v", stats[0])
+	}
+}
+
+func TestRemoteZeroUnknownLineDeltaIsRetained(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.rememberRemoteFileLineDelta("/repo/demo.go", 0, 0, false, false)
+	stats := cb.getRemoteFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("zero unknown remote line evidence must be retained, got %+v", stats)
+	}
+	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("zero unknown remote line evidence mutated: %+v", stats[0])
+	}
+}
+
+func TestRemoteRepeatedLineDeltasWithoutBaselineBecomeUnknown(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/big.go", false)
+	cb.rememberRemoteToolFileLineDeltas("ssh_write_file", []CodingAgentFileChange{{Path: "/repo/big.go", Added: 20, Removed: 4, HasCounts: true}})
+	cb.trackRemoteFileChanged("/repo/big.go", false)
+	cb.rememberRemoteToolFileLineDeltas("ssh_edit_file", []CodingAgentFileChange{{Path: "/repo/big.go", Added: 2, Removed: 1, HasCounts: true}})
+	stats := cb.getRemoteFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("remote line stats=%v", stats)
+	}
+	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("repeated remote mutations without a baseline must not keep stale exact counts: %+v", stats[0])
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/big.go", false)
+	cb.trackRemoteFileChanged("/repo/big.go", false)
+	cb.rememberRemoteToolFileLineDeltas("ssh_write_file", []CodingAgentFileChange{{Path: "/repo/big.go", Added: 20, Removed: 4, HasCounts: true}})
+	stats = cb.getRemoteFileLineDeltas()
+	if len(stats) != 1 || stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("a later operation diff must become explicit unknown evidence after an uncounted earlier mutation: %+v", stats)
+	}
+}
+
+func TestRemoteSecondMutationCreatesUnknownEvidenceWithoutOperationDiff(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/big.bin", false)
+	cb.trackRemoteFileChanged("/repo/big.bin", false)
+	stats := cb.getRemoteFileLineDeltas()
+	if len(stats) != 1 || stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("second mutation without operation diff evidence must retain explicit unknown evidence: %+v", stats)
+	}
+}
+
+func TestCodingSecondMutationCreatesUnknownEvidenceWithoutOperationDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "big.bin")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root, onProgress: func(string) {}}}
+	cb.trackFile(path)
+	cb.trackFile(path)
+	stats := cb.getFileLineDeltas()
+	if len(stats) != 1 || stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("second mutation without operation diff evidence must retain explicit unknown evidence: %+v", stats)
+	}
+}
+
+func TestRemoteLateBaselineAfterEarlierMutationIsRejected(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.rememberRemoteFileLineBaseline("/repo/demo.go", "start\n")
+	if !cb.hasRemoteFileLineBaseline("/repo/demo.go") {
+		t.Fatal("first mutation baseline should be retained")
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/demo.go", false)
+	cb.rememberRemoteFileLineBaseline("/repo/demo.go", "intermediate\n")
+	if cb.hasRemoteFileLineBaseline("/repo/demo.go") {
+		t.Fatal("baseline captured after an earlier mutation starts from intermediate bytes and must be rejected")
+	}
+}
+
+func TestRemoteWriteFilePythonDiffMatchesGitNumstatEdgeCases(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("python unavailable")
+	}
+	for _, tc := range []struct {
+		name       string
+		initial    []byte
+		content    string
+		added      int
+		removed    int
+		wantCounts bool
+	}{
+		{name: "empty to one line", initial: []byte(""), content: "x", added: 1, removed: 0, wantCounts: true},
+		{name: "one line to empty", initial: []byte("x"), content: "", added: 0, removed: 1, wantCounts: true},
+		{name: "add trailing newline", initial: []byte("x"), content: "x\n", added: 1, removed: 1, wantCounts: true},
+		{name: "remove trailing newline", initial: []byte("x\n"), content: "x", added: 1, removed: 1, wantCounts: true},
+		{name: "append blank line", initial: []byte("x\n"), content: "x\n\n", added: 1, removed: 0, wantCounts: true},
+		{name: "binary before image", initial: []byte{0xff, 0xfe, 0xfd}, content: "x\n", wantCounts: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "demo.txt")
+			if err := os.WriteFile(path, tc.initial, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			script := decodeRemotePythonCommandForTest(t, remoteWriteFilePythonCommand(path, tc.content))
+			out, err := exec.Command(python, "-c", script).CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "OK created=false") {
+				t.Fatalf("python write err=%v out=%s", err, out)
+			}
+			added, removed, ok := remoteDiffStatFromCommandResult(string(out))
+			if ok != tc.wantCounts {
+				t.Fatalf("diff presence=%v want %v, out=%s", ok, tc.wantCounts, out)
+			}
+			if tc.wantCounts && (added != tc.added || removed != tc.removed) {
+				t.Fatalf("diff=+%d -%d, want +%d -%d, out=%s", added, removed, tc.added, tc.removed, out)
+			}
+		})
+	}
+}
+
+func TestRemoteWriteFilePythonCommandCollectsExactLineDiff(t *testing.T) {
+	cmd := remoteWriteFilePythonCommand("/tmp/a.txt", "one\ntwo\n")
+	script := decodeRemotePythonCommandForTest(t, cmd)
+	for _, want := range []string{"difflib", "before = p.read_bytes()", "raw.decode('utf-8')", "chr(10)", "DIFF added=%d removed=%d"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("remote write command missing diff collector %q: %s", want, script)
+		}
+	}
+	if strings.Contains(script, "splitlines(True)") {
+		t.Fatalf("remote write command must use git-compatible LF line splitting: %s", script)
+	}
+}
+
+func TestCodingLateBaselineAfterEarlierMutationIsRejected(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.trackFile(path)
+	cb.trackFile(path)
+	if cb.rememberFileLineBaseline(path, "intermediate\n") {
+		t.Fatal("baseline captured after an earlier mutation must not be accepted as turn-start evidence")
+	}
+	if stats := cb.getNetFileLineDeltas(); len(stats) != 0 {
+		t.Fatalf("late baseline must not produce net stats: %+v", stats)
+	}
+}
+
+func TestCodingBaselineWithoutTrackedMutationIsRejected(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	if cb.rememberFileLineBaseline(path, "before\n") {
+		t.Fatal("baseline without exactly one tracked mutation must not become turn-start evidence")
+	}
+}
+
+func TestCodingNetFileLineDeltasKeepUnknownWhenFinalUndiffable(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.bin")
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.trackFile(path)
+	if !cb.rememberFileLineBaseline(path, "text before\n") {
+		t.Fatal("first mutation baseline should be retained")
+	}
+	if err := os.WriteFile(path, []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stats := cb.getNetFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("final undiffable bytes must keep unknown evidence, got %+v", stats)
+	}
+	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
+		t.Fatalf("final undiffable bytes must be unknown zero evidence, got %+v", stats[0])
+	}
+}
+
+func TestCodingNetFileLineDeltasUseFirstBaselineAndFinalContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	if err := os.WriteFile(path, []byte("a\nx\ny\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.trackFile(path)
+	cb.rememberFileLineBaseline(path, "a\nb\n")
+	cb.rememberFileLineBaseline(path, "a\nx\n")
+	stats := cb.getNetFileLineDeltas()
+	if len(stats) != 1 {
+		t.Fatalf("net stats=%v", stats)
+	}
+	if !stats[0].HasCounts || stats[0].Insertions != 2 || stats[0].Deletions != 1 {
+		t.Fatalf("net stats=%+v, want exact +2 -1", stats[0])
 	}
 }

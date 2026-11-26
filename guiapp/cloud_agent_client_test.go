@@ -13,10 +13,14 @@ import (
 func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	var llmBody map[string]any
 	var llmCalled bool
+	var createBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/cloud-agents":
+			if err := json.NewDecoder(r.Body).Decode(&createBody); err != nil {
+				t.Fatalf("decode create body: %v", err)
+			}
 			_, _ = w.Write([]byte(`{"id":"cag_new","name":"任务","kind":"session","status":"idle","llm_mode":"official"}`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/llm"):
 			llmCalled = true
@@ -38,6 +42,7 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 		},
 		CloudAgentLLMProvider: "prov-1",
 		CloudAgentLLMModel:    "deepseek-v3",
+		MaclawLLMThinkingMode: "high",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +50,13 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	row, err := app.CreateCloudAgent("任务", "session")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The thinking level rides BOTH calls: the create payload covers an
+	// official-mode instance (no default llm applied), the llm payload a
+	// custom one. Without it the cloud turn sends no reasoning field and
+	// shows no 思考, unlike the same provider locally.
+	if got := createBody["thinking_mode"]; got != "high" {
+		t.Fatalf("create thinking_mode=%v", got)
 	}
 	if !llmCalled {
 		t.Fatalf("default llm was not applied to the new instance")
@@ -78,6 +90,9 @@ func TestCreateCloudAgentAppliesDesktopDefaultLLM(t *testing.T) {
 	}
 	if got := llmBody["max_output_tokens"]; got != float64(8192) {
 		t.Fatalf("llm max_output_tokens=%v", got)
+	}
+	if got := llmBody["thinking_mode"]; got != "high" {
+		t.Fatalf("llm thinking_mode=%v", got)
 	}
 	if row.LLMMode != "custom" || row.LLMModel != "deepseek-v3" {
 		t.Fatalf("row mode/model=%q/%q, want custom/deepseek-v3", row.LLMMode, row.LLMModel)

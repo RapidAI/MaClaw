@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
-)
+	"unicode"
 
+	regexpSyntax "regexp/syntax"
+)
 func repeatToolCalls(name, args, result string, success, poll bool, n int) []toolCallRecord {
 	tail := make([]toolCallRecord, n)
 	for i := range tail {
@@ -395,6 +399,323 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits[i:])
+}
+
+func TestBR696A70521E75DifferentSearchesDoNotStop(t *testing.T) {
+	// T4 read one spilled flutter log three times at offset 0. The queries
+	// and receipts differed, but the page key ignored the query, so the
+	// third read was the same page and the turn hard-exited.
+	handle := "20261126T093247_bash_ff5379d95f85feab"
+	queries := []string{
+		"No issues found|All tests passed|Error|error •",
+		"issues found",
+		"All tests passed",
+	}
+	receipts := []string{
+		searchReadResult(handle, 0, queries[0], false),
+		searchReadResult(handle, 0, queries[1], false) + "[match_offset: 2264]\nhit\n",
+		searchReadResult(handle, 0, queries[2], false),
+	}
+	calls := make([]toolCallRecord, len(queries))
+	for i, query := range queries {
+		calls[i] = toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"` + handle + `","query":` + strconv.Quote(query) + `}`,
+			result:  receipts[i],
+			success: true,
+			batch:   33,
+		}
+	}
+	if _, seen := repeatedSuccessfulCommit(calls); seen != 1 {
+		t.Fatalf("the third different search was counted as the same page, seen=%d", seen)
+	}
+	id, seen := mostRepeatedImmutableRead(calls, 33)
+	if seen != 1 || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("one batch of different searches must not hard-exit: id=%q seen=%d", id, seen)
+	}
+	again := append(calls, calls[2])
+	id, seen = mostRepeatedImmutableRead(again, 33)
+	if seen != 2 || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the first repeat of one search warns, it does not stop: seen=%d", seen)
+	}
+	third := append(again, calls[2])
+	id, seen = mostRepeatedImmutableRead(third, 33)
+	if seen != 3 || !repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the same search a third time must still stop: id=%q seen=%d", id, seen)
+	}
+}
+
+func TestDifferentSearchQueriesAreDifferentPages(t *testing.T) {
+	queries := []string{
+		"No issues found|All tests passed|Error|error •",
+		"issues found",
+		"All tests passed",
+	}
+	calls := make([]toolCallRecord, len(queries))
+	ids := make([]string, len(queries))
+	for i, query := range queries {
+		calls[i] = toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(query) + `}`,
+			result:  searchReadResult("h", 0, query, false),
+			success: true,
+		}
+		id, ok := spilledPageIdentity(calls[i])
+		if !ok {
+			t.Fatalf("query %q has no page identity", query)
+		}
+		ids[i] = id
+	}
+	if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+		t.Fatalf("different queries collapsed: %q", ids)
+	}
+	if _, seen := repeatedSuccessfulCommit(calls); seen != 1 {
+		t.Fatalf("different queries counted as one page, seen=%d", seen)
+	}
+	if repeatedCommitStops(nil, ids[2], 1) {
+		t.Fatal("a new query must not stop the turn")
+	}
+	same := []toolCallRecord{calls[2], calls[2], calls[2]}
+	id, seen := repeatedSuccessfulCommit(same)
+	if seen != 3 || !repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("the same search must still stop: id=%q seen=%d", id, seen)
+	}
+}
+
+func TestSameSearchQueryIgnoresCaseLimitAndHandleSuffix(t *testing.T) {
+	one := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"NeEdLe","limit":1}`,
+		result:  searchReadResult("h", 0, "NeEdLe", false),
+		success: true,
+	}
+	two := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"offset":0,"id":"h.txt","query":"  needle  "}`,
+		result:  searchReadResult("h", 0, "needle", false),
+		success: true,
+	}
+	idOne, okOne := spilledPageIdentity(one)
+	idTwo, okTwo := spilledPageIdentity(two)
+	if !okOne || !okTwo || idOne != idTwo {
+		t.Fatalf("the same search was split: %q %q ok=%v %v", idOne, idTwo, okOne, okTwo)
+	}
+	bare := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0}`,
+		result:  "[tool_result_read]\nid: h\noffset: 0\ntruncated: false\n\n---\npage\n--- end ---\n",
+		success: true,
+	}
+	byteID, ok := spilledPageIdentity(bare)
+	if !ok || byteID == idOne || byteID != "read_tool_result\nh\n0" {
+		t.Fatalf("a byte page must stay id/offset only, got %q search %q", byteID, idOne)
+	}
+}
+
+func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
+	// strings.ToLower(U+0130) is ASCII i, but regexp (?i) does not match
+	// those spellings. Folding them together made the third different
+	// search the same page and hard-exited the turn.
+	dotted := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"İ"}`,
+		result:  searchReadResult("h", 0, "İ", false),
+		success: true,
+	}
+	plain := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"i"}`,
+		result:  searchReadResult("h", 0, "i", false),
+		success: true,
+	}
+	idDotted, okDotted := spilledPageIdentity(dotted)
+	idPlain, okPlain := spilledPageIdentity(plain)
+	if !okDotted || !okPlain || idDotted == idPlain {
+		t.Fatalf("dotted capital I and i collapsed: %q %q ok=%v %v", idDotted, idPlain, okDotted, okPlain)
+	}
+	ascii := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"I"}`,
+		result:  searchReadResult("h", 0, "I", false),
+		success: true,
+	}
+	idASCII, okASCII := spilledPageIdentity(ascii)
+	if !okASCII || idASCII != idPlain || idASCII == idDotted {
+		t.Fatalf("ASCII I must stay with i and apart from İ: ascii=%q plain=%q dotted=%q", idASCII, idPlain, idDotted)
+	}
+	// Final sigma and capital sigma are one (?i) search, so they are one page.
+	capital := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"Σ"}`,
+		result:  searchReadResult("h", 0, "Σ", false),
+		success: true,
+	}
+	final := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"ς"}`,
+		result:  searchReadResult("h", 0, "ς", false),
+		success: true,
+	}
+	idCapital, okCapital := spilledPageIdentity(capital)
+	idFinal, okFinal := spilledPageIdentity(final)
+	if !okCapital || !okFinal || idCapital != idFinal {
+		t.Fatalf("sigma case class split: %q %q ok=%v %v", idCapital, idFinal, okCapital, okFinal)
+	}
+	id, seen := repeatedSuccessfulCommit([]toolCallRecord{dotted, plain, ascii})
+	if seen != 2 || id != idPlain || repeatedCommitStops(nil, id, seen) {
+		t.Fatalf("I and i are one page; İ must not join them: id=%q seen=%d", id, seen)
+	}
+	// (?i) does not fold a rune outside regexp/syntax [minFold, maxFold].
+	// Pairing it with its SimpleFold partner made a third search the same page.
+	outside := rune(regexpFoldMax + 1)
+	partner := unicode.SimpleFold(outside)
+	if partner == outside {
+		for r := outside; r < outside+0x40; r++ {
+			if unicode.SimpleFold(r) != r {
+				outside = r
+				partner = unicode.SimpleFold(r)
+				break
+			}
+		}
+	}
+	if partner != outside {
+		left := toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(string(outside)) + `}`,
+			result:  searchReadResult("h", 0, string(outside), false),
+			success: true,
+		}
+		right := toolCallRecord{
+			name:    "read_tool_result",
+			args:    `{"id":"h","offset":0,"query":` + strconv.Quote(string(partner)) + `}`,
+			result:  searchReadResult("h", 0, string(partner), false),
+			success: true,
+		}
+		idLeft, okLeft := spilledPageIdentity(left)
+		idRight, okRight := spilledPageIdentity(right)
+		if !okLeft || !okRight || idLeft == idRight {
+			t.Fatalf("rune outside (?i) fold range collapsed with its SimpleFold partner: %#U %#U %q %q", outside, partner, idLeft, idRight)
+		}
+		if _, seen := repeatedSuccessfulCommit([]toolCallRecord{left, right, plain}); seen != 1 {
+			t.Fatalf("an unfolded partner must not join the latest search, seen=%d", seen)
+		}
+	}
+	// A query past the raw 4096-byte cap is rejected before (?i) compiles.
+	// Folding Kelvin first shrinks it onto an accepted spelling.
+	over := strings.Repeat("a", 4094) + "\u212A"
+	accepted := strings.Repeat("a", 4094) + "K"
+	if len(over) <= 4096 || len(accepted) > 4096 {
+		t.Fatalf("query cap fixture drifted: over=%d accepted=%d", len(over), len(accepted))
+	}
+	longCall := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(over) + `}`,
+		result:  "error: toolresult: query exceeds 4096 bytes",
+		success: false,
+	}
+	acceptedCall := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(accepted) + `}`,
+		result:  searchReadResult("h", 0, accepted, false),
+		success: true,
+	}
+	if normalizeSpilledSearchQuery(over) == normalizeSpilledSearchQuery(accepted) {
+		t.Fatal("a rejected over-cap query folded onto the accepted spelling")
+	}
+	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{longCall, acceptedCall, acceptedCall}); seen != 2 {
+		t.Fatal("the rejected spelling must not count as the accepted search")
+	}
+	// The loop records the tool string before the host outcome. A lowercase
+	// "error:" used to classify as success, so the rejected spelling joined
+	// the accepted page and the third call hard-stopped a different search.
+	if classifyToolResult(longCall.result).kind != toolOutcomeError {
+		t.Fatal("read_tool_result error: must not classify as a successful page")
+	}
+	recorded := longCall
+	recorded.success = executionOutcomeFromToolOutcome(classifyToolResult(recorded.result).kind) == ToolExecutionOutcomeOK
+	if recorded.success {
+		t.Fatal("a rejected query must not be recorded as a successful commit")
+	}
+	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{recorded, acceptedCall, acceptedCall}); seen != 2 {
+		t.Fatal("a misclassified rejection must not join the accepted search")
+	}
+	// Kelvin matches K under (?i), but search keeps the raw bytes for the
+	// overlap window. Folding 3 bytes to 1 made those pages one observation.
+	kelvinQuery := "\u212A"
+	kelvin := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(kelvinQuery) + `}`,
+		result:  searchReadResult("h", 0, kelvinQuery, false),
+		success: true,
+	}
+	kelvinID, okKelvin := spilledPageIdentity(kelvin)
+	asciiK := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"K"}`,
+		result:  searchReadResult("h", 0, "K", false),
+		success: true,
+	}
+	kID, okK := spilledPageIdentity(asciiK)
+	if !okKelvin || !okK || kelvinID == kID {
+		t.Fatalf("Kelvin must stay a distinct page from K: %q %q", kelvinID, kID)
+	}
+	// minFoldRune('A') is 'A', not 'a'. 'a' still joins that minimum.
+	if foldedSearchRune('@') != '@' || foldedSearchRune('A') != 'A' || foldedSearchRune('a') != 'A' || foldedSearchRune('\u212A') != 'K' {
+		t.Fatalf("fold bounds drifted: @=%#U A=%#U a=%#U kelvin=%#U", foldedSearchRune('@'), foldedSearchRune('A'), foldedSearchRune('a'), foldedSearchRune('\u212A'))
+	}
+	// The page is the simplified syntax tree regexp.Compile searches. A local
+	// walk that disagrees, or a fold that no longer parses, is not that page.
+	// Regexp.String keeps the raw pattern, so it cannot tell I from i.
+	for _, query := range []string{"I", "i", "İ", "Σ", "ς", "a\u212A", string(rune(regexpFoldMax + 1))} {
+		folded := normalizeSpilledSearchQuery(query)
+		left, err := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(query), regexpSyntax.Perl)
+		if err != nil {
+			if folded != strings.TrimSpace(query) {
+				t.Fatalf("uncompiled %q folded to %q", query, folded)
+			}
+			continue
+		}
+		right, ferr := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(folded), regexpSyntax.Perl)
+		if ferr != nil || !left.Simplify().Equal(right.Simplify()) {
+			t.Fatalf("folded %q is not the compiled (?i) page of %q: %v %v", folded, query, err, ferr)
+		}
+		if _, cerr := regexp.Compile("(?i)" + regexp.QuoteMeta(query)); cerr != nil && folded != strings.TrimSpace(query) {
+			t.Fatalf("compile failed for %q but it folded to %q: %v", query, folded, cerr)
+		}
+	}
+}
+
+func TestSearchContinuationKeepsTheQuery(t *testing.T) {
+	call := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":"needle"}`,
+		result:  "[tool_result_read]\nid: h\noffset: 0\nquery: \"needle\"\nreturned_matches: 1\ntruncated: true\nnext_offset: 400\n\n---\nmatch\n--- end ---\n",
+		success: true,
+	}
+	next, ok := advertisedReadContinuation(call)
+	want, wantOK := spilledPageIdentity(toolCallRecord{
+		name: "read_tool_result", args: `{"id":"h","offset":400,"query":"needle"}`, result: "page", success: true,
+	})
+	if !ok || !wantOK || next != want {
+		t.Fatalf("continuation = %q ok=%v want %q", next, ok, want)
+	}
+	body := toolCallRecord{
+		name: "read_tool_result", args: `{"id":"h","offset":0}`,
+		result:  "[tool_result_read]\noffset: 0\ntruncated: true\nnext_offset: 16384\n\n---\nquery: \"needle\"\n--- end ---\n",
+		success: true,
+	}
+	byteNext, ok := advertisedReadContinuation(body)
+	if !ok || byteNext != "read_tool_result\nh\n16384" {
+		t.Fatalf("body query must not join a byte page, got %q ok=%v", byteNext, ok)
+	}
+}
+
+func searchReadResult(id string, offset int, query string, truncated bool) string {
+	state := "truncated: false\n"
+	if truncated {
+		state = "truncated: true\nnext_offset: 400\n"
+	}
+	return "[tool_result_read]\nid: " + id + "\noffset: " + itoa(offset) + "\nquery: " + strconv.Quote(query) + "\nreturned_matches: 0\n" + state + "\n---\n\n--- end ---\n"
 }
 
 func TestRepeatedCommitResetsWhenThePayloadChanges(t *testing.T) {

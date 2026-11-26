@@ -792,13 +792,16 @@ func (s *Service) EnsureCloudGrant(ctx context.Context, tenantID, userID, contro
 	controllerMachineID = strings.TrimSpace(controllerMachineID)
 	agentID = strings.TrimSpace(agentID)
 	ownerUserID = strings.TrimSpace(ownerUserID)
-	if tenantID == "" || userID == "" || controllerMachineID == "" || agentID == "" || ownerUserID == "" {
+	if tenantID == "" || userID == "" || agentID == "" || ownerUserID == "" {
 		return Grant{}, invalid("云端控制需要登录这台电脑")
 	}
 	if userID != ownerUserID {
 		return Grant{}, denied("不能控制别人的云端实例")
 	}
-	machine, err := s.requireOwnMachine(ctx, userID, controllerMachineID)
+	// A phone has no desktop identity. Its cloud grant is owned by the account
+	// itself (empty controller machine id, named "移动设备"), the same way a
+	// same-account phone session already controls the account's own machines.
+	machine, err := s.controllerIdentity(ctx, userID, controllerMachineID)
 	if err != nil {
 		return Grant{}, err
 	}

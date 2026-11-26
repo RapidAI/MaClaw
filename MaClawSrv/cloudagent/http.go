@@ -75,7 +75,7 @@ func (rt *Runtime) ServeStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *Runtime) ServeResume(w http.ResponseWriter, r *http.Request) {
-	if _, err := rt.instance(r.PathValue("id")); err != nil {
+	if err := rt.Resume(r.PathValue("id")); err != nil {
 		writeRuntimeErr(w, err)
 		return
 	}

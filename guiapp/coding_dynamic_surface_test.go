@@ -186,8 +186,12 @@ func TestTrustedCodingIdentityOnlyResolvesFromDurableRuntimeAnchor(t *testing.T)
 		t.Fatalf("unanchored runtime unexpectedly resolved identity: %#v", identity)
 	}
 	wanted := &trustedCodingInvocationIdentity{TenantID: "tenant", PrincipalID: "principal", SessionID: "session", RootTaskID: "semantic-root", TurnID: "turn"}
-	if !registerTrustedCodingInvocationIdentity(store, request, wanted) {
-		t.Fatal("trusted host identity registration failed")
+	if _, err := store.RegisterSemanticTaskAnchor(codingruntime.SemanticTaskAnchor{
+		RuntimeTaskID: request.Task.TaskID, RuntimeAttemptID: request.Attempt.AttemptID,
+		TenantID: wanted.TenantID, PrincipalID: wanted.PrincipalID, SessionID: wanted.SessionID,
+		RootTaskID: wanted.RootTaskID, TurnID: wanted.TurnID,
+	}); err != nil {
+		t.Fatalf("trusted host identity registration failed: %v", err)
 	}
 	identity, ok := resolveTrustedCodingInvocationIdentity(store, request)
 	if !ok || identity == nil || identity.TenantID != "tenant" || identity.PrincipalID != "principal" || identity.SessionID != "session" || identity.RootTaskID != "semantic-root" || identity.TurnID != "turn" {
@@ -199,6 +203,18 @@ func TestTrustedCodingIdentityOnlyResolvesFromDurableRuntimeAnchor(t *testing.T)
 	if cb.codingDynamicAliasesMayMaterialize() {
 		t.Fatal("identity alone must not re-enable dynamic aliases")
 	}
+}
+
+func resolveTrustedCodingInvocationIdentity(store codingruntime.Store, request codingruntime.ExecutionRequest) (*trustedCodingInvocationIdentity, bool) {
+	anchors, ok := store.(codingruntime.SemanticTaskAnchorStore)
+	if !ok || anchors == nil {
+		return nil, false
+	}
+	anchor, err := anchors.ResolveSemanticTaskAnchor(request.Task.TaskID, request.Attempt.AttemptID)
+	if err != nil {
+		return nil, false
+	}
+	return trustedCodingIdentityFromAnchor(anchor)
 }
 
 func firstCodingDynamicAliasForTest(names []string, prefix string) string {

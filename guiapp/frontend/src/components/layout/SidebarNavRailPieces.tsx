@@ -153,6 +153,8 @@ type SidebarPrimaryNavProps = {
     runningTaskCount?: number;
     /** Prefers the background-task view when the Tasks entry is activated. */
     onOpenBackgroundTasks?: () => void;
+    /** 工作台 click also restores a collapsed task pane (收起后点工作台自动展开). */
+    onRequestTaskPaneOpen?: () => void;
     /** Popup state for the 专业功能 rail entry (AI experts, workflows, tools). */
     proMenuOpen?: boolean;
     onToggleProMenu?: (target: HTMLElement) => void;
@@ -278,7 +280,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
     );
 };
 
-export const SidebarPrimaryNav = ({ lang, navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true, connectLabel, connectTitle, connectMenuOpen = false, onToggleConnectMenu, connectSoloActive = false }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ lang, navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, runningTaskCount = 0, onOpenBackgroundTasks, onRequestTaskPaneOpen, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true, connectLabel, connectTitle, connectMenuOpen = false, onToggleConnectMenu, connectSoloActive = false }: SidebarPrimaryNavProps) => {
     // Callers that omit lang still have to be told apart. Cyrillic is its own
     // case: treating it as "not English" used to print the Simplified labels.
     const languageSample = `${aiAssistantLabel} ${appsLabel} ${utilitiesLabel} ${workflowLabel || ''}`;
@@ -332,7 +334,7 @@ export const SidebarPrimaryNav = ({ lang, navTab, aiAssistantLabel, appsLabel, s
                 legacyLabel={aiAssistantLabel}
                 icon={<div className="ai-nav-icon-badge" aria-hidden="true"><HomeRailIcon /></div>}
                 active={workbenchActive}
-                onClick={() => { switchTool('ai'); requestRailMiddleFocus('tasks'); }}
+                onClick={() => { switchTool('ai'); requestRailMiddleFocus('tasks'); onRequestTaskPaneOpen?.(); }}
                 title={aiAssistantLabel}
                 aiStyle
             />
@@ -355,7 +357,7 @@ export const SidebarPrimaryNav = ({ lang, navTab, aiAssistantLabel, appsLabel, s
                 visible={useProMenu ? proTargets.length > 0 : showUtilitiesEntry}
                 menuTrigger={proMenuAvailable ? { expanded: proMenuOpen, controls: 'pro-features-popup-menu' } : undefined}
             />
-            <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
+            <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); onRequestTaskPaneOpen?.(); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
             <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive || latexTemplatesActive} current={navTab === 'files' || knowledgeActive || latexTemplatesActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
             <SemanticNavItem id="connect" label={connectLabel || text('Connect', '连接', '連接')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || text('Connect chat, email, GitHub and hardware', '连接即时通讯、邮箱、GitHub 和硬件', '連接即時通訊、郵箱、GitHub 和硬體')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />

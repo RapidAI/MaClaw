@@ -10,7 +10,8 @@ import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathF
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { appendRolePrefixStrip, createRolePrefixStreamCursor, findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay, type RolePrefixStreamCursor } from "./rolePrefixDisplay";
 import { isConversationBranchRewindCommand, isHistoryResetCommandText } from "./composeAction";
-import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, mergeCodingToolProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { codingRowStartedAt, codingTimelineSequenceIsTaken, insertCodingTimelineItem, mergeCodingToolProgress, nextCodingTimelineSequence, normalizeCodingTimelineSequence, replaceLateCodingToolStart, replaceMatchingCodingToolStart } from "./codingAgentTimeline";
 import { liveStatusProgress } from "./aiAssistantProgressUtils";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { ROUND_PROSE_PRESERVE_MIN_CHARS, clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
@@ -2244,41 +2245,10 @@ function localizedExecutionActionText(command: string, label: string | undefined
     return label;
 }
 
-function nextCodingTimelineSequence(timeline: CodingAgentTimelineItem[], preferred?: number): number {
-    const normalizedPreferred = normalizeCodingTimelineSequence(preferred);
-    if (normalizedPreferred > 0 && !codingTimelineSequenceIsTaken(timeline, normalizedPreferred)) {
-        return normalizedPreferred;
-    }
-    return timeline.reduce((max, item) => Math.max(max, item.lastSequence || item.sequence), 0) + 1;
-}
-
-function normalizeCodingTimelineSequence(value?: number): number {
-    return Number.isFinite(value) && (value || 0) > 0 ? Math.trunc(value || 0) : 0;
-}
-
-function codingTimelineSequenceIsTaken(timeline: CodingAgentTimelineItem[], sequence: number): boolean {
-    return timeline.some((item) =>
-        (sequence >= item.sequence && sequence <= (item.lastSequence || item.sequence))
-        || item.eventSequences?.includes(sequence),
-    );
-}
-
-/** Row start. A later rewrite of `timestamp` must not move this. */
-function codingRowStartedAt(item: { startedAt?: number; timestamp?: number }, fallback: number): number {
-    const started = item.startedAt || 0;
-    if (started > 0) return started;
-    const stamp = item.timestamp || 0;
-    return stamp > 0 ? stamp : fallback;
-}
-
-/**
- * Live feed rows owned by one assistant turn. Every reasoning burst inserts a
- * row, so an unbounded list makes each later delta scan and copy the whole
- * array — O(n²) churn over a long turn, the kind of sustained allocation that
- * starved the WebView renderer into an OOM crash. Older rows are not lost
- * information: the same text lives in message.reasoning.
- */
-const MAX_CODING_TIMELINE_ITEMS = 300;
+// nextCodingTimelineSequence / normalizeCodingTimelineSequence /
+// codingTimelineSequenceIsTaken / codingRowStartedAt / insertCodingTimelineItem
+// and the tool lifecycle merges live in codingAgentTimeline.ts — shared with
+// the mirrored cloud/remote trail builders.
 
 /**
  * Live transcript ceiling. The rendered window is already the last
@@ -2288,15 +2258,6 @@ const MAX_CODING_TIMELINE_ITEMS = 300;
  * conversationViewCut so it lands on a turn boundary, never mid-round.
  */
 const MAX_LIVE_TRANSCRIPT_MESSAGES = 500;
-
-/** Keep the transport order recoverable even when Wails delivers a batch late. */
-function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: CodingAgentTimelineItem): CodingAgentTimelineItem[] {
-    const insertAt = timeline.findIndex((current) => current.sequence > item.sequence);
-    const next = insertAt < 0
-        ? [...timeline, item]
-        : [...timeline.slice(0, insertAt), item, ...timeline.slice(insertAt)];
-    return next.length > MAX_CODING_TIMELINE_ITEMS ? next.slice(next.length - MAX_CODING_TIMELINE_ITEMS) : next;
-}
 
 /**
  * A markdown rule or step banner must not open its own 思考过程. When it
@@ -2435,84 +2396,9 @@ function applyNormalizedStreamParts(message: ChatMessage, parts: string[], event
     return current;
 }
 
-function codingToolLifecycleMatches(startContent: string, finishedContent: string): boolean {
-    const started = parseCodingAgentProgress(startContent);
-    const finished = parseCodingAgentProgress(finishedContent);
-    if (!started || !finished || started.event !== 'tool_started' || finished.event !== 'tool_finished') return false;
-
-    // A turn is normally sequential, but never merge different turns/runs.
-    for (const field of ['turnID', 'runID', 'taskID'] as const) {
-        if (started[field] && finished[field] && started[field] !== finished[field]) return false;
-    }
-    // Tool name is the primary lifecycle identity; titles are a safe fallback
-    // for older events that did not include a structured tool detail.
-    if (started.detail && finished.detail && started.detail !== finished.detail) return false;
-    if (!started.detail || !finished.detail) {
-        if (!started.title || started.title !== finished.title) return false;
-    }
-
-    // A model may call the same tool repeatedly in one turn. The exact command
-    // (when emitted) distinguishes those lifecycles; without it the nearest
-    // outstanding matching start is the only safe pairing heuristic.
-    const startedCommand = (started.command || '').trim();
-    const finishedCommand = (finished.command || '').trim();
-    return !startedCommand || !finishedCommand || startedCommand === finishedCommand;
-}
-
-function replaceMatchingCodingToolStart(
-    timeline: CodingAgentTimelineItem[],
-    finishedContent: string,
-    finishedSequence: number,
-    timestamp: number,
-): CodingAgentTimelineItem[] | null {
-    for (let index = timeline.length - 1; index >= 0; index--) {
-        const item = timeline[index];
-        if (item.kind !== 'progress' || item.sequence > finishedSequence) continue;
-        if (!codingToolLifecycleMatches(item.content, finishedContent)) continue;
-        const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), finishedSequence]));
-        return timeline.map((current, currentIndex) => currentIndex === index
-            ? { ...current, content: finishedContent, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
-            : current);
-    }
-    return null;
-}
-
-function mergeCodingToolProgress(
-    timeline: CodingAgentTimelineItem[],
-    progressContent: string,
-    progressSequence: number,
-    timestamp: number,
-): CodingAgentTimelineItem[] | null {
-    for (let index = timeline.length - 1; index >= 0; index--) {
-        const item = timeline[index];
-        if (item.kind !== 'progress') continue;
-        const merged = mergeCodingToolProgressContent(item.content, progressContent);
-        if (!merged) continue;
-        const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), progressSequence]));
-        return timeline.map((current, currentIndex) => currentIndex === index
-            ? { ...current, content: merged, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
-            : current);
-    }
-    return null;
-}
-
-function replaceLateCodingToolStart(
-    timeline: CodingAgentTimelineItem[],
-    startedContent: string,
-    startedSequence: number,
-    timestamp: number,
-): CodingAgentTimelineItem[] | null {
-    for (let index = 0; index < timeline.length; index++) {
-        const item = timeline[index];
-        if (item.kind !== 'progress' || item.sequence < startedSequence) continue;
-        if (!codingToolLifecycleMatches(startedContent, item.content)) continue;
-        const eventSequences = Array.from(new Set([startedSequence, ...(item.eventSequences || []), item.sequence]));
-        return timeline.map((current, currentIndex) => currentIndex === index
-            ? { ...current, sequence: startedSequence, content: item.content, timestamp, startedAt: codingRowStartedAt(current, timestamp), eventSequences }
-            : current);
-    }
-    return null;
-}
+// codingToolLifecycleMatches / replaceMatchingCodingToolStart /
+// mergeCodingToolProgress / replaceLateCodingToolStart live in
+// codingAgentTimeline.ts, shared with the mirrored remote/cloud trails.
 
 /** True when the last reasoning line is a status bullet. Does not copy the line. */
 function lastReasoningLineIsStatusBullet(existing: string): boolean {

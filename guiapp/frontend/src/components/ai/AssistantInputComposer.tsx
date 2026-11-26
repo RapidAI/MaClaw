@@ -17,7 +17,7 @@ const EMPTY_SUBMITTED_PROMPTS: string[] = [];
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const {
-        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composeAction,
+        active = true, attachButtonTestId, browseFile, canSend, cancelPending, cancelSession, cancelTitle, clearSelectedFile, composeAction,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick,
         handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked,
@@ -242,6 +242,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     <AssistantInputActionsRight
                         canSend={canSend}
                         cancelSession={cancelSession}
+                        cancelTitle={cancelTitle}
                         handleCancel={handleCancel}
                         handleClearInput={handleClearInput}
                         handleSend={handleSend}

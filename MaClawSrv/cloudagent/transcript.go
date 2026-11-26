@@ -133,8 +133,21 @@ func (b *book) EnsureTask(id, title string) error {
 
 // Begin records a running turn. A repeated client message id returns the
 // original request id and does not insert another row. A different message
-// is refused while any turn is still running, so one instance runs one turn.
+// is refused while any turn is still running or parked input is ahead of it,
+// so one instance runs one turn and a send cannot jump the durable queue in
+// the finish→drain handoff window.
 func (b *book) Begin(clientID, taskID, text string, now time.Time) (requestID string, created bool, err error) {
+	return b.begin(clientID, taskID, text, now, false)
+}
+
+// BeginDrain is the queue runner's admission path. The oldest parked row is
+// still present while it is being promoted, so the queue-ahead fence does not
+// apply to this one internal begin.
+func (b *book) BeginDrain(clientID, taskID, text string, now time.Time) (requestID string, created bool, err error) {
+	return b.begin(clientID, taskID, text, now, true)
+}
+
+func (b *book) begin(clientID, taskID, text string, now time.Time, draining bool) (requestID string, created bool, err error) {
 	clientID = strings.TrimSpace(clientID)
 	tx, err := b.db.Begin()
 	if err != nil {
@@ -157,6 +170,15 @@ func (b *book) Begin(clientID, taskID, text string, now time.Time) (requestID st
 	}
 	if running > 0 {
 		return "", false, errBusy
+	}
+	if !draining {
+		var queued int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM queued_turns`).Scan(&queued); err != nil {
+			return "", false, err
+		}
+		if queued > 0 {
+			return "", false, errBusy
+		}
 	}
 	if strings.TrimSpace(taskID) == "" {
 		taskID = newID("task_")
