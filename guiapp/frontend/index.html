@@ -279,6 +279,33 @@
     }
   } catch(e) {}
   try { fetch('/maclaw-boot/ping?stage=html'); } catch(e) {}
+  // wails3 migration (Phase 2): v2 injects window.runtime natively; wails3
+  // does not. Only under wails3 do we load the v3 runtime module and install
+  // the window.go.main.App Proxy so the generated wailsjs bindings
+  // (window['go']['main']['App']['X']) route to Call.ByName unchanged.
+  // Inline + self-contained: this file is not processed by the bundler.
+  // V3 service prefix must match the Go service registration (package
+  // guiapp, type App); verify during the wails3 smoke run.
+  if (!window.runtime) {
+    import(/* @vite-ignore */ '/wails' + '/runtime.js')
+      .then(function (m) {
+        var call = (m && m.Call) || (m && m.default && m.default.Call);
+        if (!call) throw new Error('wails3 runtime module has no Call namespace');
+        window.go = window.go || {};
+        window.go.main = window.go.main || {};
+        window.go.main.App = new Proxy(window.go.main.App || {}, {
+          get: function (_t, name) {
+            if (typeof name !== 'string' || name === 'then') return undefined;
+            return function () {
+              var args = Array.prototype.slice.call(arguments);
+              return call.ByName('guiapp.App.' + name, ...args);
+            };
+          },
+        });
+        console.info('[wails3-bridge] window.go.main.App installed');
+      })
+      .catch(function (err) { console.error('[wails3-bridge] failed:', err); });
+  }
   (function () {
     function aliasGoMain() {
       try {
