@@ -18,6 +18,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	wruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
@@ -197,6 +199,15 @@ func Main3(v string) {
 	// dispatches to the reused systray fork loop on Windows).
 	bootLog("wails3 window %dx%d frameless=true startMaximised=%v mode=%s", winWidth, winHeight, startMaximised, launch.Mode)
 	setupTray3(app, args[1:])
+
+	// --desktop-stage: open the standalone desktop-stream window at launch
+	// (also serves as the programmatic verification of the pop-out binding).
+	if slices.Contains(args, "--desktop-stage") {
+		go func() {
+			time.Sleep(5 * time.Second) // let the main window settle first
+			app.OpenDesktopStageWindow(1280, 10)
+		}()
+	}
 
 	// v2 OnDomReady equivalent.
 	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(event *application.WindowEvent) {
