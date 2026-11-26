@@ -5835,6 +5835,13 @@ func spilledSearchQuery(args map[string]interface{}, result string) string {
 
 func normalizeSpilledSearchQuery(query string) string {
 	query = strings.TrimSpace(query)
+	// readSearchOpened rejects the raw query before compiling (?i). A folded
+	// form that shrinks under 4096 bytes is a different observation: the long
+	// spelling is an error, and joining it to the accepted spelling stops the
+	// next search as if both had returned the same page.
+	if len(query) > maxSpilledSearchQueryBytes {
+		return query
+	}
 	var b strings.Builder
 	b.Grow(len(query))
 	for _, r := range query {
@@ -5850,6 +5857,9 @@ func normalizeSpilledSearchQuery(query string) string {
 const (
 	regexpFoldMin rune = 0x0041
 	regexpFoldMax rune = 0x1e943
+	// maxSpilledSearchQueryBytes matches toolresult's raw query cap. Folding
+	// must not run on a query that search rejects before regexp.Compile.
+	maxSpilledSearchQueryBytes = 4096
 )
 
 // foldedSearchRune is the representative regexp (?i) compiles for r.

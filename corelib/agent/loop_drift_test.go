@@ -598,6 +598,31 @@ func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
 			t.Fatalf("an unfolded partner must not join the latest search, seen=%d", seen)
 		}
 	}
+	// A query past the raw 4096-byte cap is rejected before (?i) compiles.
+	// Folding Kelvin first shrinks it onto an accepted spelling.
+	over := strings.Repeat("a", 4094) + "\u212A"
+	accepted := strings.Repeat("a", 4094) + "K"
+	if len(over) <= 4096 || len(accepted) > 4096 {
+		t.Fatalf("query cap fixture drifted: over=%d accepted=%d", len(over), len(accepted))
+	}
+	longCall := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(over) + `}`,
+		result:  "error: toolresult: query exceeds 4096 bytes",
+		success: false,
+	}
+	acceptedCall := toolCallRecord{
+		name:    "read_tool_result",
+		args:    `{"id":"h","offset":0,"query":` + strconv.Quote(accepted) + `}`,
+		result:  searchReadResult("h", 0, accepted, false),
+		success: true,
+	}
+	if normalizeSpilledSearchQuery(over) == normalizeSpilledSearchQuery(accepted) {
+		t.Fatal("a rejected over-cap query folded onto the accepted spelling")
+	}
+	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{longCall, acceptedCall, acceptedCall}); seen != 2 {
+		t.Fatal("the rejected spelling must not count as the accepted search")
+	}
 	// minFoldRune('A') is 'A', not 'a'. 'a' and Kelvin still join that minimum.
 	if foldedSearchRune('@') != '@' || foldedSearchRune('A') != 'A' || foldedSearchRune('a') != 'A' || foldedSearchRune('\u212A') != 'K' {
 		t.Fatalf("fold bounds drifted: @=%#U A=%#U a=%#U kelvin=%#U", foldedSearchRune('@'), foldedSearchRune('A'), foldedSearchRune('a'), foldedSearchRune('\u212A'))
