@@ -13,7 +13,9 @@ class AgentJob {
   final String message;
 
   /// Live thinking trace while the job runs (tool steps), newest last. Empty
-  /// once the job finishes — the answer replaces it in the UI.
+  /// once the job finishes — the answer replaces it in the UI. The wire field
+  /// is `thinking`; `progress` stays the numeric 0..1 fraction other clients
+  /// already parse.
   final List<String> progress;
 
   const AgentJob({
@@ -48,8 +50,8 @@ class AgentJob {
       answer: json['answer'] as String? ?? '',
       message: json['message'] as String? ?? '',
       progress: [
-        for (final line in json['progress'] is List
-            ? json['progress'] as List
+        for (final line in json['thinking'] is List
+            ? json['thinking'] as List
             : const [])
           if (line is String && line.trim().isNotEmpty) line,
       ],

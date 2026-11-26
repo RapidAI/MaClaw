@@ -248,12 +248,17 @@ func mobileAgentJobPayload(job mobileAgentJobRecord) map[string]any {
 	if job.RequestID != "" {
 		m["llm_request_id"] = job.RequestID
 	}
-	// Only while running: a finished job speaks for itself, and the trace is
-	// noise once the answer is there.
+	// progress stays the 0..1 status fraction. Older clients (and the unified
+	// job list) read it as a number; replacing it with the trace array made
+	// those progress bars stop. The trace rides thinking, and only while the
+	// job is running.
+	if frac := mobileJobProgressFromStatus(job.Status); frac >= 0 {
+		m["progress"] = frac
+	}
 	if mobileJobIsActive(job.Status) && len(job.Progress) > 0 {
-		progress := make([]string, len(job.Progress))
-		copy(progress, job.Progress)
-		m["progress"] = progress
+		thinking := make([]string, len(job.Progress))
+		copy(thinking, job.Progress)
+		m["thinking"] = thinking
 	}
 	if job.Status == mobileAgentJobStatusReady && job.Answer != "" {
 		m["answer"] = job.Answer
