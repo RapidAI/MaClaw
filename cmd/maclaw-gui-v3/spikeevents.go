@@ -62,14 +62,15 @@ func spikeTrayIconBytes() []byte {
 	buf.Write([]byte{0, 0, 1, 0, 1, 0})
 	// ICONDIRENTRY: 16x16, 32bpp
 	imageOffset := uint32(6 + 16)
-	bytesInRes := uint32(40 + size*size*4 + (size/8)*size*4) // header + XOR + AND mask rows
+	andRowStride := 4                                          // ((16+31)/32)*4: 1bpp row padded to 4 bytes
+	bytesInRes := uint32(40 + size*size*4 + andRowStride*size) // header + XOR + AND mask
 	entry := make([]byte, 16)
 	entry[0] = size
 	entry[1] = size
-	binary.LittleEndian.PutUint16(entry[4:], 1)             // planes
-	binary.LittleEndian.PutUint16(entry[6:], 32)            // bit count
-	binary.LittleEndian.PutUint32(entry[8:], bytesInRes)    // bytes in res
-	binary.LittleEndian.PutUint32(entry[12:], imageOffset)  // offset
+	binary.LittleEndian.PutUint16(entry[4:], 1)            // planes
+	binary.LittleEndian.PutUint16(entry[6:], 32)           // bit count
+	binary.LittleEndian.PutUint32(entry[8:], bytesInRes)   // bytes in res
+	binary.LittleEndian.PutUint32(entry[12:], imageOffset) // offset
 	buf.Write(entry)
 	// BITMAPINFOHEADER (biHeight = 2*size: XOR + AND)
 	bih := make([]byte, 40)
@@ -85,11 +86,9 @@ func spikeTrayIconBytes() []byte {
 			buf.Write([]byte{0x80, 0x00, 0x80, 0xFF}) // B G R A
 		}
 	}
-	// AND mask: fully opaque
+	// AND mask: fully opaque (4 bytes per row per the ICO stride rule)
 	for y := 0; y < size; y++ {
-		for i := 0; i < size/8; i++ {
-			buf.Write([]byte{0, 0, 0, 0})
-		}
+		buf.Write([]byte{0, 0, 0, 0})
 	}
 	return buf.Bytes()
 }

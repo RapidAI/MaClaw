@@ -31,7 +31,6 @@
       log('recv spike:ping', JSON.stringify(e.data));
       Events.Emit('spike:pong', e.data);
     });
-    Events.On('spike:read-cookie', () => Events.Emit('spike:win1-cookie', document.cookie));
 
     // C4: asset middleware POST route.
     try {
@@ -44,7 +43,10 @@
     // C5: module-load probe (redundant with the Go-side ExecJS retry probe).
     Events.Emit('spike:probe', { href: location.href, title: document.title, from: 'module' });
 
-    document.getElementById('guardedDrag').addEventListener('click', async () => {
+    // mousedown, not click: click fires after mouse-up, which would make the
+    // GetAsyncKeyState guard refuse every time and the POST path never test.
+    document.getElementById('guardedDrag').addEventListener('mousedown', async (ev) => {
+      ev.preventDefault();
       try {
         const r = await Call.ByName('main.SpikeService.GuardedDragBegin');
         log('guarded drag:', JSON.stringify(r));

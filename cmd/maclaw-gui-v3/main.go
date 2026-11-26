@@ -32,6 +32,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -73,6 +75,7 @@ type SpikeService struct {
 	win             *application.WebviewWindow
 	win2            *application.WebviewWindow
 	dialogRequested bool
+	trayOnce        sync.Once
 }
 
 // GuardedDragBegin replicates guiapp's guarded frameless drag
@@ -130,20 +133,22 @@ func (s *SpikeService) createSecondWindow() {
 }
 
 func (s *SpikeService) createTray() {
-	tray := s.app.SystemTray.New()
-	icon := spikeTrayIconBytes()
-	tray.SetIcon(icon)
-	tray.SetLabel("MaClaw spike")
-	menu := s.app.NewMenu()
-	menu.Add("退出 spike").OnClick(func(*application.Context) { s.app.Quit() })
-	tray.SetMenu(menu)
-	spikeLogf("C7 tray created (icon=%dB, menu=1 item) — manual check: tray visible, 退出 spike works", len(icon))
-	if s.dialogRequested {
-		dlg := s.app.Dialog.OpenFile().SetTitle("spike file dialog")
-		path, err := dlg.PromptForSingleSelection()
-		spikeLogf("C7b dialog path=%q err=%v", path, err)
-	}
-	spikeLogf("=== all automated checkpoints fired; waiting for --quit relay or manual close ===")
+	s.trayOnce.Do(func() {
+		tray := s.app.SystemTray.New()
+		icon := spikeTrayIconBytes()
+		tray.SetIcon(icon)
+		tray.SetLabel("MaClaw spike")
+		menu := s.app.NewMenu()
+		menu.Add("退出 spike").OnClick(func(*application.Context) { s.app.Quit() })
+		tray.SetMenu(menu)
+		spikeLogf("C7 tray created (icon=%dB, menu=1 item) — manual check: tray visible, 退出 spike works", len(icon))
+		if s.dialogRequested {
+			dlg := s.app.Dialog.OpenFile().SetTitle("spike file dialog")
+			path, err := dlg.PromptForSingleSelection()
+			spikeLogf("C7b dialog path=%q err=%v", path, err)
+		}
+		spikeLogf("=== all automated checkpoints fired; waiting for --quit relay or manual close ===")
+	})
 }
 
 func main() {
@@ -196,9 +201,22 @@ func main() {
 		os.Exit(1)
 	}
 	svc.win = win
+	var readyFired atomic.Bool
 	win.OnWindowEvent(events.Common.WindowRuntimeReady, func(event *application.WindowEvent) {
+		readyFired.Store(true)
 		go svc.onWin1RuntimeReady()
 	})
+	// Watchdogs for the rapid-relaunch flake observed during Phase 0: an
+	// immediate relaunch can stall WebView2 environment creation for seconds
+	// and WindowRuntimeReady may not fire within the normal ~5s budget.
+	time.AfterFunc(12*time.Second, func() {
+		if !readyFired.Load() {
+			spikeLogf("C0 WARN runtime not ready after 12s (rapid-relaunch env contention); checkpoints will not fire this run")
+		}
+	})
+	// Tray normally fires from the win2 chain (ready+4s); this fallback keeps
+	// C7 verifiable even when the webview chain stalls.
+	time.AfterFunc(25*time.Second, func() { svc.createTray() })
 
 	spikeLogf("main window created; running event loop")
 	app.Run()
