@@ -25,6 +25,12 @@ import (
 
 var desktopStageWindow *application.WebviewWindow
 
+// desktopStageLastBounds remembers the pop-out window's last on-screen
+// geometry (physical px) so a reopen restores the user's resized/placed
+// window instead of snapping back to the 1280x800 default. Session-scoped
+// by design: a fresh process starts from the default again.
+var desktopStageLastW, desktopStageLastH int
+
 // DesktopStageWindowSupported reports whether the running build can open the
 // native pop-out stage window. The frontend probe calls this before showing
 // the pop-out control; under wails/v2 builds the method is absent and the
@@ -47,11 +53,15 @@ func (a *App) OpenDesktopStageWindow(width int, fps int) {
 	if width > 0 || fps > 0 {
 		url = fmt.Sprintf("/h264.html?w=%d&fps=%d", width, fps)
 	}
+	w, h := 1280, 800
+	if desktopStageLastW > 0 && desktopStageLastH > 0 {
+		w, h = desktopStageLastW, desktopStageLastH
+	}
 	win := wruntime.Application().Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "MaClaw 桌面画面",
 		Name:             "desktop-stage",
-		Width:            1280,
-		Height:           800,
+		Width:            w,
+		Height:           h,
 		Frameless:        false,
 		BackgroundColour: application.RGBA{Red: 12, Green: 12, Blue: 12, Alpha: 255},
 		URL:              url,
@@ -62,10 +72,14 @@ func (a *App) OpenDesktopStageWindow(width int, fps int) {
 	}
 	desktopStageWindow = win
 	win.OnWindowEvent(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		// 记录关闭前的尺寸，下次弹出时恢复用户调整过的几何。
+		if sw, sh := win.Size(); sw > 200 && sh > 200 {
+			desktopStageLastW, desktopStageLastH = sw, sh
+		}
 		desktopStageWindow = nil
 	})
 	win.Show()
-	log.Printf("[desktop-stage] pop-out window opened url=%s", url)
+	log.Printf("[desktop-stage] pop-out window opened url=%s size=%dx%d (last=%dx%d)", url, w, h, desktopStageLastW, desktopStageLastH)
 }
 
 // CloseDesktopStageWindow closes the pop-out window if open. The panel
