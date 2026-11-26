@@ -44,6 +44,9 @@ func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) 
 
 // ServiceShutdown routes into the existing shutdown hook.
 func (a *App) ServiceShutdown() {
+	if a.ctx == nil {
+		return
+	}
 	a.shutdown(a.ctx)
 }
 
@@ -94,6 +97,29 @@ func Main3(v string) {
 	envCheckWidth, envCheckHeight := envCheckWindowSize()
 	startMaximised := shouldMaximiseMainWindowForPrimaryScreen()
 
+	// Launch classification mirrors main.go: file-companion launches seed the
+	// companion variant and override the window geometry (v2
+	// applyDesktopLaunchOptions; HideWindowOnClose has no direct v3 field yet
+	// — tracked gap).
+	launch := classifyDesktopLaunch(args)
+	winWidth, winHeight := envCheckWidth, envCheckHeight
+	if launch.Mode == desktopLaunchFileCompanion {
+		switch {
+		case launch.Quit:
+			app.seedFileCompanionQuit()
+		case launch.Notice != "":
+			app.seedFileCompanionNotice(launch.Notice)
+		case launch.Library:
+			app.seedFileCompanionLibrary()
+		case launch.Place:
+			app.seedFileCompanionPlace(launch.Paths)
+		default:
+			app.seedFileCompanionPaths(launch.Paths)
+		}
+		winWidth, winHeight = 1280, 800
+		startMaximised = false
+	}
+
 	v3app := application.New(application.Options{
 		Name: brand.Current().WindowTitle,
 		Services: []application.Service{
@@ -119,8 +145,8 @@ func Main3(v string) {
 	win := v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            brand.Current().WindowTitle,
-		Width:            envCheckWidth,
-		Height:           envCheckHeight,
+		Width:            winWidth,
+		Height:           winHeight,
 		Frameless:        true,
 		BackgroundColour: application.RGBA{Red: 243, Green: 245, Blue: 247, Alpha: 255}, // #f3f5f7
 		Windows: application.WindowsWindow{
@@ -133,6 +159,7 @@ func Main3(v string) {
 
 	// Tray: start after the single-instance lock is accepted (wails3 tag
 	// dispatches to the reused systray fork loop on Windows).
+	bootLog("wails3 window %dx%d frameless=true startMaximised=%v mode=%s", winWidth, winHeight, startMaximised, launch.Mode)
 	setupTray3(app, args[1:])
 
 	// v2 OnDomReady equivalent.

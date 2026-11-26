@@ -54,12 +54,19 @@ export async function installWindowGoProxy() {
     });
 }
 
-// v2 events callbacks receive spread data args; v3 delivers a CustomEvent
-// whose .data is the single payload (or an array when several were emitted).
+// v2 events semantics: a single payload is delivered as ONE callback arg
+// (array payloads included — never spread); multiple emit args are spread.
+// Bridge convention: JS-side multi-arg emits are wrapped in a __maclawMulti
+// marker (see eventsEmit); plain arrays from Go passes through as one arg,
+// matching v2.
 function adaptEventCallback(callback) {
     return (event) => {
         const data = event && typeof event === 'object' && 'data' in event ? event.data : event;
-        callback(...(Array.isArray(data) ? data : [data]));
+        if (data && typeof data === 'object' && Array.isArray(data.__maclawMulti)) {
+            callback(...data.__maclawMulti);
+            return;
+        }
+        callback(data);
     };
 }
 
@@ -82,7 +89,7 @@ export async function eventsEmit(eventName, ...args) {
     // Mirror v2: one payload → single arg; several → array (matched by the
     // adaptEventCallback spread on the receiving side).
     if (args.length === 1) return v3.Events.Emit(eventName, args[0]);
-    return v3.Events.Emit(eventName, args);
+    return v3.Events.Emit(eventName, { __maclawMulti: args });
 }
 
 // callWindow routes a v2 Window* call to the v3 Window namespace. Unmapped
