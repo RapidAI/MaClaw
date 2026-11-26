@@ -11,7 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // DataMigrationProgress is emitted to the frontend during data directory migration.

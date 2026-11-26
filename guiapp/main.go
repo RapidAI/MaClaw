@@ -28,7 +28,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // version defaults to "dev"; cmd/maclaw-gui injects its ldflags-set value

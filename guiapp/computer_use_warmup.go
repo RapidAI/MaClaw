@@ -18,7 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	wailsruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 const cuObserveHistoryMax = 16

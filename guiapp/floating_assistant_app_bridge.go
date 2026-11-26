@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // petPositionLockMu serializes the config writes for the pin. The menu thread

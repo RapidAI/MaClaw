@@ -17,7 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"github.com/zalando/go-keyring"
 )
 

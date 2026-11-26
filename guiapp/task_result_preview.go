@@ -16,7 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"

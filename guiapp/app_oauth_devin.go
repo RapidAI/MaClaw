@@ -11,7 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 
 	"github.com/pkg/browser"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // DevinLoginInfo is returned when the Devin account page has been opened.

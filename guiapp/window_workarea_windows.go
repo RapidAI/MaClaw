@@ -13,7 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/guiapp/petpack"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	wailsruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // Win10 frameless + translucent maximise often paints past the monitor work area

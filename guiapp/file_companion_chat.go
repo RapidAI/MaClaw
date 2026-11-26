@@ -14,7 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	wailsruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // fileCompanionToolsDisabled reports a companion owner. The model request for

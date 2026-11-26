@@ -30,7 +30,7 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // HubSkillUpdateInfo describes an available update for a locally installed Hub Skill.

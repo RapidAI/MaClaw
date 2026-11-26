@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
-	wails_runtime "github.com/wailsapp/wails/v2/pkg/runtime"
+	wails_runtime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 func (a *App) platformStartup() {

@@ -14,7 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/buddy/protocol"
 	"github.com/RapidAI/CodeClaw/buddy/serialport"
 	"github.com/RapidAI/CodeClaw/buddy/service"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // buddyConfig is persisted as data/buddy.json.

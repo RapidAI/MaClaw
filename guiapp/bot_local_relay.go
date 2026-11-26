@@ -16,7 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/localrelay"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/gorilla/websocket"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // The local relay lets the person's cloud bots reach this computer: files in

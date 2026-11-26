@@ -3,7 +3,7 @@
 package guiapp
 
 import (
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // Window dragging on Windows is handled by the frontend via data-window-drag

@@ -14,7 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/slack"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/pkg/browser"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // beginSlackLogin is the browser install. Tests replace it so they do not

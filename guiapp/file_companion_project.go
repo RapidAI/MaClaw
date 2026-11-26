@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // A companion project is a zip another reader can open and get the same
