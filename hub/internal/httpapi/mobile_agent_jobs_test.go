@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -214,6 +215,57 @@ func TestMobileAgentJobProgressStaysNumeric(t *testing.T) {
 	}
 	if _, exists := done["thinking"]; exists {
 		t.Fatalf("finished job leaked thinking: %#v", done["thinking"])
+	}
+}
+
+func TestMobileAgentJobProgressAppendWhilePurgeWriterWaits(t *testing.T) {
+	resetMobilePurgeState(t)
+	t.Cleanup(mobileResetKnowledgePurgeStateForTest)
+	const jobID = "job-progress-purge-lock"
+	mobileAgentJobs.Lock()
+	mobileAgentJobs.jobs[jobID] = mobileAgentJobRecord{
+		JobID: jobID, OwnerID: "owner-progress-lock", TenantID: "tenant-progress-lock",
+		Status: mobileAgentJobStatusRunning,
+	}
+	mobileAgentJobs.Unlock()
+	t.Cleanup(func() {
+		mobileAgentJobs.Lock()
+		delete(mobileAgentJobs.jobs, jobID)
+		mobileAgentJobs.Unlock()
+	})
+
+	mobileKnowledgePurgeState.RLock()
+
+	var writer sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		mobileKnowledgePurgeState.Lock()
+		mobileKnowledgePurgeState.Unlock()
+	}()
+	// Let the writer queue. A recursive RLock would then block forever.
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		mobileAgentJobAppendProgressLocked(jobID, "调用 web_search")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		mobileKnowledgePurgeState.RUnlock()
+		t.Fatal("progress append blocked while a purge writer was waiting")
+	}
+	// Release before waiting: the writer cannot finish while this read lock is held.
+	mobileKnowledgePurgeState.RUnlock()
+	writer.Wait()
+
+	mobileAgentJobs.Lock()
+	got := append([]string(nil), mobileAgentJobs.jobs[jobID].Progress...)
+	mobileAgentJobs.Unlock()
+	if len(got) != 1 || got[0] != "调用 web_search" {
+		t.Fatalf("progress = %#v, want the appended line", got)
 	}
 }
 
