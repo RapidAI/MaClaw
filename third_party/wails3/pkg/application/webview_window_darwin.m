@@ -1,0 +1,1210 @@
+//go:build darwin && !ios && !server && !purego
+#import <Foundation/Foundation.h>
+#import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
+#import "webview_window_darwin.h"
+#import "mac_private_api_darwin.h"
+#import "../events/events_darwin.h"
+extern void processMessage(unsigned int, const char*, const char *, bool);
+extern void processURLRequest(unsigned int, void *);
+extern void cancelURLRequest(void *);
+extern void processDragItems(unsigned int windowId, char** arr, int length, int x, int y);
+extern void processWindowKeyDownEvent(unsigned int, const char*);
+// Implemented in Go, in accelerator_darwin.go.
+extern char* acceleratorFromKeyPress(unsigned short keyCode, unsigned long modifiers,
+                                     unsigned int character, int hasCharacter);
+extern bool processWindowKeyEquivalent(unsigned int, const char*);
+extern bool hasListeners(unsigned int);
+extern int resolveMediaCapturePermission(unsigned int, bool, bool);
+extern bool windowShouldUnconditionallyClose(unsigned int);
+extern bool windowIsHidden(unsigned int);
+
+@interface WebviewWindow ()
+
+@property (retain) NSTimer* zoomAnimationTimer;
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+@property (retain) CADisplayLink* zoomDisplayLink;
+#endif
+@property NSRect zoomAnimationStartFrame;
+@property NSRect zoomAnimationTargetFrame;
+@property CFTimeInterval zoomAnimationStartTime;
+@property NSTimeInterval zoomAnimationDuration;
+@property BOOL zoomAnimationTargetIsZoomed;
+@property BOOL preparingZoomAnimationTarget;
+@property BOOL applyingZoomAnimationFrame;
+@property NSRect zoomRestoreFrame;
+@property BOOL hasZoomRestoreFrame;
+
+- (void)stepZoomAnimationAtTime:(CFTimeInterval)time;
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+- (void)stepZoomAnimationFromDisplayLink:(CADisplayLink*)displayLink API_AVAILABLE(macos(14.0));
+#endif
+
+@end
+
+NSString* acceleratorStringFromKeyEvent(NSEvent* event) {
+    // Only the first character is of interest: every key named from its
+    // characters rather than its key code produces exactly one. Passing the
+    // character rather than the string also keeps Control-Space, which
+    // produces a NUL, from looking like no character at all.
+    NSString* characters = [event characters];
+    int hasCharacter = characters.length > 0;
+    unichar character = hasCharacter ? [characters characterAtIndex:0] : 0;
+
+    char* accelerator = acceleratorFromKeyPress((unsigned short)event.keyCode,
+                                                (unsigned long)event.modifierFlags,
+                                                (unsigned int)character,
+                                                hasCharacter);
+    if (accelerator == NULL) {
+        return @"";
+    }
+    NSString* result = [NSString stringWithUTF8String:accelerator];
+    free(accelerator);
+    return result;
+}
+
+BOOL dispatchKeyEquivalent(NSEvent* event, NSWindow* window) {
+    WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)window.delegate;
+    if (delegate == nil) {
+        return NO;
+    }
+    NSString* accelerator = acceleratorStringFromKeyEvent(event);
+    return accelerator.length > 0 &&
+        processWindowKeyEquivalent(delegate.windowId, accelerator.UTF8String);
+}
+
+@implementation WebviewWindow
+- (WebviewWindow*) initWithContentRect:(NSRect)contentRect styleMask:(NSUInteger)windowStyle backing:(NSBackingStoreType)bufferingType defer:(BOOL)deferCreation;
+{
+    self = [super initWithContentRect:contentRect styleMask:windowStyle backing:bufferingType defer:deferCreation];
+    [self setAlphaValue:1.0];
+    [self setBackgroundColor:[NSColor clearColor]];
+    [self setOpaque:NO];
+    [self setMovableByWindowBackground:YES];
+    return self;
+}
+- (void)keyDown:(NSEvent *)event {
+    NSString *keyEventString = acceleratorStringFromKeyEvent(event);
+    // A press with no name cannot match a binding, and the parser rejects the
+    // empty string, so sending it on only produces an error for every one.
+    if (keyEventString.length == 0) {
+        return;
+    }
+    WebviewWindowDelegate *delegate = (WebviewWindowDelegate*)self.delegate;
+    processWindowKeyDownEvent(delegate.windowId, [keyEventString UTF8String]);
+}
+// performKeyEquivalent is invoked by Cocoa for every modifier-key combo
+// BEFORE the responder chain runs, giving the window a chance to claim
+// accelerators (e.g. Ctrl+Tab) that the WKWebView would otherwise consume
+// silently. Returns YES only when there is an actual KeyBinding match;
+// otherwise falls through to super so normal Cocoa handling — including
+// main-menu key equivalents — continues unchanged.
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (dispatchKeyEquivalent(event, self)) {
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (BOOL) canBecomeMainWindow {
+    return YES;
+}
+- (BOOL) acceptsFirstResponder {
+    return YES;
+}
+- (BOOL) becomeFirstResponder {
+    return YES;
+}
+- (BOOL) resignFirstResponder {
+    return YES;
+}
+- (void) cancelOperation:(id)sender {
+    if (self.disableEscapeExitsFullscreen &&
+        (self.styleMask & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen) {
+        return;
+    }
+    [super cancelOperation:sender];
+}
+- (void)cancelZoomAnimation {
+    [self.zoomAnimationTimer invalidate];
+    self.zoomAnimationTimer = nil;
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+    if (@available(macOS 14.0, *)) {
+        [self.zoomDisplayLink invalidate];
+        self.zoomDisplayLink = nil;
+    }
+#endif
+}
+- (BOOL)zoomAnimationIsRunning {
+    BOOL isRunning = self.zoomAnimationTimer != nil;
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+    isRunning = isRunning || self.zoomDisplayLink != nil;
+#endif
+    return isRunning;
+}
+- (BOOL)shouldReduceZoomMotion {
+    return [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceMotion];
+}
+- (BOOL)isZoomed {
+    if ([self zoomAnimationIsRunning]) {
+        return self.zoomAnimationTargetIsZoomed;
+    }
+    return [super isZoomed];
+}
+- (NSTimeInterval)animationResizeTime:(NSRect)newFrame {
+    if (self.preparingZoomAnimationTarget) {
+        return 0;
+    }
+    return [super animationResizeTime:newFrame];
+}
+- (void)setFrame:(NSRect)frameRect display:(BOOL)displayFlag {
+    if ([self zoomAnimationIsRunning] && !self.applyingZoomAnimationFrame) {
+        [self cancelZoomAnimation];
+    }
+    NSSize oldSize = self.frame.size;
+    if (self.hasZoomRestoreFrame &&
+        !self.applyingZoomAnimationFrame &&
+        ![super isZoomed] &&
+        !NSEqualSizes(oldSize, frameRect.size)) {
+        [super setFrame:frameRect display:displayFlag];
+        self.zoomRestoreFrame = self.frame;
+        return;
+    }
+    [super setFrame:frameRect display:displayFlag];
+}
+- (void)setFrame:(NSRect)frameRect display:(BOOL)displayFlag animate:(BOOL)animateFlag {
+    if ([self zoomAnimationIsRunning] && !self.applyingZoomAnimationFrame) {
+        [self cancelZoomAnimation];
+    }
+    NSSize oldSize = self.frame.size;
+    if (self.hasZoomRestoreFrame &&
+        !self.applyingZoomAnimationFrame &&
+        ![super isZoomed] &&
+        !NSEqualSizes(oldSize, frameRect.size)) {
+        [super setFrame:frameRect display:displayFlag animate:animateFlag];
+        self.zoomRestoreFrame = self.frame;
+        return;
+    }
+    [super setFrame:frameRect display:displayFlag animate:animateFlag];
+}
+- (void)startZoomAnimationDriver {
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+    if (@available(macOS 14.0, *)) {
+        if (self.screen != nil) {
+            CADisplayLink *displayLink = [self displayLinkWithTarget:self
+                                                            selector:@selector(stepZoomAnimationFromDisplayLink:)];
+            NSInteger maximumFramesPerSecond = self.screen.maximumFramesPerSecond;
+            if (maximumFramesPerSecond > 0) {
+                displayLink.preferredFrameRateRange = CAFrameRateRangeMake(
+                    MIN(60, maximumFramesPerSecond),
+                    maximumFramesPerSecond,
+                    maximumFramesPerSecond);
+            }
+            self.zoomDisplayLink = displayLink;
+            [displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+            return;
+        }
+    }
+#endif
+
+    NSInteger framesPerSecond = 60;
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 120000
+    if (@available(macOS 12.0, *)) {
+        NSInteger maximumFramesPerSecond = self.screen.maximumFramesPerSecond;
+        if (maximumFramesPerSecond > 0) {
+            framesPerSecond = maximumFramesPerSecond;
+        }
+    }
+#endif
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 / framesPerSecond
+        target:self
+        selector:@selector(stepZoomAnimationFromTimer:)
+        userInfo:nil
+        repeats:YES];
+    self.zoomAnimationTimer = timer;
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+}
+- (void)stepZoomAnimationFromTimer:(NSTimer*)timer {
+    if (timer != self.zoomAnimationTimer) {
+        [timer invalidate];
+        return;
+    }
+    [self stepZoomAnimationAtTime:CACurrentMediaTime()];
+}
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+- (void)stepZoomAnimationFromDisplayLink:(CADisplayLink*)displayLink API_AVAILABLE(macos(14.0)) {
+    if (displayLink != self.zoomDisplayLink) {
+        [displayLink invalidate];
+        return;
+    }
+    [self stepZoomAnimationAtTime:displayLink.targetTimestamp];
+}
+#endif
+- (void)stepZoomAnimationAtTime:(CFTimeInterval)time {
+
+    if ([self shouldReduceZoomMotion]) {
+        self.applyingZoomAnimationFrame = YES;
+        [super setFrame:self.zoomAnimationTargetFrame display:YES animate:NO];
+        self.applyingZoomAnimationFrame = NO;
+        if (!self.zoomAnimationTargetIsZoomed) {
+            self.hasZoomRestoreFrame = NO;
+        }
+        [self cancelZoomAnimation];
+        return;
+    }
+
+    double progress = (time - self.zoomAnimationStartTime) / self.zoomAnimationDuration;
+    progress = MIN(1.0, MAX(0.0, progress));
+    double easedProgress;
+    if (progress < 0.5) {
+        easedProgress = 4.0 * progress * progress * progress;
+    } else {
+        double remaining = -2.0 * progress + 2.0;
+        easedProgress = 1.0 - (remaining * remaining * remaining) / 2.0;
+    }
+
+    NSRect start = self.zoomAnimationStartFrame;
+    NSRect target = self.zoomAnimationTargetFrame;
+    NSRect frame = NSMakeRect(
+        start.origin.x + ((target.origin.x - start.origin.x) * easedProgress),
+        start.origin.y + ((target.origin.y - start.origin.y) * easedProgress),
+        start.size.width + ((target.size.width - start.size.width) * easedProgress),
+        start.size.height + ((target.size.height - start.size.height) * easedProgress)
+    );
+
+    self.applyingZoomAnimationFrame = YES;
+    [super setFrame:frame display:YES animate:NO];
+    self.applyingZoomAnimationFrame = NO;
+
+    if (progress >= 1.0) {
+        if (!self.zoomAnimationTargetIsZoomed) {
+            self.hasZoomRestoreFrame = NO;
+        }
+        [self cancelZoomAnimation];
+    }
+}
+- (void)zoom:(id)sender {
+    NSRect startFrame = self.frame;
+    BOOL startIsZoomed = [super isZoomed];
+    BOOL interruptedAnimation = [self zoomAnimationIsRunning];
+    NSRect previousTargetFrame = self.zoomAnimationTargetFrame;
+    [self cancelZoomAnimation];
+
+    // AppKit determines whether zoom() enters the standard frame or restores
+    // the user's frame from the window's current zoom state. During an
+    // interrupted animation, first move to the previous intended target
+    // without displaying it so AppKit toggles from the correct native state.
+    if (interruptedAnimation) {
+        self.applyingZoomAnimationFrame = YES;
+        [super setFrame:previousTargetFrame display:NO animate:NO];
+        self.applyingZoomAnimationFrame = NO;
+    }
+
+    // Ask AppKit to calculate and apply the native target immediately. This
+    // preserves delegate hooks, constraints, and the standard/user frame pair.
+    self.preparingZoomAnimationTarget = YES;
+    [super zoom:sender];
+    self.preparingZoomAnimationTarget = NO;
+
+    NSRect targetFrame = self.frame;
+    BOOL targetIsZoomed = [super isZoomed];
+    if (NSEqualRects(startFrame, targetFrame)) {
+        if (startIsZoomed && self.hasZoomRestoreFrame) {
+            targetFrame = self.zoomRestoreFrame;
+            targetIsZoomed = NO;
+        } else {
+            return;
+        }
+    }
+
+    if (targetIsZoomed) {
+        if (!self.hasZoomRestoreFrame) {
+            self.zoomRestoreFrame = startFrame;
+            self.hasZoomRestoreFrame = YES;
+        }
+    } else if (self.hasZoomRestoreFrame) {
+        targetFrame = self.zoomRestoreFrame;
+    }
+
+    // Reduced-motion users should not receive a replacement animation. AppKit
+    // has already applied the correct target and updated its zoom state.
+    if ([self shouldReduceZoomMotion]) {
+        if (!targetIsZoomed) {
+            self.applyingZoomAnimationFrame = YES;
+            [super setFrame:targetFrame display:YES animate:NO];
+            self.applyingZoomAnimationFrame = NO;
+            self.hasZoomRestoreFrame = NO;
+        }
+        return;
+    }
+
+    // Restore the actual visible frame before starting our incremental resize.
+    // Every tick is non-animated so WKWebView receives each intermediate
+    // viewport instead of deferring layout until AppKit's animation completes.
+    self.applyingZoomAnimationFrame = YES;
+    [super setFrame:startFrame display:YES animate:NO];
+    self.applyingZoomAnimationFrame = NO;
+
+    NSTimeInterval duration = [super animationResizeTime:targetFrame];
+    if (duration <= 0) {
+        self.applyingZoomAnimationFrame = YES;
+        [super setFrame:targetFrame display:YES animate:NO];
+        self.applyingZoomAnimationFrame = NO;
+        if (!targetIsZoomed) {
+            self.hasZoomRestoreFrame = NO;
+        }
+        return;
+    }
+
+    self.zoomAnimationStartFrame = startFrame;
+    self.zoomAnimationTargetFrame = targetFrame;
+    self.zoomAnimationStartTime = CACurrentMediaTime();
+    self.zoomAnimationDuration = duration;
+    self.zoomAnimationTargetIsZoomed = targetIsZoomed;
+
+    [self startZoomAnimationDriver];
+}
+- (void) setDelegate:(id<NSWindowDelegate>) delegate {
+    [delegate retain];
+    [super setDelegate: delegate];
+    // If the delegate is our WebviewWindowDelegate (which handles NSDraggingDestination)
+    if ([delegate isKindOfClass:[WebviewWindowDelegate class]]) {
+        [self registerForDraggedTypes:@[NSFilenamesPboardType]]; // 'self' is the WebviewWindow instance
+    }
+}
+- (void)close {
+    [self cancelZoomAnimation];
+    [super close];
+}
+- (void) dealloc {
+    [self cancelZoomAnimation];
+    // Remove the script handler, otherwise WebviewWindowDelegate won't get deallocated
+    // See: https://stackoverflow.com/questions/26383031/wkwebview-causes-my-view-controller-to-leak
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"external"];
+    if (self.delegate) {
+        [self.delegate release];
+    }
+    [super dealloc];
+}
+- (void)windowDidZoom:(NSNotification *)notification {
+    NSWindow *window = notification.object;
+    WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[window delegate];
+    if ([window isZoomed]) {
+        if (hasListeners(EventWindowMaximise)) {
+            processWindowEvent(delegate.windowId, EventWindowMaximise);
+        }
+    } else {
+        if (hasListeners(EventWindowUnMaximise)) {
+            processWindowEvent(delegate.windowId, EventWindowUnMaximise);
+        }
+    }
+}
+- (void)performZoomIn:(id)sender {
+    [self zoom:sender];
+    if (hasListeners(EventWindowZoomIn)) {
+        WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[sender delegate];
+        processWindowEvent(delegate.windowId, EventWindowZoomIn);
+    }
+}
+- (void)performZoomOut:(id)sender {
+    [self zoom:sender];
+    if (hasListeners(EventWindowZoomOut)) {
+        WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[sender delegate];
+        processWindowEvent(delegate.windowId, EventWindowZoomOut);
+    }
+}
+- (void)performZoomReset:(id)sender {
+    [self setFrame:[self frameRectForContentRect:[[self screen] visibleFrame]] display:YES];
+    if (hasListeners(EventWindowZoomReset)) {
+        WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[sender delegate];
+        processWindowEvent(delegate.windowId, EventWindowZoomReset);
+    }
+}
+@end
+@implementation WebviewWindowDelegate
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    NSPasteboard *pasteboard = [sender draggingPasteboard];
+    if ([[pasteboard types] containsObject:NSFilenamesPboardType]) {
+        if (hasListeners(EventWindowFileDraggingEntered)) {
+             processWindowEvent(self.windowId, EventWindowFileDraggingEntered);
+        }
+        return NSDragOperationCopy;
+    }
+    return NSDragOperationNone;
+}
+- (void)draggingExited:(id<NSDraggingInfo>)sender {
+    if (hasListeners(EventWindowFileDraggingExited)) {
+        processWindowEvent(self.windowId, EventWindowFileDraggingExited);
+    }
+}
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    return YES;
+}
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSPasteboard *pasteboard = [sender draggingPasteboard];
+    if (hasListeners(EventWindowFileDraggingPerformed)) {
+        processWindowEvent(self.windowId, EventWindowFileDraggingPerformed);
+    }
+    if ([[pasteboard types] containsObject:NSFilenamesPboardType]) {
+        NSArray *files = [pasteboard propertyListForType:NSFilenamesPboardType];
+        NSUInteger count = [files count];
+        if (count == 0) {
+            return NO;
+        }
+        char** cArray = (char**)malloc(count * sizeof(char*));
+        if (cArray == NULL) {
+            return NO;
+        }
+        for (NSUInteger i = 0; i < count; i++) {
+            NSString* str = files[i];
+            cArray[i] = (char*)[str UTF8String];
+        }
+        NSWindow<WailsWebviewWindow>* window =
+            (NSWindow<WailsWebviewWindow>*)[sender draggingDestinationWindow];
+        WKWebView *webView = window.webView; // Get the webView from the window
+        NSPoint dropPointInWindow = [sender draggingLocation];
+        NSPoint dropPointInView = [webView convertPoint:dropPointInWindow fromView:nil]; // Convert to webView's coordinate system
+        CGFloat viewHeight = webView.frame.size.height;
+        int x = (int)dropPointInView.x;
+        int y = (int)(viewHeight - dropPointInView.y); // Flip Y for web coordinate system
+        processDragItems(self.windowId, cArray, (int)count, x, y); // self.windowId is from the delegate
+        free(cArray);
+        return NO;
+    }
+    return NO;
+}
+// Original WebviewWindowDelegate methods continue here...
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[sender delegate];
+    // Check if this window should close unconditionally (called from Close() method)
+    if (windowShouldUnconditionallyClose(delegate.windowId)) {
+        return true;
+    }
+    // If the window is hidden (via Hide()), don't trigger close events.
+    // This fixes issue #4389 where hiding the last window with
+    // ApplicationShouldTerminateAfterLastWindowClosed=true would incorrectly
+    // trigger the close event sequence and destroy the window.
+    if (windowIsHidden(delegate.windowId)) {
+        return false;
+    }
+    // For user-initiated closes, emit WindowClosing event and let the application decide
+    processWindowEvent(delegate.windowId, EventWindowShouldClose);
+    return false;
+}
+- (void) dealloc {
+    // Makes sure to remove the retained properties so the reference counter of the retains are decreased
+    self.leftMouseEvent = nil;
+    [super dealloc];
+}
+- (void) startDrag:(NSWindow*)window {
+    [window performWindowDragWithEvent:self.leftMouseEvent];
+}
+// Handle script messages from the external bridge
+- (void)userContentController:(nonnull WKUserContentController *)userContentController didReceiveScriptMessage:(nonnull WKScriptMessage *)message {
+    // Get the origin from the message's frame
+    NSString *origin = nil;
+    if (message.frameInfo && message.frameInfo.request && message.frameInfo.request.URL) {
+        NSURL *url = message.frameInfo.request.URL;
+        if (url.scheme && url.host) {
+            origin = [url absoluteString];
+        }
+    }
+    id body = message.body;
+    NSString *m = [body isKindOfClass:[NSString class]] ? (NSString *)body : [body description];
+    const char *_m = [m UTF8String];
+    const char *_origin = origin ? [origin UTF8String] : "";
+    processMessage(self.windowId, _m, _origin, message.frameInfo.isMainFrame);
+}
+- (void)handleLeftMouseDown:(NSEvent *)event {
+    self.leftMouseEvent = event;
+    NSWindow *window = [event window];
+    if( self.invisibleTitleBarHeight > 0 ) {
+        NSPoint location = [event locationInWindow];
+        NSRect frame = [window frame];
+        if( location.y > frame.size.height - self.invisibleTitleBarHeight ) {
+            // Only the first click can begin a drag. Starting another native
+            // drag for the second click races the JavaScript double-click
+            // handler and can make AppKit discard the zoom restore frame.
+            if (event.clickCount != 1) {
+                return;
+            }
+            // Skip drag if the click is near a window edge (resize zone).
+            // This prevents conflict between dragging and native top-corner resizing,
+            // which causes window content to shake/jitter (#4960).
+            CGFloat resizeThreshold = 5.0;
+            BOOL nearLeftEdge = location.x < resizeThreshold;
+            BOOL nearRightEdge = location.x > frame.size.width - resizeThreshold;
+            if( nearLeftEdge || nearRightEdge ) {
+                return;
+            }
+            [window performWindowDragWithEvent:event];
+            return;
+        }
+    }
+}
+- (void)handleLeftMouseUp:(NSWindow *)window {
+    self.leftMouseEvent = nil;
+}
+- (void)webView:(nonnull WKWebView *)webView startURLSchemeTask:(nonnull id<WKURLSchemeTask>)urlSchemeTask {
+    NSURL *url = urlSchemeTask.request.URL;
+    fflush(stdout);
+    if ([url.path hasSuffix:@".css"] || [url.path containsString:@"style"]) {
+        fflush(stdout);
+    }
+    processURLRequest(self.windowId, urlSchemeTask);
+}
+- (void)webView:(nonnull WKWebView *)webView stopURLSchemeTask:(nonnull id<WKURLSchemeTask>)urlSchemeTask {
+    cancelURLRequest(urlSchemeTask);
+    NSInputStream *stream = urlSchemeTask.request.HTTPBodyStream;
+    if (stream) {
+        NSStreamStatus status = stream.streamStatus;
+        if (status != NSStreamStatusClosed && status != NSStreamStatusNotOpen) {
+            [stream close];
+        }
+    }
+}
+- (NSApplicationPresentationOptions)window:(NSWindow *)window willUseFullScreenPresentationOptions:(NSApplicationPresentationOptions)proposedOptions {
+    if (self.showToolbarWhenFullscreen) {
+        return proposedOptions;
+    } else {
+        return proposedOptions | NSApplicationPresentationAutoHideToolbar;
+    }
+}
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification {
+    NSWindow *window = notification.object;
+    BOOL isVisible = ([window occlusionState] & NSWindowOcclusionStateVisible) != 0;
+    if (hasListeners(isVisible ? EventWindowShow : EventWindowHide)) {
+        processWindowEvent(self.windowId, isVisible ? EventWindowShow : EventWindowHide);
+    }
+}
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidBecomeKey) ) {
+        processWindowEvent(self.windowId, EventWindowDidBecomeKey);
+    }
+}
+- (void)windowDidBecomeMain:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidBecomeMain) ) {
+        processWindowEvent(self.windowId, EventWindowDidBecomeMain);
+    }
+}
+- (void)windowDidBeginSheet:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidBeginSheet) ) {
+        processWindowEvent(self.windowId, EventWindowDidBeginSheet);
+    }
+}
+- (void)windowDidChangeAlpha:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeAlpha) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeAlpha);
+    }
+}
+- (void)windowDidChangeBackingLocation:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeBackingLocation) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeBackingLocation);
+    }
+}
+- (void)windowDidChangeBackingProperties:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeBackingProperties) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeBackingProperties);
+    }
+}
+- (void)windowDidChangeCollectionBehavior:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeCollectionBehavior) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeCollectionBehavior);
+    }
+}
+- (void)windowDidChangeEffectiveAppearance:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeEffectiveAppearance) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeEffectiveAppearance);
+    }
+}
+- (void)windowDidChangeOrderingMode:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeOrderingMode) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeOrderingMode);
+    }
+}
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeScreen) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeScreen);
+    }
+}
+- (void)windowDidChangeScreenParameters:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeScreenParameters) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeScreenParameters);
+    }
+}
+- (void)windowDidChangeScreenProfile:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeScreenProfile) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeScreenProfile);
+    }
+}
+- (void)windowDidChangeScreenSpace:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeScreenSpace) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeScreenSpace);
+    }
+}
+- (void)windowDidChangeScreenSpaceProperties:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeScreenSpaceProperties) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeScreenSpaceProperties);
+    }
+}
+- (void)windowDidChangeSharingType:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeSharingType) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeSharingType);
+    }
+}
+- (void)windowDidChangeSpace:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeSpace) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeSpace);
+    }
+}
+- (void)windowDidChangeSpaceOrderingMode:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeSpaceOrderingMode) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeSpaceOrderingMode);
+    }
+}
+- (void)windowDidChangeTitle:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeTitle) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeTitle);
+    }
+}
+- (void)windowDidChangeToolbar:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidChangeToolbar) ) {
+        processWindowEvent(self.windowId, EventWindowDidChangeToolbar);
+    }
+}
+- (void)windowDidDeminiaturize:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidDeminiaturize) ) {
+        processWindowEvent(self.windowId, EventWindowDidDeminiaturize);
+    }
+}
+- (void)windowDidEndSheet:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidEndSheet) ) {
+        processWindowEvent(self.windowId, EventWindowDidEndSheet);
+    }
+}
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidEnterFullScreen) ) {
+        processWindowEvent(self.windowId, EventWindowDidEnterFullScreen);
+    }
+}
+- (void)windowMaximise:(NSNotification *)notification {
+    if( hasListeners(EventWindowMaximise) ) {
+        processWindowEvent(self.windowId, EventWindowMaximise);
+    }
+}
+- (void)windowUnMaximise:(NSNotification *)notification {
+    if( hasListeners(EventWindowUnMaximise) ) {
+        processWindowEvent(self.windowId, EventWindowUnMaximise);
+    }
+}
+- (void)windowDidEnterVersionBrowser:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidEnterVersionBrowser) ) {
+        processWindowEvent(self.windowId, EventWindowDidEnterVersionBrowser);
+    }
+}
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidExitFullScreen) ) {
+        processWindowEvent(self.windowId, EventWindowDidExitFullScreen);
+    }
+}
+- (void)windowDidExitVersionBrowser:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidExitVersionBrowser) ) {
+        processWindowEvent(self.windowId, EventWindowDidExitVersionBrowser);
+    }
+}
+- (void)windowDidExpose:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidExpose) ) {
+        processWindowEvent(self.windowId, EventWindowDidExpose);
+    }
+}
+- (void)windowDidFocus:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidFocus) ) {
+        processWindowEvent(self.windowId, EventWindowDidFocus);
+    }
+}
+- (void)windowDidMiniaturize:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidMiniaturize) ) {
+        processWindowEvent(self.windowId, EventWindowDidMiniaturize);
+    }
+}
+- (void)windowDidMove:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidMove) ) {
+        processWindowEvent(self.windowId, EventWindowDidMove);
+    }
+}
+- (void)windowDidOrderOffScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidOrderOffScreen) ) {
+        processWindowEvent(self.windowId, EventWindowDidOrderOffScreen);
+    }
+}
+- (void)windowDidOrderOnScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidOrderOnScreen) ) {
+        processWindowEvent(self.windowId, EventWindowDidOrderOnScreen);
+    }
+}
+- (void)windowDidResignKey:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidResignKey) ) {
+        processWindowEvent(self.windowId, EventWindowDidResignKey);
+    }
+}
+- (void)windowDidResignMain:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidResignMain) ) {
+        processWindowEvent(self.windowId, EventWindowDidResignMain);
+    }
+}
+- (void)windowDidResize:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidResize) ) {
+        processWindowEvent(self.windowId, EventWindowDidResize);
+    }
+}
+- (void)windowDidUpdateAlpha:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateAlpha) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateAlpha);
+    }
+}
+- (void)windowDidUpdateCollectionBehavior:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateCollectionBehavior) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateCollectionBehavior);
+    }
+}
+- (void)windowDidUpdateCollectionProperties:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateCollectionProperties) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateCollectionProperties);
+    }
+}
+- (void)windowDidUpdateShadow:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateShadow) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateShadow);
+    }
+}
+- (void)windowDidUpdateTitle:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateTitle) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateTitle);
+    }
+}
+- (void)windowDidUpdateToolbar:(NSNotification *)notification {
+    if( hasListeners(EventWindowDidUpdateToolbar) ) {
+        processWindowEvent(self.windowId, EventWindowDidUpdateToolbar);
+    }
+}
+- (void)windowWillBecomeKey:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillBecomeKey) ) {
+        processWindowEvent(self.windowId, EventWindowWillBecomeKey);
+    }
+}
+- (void)windowWillBecomeMain:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillBecomeMain) ) {
+        processWindowEvent(self.windowId, EventWindowWillBecomeMain);
+    }
+}
+- (void)windowWillBeginSheet:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillBeginSheet) ) {
+        processWindowEvent(self.windowId, EventWindowWillBeginSheet);
+    }
+}
+- (void)windowWillChangeOrderingMode:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillChangeOrderingMode) ) {
+        processWindowEvent(self.windowId, EventWindowWillChangeOrderingMode);
+    }
+}
+- (void)windowWillClose:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillClose) ) {
+        processWindowEvent(self.windowId, EventWindowWillClose);
+    }
+}
+- (void)windowWillDeminiaturize:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillDeminiaturize) ) {
+        processWindowEvent(self.windowId, EventWindowWillDeminiaturize);
+    }
+}
+- (void)windowWillEnterFullScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillEnterFullScreen) ) {
+        processWindowEvent(self.windowId, EventWindowWillEnterFullScreen);
+    }
+}
+- (void)windowWillEnterVersionBrowser:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillEnterVersionBrowser) ) {
+        processWindowEvent(self.windowId, EventWindowWillEnterVersionBrowser);
+    }
+}
+- (void)windowWillExitFullScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillExitFullScreen) ) {
+        processWindowEvent(self.windowId, EventWindowWillExitFullScreen);
+    }
+}
+- (void)windowWillExitVersionBrowser:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillExitVersionBrowser) ) {
+        processWindowEvent(self.windowId, EventWindowWillExitVersionBrowser);
+    }
+}
+- (void)windowWillFocus:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillFocus) ) {
+        processWindowEvent(self.windowId, EventWindowWillFocus);
+    }
+}
+- (void)windowWillMiniaturize:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillMiniaturize) ) {
+        processWindowEvent(self.windowId, EventWindowWillMiniaturize);
+    }
+}
+- (void)windowWillMove:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillMove) ) {
+        processWindowEvent(self.windowId, EventWindowWillMove);
+    }
+}
+- (void)windowWillOrderOffScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillOrderOffScreen) ) {
+        processWindowEvent(self.windowId, EventWindowWillOrderOffScreen);
+    }
+}
+- (void)windowWillOrderOnScreen:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillOrderOnScreen) ) {
+        processWindowEvent(self.windowId, EventWindowWillOrderOnScreen);
+    }
+}
+- (void)windowWillResignMain:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillResignMain) ) {
+        processWindowEvent(self.windowId, EventWindowWillResignMain);
+    }
+}
+- (void)windowWillResize:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillResize) ) {
+        processWindowEvent(self.windowId, EventWindowWillResize);
+    }
+}
+- (void)windowWillUnfocus:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUnfocus) ) {
+        processWindowEvent(self.windowId, EventWindowWillUnfocus);
+    }
+}
+- (void)windowWillUpdateAlpha:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateAlpha) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateAlpha);
+    }
+}
+- (void)windowWillUpdateCollectionBehavior:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateCollectionBehavior) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateCollectionBehavior);
+    }
+}
+- (void)windowWillUpdateCollectionProperties:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateCollectionProperties) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateCollectionProperties);
+    }
+}
+- (void)windowWillUpdateShadow:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateShadow) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateShadow);
+    }
+}
+- (void)windowWillUpdateTitle:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateTitle) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateTitle);
+    }
+}
+- (void)windowWillUpdateToolbar:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateToolbar) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateToolbar);
+    }
+}
+- (void)windowWillUpdateVisibility:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUpdateVisibility) ) {
+        processWindowEvent(self.windowId, EventWindowWillUpdateVisibility);
+    }
+}
+- (void)windowWillUseStandardFrame:(NSNotification *)notification {
+    if( hasListeners(EventWindowWillUseStandardFrame) ) {
+        processWindowEvent(self.windowId, EventWindowWillUseStandardFrame);
+    }
+}
+- (void)windowFileDraggingEntered:(NSNotification *)notification {
+    if( hasListeners(EventWindowFileDraggingEntered) ) {
+        processWindowEvent(self.windowId, EventWindowFileDraggingEntered);
+    }
+}
+- (void)windowFileDraggingPerformed:(NSNotification *)notification {
+    if( hasListeners(EventWindowFileDraggingPerformed) ) {
+        processWindowEvent(self.windowId, EventWindowFileDraggingPerformed);
+    }
+}
+- (void)windowFileDraggingExited:(NSNotification *)notification {
+    if( hasListeners(EventWindowFileDraggingExited) ) {
+        processWindowEvent(self.windowId, EventWindowFileDraggingExited);
+    }
+}
+- (void)windowShow:(NSNotification *)notification {
+    if( hasListeners(EventWindowShow) ) {
+        processWindowEvent(self.windowId, EventWindowShow);
+    }
+}
+- (void)windowHide:(NSNotification *)notification {
+    if( hasListeners(EventWindowHide) ) {
+        processWindowEvent(self.windowId, EventWindowHide);
+    }
+}
+- (void)webView:(nonnull WKWebView *)webview didStartProvisionalNavigation:(WKNavigation *)navigation {
+    if( hasListeners(EventWebViewDidStartProvisionalNavigation) ) {
+        processWindowEvent(self.windowId, EventWebViewDidStartProvisionalNavigation);
+    }
+}
+- (void)webView:(nonnull WKWebView *)webview didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {
+    if( hasListeners(EventWebViewDidReceiveServerRedirectForProvisionalNavigation) ) {
+        processWindowEvent(self.windowId, EventWebViewDidReceiveServerRedirectForProvisionalNavigation);
+    }
+}
+- (void)webView:(nonnull WKWebView *)webview didFinishNavigation:(WKNavigation *)navigation {
+    if( hasListeners(EventWebViewDidFinishNavigation) ) {
+        processWindowEvent(self.windowId, EventWebViewDidFinishNavigation);
+    }
+}
+- (void)webView:(nonnull WKWebView *)webview didCommitNavigation:(WKNavigation *)navigation {
+    if( hasListeners(EventWebViewDidCommitNavigation) ) {
+        processWindowEvent(self.windowId, EventWebViewDidCommitNavigation);
+    }
+}
+// GENERATED EVENTS END
+// WKNavigationDelegate - Recover from WebContent process termination.
+// WebKit invokes this on the main thread when the WebContent (renderer) process
+// crashes or is jetsammed — notably after macOS sleep. Without this handler the
+// WKWebView is left showing an unresponsive blank page.
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    if( hasListeners(EventWebViewWebContentProcessDidTerminate) ) {
+        processWindowEvent(self.windowId, EventWebViewWebContentProcessDidTerminate);
+    }
+    [webView reload];
+}
+// WKUIDelegate - Handle file input element clicks
+- (void)webView:(WKWebView *)webView runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(NSArray<NSURL *> * URLs))completionHandler {
+    NSOpenPanel *openPanel = [NSOpenPanel openPanel];
+    openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    if (@available(macOS 10.14, *)) {
+        openPanel.canChooseDirectories = parameters.allowsDirectories;
+    }
+    [openPanel beginSheetModalForWindow:webView.window
+        completionHandler:^(NSInteger result) {
+            if (result == NSModalResponseOK)
+                completionHandler(openPanel.URLs);
+            else
+                completionHandler(nil);
+        }];
+}
+// WKUIDelegate - Handle a getUserMedia request for the camera or microphone.
+// Left unimplemented, WebKit takes its default action instead, which on Cocoa
+// is its own prompt — so the window's Permissions never reach the decision and
+// PermissionAllow and PermissionDeny do nothing. The answer comes from them
+// here; PermissionDefault asks for the same prompt as before.
+- (void)webView:(WKWebView *)webView
+    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                          initiatedByFrame:(WKFrameInfo *)frame
+                                      type:(WKMediaCaptureType)type
+                           decisionHandler:(void (^)(WKPermissionDecision decision))decisionHandler
+    API_AVAILABLE(macos(12.0)) {
+    bool needAudio = type == WKMediaCaptureTypeMicrophone || type == WKMediaCaptureTypeCameraAndMicrophone;
+    bool needVideo = type == WKMediaCaptureTypeCamera || type == WKMediaCaptureTypeCameraAndMicrophone;
+    decisionHandler((WKPermissionDecision)resolveMediaCapturePermission(self.windowId, needAudio, needVideo));
+}
+@end
+void windowSetScreen(void* window, void* screen, int yOffset) {
+    NSWindow* nsWindow = (NSWindow*)window;
+    NSScreen* nsScreen = (NSScreen*)screen;
+    // Get current frame
+    NSRect frame = [nsWindow frame];
+    // Convert frame to screen coordinates
+    NSRect screenFrame = [nsScreen frame];
+    NSRect currentScreenFrame = [[nsWindow screen] frame];
+    // Calculate the menubar height for the target screen
+    NSRect visibleFrame = [nsScreen visibleFrame];
+    CGFloat menubarHeight = screenFrame.size.height - visibleFrame.size.height;
+    // Calculate the distance from the top of the current screen
+    CGFloat topOffset = currentScreenFrame.origin.y + currentScreenFrame.size.height - frame.origin.y;
+    // Position relative to new screen's top, accounting for menubar
+    frame.origin.x = screenFrame.origin.x + (frame.origin.x - currentScreenFrame.origin.x);
+    frame.origin.y = screenFrame.origin.y + screenFrame.size.height - topOffset - menubarHeight - yOffset;
+    // Set the frame which moves the window to the new screen
+    [nsWindow setFrame:frame display:YES];
+}
+// Check if Liquid Glass is supported on this system
+bool isLiquidGlassSupported() {
+    // Check for macOS 26.0+ and NSGlassEffectView availability
+    if (@available(macOS 26.0, *)) {
+        return NSClassFromString(@"NSGlassEffectView") != nil;
+    }
+    return false;
+}
+// Remove any existing visual effects from the window
+void windowRemoveVisualEffects(void* nsWindow) {
+    NSWindow* window = (NSWindow*)nsWindow;
+    NSView* contentView = [window contentView];
+    // Get NSGlassEffectView class if available (avoid hard reference)
+    Class glassEffectViewClass = nil;
+    if (@available(macOS 26.0, *)) {
+        glassEffectViewClass = NSClassFromString(@"NSGlassEffectView");
+    }
+    // Remove all NSVisualEffectView and NSGlassEffectView subviews
+    NSArray* subviews = [contentView subviews];
+    for (NSView* subview in subviews) {
+        if ([subview isKindOfClass:[NSVisualEffectView class]] ||
+            (glassEffectViewClass && [subview isKindOfClass:glassEffectViewClass])) {
+            [subview removeFromSuperview];
+        }
+    }
+}
+// Configure WebView for liquid glass effect
+void configureWebViewForLiquidGlass(void* nsWindow) {
+    NSWindow<WailsWebviewWindow>* window = (NSWindow<WailsWebviewWindow>*)nsWindow;
+    WKWebView* webView = window.webView;
+    // Make WebView background transparent
+    wailsPrivateSetWebviewTransparent((void*)webView);
+    wailsPrivateSetWebviewBackgroundColour((void*)webView, 0, 0, 0, 0);
+    // Ensure WebView is above glass layer
+    if (webView.layer) {
+        webView.layer.zPosition = 1.0;
+        webView.layer.shouldRasterize = YES;
+        webView.layer.rasterizationScale = [[NSScreen mainScreen] backingScaleFactor];
+    }
+}
+// Apply Liquid Glass effect to window
+void windowSetLiquidGlass(void* nsWindow, int style, int material, double cornerRadius,
+                          int r, int g, int b, int a,
+                          const char* groupID, double groupSpacing) {
+    NSWindow<WailsWebviewWindow>* window = (NSWindow<WailsWebviewWindow>*)nsWindow;
+    // Ensure we're on the main thread for UI operations
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            windowSetLiquidGlass(nsWindow, style, material, cornerRadius, r, g, b, a, groupID, groupSpacing);
+        });
+        return;
+    }
+    // Remove any existing visual effects
+    windowRemoveVisualEffects(nsWindow);
+    // Try to use NSGlassEffectView if available
+    NSView* glassView = nil;
+    if (@available(macOS 26.0, *)) {
+        Class NSGlassEffectViewClass = NSClassFromString(@"NSGlassEffectView");
+        if (NSGlassEffectViewClass) {
+            // Create NSGlassEffectView (autoreleased)
+            glassView = [[[NSGlassEffectViewClass alloc] init] autorelease];
+            // Set corner radius if the property exists
+            if (cornerRadius > 0 && [glassView respondsToSelector:@selector(setCornerRadius:)]) {
+                [glassView setValue:@(cornerRadius) forKey:@"cornerRadius"];
+            }
+            // Set tint color if the property exists and color is specified
+            if (a > 0 && [glassView respondsToSelector:@selector(setTintColor:)]) {
+                NSColor* tintColor = [NSColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:a/255.0];
+                // Use performSelector to safely set tintColor if the setter exists
+                [glassView performSelector:@selector(setTintColor:) withObject:tintColor];
+            }
+            // Only regular and clear are documented NSGlassEffectView styles,
+            // and cross-window grouping has no public API at all, so both are
+            // applied by the build-guarded implementations.
+            wailsPrivateSetGlassStyle((void*)glassView, style);
+            wailsPrivateSetGlassGrouping((void*)glassView, groupID, groupSpacing);
+        }
+    }
+    // Fallback to NSVisualEffectView if NSGlassEffectView is not available
+    if (!glassView) {
+        NSVisualEffectView* effectView = [[[NSVisualEffectView alloc] init] autorelease];
+        glassView = effectView; // Use effectView as glassView for the rest of the function
+        // If a custom material is specified, use it directly
+        if (material >= 0) {
+            [effectView setMaterial:(NSVisualEffectMaterial)material];
+            [effectView setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+        } else {
+            // Configure the visual effect based on style
+            switch(style) {
+                case 1: // Light
+                    if (@available(macOS 15.0, *)) {
+                        [effectView setMaterial:NSVisualEffectMaterialUnderPageBackground];
+                    } else if (@available(macOS 10.14, *)) {
+                        [effectView setMaterial:NSVisualEffectMaterialHUDWindow];
+                    } else {
+                        [effectView setMaterial:NSVisualEffectMaterialLight];
+                    }
+                    [effectView setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+                    break;
+                case 2: // Dark
+                    if (@available(macOS 15.0, *)) {
+                        [effectView setMaterial:NSVisualEffectMaterialHeaderView];
+                    } else if (@available(macOS 10.14, *)) {
+                        [effectView setMaterial:NSVisualEffectMaterialFullScreenUI];
+                    } else {
+                        [effectView setMaterial:NSVisualEffectMaterialDark];
+                    }
+                    [effectView setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+                    break;
+                case 3: // Vibrant
+                    if (@available(macOS 11.0, *)) {
+                        // Use the lightest material available - similar to dock
+                        [effectView setMaterial:NSVisualEffectMaterialHUDWindow];
+                    } else if (@available(macOS 10.14, *)) {
+                        [effectView setMaterial:NSVisualEffectMaterialSheet];
+                    } else {
+                        [effectView setMaterial:NSVisualEffectMaterialLight];
+                    }
+                    // Use behind window for true transparency
+                    [effectView setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+                    break;
+                default: // Automatic
+                    if (@available(macOS 10.14, *)) {
+                        // Use content background for lighter automatic effect
+                        [effectView setMaterial:NSVisualEffectMaterialContentBackground];
+                    } else {
+                        [effectView setMaterial:NSVisualEffectMaterialAppearanceBased];
+                    }
+                    [effectView setBlendingMode:NSVisualEffectBlendingModeWithinWindow];
+                    break;
+            }
+        }
+        // Use followsWindowActiveState for automatic adjustment
+        [effectView setState:NSVisualEffectStateFollowsWindowActiveState];
+        // Don't emphasize - it makes the effect too dark
+        if (@available(macOS 10.12, *)) {
+            [effectView setEmphasized:NO];
+        }
+        // Apply corner radius if specified
+        if (cornerRadius > 0) {
+            [effectView setWantsLayer:YES];
+            effectView.layer.cornerRadius = cornerRadius;
+            effectView.layer.masksToBounds = YES;
+        }
+    }
+    // Get the content view
+    NSView* contentView = [window contentView];
+    // Set up the glass view
+    [glassView setFrame:contentView.bounds];
+    [glassView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    // Check if this is a real NSGlassEffectView with contentView property
+    BOOL hasContentView = [glassView respondsToSelector:@selector(contentView)];
+    if (hasContentView) {
+        // NSGlassEffectView: Add it to window and webView goes in its contentView
+        [contentView addSubview:glassView positioned:NSWindowBelow relativeTo:nil];
+        // Safely reparent the webView to the glass view's contentView
+        WKWebView* webView = window.webView;
+        NSView* glassContentView = [glassView valueForKey:@"contentView"];
+        // Only proceed if both webView and glassContentView are non-nil
+        if (webView && glassContentView) {
+            // Always remove from current superview to avoid exceptions
+            [webView removeFromSuperview];
+            // Add to the glass view's contentView
+            [glassContentView addSubview:webView];
+            [webView setFrame:glassContentView.bounds];
+            [webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        }
+    } else {
+        // NSVisualEffectView: Add glass as bottom layer, webView on top
+        [contentView addSubview:glassView positioned:NSWindowBelow relativeTo:nil];
+        WKWebView* webView = window.webView;
+        if (webView) {
+            [webView removeFromSuperview];
+            [contentView addSubview:webView positioned:NSWindowAbove relativeTo:glassView];
+        }
+    }
+    // Configure WebView for liquid glass
+    configureWebViewForLiquidGlass(nsWindow);
+    // Make window transparent
+    [window setOpaque:NO];
+    [window setBackgroundColor:[NSColor clearColor]];
+}

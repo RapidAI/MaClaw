@@ -1,0 +1,313 @@
+package main
+
+import (
+	"os"
+	"runtime/debug"
+
+	"github.com/wailsapp/wails/v3/internal/browser"
+	"github.com/wailsapp/wails/v3/internal/features"
+
+	"github.com/pterm/pterm"
+	"github.com/wailsapp/wails/v3/internal/lo"
+
+	"github.com/leaanthony/clir"
+	"github.com/wailsapp/wails/v3/internal/commands"
+	"github.com/wailsapp/wails/v3/internal/flags"
+	"github.com/wailsapp/wails/v3/internal/report"
+	"github.com/wailsapp/wails/v3/internal/term"
+	"github.com/wailsapp/wails/v3/internal/wake/manifest"
+)
+
+func init() {
+	buildInfo, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	commands.BuildSettings = lo.Associate(buildInfo.Settings, func(setting debug.BuildSetting) (string, string) {
+		return setting.Key, setting.Value
+	})
+	// Iterate over the Deps and add them to the build settings using a prefix of "mod."
+	for _, dep := range buildInfo.Deps {
+		commands.BuildSettings["mod."+dep.Path] = dep.Version
+	}
+}
+
+func main() {
+	var applicationArgs []string
+	os.Args, applicationArgs = detachApplicationArguments(os.Args)
+	if os.Getenv("WAILS_MCP_CHILD") == "1" {
+		commands.DisableFooter = true
+	}
+	app := clir.NewCli("wails", "The Wails3 CLI", "v3")
+	app.NewSubCommand("docs", "Open the docs").Action(openDocs)
+	app.NewSubCommandFunction("init", "Initialise a new project", commands.Init)
+
+	run := app.NewSubCommand("run", "Build and run the application; use go run . when no wails.yaml exists")
+	var runOptions commands.RunOptions
+	run.AddFlags(&runOptions)
+	run.Action(func() error {
+		args := run.OtherArgs()
+		if len(args) == 0 {
+			args = nil // flag.Args returns a non-nil empty slice; preserve manifest defaults.
+		}
+		if applicationArgs != nil {
+			args = applicationArgs
+		}
+		return commands.RunApplication(&runOptions, args)
+	})
+
+	build := app.NewSubCommand("build", "Build the project")
+	var buildFlags flags.Build
+	addBuildFlags(build, &buildFlags)
+	build.Action(func() error {
+		return commands.Build(&buildFlags, build.OtherArgs())
+	})
+
+	dev := app.NewSubCommand("dev", "Run in Dev mode")
+	var devOptions commands.DevOptions
+	addDevFlags(dev, &devOptions)
+	dev.Action(func() error {
+		args := dev.OtherArgs()
+		if len(args) == 0 {
+			args = nil
+		}
+		if applicationArgs != nil {
+			args = applicationArgs
+		}
+		return commands.Dev(&devOptions, args...)
+	})
+	app.NewSubCommandFunction("mcp", "Run the Wails project MCP server", commands.MCP)
+	if features.WakeEnabled() {
+		config := app.NewSubCommand("config", "Validate Wails configuration")
+		configCheck := config.NewSubCommand("check", "Validate wails.yaml and its profiles without building")
+		var configCheckOptions commands.ConfigCheckOptions
+		configCheck.AddFlags(&configCheckOptions)
+		configCheck.Action(func() error { return commands.ConfigCheck(&configCheckOptions, configCheck.OtherArgs()) })
+
+		eject := app.NewSubCommand("eject", "Write the complete resolved reference manifest to wails.ejected.yaml")
+		var ejectOptions commands.EjectOptions
+		eject.AddFlags(&ejectOptions)
+		eject.Action(func() error { return commands.Eject(&ejectOptions, eject.OtherArgs()) })
+
+		migrate := app.NewSubCommand("migrate", "Create or activate a reviewed wails.yaml migration draft")
+		var migrateOptions commands.MigrateOptions
+		migrate.AddFlags(&migrateOptions)
+		migrate.Action(func() error { return commands.Migrate(&migrateOptions) })
+
+		clean := app.NewSubCommand("clean", "Remove disposable Wails-generated build state")
+		clean.Action(func() error { return commands.Clean(clean.OtherArgs()) })
+	}
+
+	packageDescription := "Package the project"
+	if features.WakeEnabled() {
+		packageDescription = "Deprecated: use build with a profile or --formats"
+	}
+	pkg := app.NewSubCommand("package", packageDescription)
+	var pkgFlags flags.Package
+	if features.WakeEnabled() {
+		pkg.AddFlags(&pkgFlags)
+	} else {
+		pkg.AddFlags(&pkgFlags.Common)
+	}
+	pkg.Action(func() error {
+		return commands.Package(&pkgFlags, pkg.OtherArgs())
+	})
+	doctorCmd := app.NewSubCommand("doctor", "System status report")
+	var doctorFlags flags.Doctor
+	doctorCmd.AddFlags(&doctorFlags)
+	doctorCmd.Action(func() error {
+		return commands.Doctor(&doctorFlags)
+	})
+	app.NewSubCommandFunction("doctor-ng", "System status report (new TUI)", commands.DoctorNg)
+	app.NewSubCommandFunction("releasenotes", "Show release notes", commands.ReleaseNotes)
+
+	task := app.NewSubCommand("task", "Run and list tasks")
+	var taskFlags commands.RunTaskOptions
+	task.AddFlags(&taskFlags)
+	task.Action(func() error {
+		return commands.RunTask(&taskFlags, task.OtherArgs())
+	})
+	task.LongDescription("\nUsage: wails3 task [taskname] [flags]\n\nTasks are defined in the `Taskfile.yaml` file. See https://taskfile.dev for more information.")
+
+	generate := app.NewSubCommand("generate", "Generation tools")
+	generate.NewSubCommandFunction("build-assets", "Generate build assets", commands.GenerateBuildAssets)
+	generate.NewSubCommandFunction("icons", "Generate icons", commands.GenerateIcons)
+	generate.NewSubCommandFunction("syso", "Generate Windows .syso file", commands.GenerateSyso)
+	generate.NewSubCommandFunction("runtime", "Generate the pre-built version of the runtime", commands.GenerateRuntime)
+	generate.NewSubCommandFunction("webview2bootstrapper", "Generate WebView2 bootstrapper", commands.GenerateWebView2Bootstrapper)
+	generate.NewSubCommandFunction("template", "Generate a new template", commands.GenerateTemplate)
+
+	update := app.NewSubCommand("update", "Update tools")
+	update.NewSubCommandFunction("build-assets", "Updates the build assets using the given config file", commands.UpdateBuildAssets)
+	update.NewSubCommandFunction("cli", "Updates the Wails CLI", commands.UpdateCLI)
+
+	bindgen := generate.NewSubCommand("bindings", "Generate bindings + models")
+	var bindgenFlags flags.GenerateBindingsOptions
+	bindgen.AddFlags(&bindgenFlags)
+	bindgen.Action(func() error {
+		return commands.GenerateBindings(&bindgenFlags, bindgen.OtherArgs())
+	})
+	bindgen.LongDescription("\nUsage: wails3 generate bindings [flags] [patterns...]\n\nPatterns match packages to scan for bound types.\nPattern format is analogous to that of the Go build tool,\ne.g. './...' matches packages in the current directory and all descendants.\nIf no pattern is given, the tool will fall back to the current directory.")
+	generate.NewSubCommandFunction("constants", "Generate JS constants from Go", commands.GenerateConstants)
+	generate.NewSubCommandFunction(".desktop", "Generate .desktop file", commands.GenerateDotDesktop)
+	generate.NewSubCommandFunction("appimage", "Generate Linux AppImage", commands.GenerateAppImage)
+
+	plugin := app.NewSubCommand("service", "Service tools")
+	plugin.NewSubCommandFunction("init", "Initialise a new service", commands.ServiceInit)
+
+	tool := app.NewSubCommand("tool", "Various tools")
+	tool.NewSubCommandFunction("msix", "Create a Windows MSIX package", commands.ToolMSIX)
+	tool.NewSubCommand("msix-install-tools", "Install Windows MSIX packaging tools").Action(commands.InstallMSIXTools)
+	tool.NewSubCommandFunction("checkport", "Checks if a port is open. Useful for testing if vite is running.", commands.ToolCheckPort)
+	tool.NewSubCommandFunction("watcher", "Watches files and runs a command when they change", commands.Watcher)
+	tool.NewSubCommandFunction("cp", "Copy files", commands.Cp)
+	tool.NewSubCommandFunction("buildinfo", "Show Build Info", commands.BuildInfo)
+	tool.NewSubCommandFunction("package", "Generate Linux packages (deb, rpm, archlinux)", commands.ToolPackage)
+	tool.NewSubCommandFunction("version", "Bump semantic version", commands.ToolVersion)
+	tool.NewSubCommandFunction("lipo", "Create macOS universal binary from multiple architectures", commands.ToolLipo)
+	tool.NewSubCommandFunction("capabilities", "Check system build capabilities (GTK4/GTK3 availability)", commands.ToolCapabilities)
+	tool.NewSubCommandFunction("docker-mounts", "Generate Docker volume mount flags for cross-compilation", commands.ToolDockerMounts)
+	tool.NewSubCommandFunction("prepare-macos-output", "Keep macOS app bundles signable in file-provider-backed projects", commands.ToolPrepareMacOSOutput)
+	tool.NewSubCommandFunction("has", "Check if a tool is available in PATH (e.g. wails3 tool has git, wails3 tool has gcc|clang)", commands.ToolHas)
+	tool.NewSubCommandFunction("has-cc", "Deprecated: use 'wails3 tool has gcc|clang' instead", commands.ToolHasCC)
+
+	// Low-level sign tool (used by Taskfiles)
+	toolSign := tool.NewSubCommand("sign", "Sign a binary or package directly")
+	var toolSignFlags flags.Sign
+	toolSign.AddFlags(&toolSignFlags)
+	toolSign.Action(func() error {
+		return commands.Sign(&toolSignFlags)
+	})
+
+	// Setup commands
+	setup := app.NewSubCommandFunction("setup", "Project setup wizards", commands.Setup)
+	setupSigning := setup.NewSubCommand("signing", "Configure code signing")
+	var setupSigningFlags flags.SigningSetup
+	setupSigning.AddFlags(&setupSigningFlags)
+	setupSigning.Action(func() error {
+		return commands.SigningSetup(&setupSigningFlags)
+	})
+
+	setupEntitlements := setup.NewSubCommand("entitlements", "Configure macOS entitlements")
+	var setupEntitlementsFlags flags.EntitlementsSetup
+	setupEntitlements.AddFlags(&setupEntitlementsFlags)
+	setupEntitlements.Action(func() error {
+		return commands.EntitlementsSetup(&setupEntitlementsFlags)
+	})
+
+	// Sign command (wrapper that calls platform-specific tasks)
+	signDescription := "Sign the project"
+	if features.WakeEnabled() {
+		signDescription = "Deprecated: select signing in a profile and use build"
+	}
+	sign := app.NewSubCommand("sign", signDescription)
+	var signWrapperFlags flags.SignWrapper
+	if features.WakeEnabled() {
+		sign.AddFlags(&signWrapperFlags)
+	} else {
+		sign.AddFlags(&signWrapperFlags.Common)
+	}
+	sign.Action(func() error {
+		return commands.SignWrapper(&signWrapperFlags, sign.OtherArgs())
+	})
+
+	// Updater publishing tools (the Wails Update Manifest protocol)
+	updaterCmd := app.NewSubCommand("updater", "Self-update publishing tools (keys, signing, manifests)")
+	updaterCmd.NewSubCommandFunction("genkey", "Generate an Ed25519 signing keypair for updates", commands.UpdaterGenKey)
+	updaterSign := updaterCmd.NewSubCommand("sign", "Compute digests and signatures for artifact files")
+	var updaterSignFlags commands.UpdaterSignOptions
+	updaterSign.AddFlags(&updaterSignFlags)
+	updaterSign.Action(func() error {
+		return commands.UpdaterSign(&updaterSignFlags, updaterSign.OtherArgs())
+	})
+	updaterSign.LongDescription("\nUsage: wails3 updater sign -key <private key> <files...>")
+	updaterManifest := updaterCmd.NewSubCommand("manifest", "Generate an update manifest for artifact files")
+	var updaterManifestFlags commands.UpdaterManifestOptions
+	updaterManifest.AddFlags(&updaterManifestFlags)
+	updaterManifest.Action(func() error {
+		return commands.UpdaterManifest(&updaterManifestFlags, updaterManifest.OtherArgs())
+	})
+	updaterManifest.LongDescription("\nUsage: wails3 updater manifest -version <version> [flags] <files or directories...>\n\nDigests every artifact, signs it when -key is given, infers platform/arch\nfrom the filenames and writes a Wails Update Manifest ready to upload\nalongside the artifacts.")
+	updaterCmd.NewSubCommandFunction("verify", "Verify a manifest against the artifact files and public key", commands.UpdaterVerify)
+
+	// iOS tools
+	ios := app.NewSubCommand("ios", "iOS tooling")
+	ios.NewSubCommandFunction("overlay:gen", "Generate Go overlay for iOS bridge shim", commands.IOSOverlayGen)
+	ios.NewSubCommandFunction("xcode:gen", "Generate Xcode project in output directory", commands.IOSXcodeGen)
+
+	// Android tools
+	android := app.NewSubCommand("android", "Android tooling")
+	android.NewSubCommandFunction("overlay:gen", "Generate Go overlay that registers the Android main", commands.AndroidOverlayGen)
+	if features.WakeEnabled() {
+		android.NewSubCommandFunction("devices", "List connected Android devices and emulators", commands.AndroidDevices)
+		androidRun := android.NewSubCommand("run", "Build, install and launch a development APK")
+		var androidRunOptions commands.AndroidRunOptions
+		androidRun.AddFlags(&androidRunOptions)
+		androidRun.Action(func() error { return commands.AndroidRun(&androidRunOptions, androidRun.OtherArgs()) })
+	}
+
+	app.NewSubCommandFunction("version", "Print the version", commands.Version)
+	app.NewSubCommand("sponsor", "Sponsor the project").Action(openSponsor)
+
+	defer printFooter()
+
+	err := app.Run()
+	if err != nil {
+		if code, ok := commands.ApplicationExitCode(err); ok {
+			os.Exit(code)
+		}
+		// A wake build failure is already rendered as a clean panel by the build
+		// reporter; printing the raw error again would duplicate it.
+		if !report.IsReported(err) {
+			if diagnostic, ok := manifest.FormatValidationDiagnostics(err); ok {
+				pterm.Error.Println("Invalid wails.yaml\n" + diagnostic)
+			} else {
+				pterm.Error.Println(err)
+			}
+		}
+		os.Exit(1)
+	}
+}
+
+func printFooter() {
+	if !commands.DisableFooter {
+		docsLink := term.Hyperlink("https://v3.wails.io/getting-started/your-first-app/", "wails3 docs")
+
+		pterm.Println(pterm.LightGreen("\nNeed documentation? Run: ") + pterm.LightBlue(docsLink))
+		// Check if we're in a teminal
+		printer := pterm.PrefixPrinter{
+			MessageStyle: pterm.NewStyle(pterm.FgLightGreen),
+			Prefix: pterm.Prefix{
+				Style: pterm.NewStyle(pterm.FgRed, pterm.BgLightWhite),
+				Text:  "♥ ",
+			},
+		}
+
+		linkText := term.Hyperlink("https://github.com/sponsors/leaanthony", "wails3 sponsor")
+		printer.Println("If Wails is useful to you or your company, please consider sponsoring the project: " + pterm.LightBlue(linkText))
+	}
+}
+
+func openDocs() error {
+	commands.DisableFooter = true
+	return browser.OpenURL("https://v3.wails.io/getting-started/your-first-app/")
+}
+
+func openSponsor() error {
+	commands.DisableFooter = true
+	return browser.OpenURL("https://github.com/sponsors/leaanthony")
+}
+
+// clir reparses arguments after --. Remove application arguments before giving
+// it the command line so application flags can never be interpreted as CLI flags.
+func detachApplicationArguments(args []string) ([]string, []string) {
+	if len(args) < 2 || (args[1] != "run" && args[1] != "dev") {
+		return args, nil
+	}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "--" {
+			return args[:i], append([]string{}, args[i+1:]...)
+		}
+	}
+	return args, nil
+}

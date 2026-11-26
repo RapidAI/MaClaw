@@ -175,3 +175,4 @@ replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
 
 // Patched Darwin launch-file batch hook. Do not point this at the module cache.
 replace github.com/wailsapp/wails/v2 => ./third_party/wails
+replace github.com/wailsapp/wails/v3 => ./third_party/wails3

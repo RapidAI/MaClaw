@@ -1,0 +1,142 @@
+//go:build darwin && !ios && !server && !purego
+
+package application
+
+/*
+#cgo CFLAGS: -mmacosx-version-min=10.10 -x objective-c
+#cgo LDFLAGS: -framework Cocoa
+
+#include "menuitem_darwin.h"
+
+extern void setMenuItemChecked(void*, unsigned int, bool);
+extern void setMenuItemBitmap(void*, unsigned char*, int);
+
+static bool menuSectionHeadersSupported(void) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+	if (@available(macOS 14.0, *)) {
+		return true;
+	}
+#endif
+	return false;
+}
+
+// Clear and release all menu items in the menu
+void clearMenu(void* nsMenu) {
+	NSMenu *menu = (NSMenu *)nsMenu;
+	[menu removeAllItems];
+}
+
+
+// Create a new NSMenu
+void* createNSMenu(char* label) {
+	NSMenu *menu = [[NSMenu alloc] init];
+	if( label != NULL && strlen(label) > 0 ) {
+		menu.title = [NSString stringWithUTF8String:label];
+	}
+	if( label != NULL ) {
+		free(label);
+	}
+	[menu setAutoenablesItems:NO];
+	return (void*)menu;
+}
+
+// Release a menu created by createNSMenu once ownership has been
+// transferred (e.g. to an NSMenuItem via setSubmenu:)
+void releaseNSMenu(void* nsMenu) {
+	NSMenu *menu = (NSMenu *)nsMenu;
+	[menu release];
+}
+
+void addMenuItem(void* nsMenu, void* nsMenuItem) {
+	NSMenu *menu = (NSMenu *)nsMenu;
+	[menu addItem:nsMenuItem];
+}
+
+// add seperator to menu
+void addMenuSeparator(void* nsMenu) {
+	NSMenu *menu = (NSMenu *)nsMenu;
+	[menu addItem:[NSMenuItem separatorItem]];
+}
+
+// Set the submenu of a menu item
+void setMenuItemSubmenu(void* nsMenuItem, void* nsMenu) {
+	NSMenuItem *menuItem = (NSMenuItem *)nsMenuItem;
+	NSMenu *menu = (NSMenu *)nsMenu;
+	[menuItem setSubmenu:menu];
+}
+
+// Add services menu
+static void addServicesMenu(void* menu) {
+	NSMenu *nsMenu = (__bridge NSMenu *)menu;
+	[NSApp setServicesMenu:nsMenu];
+}
+
+// Add windows menu
+void addWindowsMenu(void* menu) {
+	NSMenu *nsMenu = (__bridge NSMenu *)menu;
+	[NSApp setWindowsMenu:nsMenu];
+}
+
+
+*/
+import "C"
+import "unsafe"
+
+func menuSectionHeadersSupported() bool {
+	return bool(C.menuSectionHeadersSupported())
+}
+
+func (m *macosMenu) processMenu(parent unsafe.Pointer, menu *Menu) {
+	for _, item := range menu.items {
+		// A rebuild (Menu.Update) replaces every impl: release the previous
+		// NSMenuItem's owning reference first, or each update leaks one item
+		// (clearMenu's removeAllItems only drops the menu's retain, not the
+		// +1 from [MenuItem new]).
+		if old, ok := item.impl.(*macosMenuItem); ok && old != nil && old.nsMenuItem != nil {
+			old.destroy()
+		}
+		switch item.itemType {
+		case submenu:
+			submenu := item.submenu
+			nsSubmenu := C.createNSMenu(C.CString(item.label))
+			m.processMenu(nsSubmenu, submenu)
+			menuItem := newMenuItemImpl(item)
+			item.impl = menuItem
+			C.addMenuItem(parent, menuItem.nsMenuItem)
+			C.setMenuItemSubmenu(menuItem.nsMenuItem, nsSubmenu)
+			if item.role == ServicesMenu {
+				C.addServicesMenu(nsSubmenu)
+			}
+			if item.role == WindowMenu {
+				C.addWindowsMenu(nsSubmenu)
+			}
+			// The NSMenuItem retains its submenu; drop the createNSMenu +1 so
+			// the subtree unwinds when the item goes away.
+			C.releaseNSMenu(nsSubmenu)
+		case text, checkbox, radio, sectionHeader:
+			menuItem := newMenuItemImpl(item)
+			item.impl = menuItem
+			if item.hidden {
+				menuItem.setHidden(true)
+			}
+			C.addMenuItem(parent, menuItem.nsMenuItem)
+		case separator:
+			C.addMenuSeparator(parent)
+		}
+		if item.bitmap != nil {
+			macMenuItem := item.impl.(*macosMenuItem)
+			C.setMenuItemBitmap(macMenuItem.nsMenuItem, (*C.uchar)(&item.bitmap[0]), C.int(len(item.bitmap)))
+		}
+
+	}
+}
+
+// newNSMenu creates an NSMenu with the given title.
+func newNSMenu(label string) unsafe.Pointer {
+	return C.createNSMenu(C.CString(label))
+}
+
+// clearNSMenu removes every item from menu.
+func clearNSMenu(menu unsafe.Pointer) {
+	C.clearMenu(menu)
+}

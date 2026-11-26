@@ -1,0 +1,1975 @@
+//go:build darwin && !ios && !server && !purego
+
+package application
+
+/*
+#cgo CFLAGS: -mmacosx-version-min=10.13 -x objective-c
+#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework QuartzCore
+
+#include "application_darwin.h"
+#include "webview_window_darwin.h"
+#include "mac_private_api_darwin.h"
+#include "webview_panel_darwin.h"
+#include "webview_notch_window_darwin.h"
+#include <stdlib.h>
+#include "Cocoa/Cocoa.h"
+#import <WebKit/WebKit.h>
+#import <AppKit/AppKit.h>
+#import "webview_window_darwin_drag.h"
+
+struct WebviewPreferences {
+    bool *TabFocusesLinks;
+    bool *TextInteractionEnabled;
+    bool *FullscreenEnabled;
+    bool *AllowsBackForwardNavigationGestures;
+    bool *AllowsMagnification;
+    bool *AllowsAirPlayForMediaPlayback;
+    bool *JavaScriptCanOpenWindowsAutomatically;
+    double *MinimumFontSize;
+    bool *EnableAutoplayWithoutUserAction;
+};
+
+struct PanelPreferences {
+    bool FloatingPanel;
+    bool BecomesKeyOnlyIfNeeded;
+    bool NonActivating;
+    bool UtilityWindow;
+};
+
+extern void registerListener(unsigned int event);
+
+static NSWindow* nativeWindow(void* window) {
+	return (NSWindow*)window;
+}
+
+static NSWindow<WailsWebviewWindow>* webviewHost(void* window) {
+	return (NSWindow<WailsWebviewWindow>*)window;
+}
+
+const char* windowTitlebarDoubleClickPreference(void) {
+	NSString *action = [[NSUserDefaults standardUserDefaults]
+		stringForKey:@"AppleActionOnDoubleClick"];
+	return action == nil ? "" : [action UTF8String];
+}
+
+static NSWindowStyleMask windowStyleMask(bool frameless, bool squareCorners, double cornerRadius) {
+	NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+	if (frameless && (squareCorners || cornerRadius > 0)) {
+		styleMask = NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable;
+	} else if (frameless) {
+		styleMask |= NSWindowStyleMaskFullSizeContentView;
+	}
+	return styleMask;
+}
+
+static NSWindow<WailsWebviewWindow>* createNativeWindow(int width, int height, bool frameless,
+		bool squareCorners, double cornerRadius, bool isPanel, struct PanelPreferences panelPreferences,
+		bool isNotchWindow) {
+	NSWindowStyleMask styleMask = windowStyleMask(frameless, squareCorners, cornerRadius);
+	NSRect contentRect = NSMakeRect(0, 0, width-1, height-1);
+	if (!isPanel) {
+		return [[WebviewWindow alloc] initWithContentRect:contentRect
+			styleMask:styleMask
+			backing:NSBackingStoreBuffered
+			defer:NO];
+	}
+
+	if (panelPreferences.NonActivating) {
+		styleMask |= NSWindowStyleMaskNonactivatingPanel;
+	}
+	if (panelPreferences.UtilityWindow) {
+		styleMask |= NSWindowStyleMaskUtilityWindow;
+	}
+	WebviewPanel* panel;
+	if (isNotchWindow) {
+		panel = [[WebviewNotchWindow alloc] initWithContentRect:contentRect
+			styleMask:styleMask
+			backing:NSBackingStoreBuffered
+			defer:NO];
+	} else {
+		panel = [[WebviewPanel alloc] initWithContentRect:contentRect
+			styleMask:styleMask
+			backing:NSBackingStoreBuffered
+			defer:NO];
+	}
+	panel.floatingPanel = panelPreferences.FloatingPanel;
+	panel.becomesKeyOnlyIfNeeded = panelPreferences.BecomesKeyOnlyIfNeeded;
+	return panel;
+}
+
+// Create a new Window or Panel. Everything after native class construction is
+// deliberately shared so the panel path receives every WKWebView/window option.
+void* windowNew(unsigned int id, int width, int height, bool fraudulentWebsiteWarningEnabled,
+		bool frameless, bool squareCorners, double cornerRadius, bool enableDragAndDrop,
+		struct WebviewPreferences preferences, const char* applicationNameForUserAgent,
+		bool isPanel, struct PanelPreferences panelPreferences, bool isNotchWindow,
+		int notchContentWidth, int notchContentHeight, const char* notchScreenID) {
+	NSWindow<WailsWebviewWindow>* window = createNativeWindow(width, height, frameless,
+		squareCorners, cornerRadius, isPanel, panelPreferences, isNotchWindow);
+
+	// Note: collectionBehavior is set later via windowSetCollectionBehavior()
+	// to allow user configuration of Space and fullscreen behavior
+
+	// Create delegate
+	WebviewWindowDelegate* delegate = [[WebviewWindowDelegate alloc] init];
+	[delegate autorelease];
+
+	// Set delegate
+	[window setDelegate:delegate];
+	delegate.windowId = id;
+
+	// Add NSView to window
+	NSView* view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width-1, height-1)];
+	[view autorelease];
+
+	[view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+	if (frameless && !squareCorners && cornerRadius > 0) {
+		[view setWantsLayer:YES];
+		view.layer.cornerRadius = cornerRadius;
+		view.layer.masksToBounds = YES;
+	}
+	[window setContentView:view];
+	if (frameless && !squareCorners && cornerRadius == 0) {
+		[window setTitlebarAppearsTransparent:YES];
+		[window setTitleVisibility:NSWindowTitleHidden];
+	}
+
+	// Embed wkwebview in window
+	NSRect frame = NSMakeRect(0, 0, width, height);
+	WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+	[config autorelease];
+
+	// Set preferences
+    if (preferences.TabFocusesLinks != NULL) {
+		config.preferences.tabFocusesLinks = *preferences.TabFocusesLinks;
+	}
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 110300
+	if (@available(macOS 11.3, *)) {
+		if (preferences.TextInteractionEnabled != NULL) {
+			config.preferences.textInteractionEnabled = *preferences.TextInteractionEnabled;
+		}
+	}
+#endif
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 120300
+	if (@available(macOS 12.3, *)) {
+         if (preferences.FullscreenEnabled != NULL) {
+             config.preferences.elementFullscreenEnabled = *preferences.FullscreenEnabled;
+         }
+     }
+#endif
+
+	if (preferences.AllowsAirPlayForMediaPlayback != NULL) {
+		config.allowsAirPlayForMediaPlayback = *preferences.AllowsAirPlayForMediaPlayback;
+	}
+	if (preferences.EnableAutoplayWithoutUserAction != NULL && *preferences.EnableAutoplayWithoutUserAction) {
+		config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+	}
+	if (preferences.JavaScriptCanOpenWindowsAutomatically != NULL) {
+		config.preferences.javaScriptCanOpenWindowsAutomatically = *preferences.JavaScriptCanOpenWindowsAutomatically;
+	}
+	if (preferences.MinimumFontSize != NULL) {
+		config.preferences.minimumFontSize = *preferences.MinimumFontSize;
+	}
+	config.suppressesIncrementalRendering = true;
+	if (applicationNameForUserAgent != NULL && applicationNameForUserAgent[0] != '\0') {
+		config.applicationNameForUserAgent = [NSString stringWithUTF8String:applicationNameForUserAgent];
+	} else {
+		config.applicationNameForUserAgent = @"wails.io";
+	}
+	[config setURLSchemeHandler:delegate forURLScheme:@"wails"];
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101500
+ 	if (@available(macOS 10.15, *)) {
+         config.preferences.fraudulentWebsiteWarningEnabled = fraudulentWebsiteWarningEnabled;
+	}
+#endif
+
+	// Setup user content controller
+    WKUserContentController* userContentController = [WKUserContentController new];
+	[userContentController autorelease];
+
+    [userContentController addScriptMessageHandler:delegate name:@"external"];
+    config.userContentController = userContentController;
+
+	WKWebView* webView = [[WKWebView alloc] initWithFrame:frame configuration:config];
+	[webView autorelease];
+
+    if (preferences.AllowsBackForwardNavigationGestures != NULL) {
+        webView.allowsBackForwardNavigationGestures = *preferences.AllowsBackForwardNavigationGestures;
+    }
+	if (preferences.AllowsMagnification != NULL) {
+		webView.allowsMagnification = *preferences.AllowsMagnification;
+	}
+
+	[view addSubview:webView];
+
+    // support webview events
+    [webView setNavigationDelegate:delegate];
+    [webView setUIDelegate:delegate];
+
+	// Ensure webview resizes with the window
+	[webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+
+	if( enableDragAndDrop ) {
+		WebviewDrag* dragView = [[WebviewDrag alloc] initWithFrame:NSMakeRect(0, 0, width-1, height-1)];
+		[dragView autorelease];
+
+		// The mask must be on the drag view itself: it was previously set on
+		// the content view (a no-op), leaving the drag overlay frozen at its
+		// creation size — files dragged over any area gained by resizing the
+		// window were rejected (#3743).
+		[dragView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+		[view addSubview:dragView];
+		dragView.windowId = id;
+	}
+
+	window.webView = webView;
+	if (isNotchWindow) {
+		NSString* targetScreenID = nil;
+		if (notchScreenID != NULL && notchScreenID[0] != '\0') {
+			targetScreenID = [NSString stringWithUTF8String:notchScreenID];
+		}
+		[(WebviewNotchWindow*)window configureWebView:webView
+			contentWidth:notchContentWidth
+			contentHeight:notchContentHeight
+			targetScreenID:targetScreenID];
+	}
+	return window;
+}
+
+
+void printWindowStyle(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+    NSWindowStyleMask styleMask = [nsWindow styleMask];
+	// Get delegate
+	WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[nsWindow delegate];
+
+	printf("Window %d style mask: ", windowDelegate.windowId);
+
+    if (styleMask & NSWindowStyleMaskTitled)
+    {
+        printf("NSWindowStyleMaskTitled ");
+    }
+
+    if (styleMask & NSWindowStyleMaskClosable)
+    {
+        printf("NSWindowStyleMaskClosable ");
+    }
+
+    if (styleMask & NSWindowStyleMaskMiniaturizable)
+    {
+        printf("NSWindowStyleMaskMiniaturizable ");
+    }
+
+    if (styleMask & NSWindowStyleMaskResizable)
+    {
+        printf("NSWindowStyleMaskResizable ");
+    }
+
+    if (styleMask & NSWindowStyleMaskFullSizeContentView)
+    {
+        printf("NSWindowStyleMaskFullSizeContentView ");
+    }
+
+    if (styleMask & NSWindowStyleMaskNonactivatingPanel)
+    {
+        printf("NSWindowStyleMaskNonactivatingPanel ");
+    }
+
+	if (styleMask & NSWindowStyleMaskFullScreen)
+	{
+		printf("NSWindowStyleMaskFullScreen ");
+	}
+
+	if (styleMask & NSWindowStyleMaskBorderless)
+	{
+		printf("MSWindowStyleMaskBorderless ");
+	}
+
+	printf("\n");
+}
+
+
+// setInvisibleTitleBarHeight sets the invisible title bar height
+void setInvisibleTitleBarHeight(void* window, unsigned int height) {
+	NSWindow* nsWindow = nativeWindow(window);
+	// Get delegate
+	WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[nsWindow delegate];
+	// Set height
+	delegate.invisibleTitleBarHeight = height;
+}
+
+// Make NSWindow transparent
+void windowSetTransparent(void* nsWindow) {
+	[nativeWindow(nsWindow) setOpaque:NO];
+	[nativeWindow(nsWindow) setBackgroundColor:[NSColor clearColor]];
+}
+
+void windowSetInvisibleTitleBar(void* nsWindow, unsigned int height) {
+	NSWindow* window = nativeWindow(nsWindow);
+	WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[window delegate];
+	delegate.invisibleTitleBarHeight = height;
+}
+
+
+// Set the title of the NSWindow
+void windowSetTitle(void* nsWindow, char* title) {
+	NSString* nsTitle = [NSString stringWithUTF8String:title];
+	[nativeWindow(nsWindow) setTitle:nsTitle];
+	free(title);
+}
+
+// Set the size of the NSWindow
+void windowSetSize(void* nsWindow, int width, int height) {
+	// Set window size on main thread
+	NSWindow* window = nativeWindow(nsWindow);
+	NSSize contentSize = [window contentRectForFrameRect:NSMakeRect(0, 0, width, height)].size;
+	[window setContentSize:contentSize];
+	[window setFrame:NSMakeRect(window.frame.origin.x, window.frame.origin.y, width, height) display:YES animate:YES];
+}
+
+// Set NSWindow always on top
+void windowSetAlwaysOnTop(void* nsWindow, bool alwaysOnTop) {
+	// Set window always on top on main thread
+	[nativeWindow(nsWindow) setLevel:alwaysOnTop ? NSFloatingWindowLevel : NSNormalWindowLevel];
+}
+
+void setNormalWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSNormalWindowLevel]; }
+void setFloatingWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSFloatingWindowLevel];}
+void setPopUpMenuWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSPopUpMenuWindowLevel]; }
+void setMainMenuWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSMainMenuWindowLevel]; }
+void setStatusWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSStatusWindowLevel]; }
+void setModalPanelWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSModalPanelWindowLevel]; }
+void setScreenSaverWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSScreenSaverWindowLevel]; }
+void setTornOffMenuWindowLevel(void* nsWindow) { [nativeWindow(nsWindow) setLevel:NSTornOffMenuWindowLevel]; }
+
+// Set NSWindow collection behavior for Spaces and fullscreen
+// The behavior parameter is a bitmask that can combine multiple NSWindowCollectionBehavior values
+void windowSetCollectionBehavior(void* nsWindow, int behavior) {
+	NSWindow* window = nativeWindow(nsWindow);
+	if (behavior == 0) {
+		// Default: use FullScreenPrimary for backwards compatibility
+		window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+	} else {
+		// Pass through the combined bitmask directly
+		window.collectionBehavior = (NSWindowCollectionBehavior)behavior;
+	}
+}
+
+// Set NSWindow tabbing mode (macOS 10.12+)
+void windowSetTabbingMode(void* nsWindow, int mode) {
+	NSWindow* window = nativeWindow(nsWindow);
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 101200
+	if (@available(macOS 10.12, *)) {
+		[window setTabbingMode:mode];
+	}
+#endif
+}
+
+// Install a script that runs at document start in every frame of the window's
+// webview (the asset-request body shim, darwin_body_fetch_shim.go).
+void windowAddDocumentStartScript(void* nsWindow, const char* source) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	WKUserScript* script = [[WKUserScript alloc] initWithSource:[NSString stringWithUTF8String:source]
+		injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO];
+	[window.webView.configuration.userContentController addUserScript:script];
+	[script release];
+}
+
+// Load URL in NSWindow
+void navigationLoadURL(void* nsWindow, char* url) {
+	// Load URL on main thread
+	NSURL* nsURL = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
+	NSURLRequest* request = [NSURLRequest requestWithURL:nsURL];
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	[window.webView loadRequest:request];
+	free(url);
+}
+
+// Set NSWindow resizable
+void windowSetResizable(void* nsWindow, bool resizable) {
+	// Set window resizable on main thread
+	NSWindow* window = nativeWindow(nsWindow);
+	if (resizable) {
+		NSWindowStyleMask styleMask = [window styleMask] | NSWindowStyleMaskResizable;
+		[window setStyleMask:styleMask];
+	} else {
+		NSWindowStyleMask styleMask = [window styleMask] & ~NSWindowStyleMaskResizable;
+		[window setStyleMask:styleMask];
+	}
+}
+
+// Set NSWindow min size
+void windowSetMinSize(void* nsWindow, int width, int height) {
+	// Set window min size on main thread
+	NSWindow* window = nativeWindow(nsWindow);
+	NSSize contentSize = [window contentRectForFrameRect:NSMakeRect(0, 0, width, height)].size;
+	[window setContentMinSize:contentSize];
+	NSSize size = { width, height };
+	[window setMinSize:size];
+}
+
+// Set NSWindow max size
+void windowSetMaxSize(void* nsWindow, int width, int height) {
+	// Set window max size on main thread
+	NSSize size = { FLT_MAX, FLT_MAX };
+	size.width = width > 0 ? width : FLT_MAX;
+	size.height = height > 0 ? height : FLT_MAX;
+	NSWindow* window = nativeWindow(nsWindow);
+	NSSize contentSize = [window contentRectForFrameRect:NSMakeRect(0, 0, size.width, size.height)].size;
+	[window setContentMaxSize:contentSize];
+	[window setMaxSize:size];
+}
+
+static double webViewGetPageZoom(WKWebView* webView) {
+	if (@available(macOS 11.0, *)) {
+		return webView.pageZoom;
+	}
+	return webView.magnification;
+}
+
+static void webViewSetPageZoom(WKWebView* webView, double zoom) {
+	if (@available(macOS 11.0, *)) {
+		webView.pageZoom = zoom;
+		return;
+	}
+	[webView setMagnification:zoom];
+}
+
+// windowZoomReset
+void windowZoomReset(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	webViewSetPageZoom(window.webView, 1.0);
+	[window.webView setMagnification:1.0];
+}
+
+// windowZoomSet
+void windowZoomSet(void* nsWindow, double zoom) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	webViewSetPageZoom(window.webView, zoom);
+}
+
+// windowZoomGet
+float windowZoomGet(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	return webViewGetPageZoom(window.webView);
+}
+
+// windowZoomIn
+void windowZoomIn(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	webViewSetPageZoom(window.webView, webViewGetPageZoom(window.webView) + 0.05);
+}
+
+// windowZoomOut
+void windowZoomOut(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	double zoom = webViewGetPageZoom(window.webView);
+	webViewSetPageZoom(window.webView, zoom > 1.05 ? zoom - 0.05 : 1.0);
+}
+
+// windowReload reloads the current page using the cached version.
+void windowReload(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	[window.webView reload];
+}
+
+// windowForceReload reloads the current page bypassing the cache.
+void windowForceReload(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	[window.webView reloadFromOrigin];
+}
+
+// createModalWindow presents a modal window as a sheet attached to the parent window
+void createModalWindow(void* parentWindowPtr, void* modalWindowPtr) {
+	if (parentWindowPtr == NULL || modalWindowPtr == NULL) {
+		return;
+	}
+
+	NSWindow* parentWindow = (NSWindow*)parentWindowPtr;
+	NSWindow* modalWindow = (NSWindow*)modalWindowPtr;
+
+	// Present the modal window as a sheet attached to the parent window
+	// Must be dispatched to the main thread for UI thread safety
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[parentWindow beginSheet:modalWindow completionHandler:^(NSModalResponse returnCode) {
+			// Sheet was dismissed - window will be released automatically
+		}];
+	});
+}
+
+// Set the window position relative to the top-left of its screen's work area
+// (NSScreen visibleFrame, which excludes the menu bar and dock), matching the
+// documented SetRelativePosition contract and the Windows implementation.
+// Previously this used the full NSScreen frame, so windows were placed under
+// the menu bar (and under a left-side dock) on macOS (issue #4300).
+void windowSetRelativePosition(void* nsWindow, int x, int y) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSScreen* screen = [window screen];
+	if( screen == NULL ) {
+		screen = [NSScreen mainScreen];
+	}
+	NSRect windowFrame = [window frame];
+	NSRect workArea = [screen visibleFrame];
+	windowFrame.origin.x = workArea.origin.x + (CGFloat)x;
+	windowFrame.origin.y = (workArea.origin.y + workArea.size.height) - windowFrame.size.height - (CGFloat)y;
+
+	[window setFrame:windowFrame display:TRUE animate:FALSE];
+}
+
+// Execute JS in NSWindow
+void windowExecJS(void* nsWindow, const char* js) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	[window.webView evaluateJavaScript:[NSString stringWithUTF8String:js] completionHandler:nil];
+	free((void*)js);
+}
+
+// Execute JS without allocation - buffer is NOT freed
+void windowExecJSNoAlloc(void* nsWindow, const char* js) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	[window.webView evaluateJavaScript:[NSString stringWithUTF8String:js] completionHandler:nil];
+}
+
+// Make NSWindow backdrop translucent
+void windowSetTranslucent(void* nsWindow) {
+	// Get window
+	NSWindow* window = nativeWindow(nsWindow);
+
+	id contentView = [window contentView];
+	NSVisualEffectView *effectView = [NSVisualEffectView alloc];
+	NSRect bounds = [contentView bounds];
+	[effectView initWithFrame:bounds];
+	[effectView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+	[effectView setBlendingMode:NSVisualEffectBlendingModeBehindWindow];
+	[effectView setState:NSVisualEffectStateActive];
+	[contentView addSubview:effectView positioned:NSWindowBelow relativeTo:nil];
+}
+
+// Make webview background transparent
+void webviewSetTransparent(void* nsWindow) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	wailsPrivateSetWebviewTransparent((void*)window.webView);
+}
+
+// Set webview background colour
+void webviewSetBackgroundColour(void* nsWindow, int r, int g, int b, int alpha) {
+	NSWindow<WailsWebviewWindow>* window = webviewHost(nsWindow);
+	wailsPrivateSetWebviewBackgroundColour((void*)window.webView, r, g, b, alpha);
+}
+
+// Set the window background colour
+void windowSetBackgroundColour(void* nsWindow, int r, int g, int b, int alpha) {
+	[nativeWindow(nsWindow) setBackgroundColor:[NSColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:alpha/255.0]];
+}
+
+bool windowIsMaximised(void* nsWindow) {
+	return [nativeWindow(nsWindow) isZoomed];
+}
+
+bool windowIsFullscreen(void* nsWindow) {
+	return [nativeWindow(nsWindow) styleMask] & NSWindowStyleMaskFullScreen;
+}
+
+bool windowIsMinimised(void* nsWindow) {
+	return [nativeWindow(nsWindow) isMiniaturized];
+}
+
+bool windowIsFocused(void* nsWindow) {
+	return [nativeWindow(nsWindow) isKeyWindow];
+}
+
+// Set Window fullscreen
+void windowFullscreen(void* nsWindow) {
+	if( windowIsFullscreen(nsWindow) ) {
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[nativeWindow(nsWindow) toggleFullScreen:nil];
+	});}
+
+void windowUnFullscreen(void* nsWindow) {
+	if( !windowIsFullscreen(nsWindow) ) {
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[nativeWindow(nsWindow) toggleFullScreen:nil];
+	});
+}
+
+// restore window to normal size
+void windowRestore(void* nsWindow) {
+	// If window is fullscreen
+	if([nativeWindow(nsWindow) styleMask] & NSWindowStyleMaskFullScreen) {
+		[nativeWindow(nsWindow) toggleFullScreen:nil];
+	}
+	// If window is maximised
+	if([nativeWindow(nsWindow) isZoomed]) {
+		[nativeWindow(nsWindow) zoom:nil];
+	}
+	// If window in minimised
+	if([nativeWindow(nsWindow) isMiniaturized]) {
+		[nativeWindow(nsWindow) deminiaturize:nil];
+	}
+}
+
+// forward declaration - defined later in this file
+static void setButtonState(void *button, int state);
+
+// setFullscreenButtonState sets the fullscreen button state
+static void setFullscreenButtonState(void* nsWindow, int state) {
+	NSButton *fullscreenButton = [nativeWindow(nsWindow) standardWindowButton:NSWindowZoomButton];
+	setButtonState(fullscreenButton, state);
+}
+
+// Set the titlebar style
+void windowSetTitleBarAppearsTransparent(void* nsWindow, bool transparent) {
+	if( transparent ) {
+		[nativeWindow(nsWindow) setTitlebarAppearsTransparent:true];
+	} else {
+		[nativeWindow(nsWindow) setTitlebarAppearsTransparent:false];
+	}
+}
+
+// Set window fullsize content view
+void windowSetFullSizeContent(void* nsWindow, bool fullSize) {
+	NSWindow* window = nativeWindow(nsWindow);
+	if( fullSize ) {
+		[window setStyleMask:[window styleMask] | NSWindowStyleMaskFullSizeContentView];
+	} else {
+		[window setStyleMask:[window styleMask] & ~NSWindowStyleMaskFullSizeContentView];
+	}
+}
+
+// Set Hide Titlebar
+void windowSetHideTitleBar(void* nsWindow, bool hideTitlebar) {
+	NSWindow* window = nativeWindow(nsWindow);
+	if( hideTitlebar ) {
+		[window setStyleMask:[window styleMask] & ~NSWindowStyleMaskTitled];
+	} else {
+		[window setStyleMask:[window styleMask] | NSWindowStyleMaskTitled];
+	}
+}
+
+// Set Hide Title in Titlebar
+void windowSetHideTitle(void* nsWindow, bool hideTitle) {
+	if( hideTitle ) {
+		[nativeWindow(nsWindow) setTitleVisibility:NSWindowTitleHidden];
+	} else {
+		[nativeWindow(nsWindow) setTitleVisibility:NSWindowTitleVisible];
+	}
+}
+
+// Set Window use toolbar
+void windowSetUseToolbar(void* nsWindow, bool useToolbar) {
+	NSWindow* window = nativeWindow(nsWindow);
+	if( useToolbar ) {
+		NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"wails.toolbar"];
+		[toolbar autorelease];
+		[window setToolbar:toolbar];
+	} else {
+		[window setToolbar:nil];
+	}
+}
+
+// Set window toolbar style
+void windowSetToolbarStyle(void* nsWindow, int style) {
+	NSWindow* window = nativeWindow(nsWindow);
+
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
+	if (@available(macOS 11.0, *)) {
+		NSToolbar* toolbar = [window toolbar];
+		if ( toolbar == nil ) {
+			return;
+		}
+		[window setToolbarStyle:style];
+	}
+#endif
+
+}
+// Set Hide Toolbar Separator
+void windowSetHideToolbarSeparator(void* nsWindow, bool hideSeparator) {
+	NSToolbar* toolbar = [nativeWindow(nsWindow) toolbar];
+	if( toolbar == nil ) {
+		return;
+	}
+	[toolbar setShowsBaselineSeparator:!hideSeparator];
+}
+
+// Configure the toolbar auto-hide feature
+void windowSetShowToolbarWhenFullscreen(void* window, bool setting) {
+	NSWindow* nsWindow = nativeWindow(window);
+	// Get delegate
+	WebviewWindowDelegate* delegate = (WebviewWindowDelegate*)[nsWindow delegate];
+	// Set height
+	delegate.showToolbarWhenFullscreen = setting;
+}
+
+// Set Window appearance type
+void windowSetAppearanceTypeByName(void* nsWindow, const char *appearanceName) {
+	// set window appearance type by name
+	// Convert appearance name to NSString
+	NSString* appearanceNameString = [NSString stringWithUTF8String:appearanceName];
+	// Set appearance
+	[nativeWindow(nsWindow) setAppearance:[NSAppearance appearanceNamed:appearanceNameString]];
+
+	free((void*)appearanceName);
+}
+
+// Center window on current monitor
+void windowCenter(void* nsWindow) {
+    NSWindow* window = nativeWindow(nsWindow);
+    NSScreen* screen = [window screen];
+    if (screen == NULL) {
+        screen = [NSScreen mainScreen];
+    }
+
+    NSRect screenFrame = [screen visibleFrame];
+    NSRect windowFrame = [window frame];
+
+    CGFloat x = screenFrame.origin.x + (screenFrame.size.width - windowFrame.size.width) / 2;
+    CGFloat y = screenFrame.origin.y + (screenFrame.size.height - windowFrame.size.height) / 2;
+
+    [window setFrame:NSMakeRect(x, y, windowFrame.size.width, windowFrame.size.height) display:YES];
+}
+
+
+// Get the current size of the window
+void windowGetSize(void* nsWindow, int* width, int* height) {
+	NSRect frame = [nativeWindow(nsWindow) frame];
+	*width = frame.size.width;
+	*height = frame.size.height;
+}
+
+// Get window width
+int windowGetWidth(void* nsWindow) {
+	return [nativeWindow(nsWindow) frame].size.width;
+}
+
+// Get window height
+int windowGetHeight(void* nsWindow) {
+	return [nativeWindow(nsWindow) frame].size.height;
+}
+
+// Get the window position relative to its screen's work area (NSScreen
+// visibleFrame): X from the work area's left edge, Y from its top edge
+// (Y-down). Must mirror windowSetRelativePosition exactly so Get/Set
+// round-trip on every screen: previously X was returned absolute (missing
+// the origin.x subtraction) and Y omitted origin.y, so each axis was wrong
+// only on screens whose corresponding origin component is non-zero
+// (issue #5408). Both now use visibleFrame rather than frame so the
+// position excludes the menu bar and dock, as on Windows (issue #4300).
+void windowGetRelativePosition(void* nsWindow, int* x, int* y) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSRect frame = [window frame];
+
+	NSScreen* screen = [window screen];
+	if( screen == NULL ) {
+		screen = [NSScreen mainScreen];
+	}
+	NSRect workArea = [screen visibleFrame];
+	*x = frame.origin.x - workArea.origin.x;
+	*y = (workArea.origin.y + workArea.size.height) - frame.origin.y - frame.size.height;
+}
+
+// Get absolute window position in the canonical Wails coordinate space:
+// logical points, Y-down, with (0,0) at the top-left of the primary screen.
+// This matches Screen.Bounds (see screen_darwin.go), Windows, GTK and the
+// public APIs of Electron and the web. Screens above the primary have
+// negative Y.
+void windowGetPosition(void* nsWindow, int* x, int* y) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSScreen* primaryScreen = [[NSScreen screens] firstObject];
+	if (primaryScreen == NULL) {
+		primaryScreen = [NSScreen mainScreen];
+	}
+	CGFloat primaryHeight = [primaryScreen frame].size.height;
+	NSRect frame = [window frame];
+	*x = frame.origin.x;
+	*y = primaryHeight - frame.origin.y - frame.size.height;
+}
+
+void windowSetPosition(void* nsWindow, int x, int y) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSScreen* primaryScreen = [[NSScreen screens] firstObject];
+	if (primaryScreen == NULL) {
+		primaryScreen = [NSScreen mainScreen];
+	}
+	CGFloat primaryHeight = [primaryScreen frame].size.height;
+	NSRect frame = [window frame];
+	frame.origin.x = x;
+	frame.origin.y = primaryHeight - frame.size.height - y;
+	[window setFrame:frame display:YES];
+}
+
+
+// Center window on a specific screen identified by display ID
+void windowCenterOnScreen(void* nsWindow, const char* screenID) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSString* targetID = [NSString stringWithUTF8String:screenID];
+	NSScreen* targetScreen = nil;
+	for (NSScreen* s in [NSScreen screens]) {
+		NSDictionary* desc = [s deviceDescription];
+		NSNumber* num = [desc objectForKey:@"NSScreenNumber"];
+		CGDirectDisplayID displayID = [num unsignedIntValue];
+		NSString* sid = [NSString stringWithFormat:@"%u", displayID];
+		if ([sid isEqualToString:targetID]) {
+			targetScreen = s;
+			break;
+		}
+	}
+	if (targetScreen == nil) {
+		targetScreen = [NSScreen mainScreen];
+	}
+	NSRect visibleFrame = [targetScreen visibleFrame];
+	NSRect windowFrame = [window frame];
+	CGFloat x = visibleFrame.origin.x + (visibleFrame.size.width - windowFrame.size.width) / 2;
+	CGFloat y = visibleFrame.origin.y + (visibleFrame.size.height - windowFrame.size.height) / 2;
+	[window setFrameOrigin:NSMakePoint(x, y)];
+}
+
+// Position window relative to a specific screen's visible frame
+void windowSetPositionOnScreen(void* nsWindow, int x, int y, const char* screenID) {
+	NSWindow* window = nativeWindow(nsWindow);
+	NSString* targetID = [NSString stringWithUTF8String:screenID];
+	NSScreen* targetScreen = nil;
+	for (NSScreen* s in [NSScreen screens]) {
+		NSDictionary* desc = [s deviceDescription];
+		NSNumber* num = [desc objectForKey:@"NSScreenNumber"];
+		CGDirectDisplayID displayID = [num unsignedIntValue];
+		NSString* sid = [NSString stringWithFormat:@"%u", displayID];
+		if ([sid isEqualToString:targetID]) {
+			targetScreen = s;
+			break;
+		}
+	}
+	if (targetScreen == nil) {
+		targetScreen = [NSScreen mainScreen];
+	}
+	CGFloat scale = [targetScreen backingScaleFactor];
+	NSRect visibleFrame = [targetScreen visibleFrame];
+	NSRect windowFrame = [window frame];
+	// x,y are in DIP top-origin coords relative to the screen's work area
+	CGFloat newX = visibleFrame.origin.x + (x / scale);
+	CGFloat newY = visibleFrame.origin.y + visibleFrame.size.height - windowFrame.size.height - (y / scale);
+	[window setFrameOrigin:NSMakePoint(newX, newY)];
+}
+
+// Destroy window
+void windowDestroy(void* nsWindow) {
+	[nativeWindow(nsWindow) close];
+}
+
+// Remove drop shadow from window
+void windowSetShadow(void* nsWindow, bool hasShadow) {
+	[nativeWindow(nsWindow) setHasShadow:hasShadow];
+}
+
+// Set whether the Escape key should be prevented from exiting fullscreen
+void windowSetDisableEscapeExitsFullscreen(void* nsWindow, bool disable) {
+	[webviewHost(nsWindow) setDisableEscapeExitsFullscreen:disable];
+}
+
+
+
+// windowClose closes the current window
+static void windowClose(void *window) {
+	[nativeWindow(window) close];
+}
+
+// windowZoom
+static void windowZoom(void *window) {
+	[nativeWindow(window) zoom:nil];
+}
+
+// webviewRenderHTML renders the given HTML
+static void windowRenderHTML(void *window, const char *html) {
+	NSWindow<WailsWebviewWindow>* nsWindow = webviewHost(window);
+	// get window delegate
+	WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[nsWindow delegate];
+	// render html
+	[nsWindow.webView loadHTMLString:[NSString stringWithUTF8String:html] baseURL:nil];
+}
+
+static void windowInjectCSS(void *window, const char *css) {
+	NSWindow<WailsWebviewWindow>* nsWindow = webviewHost(window);
+	// inject css
+	[nsWindow.webView evaluateJavaScript:[NSString stringWithFormat:@"(function() { var style = document.createElement('style'); style.appendChild(document.createTextNode('%@')); document.head.appendChild(style); })();", [NSString stringWithUTF8String:css]] completionHandler:nil];
+	free((void*)css);
+}
+
+static void windowMinimise(void *window) {
+	[nativeWindow(window) miniaturize:nil];
+}
+
+// windowFlash requests user attention so the app's Dock icon bounces, drawing
+// the user back to a window that needs them. NSInformationalRequest bounces the
+// icon once; the request completes on its own, so disabling is a no-op.
+static void windowFlash(void *window, bool enabled) {
+	if (enabled) {
+		[NSApp requestUserAttention:NSInformationalRequest];
+	}
+}
+
+// zoom maximizes the window to the screen dimensions
+static void windowMaximise(void *window) {
+	[nativeWindow(window) zoom:nil];
+}
+
+static bool isFullScreen(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+    long mask = [nsWindow styleMask];
+    return (mask & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen;
+}
+
+static bool isVisible(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+    return (nsWindow.occlusionState & NSWindowOcclusionStateVisible) == NSWindowOcclusionStateVisible;
+}
+
+// windowSetFullScreen
+static void windowSetFullScreen(void *window, bool fullscreen) {
+	if (isFullScreen(window)) {
+		return;
+	}
+	NSWindow* nsWindow = nativeWindow(window);
+	windowSetMaxSize(nsWindow, 0, 0);
+	windowSetMinSize(nsWindow, 0, 0);
+	[nsWindow toggleFullScreen:nil];
+}
+
+// windowUnminimise
+static void windowUnminimise(void *window) {
+	[nativeWindow(window) deminiaturize:nil];
+}
+
+// windowUnmaximise
+static void windowUnmaximise(void *window) {
+	[nativeWindow(window) zoom:nil];
+}
+
+static void windowDisableSizeConstraints(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+	// disable size constraints
+	[nsWindow setContentMinSize:CGSizeZero];
+	[nsWindow setContentMaxSize:CGSizeZero];
+}
+
+static bool isNonActivatingPanel(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+	return [nsWindow isKindOfClass:[NSPanel class]] &&
+		([nsWindow styleMask] & NSWindowStyleMaskNonactivatingPanel) != 0;
+}
+
+static void windowShow(void *window, bool animated, double animationDuration) {
+	NSWindow* nsWindow = nativeWindow(window);
+	if ([nsWindow isKindOfClass:[WebviewNotchWindow class]]) {
+		[(WebviewNotchWindow*)nsWindow showAnimated:animated duration:animationDuration];
+		return;
+	}
+	if (isNonActivatingPanel(window)) {
+		[nsWindow orderFrontRegardless];
+		return;
+	}
+	[nsWindow makeKeyAndOrderFront:nil];
+}
+
+static void windowHide(void *window, bool animated, double animationDuration) {
+	NSWindow* nsWindow = nativeWindow(window);
+	if ([nsWindow isKindOfClass:[WebviewNotchWindow class]]) {
+		[(WebviewNotchWindow*)nsWindow hideAnimated:animated duration:animationDuration];
+		return;
+	}
+	[nsWindow orderOut:nil];
+}
+
+// setButtonState sets the state of the given button
+// 0 = enabled
+// 1 = disabled
+// 2 = hidden
+static void setButtonState(void *button, int state) {
+	if (button == nil) {
+		return;
+	}
+	NSButton *nsbutton = (NSButton*)button;
+	nsbutton.hidden = state == 2;
+	nsbutton.enabled = state != 1;
+}
+
+// setMinimiseButtonState sets the minimise button state
+static void setMinimiseButtonState(void *window, int state) {
+	NSWindow* nsWindow = nativeWindow(window);
+	NSButton *minimiseButton = [nsWindow standardWindowButton:NSWindowMiniaturizeButton];
+	setButtonState(minimiseButton, state);
+}
+
+// setMaximiseButtonState sets the maximise button state
+static void setMaximiseButtonState(void *window, int state) {
+	NSWindow* nsWindow = nativeWindow(window);
+	NSButton *maximiseButton = [nsWindow standardWindowButton:NSWindowZoomButton];
+	setButtonState(maximiseButton, state);
+}
+
+// setCloseButtonState sets the close button state
+static void setCloseButtonState(void *window, int state) {
+	NSWindow* nsWindow = nativeWindow(window);
+	NSButton *closeButton = [nsWindow standardWindowButton:NSWindowCloseButton];
+	setButtonState(closeButton, state);
+}
+
+// windowShowMenu opens an NSMenu at the given coordinates
+static void windowShowMenu(void *window, void *menu, int x, int y) {
+	NSMenu* nsMenu = (NSMenu*)menu;
+	WKWebView* webView = webviewHost(window).webView;
+	NSPoint point = NSMakePoint(x, y);
+	[nsMenu popUpMenuPositioningItem:nil atLocation:point inView:webView];
+}
+
+// Make the given window frameless
+static void windowSetFrameless(void *window, bool frameless, bool squareCorners, double cornerRadius) {
+	NSWindow* nsWindow = nativeWindow(window);
+	NSWindowStyleMask panelStyles = [nsWindow styleMask] &
+		(NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskUtilityWindow);
+	// set the window style to be frameless
+	if (frameless && (squareCorners || cornerRadius > 0)) {
+		[nsWindow setStyleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable |
+			NSWindowStyleMaskMiniaturizable | panelStyles];
+		NSView* view = [nsWindow contentView];
+		if (!squareCorners) {
+			[view setWantsLayer:YES];
+			view.layer.cornerRadius = cornerRadius;
+			view.layer.masksToBounds = YES;
+		} else {
+			view.layer.cornerRadius = 0;
+			view.layer.masksToBounds = NO;
+		}
+	} else if (frameless) {
+		[nsWindow setStyleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+			NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
+			NSWindowStyleMaskFullSizeContentView | panelStyles];
+		[nsWindow setTitlebarAppearsTransparent:YES];
+		[nsWindow setTitleVisibility:NSWindowTitleHidden];
+	} else {
+		[nsWindow setStyleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+			NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | panelStyles];
+		NSView* view = [nsWindow contentView];
+		view.layer.cornerRadius = 0;
+		view.layer.masksToBounds = NO;
+	}
+}
+
+static void startDrag(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+	if ([nsWindow isKindOfClass:[WebviewNotchWindow class]]) {
+		return;
+	}
+
+	// Get delegate
+	WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[nsWindow delegate];
+
+	// start drag
+	[windowDelegate startDrag:nsWindow];
+}
+
+// Credit: https://stackoverflow.com/q/33319295
+static void windowPrint(void *window) {
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
+	// Check if macOS 11.0 or newer
+	if (@available(macOS 11.0, *)) {
+		NSWindow* nsWindow = nativeWindow(window);
+		NSWindow<WailsWebviewWindow>* host = webviewHost(window);
+		WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[nsWindow delegate];
+		WKWebView* webView = host.webView;
+
+		// TODO: Think about whether to expose this as config
+		NSPrintInfo *pInfo = [NSPrintInfo sharedPrintInfo];
+		pInfo.horizontalPagination = NSPrintingPaginationModeAutomatic;
+		pInfo.verticalPagination = NSPrintingPaginationModeAutomatic;
+		pInfo.verticallyCentered = YES;
+		pInfo.horizontallyCentered = YES;
+		pInfo.orientation = NSPaperOrientationLandscape;
+		pInfo.leftMargin = 30;
+		pInfo.rightMargin = 30;
+		pInfo.topMargin = 30;
+		pInfo.bottomMargin = 30;
+
+		NSPrintOperation *po = [webView printOperationWithPrintInfo:pInfo];
+		po.showsPrintPanel = YES;
+		po.showsProgressPanel = YES;
+
+		// Without the next line you get an exception. Also it seems to
+		// completely ignore the values in the rect. I tried changing them
+		// in both x and y direction to include content scrolled off screen.
+		// It had no effect whatsoever in either direction.
+		po.view.frame = webView.bounds;
+
+		// [printOperation runOperation] DOES NOT WORK WITH WKWEBVIEW, use
+		[po runOperationModalForWindow:nsWindow delegate:windowDelegate didRunSelector:nil contextInfo:nil];
+	}
+#endif
+}
+
+void setWindowEnabled(void *window, bool enabled) {
+	NSWindow* nsWindow = nativeWindow(window);
+	[nsWindow setIgnoresMouseEvents:!enabled];
+}
+
+void windowSetEnabled(void *window, bool enabled) {
+	// TODO: Implement
+}
+
+void windowFocus(void *window) {
+	NSWindow* nsWindow = nativeWindow(window);
+	if (isNonActivatingPanel(window)) {
+		[nsWindow orderFrontRegardless];
+		[nsWindow makeKeyWindow];
+		return;
+	}
+	// If the current application is not active, activate it
+	if (![[NSApplication sharedApplication] isActive]) {
+		[[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+	}
+	[nsWindow makeKeyAndOrderFront:nil];
+	[nsWindow makeKeyWindow];
+}
+
+static bool isIgnoreMouseEvents(void *nsWindow) {
+    NSWindow *window = (__bridge NSWindow *)nsWindow;
+    return [window ignoresMouseEvents];
+}
+
+static void setIgnoreMouseEvents(void *nsWindow, bool ignore) {
+    NSWindow *window = (__bridge NSWindow *)nsWindow;
+    [window setIgnoresMouseEvents:ignore];
+}
+
+static void setContentProtection(void *nsWindow, bool enabled) {
+    NSWindow *window = (__bridge NSWindow *)nsWindow;
+	if( ! [window respondsToSelector:@selector(setSharingType:)]) {
+		return;
+	}
+
+	if( enabled ) {
+		[window setSharingType:NSWindowSharingNone];
+	} else {
+		[window setSharingType:NSWindowSharingReadOnly];
+	}
+}
+
+*/
+import "C"
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"unsafe"
+
+	"github.com/wailsapp/wails/v3/internal/assetserver"
+	"github.com/wailsapp/wails/v3/internal/runtime"
+
+	"github.com/wailsapp/wails/v3/pkg/events"
+)
+
+// macosWindowNative is empty: the cgo backend keeps a window's native state
+// in its Objective-C classes.
+type macosWindowNative struct{}
+
+func (w *macosWebviewWindow) getBorderSizes() *LRTB {
+	return &LRTB{}
+}
+
+func (w *macosWebviewWindow) isFocused() bool {
+	return bool(C.windowIsFocused(w.nsWindow))
+}
+
+func (w *macosWebviewWindow) setPosition(x int, y int) {
+	C.windowSetPosition(w.nsWindow, C.int(x), C.int(y))
+}
+
+func (w *macosWebviewWindow) centerOnScreen(screen *Screen) {
+	cID := C.CString(screen.ID)
+	defer C.free(unsafe.Pointer(cID))
+	C.windowCenterOnScreen(w.nsWindow, cID)
+}
+
+func (w *macosWebviewWindow) print() error {
+	C.windowPrint(w.nsWindow)
+	return nil
+}
+
+func (w *macosWebviewWindow) startResize(_ string) error {
+	// Never called. Handled natively by the OS.
+	return nil
+}
+
+func (w *macosWebviewWindow) focus() {
+	// Make the window key and main
+	C.windowFocus(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) openContextMenu(menu *Menu, data *ContextMenuData) {
+	// Reuse existing impl if available, otherwise create new one
+	if menu.impl == nil {
+		menu.impl = newMenuImpl(menu)
+	}
+	thisMenu := menu.impl.(*macosMenu)
+	thisMenu.update()
+	C.windowShowMenu(w.nsWindow, thisMenu.nsMenu, C.int(data.X), C.int(data.Y))
+}
+
+func (w *macosWebviewWindow) getZoom() float64 {
+	return float64(C.windowZoomGet(w.nsWindow))
+}
+
+func (w *macosWebviewWindow) setFrameless(frameless bool) {
+	C.windowSetFrameless(w.nsWindow, C.bool(frameless), C.bool(w.parent.options.Mac.CornerType == MacWindowCornerTypeSquare), C.double(w.parent.options.Mac.CornerRadius))
+	if frameless {
+		C.windowSetTitleBarAppearsTransparent(w.nsWindow, C.bool(true))
+		C.windowSetHideTitle(w.nsWindow, C.bool(true))
+	} else {
+		macOptions := w.parent.options.Mac
+		appearsTransparent := macOptions.TitleBar.AppearsTransparent
+		hideTitle := macOptions.TitleBar.HideTitle
+		C.windowSetTitleBarAppearsTransparent(w.nsWindow, C.bool(appearsTransparent))
+		C.windowSetHideTitle(w.nsWindow, C.bool(hideTitle))
+	}
+	// Native-default frameless windows retain the AppKit frame, so their title-bar
+	// buttons must be hidden explicitly and restored when the frame is shown again.
+	// True borderless square and custom-radius windows do not need this handling.
+	if usesNativeMacFramelessFrame(w.parent.options.Mac) {
+		w.applyWindowButtonStates()
+	}
+}
+
+func (w *macosWebviewWindow) setHasShadow(hasShadow bool) {
+	C.windowSetShadow(w.nsWindow, C.bool(hasShadow))
+}
+
+func (w *macosWebviewWindow) getScreen() (*Screen, error) {
+	return getScreenForWindow(w)
+}
+
+func (w *macosWebviewWindow) show() {
+	animated, duration := w.notchAnimation()
+	C.windowShow(w.nsWindow, C.bool(animated), C.double(duration))
+	w.setHasShadow(!w.parent.options.Mac.DisableShadow)
+}
+
+func (w *macosWebviewWindow) hide() {
+	globalApplication.debug("Window hiding", "windowId", w.parent.id, "title", w.parent.options.Title)
+	animated, duration := w.notchAnimation()
+	C.windowHide(w.nsWindow, C.bool(animated), C.double(duration))
+}
+
+func (w *macosWebviewWindow) notchConfiguration() (int, int, string) {
+	if w.parent.notchWindow == nil {
+		return 0, 0, ""
+	}
+	return w.parent.notchWindow.contentWidth,
+		w.parent.notchWindow.contentHeight,
+		w.parent.notchWindow.screenID
+}
+
+func (w *macosWebviewWindow) setFullscreenButtonState(state ButtonState) {
+	// Both MaximiseButtonState and FullscreenButtonState target NSWindowZoomButton.
+	// Apply the more restrictive of the two so neither setter silently overrides the other.
+	C.setFullscreenButtonState(w.nsWindow, C.int(effectiveZoomButtonState(state, w.parent.options.MaximiseButtonState)))
+}
+
+func (w *macosWebviewWindow) disableSizeConstraints() {
+	C.windowDisableSizeConstraints(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) unfullscreen() {
+	C.windowUnFullscreen(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) fullscreen() {
+	C.windowFullscreen(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) unminimise() {
+	C.windowUnminimise(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) unmaximise() {
+	C.windowUnmaximise(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) maximise() {
+	C.windowMaximise(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) minimise() {
+	C.windowMinimise(w.nsWindow)
+}
+
+func platformTitlebarDoubleClickPreference() string {
+	return C.GoString(C.windowTitlebarDoubleClickPreference())
+}
+
+func (w *macosWebviewWindow) on(eventID uint) {
+	//C.registerListener(C.uint(eventID))
+}
+
+func (w *macosWebviewWindow) zoom() {
+	C.windowZoom(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) windowZoom() {
+	C.windowZoom(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) close() {
+	globalApplication.debug("Window close() called - setting unconditionallyClose flag", "windowId", w.parent.id, "title", w.parent.options.Title)
+	// Set the unconditionallyClose flag to allow the window to close
+	atomic.StoreUint32(&w.parent.unconditionallyClose, 1)
+	C.windowClose(w.nsWindow)
+	globalApplication.debug("Window close() completed", "windowId", w.parent.id, "title", w.parent.options.Title)
+	// TODO: Check if we need to unregister the window here or not
+}
+
+func (w *macosWebviewWindow) zoomIn() {
+	C.windowZoomIn(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) zoomOut() {
+	C.windowZoomOut(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) zoomReset() {
+	C.windowZoomReset(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) reload() {
+	globalApplication.debug("reload called on WebviewWindow", "parentID", w.parent.id)
+	InvokeAsync(func() {
+		C.windowReload(w.nsWindow)
+	})
+}
+
+func (w *macosWebviewWindow) forceReload() {
+	globalApplication.debug("force reload called on WebviewWindow", "parentID", w.parent.id)
+	InvokeAsync(func() {
+		C.windowForceReload(w.nsWindow)
+	})
+}
+
+func (w *macosWebviewWindow) center() {
+	C.windowCenter(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) isMinimised() bool {
+	return w.syncMainThreadReturningBool(func() bool {
+		return bool(C.windowIsMinimised(w.nsWindow))
+	})
+}
+
+func (w *macosWebviewWindow) isMaximised() bool {
+	return w.syncMainThreadReturningBool(func() bool {
+		return bool(C.windowIsMaximised(w.nsWindow))
+	})
+}
+
+func (w *macosWebviewWindow) isFullscreen() bool {
+	return w.syncMainThreadReturningBool(func() bool {
+		return bool(C.windowIsFullscreen(w.nsWindow))
+	})
+}
+
+func (w *macosWebviewWindow) isVisible() bool {
+	return bool(C.isVisible(w.nsWindow))
+}
+
+func (w *macosWebviewWindow) syncMainThreadReturningBool(fn func() bool) bool {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var result bool
+	globalApplication.dispatchOnMainThread(func() {
+		result = fn()
+		wg.Done()
+	})
+	wg.Wait()
+	return result
+}
+
+func (w *macosWebviewWindow) restore() {
+	// restore window to normal size
+	C.windowRestore(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) restoreWindow() {
+	C.windowRestore(w.nsWindow)
+}
+
+func (w *macosWebviewWindow) setEnabled(enabled bool) {
+	C.windowSetEnabled(w.nsWindow, C.bool(enabled))
+}
+
+func (w *macosWebviewWindow) execJS(js string) {
+	InvokeAsync(func() {
+		globalApplication.shutdownLock.Lock()
+		performingShutdown := globalApplication.performingShutdown
+		globalApplication.shutdownLock.Unlock()
+
+		if performingShutdown {
+			return
+		}
+		if w.nsWindow == nil || w.parent.isDestroyed() {
+			return
+		}
+		C.windowExecJS(w.nsWindow, C.CString(js))
+	})
+}
+
+// execJSDragOver executes JS for drag-over events with zero allocations
+// Must be called from main thread
+func (w *macosWebviewWindow) execJSDragOver(buffer []byte) {
+	if w.nsWindow == nil {
+		return
+	}
+	// Pass buffer directly to C without allocation
+	// Buffer must be null-terminated
+	C.windowExecJSNoAlloc(w.nsWindow, (*C.char)(unsafe.Pointer(&buffer[0])))
+}
+
+func (w *macosWebviewWindow) setURL(uri string) {
+	C.navigationLoadURL(w.nsWindow, C.CString(uri))
+}
+
+func (w *macosWebviewWindow) setAlwaysOnTop(alwaysOnTop bool) {
+	C.windowSetAlwaysOnTop(w.nsWindow, C.bool(alwaysOnTop))
+}
+
+func newWindowImpl(parent *WebviewWindow) *macosWebviewWindow {
+	result := &macosWebviewWindow{
+		parent: parent,
+	}
+	result.parent.RegisterHook(events.Mac.WebViewDidFinishNavigation, func(event *WindowEvent) {
+		// Inject runtime core
+		js := runtime.Core(globalApplication.impl.GetFlags(globalApplication.options))
+		js += fmt.Sprintf("window._wails.flags.enableFileDrop=%v;", result.parent.options.EnableFileDrop)
+		result.execJS(js)
+	})
+	return result
+}
+
+func (w *macosWebviewWindow) setTitle(title string) {
+	if !w.parent.options.Frameless {
+		cTitle := C.CString(title)
+		C.windowSetTitle(w.nsWindow, cTitle)
+	}
+}
+
+func (w *macosWebviewWindow) flash(enabled bool) {
+	C.windowFlash(w.nsWindow, C.bool(enabled))
+}
+
+func (w *macosWebviewWindow) setSize(width, height int) {
+	C.windowSetSize(w.nsWindow, C.int(width), C.int(height))
+}
+
+func (w *macosWebviewWindow) setMinSize(width, height int) {
+	C.windowSetMinSize(w.nsWindow, C.int(width), C.int(height))
+}
+func (w *macosWebviewWindow) setMaxSize(width, height int) {
+	C.windowSetMaxSize(w.nsWindow, C.int(width), C.int(height))
+}
+
+func (w *macosWebviewWindow) setResizable(resizable bool) {
+	C.windowSetResizable(w.nsWindow, C.bool(resizable))
+}
+
+func (w *macosWebviewWindow) size() (int, int) {
+	var width, height C.int
+	var wg sync.WaitGroup
+	wg.Add(1)
+	globalApplication.dispatchOnMainThread(func() {
+		C.windowGetSize(w.nsWindow, &width, &height)
+		wg.Done()
+	})
+	wg.Wait()
+	return int(width), int(height)
+}
+
+func (w *macosWebviewWindow) setRelativePosition(x, y int) {
+	C.windowSetRelativePosition(w.nsWindow, C.int(x), C.int(y))
+}
+
+func (w *macosWebviewWindow) setWindowLevel(level MacWindowLevel) {
+	switch level {
+	case MacWindowLevelNormal:
+		C.setNormalWindowLevel(w.nsWindow)
+	case MacWindowLevelFloating:
+		C.setFloatingWindowLevel(w.nsWindow)
+	case MacWindowLevelTornOffMenu:
+		C.setTornOffMenuWindowLevel(w.nsWindow)
+	case MacWindowLevelModalPanel:
+		C.setModalPanelWindowLevel(w.nsWindow)
+	case MacWindowLevelMainMenu:
+		C.setMainMenuWindowLevel(w.nsWindow)
+	case MacWindowLevelStatus:
+		C.setStatusWindowLevel(w.nsWindow)
+	case MacWindowLevelPopUpMenu:
+		C.setPopUpMenuWindowLevel(w.nsWindow)
+	case MacWindowLevelScreenSaver:
+		C.setScreenSaverWindowLevel(w.nsWindow)
+	}
+}
+
+func (w *macosWebviewWindow) setCollectionBehavior(behavior MacWindowCollectionBehavior) {
+	C.windowSetCollectionBehavior(w.nsWindow, C.int(behavior))
+}
+
+func (w *macosWebviewWindow) setTabbingMode(mode MacWindowTabbingMode) {
+	if mode == MacWindowTabbingModeDefault {
+		mode = MacWindowTabbingModeDisallowed
+	}
+
+	// Our iota values are offset by 1 from NSWindowTabbingMode:
+	//   MacWindowTabbingModeAutomatic(1) -> NSWindowTabbingModeAutomatic(0)
+	//   MacWindowTabbingModePreferred(2) -> NSWindowTabbingModePreferred(1)
+	//   MacWindowTabbingModeDisallowed(3) -> NSWindowTabbingModeDisallowed(2)
+	// https://developer.apple.com/documentation/appkit/nswindow/tabbingmode-swift.enum
+	C.windowSetTabbingMode(w.nsWindow, C.int(mode-1))
+}
+
+func (w *macosWebviewWindow) width() int {
+	var width C.int
+	var wg sync.WaitGroup
+	wg.Add(1)
+	globalApplication.dispatchOnMainThread(func() {
+		width = C.windowGetWidth(w.nsWindow)
+		wg.Done()
+	})
+	wg.Wait()
+	return int(width)
+}
+func (w *macosWebviewWindow) height() int {
+	var height C.int
+	var wg sync.WaitGroup
+	wg.Add(1)
+	globalApplication.dispatchOnMainThread(func() {
+		height = C.windowGetHeight(w.nsWindow)
+		wg.Done()
+	})
+	wg.Wait()
+	return int(height)
+}
+
+func bool2CboolPtr(value bool) *C.bool {
+	v := C.bool(value)
+	return &v
+}
+
+func (w *macosWebviewWindow) getWebviewPreferences() C.struct_WebviewPreferences {
+	wvprefs := w.parent.options.Mac.WebviewPreferences
+
+	var result C.struct_WebviewPreferences
+
+	if wvprefs.TextInteractionEnabled.IsSet() {
+		result.TextInteractionEnabled = bool2CboolPtr(wvprefs.TextInteractionEnabled.Get())
+	}
+	if wvprefs.TabFocusesLinks.IsSet() {
+		result.TabFocusesLinks = bool2CboolPtr(wvprefs.TabFocusesLinks.Get())
+	}
+	if wvprefs.FullscreenEnabled.IsSet() {
+		result.FullscreenEnabled = bool2CboolPtr(wvprefs.FullscreenEnabled.Get())
+	}
+	if wvprefs.AllowsBackForwardNavigationGestures.IsSet() {
+		result.AllowsBackForwardNavigationGestures = bool2CboolPtr(wvprefs.AllowsBackForwardNavigationGestures.Get())
+	}
+	if wvprefs.AllowsMagnification.IsSet() {
+		result.AllowsMagnification = bool2CboolPtr(wvprefs.AllowsMagnification.Get())
+	}
+	if wvprefs.AllowsAirPlayForMediaPlayback.IsSet() {
+		result.AllowsAirPlayForMediaPlayback = bool2CboolPtr(wvprefs.AllowsAirPlayForMediaPlayback.Get())
+	}
+	if wvprefs.JavaScriptCanOpenWindowsAutomatically.IsSet() {
+		result.JavaScriptCanOpenWindowsAutomatically = bool2CboolPtr(wvprefs.JavaScriptCanOpenWindowsAutomatically.Get())
+	}
+	if wvprefs.MinimumFontSize.IsSet() {
+		v := C.double(wvprefs.MinimumFontSize.Get())
+		result.MinimumFontSize = &v
+	}
+	if wvprefs.EnableAutoplayWithoutUserAction.IsSet() {
+		result.EnableAutoplayWithoutUserAction = bool2CboolPtr(wvprefs.EnableAutoplayWithoutUserAction.Get())
+	}
+
+	return result
+}
+
+func (w *macosWebviewWindow) getPanelPreferences() C.struct_PanelPreferences {
+	preferences := w.parent.options.Mac.PanelPreferences
+	return C.struct_PanelPreferences{
+		FloatingPanel:          C.bool(preferences.FloatingPanel),
+		BecomesKeyOnlyIfNeeded: C.bool(preferences.BecomesKeyOnlyIfNeeded),
+		NonActivating:          C.bool(preferences.NonActivating),
+		UtilityWindow:          C.bool(preferences.UtilityWindow),
+	}
+}
+
+func (w *macosWebviewWindow) run() {
+	for eventId := range w.parent.eventListeners {
+		w.on(eventId)
+	}
+	globalApplication.dispatchOnMainThread(func() {
+		options := w.parent.options
+		macOptions := options.Mac
+
+		var appName *C.char
+		if s := macOptions.WebviewPreferences.ApplicationNameForUserAgent; s != "" {
+			appName = C.CString(s)
+			defer C.free(unsafe.Pointer(appName))
+		}
+		notchContentWidth, notchContentHeight, notchScreenID := w.notchConfiguration()
+		cNotchScreenID := C.CString(notchScreenID)
+		defer C.free(unsafe.Pointer(cNotchScreenID))
+		w.nsWindow = C.windowNew(C.uint(w.parent.id),
+			C.int(options.Width),
+			C.int(options.Height),
+			C.bool(macOptions.EnableFraudulentWebsiteWarnings),
+			C.bool(options.Frameless),
+			C.bool(macOptions.CornerType == MacWindowCornerTypeSquare),
+			C.double(macOptions.CornerRadius),
+			C.bool(options.EnableFileDrop),
+			w.getWebviewPreferences(),
+			appName,
+			C.bool(macOptions.WindowClass == MacWindowClassPanel),
+			w.getPanelPreferences(),
+			C.bool(w.parent.notchWindow != nil),
+			C.int(notchContentWidth),
+			C.int(notchContentHeight),
+			cNotchScreenID,
+		)
+		bodyShim := C.CString(darwinBodyFetchShimJS)
+		C.windowAddDocumentStartScript(w.nsWindow, bodyShim)
+		C.free(unsafe.Pointer(bodyShim))
+		if macOptions.DisableEscapeExitsFullscreen {
+			C.windowSetDisableEscapeExitsFullscreen(w.nsWindow, C.bool(true))
+		}
+		w.setTitle(options.Title)
+		w.setResizable(!options.DisableResize)
+		if options.MinWidth != 0 || options.MinHeight != 0 {
+			w.setMinSize(options.MinWidth, options.MinHeight)
+		}
+		if options.MaxWidth != 0 || options.MaxHeight != 0 {
+			w.setMaxSize(options.MaxWidth, options.MaxHeight)
+		}
+		//w.setZoom(options.Zoom)
+		w.enableDevTools()
+
+		// Content Protection
+		w.setContentProtection(options.ContentProtectionEnabled)
+
+		w.setBackgroundColour(options.BackgroundColour)
+
+		switch macOptions.Backdrop {
+		case MacBackdropTransparent:
+			C.windowSetTransparent(w.nsWindow)
+			C.webviewSetTransparent(w.nsWindow)
+		case MacBackdropTranslucent:
+			C.windowSetTranslucent(w.nsWindow)
+			C.webviewSetTransparent(w.nsWindow)
+		case MacBackdropLiquidGlass:
+			w.applyLiquidGlass()
+		case MacBackdropNormal:
+		}
+
+		w.setWindowLevel(effectiveMacWindowLevel(options))
+
+		// Set collection behavior (defaults to FullScreenPrimary for backwards compatibility)
+		w.setCollectionBehavior(macOptions.CollectionBehavior)
+
+		// Set tabbing mode (macOS 10.12+)
+		// Default to disallowed unless explicitly configured.
+		if macOptions.TabbingMode == MacWindowTabbingModeDefault {
+			macOptions.TabbingMode = MacWindowTabbingModeDisallowed
+		}
+		w.setTabbingMode(macOptions.TabbingMode)
+
+		// Initialise the window buttons, including the hidden state required when
+		// native AppKit corners are retained for a frameless window.
+		w.applyWindowButtonStates()
+
+		// Ignore mouse events if requested
+		w.setIgnoreMouseEvents(options.IgnoreMouseEvents)
+
+		titleBarOptions := macOptions.TitleBar
+		if !w.parent.options.Frameless {
+			C.windowSetTitleBarAppearsTransparent(w.nsWindow, C.bool(titleBarOptions.AppearsTransparent))
+			C.windowSetHideTitleBar(w.nsWindow, C.bool(titleBarOptions.Hide))
+			C.windowSetHideTitle(w.nsWindow, C.bool(titleBarOptions.HideTitle))
+			C.windowSetFullSizeContent(w.nsWindow, C.bool(titleBarOptions.FullSizeContent))
+			C.windowSetUseToolbar(w.nsWindow, C.bool(titleBarOptions.UseToolbar))
+			C.windowSetToolbarStyle(w.nsWindow, C.int(titleBarOptions.ToolbarStyle))
+			C.windowSetShowToolbarWhenFullscreen(w.nsWindow, C.bool(titleBarOptions.ShowToolbarWhenFullscreen))
+			C.windowSetHideToolbarSeparator(w.nsWindow, C.bool(titleBarOptions.HideToolbarSeparator))
+		}
+
+		if macOptions.Appearance != "" {
+			C.windowSetAppearanceTypeByName(w.nsWindow, C.CString(string(macOptions.Appearance)))
+		}
+
+		// Only apply invisible title bar when the native drag area is hidden
+		// (frameless window or transparent/hidden title bar presets like HiddenInset)
+		if macOptions.InvisibleTitleBarHeight != 0 &&
+			(w.parent.options.Frameless || titleBarOptions.AppearsTransparent) {
+			C.windowSetInvisibleTitleBar(w.nsWindow, C.uint(macOptions.InvisibleTitleBarHeight))
+		}
+
+		switch w.parent.options.StartState {
+		case WindowStateMaximised:
+			w.maximise()
+		case WindowStateMinimised:
+			w.minimise()
+		case WindowStateFullscreen:
+			w.fullscreen()
+		case WindowStateNormal:
+		}
+		if w.parent.notchWindow == nil {
+			if options.Screen != nil {
+				cID := C.CString(options.Screen.ID)
+				if w.parent.options.InitialPosition == WindowCentered {
+					C.windowCenterOnScreen(w.nsWindow, cID)
+				} else {
+					C.windowSetPositionOnScreen(w.nsWindow, C.int(options.X), C.int(options.Y), cID)
+				}
+				C.free(unsafe.Pointer(cID))
+			} else if w.parent.options.InitialPosition == WindowCentered {
+				C.windowCenter(w.nsWindow)
+			} else {
+				w.setPosition(options.X, options.Y)
+			}
+		}
+
+		startURL, err := assetserver.GetStartURL(options.URL)
+		if err != nil {
+			globalApplication.handleFatalError(err)
+		}
+
+		w.setURL(startURL)
+
+		// We need to wait for the HTML to load before we can execute the javascript
+		w.parent.OnWindowEvent(events.Mac.WebViewDidFinishNavigation, func(_ *WindowEvent) {
+			InvokeAsync(func() {
+				if options.JS != "" {
+					w.execJS(options.JS)
+				}
+				if options.CSS != "" {
+					C.windowInjectCSS(w.nsWindow, C.CString(options.CSS))
+				}
+				if !options.Hidden {
+					w.parent.Show()
+				}
+			})
+		})
+
+		if options.HTML != "" {
+			w.setHTML(options.HTML)
+		}
+
+	})
+}
+
+func (w *macosWebviewWindow) nativeWindow() unsafe.Pointer {
+	return w.nsWindow
+}
+
+func (w *macosWebviewWindow) setBackgroundColour(colour RGBA) {
+
+	C.windowSetBackgroundColour(w.nsWindow, C.int(colour.Red), C.int(colour.Green), C.int(colour.Blue), C.int(colour.Alpha))
+}
+
+func (w *macosWebviewWindow) applyLiquidGlass() {
+	options := w.parent.options.Mac.LiquidGlass
+
+	// Validate corner radius
+	if options.CornerRadius < 0 {
+		options.CornerRadius = 0
+	}
+
+	globalApplication.debug("Applying Liquid Glass effect", "window", w.parent.id)
+
+	// Check if liquid glass is supported
+	if !C.isLiquidGlassSupported() {
+		// Fallback to translucent
+		C.windowSetTranslucent(w.nsWindow)
+		C.webviewSetTransparent(w.nsWindow)
+		globalApplication.debug("Liquid Glass not supported on this macOS version, falling back to translucent", "window", w.parent.id)
+		return
+	}
+
+	// Prepare tint color values (already clamped by uint8 type)
+	var r, g, b, a C.int
+	if options.TintColor != nil {
+		r = C.int(options.TintColor.Red)
+		g = C.int(options.TintColor.Green)
+		b = C.int(options.TintColor.Blue)
+		a = C.int(options.TintColor.Alpha)
+	}
+
+	// Prepare group ID
+	var groupIDCStr *C.char
+	if options.GroupID != "" {
+		groupIDCStr = C.CString(options.GroupID)
+		defer C.free(unsafe.Pointer(groupIDCStr))
+	}
+
+	// Apply liquid glass effect
+	C.windowSetLiquidGlass(
+		w.nsWindow,
+		C.int(options.Style),
+		C.int(options.Material),
+		C.double(options.CornerRadius),
+		r, g, b, a,
+		groupIDCStr,
+		C.double(options.GroupSpacing),
+	)
+
+	globalApplication.debug("Applied Liquid Glass effect", "window", w.parent.id, "style", options.Style)
+}
+
+func (w *macosWebviewWindow) relativePosition() (int, int) {
+	var x, y C.int
+	InvokeSync(func() {
+		C.windowGetRelativePosition(w.nsWindow, &x, &y)
+	})
+
+	return int(x), int(y)
+}
+
+func (w *macosWebviewWindow) position() (int, int) {
+	var x, y C.int
+	InvokeSync(func() {
+		C.windowGetPosition(w.nsWindow, &x, &y)
+	})
+
+	return int(x), int(y)
+}
+
+func (w *macosWebviewWindow) bounds() Rect {
+	// DOTO: do it in a single step + proper DPI scaling
+	var x, y, width, height C.int
+	InvokeSync(func() {
+		C.windowGetPosition(w.nsWindow, &x, &y)
+		C.windowGetSize(w.nsWindow, &width, &height)
+	})
+
+	return Rect{
+		X:      int(x),
+		Y:      int(y),
+		Width:  int(width),
+		Height: int(height),
+	}
+}
+
+func (w *macosWebviewWindow) setBounds(bounds Rect) {
+	// DOTO: do it in a single step + proper DPI scaling
+	C.windowSetPosition(w.nsWindow, C.int(bounds.X), C.int(bounds.Y))
+	C.windowSetSize(w.nsWindow, C.int(bounds.Width), C.int(bounds.Height))
+}
+
+func (w *macosWebviewWindow) physicalBounds() Rect {
+	// TODO: proper DPI scaling
+	return w.bounds()
+}
+
+func (w *macosWebviewWindow) setPhysicalBounds(physicalBounds Rect) {
+	// TODO: proper DPI scaling
+	w.setBounds(physicalBounds)
+}
+
+func (w *macosWebviewWindow) destroy() {
+	if w.nsWindow == nil {
+		return
+	}
+	// Ensure windowShouldClose allows the native close to complete before the
+	// NSWindow/NSPanel releases itself. This also prevents later bridge calls
+	// from observing a dangling native pointer.
+	atomic.StoreUint32(&w.parent.unconditionallyClose, 1)
+	w.parent.markAsDestroyed()
+	// Clear caches for this window
+	clearWindowDragCache(w.parent.id)
+	C.windowDestroy(w.nsWindow)
+	w.nsWindow = nil
+}
+
+func (w *macosWebviewWindow) setHTML(html string) {
+	// Convert HTML to C string
+	cHTML := C.CString(html)
+	// Render HTML
+	C.windowRenderHTML(w.nsWindow, cHTML)
+}
+
+func (w *macosWebviewWindow) startDrag() error {
+	C.startDrag(w.nsWindow)
+	return nil
+}
+
+func (w *macosWebviewWindow) setMinimiseButtonState(state ButtonState) {
+	C.setMinimiseButtonState(w.nsWindow, C.int(state))
+}
+
+func (w *macosWebviewWindow) setMaximiseButtonState(state ButtonState) {
+	// Both MaximiseButtonState and FullscreenButtonState target NSWindowZoomButton.
+	// Apply the more restrictive of the two so neither setter silently overrides the other.
+	C.setMaximiseButtonState(w.nsWindow, C.int(effectiveZoomButtonState(state, w.parent.options.FullscreenButtonState)))
+}
+
+func (w *macosWebviewWindow) setCloseButtonState(state ButtonState) {
+	C.setCloseButtonState(w.nsWindow, C.int(state))
+}
+
+func (w *macosWebviewWindow) isIgnoreMouseEvents() bool {
+	return bool(C.isIgnoreMouseEvents(w.nsWindow))
+}
+
+func (w *macosWebviewWindow) setIgnoreMouseEvents(ignore bool) {
+	C.setIgnoreMouseEvents(w.nsWindow, C.bool(ignore))
+}
+
+func (w *macosWebviewWindow) setContentProtection(enabled bool) {
+	C.setContentProtection(w.nsWindow, C.bool(enabled))
+}
+
+func (w *macosWebviewWindow) setNonClientHitTestRegions([]nonClientHitTestRegion) {
+}
+
+func (w *macosWebviewWindow) attachModal(modalWindow *WebviewWindow) {
+	if modalWindow == nil || modalWindow.impl == nil || modalWindow.isDestroyed() {
+		return
+	}
+	modalNativeWindow := modalWindow.impl.nativeWindow()
+	if modalNativeWindow == nil {
+		return
+	}
+	C.createModalWindow(w.nsWindow, modalNativeWindow)
+}
+
+func (w *macosWebviewWindow) cut() {
+}
+
+func (w *macosWebviewWindow) paste() {
+}
+
+func (w *macosWebviewWindow) copy() {
+}
+
+func (w *macosWebviewWindow) selectAll() {
+}
+
+func (w *macosWebviewWindow) undo() {
+}
+
+func (w *macosWebviewWindow) delete() {
+}
+
+func (w *macosWebviewWindow) redo() {
+}
+
+// setNativeZoom sets the WKWebView magnification.
+func (w *macosWebviewWindow) setNativeZoom(zoom float64) {
+	C.windowZoomSet(w.nsWindow, C.double(zoom))
+}
