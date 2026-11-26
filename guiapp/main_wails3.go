@@ -144,7 +144,11 @@ func Main(v string) {
 	// WebView2 hardware acceleration. v3.1.0 exposes no Windows GPU toggle in
 	// application.Options, so use the WebView2 loader's supported env var,
 	// which create_core_webview2_environment reads at environment creation.
-	gpuDisabled := webviewGPUDisabled(defaultWebviewUserDataPath())
+	// v2 parity (main.go): clear WebView2 caches when the embedded frontend
+	// fingerprint changes — stale caches on upgraded installs white-screen.
+	webviewUserDataPath := defaultWebviewUserDataPath()
+	clearWebviewAssetCacheIfNeeded(webviewUserDataPath)
+	gpuDisabled := webviewGPUDisabled(webviewUserDataPath)
 	if gpuDisabled {
 		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-gpu")
 	}
@@ -186,6 +190,12 @@ func Main(v string) {
 			Middleware: func(next http.Handler) http.Handler {
 				return fileCompanionAssetMiddleware(app, next)
 			},
+		},
+		Windows: application.WindowsOptions{
+			// Brand-scoped WebView2 profile — identical to the v2 layout
+			// (%APPDATA%/<BinaryName.exe>), so a promoted install inherits
+			// the user's existing profile instead of a fresh default.
+			WebviewUserDataPath: webviewUserDataPath,
 		},
 		SingleInstance: &application.SingleInstanceOptions{
 			// Brand-scoped: TigerClaw/MetaStaff must not share MaClaw's
