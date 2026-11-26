@@ -53,7 +53,10 @@ require (
 	pgregory.net/rapid v1.2.0
 )
 
-require github.com/wailsapp/wails/v3 v3.1.0 // indirect
+require (
+	github.com/coder/websocket v1.8.14 // indirect
+	github.com/wailsapp/wails/v3 v3.1.0
+)
 
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect

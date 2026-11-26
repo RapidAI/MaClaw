@@ -12,6 +12,7 @@
 //
 // Checkpoints:
 //
+//	C0 watchdog for the rapid-relaunch WebView2 init flake (WARN + tray fallback)
 //	C1 frameless window + HWND access + guarded drag (guiapp 同款逻辑)
 //	C2 DWM frameless inset measurement + corner preference + OS build
 //	C3 single instance lock + second instance --quit relay
@@ -76,7 +77,13 @@ type SpikeService struct {
 	win2            *application.WebviewWindow
 	dialogRequested bool
 	trayOnce        sync.Once
+	stopped         atomic.Bool // set once app.Run() has returned
 }
+
+// stillRunning guards the delayed callbacks: a manual window close or an
+// early --quit relay must not leave the 25s tray fallback (or a late
+// RuntimeReady goroutine) calling into a stopped application.
+func (s *SpikeService) stillRunning() bool { return !s.stopped.Load() }
 
 // GuardedDragBegin replicates guiapp's guarded frameless drag
 // (guiapp/window_drag_windows.go BeginWindowDrag) against the v3 window:
@@ -94,6 +101,9 @@ func (s *SpikeService) GuardedDragBegin() string {
 }
 
 func (s *SpikeService) onWin1RuntimeReady() {
+	if !s.stillRunning() {
+		return
+	}
 	h := uintptr(s.win.NativeWindow())
 	spikeLogf("C1 native window handle=0x%x nonzero=%v; guarded drag exposed as service method (manual feel check: top bar drag / button)", h, h != 0)
 	for _, v := range spikeWinChecks(h) {
@@ -134,6 +144,9 @@ func (s *SpikeService) createSecondWindow() {
 
 func (s *SpikeService) createTray() {
 	s.trayOnce.Do(func() {
+		if !s.stillRunning() {
+			return
+		}
 		tray := s.app.SystemTray.New()
 		icon := spikeTrayIconBytes()
 		tray.SetIcon(icon)
@@ -167,6 +180,9 @@ func main() {
 			UniqueID: "maclaw-spike-wails3",
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				spikeLogf("C3 second-instance launch args=%v workdir=%s", data.Args, data.WorkingDir)
+				// 移植提示：Windows 转发完整命令行，data.Args[0] 是第二实例
+				// 的 exe 路径。guiapp 移植时参数判定必须从 Args[1:] 开始
+				// （spike 这里用全量 Contains 是刻意的稳健写法）。
 				if slices.Contains(data.Args, "--quit") {
 					spikeLogf("C3 PASS second instance relayed --quit")
 					svc.app.Quit()
@@ -210,6 +226,9 @@ func main() {
 	// immediate relaunch can stall WebView2 environment creation for seconds
 	// and WindowRuntimeReady may not fire within the normal ~5s budget.
 	time.AfterFunc(12*time.Second, func() {
+		if !svc.stillRunning() {
+			return
+		}
 		if !readyFired.Load() {
 			spikeLogf("C0 WARN runtime not ready after 12s (rapid-relaunch env contention); checkpoints will not fire this run")
 		}
@@ -220,6 +239,7 @@ func main() {
 
 	spikeLogf("main window created; running event loop")
 	app.Run()
+	svc.stopped.Store(true)
 	spikeLogf("=== app exited ===")
 }
 

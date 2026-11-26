@@ -73,7 +73,7 @@ func spikeWinChecks(hwnd uintptr) []string {
 	var pref uint32
 	hr, _, _ := procDwmGetWindowAttribute.Call(hwnd, dwmwaCornerPref, uintptr(unsafe.Pointer(&pref)), 4)
 	if hr == 0 {
-		out = append(out, fmt.Sprintf("cornerPreference=%d (%s)", pref, spikeCornerName(pref, hr)))
+		out = append(out, fmt.Sprintf("cornerPreference=%d (%s)", pref, spikeCornerName(pref)))
 	} else {
 		out = append(out, fmt.Sprintf("cornerPreference=unsupported hr=0x%08x (Windows 10 预期如此)", hr))
 	}
@@ -82,10 +82,7 @@ func spikeWinChecks(hwnd uintptr) []string {
 	return out
 }
 
-func spikeCornerName(pref uint32, hr uintptr) string {
-	if hr != 0 {
-		return "unsupported"
-	}
+func spikeCornerName(pref uint32) string {
 	if pref == dwmcpRound {
 		return "round"
 	}
