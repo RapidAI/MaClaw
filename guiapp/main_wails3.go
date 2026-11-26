@@ -125,7 +125,8 @@ func Main3(v string) {
 	if gpuDisabled {
 		os.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-gpu")
 	}
-	bootLog("wails3 gpuDisabled=%v", gpuDisabled)
+	visualHosting := useVisualHostingWails3()
+	bootLog("wails3 gpuDisabled=%v visualHosting=%v remote=%v", gpuDisabled, visualHosting, perfSessionIsRemote())
 	launch := classifyDesktopLaunch(args)
 	winWidth, winHeight := envCheckWidth, envCheckHeight
 	hideOnClose := false
