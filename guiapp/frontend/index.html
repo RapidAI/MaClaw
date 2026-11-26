@@ -284,8 +284,10 @@
   // the window.go.main.App Proxy so the generated wailsjs bindings
   // (window['go']['main']['App']['X']) route to Call.ByName unchanged.
   // Inline + self-contained: this file is not processed by the bundler.
-  // V3 service prefix must match the Go service registration (package
-  // guiapp, type App); verify during the wails3 smoke run.
+  // V3 service prefix = pkgPath.TypeName (wails3 bindings.go fqn =
+  // packagePath.typeName.methodName, pkgPath is the FULL import path —
+  // verified against v3.1.0 bindings.go:229-245; only `package main` is
+  // special-cased to the short name, which is why the spike worked).
   if (!window.runtime) {
     // wails3 migration (Phase 2): install the window.go.main.App Proxy
     // SYNCHRONOUSLY — the app bundle's first binding call can happen before
@@ -318,7 +320,7 @@
           return wails3Runtime().then(function (m) {
             var call = (m && m.Call) || (m && m.default && m.default.Call);
             if (!call) throw new Error('wails3 runtime module has no Call namespace');
-            return call.ByName('guiapp.App.' + name, ...args);
+            return call.ByName('github.com/RapidAI/CodeClaw/guiapp.App.' + name, ...args);
           });
         };
       },

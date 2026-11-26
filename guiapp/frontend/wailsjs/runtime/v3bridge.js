@@ -8,7 +8,7 @@
 // V3_SERVICE_PREFIX must match the wails3 service registration: package
 // guiapp, service type App → "guiapp.App". Verify via the wails3 smoke run
 // (dist/gate_wails3.exe) before cutting over.
-export const V3_SERVICE_PREFIX = 'guiapp.App.';
+export const V3_SERVICE_PREFIX = 'github.com/RapidAI/CodeClaw/guiapp.App.';
 
 let v3Promise = null;
 
