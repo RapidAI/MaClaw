@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"clawmatemaker/internal/flash"
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"context"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // assets is deliberately embedded from the built static surface. The desktop
@@ -42,21 +42,31 @@ func main() {
 	flash.ConfigureSidecar(executable, releaseBuild == "true")
 	flash.ConfigureSidecarTrust(releaseKeyID, releasePublicKeyBase64)
 	app := NewApp()
-	err = wails.Run(&options.App{
+	v3app := application.New(application.Options{
+		Name: "ClawMate Maker",
+		Services: []application.Service{
+			application.NewService(app),
+		},
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(assets),
+		},
+		// v2 OnBeforeClose semantics: block quit while a flash write is
+		// active (the UI is notified via the app:close-blocked event).
+		ShouldQuit: func() bool {
+			return !app.PreventCloseWhileWriting(context.Background())
+		},
+	})
+	wails3App = v3app
+	win := v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "ClawMate Maker",
 		Width:            1180,
 		Height:           820,
 		MinWidth:         960,
 		MinHeight:        680,
-		DisableResize:    false,
-		BackgroundColour: &options.RGBA{R: 244, G: 247, B: 251, A: 255},
-		AssetServer:      &assetserver.Options{Assets: assets},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		OnBeforeClose:    app.PreventCloseWhileWriting,
-		Bind:             []interface{}{app},
+		BackgroundColour: application.RGBA{Red: 244, Green: 247, Blue: 251, Alpha: 255},
 	})
-	if err != nil {
+	_ = win
+	if err := v3app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

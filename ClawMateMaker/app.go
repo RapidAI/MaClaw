@@ -21,7 +21,7 @@ import (
 	"clawmatemaker/internal/firmware"
 	"clawmatemaker/internal/jobs"
 	"clawmatemaker/internal/logging"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // App is the narrow Wails boundary. All safety decisions remain in internal packages.
@@ -154,6 +154,50 @@ type planStart struct {
 	err    error
 }
 
+// wails3App is the running v3 application instance, installed by main
+// before the first window is created. Nil in unit tests: every helper
+// degrades to a no-op or a typed error, matching the v2 behaviour where
+// runtime calls without a started app returned errors.
+var wails3App *application.App
+
+func emitWails3Event(name string, payload any) {
+	if wails3App == nil {
+		return
+	}
+	wails3App.Event.Emit(name, payload)
+}
+
+func openWails3FileDialog(title, filterName, filterPattern string) (string, error) {
+	if wails3App == nil {
+		return "", fmt.Errorf("native file chooser is unavailable before application startup")
+	}
+	d := wails3App.Dialog.OpenFile().SetTitle(title)
+	if filterPattern != "" {
+		d = d.AddFilter(filterName, filterPattern)
+	}
+	return d.PromptForSingleSelection()
+}
+
+func openWails3DirectoryDialog(title string) (string, error) {
+	if wails3App == nil {
+		return "", fmt.Errorf("native directory chooser is unavailable before application startup")
+	}
+	return wails3App.Dialog.OpenFile().SetTitle(title).
+		CanChooseDirectories(true).CanChooseFiles(false).
+		PromptForSingleSelection()
+}
+
+// ServiceStartup wires the v3 service lifecycle into the existing startup.
+func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
+	a.startup(ctx)
+	return nil
+}
+
+// ServiceShutdown wires the v3 service lifecycle into the existing shutdown.
+func (a *App) ServiceShutdown() {
+	a.shutdown(context.Background())
+}
+
 func NewApp() *App {
 	return &App{
 		verifiedPackage: make(map[string]verifiedPackage),
@@ -174,7 +218,7 @@ func (a *App) startup(ctx context.Context) {
 	a.watchCancel = cancel
 	go device.WatchCandidates(watchCtx, device.ListCandidates, device.DefaultWatchPolicy(), func(event device.ChangeEvent) {
 		if a.ctx != nil {
-			wailsruntime.EventsEmit(a.ctx, "device:change", event)
+			emitWails3Event("device:change", event)
 		}
 	})
 }
@@ -197,7 +241,7 @@ func (a *App) PreventCloseWhileWriting(context.Context) bool {
 		return false
 	}
 	if a.ctx != nil {
-		wailsruntime.EventsEmit(a.ctx, "app:close-blocked", map[string]any{"reason": "flash_active"})
+		emitWails3Event("app:close-blocked", map[string]any{"reason": "flash_active"})
 	}
 	return true
 }
@@ -532,7 +576,7 @@ func (a *App) ImportFirmwarePackageForChannel(boardID, locale, requestedChannel 
 		return catalog.DownloadedRelease{}, fmt.Errorf("native file chooser is unavailable before application startup")
 	}
 	copy := dialogCopyFor(locale)
-	path, err := wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{Title: copy.importTitle, Filters: []wailsruntime.FileFilter{{DisplayName: copy.firmwareFilter, Pattern: "*.clawfw"}}})
+	path, err := openWails3FileDialog(copy.importTitle, copy.firmwareFilter, "*.clawfw")
 	if err != nil {
 		return catalog.DownloadedRelease{}, fmt.Errorf("choose firmware package: %w", err)
 	}
@@ -1362,7 +1406,7 @@ func (a *App) ExportJobDiagnostics(jobID, locale string) (diagnostics.Bundle, er
 	if a.ctx == nil {
 		return diagnostics.Bundle{}, fmt.Errorf("native directory chooser is unavailable before application startup")
 	}
-	destination, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{Title: dialogCopyFor(locale).diagnosticsDirectoryTitle})
+	destination, err := openWails3DirectoryDialog(dialogCopyFor(locale).diagnosticsDirectoryTitle)
 	if err != nil {
 		return diagnostics.Bundle{}, fmt.Errorf("choose diagnostics directory: %w", err)
 	}
@@ -1427,7 +1471,7 @@ func (a *App) firmwareCachePath() string {
 
 func (a *App) emitLog(event logging.Event) {
 	if a.ctx != nil {
-		wailsruntime.EventsEmit(a.ctx, "job:log", event)
+		emitWails3Event("job:log", event)
 	}
 }
 
