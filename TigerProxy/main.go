@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
@@ -66,7 +67,7 @@ func cleanOldLogs(dir string, maxDays int) {
 	}
 }
 
-func main() {
+func main2() {
 	closeLog := initLogging()
 	defer closeLog()
 	log.Printf("[codexproxy] starting")
@@ -96,7 +97,11 @@ func main() {
 		},
 		Bind: []interface{}{app},
 	}
-	setupTray(app, appOptions)
+	// v2 EditMenu: Ctrl+A/C/V/X inside WebView2 input fields.
+	editMenu := menu.NewMenu()
+	editMenu.Append(menu.EditMenu())
+	appOptions.Menu = editMenu
+	setupTray(app)
 	if err := wails.Run(appOptions); err != nil {
 		log.Fatal(err)
 	}
