@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -34,6 +35,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
+
+	regexpSyntax "regexp/syntax"
 )
 
 // TurnRouter is an optional LoopCallbacks extension for per-turn model routing.
@@ -5842,12 +5845,49 @@ func normalizeSpilledSearchQuery(query string) string {
 	if len(query) > maxSpilledSearchQueryBytes {
 		return query
 	}
+	folded := foldSpilledSearchQuery(query)
+	// regexp.Compile("(?i)"+QuoteMeta(query)) is the observation. A local
+	// SimpleFold walk that disagrees with that compile, or that grows past
+	// the pattern-size limit and makes Compile fail, is not that page.
+	if !spilledSearchFoldCompiles(query, folded) {
+		return query
+	}
+	return folded
+}
+
+func foldSpilledSearchQuery(query string) string {
 	var b strings.Builder
 	b.Grow(len(query))
 	for _, r := range query {
 		b.WriteRune(foldedSearchRune(r))
 	}
 	return b.String()
+}
+
+// spilledSearchFoldCompiles reports that the folded spelling is the page
+// readSearchOpened actually searches. That path is regexp.Compile, which
+// parses with syntax.Perl and then Simplify. Regexp.String keeps the raw
+// pattern, so "I" and "i" look different even though (?i) searches one class.
+// A fold that does not parse must stay distinct from an accepted shorter
+// spelling of the same SimpleFold class.
+func spilledSearchFoldCompiles(raw, folded string) bool {
+	left, err := compiledSearchPattern(raw)
+	if err != nil {
+		return false
+	}
+	right, err := compiledSearchPattern(folded)
+	if err != nil {
+		return false
+	}
+	return left.Equal(right)
+}
+
+func compiledSearchPattern(query string) (*regexpSyntax.Regexp, error) {
+	re, err := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(query), regexpSyntax.Perl)
+	if err != nil {
+		return nil, err
+	}
+	return re.Simplify(), nil
 }
 
 // regexpFoldMin and regexpFoldMax are the runes Go's regexp (?i) folds.
@@ -7158,7 +7198,9 @@ type toolOutcome struct {
 //   - "未知工具"         → im_tool_execution.go, subagent callbacks
 //   - "参数解析失败"     → im_tool_execution.go, tui callbacks
 //   - "错误:"           → various tool handlers
-//   - "Error:"          → various tool handlers
+//   - "Error:" / "error:" → tool handlers. read_tool_result uses the
+//     lowercase spelling. Matching only "Error:" recorded that failure
+//     as a successful page.
 func classifyToolResult(result string) toolOutcome {
 	snippet := truncateRunesSuffix(result, 300)
 
@@ -7173,14 +7215,18 @@ func classifyToolResult(result string) toolOutcome {
 		"工具执行异常", // im_tool_execution.go panic recovery
 		"未知工具",   // im_tool_execution.go, subagent callbacks
 		"参数解析失败", // im_tool_execution.go, tui callbacks
-		"错误:",    // various tool handlers
-		"Error:", // various tool handlers
+		"错误:", // various tool handlers
 	}
 	trimmed := strings.TrimSpace(result)
 	for _, prefix := range errorPrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 		}
+	}
+	// Case-insensitive so "error:" from read_tool_result is the same failure
+	// as "Error:". A capital Error later in the line is ordinary prose.
+	if len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "error:") {
+		return toolOutcome{kind: toolOutcomeError, snippet: snippet}
 	}
 	// Also check for [错误] appearing mid-result (e.g. bash output + error).
 	if strings.Contains(result, "\n[错误]") {

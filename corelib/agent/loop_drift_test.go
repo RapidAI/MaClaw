@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode"
-)
 
+	regexpSyntax "regexp/syntax"
+)
 func repeatToolCalls(name, args, result string, success, poll bool, n int) []toolCallRecord {
 	tail := make([]toolCallRecord, n)
 	for i := range tail {
@@ -623,9 +625,43 @@ func TestSearchQueryFoldFollowsRegexpCaseClass(t *testing.T) {
 	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{longCall, acceptedCall, acceptedCall}); seen != 2 {
 		t.Fatal("the rejected spelling must not count as the accepted search")
 	}
+	// The loop records the tool string before the host outcome. A lowercase
+	// "error:" used to classify as success, so the rejected spelling joined
+	// the accepted page and the third call hard-stopped a different search.
+	if classifyToolResult(longCall.result).kind != toolOutcomeError {
+		t.Fatal("read_tool_result error: must not classify as a successful page")
+	}
+	recorded := longCall
+	recorded.success = executionOutcomeFromToolOutcome(classifyToolResult(recorded.result).kind) == ToolExecutionOutcomeOK
+	if recorded.success {
+		t.Fatal("a rejected query must not be recorded as a successful commit")
+	}
+	if _, seen := repeatedSuccessfulCommit([]toolCallRecord{recorded, acceptedCall, acceptedCall}); seen != 2 {
+		t.Fatal("a misclassified rejection must not join the accepted search")
+	}
 	// minFoldRune('A') is 'A', not 'a'. 'a' and Kelvin still join that minimum.
 	if foldedSearchRune('@') != '@' || foldedSearchRune('A') != 'A' || foldedSearchRune('a') != 'A' || foldedSearchRune('\u212A') != 'K' {
 		t.Fatalf("fold bounds drifted: @=%#U A=%#U a=%#U kelvin=%#U", foldedSearchRune('@'), foldedSearchRune('A'), foldedSearchRune('a'), foldedSearchRune('\u212A'))
+	}
+	// The page is the simplified syntax tree regexp.Compile searches. A local
+	// walk that disagrees, or a fold that no longer parses, is not that page.
+	// Regexp.String keeps the raw pattern, so it cannot tell I from i.
+	for _, query := range []string{"I", "i", "İ", "Σ", "ς", "a\u212A", string(rune(regexpFoldMax + 1))} {
+		folded := normalizeSpilledSearchQuery(query)
+		left, err := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(query), regexpSyntax.Perl)
+		if err != nil {
+			if folded != strings.TrimSpace(query) {
+				t.Fatalf("uncompiled %q folded to %q", query, folded)
+			}
+			continue
+		}
+		right, ferr := regexpSyntax.Parse("(?i)"+regexp.QuoteMeta(folded), regexpSyntax.Perl)
+		if ferr != nil || !left.Simplify().Equal(right.Simplify()) {
+			t.Fatalf("folded %q is not the compiled (?i) page of %q: %v %v", folded, query, err, ferr)
+		}
+		if _, cerr := regexp.Compile("(?i)" + regexp.QuoteMeta(query)); cerr != nil && folded != strings.TrimSpace(query) {
+			t.Fatalf("compile failed for %q but it folded to %q: %v", query, folded, cerr)
+		}
 	}
 }
 

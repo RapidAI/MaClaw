@@ -9612,6 +9612,8 @@ func TestClassifyToolResult(t *testing.T) {
 		{"parse failed", "参数解析失败: unexpected end of JSON", toolOutcomeError},
 		{"chinese error prefix", "错误: something went wrong", toolOutcomeError},
 		{"english error prefix", "Error: connection refused", toolOutcomeError},
+		{"lowercase tool error", "error: toolresult: query exceeds 4096 bytes", toolOutcomeError},
+		{"lowercase read error", "error: read_tool_result requires id (from [tool_result_handle]) or path", toolOutcomeError},
 		{"mid-result error", "some output\n[错误] 后台任务启动失败: no space", toolOutcomeError},
 
 		// OK cases — normal output should not be misclassified.
