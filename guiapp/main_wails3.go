@@ -19,7 +19,12 @@ import (
 	"slices"
 	"time"
 
+	goruntime "runtime"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	wruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -69,10 +74,34 @@ func Main(v string) {
 	if isConsoleBufferCommand(args) {
 		os.Exit(runConsoleBufferCommand(args))
 	}
-	// Preamble kept in sync with main.go Main().
+	// Preamble mirrors main.go's v2 Main line-for-line (the v2 path is gone;
+	// keep them from drifting if anything is ever re-ported).
+	isTUI := isTUISubcommand(args)
+
+	// --- Log to file: ~/.maclaw/logs/maclaw.log ---
+	corelib.SyncLogDetailEnabledFromDefaultConfig()
+	initLogFile()
+	if isTUI {
+		setLogFallback(false, nil)
+	}
+
+	// --- Program log for programming tool output ---
+	programLogger.Init()
+
+	if isCompanionPaperHostArgv(args) {
+		os.Exit(runCompanionPaperHost(args))
+	}
+	if goruntime.GOOS != "darwin" && companionPaperFromArgs(args) {
+		os.Exit(0)
+	}
+	bm25.PrewarmDict()
+	skill.MigrateSkillsDir()
+
+	if isTUI {
+		runTUIMode(nil)
+		return
+	}
 	app := NewApp()
-	// Dev subcommands, kept in sync with main.go Main (parity for wails3
-	// dev builds).
 	if len(args) > 1 {
 		if args[1] == "remote-smoke" {
 			os.Exit(runRemoteSmoke(app, args[2:]))
@@ -227,6 +256,11 @@ func Main(v string) {
 
 	log.Printf("[boot] wails3 event loop starting")
 	v3app.Run()
+
+	// v2 Main 同款收尾：companion 退役 + 确定性退出（注入钩子下
+	// ExitProcess 挂死防护，见 finishDesktopExit 注释）。
+	app.signalFileCompanionQuit()
+	finishDesktopExit()
 }
 
 // onSecondInstanceLaunch3 ports the v2 OnSecondInstanceLaunch body; args must
