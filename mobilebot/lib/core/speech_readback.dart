@@ -32,13 +32,10 @@ Future<String?> speakReplyReadback(
     onDone();
     return '';
   }
-  var spokenByKokoro = false;
   if (await engine.useKokoro) {
     final err = await engine.speakSegments(
       splitSpeechSegments(text),
-      onEvent: (event, _) {
-        if (event == 'start') spokenByKokoro = true;
-      },
+      onEvent: (_, _) {},
     );
     if (err == null) {
       onDone();
@@ -50,21 +47,42 @@ Future<String?> speakReplyReadback(
     onDone();
     return 'system tts unavailable';
   }
+  // Restore the previous handlers only after this turn ends. Clearing them in
+  // finally runs before the platform completion callback, so a Kokoro start
+  // followed by a failed segment used to drop onDone and leave the mic shut.
+  final previousComplete = tts.completionHandler;
+  final previousError = tts.errorHandler;
+  var settled = false;
+  void restore() {
+    tts.setCompletionHandler(previousComplete ?? () {});
+    tts.setErrorHandler(previousError ?? (_) {});
+  }
+
+  void finish() {
+    if (settled) return;
+    settled = true;
+    restore();
+    onDone();
+  }
+
   try {
-    final previous = tts.completionHandler;
     tts.setCompletionHandler(() {
-      if (previous != null) previous();
-      onDone();
+      previousComplete?.call();
+      finish();
     });
-    tts.setErrorHandler((_) => onDone());
+    tts.setErrorHandler((message) {
+      previousError?.call(message);
+      finish();
+    });
     await tts.stop();
     await tts.speak(text);
     return '';
   } on Object catch (e) {
-    onDone();
+    if (!settled) {
+      settled = true;
+      restore();
+      onDone();
+    }
     return 'system tts failed: $e';
-  } finally {
-    // Do not leave our handler attached after this turn.
-    if (spokenByKokoro) tts.setCompletionHandler(() {});
   }
 }

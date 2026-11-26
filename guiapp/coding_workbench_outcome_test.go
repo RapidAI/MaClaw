@@ -467,3 +467,53 @@ func TestRemoteTaskDetailUsesTheListStatusSource(t *testing.T) {
 		t.Fatalf("detail row = %#v, want the workbench outcome the list shows", row.ActiveWorkflow)
 	}
 }
+
+// get_task used to count shares from the one row it opened. A directory that
+// the list already knows is shared then looked unique, so the idle detail
+// inherited the sibling's ledger run. The detail must use the same visible
+// task set the list counts.
+func TestRemoteTaskDetailDoesNotInheritSharedDirectoryRun(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// The list reads an already-open ledger only when its path matches this
+	// data dir. A bare assignment is closed and ignored, which hides the bug.
+	app.codingRuntimeStore = store
+	app.codingRuntimeStorePath = filepath.Clean(app.GetDataDir())
+
+	workingDir := filepath.Join(t.TempDir(), "shared-detail")
+	runningTask := app.CreateTaskWithMode("Running detail sibling", workingDir, "coding_dev")
+	idleTask := app.CreateTaskWithMode("Idle detail sibling", workingDir, "coding_dev")
+	if runningTask.ProjectPath == "" || idleTask.ProjectPath == "" || runningTask.ProjectPath == idleTask.ProjectPath {
+		t.Fatalf("task paths running=%q idle=%q", runningTask.ProjectPath, idleTask.ProjectPath)
+	}
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-detail-shared", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(runningTask.ProjectPath)
+	beginForegroundAgentOwner(owner)
+	defer endForegroundAgentOwner(owner)
+
+	listed := listedWorkflowStatus(app.ListTasks(50), idleTask.ProjectPath)
+	detail := app.remoteControlTaskSnapshot(idleTask.ProjectPath)
+	got := ""
+	if detail.ActiveWorkflow != nil {
+		got = detail.ActiveWorkflow.Status
+	}
+	if got != listed {
+		t.Fatalf("detail status = %q, list status = %q; get_task must not inherit the sibling run", got, listed)
+	}
+	if listed == string(codingruntime.TaskRunning) {
+		t.Fatalf("list marked the idle sibling running: %q", listed)
+	}
+}
+

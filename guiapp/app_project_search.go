@@ -554,12 +554,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	// inputs once so both surfaces apply the same V2, ledger, workbench,
 	// slot, and live-owner facts.
 	statusSource := a.collectTaskListStatusSource(shareRecords, func(rec memory.ProjectRecord) bool {
-		if !isTaskManagementRecord(rec) || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
-			return false
-		}
-		// Cloud rows drop coding tags before the ledger match, so they must
-		// not make a local task look like it shares a directory.
-		return localCloudWorkspaceID(rec) == ""
+		return taskListShareInclude(pi, rec)
 	})
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -5333,11 +5328,10 @@ func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Ca
 }
 
 // applyTaskListStatusOne gives one task row the same status the task list
-// shows. A detail view cannot reuse a list-wide pass (share counts and live
-// owners are computed over the whole window), so it runs the same collect +
-// apply for a single record and ends with the one-row facts the list also
-// uses. Without this, get_task could show a stale or empty status while the
-// list showed completed.
+// shows. Live owners are process-wide. Share counts are not: a directory
+// used by two visible tasks is shared only when both rows are counted.
+// Counting the opened row alone makes that directory look unique, so an idle
+// get_task inherits the sibling's ledger run while the list does not.
 func (a *App) applyTaskListStatusOne(result *ProjectSearchResult) {
 	if a == nil || result == nil {
 		return
@@ -5346,8 +5340,33 @@ func (a *App) applyTaskListStatusOne(result *ProjectSearchResult) {
 	if !ok {
 		return
 	}
-	source := a.collectTaskListStatusSource([]memory.ProjectRecord{rec}, func(memory.ProjectRecord) bool { return true })
+	shareRecords := []memory.ProjectRecord{rec}
+	include := func(memory.ProjectRecord) bool { return true }
+	if pi := a.taskIndexForStatus(); pi != nil && codingRuntimeRefForTaskTags(rec.Tags) != "" {
+		shareRecords = pi.ListAllMatching(isTaskManagementRecord)
+		include = func(row memory.ProjectRecord) bool {
+			return taskListShareInclude(pi, row)
+		}
+	}
+	source := a.collectTaskListStatusSource(shareRecords, include)
 	a.applyTaskListStatusSource(result, projectWorkflowProjectPathForRecord(rec), source)
+}
+
+// taskIndexForStatus is the index SearchTasks counts shares against.
+func (a *App) taskIndexForStatus() *memory.ProjectIndex {
+	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	return a.memoryStore.ProjectIndex()
+}
+
+// taskListShareInclude is the SearchTasks share filter: hidden, archived,
+// sidebar-omitted, and cloud rows do not make a local directory look shared.
+func taskListShareInclude(pi *memory.ProjectIndex, rec memory.ProjectRecord) bool {
+	if !isTaskManagementRecord(rec) || pi == nil || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
+		return false
+	}
+	return localCloudWorkspaceID(rec) == ""
 }
 
 // taskRecordForStatus loads the index record whose path matches (or shares a

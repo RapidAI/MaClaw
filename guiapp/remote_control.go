@@ -660,8 +660,8 @@ func (a *App) remoteControlTaskSnapshot(path string) ProjectSearchResult {
 		result.ProjectPath = path
 	}
 	// The detail badge must match the list: same status sources, same order.
-	// Only one row is needed here, so this is one collect + apply, not a
-	// full sidebar scan.
+	// Share counts still come from the visible task set. One row would make
+	// a shared directory look unique and inherit the sibling's run.
 	a.applyTaskListStatusOne(&result)
 	return result
 }

@@ -80,6 +80,34 @@ void main() {
     expect(done, 1);
   });
 
+  // A previous completion handler belongs to an earlier turn. Clearing it
+  // before this turn's platform callback arrives drops the new completion,
+  // which leaves the Bot voice loop in `_ttsBusy` with the microphone shut.
+  test('system tts keeps this turn completion when a previous handler exists',
+      () async {
+    final tts = FakeTtsChannel();
+    addTearDown(tts.dispose);
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final system = FlutterTtsProbe();
+    addTearDown(system.dispose);
+    var previous = 0;
+    system.instance.setCompletionHandler(() => previous++);
+    var done = 0;
+    final err = await speakReplyReadback(
+      engine,
+      '上海明天有雨。',
+      onDone: () => done++,
+      systemTts: () => system.instance,
+    );
+    expect(err, '');
+    expect(done, 0);
+    expect(previous, 0);
+    await system.fireCompletion();
+    expect(done, 1);
+    expect(previous, 1);
+  });
+
   test('a long reply is summarized before it reaches tts', () async {
     final tts = FakeTtsChannel();
     addTearDown(tts.dispose);
