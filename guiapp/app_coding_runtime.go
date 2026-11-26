@@ -22,16 +22,26 @@ func (a *App) openExistingCodingRuntimeStore() *codingruntime.SQLiteStore {
 		return nil
 	}
 	a.codingRuntimeStoreMu.Lock()
-	store := a.codingRuntimeStore
-	a.codingRuntimeStoreMu.Unlock()
-	if store != nil {
-		return store
+	defer a.codingRuntimeStoreMu.Unlock()
+	if a.codingRuntimeStoreClosed {
+		return nil
 	}
-	dbPath := filepath.Join(a.GetDataDir(), "coding_runtime.db")
+	dir := filepath.Clean(a.GetDataDir())
+	if store := a.codingRuntimeStore; store != nil {
+		if a.codingRuntimeStorePath == dir {
+			return store
+		}
+		a.codingRuntimeStore = nil
+		a.codingRuntimeStorePath = ""
+		if err := store.Close(); err != nil {
+			log.Printf("[coding-runtime] close replaced ledger failed: %v", err)
+		}
+	}
+	dbPath := filepath.Join(dir, "coding_runtime.db")
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
-	return a.ensureCodingRuntimeStore()
+	return a.openCodingRuntimeStoreLocked(dir)
 }
 
 // ensureCodingRuntimeStore opens the app-level execution ledger once. Keeping
@@ -43,10 +53,24 @@ func (a *App) ensureCodingRuntimeStore() *codingruntime.SQLiteStore {
 	}
 	a.codingRuntimeStoreMu.Lock()
 	defer a.codingRuntimeStoreMu.Unlock()
-	if a.codingRuntimeStore != nil {
-		return a.codingRuntimeStore
+	if a.codingRuntimeStoreClosed {
+		return nil
 	}
-	dir := a.GetDataDir()
+	return a.openCodingRuntimeStoreLocked(filepath.Clean(a.GetDataDir()))
+}
+
+func (a *App) openCodingRuntimeStoreLocked(dir string) *codingruntime.SQLiteStore {
+	if a.codingRuntimeStore != nil {
+		if a.codingRuntimeStorePath == dir {
+			return a.codingRuntimeStore
+		}
+		old := a.codingRuntimeStore
+		a.codingRuntimeStore = nil
+		a.codingRuntimeStorePath = ""
+		if err := old.Close(); err != nil {
+			log.Printf("[coding-runtime] close replaced ledger failed: %v", err)
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Printf("[coding-runtime] create data directory failed: %v", err)
 		return nil
@@ -75,6 +99,7 @@ func (a *App) ensureCodingRuntimeStore() *codingruntime.SQLiteStore {
 		log.Printf("[coding-runtime] marked %d abandoned attempt(s) interrupted at store open; recovery requires read-only probe", len(abandoned))
 	}
 	a.codingRuntimeStore = store
+	a.codingRuntimeStorePath = dir
 	return store
 }
 
@@ -83,9 +108,28 @@ func (a *App) closeCodingRuntimeStore() {
 		return
 	}
 	a.codingRuntimeStoreMu.Lock()
+	defer a.codingRuntimeStoreMu.Unlock()
 	store := a.codingRuntimeStore
 	a.codingRuntimeStore = nil
-	a.codingRuntimeStoreMu.Unlock()
+	a.codingRuntimeStorePath = ""
+	a.codingRuntimeStoreClosed = true
+	if store != nil {
+		_ = store.Close()
+	}
+}
+
+func (a *App) resetCodingRuntimeStoreForDataDirChange() {
+	if a == nil {
+		return
+	}
+	a.codingRuntimeStoreMu.Lock()
+	defer a.codingRuntimeStoreMu.Unlock()
+	if a.codingRuntimeStoreClosed {
+		return
+	}
+	store := a.codingRuntimeStore
+	a.codingRuntimeStore = nil
+	a.codingRuntimeStorePath = ""
 	if store != nil {
 		_ = store.Close()
 	}
@@ -160,8 +204,10 @@ type desktopCodingStaticWorkspace struct {
 // the capability lifecycle auditable in one place; App only holds thin
 // delegating wrappers, and no other type may mint, chain, fence, or revoke.
 type desktopCodingCapabilityIssuer struct {
-	relationsMu sync.Mutex
-	relations   *codingTaskRelationService
+	relationsMu     sync.Mutex
+	relations       *codingTaskRelationService
+	relationsPath   string
+	relationsClosed bool
 
 	sessionsMu sync.Mutex
 	sessions   map[string]desktopCodingTaskSession
@@ -183,30 +229,109 @@ func (i *desktopCodingCapabilityIssuer) relationService(dataDir string) (*coding
 	if i == nil {
 		return nil, fmt.Errorf("coding task relation host is unavailable")
 	}
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		return nil, fmt.Errorf("coding task relation data directory is required")
+	}
+	dataDir = filepath.Clean(dataDir)
 	i.relationsMu.Lock()
 	defer i.relationsMu.Unlock()
+	if i.relationsClosed {
+		return nil, fmt.Errorf("coding task relation host is closed")
+	}
 	if i.relations != nil {
-		return i.relations, nil
+		if i.relationsPath == dataDir {
+			return i.relations, nil
+		}
+		i.closeRelationServiceLocked()
+		i.invalidateRelationCapabilitiesForDataDirChange()
 	}
 	service, err := newCodingTaskRelationService(filepath.Join(dataDir, "coding_task_relations.db"))
 	if err != nil {
 		return nil, err
 	}
 	i.relations = service
+	i.relationsPath = dataDir
 	return service, nil
+}
+
+func (i *desktopCodingCapabilityIssuer) closeRelationServiceLocked() {
+	service := i.relations
+	i.relations = nil
+	i.relationsPath = ""
+	if service != nil {
+		if err := service.Close(); err != nil {
+			log.Printf("[coding-runtime] close task relation service failed: %v", err)
+		}
+	}
+}
+
+func (i *desktopCodingCapabilityIssuer) invalidateRelationCapabilitiesForDataDirChange() {
+	owners := make(map[string]struct{})
+	i.sessionsMu.Lock()
+	defer i.sessionsMu.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for ownerID := range i.sessions {
+		owners[ownerID] = struct{}{}
+	}
+	i.sessions = nil
+	if i.generations == nil {
+		i.generations = make(map[string]uint64)
+	}
+	for ownerID := range i.generations {
+		owners[ownerID] = struct{}{}
+	}
+	for _, ingress := range i.ingress {
+		owners[ingress.ownerID] = struct{}{}
+	}
+	for _, workspace := range i.staticWorkspaces {
+		owners[workspace.ownerID] = struct{}{}
+	}
+	for ownerID := range i.continuationTokens {
+		owners[ownerID] = struct{}{}
+	}
+	for ownerID := range i.chainConsumed {
+		owners[ownerID] = struct{}{}
+	}
+	for ownerID := range i.continuationBudget {
+		owners[ownerID] = struct{}{}
+	}
+	for ownerID := range owners {
+		i.generations[ownerID]++
+	}
+	i.ingress = nil
+	i.staticWorkspaces = nil
+	i.continuationTokens = nil
+	i.chainConsumed = nil
+	i.continuationBudget = nil
 }
 
 func (i *desktopCodingCapabilityIssuer) closeRelationService() {
 	if i == nil {
 		return
 	}
+	// Close is terminal for this issuer. Keep the issuer lock while Close waits
+	// for an in-flight bind or lifecycle transition: a late caller must not open
+	// a second service for the same database either during the old cross-store
+	// critical section or after process shutdown has begun.
 	i.relationsMu.Lock()
-	service := i.relations
-	i.relations = nil
-	i.relationsMu.Unlock()
-	if service != nil {
-		_ = service.Close()
+	defer i.relationsMu.Unlock()
+	i.relationsClosed = true
+	i.closeRelationServiceLocked()
+}
+
+func (i *desktopCodingCapabilityIssuer) resetRelationServiceForDataDirChange() {
+	if i == nil {
+		return
 	}
+	i.relationsMu.Lock()
+	defer i.relationsMu.Unlock()
+	if i.relationsClosed {
+		return
+	}
+	i.closeRelationServiceLocked()
+	i.invalidateRelationCapabilitiesForDataDirChange()
 }
 
 // beginIngress mints one bare request credential. It deliberately does not
@@ -334,6 +459,9 @@ func (i *desktopCodingCapabilityIssuer) mintLocked(ownerID string, workspace cod
 	}
 	if i.generations == nil {
 		i.generations = make(map[string]uint64)
+	}
+	if _, ok := i.generations[ownerID]; !ok {
+		i.generations[ownerID] = 0
 	}
 	now := time.Now().UTC()
 	var expired []string

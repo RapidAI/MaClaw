@@ -101,6 +101,12 @@ func (g *llmGate) handler(w http.ResponseWriter, r *http.Request) {
 func newGate(t *testing.T, reply string, block bool) (*llmGate, *httptest.Server, func()) {
 	t.Helper()
 	g := &llmGate{started: make(chan struct{}), reply: reply}
+	// srv.Close must REGISTER before the gate's release: cleanups run LIFO,
+	// so the handler parked at <-g.release is always freed before the server
+	// waits on outstanding connections — otherwise a failed assertion deadlocks
+	// Close instead of failing the test.
+	srv := httptest.NewServer(http.HandlerFunc(g.handler))
+	t.Cleanup(srv.Close)
 	release := func() {}
 	if block {
 		g.release = make(chan struct{})
@@ -108,8 +114,6 @@ func newGate(t *testing.T, reply string, block bool) (*llmGate, *httptest.Server
 		release = func() { once.Do(func() { close(g.release) }) }
 		t.Cleanup(release)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(g.handler))
-	t.Cleanup(srv.Close)
 	return g, srv, release
 }
 
@@ -593,8 +597,10 @@ func assertPulse(t *testing.T, disabled bool) {
 	g.release = make(chan struct{})
 	var once sync.Once
 	release := func() { once.Do(func() { close(g.release) }) }
-	t.Cleanup(release)
 	var beats atomic.Int32
+	// Register srv.Close BEFORE release: cleanups run LIFO, so the parked
+	// handler is freed before the server waits on outstanding connections.
+	// The old order deadlocked Close whenever an assertion fired early.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/internal/cloud-agents/heartbeat" {
 			beats.Add(1)
@@ -609,6 +615,7 @@ func assertPulse(t *testing.T, disabled bool) {
 		g.handler(w, r)
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(release)
 	t.Setenv("MACLAW_HUB_URL", "https://hub.example")
 	rt := openRuntime(t)
 	spec := putSession(t, rt, srv.URL)
@@ -644,11 +651,22 @@ func assertTurnCancelled(t *testing.T, rt *Runtime, id, requestID, taskID string
 	if err != nil || status != "interrupted" {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
-	rt.mu.Lock()
-	_, live := rt.cancels[requestID]
-	rt.mu.Unlock()
-	if live {
-		t.Fatal("running turn was not cancelled")
+	// 871dd51d moved the cancels-entry delete to untrack, which runs when the
+	// turn goroutine has fully unwound — cancel itself is synchronous but the
+	// removal lands milliseconds later. Poll briefly instead of failing the
+	// instant pulse returns.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		rt.mu.Lock()
+		_, live := rt.cancels[requestID]
+		rt.mu.Unlock()
+		if !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("running turn was not cancelled")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	before := g.hits.Load()
 	text := transcript(t, rt, id, taskID)

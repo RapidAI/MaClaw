@@ -141,10 +141,6 @@ type RemoteCodingSubAgent struct {
 	// remote transport, not a semantic task/session identity, so it cannot be
 	// used to populate this field.
 	dynamicInvocationIdentity *trustedCodingInvocationIdentity
-	// See CodingSubAgent.verifiedInvocationIdentity. This is an ingress-only
-	// carrier until it is bound to the fresh runtime Attempt; SSH transport
-	// fields must never populate it.
-	verifiedInvocationIdentity *trustedCodingInvocationIdentity
 	// R1b relation inputs are populated only by an authenticated host ingress.
 	// SSH/session transport values must never fill them.
 	verifiedTaskRelationService *codingTaskRelationService
@@ -210,7 +206,6 @@ func (r *RemoteCodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request
 	}
 	service, subject, handle := r.verifiedTaskRelationService, r.verifiedTaskSubject, r.verifiedTaskHandle
 	r.dynamicInvocationIdentity = nil
-	r.verifiedInvocationIdentity = nil
 	r.verifiedTaskRelationService = nil
 	r.verifiedTaskSubject = verifiedCodingSubject{}
 	r.verifiedTaskHandle = nil
@@ -220,9 +215,6 @@ func (r *RemoteCodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request
 				r.dynamicInvocationIdentity = identity
 			}
 		}
-	}
-	if r.dynamicInvocationIdentity == nil {
-		r.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(r.runtimeStore, request)
 	}
 }
 
@@ -285,14 +277,6 @@ func NewRemoteCodingSubAgent(
 		commitTaskID: newInFlightRecoveryRunID(),
 		loopCtx:      loopCtx,
 	}
-}
-
-func (r *RemoteCodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
-	if r == nil || identity == nil || !identity.complete() {
-		return
-	}
-	copy := *identity
-	r.verifiedInvocationIdentity = &copy
 }
 
 func (r *RemoteCodingSubAgent) setVerifiedCodingTaskRelation(service *codingTaskRelationService, subject verifiedCodingSubject, handle verifiedCodingTaskHandle) {
@@ -572,9 +556,6 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		// unavailable.
 		if identity, ok := bindVerifiedCodingTaskHandle(execution.verifiedTaskRelationService, execution.verifiedTaskSubject, execution.verifiedTaskHandle, store, request); ok {
 			execution.dynamicInvocationIdentity = identity
-		} else {
-			_ = registerTrustedCodingInvocationIdentity(store, request, execution.verifiedInvocationIdentity)
-			execution.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
 		// The remote runtime runner itself is the host-verified ingress: it has
 		// already pinned the SSH target/session and created a fresh durable
@@ -602,7 +583,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity, execution.verifiedInvocationIdentity = nil, nil, nil, nil
+	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity = nil, nil, nil
 	execution.correlatedRemoteExecution = false
 	execution.verifiedTaskRelationService, execution.verifiedTaskHandle = nil, nil
 	execution.verifiedTaskSubject = verifiedCodingSubject{}

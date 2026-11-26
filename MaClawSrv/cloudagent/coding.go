@@ -430,6 +430,14 @@ func (rt *Runtime) maclawCfg(inst *instance) corelib.MaclawLLMConfig {
 	if err != nil {
 		return corelib.MaclawLLMConfig{}
 	}
+	// The owner's thinking level stamps the request the same way the
+	// desktop's global level stamps a local coding turn — without it the
+	// request body carries no reasoning field and most providers never
+	// stream reasoning deltas, which is why cloud turns showed no 思考.
+	return corelib.ApplyGlobalThinkingLevel(rt.maclawCfgFromProviders(cfg), cfg.MaclawLLMThinkingMode)
+}
+
+func (rt *Runtime) maclawCfgFromProviders(cfg corelib.AppConfig) corelib.MaclawLLMConfig {
 	if len(cfg.MaclawLLMProviders) > 0 {
 		item := cfg.MaclawLLMProviders[0]
 		return corelib.MaclawLLMConfig{

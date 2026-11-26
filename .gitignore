@@ -414,3 +414,9 @@ mobilebot/android/app/src/main/jniLibs/
 /build/cua_probe/
 /build/scp_up.py
 
+
+# 本地调试与临时诊断目录
+/.devin-tmp/
+
+# cursor 验证工具本地二进制
+tools/cursorverify/*.exe

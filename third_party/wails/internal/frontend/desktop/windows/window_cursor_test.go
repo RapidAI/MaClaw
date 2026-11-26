@@ -190,3 +190,68 @@ func TestCursorJogShould(t *testing.T) {
 		})
 	}
 }
+
+// TestIsSizingCursorHandle keeps the stuck-fullscreen-cursor detector limited
+// to the shared resize cursors; an arrow or a null cursor must take their own
+// paths instead.
+func TestIsSizingCursorHandle(t *testing.T) {
+	handles := map[uint16]w32.HCURSOR{
+		w32.IDC_SIZENWSE: 0x1000d,
+		w32.IDC_SIZENESW: 0x1000f,
+		w32.IDC_SIZEWE:   0x10011,
+		w32.IDC_SIZENS:   0x10013,
+	}
+	load := func(_ w32.HINSTANCE, id uint16) w32.HCURSOR {
+		return handles[id]
+	}
+	for _, cursor := range []w32.HCURSOR{0x1000d, 0x1000f, 0x10011, 0x10013} {
+		if !isSizingCursorHandleWith(cursor, load) {
+			t.Fatalf("cursor %#x must be detected as a sizing cursor", cursor)
+		}
+	}
+	for _, cursor := range []w32.HCURSOR{0, 0x10003, 0x10015, 0xdead} {
+		if isSizingCursorHandleWith(cursor, load) {
+			t.Fatalf("cursor %#x must not be detected as a sizing cursor", cursor)
+		}
+	}
+}
+
+// TestCursorMouseMoveLParam pins the signed low-word packing used for posted
+// WM_MOUSEMOVE messages; negative client coordinates must wrap, not clamp.
+func TestCursorMouseMoveLParam(t *testing.T) {
+	if got, want := cursorMouseMoveLParam(0x1234, 0x5678), uintptr(0x1234|0x5678<<16); got != want {
+		t.Fatalf("positive lparam = %#x, want %#x", got, want)
+	}
+	if got, want := cursorMouseMoveLParam(-1, -2), uintptr(0xffff|0xfffe<<16); got != want {
+		t.Fatalf("negative lparam = %#x, want %#x", got, want)
+	}
+}
+
+// TestCursorMouseMoveWParam pins the modifier replication: a synthetic move
+// must carry the buttons and modifiers the user is actually holding, or a
+// mid-drag page would see a false button-up state.
+func TestCursorMouseMoveWParam(t *testing.T) {
+	downSet := map[int]bool{}
+	keyState := func(vk int) uint16 {
+		if downSet[vk] {
+			return 0x8000
+		}
+		return 0
+	}
+	if got := cursorMouseMoveWParamWith(keyState); got != 0 {
+		t.Fatalf("no keys = %#x, want 0", got)
+	}
+	downSet[w32.VK_LBUTTON] = true
+	if got := cursorMouseMoveWParamWith(keyState); got != mkLButton {
+		t.Fatalf("lbutton = %#x, want %#x", got, mkLButton)
+	}
+	downSet[w32.VK_SHIFT] = true
+	downSet[w32.VK_CONTROL] = true
+	if got := cursorMouseMoveWParamWith(keyState); got != mkLButton|mkShift|mkControl {
+		t.Fatalf("lbutton+shift+control = %#x, want %#x", got, mkLButton|mkShift|mkControl)
+	}
+	downSet[w32.VK_XBUTTON2] = true
+	if got := cursorMouseMoveWParamWith(keyState); got != mkLButton|mkShift|mkControl|mkXButton2 {
+		t.Fatalf("with xbutton2 = %#x, want %#x", got, mkLButton|mkShift|mkControl|mkXButton2)
+	}
+}

@@ -723,8 +723,11 @@ func (s *MemoryStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 	if attempt == nil || attempt.TaskID != normalized.RuntimeTaskID {
 		return nil, ErrSemanticAnchorNotFound
 	}
+	if attempt.Status != TaskRunning {
+		return nil, fmt.Errorf("%w: semantic anchor attempt is not running", ErrInvalidTransition)
+	}
 	if prior, exists := s.semanticAnchors[normalized.RuntimeAttemptID]; exists {
-		if prior == normalized {
+		if semanticAnchorIdentityEqual(prior, normalized) {
 			copy := prior
 			return &copy, nil
 		}
@@ -732,6 +735,9 @@ func (s *MemoryStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 	}
 	for _, prior := range s.semanticAnchors {
 		if prior.RuntimeTaskID == normalized.RuntimeTaskID && !semanticAnchorLineageEqual(prior, normalized) {
+			return nil, ErrSemanticAnchorConflict
+		}
+		if semanticAnchorTurnEqual(prior, normalized) {
 			return nil, ErrSemanticAnchorConflict
 		}
 	}

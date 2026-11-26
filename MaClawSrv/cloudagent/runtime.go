@@ -64,8 +64,12 @@ type Spec struct {
 	Kind        string `json:"kind"`
 	LLMMode     string `json:"llm_mode"`
 	LLMModel    string `json:"llm_model"`
-	HubOrigin   string `json:"hub_origin"`
-	HubLoopback string `json:"hub_loopback"`
+	// LLMThinkingMode carries the owner's desktop thinking level
+	// ("" auto | low | high | max | none) so cloud coding turns request
+	// reasoning exactly like the desktop's own coding agent does.
+	LLMThinkingMode string `json:"llm_thinking_mode,omitempty"`
+	HubOrigin       string `json:"hub_origin"`
+	HubLoopback     string `json:"hub_loopback"`
 }
 
 type instance struct {
@@ -302,6 +306,7 @@ func (rt *Runtime) Put(spec Spec) error {
 	spec.Kind = strings.TrimSpace(spec.Kind)
 	spec.TenantID = strings.TrimSpace(spec.TenantID)
 	spec.OwnerUserID = strings.TrimSpace(spec.OwnerUserID)
+	spec.LLMThinkingMode = normalizeThinkingLevel(spec.LLMThinkingMode)
 	if spec.ID == "" || spec.TenantID == "" || spec.OwnerUserID == "" {
 		return errors.New("实例标识不完整")
 	}
@@ -320,6 +325,11 @@ func (rt *Runtime) Put(spec Spec) error {
 		spec.LLMMode = existing.meta.LLMMode
 		if spec.LLMModel == "" {
 			spec.LLMModel = existing.meta.LLMModel
+		}
+		// The thinking level is owner preference state: a re-provision that
+		// does not carry it (older Hub) must not reset a saved level.
+		if spec.LLMThinkingMode == "" {
+			spec.LLMThinkingMode = existing.meta.LLMThinkingMode
 		}
 		if err := writeMeta(existing.dir, spec); err != nil {
 			return err

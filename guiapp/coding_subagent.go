@@ -149,22 +149,17 @@ type CodingSubAgent struct {
 	// copies of the agent never copy a mutex value.
 	dynamicLifecycleOwner codingDynamicLifecycleOwner
 
-	// dynamicInvocationIdentity is populated only by a future verified task
-	// ingress. It intentionally has no public "best effort" constructor: a
+	// dynamicInvocationIdentity is populated only by the verified task-relation
+	// bind. It intentionally has no public "best effort" constructor: a
 	// loop ID, code session, project path, or user ID is not a RootTaskID and
 	// must never make a dynamic Skill/MCP alias executable.
 	dynamicInvocationIdentity *trustedCodingInvocationIdentity
 	// staticWorkspaceBinding is the host-issued local workspace binding carried
-	// by the same authenticated ingress as verifiedInvocationIdentity. It is
+	// by the same authenticated ingress as the verified task relation. It is
 	// used only to prepare an S1-A shadow catalog today; no static tool alias,
 	// grant or name dispatcher reads it yet.
 	staticWorkspaceBinding codingStaticWorkspaceBinding
 	staticShadowPlan       *codingStaticPlanPreparation
-	// verifiedInvocationIdentity is injected only by a host boundary that has
-	// already authenticated tenant/principal/session and resolved a semantic
-	// task relation. It is registered against the fresh runtime Attempt in
-	// onStart, then discarded; the durable anchor is the later source of truth.
-	verifiedInvocationIdentity *trustedCodingInvocationIdentity
 	// R1b accepts only an opaque relation handle plus independently verified
 	// subject. onStart binds it to the fresh runtime attempt; it never derives
 	// a semantic identity from loop/user/path/runtime fields.
@@ -274,7 +269,6 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 	}
 	service, subject, handle := s.verifiedTaskRelationService, s.verifiedTaskSubject, s.verifiedTaskHandle
 	s.dynamicInvocationIdentity = nil
-	s.verifiedInvocationIdentity = nil
 	s.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
 	setCodingStaticShadowPlan(s, nil)
 	s.verifiedTaskRelationService = nil
@@ -286,9 +280,6 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 				s.dynamicInvocationIdentity = identity
 			}
 		}
-	}
-	if s.dynamicInvocationIdentity == nil {
-		s.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(s.runtimeStore, request)
 	}
 	if s.dynamicInvocationIdentity != nil && s.dynamicInvocationIdentity.complete() {
 		setCodingStaticShadowPlan(s, prepareAdmittedLocalChildStaticShadowPlan(s, request))
@@ -523,18 +514,6 @@ func NewCodingSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, h
 		commitTaskID: newInFlightRecoveryRunID(),
 		loopCtx:      loopCtx,
 	}
-}
-
-// setVerifiedCodingInvocationIdentity is intentionally package-private: GUI
-// ingress code may hand in a verified host object, but public/model-facing
-// callers cannot construct an execution scope from strings. It does not make
-// a dynamic alias executable; G2-G5 remain mandatory.
-func (s *CodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
-	if s == nil || identity == nil || !identity.complete() {
-		return
-	}
-	copy := *identity
-	s.verifiedInvocationIdentity = &copy
 }
 
 // setVerifiedCodingTaskRelation is the authenticated-host R1b ingress. It is
@@ -20588,9 +20567,6 @@ func runTaskWithSubAgentRuntimeOptions(
 		// diagnostics: absent registration leaves dynamic capabilities closed.
 		if identity, ok := bindVerifiedCodingTaskHandle(sa.verifiedTaskRelationService, sa.verifiedTaskSubject, sa.verifiedTaskHandle, store, request); ok {
 			sa.dynamicInvocationIdentity = identity
-		} else {
-			_ = registerTrustedCodingInvocationIdentity(store, request, sa.verifiedInvocationIdentity)
-			sa.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
 		// The correlated local boundary exists only when the durable identity
 		// and the host-issued local workspace binding are both present. Either
@@ -20658,7 +20634,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity, sa.verifiedInvocationIdentity = nil, nil, nil, nil
+	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity = nil, nil, nil
 	sa.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
 	setCodingStaticShadowPlan(sa, nil)
 	sa.correlatedLocalExecution = false

@@ -27,6 +27,18 @@
   stub FS and the app starts with a fake index.html — startup "works" but the UI never
   loads. Do not use a stub build for end-to-end checks.
 
+## Vendored Wails runtime JS
+
+- After editing `third_party/wails/internal/frontend/runtime/desktop/*.js`,
+  regenerate the embedded bundles from that directory with
+  `npm run build:runtime-desktop-prod` and `npm run build:runtime-desktop-debug`;
+  the Go binaries embed the generated `runtime_prod_desktop.js` /
+  `runtime_debug_desktop.js` files, not the source files directly. Run
+  `npx vitest run` there for the runtime tests. esbuild is pinned to exactly
+  0.15.6 on purpose: later 0.15.x releases rewrite the debug-bundle formatting
+  (short ifs join their condition line), which buries real changes under
+  cosmetic churn in the vendored diff — do not restore the caret range.
+
 ## File-companion process
 
 - `MaClaw.exe open-file <paths...>` runs the file-companion host. It uses its own

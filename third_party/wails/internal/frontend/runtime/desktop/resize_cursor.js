@@ -3,8 +3,7 @@
 // be trusted. A maximised or fullscreen WebView2 window often leaves
 // outerWidth/outerHeight at the restored size, or at 0, while the page is
 // already the full monitor. The edge test then matches the whole window and
-// sets a sizing cursor. Windows does not draw sizing cursors on a maximised
-// window, so the pointer disappears until the window is restored.
+// sets a sizing cursor even though outer-window resizing is impossible there.
 
 const RESIZE_CURSORS = {
     se: "se-resize",

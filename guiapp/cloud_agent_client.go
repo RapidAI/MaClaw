@@ -61,9 +61,10 @@ func (a *App) CreateCloudAgent(name, kind string) (CloudAgentRow, error) {
 	}
 	var row CloudAgentRow
 	err := a.remoteControlJSON(http.MethodPost, "/api/v1/cloud-agents", map[string]string{
-		"name":     strings.TrimSpace(name),
-		"kind":     kind,
-		"llm_mode": "official",
+		"name":          strings.TrimSpace(name),
+		"kind":          kind,
+		"llm_mode":      "official",
+		"thinking_mode": a.cloudAgentThinkingLevel(),
 	}, &row)
 	if err != nil {
 		return row, err
@@ -115,9 +116,22 @@ func (a *App) cloudAgentDefaultLLM() (CloudLLMSet, bool) {
 			ContextLength:   provider.ContextLength,
 			TimeoutSec:      provider.TimeoutSec,
 			MaxOutputTokens: provider.MaxOutputTokens,
+			// The same global level a local coding turn is stamped with —
+			// the srv applies it so cloud and local requests match.
+			ThinkingMode: a.cloudAgentThinkingLevel(),
 		}, true
 	}
 	return CloudLLMSet{}, false
+}
+
+// cloudAgentThinkingLevel reads the desktop's global thinking level — the
+// same setting ApplyGlobalThinkingLevel consumes for local coding turns.
+func (a *App) cloudAgentThinkingLevel() string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.MaclawLLMThinkingMode)
 }
 
 // RenameCloudAgent renames an instance.
@@ -206,6 +220,9 @@ type CloudLLMSet struct {
 	ContextLength   int    `json:"context_length,omitempty"`
 	TimeoutSec      int    `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	// ThinkingMode carries the desktop's global thinking level so the cloud
+	// coding turn requests reasoning exactly like a local turn does.
+	ThinkingMode string `json:"thinking_mode,omitempty"`
 }
 
 // SetCloudAgentLLM pins a cloud instance to one of the desktop's configured

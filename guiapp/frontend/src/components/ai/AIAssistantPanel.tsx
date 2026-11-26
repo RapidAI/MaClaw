@@ -5234,6 +5234,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // the spinner, Enter routes into the type-ahead queue, and typing stays
     // open (inputLocked above only reflects send permission).
     const remoteComposerBusy = !!remoteChat
+        && !!remoteChat.canSend
         && (remoteChat.busy || (!!remoteChat.live && !remoteChat.live.responded) || !!remoteChat.activity?.stopping);
     const composerVisualBusy = remoteChat ? remoteComposerBusy : inputVisualBusy;
     const composerShowBusySpinner = remoteChat ? remoteComposerBusy : showBusySpinner;

@@ -580,25 +580,23 @@ func TestReadOnlyChildAdmissionDoesNotRetainParentSemanticIdentity(t *testing.T)
 		RootTaskID: "parent-root", TenantID: "tenant", PrincipalID: "principal", SessionID: "session",
 	}
 	parent := &CodingSubAgent{
-		role:                       codingRoleExplorer,
-		dynamicInvocationIdentity:  parentIdentity,
-		verifiedInvocationIdentity: parentIdentity,
-		staticShadowPlan:           &codingStaticPlanPreparation{},
+		role:                      codingRoleExplorer,
+		dynamicInvocationIdentity: parentIdentity,
+		staticShadowPlan:          &codingStaticPlanPreparation{},
 	}
 	child := *parent
 	child.prepareAdmittedReadOnlyChildSemanticState(codingruntime.ExecutionRequest{})
-	if child.dynamicInvocationIdentity != nil || child.verifiedInvocationIdentity != nil || child.staticShadowPlan != nil || child.staticWorkspaceBinding.complete() || child.verifiedTaskHandle != nil || child.verifiedTaskRelationService != nil {
+	if child.dynamicInvocationIdentity != nil || child.staticShadowPlan != nil || child.staticWorkspaceBinding.complete() || child.verifiedTaskHandle != nil || child.verifiedTaskRelationService != nil {
 		t.Fatalf("local child retained parent semantic state: %#v", child)
 	}
 
 	remoteParent := &RemoteCodingSubAgent{
-		role:                       codingRoleExplorer,
-		dynamicInvocationIdentity:  parentIdentity,
-		verifiedInvocationIdentity: parentIdentity,
+		role:                      codingRoleExplorer,
+		dynamicInvocationIdentity: parentIdentity,
 	}
 	remoteChild := *remoteParent
 	remoteChild.prepareAdmittedReadOnlyChildSemanticState(codingruntime.ExecutionRequest{})
-	if remoteChild.dynamicInvocationIdentity != nil || remoteChild.verifiedInvocationIdentity != nil || remoteChild.verifiedTaskHandle != nil || remoteChild.verifiedTaskRelationService != nil {
+	if remoteChild.dynamicInvocationIdentity != nil || remoteChild.verifiedTaskHandle != nil || remoteChild.verifiedTaskRelationService != nil {
 		t.Fatalf("remote child retained parent semantic state: %#v", remoteChild)
 	}
 }

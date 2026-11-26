@@ -207,7 +207,9 @@ type Attempt struct {
 //
 // An anchor is attempt-scoped because each model turn needs a fresh TurnID.
 // All attempts of one runtime task must retain the same tenant/principal/
-// session/root tuple; RegisterSemanticTaskAnchor enforces that invariant.
+// session/root tuple. The full tenant/principal/session/root/turn lineage may
+// own at most one runtime attempt; RegisterSemanticTaskAnchor enforces both
+// invariants and only binds an attempt that is still running.
 type SemanticTaskAnchor struct {
 	RuntimeTaskID    string
 	RuntimeAttemptID string
@@ -439,6 +441,20 @@ func normalizeSemanticTaskAnchor(anchor SemanticTaskAnchor) (SemanticTaskAnchor,
 func semanticAnchorLineageEqual(left, right SemanticTaskAnchor) bool {
 	return left.TenantID == right.TenantID && left.PrincipalID == right.PrincipalID &&
 		left.SessionID == right.SessionID && left.RootTaskID == right.RootTaskID
+}
+
+// semanticAnchorIdentityEqual compares only the immutable identity fields.
+// CreatedAt is the registration clock, not part of the anchor identity; two
+// registrations of the same attempt may legitimately observe different clocks.
+func semanticAnchorIdentityEqual(left, right SemanticTaskAnchor) bool {
+	return left.RuntimeTaskID == right.RuntimeTaskID && left.RuntimeAttemptID == right.RuntimeAttemptID &&
+		semanticAnchorLineageEqual(left, right) && left.TurnID == right.TurnID
+}
+
+// semanticAnchorTurnEqual identifies the one semantic model turn that may own
+// a runtime attempt. Runtime IDs are intentionally excluded.
+func semanticAnchorTurnEqual(left, right SemanticTaskAnchor) bool {
+	return semanticAnchorLineageEqual(left, right) && left.TurnID == right.TurnID
 }
 
 func validStartStatus(status TaskStatus) bool {

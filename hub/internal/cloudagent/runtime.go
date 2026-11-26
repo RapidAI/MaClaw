@@ -273,15 +273,16 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 		origin = loopback
 	}
 	_, err = d.call(ctx, http.MethodPut, conn, "/api/v1/cloud-agents/"+url.PathEscape(inst.ID), map[string]any{
-		"id":            inst.ID,
-		"tenant_id":     inst.TenantID,
-		"owner_user_id": inst.OwnerUserID,
-		"name":          inst.Name,
-		"kind":          inst.Kind,
-		"llm_mode":      inst.LLMMode,
-		"llm_model":     inst.LLMModel,
-		"hub_origin":    origin,
-		"hub_loopback":  loopback,
+		"id":                inst.ID,
+		"tenant_id":         inst.TenantID,
+		"owner_user_id":     inst.OwnerUserID,
+		"name":              inst.Name,
+		"kind":              inst.Kind,
+		"llm_mode":          inst.LLMMode,
+		"llm_model":         inst.LLMModel,
+		"llm_thinking_mode": inst.LLMThinkingMode,
+		"hub_origin":        origin,
+		"hub_loopback":      loopback,
 	})
 	return err
 }

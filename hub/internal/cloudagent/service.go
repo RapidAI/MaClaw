@@ -340,16 +340,17 @@ func (s *Service) Create(ctx context.Context, tenantID, userID string, in Create
 	}
 	now := formatTS(s.now())
 	inst := Instance{
-		ID:               newID("cag_"),
-		TenantID:         tenantID,
-		OwnerUserID:      userID,
-		Name:             name,
-		Kind:             kind,
-		LLMMode:          mode,
-		Status:           StatusProvisioning,
+		ID:              newID("cag_"),
+		TenantID:        tenantID,
+		OwnerUserID:     userID,
+		Name:            name,
+		Kind:            kind,
+		LLMMode:         mode,
+		LLMThinkingMode: normalizeThinkingLevel(in.ThinkingMode),
+		Status:          StatusProvisioning,
 		CloudWorkspaceID: "",
-		CreatedAt:        s.now(),
-		UpdatedAt:        s.now(),
+		CreatedAt:       s.now(),
+		UpdatedAt:       s.now(),
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO cloud_agents (
 		id, tenant_id, owner_user_id, name, kind, llm_mode, llm_label, llm_model, status, cloud_workspace_id, created_at, updated_at, deleted_at

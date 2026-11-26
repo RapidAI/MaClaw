@@ -36,9 +36,21 @@ const trails = new Map<string, CloudAgentTrail>();
 
 function trailOf(key: string): CloudAgentTrail {
     let trail = trails.get(key);
-    if (!trail) {
-        trail = { requestId: '', builder: new CodingAgentTrailBuilder() };
+    if (trail) {
+        // LRU touch: Map iteration is insertion-ordered, so re-inserting
+        // moves this key to the back and keeps the open task's trail alive.
+        trails.delete(key);
         trails.set(key, trail);
+        return trail;
+    }
+    trail = { requestId: '', builder: new CodingAgentTrailBuilder() };
+    trails.set(key, trail);
+    // Soft cap: a long session opening many tasks must not accumulate a
+    // trail per task forever — evict the oldest untouched key first.
+    while (trails.size > 32) {
+        const oldest = trails.keys().next().value;
+        if (oldest === undefined) break;
+        trails.delete(oldest);
     }
     return trail;
 }

@@ -607,6 +607,8 @@ type App struct {
 	codingKnowledgeStore       *knowledge.CodingKnowledgeStore // independent coding experience store (coding_knowledge.db)
 	codingRuntimeStore         *codingruntime.SQLiteStore      // durable local/remote coding attempt ledger
 	codingRuntimeStoreMu       sync.Mutex
+	codingRuntimeStorePath     string
+	codingRuntimeStoreClosed   bool
 	enterpriseKnowledgeStore   *knowledge.SQLiteStore         // enterprise digital assets local KB (legacy pointer; prefer enterpriseClient)
 	enterpriseClient           *enterpriseknowledge.Client    // shared enterprise knowledge client
 	enterpriseSync             *enterpriseknowledge.SyncAgent // Hub→local one-way sync for digital assets
@@ -3656,8 +3658,8 @@ func (a *App) shutdown(ctx context.Context) {
 		}
 	}
 	// Close coding knowledge store.
-	a.closeCodingRuntimeStore()
 	a.closeCodingTaskRelationService()
+	a.closeCodingRuntimeStore()
 	if a.codingKnowledgeStore != nil {
 		_ = a.codingKnowledgeStore.Close()
 		a.codingKnowledgeStore = nil
@@ -6858,6 +6860,8 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		a.imAuditStore = nil
 	}
 	a.imAuditStoreMu = sync.Once{}
+	a.codingCaps.resetRelationServiceForDataDirChange()
+	a.resetCodingRuntimeStoreForDataDirChange()
 	if a.codingKnowledgeStore != nil {
 		codingKnowledgeStoreMu.Lock()
 		_ = a.codingKnowledgeStore.Close()

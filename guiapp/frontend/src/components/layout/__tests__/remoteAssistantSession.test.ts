@@ -793,3 +793,76 @@ describe('remoteAssistantSession live mirror', () => {
         expect(assistantBody()).toBe(draft);
     });
 });
+
+describe('remoteAssistantSession mirrored coding trail', () => {
+    beforeEach(() => {
+        publishRemoteAssistantSession(null);
+        bindRemoteAssistantActions(null);
+        bindRemoteStreamRecovery(null);
+    });
+
+    const startedJson = (command: string) => `Coding Agent Event: ${JSON.stringify({
+        version: 1, agent: 'coding', event: 'tool_started', phase: 'running', title: '', detail: 'bash', command,
+    })}`;
+    const finishedJson = (command: string, outcome = 'success') => `Coding Agent Event: ${JSON.stringify({
+        version: 1, agent: 'coding', event: 'tool_finished', phase: 'running', title: '', detail: 'bash', command, outcome,
+    })}`;
+
+    function remoteFrame(event: string, cursor: number, extra: Record<string, unknown> = {}, requestId = 'r1') {
+        return {
+            grant_id: 'g1', project_path: 'D:/tasks/a', request_id: requestId,
+            event, proto: 2, cursor, cursor_from: cursor, seq: cursor,
+            ...extra,
+        };
+    }
+
+    function liveRow() {
+        return remoteAssistantSessionSnapshot()?.messages.find(message => message.remoteLive);
+    }
+
+    it('folds the relay thinking sequence into one thought and merges started with finished', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload(remoteFrame('round_started', 1, { display_text: '〔远控〕改一下' }));
+        // The desktop relay always writes state on thinking envelopes —
+        // started opens the block, deltas append, done adopts the full text.
+        applyRemoteStreamPayload(remoteFrame('thinking', 2, { state: 'started' }));
+        applyRemoteStreamPayload(remoteFrame('thinking', 3, { state: 'delta', text: '先想想' }));
+        applyRemoteStreamPayload(remoteFrame('thinking', 4, { state: 'delta', text: '，再动手' }));
+        applyRemoteStreamPayload(remoteFrame('thinking', 5, { state: 'done', text: '先想想，再动手' }));
+        applyRemoteStreamPayload(remoteFrame('progress', 6, { text: startedJson('ls -la') }));
+        applyRemoteStreamPayload(remoteFrame('progress', 7, { text: finishedJson('ls -la') }));
+        applyRemoteStreamPayload(remoteFrame('token', 8, { text: '改好了。' }));
+
+        const row = liveRow();
+        expect(row?.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress']);
+        expect(row?.codingTimeline?.[0].content).toBe('先想想，再动手');
+        expect(row?.codingTimeline?.[1].content).toContain('"event":"tool_finished"');
+        expect(row?.codingTimeline?.[1].content).toContain('ls -la');
+    });
+
+    it('keeps styled session tool lines out of the coding timeline', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteStreamPayload(remoteFrame('round_started', 1));
+        applyRemoteStreamPayload(remoteFrame('progress', 2, { text: '工具 · 执行命令 (bash)\nls -la' }));
+        const row = liveRow();
+        expect(row?.codingTimeline).toBeUndefined();
+        // The styled line still folds into the bubble's toolCalls timeline.
+        expect(row?.toolCalls?.[0].detail).toBe('ls -la');
+    });
+
+    it('a watch snapshot seeds the interleaved trail for a mid-turn join', () => {
+        publishRemoteAssistantSession(session());
+        applyRemoteWatchSnapshot('g1', 'D:/tasks/a', {
+            request_id: 'r1',
+            project_path: 'D:/tasks/a',
+            responded: false,
+            parts: [
+                { kind: 'thinking', seq: 1, text: '先看目录。', done: true },
+                { kind: 'progress', seq: 2, text: startedJson('ls -la') },
+            ],
+        }, undefined, 42);
+        const row = liveRow();
+        expect(row?.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress']);
+        expect(row?.codingTimeline?.[0].content).toBe('先看目录。');
+    });
+});
