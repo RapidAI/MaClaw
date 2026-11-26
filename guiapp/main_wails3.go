@@ -145,6 +145,10 @@ func Main3(v string) {
 
 	v3app := application.New(application.Options{
 		Name: brand.Current().WindowTitle,
+		// Visual hosting over RDP (official wails3 RDP fix); no-op off RDP.
+		Windows: application.WindowsOptions{
+			UseVisualHosting: useVisualHostingWails3(),
+		},
 
 		Services: []application.Service{
 			application.NewService(app),
