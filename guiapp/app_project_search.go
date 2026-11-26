@@ -384,17 +384,12 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	records = collapseRecentTaskForkRecords(records)
 
 	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(fetchLimit))
-	// One workflow load for the widened window. A per-row store read would run
-	// twice as often now that omitted digital-employee rows are read past.
-	var v2WorkflowStates map[string]*v2.WorkflowState
-	if len(records) > 0 {
-		v2WorkflowStates = a.v2WorkflowStatesByOwner()
-	}
-	codingActiveByRef, codingActiveUpdated := a.activeCodingRuntimeStatusesByRef()
-	sharedRefs := codingRuntimeRefShareCounts(records, func(rec memory.ProjectRecord) bool {
+	// Same status pass as SearchTasks / list_tasks. One workflow load for the
+	// widened window: a per-row store read would run twice as often now that
+	// omitted digital-employee rows are read past.
+	statusSource := a.collectTaskListStatusSource(records, func(rec memory.ProjectRecord) bool {
 		return !omittedFromTaskSidebar(rec)
 	})
-	liveOwners := taskListLiveOwners()
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -405,7 +400,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, codingActiveUpdated, sharedRefs, liveOwners)
+		a.applyTaskListStatusSource(&result, projectWorkflowProjectPathForRecord(rec), statusSource)
 		results = append(results, result)
 		if len(results) == limit {
 			break
@@ -480,6 +475,8 @@ const sceneIndexCacheTTL = 60 * time.Second
 
 // ListTasks returns the user-visible task management list. Unlike SearchProjects,
 // this intentionally excludes automatic project/memory sediment and fork rows.
+// Remote list_tasks calls this, so the phone list and the sidebar share
+// collectTaskListStatusSource instead of attaching status a second time.
 func (a *App) ListTasks(limit int) []ProjectSearchResult {
 	return a.SearchTasks("", limit)
 }
@@ -553,9 +550,10 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	// limit so the sidebar never shows the same cloud task twice.
 	records = collapseDuplicateCloudWorkspaceRecords(records)
 	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
-	v2WorkflowStates := a.v2WorkflowStatesByOwner()
-	codingActiveByRef, codingActiveUpdated := a.activeCodingRuntimeStatusesByRef()
-	sharedRefs := codingRuntimeRefShareCounts(shareRecords, func(rec memory.ProjectRecord) bool {
+	// Phone list_tasks is ListTasks, which is this pass. Collect the status
+	// inputs once so both surfaces apply the same V2, ledger, workbench,
+	// slot, and live-owner facts.
+	statusSource := a.collectTaskListStatusSource(shareRecords, func(rec memory.ProjectRecord) bool {
 		if !isTaskManagementRecord(rec) || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
 			return false
 		}
@@ -563,7 +561,6 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		// not make a local task look like it shares a directory.
 		return localCloudWorkspaceID(rec) == ""
 	})
-	liveOwners := taskListLiveOwners()
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		if !isTaskManagementRecord(rec) {
@@ -582,7 +579,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, codingActiveUpdated, sharedRefs, liveOwners)
+		a.applyTaskListStatusSource(&result, projectWorkflowProjectPathForRecord(rec), statusSource)
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -5333,6 +5330,78 @@ func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Ca
 		state.ProjectPath = executionProjectPath
 	}
 	return state
+}
+
+// applyTaskListStatusOne gives one task row the same status the task list
+// shows. A detail view cannot reuse a list-wide pass (share counts and live
+// owners are computed over the whole window), so it runs the same collect +
+// apply for a single record and ends with the one-row facts the list also
+// uses. Without this, get_task could show a stale or empty status while the
+// list showed completed.
+func (a *App) applyTaskListStatusOne(result *ProjectSearchResult) {
+	if a == nil || result == nil {
+		return
+	}
+	rec, ok := a.taskRecordForStatus(result.ProjectPath)
+	if !ok {
+		return
+	}
+	source := a.collectTaskListStatusSource([]memory.ProjectRecord{rec}, func(memory.ProjectRecord) bool { return true })
+	a.applyTaskListStatusSource(result, projectWorkflowProjectPathForRecord(rec), source)
+}
+
+// taskRecordForStatus loads the index record whose path matches (or shares a
+// session with) the task row, the same lookup the list applies status to.
+func (a *App) taskRecordForStatus(projectPath string) (memory.ProjectRecord, bool) {
+	path := normalizeProjectSessionPath(projectPath)
+	if a == nil || path == "" || a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return memory.ProjectRecord{}, false
+	}
+	rec := a.memoryStore.ProjectIndex().Get(path)
+	if rec == nil {
+		return memory.ProjectRecord{}, false
+	}
+	return *rec, true
+}
+
+// taskListStatusSource is one pass of the facts applyTaskListWorkflow reads.
+// SearchTasks (the desktop sidebar and ListTasks) and the phone list_tasks
+// entry collect it once, then apply it to every row. SearchProjects uses the
+// same collector so a project search cannot grow a second status recipe.
+type taskListStatusSource struct {
+	v2      map[string]*v2.WorkflowState
+	active  map[string]string
+	updated map[string]time.Time
+	shared  map[string]struct{}
+	live    map[string]struct{}
+}
+
+// collectTaskListStatusSource loads V2 snapshots, the coding ledger, shared
+// working directories, and live session owners. include decides which records
+// count as sharing a directory; display filtering stays with the caller.
+// An empty record set skips the V2 load. The ledger read still runs, because
+// a quiet refresh is what records a dead lease.
+func (a *App) collectTaskListStatusSource(shareRecords []memory.ProjectRecord, include func(memory.ProjectRecord) bool) taskListStatusSource {
+	if a == nil {
+		return taskListStatusSource{}
+	}
+	var v2States map[string]*v2.WorkflowState
+	if len(shareRecords) > 0 {
+		v2States = a.v2WorkflowStatesByOwner()
+	}
+	active, updated := a.activeCodingRuntimeStatusesByRef()
+	return taskListStatusSource{
+		v2:      v2States,
+		active:  active,
+		updated: updated,
+		shared:  codingRuntimeRefShareCounts(shareRecords, include),
+		live:    taskListLiveOwners(),
+	}
+}
+
+// applyTaskListStatusSource writes one row from a collected status pass.
+func (a *App) applyTaskListStatusSource(result *ProjectSearchResult, workflowPath string, source taskListStatusSource) {
+	a.applyTaskListWorkflow(result, workflowPath, source.v2, source.active, source.updated, source.shared, source.live)
 }
 
 // applyTaskListWorkflow attaches one task's status. The task's own snapshot

@@ -12,11 +12,16 @@ class AgentJob {
   final String answer;
   final String message;
 
+  /// Live thinking trace while the job runs (tool steps), newest last. Empty
+  /// once the job finishes — the answer replaces it in the UI.
+  final List<String> progress;
+
   const AgentJob({
     this.jobId = '',
     this.status = '',
     this.answer = '',
     this.message = '',
+    this.progress = const [],
   });
 
   bool get isActive {
@@ -42,6 +47,12 @@ class AgentJob {
       status: json['status'] as String? ?? '',
       answer: json['answer'] as String? ?? '',
       message: json['message'] as String? ?? '',
+      progress: [
+        for (final line in json['progress'] is List
+            ? json['progress'] as List
+            : const [])
+          if (line is String && line.trim().isNotEmpty) line,
+      ],
     );
   }
 }

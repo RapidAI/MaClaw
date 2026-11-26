@@ -365,3 +365,105 @@ func TestWorkbenchOutcomeWinsSameSecondTie(t *testing.T) {
 		t.Fatalf("tied row = %#v, want the failed turn outcome", result.ActiveWorkflow)
 	}
 }
+
+// Phone list_tasks and the desktop sidebar must read one status pass. A coding
+// turn that ended without a ledger row is failed on both. A plain chat does
+// not inherit that workbench memory, so its snapshot stays empty.
+func TestRemoteListTasksSharesSearchTaskStatus(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	workDir := t.TempDir()
+	coding := app.CreateTaskWithMode("失败回合", workDir, "coding_dev")
+	plain := app.CreateTask("纯对话", "")
+	if coding.ProjectPath == "" || plain.ProjectPath == "" {
+		t.Fatalf("created coding=%q plain=%q", coding.ProjectPath, plain.ProjectPath)
+	}
+	handler := &IMMessageHandler{app: app}
+	now := time.Now().Unix()
+	handler.stickyCodingWorkbenchMemory.Store(projectSessionOwnerID(coding.ProjectPath), stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "failed", LastOutcomeAtUnix: now,
+	})
+	handler.stickyCodingWorkbenchMemory.Store(projectSessionOwnerID(plain.ProjectPath), stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "failed", LastOutcomeAtUnix: now,
+	})
+	app.imHandler = handler
+
+	sidebar := app.SearchTasks("", 50)
+	raw, err := app.executeRemoteControl("list_tasks", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("list_tasks payload type = %T", raw)
+	}
+	remote, ok := payload["tasks"].([]ProjectSearchResult)
+	if !ok {
+		t.Fatalf("list_tasks tasks type = %T", payload["tasks"])
+	}
+
+	if got, want := listedWorkflowStatus(sidebar, coding.ProjectPath), "failed"; got != want {
+		t.Fatalf("sidebar coding status = %q, want %q", got, want)
+	}
+	if got, want := listedWorkflowStatus(remote, coding.ProjectPath), "failed"; got != want {
+		t.Fatalf("list_tasks coding status = %q, want %q", got, want)
+	}
+	if got := listedWorkflowStatus(sidebar, plain.ProjectPath); got != "" {
+		t.Fatalf("sidebar plain chat status = %q, want empty", got)
+	}
+	if got := listedWorkflowStatus(remote, plain.ProjectPath); got != "" {
+		t.Fatalf("list_tasks plain chat status = %q, want empty", got)
+	}
+	for _, row := range remote {
+		if len(row.RecentArtifacts) != 0 || len(row.SourceURLs) != 0 {
+			t.Fatalf("list_tasks kept artifact bodies on %q", row.ProjectPath)
+		}
+	}
+}
+
+func listedWorkflowStatus(rows []ProjectSearchResult, projectPath string) string {
+	want := normalizeProjectSessionPath(projectPath)
+	for i := range rows {
+		if normalizeProjectSessionPath(rows[i].ProjectPath) != want {
+			continue
+		}
+		if rows[i].ActiveWorkflow == nil {
+			return ""
+		}
+		return rows[i].ActiveWorkflow.Status
+	}
+	return ""
+}
+
+// The remote task detail (get_task) reads its own record snapshot, so it could
+// show an empty or stale status while the phone list showed completed. The
+// detail row now runs the same collect + apply as the list for one record.
+func TestRemoteTaskDetailUsesTheListStatusSource(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	app.aiConversationMemory = memory
+
+	const workDir = "D:/repo"
+	created := app.createTaskRecordWithWorkingDir("detail task", "seed", []string{taskManagementTag, taskUserCreatedTag, "coding_dev"}, workDir, true)
+	projectPath := created.ProjectPath
+	if projectPath == "" {
+		t.Fatal("task record was not created")
+	}
+	owner := projectSessionOwnerID(projectPath)
+	handler := &IMMessageHandler{app: app}
+	handler.stickyCodingWorkbenchMemory.Store(owner, stickyCodingWorkbenchMemory{
+		Kind: "local", LastOutcome: "completed", LastOutcomeAtUnix: time.Now().Unix(),
+	})
+	app.imHandler = handler
+
+	row := &ProjectSearchResult{
+		ProjectPath: projectPath,
+		Tags:        []string{"coding_dev", "working_dir:" + workDir},
+	}
+	app.applyTaskListStatusOne(row)
+	if row.ActiveWorkflow == nil || row.ActiveWorkflow.Status != "completed" {
+		t.Fatalf("detail row = %#v, want the workbench outcome the list shows", row.ActiveWorkflow)
+	}
+}

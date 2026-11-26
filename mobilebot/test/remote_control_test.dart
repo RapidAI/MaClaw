@@ -5,7 +5,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'l10n_test_helper.dart';
+import 'package:mobilebot/l10n/gen/app_localizations.dart';
 import 'package:mobilebot/core/account_store.dart';
 import 'package:mobilebot/core/api_client.dart';
 import 'package:mobilebot/features/remote/remote_api.dart';
@@ -503,6 +505,50 @@ void main() {
   }
 
   group('remote screen', () {
+    testWidgets('task state matches the desktop sidebar for finished tasks', (
+      tester,
+    ) async {
+      // 手机远控曾把每个已结束任务画成「待开始」：
+      // - 普通对话跑完只有 has_output，没有 workflow 快照；
+      // - 有快照的行才读 status。
+      // 桌面侧栏把这两种都画成「已完成」，手机要一致。
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantView])
+        ..tasksByGrant = {
+          'g-view': const [
+            RemoteTask(
+              id: '/p/done',
+              name: '产出任务',
+              projectPath: '/p/done',
+              hasOutput: true,
+            ),
+            RemoteTask(
+              id: '/p/snap',
+              name: '快照任务',
+              projectPath: '/p/snap',
+              activeStatus: 'completed',
+            ),
+            RemoteTask(
+              id: '/p/failed',
+              name: '失败任务',
+              projectPath: '/p/failed',
+              hasOutput: true,
+              activeStatus: 'failed',
+            ),
+            RemoteTask(id: '/p/new', name: '纯对话', projectPath: '/p/new'),
+          ],
+        };
+      await tester.pumpWidget(_app(api));
+      await tester.pumpAndSettle();
+
+      // 三个已结束的任务都有「已完成」或「失败」，一个都不该是「待开始」。
+      expect(find.text('待开始'), findsNothing);
+      expect(find.text('已完成'), findsNWidgets(2));
+      expect(find.text('失败'), findsOneWidget);
+      // 未跑过的纯对话只显示类型芯片，不再给误导性的状态。
+      expect(find.text('纯对话'), findsOneWidget);
+    });
+
     testWidgets('dropdown lists machines and tasks load for the selection', (
       tester,
     ) async {
@@ -534,6 +580,57 @@ void main() {
       expect(find.text('任务乙'), findsOneWidget);
       expect(find.text('任务甲'), findsNothing);
       expect(api.calls, contains('list:g-ops'));
+      expect(find.text('这台机器的任务'), findsWidgets);
+      expect(find.text('云端任务'), findsOneWidget);
+      expect(
+        find.text('按账号只有一套，不在某一台机器的任务列表里。'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('top switch keeps machine tasks and opens cloud beside them', (
+      tester,
+    ) async {
+      final api = _FakeRemoteApi()
+        ..snapshot = const RemoteControlState(grants: [_grantView])
+        ..tasksByGrant = {
+          'g-view': const [
+            RemoteTask(id: '/p/a', name: '任务甲', projectPath: '/p/a'),
+          ],
+        };
+      final router = GoRouter(
+        initialLocation: '/remote',
+        routes: [
+          GoRoute(
+            path: '/remote',
+            builder: (_, _) => const RemoteScreen(),
+          ),
+          GoRoute(
+            path: '/cloud',
+            builder: (_, _) => const Scaffold(body: Text('云端页')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [remoteApiProvider.overrideWithValue(api)],
+          child: MaterialApp.router(
+            locale: const Locale('zh'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            routerConfig: router,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('任务甲'), findsOneWidget);
+      await tester.tap(find.text('云端任务'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('云端页'), findsOneWidget);
+      expect(find.text('任务甲'), findsNothing);
     });
 
     testWidgets('kind chip copy stays inside a 320dp card with a long title', (
@@ -918,6 +1015,37 @@ void main() {
   });
 
   group('remote task detail', () {
+    testWidgets('task detail badge uses the list status, not a bare snapshot', (
+      tester,
+    ) async {
+      // 详情页曾经只读 get_task 自己的快照；受控端补齐前它可能为空，
+      // 完成的任务在详情里没有状态。受控端现在用同一套状态源，这里钉住
+      // 详情徽标直接读回来显示。
+      final api = _FakeRemoteApi()
+        ..detail = RemoteTaskDetail(
+          task: const RemoteTask(
+            id: '/p/a',
+            name: '任务甲',
+            projectPath: '/p/a',
+            activeStatus: 'completed',
+          ),
+          messages: const [RemoteMessage(role: 'user', content: '完成了吗')],
+        );
+      await tester.pumpWidget(
+        _app(
+          api,
+          home: const RemoteTaskScreen(
+            grant: _grantView,
+            taskPath: '/p/a',
+            taskName: '任务甲',
+          ),
+        ),
+      );
+      await pumpFew(tester);
+      expect(find.text('已完成'), findsOneWidget);
+      expect(find.text('待开始'), findsNothing);
+    });
+
     RemoteTaskDetail sampleDetail() => RemoteTaskDetail(
       task: const RemoteTask(
         id: '/p/a',

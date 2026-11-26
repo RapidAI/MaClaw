@@ -2,8 +2,9 @@
   "@@locale": "zh",
   "tabBots": "Bot",
   "tabRemote": "远控",
+  "tabCloud": "云端",
   "tabAssistant": "助手",
-  "tabStatus": "工作状态",
+  "tabStatus": "状态",
   "tabMe": "我的",
   "errorBotNotFound": "找不到这个 Bot",
   "backToBots": "返回列表",
@@ -414,6 +415,33 @@
   "refresh": "刷新",
   "rcSectionInvites": "邀请我",
   "rcSectionMachines": "远程机",
+  "rcSectionCloud": "云端",
+  "rcCloudAccountSlot": "账号云端",
+  "rcCloudSeparateHint": "按账号只有一套，不在某一台机器的任务列表里。",
+  "cloudTitle": "云端任务",
+  "cloudNewInstance": "新建实例",
+  "cloudNewTask": "新建任务",
+  "cloudNoInstances": "还没有云端实例。",
+  "cloudDisabled": "当前账号未开启云端。",
+  "cloudGrantNeedsMachine": "任务和会话还打不开：当前 Hub 要求绑定一台已登录的电脑，手机没有这台机器。",
+  "cloudUntitled": "未命名",
+  "cloudNoTasks": "还没有任务。",
+  "cloudNoHistory": "还没有会话。",
+  "cloudMessageHint": "发消息…",
+  "cloudComposerHint": "发消息…",
+  "cloudSend": "发送",
+  "cloudNameHint": "名称",
+  "cloudCreate": "创建",
+  "cloudStatusProvisioning": "准备中",
+  "cloudStatusIdle": "空闲",
+  "cloudStatusRunning": "运行中",
+  "cloudStatusStopped": "已停止",
+  "cloudStatusProvisionFailed": "准备失败",
+  "cloudTurnRunning": "回合进行中",
+  "cloudTurnFinished": "回合已结束",
+  "cloudTurnCancelled": "回合已停止",
+  "cloudTurnInterrupted": "回合已中断",
+  "backToCloud": "返回云端",
   "rcNoMachines": "还没有可控制的机器。\n在下面的「我的设备」里挑一台配对，或让别的账号邀请你。",
   "rcControlledByOthers": "正在远控我的电脑",
   "rcPendingOutgoing": "等待对方处理",
@@ -481,7 +509,6 @@
   "rcStateRunning": "运行中",
   "rcStateCancelled": "已取消",
   "rcStateInterrupted": "已中断",
-  "rcStateNotStarted": "待开始",
   "rcPendingReview": "待查看",
   "rcNameRequired": "请输入任务名称",
   "rcCreateTaskOn": "在 {machine} 上新建任务",
@@ -625,6 +652,13 @@
     }
   },
   "rtActivityNotes": "备注 {count}",
+  "@rtActivityNotes": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "rtPhaseStarting": "启动中",
   "rtPhaseRunning": "执行中",
   "rtPhaseCompleted": "已完成",
@@ -639,16 +673,11 @@
   "rtToolDone": "已完成",
   "rtToolFailed": "失败",
   "rtActivityRunning": "处理中…",
-  "@rtActivityNotes": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "rtOpen": "打开",
   "rcInviteHint": "对方在其中一台电脑上接受后，你就可以远控那台电脑。",
   "rcTasksTitle": "任务",
+  "rcMachineTasks": "这台机器的任务",
+  "rcCloudTasks": "云端任务",
   "rcSpaceOther": "其他",
   "rcSpaceTaskCount": "{count} 个任务",
   "chatVoiceInitFailed": "语音朗读初始化失败",
@@ -1117,6 +1146,7 @@
   "chatSendMaybeDelivered": "发送超时，可能已送达，请勿重复发送",
   "chatDoneNoReply": "（已完成，无文字回复）",
   "speechCodeOnScreen": "，代码内容见屏幕，",
+  "speechSummaryEnd": "……以上是要点，完整内容请看屏幕",
   "speechReplyTooLong": "……回复较长，完整内容请查看屏幕",
   "updateDownloadFailed": "下载更新包失败：{error}",
   "@updateDownloadFailed": {

@@ -257,17 +257,7 @@ func (a *App) executeRemoteControl(op string, body json.RawMessage, grantIDs ...
 	}
 	switch op {
 	case "list_tasks":
-		tasks := a.ListTasks(remoteControlTaskLimit)
-		if tasks == nil {
-			tasks = []ProjectSearchResult{}
-		}
-		for i := range tasks {
-			// The list only needs identity, status, and folders. Artifact
-			// bodies stay on get_task so a long list does not cross the Hub.
-			tasks[i].RecentArtifacts = nil
-			tasks[i].SourceURLs = nil
-		}
-		return map[string]any{"tasks": tasks}, nil
+		return map[string]any{"tasks": a.listRemoteControlTasks()}, nil
 	case "get_task":
 		var req struct {
 			ProjectPath string `json:"project_path"`
@@ -669,6 +659,10 @@ func (a *App) remoteControlTaskSnapshot(path string) ProjectSearchResult {
 	if strings.TrimSpace(result.ProjectPath) == "" {
 		result.ProjectPath = path
 	}
+	// The detail badge must match the list: same status sources, same order.
+	// Only one row is needed here, so this is one collect + apply, not a
+	// full sidebar scan.
+	a.applyTaskListStatusOne(&result)
 	return result
 }
 
@@ -709,6 +703,22 @@ func remoteControlMessageError(text string) error {
 // remoteControlTaskLimit matches the sidebar's ListTasks(1000) so a remote
 // tab does not drop tasks that this computer would still show.
 const remoteControlTaskLimit = 1000
+
+// listRemoteControlTasks is the phone task list. Status comes from ListTasks,
+// which is SearchTasks: one collectTaskListStatusSource pass, then
+// applyTaskListWorkflow on every row. Artifact bodies stay on get_task so a
+// long list does not cross the Hub. Do not attach status again here.
+func (a *App) listRemoteControlTasks() []ProjectSearchResult {
+	tasks := a.ListTasks(remoteControlTaskLimit)
+	if tasks == nil {
+		tasks = []ProjectSearchResult{}
+	}
+	for i := range tasks {
+		tasks[i].RecentArtifacts = nil
+		tasks[i].SourceURLs = nil
+	}
+	return tasks
+}
 
 // remoteControlBodyLimit is the largest Hub response this desktop will read.
 const remoteControlBodyLimit = 8 << 20
