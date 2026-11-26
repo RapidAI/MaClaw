@@ -47,42 +47,92 @@ Future<String?> speakReplyReadback(
     onDone();
     return 'system tts unavailable';
   }
-  // Restore the previous handlers only after this turn ends. Clearing them in
-  // finally runs before the platform completion callback, so a Kokoro start
-  // followed by a failed segment used to drop onDone and leave the mic shut.
-  final previousComplete = tts.completionHandler;
-  final previousError = tts.errorHandler;
-  var settled = false;
-  void restore() {
-    tts.setCompletionHandler(previousComplete ?? () {});
-    tts.setErrorHandler(previousError ?? (_) {});
-  }
-
-  void finish() {
-    if (settled) return;
-    settled = true;
-    restore();
-    onDone();
-  }
-
+  // The plugin has one completion slot. Restoring a previous wrapper, or
+  // clearing it in finally, drops the turn that is still waiting and leaves
+  // the mic shut. Only the turn that still owns the slot may put the caller's
+  // handler back, and only after its own callback.
+  final turn = _SystemTtsTurn.claim(tts, onDone);
   try {
-    tts.setCompletionHandler(() {
-      previousComplete?.call();
-      finish();
-    });
-    tts.setErrorHandler((message) {
-      previousError?.call(message);
-      finish();
-    });
     await tts.stop();
+    // stop() can emit the previous utterance's completion. Accepting before
+    // speak() would finish this turn before it has spoken.
+    turn.accept();
     await tts.speak(text);
     return '';
   } on Object catch (e) {
-    if (!settled) {
-      settled = true;
-      restore();
-      onDone();
-    }
+    if (!turn.fail()) return '';
+    onDone();
     return 'system tts failed: $e';
+  }
+}
+
+/// One system-TTS utterance. A later utterance shares the plugin slot, so an
+/// earlier turn must not write its wrapper back over the later one.
+class _SystemTtsTurn {
+  _SystemTtsTurn._(this.tts);
+
+  static final Expando<_SystemTtsTurn> _active = Expando<_SystemTtsTurn>();
+
+  final FlutterTts tts;
+  void Function()? callerComplete;
+  ErrorHandler? callerError;
+  bool _settled = false;
+  bool _accepting = false;
+
+  static _SystemTtsTurn claim(FlutterTts tts, void Function() onDone) {
+    final previous = _active[tts];
+    final turn = _SystemTtsTurn._(tts);
+    if (previous != null) {
+      turn.callerComplete = previous.callerComplete;
+      turn.callerError = previous.callerError;
+      previous._settled = true;
+    } else {
+      turn.callerComplete = tts.completionHandler;
+      turn.callerError = tts.errorHandler;
+    }
+    _active[tts] = turn;
+    tts.setCompletionHandler(() {
+      if (!_owns(tts, turn)) return;
+      turn._complete(onDone);
+    });
+    tts.setErrorHandler((message) {
+      if (!_owns(tts, turn)) return;
+      turn.callerError?.call(message);
+      turn._complete(onDone);
+    });
+    return turn;
+  }
+
+  static bool _owns(FlutterTts tts, _SystemTtsTurn turn) {
+    return identical(_active[tts], turn);
+  }
+
+  void accept() {
+    _accepting = true;
+  }
+
+  /// End this turn after speak() throws. A later turn already owns the slot,
+  /// so this one must not restore or fire onDone again.
+  bool fail() {
+    if (_settled || !_owns(tts, this)) return false;
+    _settled = true;
+    _release();
+    return true;
+  }
+
+  void _complete(void Function() onDone) {
+    if (_settled || !_accepting || !_owns(tts, this)) return;
+    _settled = true;
+    final caller = callerComplete;
+    _release();
+    if (caller != null) caller();
+    onDone();
+  }
+
+  void _release() {
+    if (!identical(_active[tts], this)) return;
+    _active[tts] = null;
+    tts.setCompletionHandler(callerComplete ?? () {});
+    tts.setErrorHandler(callerError ?? (_) {});
   }
 }

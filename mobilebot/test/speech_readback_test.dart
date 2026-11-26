@@ -108,6 +108,91 @@ void main() {
     expect(previous, 1);
   });
 
+  // Two replies can speak before either platform callback arrives. The first
+  // turn used to treat its own wrapper as the "previous" handler and write it
+  // back, so the second turn's completion never reached onDone.
+  test('a later system tts turn keeps the completion slot', () async {
+    final tts = FakeTtsChannel();
+    addTearDown(tts.dispose);
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final system = FlutterTtsProbe();
+    addTearDown(system.dispose);
+    var original = 0;
+    system.instance.setCompletionHandler(() => original++);
+    var done1 = 0;
+    var done2 = 0;
+    expect(
+      await speakReplyReadback(
+        engine,
+        '第一句。',
+        onDone: () => done1++,
+        systemTts: () => system.instance,
+      ),
+      '',
+    );
+    expect(
+      await speakReplyReadback(
+        engine,
+        '第二句。',
+        onDone: () => done2++,
+        systemTts: () => system.instance,
+      ),
+      '',
+    );
+    expect(done1, 0);
+    expect(done2, 0);
+    await system.fireCompletion();
+    expect(done1, 0);
+    expect(done2, 1);
+    expect(original, 1);
+    await system.fireCompletion();
+    expect(done2, 1);
+    expect(original, 2);
+  });
+
+  // stop() can deliver the previous utterance's completion before speak().
+  // Treating that as this turn's completion reopens the mic while the reply
+  // is still queued.
+  test('a completion from stop does not finish this turn', () async {
+    final tts = FakeTtsChannel();
+    addTearDown(tts.dispose);
+    FakeTtsChannel.messenger.setMockMethodCallHandler(
+      FakeTtsChannel.channel,
+      (call) async {
+        if (call.method == 'speak') {
+          tts.spoken.add(call.arguments is String ? call.arguments as String : '');
+        }
+        if (call.method == 'stop') {
+          await FakeTtsChannel.messenger.handlePlatformMessage(
+            FakeTtsChannel.channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              const MethodCall('speak.onComplete'),
+            ),
+            (_) {},
+          );
+        }
+        return 1;
+      },
+    );
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final system = FlutterTtsProbe();
+    addTearDown(system.dispose);
+    var done = 0;
+    final err = await speakReplyReadback(
+      engine,
+      '停掉上一句后再读。',
+      onDone: () => done++,
+      systemTts: () => system.instance,
+    );
+    expect(err, '');
+    expect(tts.spoken, ['停掉上一句后再读。']);
+    expect(done, 0);
+    await system.fireCompletion();
+    expect(done, 1);
+  });
+
   test('a long reply is summarized before it reaches tts', () async {
     final tts = FakeTtsChannel();
     addTearDown(tts.dispose);
