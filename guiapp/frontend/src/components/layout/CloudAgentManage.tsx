@@ -329,9 +329,9 @@ export function CloudAgentManage({ lang, onClose, onCreated }: { lang: string; o
             {pickedKind === 'coding' ? (
                 <div data-testid="cloud-agent-git" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, color: 'var(--theme-text-secondary, #667085)' }}>
-                        {text('Repository access reuses the GitHub/GitLab account connected in Settings.', '代码库连接会复用设置中已登录的 GitHub/GitLab 账号。', '程式庫連接會復用設定中已登入的 GitHub/GitLab 帳號。')}
+                        {text('Repository access reuses the GitHub/GitLab account connected in Settings.', '代码库连接会复用设置中已登录的 GitHub/GitLab 账号。', '代碼庫連接會復用設定中已登入的 GitHub/GitLab 帳號。')}
                     </span>
-                    <button type="button" onClick={() => setGitDialogOpen(true)}>{text('Connect repository', '连接代码库', '連接程式庫')}</button>
+                    <button type="button" onClick={() => setGitDialogOpen(true)}>{text('Connect repository', '连接代码库', '連接代碼庫')}</button>
                     {gitConnectedRepo ? <strong data-testid="cloud-agent-git-connected">{text('Connected', '已连接', '已連接')} {gitConnectedRepo}</strong> : null}
                 </div>
             ) : null}

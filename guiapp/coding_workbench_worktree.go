@@ -505,6 +505,24 @@ func remapWorktreePaths(paths []string, worktreeProject, mainProject string) []s
 	return uniqueSortedSubAgentStrings(out)
 }
 
+// remapWorktreeDiffStat rewrites per-file diff paths along with the audit
+// lists so the final structured table does not expose the temporary worktree.
+func remapWorktreeDiffStat(stat *SubAgentDiffStat, worktreeProject, mainProject string) *SubAgentDiffStat {
+	if stat == nil || len(stat.FileStats) == 0 {
+		return stat
+	}
+	out := *stat
+	out.FileStats = make([]SubAgentFileDiffStat, 0, len(stat.FileStats))
+	for _, file := range stat.FileStats {
+		paths := remapWorktreePaths([]string{file.Path}, worktreeProject, mainProject)
+		if len(paths) > 0 {
+			file.Path = paths[0]
+		}
+		out.FileStats = append(out.FileStats, file)
+	}
+	return &out
+}
+
 // listCodingWorkbenchWorktrees lists maclaw coding worktrees for a git root.
 func listCodingWorkbenchWorktrees(projectPath string) (string, error) {
 	projectPath = strings.TrimSpace(projectPath)

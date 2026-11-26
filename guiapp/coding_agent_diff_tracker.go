@@ -114,10 +114,15 @@ func codingAgentFileChangesFromSnapshot(snapshot CodingDiffSnapshot, stat *SubAg
 	changes := make([]CodingAgentFileChange, 0, len(files))
 	for _, path := range files {
 		added, removed := lookupSubAgentFileDiffStat(stat, path)
+		hasCounts := false
+		if i := lookupSubAgentFileDiffStatIndex(stat, path); i >= 0 {
+			hasCounts = stat.FileStats[i].HasCounts
+		}
 		changes = append(changes, CodingAgentFileChange{
-			Path:    compactSubAgentPathText(path),
-			Added:   added,
-			Removed: removed,
+			Path:      compactSubAgentPathText(path),
+			Added:     added,
+			Removed:   removed,
+			HasCounts: hasCounts,
 		})
 	}
 	return changes
@@ -136,35 +141,146 @@ func mergeSubAgentDiffStat(stat *SubAgentDiffStat, fallbacks []SubAgentFileDiffS
 	if stat != nil && len(stat.FileStats) > 0 {
 		merged.FileStats = append([]SubAgentFileDiffStat{}, stat.FileStats...)
 	}
-	for _, fallback := range fallbacks {
+	fallbackEvidenceBefore := func(path string, before int, exact bool) bool {
+		for i := 0; i < before; i++ {
+			candidate := fallbacks[i]
+			if candidate.HasCounts == exact && subAgentDiffEvidencePathsMatch(candidate.Path, path) {
+				return true
+			}
+		}
+		return false
+	}
+	for fallbackIndex, fallback := range fallbacks {
 		path := strings.TrimSpace(fallback.Path)
-		if path == "" || (fallback.Insertions <= 0 && fallback.Deletions <= 0) {
+		if path == "" {
 			continue
 		}
 		if i := lookupSubAgentFileDiffStatIndex(merged, path); i >= 0 {
 			merged.FileStats[i].Path = preferredSubAgentDiffPath(merged.FileStats[i].Path, path)
-			if merged.FileStats[i].Insertions > 0 || merged.FileStats[i].Deletions > 0 {
+			if fallback.HasCounts {
+				if fallbackEvidenceBefore(path, fallbackIndex, false) {
+					// Once the turn was downgraded to unknown, a later per-operation
+					// diff must not resurrect precision: that diff starts from
+					// intermediate bytes rather than the start of the turn.
+					continue
+				}
+				// Tool baselines measure this turn's net edit. They are more
+				// authoritative than git diff output, which is relative to HEAD and
+				// may include work that was already dirty before the turn.
+				merged.FileStats[i].Insertions = fallback.Insertions
+				merged.FileStats[i].Deletions = fallback.Deletions
+				merged.FileStats[i].HasCounts = true
 				continue
 			}
-			merged.FileStats[i].Insertions = fallback.Insertions
-			merged.FileStats[i].Deletions = fallback.Deletions
-			continue
+			if !fallback.HasCounts {
+				if fallbackEvidenceBefore(path, fallbackIndex, true) {
+					continue
+				}
+				// A touched file whose turn-net counts are unavailable must not
+				// borrow HEAD-relative git precision: that precision may include
+				// changes which already existed before this turn.
+				merged.FileStats[i].Insertions = 0
+				merged.FileStats[i].Deletions = 0
+				merged.FileStats[i].HasCounts = false
+				continue
+			}
 		}
 		merged.FileStats = append(merged.FileStats, SubAgentFileDiffStat{
 			Path:       path,
 			Insertions: fallback.Insertions,
 			Deletions:  fallback.Deletions,
+			HasCounts:  fallback.HasCounts,
 		})
 	}
 	if len(merged.FileStats) == 0 {
 		return stat
 	}
 	for _, file := range merged.FileStats {
+		if !file.HasCounts {
+			continue
+		}
 		merged.Insertions += file.Insertions
 		merged.Deletions += file.Deletions
 	}
 	merged.FilesChanged = len(merged.FileStats)
 	return merged
+}
+
+// filterSubAgentDiffStatToFiles scopes repository-wide diff evidence to the
+// files this turn actually touched. `git diff` is relative to HEAD, so an
+// already-dirty user workspace must not leak unrelated pre-existing changes
+// into the task's final table.
+func filterSubAgentDiffStatToFiles(stat *SubAgentDiffStat, fileGroups ...[]string) *SubAgentDiffStat {
+	if stat == nil || len(stat.FileStats) == 0 {
+		return stat
+	}
+	out := &SubAgentDiffStat{}
+	for _, file := range stat.FileStats {
+		kept := false
+		for _, group := range fileGroups {
+			for _, path := range group {
+				if subAgentDiffEvidencePathsMatch(file.Path, path) {
+					kept = true
+					break
+				}
+			}
+			if kept {
+				break
+			}
+		}
+		if !kept {
+			continue
+		}
+		out.FileStats = append(out.FileStats, file)
+		if file.HasCounts {
+			out.Insertions += file.Insertions
+			out.Deletions += file.Deletions
+		}
+	}
+	if len(out.FileStats) == 0 {
+		return nil
+	}
+	out.FilesChanged = len(out.FileStats)
+	return out
+}
+
+// subAgentDiffEvidencePathsMatch is stricter than the UI-oriented suffix
+// matcher: suffix equivalence is accepted only when one side is absolute. Two
+// different relative nested files may share a tail and must not borrow each
+// other's measured line counts.
+func subAgentDiffEvidencePathsMatch(a, b string) bool {
+	a = normalizeSubAgentDiffPath(a)
+	b = normalizeSubAgentDiffPath(b)
+	if a == "" || b == "" {
+		return false
+	}
+	windowsCaseInsensitive := subAgentDiffPathLooksWindowsAbsolute(a) || subAgentDiffPathLooksWindowsAbsolute(b)
+	if windowsCaseInsensitive {
+		if strings.EqualFold(a, b) {
+			return true
+		}
+	} else if a == b {
+		return true
+	}
+	if !subAgentDiffPathLooksAbsolute(a) && !subAgentDiffPathLooksAbsolute(b) {
+		return false
+	}
+	if windowsCaseInsensitive {
+		al, bl := strings.ToLower(a), strings.ToLower(b)
+		return strings.HasSuffix(al, "/"+bl) || strings.HasSuffix(bl, "/"+al)
+	}
+	return strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
+}
+
+func subAgentDiffPathLooksWindowsAbsolute(path string) bool {
+	return len(path) > 2 && path[1] == ':' && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z'))
+}
+
+func subAgentDiffPathLooksAbsolute(path string) bool {
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return true
+	}
+	return len(path) > 2 && path[1] == ':' && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z'))
 }
 
 func lookupSubAgentFileDiffStat(stat *SubAgentDiffStat, path string) (added, removed int) {
@@ -184,7 +300,7 @@ func lookupSubAgentFileDiffStatIndex(stat *SubAgentDiffStat, path string) int {
 		return -1
 	}
 	for i, file := range stat.FileStats {
-		if subAgentDiffPathsMatch(file.Path, want) {
+		if subAgentDiffEvidencePathsMatch(file.Path, want) {
 			return i
 		}
 	}

@@ -17,15 +17,39 @@ type FinalAnswerVerificationFact struct {
 	AfterFinalEdit bool
 }
 
+// FinalAnswerFileChangeFact is host-observed per-file diff evidence. HasCounts
+// distinguishes an exact zero-line change from a file whose line counts are
+// unavailable; the table renders unavailable counts as an explicit dash rather
+// than inventing precision.
+type FinalAnswerFileChangeFact struct {
+	Path      string
+	Created   bool
+	Added     int
+	Removed   int
+	HasCounts bool
+}
+
 // AppendFinalAnswerHostFacts fills narrow factual gaps in a model-written
 // final answer. It deliberately does not explain the implementation — that is
 // the model's job — but files changed and verifier outcomes are host facts and
 // must not depend on whether the model remembered to mention them.
 func AppendFinalAnswerHostFacts(summary string, filesCreated, filesModified []string, verification []FinalAnswerVerificationFact) string {
+	return appendFinalAnswerHostFacts(summary, filesCreated, filesModified, nil, verification, false)
+}
+
+// AppendFinalAnswerHostFactsWithFileChanges is the structured host-fact form
+// used by coding surfaces. The changed-files table is composed only from this
+// metadata, never by keyword-scanning model prose; this keeps the mechanism
+// stable across languages and paraphrases.
+func AppendFinalAnswerHostFactsWithFileChanges(summary string, filesCreated, filesModified []string, fileChanges []FinalAnswerFileChangeFact, verification []FinalAnswerVerificationFact) string {
+	return appendFinalAnswerHostFacts(summary, filesCreated, filesModified, fileChanges, verification, true)
+}
+
+func appendFinalAnswerHostFacts(summary string, filesCreated, filesModified []string, fileChanges []FinalAnswerFileChangeFact, verification []FinalAnswerVerificationFact, preferTable bool) string {
 	summary = sanitizeFinalAnswerMentionedCommands(strings.TrimSpace(summary), verification)
 	facts := make([]string, 0, 2)
 	zh := finalSummaryMostlyChinese(summary)
-	if fileFact := finalAnswerFileFact(summary, filesCreated, filesModified, zh); fileFact != "" {
+	if fileFact := finalAnswerFileFact(summary, filesCreated, filesModified, fileChanges, zh, preferTable); fileFact != "" {
 		facts = append(facts, fileFact)
 	}
 	if verificationFact := finalAnswerVerificationFact(summary, verification, zh); verificationFact != "" {
@@ -151,11 +175,26 @@ func LooksLikeVerificationCommand(command string) bool {
 	return false
 }
 
-func finalAnswerFileFact(summary string, filesCreated, filesModified []string, zh bool) string {
+type finalAnswerFileChangeRow struct {
+	Path      string
+	Created   bool
+	Added     int
+	Removed   int
+	HasCounts bool
+}
+
+func finalAnswerFileFact(summary string, filesCreated, filesModified []string, fileChanges []FinalAnswerFileChangeFact, zh bool, preferTable bool) string {
 	created := uniqueFinalAnswerPaths(filesCreated)
 	modified := uniqueFinalAnswerPaths(filesModified)
-	if len(created) == 0 && len(modified) == 0 {
+	if len(created) == 0 && len(modified) == 0 && len(fileChanges) == 0 {
 		return ""
+	}
+	if preferTable || len(fileChanges) > 0 {
+		rows := finalAnswerFileChangeRows(created, modified, fileChanges)
+		if len(rows) == 0 {
+			return ""
+		}
+		return renderFinalAnswerFileChangeTable(rows, zh)
 	}
 	lowerSummary := strings.ToLower(strings.ReplaceAll(summary, "\\", "/"))
 	baseCounts := finalAnswerPathBaseCounts(created, modified)
@@ -195,9 +234,215 @@ func finalAnswerFileFact(summary string, filesCreated, filesModified []string, z
 		}
 	}
 	if zh {
-		return "本轮实际改动：" + strings.Join(parts, "；") + "。"
+		return "**本轮实际改动：**" + strings.Join(parts, "；") + "。"
 	}
-	return "Actual file changes: " + strings.Join(parts, "; ") + "."
+	return "**Actual file changes:** " + strings.Join(parts, "; ") + "."
+}
+
+func finalAnswerFileChangeRows(filesCreated, filesModified []string, facts []FinalAnswerFileChangeFact) []finalAnswerFileChangeRow {
+	createdSet := map[string]bool{}
+	for _, path := range uniqueFinalAnswerPaths(filesCreated) {
+		createdSet[finalAnswerFileChangeKey(path)] = true
+	}
+	ordered := map[string]bool{}
+	for _, path := range uniqueFinalAnswerPaths(filesCreated) {
+		ordered[finalAnswerFileChangeKey(path)] = true
+	}
+	for _, path := range uniqueFinalAnswerPaths(filesModified) {
+		ordered[finalAnswerFileChangeKey(path)] = true
+	}
+	merged := map[string]finalAnswerFileChangeRow{}
+	for _, fact := range facts {
+		path := strings.TrimSpace(strings.ReplaceAll(fact.Path, "\\", "/"))
+		key := finalAnswerFileChangeKey(path)
+		if key == "" {
+			continue
+		}
+		ordered[key] = true
+		row, ok := merged[key]
+		if !ok {
+			row = finalAnswerFileChangeRow{Path: path, Created: fact.Created, HasCounts: fact.HasCounts}
+		} else {
+			row.Created = row.Created || fact.Created
+			row.HasCounts = row.HasCounts || fact.HasCounts
+		}
+		if fact.HasCounts {
+			row.Added += fact.Added
+			row.Removed += fact.Removed
+		}
+		merged[key] = row
+	}
+	keys := make([]string, 0, len(ordered))
+	for key := range ordered {
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	rows := make([]finalAnswerFileChangeRow, 0, len(keys))
+	for _, key := range keys {
+		row, ok := merged[key]
+		if !ok {
+			row = finalAnswerFileChangeRow{Path: key}
+		}
+		if row.Path == "" {
+			row.Path = key
+		}
+		row.Created = row.Created || createdSet[key]
+		rows = appendFinalAnswerMergedRow(rows, row)
+	}
+	out := rows[:0]
+	for _, row := range rows {
+		// A touched file whose net text is identical to the start of the turn is
+		// not a changed file. Keep exact zero rows for newly created files (an
+		// empty new file is still a creation), but do not noise the table with
+		// write/revert churn on pre-existing files.
+		if row.HasCounts && row.Added == 0 && row.Removed == 0 && !row.Created {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func appendFinalAnswerMergedRow(rows []finalAnswerFileChangeRow, row finalAnswerFileChangeRow) []finalAnswerFileChangeRow {
+	merged := false
+	for i, existing := range rows {
+		if !finalAnswerRowPathsMatch(existing.Path, row.Path) {
+			continue
+		}
+		// Only use suffix equivalence to repair host paths expressed in two
+		// forms (for example project-relative plus absolute). Two independently
+		// measured files may be genuinely different nested paths, so exact
+		// evidence from both sides is never merged away unless the key is exact.
+		if existing.HasCounts && row.HasCounts {
+			if finalAnswerFileChangeKey(existing.Path) == finalAnswerFileChangeKey(row.Path) {
+				existing.Added += row.Added
+				existing.Removed += row.Removed
+				existing.Created = existing.Created || row.Created
+				rows[i] = existing
+				merged = true
+				break
+			}
+			continue
+		}
+		if !existing.HasCounts && row.HasCounts {
+			row.Created = row.Created || existing.Created
+			rows[i] = row
+		} else if existing.HasCounts && !row.HasCounts {
+			rows[i].Created = rows[i].Created || row.Created
+		} else {
+			existing.Created = existing.Created || row.Created
+			if len(row.Path) < len(existing.Path) {
+				existing.Path = row.Path
+			}
+			rows[i] = existing
+		}
+		merged = true
+		break
+	}
+	if !merged {
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func finalAnswerRowPathsMatch(a, b string) bool {
+	a = strings.TrimPrefix(finalAnswerFileChangeKey(a), "./")
+	b = strings.TrimPrefix(finalAnswerFileChangeKey(b), "./")
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	if !finalAnswerRowPathLooksAbsolute(a) && !finalAnswerRowPathLooksAbsolute(b) {
+		return false
+	}
+	return strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
+}
+
+func finalAnswerRowPathLooksAbsolute(path string) bool {
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return true
+	}
+	return len(path) > 2 && path[1] == ':' && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z'))
+}
+
+func finalAnswerFileChangeKey(path string) string {
+	return strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+}
+
+func renderFinalAnswerFileChangeTable(rows []finalAnswerFileChangeRow, zh bool) string {
+	var b strings.Builder
+	if zh {
+		fmt.Fprintf(&b, "## 文件改动（%d 个文件）\n\n", len(rows))
+		b.WriteString("| 文件 | 状态 | 新增行 | 删除行 |\n")
+		b.WriteString("|---|---|---:|---:|\n")
+	} else {
+		fmt.Fprintf(&b, "## File changes (%d %s)\n\n", len(rows), finalAnswerEnglishPlural(len(rows), "file", "files"))
+		b.WriteString("| File | Status | Added lines | Removed lines |\n")
+		b.WriteString("|---|---|---:|---:|\n")
+	}
+	const maxRows = 12
+	shown := rows
+	if len(shown) > maxRows {
+		shown = shown[:maxRows]
+	}
+	for _, row := range shown {
+		status := "modified"
+		if zh {
+			status = "修改"
+		}
+		if row.Created {
+			status = "created"
+			if zh {
+				status = "新建"
+			}
+		}
+		added, removed := "—", "—"
+		if row.HasCounts {
+			added = fmt.Sprintf("%d", row.Added)
+			removed = fmt.Sprintf("%d", row.Removed)
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", finalAnswerMarkdownTableCell(row.Path), status, added, removed)
+	}
+	if len(rows) > len(shown) {
+		remaining := rows[len(shown):]
+		added, removed, counted := 0, 0, len(remaining) > 0
+		for _, row := range remaining {
+			if !row.HasCounts {
+				counted = false
+				continue
+			}
+			added += row.Added
+			removed += row.Removed
+		}
+		addedText, removedText := "—", "—"
+		if counted {
+			addedText = fmt.Sprintf("%d", added)
+			removedText = fmt.Sprintf("%d", removed)
+		}
+		label := fmt.Sprintf("%d more files", len(remaining))
+		status := "—"
+		if zh {
+			label = fmt.Sprintf("其余 %d 个文件", len(remaining))
+		}
+		fmt.Fprintf(&b, "| *%s* | %s | %s | %s |\n", label, status, addedText, removedText)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func finalAnswerEnglishPlural(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+func finalAnswerMarkdownTableCell(text string) string {
+	text = strings.ReplaceAll(text, "|", "\\|")
+	return strings.ReplaceAll(text, "\n", " ")
 }
 
 func finalAnswerVerificationFact(summary string, verification []FinalAnswerVerificationFact, zh bool) string {
@@ -251,9 +496,9 @@ func finalAnswerVerificationFact(summary string, verification []FinalAnswerVerif
 		return ""
 	}
 	if zh {
-		return "实际验证：" + strings.Join(items, "；") + "。"
+		return "**实际验证：**" + strings.Join(items, "；") + "。"
 	}
-	return "Observed verification: " + strings.Join(items, "; ") + "."
+	return "**Observed verification:** " + strings.Join(items, "; ") + "."
 }
 
 // sanitizeFinalAnswerMentionedCommands rewrites a verifier invocation the

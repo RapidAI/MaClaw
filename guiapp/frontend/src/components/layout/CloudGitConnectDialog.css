@@ -217,6 +217,28 @@
     white-space: nowrap;
 }
 
+.cgc-account-action {
+    margin-left: auto;
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning, #f79009) 36%, transparent);
+    border-radius: 10px;
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-text-primary, #172033);
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.cgc-account-action:hover {
+    border-color: color-mix(in srgb, var(--theme-primary, #2f6fed) 46%, transparent);
+    background: color-mix(in srgb, var(--theme-primary, #2f6fed) 6%, transparent);
+    color: var(--theme-primary, #2f6fed);
+}
+
 .cgc-alert {
     display: grid;
     gap: 3px;
@@ -411,17 +433,22 @@
     font-size: 0.66rem;
 }
 
-.cgc-repo-more,
 .cgc-empty-note {
     margin: 0;
     padding: 8px 10px;
     color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
     font-size: 0.7rem;
-    text-align: center;
+    text-align: left;
 }
 
-.cgc-empty-note {
-    text-align: left;
+.cgc-bound-note {
+    margin: 0;
+    padding: 7px 10px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--theme-success, #12b76a) 7%, transparent);
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+    font-size: 0.72rem;
+    line-height: 1.45;
 }
 
 .cgc-advanced {
@@ -559,6 +586,10 @@
     .cgc-provider-section,
     .cgc-advanced-panel {
         grid-template-columns: 1fr;
+    }
+
+    .cgc-account {
+        flex-wrap: wrap;
     }
 
     .cgc-footer {

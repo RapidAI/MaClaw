@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import { refreshCloudGit } from './cloudAgentAssistant';
 import { noRepoScopeNote } from '../../utils/githubScopes';
+import { openSettingsTab } from '../../utils/settingsNavigation';
 import './CloudGitConnectDialog.css';
 
 type Binding = (...args: unknown[]) => Promise<unknown>;
@@ -84,6 +85,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [bound, setBound] = useState<{ service: string; repo: string } | null>(null);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const loadGeneration = useRef(0);
     const repoCache = useRef<Partial<Record<string, RepoView[]>>>({});
@@ -98,6 +100,12 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     // effect runs once — otherwise every parent re-render would steal focus.
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
+    // Live service mirror for one-shot async paths (the mount probe) whose
+    // first-render closure would otherwise see a stale git.service.
+    const serviceRef = useRef(git.service);
+    serviceRef.current = git.service;
+    const repoRef = useRef(git.repo);
+    repoRef.current = git.repo;
     useEffect(() => {
         const invoker = document.activeElement as HTMLElement | null;
         const onKey = (event: KeyboardEvent) => {
@@ -212,7 +220,6 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
             || (repo.description || '').toLowerCase().includes(query)
         ));
     }, [repos, repoQuery, repoSelectionLocked]);
-    const visibleRepos = filteredRepos.slice(0, 24);
 
     const fail = (err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));
@@ -234,7 +241,92 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
         }));
     };
 
+    // Deep-link into Settings → GitHub & GitLab and let the user sign in
+    // there; the dialog closes so reopening starts a fresh account read.
+    const goToSettings = () => {
+        openSettingsTab('github');
+        onCloseRef.current();
+    };
+
+    const updatedLabel = (at: string): string => {
+        const time = Date.parse(at);
+        if (!Number.isFinite(time)) return '';
+        const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+        if (seconds < 60) return text('Updated just now', '刚刚更新', '剛剛更新');
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return text(`Updated ${minutes} minutes ago`, `${minutes} 分钟前更新`, `${minutes} 分鐘前更新`);
+        const hours = Math.round(minutes / 60);
+        if (hours < 24) return text(`Updated ${hours} hours ago`, `${hours} 小时前更新`, `${hours} 小時前更新`);
+        const days = Math.round(hours / 24);
+        if (days < 30) return text(`Updated ${days} days ago`, `${days} 天前更新`, `${days} 天前更新`);
+        const months = Math.round(days / 30);
+        if (months < 12) return text(`Updated ${months} months ago`, `${months} 个月前更新`, `${months} 個月前更新`);
+        const years = Math.round(months / 12);
+        return text(`Updated ${years} years ago`, `${years} 年前更新`, `${years} 年前更新`);
+    };
+
+    // One-time probe: the dialog defaults to GitHub, but when only GitLab is
+    // signed in, opening on GitHub would first show "no connected account".
+    // Switch to the usable service before the user reads anything; both reads
+    // are local credential-store lookups, and the service effect's generation
+    // guard cancels the superseded GitHub load.
+    const initialServiceProbed = useRef(false);
+    useEffect(() => {
+        if (initialServiceProbed.current) return;
+        initialServiceProbed.current = true;
+        const usable = (view: AccountView | null) => !!view?.connected && view.repo_scope !== false;
+        void (async () => {
+            const readAccount = async (gitlab: boolean): Promise<AccountView | null> => {
+                const binding = appBinding(gitlab ? 'CloudAgentGitLabAccount' : 'CloudAgentGitHubAccount');
+                if (!binding) return null;
+                try {
+                    return await binding() as AccountView;
+                } catch {
+                    return null;
+                }
+            };
+            const [github, gitlab] = await Promise.all([readAccount(false), readAccount(true)]);
+            // Only switch while the user is still on the untouched default —
+            // a manual service switch wins and the probe must not stomp it.
+            if (serviceRef.current === 'github' && usable(gitlab) && !usable(github)) switchService('gitlab');
+        })();
+    }, []);
+
+    // Surface the instance's existing repository binding instead of letting a
+    // second connect die on the server's "already has a repository" error.
+    // Reconnecting the SAME repository is the supported token-refresh path
+    // (srv re-sets identity without re-cloning), so prefilling it is useful,
+    // not just informative. A binding on the OTHER service is shown as a note
+    // only — repository namespaces do not transfer across GitHub/GitLab.
+    useEffect(() => {
+        if (!instanceId) return;
+        let cancelled = false;
+        void (async () => {
+            const get = appBinding('GetCloudAgentGit');
+            if (!get) return;
+            try {
+                const view = await get(instanceId) as { connected?: boolean; service?: string; repo?: string };
+                if (cancelled || !view?.connected) return;
+                const repo = String(view.repo || '').trim();
+                const service = String(view.service || '').trim().toLowerCase();
+                if (!repo) return;
+                setBound({ service, repo });
+                if (serviceRef.current !== service || repoRef.current.trim()) return;
+                setRepoQuery(repo);
+                setRepoSelectionLocked(true);
+                setGit((prev) => (prev.repo.trim() ? prev : { ...prev, repo }));
+            } catch {
+                // An unreachable srv keeps the plain connect flow unchanged.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [instanceId]);
+
     const updateRepo = (value: string) => {
+        // A connect failure refers to the previous input; editing starts fresh.
+        setError('');
         setRepoQuery(value);
         setRepoListOpen(true);
         setRepoSelectionLocked(false);
@@ -242,6 +334,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     };
 
     const selectRepo = (repo: RepoView) => {
+        setError('');
         setRepoQuery(repo.name);
         setRepoListOpen(false);
         setRepoSelectionLocked(true);
@@ -251,7 +344,9 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const accountReady = git.source === 'account' && accountState === 'ready';
     const authorReady = !!git.authorName.trim() && !!git.authorEmail.trim();
     const manualReady = !!git.token.trim() && authorReady;
-    const canSubmit = !busy && !!git.repo.trim() && ((accountReady && authorReady) || manualReady);
+    // instanceId gates here (not inside submit) so a missing id disables the
+    // button instead of clicking through to a silent no-op.
+    const canSubmit = !busy && !!instanceId && !!git.repo.trim() && ((accountReady && authorReady) || manualReady);
     const selectedRepo = repos.find((repo) => repo.name === git.repo.trim());
 
     const submit = async () => {
@@ -273,8 +368,10 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
                 return;
             }
-            await refreshCloudGit(instanceId);
             onConnected?.(String(view?.repo || git.repo.trim()).trim());
+            // refreshCloudGit is internally try/catch'd and generation-guarded;
+            // don't hold the dialog open on a slow Hub round-trip.
+            void refreshCloudGit(instanceId);
             onClose();
         } catch (err) {
             fail(err);
@@ -313,7 +410,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
             <div ref={dialogRef} className="cgc-dialog">
                 <header className="cgc-header">
                     <div className="cgc-title-block">
-                        <h2>{text('Connect repository', '连接代码库', '連接程式庫')}</h2>
+                        <h2>{text('Connect repository', '连接代码库', '連接代碼庫')}</h2>
                         <p>{text('Choose a repository. The connected account is used automatically.', '选择仓库即可连接，系统将自动使用已登录账号。', '選擇倉庫即可連接，系統將自動使用已登入帳號。')}</p>
                     </div>
                     <button type="button" className="cgc-close" aria-label={text('Close', '关闭', '關閉')} onClick={onClose}>×</button>
@@ -359,6 +456,11 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                                     <strong>{accountState === 'error' ? text('Account permission incomplete', '账号权限不完整', '帳號權限不完整') : text('No connected account', '未连接账号', '未連接帳號')}</strong>
                                     <span>{accountMessage}</span>
                                 </span>
+                                <button type="button" className="cgc-account-action" onClick={goToSettings}>
+                                    {accountState === 'error'
+                                        ? text('Reconnect at Settings', '去设置重新登录', '去設定重新登入')
+                                        : text('Sign in at Settings', '去设置登录', '去設定登入')}
+                                </button>
                             </>
                         )}
                     </section>
@@ -389,6 +491,12 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                                 {selectedRepo.default_branch ? <span>{selectedRepo.default_branch}</span> : null}
                             </div>
                         ) : null}
+                        {bound ? (
+                            <p className="cgc-bound-note" data-testid="cloud-git-bound-note">{text(
+                                `This instance is already bound to ${bound.repo}. Reconnecting the same repository refreshes its authorization.`,
+                                `该实例已绑定 ${bound.repo}；重新连接同一仓库将刷新授权。`,
+                                `該實例已綁定 ${bound.repo}；重新連接同一倉庫將刷新授權。`)}</p>
+                        ) : null}
                         {repoLoadError ? (
                             <div className="cgc-alert cgc-alert--warning">
                                 <strong>{text('Repository list unavailable', '无法自动读取仓库列表', '無法自動讀取倉庫列表')}</strong>
@@ -408,29 +516,30 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
                         ) : null}
                         {repoListOpen && accountState === 'ready' && repos.length > 0 ? (
                             <div className="cgc-repo-list" role="listbox" aria-label={text('Available repositories', '可用仓库', '可用倉庫')}>
-                                {visibleRepos.map((repo) => (
-                                    <button
-                                        type="button"
-                                        role="option"
-                                        aria-selected={repo.name === git.repo.trim()}
-                                        key={repo.name}
-                                        className="cgc-repo-option"
-                                        onMouseDown={(event) => event.preventDefault()}
-                                        onClick={() => selectRepo(repo)}
-                                    >
-                                        <span className="cgc-repo-option-main">
-                                            <strong>{repo.name}</strong>
-                                            <em>{repo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</em>
-                                        </span>
-                                        {repo.description ? <span className="cgc-repo-description">{repo.description}</span> : null}
-                                        <span className="cgc-repo-meta">
-                                            {repo.default_branch ? <span>{repo.default_branch}</span> : null}
-                                        </span>
-                                    </button>
-                                ))}
-                                {filteredRepos.length > visibleRepos.length ? (
-                                    <div className="cgc-repo-more">{text('Type to narrow the list', '继续输入以筛选更多仓库', '繼續輸入以篩選更多倉庫')}</div>
-                                ) : null}
+                                {filteredRepos.map((repo) => {
+                                    const updated = updatedLabel(repo.updated_at || '');
+                                    return (
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected={repo.name === git.repo.trim()}
+                                            key={repo.name}
+                                            className="cgc-repo-option"
+                                            onMouseDown={(event) => event.preventDefault()}
+                                            onClick={() => selectRepo(repo)}
+                                        >
+                                            <span className="cgc-repo-option-main">
+                                                <strong>{repo.name}</strong>
+                                                <em>{repo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</em>
+                                            </span>
+                                            {repo.description ? <span className="cgc-repo-description">{repo.description}</span> : null}
+                                            <span className="cgc-repo-meta">
+                                                {repo.default_branch ? <span>{repo.default_branch}</span> : null}
+                                                {updated ? <span>{updated}</span> : null}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
                             </div>
                         ) : null}
                         {repos.length >= 100 ? (

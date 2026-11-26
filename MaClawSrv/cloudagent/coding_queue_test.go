@@ -661,12 +661,13 @@ func TestCloudFinalAnswerTextUsesSharedAuditFilterAndHostFacts(t *testing.T) {
 		"已完成修复。\n\n## 质量审计\nPASS\n\n## 修复的问题\n修复空指针。",
 		nil,
 		[]string{"pkg/fix.go"},
+		[]codingagent.FinalAnswerFileChangeFact{{Path: "pkg/fix.go", Added: 8, Removed: 2, HasCounts: true}},
 		[]codingagent.FinalAnswerVerificationFact{{Command: "go test ./pkg", Succeeded: true, AfterFinalEdit: true}},
 	)
 	if strings.Contains(got, "质量审计") || strings.Contains(got, "PASS") {
 		t.Fatalf("cloud final answer leaked internal audit: %q", got)
 	}
-	for _, want := range []string{"## 修复的问题", "修复空指针", "实际验证", "`go test ./pkg` 通过"} {
+	for _, want := range []string{"## 修复的问题", "修复空指针", "## 文件改动（1 个文件）", "| `pkg/fix.go` | 修改 | 8 | 2 |", "实际验证", "`go test ./pkg` 通过"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("cloud final answer missing %q: %q", want, got)
 		}
@@ -1075,4 +1076,85 @@ func TestCodingQueuedRowsFenceNewSendDuringDrainHandoff(t *testing.T) {
 	cancel()
 	rt.untrack("req-unwinding")
 	waitQueueEmpty(t, rt, spec.ID, "task-late-send")
+}
+
+func TestCloudWriteFileChangeFactsMeasureNetTurnDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{root: root}
+	write := func(content string) {
+		t.Helper()
+		out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"demo.txt","content":`+strconvQuote(content)+`}`)
+		if abs == "" || strings.Contains(out, "无效") {
+			t.Fatalf("write failed: %q", out)
+		}
+		host.noteFileChange(abs, created, added, removed, hasCounts)
+		host.noteFileBaseline(abs, baseline, baselineOK)
+	}
+	write("a\nx\n")
+	write("a\nx\ny\n")
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if !facts[0].HasCounts || facts[0].Added != 2 || facts[0].Removed != 1 {
+		t.Fatalf("net turn diff = %+v, want +2 -1", facts[0])
+	}
+}
+
+func TestCloudWriteFileChangeFactsCreatedFileCountsAddedOnly(t *testing.T) {
+	root := t.TempDir()
+	host := &agentHost{root: root, inst: &instance{}}
+	out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"new.txt","content":"x"}`)
+	if abs == "" || !created || strings.Contains(out, "无效") {
+		t.Fatalf("write failed: %q", out)
+	}
+	host.noteFile(abs, created)
+	host.noteFileChange(abs, created, added, removed, hasCounts)
+	host.noteFileBaseline(abs, baseline, baselineOK)
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if !facts[0].Created || !facts[0].HasCounts || facts[0].Added != 1 || facts[0].Removed != 0 {
+		t.Fatalf("created one-line file = %+v, want created +1 -0", facts[0])
+	}
+}
+
+func TestCloudRepeatedWriteWithoutFirstBaselineBecomesUnknown(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.bin")
+	// Invalid UTF-8 makes the first pre-write snapshot undiffable. The second
+	// write's pre-write bytes are text, but they are intermediate bytes and must
+	// not become a start-of-turn baseline.
+	if err := os.WriteFile(path, []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{root: root}
+	write := func(content string) {
+		t.Helper()
+		out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"demo.bin","content":`+strconvQuote(content)+`}`)
+		if abs == "" || strings.Contains(out, "无效") {
+			t.Fatalf("write failed: %q", out)
+		}
+		host.noteFileChange(abs, created, added, removed, hasCounts)
+		host.noteFileBaseline(abs, baseline, baselineOK)
+	}
+	write("a\n")
+	write("a\nb\n")
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 {
+		t.Fatalf("facts=%v", facts)
+	}
+	if facts[0].HasCounts || facts[0].Added != 0 || facts[0].Removed != 0 {
+		t.Fatalf("repeated write without first baseline must be unknown, got %+v", facts[0])
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

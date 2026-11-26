@@ -49,6 +49,8 @@ type SidebarNavRailProps = {
     runningTaskCount?: number;
     /** Opens System > Monitor with the background-task view selected. */
     onOpenBackgroundTasks?: () => void;
+    /** Explicit "open the task pane" intent (工作台 click) — restores a collapsed task list. */
+    onRequestTaskPaneOpen?: () => void;
     /** Tenant daily check-in policy; absent/undefined hides the button. */
     hubCheckin?: SidebarHubCheckin;
     /** Performs the daily check-in; resolves after the reward is granted. */
@@ -87,6 +89,7 @@ export const SidebarNavRail = ({
     settingsNavSoloTab,
     runningTaskCount = 0,
     onOpenBackgroundTasks,
+    onRequestTaskPaneOpen,
     hubCheckin,
     onHubCheckin,
     hubCheckinPending = false,
@@ -248,7 +251,7 @@ export const SidebarNavRail = ({
                 the system trigger + popup menus below stay outside so they are
                 never clipped by the scroll container. */}
             <div className="mc-nav-rail__scroll" onScroll={handleRailScroll}>
-                <SidebarPrimaryNav lang={lang} navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} connectLabel={connectLabel} connectTitle={connectTitle} connectMenuOpen={connectMenuOpen} onToggleConnectMenu={toggleConnectMenu} connectSoloActive={connectSolo} />
+                <SidebarPrimaryNav lang={lang} navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} onRequestTaskPaneOpen={onRequestTaskPaneOpen} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} connectLabel={connectLabel} connectTitle={connectTitle} connectMenuOpen={connectMenuOpen} onToggleConnectMenu={toggleConnectMenu} connectSoloActive={connectSolo} />
                 <div className="snr-spacer" />
                 {hubCheckin?.enabled && (
                     <button

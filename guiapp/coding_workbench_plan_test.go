@@ -2599,7 +2599,7 @@ func TestFormatCodingAgentResultParagraphAddsHostFileAndVerificationFacts(t *tes
 			AfterFinalEdit: true,
 		}},
 	})
-	for _, want := range []string{"本轮实际改动", "pkg/fix.go", "实际验证", "`go test ./pkg` 通过"} {
+	for _, want := range []string{"## 文件改动", "| `pkg/fix.go` | 修改 | — | — |", "实际验证", "`go test ./pkg` 通过"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("host fact fallback missing %q:\n%s", want, got)
 		}
@@ -2618,8 +2618,11 @@ func TestFormatCodingAgentResultParagraphDoesNotRepeatModelFacts(t *testing.T) {
 			AfterFinalEdit: true,
 		}},
 	})
-	if strings.Count(got, "pkg/fix.go") != 1 || strings.Count(got, "go test ./pkg") != 1 || strings.Contains(got, "本轮实际改动") || strings.Contains(got, "实际验证") {
-		t.Fatalf("host fact fallback repeated model facts:\n%s", got)
+	if strings.Count(got, "go test ./pkg") != 1 || strings.Contains(got, "实际验证") {
+		t.Fatalf("host fact fallback repeated model verification fact:\n%s", got)
+	}
+	if !strings.Contains(got, "## 文件改动") || !strings.Contains(got, "| `pkg/fix.go` | 修改 | — | — |") {
+		t.Fatalf("host file table missing despite inline model mention:\n%s", got)
 	}
 }
 
@@ -3616,5 +3619,27 @@ func TestSetStickyCodingExecutionPlanVisibleInPrevOutputs(t *testing.T) {
 	if !strings.Contains(strings.Join(mem.prevOutputs(), "\n"), "T1") {
 		// Force TurnCount so prevOutputs is non-empty path... ExecutionPlan is always appended if set
 		t.Fatalf("prevOutputs missing plan: %q mem=%+v", joined, mem)
+	}
+}
+
+func TestFormatCodingAgentResultParagraphRendersStructuredFileChangeTable(t *testing.T) {
+	paragraph := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Status:        v2.TaskPassed,
+		Summary:       "已完成视觉优化。",
+		FilesCreated:  []string{"new.js"},
+		FilesModified: []string{"render.cpp"},
+		FileChanges: []v2.TaskFileChange{
+			{Path: "new.js", Created: true, Added: 40, Removed: 0, HasCounts: true},
+			{Path: "render.cpp", Added: 24, Removed: 5, HasCounts: true},
+		},
+	})
+	for _, want := range []string{
+		"## 文件改动（2 个文件）",
+		"| `new.js` | 新建 | 40 | 0 |",
+		"| `render.cpp` | 修改 | 24 | 5 |",
+	} {
+		if !strings.Contains(paragraph, want) {
+			t.Fatalf("final paragraph missing structured file table fragment %q:\n%s", want, paragraph)
+		}
 	}
 }

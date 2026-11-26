@@ -104,7 +104,7 @@ func codingAgentStepResultHeading(result v2.TaskRunResult, ordinal int) string {
 
 func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 	summary := stripCodingAgentAuditSections(result.Summary)
-	summary = codingagent.AppendFinalAnswerHostFacts(summary, result.FilesCreated, result.FilesModified, codingTaskRunVerificationFacts(result.CommandsRun))
+	summary = codingagent.AppendFinalAnswerHostFactsWithFileChanges(summary, result.FilesCreated, result.FilesModified, codingTaskRunFileChangeFacts(result.FileChanges), codingTaskRunVerificationFacts(result.CommandsRun))
 	err := formatCodingAgentVisibleError(result.Error)
 	title := codingAgentResultTitle(result.Title)
 	files := formatCodingAgentTouchedFiles(result.FilesCreated, result.FilesModified)
@@ -707,6 +707,55 @@ func formatCodingAgentFailedCommand(detail string) string {
 	return fmt.Sprintf("`%s` failed.", cmd)
 }
 
+func codingTaskRunFileChangeFacts(changes []v2.TaskFileChange) []codingagent.FinalAnswerFileChangeFact {
+	if len(changes) == 0 {
+		return nil
+	}
+	out := make([]codingagent.FinalAnswerFileChangeFact, 0, len(changes))
+	for _, change := range changes {
+		path := strings.TrimSpace(change.Path)
+		if path == "" {
+			continue
+		}
+		out = append(out, codingagent.FinalAnswerFileChangeFact{
+			Path:      path,
+			Created:   change.Created,
+			Added:     change.Added,
+			Removed:   change.Removed,
+			HasCounts: change.HasCounts,
+		})
+	}
+	return out
+}
+
+func codingSubAgentTaskFileChanges(stat *SubAgentDiffStat, filesCreated []string) []v2.TaskFileChange {
+	if stat == nil || len(stat.FileStats) == 0 {
+		return nil
+	}
+	out := make([]v2.TaskFileChange, 0, len(stat.FileStats))
+	for _, file := range stat.FileStats {
+		path := strings.TrimSpace(file.Path)
+		if path == "" {
+			continue
+		}
+		created := false
+		for _, createdPath := range filesCreated {
+			if subAgentDiffEvidencePathsMatch(path, createdPath) {
+				created = true
+				break
+			}
+		}
+		out = append(out, v2.TaskFileChange{
+			Path:      path,
+			Created:   created,
+			Added:     file.Insertions,
+			Removed:   file.Deletions,
+			HasCounts: file.HasCounts,
+		})
+	}
+	return out
+}
+
 func stripCodingAgentAuditSections(text string) string {
 	return codingagent.StripFinalAnswerAuditSections(text)
 }
@@ -721,6 +770,7 @@ func formatCodingSubAgentUserAnswer(result *CodingSubAgentResult) string {
 		Error:         result.Error,
 		FilesCreated:  result.FilesCreated,
 		FilesModified: result.FilesModified,
+		FileChanges:   codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated),
 		CommandsRun:   codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq),
 	})
 }
@@ -949,6 +999,7 @@ func remoteCodingStepToRunResult(step *v2.TaskItem, result *RemoteCodingSubAgent
 	rr.Summary = result.Summary
 	rr.FilesCreated = append([]string{}, result.FilesCreated...)
 	rr.FilesModified = append([]string{}, result.FilesModified...)
+	rr.FileChanges = codingSubAgentTaskFileChanges(result.DiffStat, result.FilesCreated)
 	rr.CommandsRun = codingSubAgentVerificationEvidence(result.CommandsRun, result.lastEditSeq)
 	rr.RuntimeTaskID = result.RuntimeTaskID
 	rr.Children = cloneChildTaskViews(result.Children)

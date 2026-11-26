@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
@@ -46,8 +47,14 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
-    sidebarExpanded?: boolean;
-    setSidebarExpanded?: (updater: (prev: boolean) => boolean) => void;
+    /** Task pane (任务列表) currently collapsed via the title-bar toggle / Ctrl+B. */
+    taskPaneCollapsed?: boolean;
+    /** Nav rail (功能栏) currently collapsed via the title-bar toggle / Ctrl+Shift+B. */
+    navRailCollapsed?: boolean;
+    /** Toggle for the task pane collapse state (also fired by divider double-click). */
+    onToggleTaskPane?: () => void;
+    /** Explicit "open the task list" intent (工作台 nav item) — restores a collapsed pane. */
+    onRequestTaskPaneOpen?: () => void;
     activeTool: string;
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
@@ -182,8 +189,10 @@ export const AppSidebarShell = ({
     t,
     gossipAllowed,
     config,
-    sidebarExpanded,
-    setSidebarExpanded,
+    taskPaneCollapsed = false,
+    navRailCollapsed = false,
+    onToggleTaskPane,
+    onRequestTaskPaneOpen,
     activeTool,
     toolDropdownOpen,
     setToolDropdownOpen,
@@ -270,11 +279,38 @@ export const AppSidebarShell = ({
     codingInheritsAssistant,
     onHubCheckin,
     hubCheckinPending = false,
-}: AppSidebarShellProps) => (
+}: AppSidebarShellProps) => {
+    // The responsive !important block in 120-app-responsive.css is the real
+    // shell-width authority on the AI tab (it beats any inline width), so the
+    // computed width reaches it through the --mc-sidebar-shell-width inline
+    // variable; the expanded calc stays as the CSS fallback. Mirror the block's
+    // breakpoints: rail 112 / 84 (≤1200) / 64 (≤560), pane hidden ≤900.
+    const [windowBucket, setWindowBucket] = useState(() => {
+        const w = window.innerWidth;
+        return w <= 560 ? 560 : w <= 900 ? 900 : w <= 1200 ? 1200 : 1441;
+    });
+    useEffect(() => {
+        const onResize = () => {
+            const w = window.innerWidth;
+            const next = w <= 560 ? 560 : w <= 900 ? 900 : w <= 1200 ? 1200 : 1441;
+            // Bucket-only updates: a drag-resize must not re-render the heavy pane per pixel.
+            setWindowBucket((prev) => (prev === next ? prev : next));
+        };
+        window.addEventListener('resize', onResize, { passive: true });
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
+    const paneMounted = navTab === 'ai' && !taskPaneCollapsed;
+    const railWidth = navRailCollapsed ? 0 : (windowBucket <= 560 ? 64 : windowBucket <= 1200 ? 84 : SIDEBAR_NAV_RAIL_WIDTH);
+    const paneVisible = paneMounted && windowBucket > 900;
+    // Collapsed columns drop out of the shell width; the pane keeps its saved width
+    // for when it comes back (the drag strip mirrors the same computation).
+    const shellWidth = railWidth + (paneVisible ? taskManagementPaneWidth + (railWidth ? SIDEBAR_AI_PANE_GAP : 0) : 0);
+    return (
 <>
             <div className="mc-sidebar-drag-strip" data-window-drag style={{
                 height: 'var(--mc-sidebar-drag-strip, 10px)',
-                width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
+                width: `${shellWidth}px`,
+                '--mc-sidebar-shell-width': `${shellWidth}px`,
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -284,8 +320,8 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar office-agent-shell" style={{ '--wails-draggable': 'no-drag', '--mc-task-pane-width': `${taskManagementPaneWidth}px`, flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
-                          <SidebarNavRail
+            <div className="sidebar office-agent-shell" style={{ '--wails-draggable': 'no-drag', '--mc-task-pane-width': `${taskManagementPaneWidth}px`, '--mc-sidebar-shell-width': `${shellWidth}px`, flexDirection: 'row', padding: 0, width: `${shellWidth}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-nav-rail-collapsed={navRailCollapsed ? 'true' : undefined} data-task-pane-collapsed={taskPaneCollapsed && navTab === 'ai' ? 'true' : undefined}>
+                {!navRailCollapsed && <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}
                     currentIcon={currentIcon}
@@ -315,9 +351,15 @@ export const AppSidebarShell = ({
                     // Background runs only. The rail adds in-progress bot tasks.
                     runningTaskCount={workbenchTaskCounts?.background ?? backgroundTaskCount}
                     onOpenBackgroundTasks={onOpenBackgroundTasks}
-                />        {navTab === 'ai' && (
+                    onRequestTaskPaneOpen={onRequestTaskPaneOpen}
+                />}
+                {/* Mounting follows the manual collapse state only: at ≤900px CSS
+                    hides the pane, and unmounting here would silently kill its
+                    event listeners (create-task etc.) on narrow windows. */}
+                {paneMounted && (
                     <SidebarAiPane
                         taskManagementPaneWidth={taskManagementPaneWidth}
+                        onToggleTaskPane={onToggleTaskPane}
                         lang={lang}
                         aiThemeMode={aiThemeMode}
                         aiLightSchemeId={aiLightSchemeId}
@@ -411,4 +453,5 @@ export const AppSidebarShell = ({
                 )}
             </div>
 </>
-);
+    );
+};

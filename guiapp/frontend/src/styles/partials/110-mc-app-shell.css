@@ -60,6 +60,32 @@
 /* Apply reference hierarchy to the live conversation chrome */
 .mc-tab-bar { min-height: 52px !important; padding: 0 18px !important; background: var(--theme-surface) !important; border-bottom: 1px solid var(--theme-border) !important; }
 .mc-tab-bar button { min-height: 40px; border-radius: var(--radius-md) var(--radius-md) 0 0 !important; }
+
+/* Sidebar collapse cluster (功能栏/任务列表 toggles) pinned to the leading edge
+   of the window-chrome headers: assistant title bar, task execution header,
+   main top header. Buttons are plain <button> so the drag-region handler
+   already excludes them; this block only shapes them. */
+.sb-toggle-cluster { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.sb-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--theme-text-secondary, #64748b);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.sb-toggle-btn:hover { background: rgba(148, 163, 184, 0.18); color: var(--theme-text-primary); }
+.sb-toggle-btn:active { background: rgba(148, 163, 184, 0.28); }
+.sb-toggle-btn[aria-pressed='true'] { color: var(--theme-primary, #2f80ed); }
+.sb-toggle-btn:focus-visible { outline: 1px solid var(--theme-primary, #2f80ed); outline-offset: 1px; }
+.sb-toggle-btn svg { display: block; }
+
 .mc-task-execution { background: var(--theme-surface) !important; padding: 24px 32px 16px !important; }
 .mc-task-execution .assistant-chat-user-message, .mc-task-execution [data-role='user-message'] { background: var(--theme-primary-soft) !important; border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important; border-radius: var(--radius-lg) !important; }
 .mc-task-execution .assistant-chat-ai-message, .mc-task-execution [data-role='assistant-message'] { background: var(--theme-surface) !important; border: 1px solid var(--theme-border) !important; border-radius: var(--radius-lg) !important; box-shadow: 0 3px 12px rgba(24,63,112,.04); }

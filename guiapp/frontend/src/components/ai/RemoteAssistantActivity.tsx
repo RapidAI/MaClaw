@@ -1,14 +1,11 @@
 import { useEffect, useState } from "react";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
-import { AssistantToolCallRow } from "./assistantToolCallRow";
-import { AssistantToolFlipTicker } from "./AssistantToolFlipTicker";
-import { isProgressOnlyToolAction, parseAssistantToolStatus, type AssistantToolCall } from "./assistantToolCall";
 import { localizeText } from "../../i18n";
 import { workflowStatusForTask } from "../layout/SidebarTaskManagement";
-import { remoteAssistantSend, type RemoteAssistantSession, type RemoteLivePart } from "../layout/remoteAssistantSession";
+import { remoteAssistantSend, type RemoteAssistantSession } from "../layout/remoteAssistantSession";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { formatProjectSearchTime } from "./projectSearchTime";
-import { isCodingAgentProgressContent, renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
+import { renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import {
     buildCodingBannerChrome,
@@ -21,7 +18,6 @@ import {
     presentCodingAgentChecklist,
     type CodingStepStatus,
 } from "./CodingWorkbenchControlPanel";
-import type { ChatMessage } from "./useAIAssistant";
 
 // Heartbeat timestamps arrive on the poll cadence; a local 1s tick keeps the
 // "N 秒前" and elapsed readouts moving between polls while a run is live.
@@ -68,49 +64,6 @@ function remoteWorkbenchSteps(session: RemoteAssistantSession): CodingStepStatus
         workbench?.execution_plan,
         codingWorkbenchStepsFromPayload(workbench?.step_statuses),
     );
-}
-
-type RemoteTrailItem = { kind: "tool"; call: AssistantToolCall } | { kind: "line"; text: string };
-
-// The trail is a tail view — bound it like the plain-line cap it replaces.
-const REMOTE_TRAIL_KEPT = 8;
-
-/**
- * One fold of the mirrored progress parts. Coding-agent lines go to the
- * feed; styled tool-status lines (工具 · action (name)) fold into the same
- * tool cards a local turn paints, collapsing adjacent identical calls like
- * remoteLiveToolCalls; anything else stays a plain mono line. Position-based
- * ids keep rows mounted while the stream appends: part.seq is position-
- * derived on the reduced path and shifts when thinking/text parts appear,
- * which would re-flip an unchanged call. Only the rare left-trim moves one.
- */
-function remoteProgressTrail(parts: RemoteLivePart[]): {
-    codingFeedMessages: ChatMessage[];
-    shownTrail: RemoteTrailItem[];
-    lastToolIndex: number;
-} {
-    const codingFeedMessages: ChatMessage[] = [];
-    const trail: RemoteTrailItem[] = [];
-    parts.forEach((part, index) => {
-        if (isCodingAgentProgressContent(part.text)) {
-            codingFeedMessages.push({ id: `remote-live-${index}`, role: "progress", content: part.text, timestamp: index + 1 });
-            return;
-        }
-        const parsed = parseAssistantToolStatus(part.text);
-        if (parsed && !isProgressOnlyToolAction(parsed.action)) {
-            const tail = trail[trail.length - 1];
-            const repeated = tail?.kind === "tool"
-                && tail.call.name === parsed.name
-                && tail.call.action === parsed.action
-                && tail.call.detail === parsed.detail;
-            if (!repeated) trail.push({ kind: "tool", call: { id: `remote-trail-tool-${trail.length}`, ...parsed } });
-            return;
-        }
-        trail.push({ kind: "line", text: part.text });
-    });
-    const shownTrail = trail.slice(-REMOTE_TRAIL_KEPT);
-    const lastToolIndex = shownTrail.reduce((found, item, index) => (item.kind === "tool" ? index : found), -1);
-    return { codingFeedMessages, shownTrail, lastToolIndex };
 }
 
 /**
@@ -196,26 +149,16 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
     // "busy" is awaitingReply-or-running, but paused / review-needed are the
     // attention states worth keeping on screen after the run itself idles.
     // The loading splash owns the surface until the transcript lands.
-    // A mirrored round that is still streaming keeps the panel up too — the
-    // live working trail arrives over remote_control.stream before the task
-    // poll can report the run.
-    const liveProgress = (session.live?.parts || []).filter(part => part.kind === "progress" && part.text);
-    // Coding-agent progress lines render through the same feed the local
-    // panel uses; styled tool-status lines fold into the same tool cards a
-    // local turn paints (settled calls as rows, the newest on the split-flap
-    // strip while the round streams so it flips like the local bubble);
-    // anything else stays a plain mono line.
-    const { codingFeedMessages, shownTrail, lastToolIndex } = remoteProgressTrail(liveProgress);
-    const codingFeed = codingFeedMessages.length
-        ? renderCodingAgentActivityFeed(codingFeedMessages, { text: t.text, fieldLabel: t.fieldLabel, isDark: t.isDark }, lang)
-        : null;
+    // A mirrored round that is still streaming keeps the surface up too — the
+    // live trail arrives over remote_control.stream before the task poll can
+    // report the run.
+    const hasLive = !!session.live && !session.live.responded && session.live.parts.length > 0;
 
     // Step rows live on the composer bar (RemoteCodingPlanChecklist). This
     // panel only names the current step; it does not draw the list.
     const workbench = session.workbench || null;
     const activeStep = remoteWorkbenchSteps(session).find(step => codingStepIsActive(step.status));
 
-    const hasLive = !!session.live && !session.live.responded && session.live.parts.length > 0;
     const showPanel = (busy || paused || review || hasLive || !!workbench?.pending_approval) && !session.loading;
     const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
@@ -251,6 +194,36 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
         // read as a live run.
         liveLabel = localizeText(lang, `Work plan on ${target}`, `${target}任务的工作清单`, `${target}任務的工作清單`);
     }
+
+    const lastActivityAgo = remoteTimeAgo(lang, activity?.lastActivityAt, now);
+    const meta = [
+        remoteElapsed(lang, activity?.busySince, now),
+        lastActivityAgo
+            ? localizeText(lang, `Last activity ${lastActivityAgo}`, `${target}最近活动：${lastActivityAgo}`, `${target}最近活動：${lastActivityAgo}`)
+            : "",
+    ].filter(Boolean).join(" · ");
+
+    // The mirrored round's rows (thoughts, tool calls, coding events) are
+    // owned by the assistant bubble's process timeline — the same single
+    // surface a local coding turn uses. Repeating them here painted every
+    // call twice. While the round simply works, this surface shrinks to the
+    // local one-line Working trail; the collapsible panel stays only for
+    // the attention states that have no rows of their own.
+    const attention = !activity?.stopping && !paused && !review && !session.syncing
+        && !(workbench?.pending_approval && !hasLive)
+        && !(activity?.awaitingReply && (!workflowStatus || workflowStatus.tone !== "info"))
+        && (busy || hasLive);
+    if (attention) {
+        return (
+            <div className="aap-remote-activity" data-testid="remote-activity">
+                {renderCodingAgentWorkingTrail({ text: t.text, fieldLabel: t.fieldLabel }, lang)}
+                {busy && meta ? (
+                    <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>
+                ) : null}
+            </div>
+        );
+    }
+
     // A terminal snapshot is the previous run's residue — "正在执行 · 已完成"
     // would read as a contradiction, so only live states make the object slot.
     // The running plan step is more specific than the workflow phase label,
@@ -261,45 +234,20 @@ export function RemoteAssistantActivity({ session, lang, theme: t }: { session: 
             || [workflowStatus?.detail, workflowStatus?.label].filter(Boolean).join(" · ")
             || (activity?.workflowType === "coding" ? localizeText(lang, "Coding task", "编码任务", "編碼任務") : undefined);
 
-    const lastActivityAgo = remoteTimeAgo(lang, activity?.lastActivityAt, now);
-    const meta = [
-        remoteElapsed(lang, activity?.busySince, now),
-        lastActivityAgo
-            ? localizeText(lang, `Last activity ${lastActivityAgo}`, `${target}最近活动：${lastActivityAgo}`, `${target}最近活動：${lastActivityAgo}`)
-            : "",
-    ].filter(Boolean).join(" · ");
-
     return (
         <div className="aap-remote-activity" data-testid="remote-activity">
             <AssistantReasoningPanel
                 live={busy || hasLive}
+                defaultOpen={false}
                 // A paused/review row cannot expand (no body); preview keeps
                 // the object name visible under the label instead.
                 preview={liveObject}
-                // Live detail opens by itself — the point of the mirror is
-                // seeing the trail, not clicking for it. No liveness gate: a
-                // fold at turn end would hide the trail just as it finishes.
-                defaultOpen={liveProgress.length > 0}
                 label={liveLabel}
                 objectLabel={liveObject}
                 lang={lang}
                 theme={t}
                 contentKey={`remote-live|${session.grantId}|${session.projectPath}`}
-            >
-                {codingFeed}
-                {shownTrail.length ? (
-                    <div className="aap-remote-progress" data-testid="remote-progress">
-                        {shownTrail.map((item, index) => item.kind === "tool"
-                            ? (hasLive && index === lastToolIndex
-                                // A stable key keeps one mounted strip across
-                                // calls: a new call flips the same tile like
-                                // the local bubble instead of remounting.
-                                ? <AssistantToolFlipTicker key="remote-trail-live-flip" call={item.call} theme={t} />
-                                : <AssistantToolCallRow key={item.call.id} call={item.call} theme={t} />)
-                            : <div key={`line-${index}`} className="aap-remote-progress-line">{item.text}</div>)}
-                    </div>
-                ) : null}
-            </AssistantReasoningPanel>
+            >{null}</AssistantReasoningPanel>
             {busy && meta ? (
                 <div className="aap-remote-activity-meta" data-testid="remote-activity-meta">{meta}</div>
             ) : null}

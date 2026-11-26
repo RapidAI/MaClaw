@@ -1,6 +1,7 @@
 package cloudagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -321,6 +323,9 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	files := host.producedFiles()
 	filesCreated, filesModified := host.explicitFileChanges()
+	// The change set lands on the trail before any terminal, so every
+	// ending (answer, ask, failure) carries what the turn wrote.
+	rt.emitCodingDiffSummary(inst, taskID, requestID, host.fileChangeFacts())
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
 			slog.String("instance", inst.meta.ID), slog.String("task", taskID),
@@ -346,7 +351,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	}
 	rt.emitCodingTaskStatus(inst, taskID, requestID, "completed", input)
 	rt.settlePlan(inst, taskID, requestID, false)
-	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.verificationFacts())
+	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.fileChangeFacts(), host.verificationFacts())
 	rt.publish(inst, taskID, requestID, "response", finalText, map[string]any{
 		"terminal": attachFiles(map[string]any{"text": finalText}, files),
 	})
@@ -506,11 +511,31 @@ type agentHost struct {
 	started      time.Time
 	files        map[string]bool
 	createdFiles map[string]bool
-	writeCount   int
-	commands     []hostCommandRun
+	fileChanges  map[string]codingagent.FinalAnswerFileChangeFact
+	// fileBaselines holds the first pre-write text snapshot per path. Re-reading
+	// the final file against this baseline yields net turn counts instead of the
+	// last write operation's incremental counts.
+	fileBaselines   map[string]string
+	fileWriteCounts map[string]int
+	writeCount      int
+	commands        []hostCommandRun
+	// lastWrite carries the write_file operands of the call ExecuteTool just
+	// ran, so its tool_finished event can attach the same files/added/removed
+	// operand the desktop's Edit cards show.
+	lastWrite hostWriteEvent
 	// iterationExtensions counts the extra waves this turn was granted
 	// after spending its configured iteration budget.
 	iterationExtensions int
+}
+
+// hostWriteEvent is one write_file call's canonical path and exact line
+// counts, as computed by execWriteFile.
+type hostWriteEvent struct {
+	path      string
+	created   bool
+	added     int
+	removed   int
+	hasCounts bool
 }
 
 func (h *agentHost) GetLLMConfig() corelib.MaclawLLMConfig { return h.cfg }
@@ -552,11 +577,12 @@ func (h *agentHost) ExtendIterationBudget(used, toolCalls int) int {
 // cloudFinalAnswerText applies the same audit-section filter and host fact
 // fallback the desktop coding surfaces use; cloud must not drift into a
 // separate user-visible report shape.
-func cloudFinalAnswerText(text string, filesCreated, filesModified []string, verification []codingagent.FinalAnswerVerificationFact) string {
-	return codingagent.AppendFinalAnswerHostFacts(
+func cloudFinalAnswerText(text string, filesCreated, filesModified []string, fileChanges []codingagent.FinalAnswerFileChangeFact, verification []codingagent.FinalAnswerVerificationFact) string {
+	return codingagent.AppendFinalAnswerHostFactsWithFileChanges(
 		codingagent.StripFinalAnswerAuditSections(text),
 		filesCreated,
 		filesModified,
+		fileChanges,
 		verification,
 	)
 }
@@ -690,7 +716,8 @@ func (h *agentHost) ExecuteTool(name, argsJSON string) string {
 	h.rt.emitToolStarted(h.inst, h.task, h.request, name, argsJSON)
 	started := time.Now()
 	result, failed := h.runTool(name, argsJSON)
-	h.rt.emitToolFinished(h.inst, h.task, h.request, name, argsJSON, result, failed, time.Since(started))
+	h.rt.emitToolFinished(h.inst, h.task, h.request, name, argsJSON, result, failed, time.Since(started), h.lastWrite)
+	h.lastWrite = hostWriteEvent{}
 	return result
 }
 
@@ -767,6 +794,8 @@ func cloudBashMayWriteWorkspace(argv []string, command string) bool {
 // value feeds the tool_finished outcome, which a result string alone
 // cannot decide (an error body and output that mentions errors look alike).
 func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
+	// A stale write operand must never attach to another tool's finished event.
+	h.lastWrite = hostWriteEvent{}
 	switch name {
 	case "bash":
 		out, failed := h.rt.execBash(h.turn, h.inst, h.root, argsJSON)
@@ -780,10 +809,13 @@ func (h *agentHost) runTool(name, argsJSON string) (string, bool) {
 	case "read_file":
 		return h.rt.execReadFile(h.inst, argsJSON)
 	case "write_file":
-		out, path, created := h.rt.execWriteFile(h.inst, h.root, argsJSON)
+		out, path, created, added, removed, hasCounts, baseline, baselineOK := h.rt.execWriteFile(h.inst, h.root, argsJSON)
 		if path != "" {
 			h.writeCount++
 			h.noteFile(path, created)
+			h.noteFileChange(path, created, added, removed, hasCounts)
+			h.noteFileBaseline(path, baseline, baselineOK)
+			h.lastWrite = hostWriteEvent{path: path, created: created, added: added, removed: removed, hasCounts: hasCounts}
 		}
 		return out, path == ""
 	case "git_commit":
@@ -856,6 +888,94 @@ func (h *agentHost) noteFile(abs string, created bool) {
 			slog.String("instance", h.inst.meta.ID), slog.String("task", h.task),
 			slog.String("request", h.request), slog.String("path", rel))
 	}
+}
+
+// noteFileChange records exact write_file evidence under the same canonical
+// artifact key as noteFile. When a first-write baseline exists, fileChangeFacts
+// later replaces these per-operation counts with the net start-of-turn diff.
+func (h *agentHost) noteFileChange(abs string, created bool, added, removed int, hasCounts bool) {
+	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
+		if h.fileWriteCounts == nil {
+			h.fileWriteCounts = map[string]int{}
+		}
+		h.fileWriteCounts[rel]++
+		if h.fileChanges == nil {
+			h.fileChanges = map[string]codingagent.FinalAnswerFileChangeFact{}
+		}
+		h.fileChanges[rel] = codingagent.FinalAnswerFileChangeFact{
+			Path:      rel,
+			Created:   created,
+			Added:     added,
+			Removed:   removed,
+			HasCounts: hasCounts,
+		}
+	}
+}
+
+// noteFileBaseline stores only the first diffable pre-write snapshot. A file
+// written several times is then measured from the start of the turn to the
+// final bytes on disk, matching the net workspace change the user expects.
+func (h *agentHost) noteFileBaseline(abs, baseline string, ok bool) {
+	if !ok {
+		return
+	}
+	if rel := canonicalArtifactRel(h.root, abs); rel != "" {
+		// Only the first successful write's pre-write bytes are a start-of-turn
+		// baseline. A later readable snapshot starts from intermediate bytes and
+		// must not be promoted into net evidence merely because the first write
+		// was too large or non-text to snapshot.
+		if h.fileWriteCounts[rel] != 1 {
+			return
+		}
+		if h.fileBaselines == nil {
+			h.fileBaselines = map[string]string{}
+		}
+		if _, exists := h.fileBaselines[rel]; !exists {
+			const maxTrackedBaselineBytes = 16 << 20
+			total := len(baseline)
+			for _, existing := range h.fileBaselines {
+				total += len(existing)
+			}
+			if total <= maxTrackedBaselineBytes {
+				h.fileBaselines[rel] = baseline
+			}
+		}
+	}
+}
+
+func (h *agentHost) fileChangeFacts() []codingagent.FinalAnswerFileChangeFact {
+	if len(h.fileChanges) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(h.fileChanges))
+	for key := range h.fileChanges {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]codingagent.FinalAnswerFileChangeFact, 0, len(keys))
+	for _, key := range keys {
+		fact := h.fileChanges[key]
+		// The created/modified audit is authoritative for status even when a
+		// file was written more than once during the turn.
+		fact.Created = h.createdFiles[key]
+		if baseline, exists := h.fileBaselines[key]; exists {
+			abs := filepath.Join(h.root, filepath.FromSlash(key))
+			if after, ok := cloudReadTextForDiff(abs); ok {
+				fact.Added, fact.Removed = codingagent.CountTextLineChanges(baseline, after)
+				fact.HasCounts = true
+			} else {
+				fact.Added, fact.Removed = 0, 0
+				fact.HasCounts = false
+			}
+		} else if h.fileWriteCounts[key] > 1 {
+			// Without a first-write baseline, per-operation diffs cannot be
+			// combined into turn-net line counts after a repeated write.
+			fact.Added, fact.Removed = 0, 0
+			fact.HasCounts = false
+		}
+		out = append(out, fact)
+	}
+	return out
 }
 
 // explicitFileChanges is the precise write_file change set. Files merely
@@ -980,28 +1100,63 @@ func (rt *Runtime) execReadFile(inst *instance, argsJSON string) (string, bool) 
 	return string(raw), false
 }
 
-// execWriteFile returns the tool result text, the resolved file path, and
-// whether the file was newly created on success — the host records that path
-// as a produced artifact. A failed write returns an empty path so pre-existing
-// files are never counted.
-func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string, bool) {
+// execWriteFile returns the tool result text, the resolved file path, whether
+// the file was newly created on success, and exact line counts when the file
+// is small enough text to diff safely, plus the pre-write baseline used for
+// net turn counts. A failed write returns an empty path so pre-existing files
+// are never counted.
+func (rt *Runtime) execWriteFile(inst *instance, root, argsJSON string) (string, string, bool, int, int, bool, string, bool) {
 	var body struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &body); err != nil {
-		return "路径无效", "", false
+		return "路径无效", "", false, 0, 0, false, "", false
 	}
 	path, err := resolveInJail(root, body.Path)
 	if err != nil {
-		return err.Error(), "", false
+		return err.Error(), "", false, 0, 0, false, "", false
 	}
 	_, statErr := os.Stat(path)
 	created := os.IsNotExist(statErr)
-	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
-		return err.Error(), "", false
+	before := ""
+	countable := true
+	if statErr == nil {
+		before, countable = cloudReadTextForDiff(path)
 	}
-	return "已写入 " + body.Path, path, created
+	if err := os.WriteFile(path, []byte(body.Content), 0o644); err != nil {
+		return err.Error(), "", false, 0, 0, false, "", false
+	}
+	added, removed := 0, 0
+	hasCounts := countable && cloudTextDiffable([]byte(body.Content))
+	if hasCounts {
+		added, removed = codingagent.CountTextLineChanges(before, body.Content)
+	}
+	return "已写入 " + body.Path, path, created, added, removed, hasCounts, before, countable
+}
+
+const (
+	cloudLineDiffMaxBytes = 4 << 20
+	cloudLineDiffMaxLines = 20000
+)
+
+func cloudReadTextForDiff(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil || !cloudTextDiffable(data) {
+		return "", false
+	}
+	return string(data), true
+}
+
+func cloudTextDiffable(data []byte) bool {
+	if len(data) > cloudLineDiffMaxBytes || !utf8.Valid(data) {
+		return false
+	}
+	lines := bytes.Count(data, []byte{'\n'}) + 1
+	if len(data) == 0 {
+		lines = 0
+	}
+	return lines <= cloudLineDiffMaxLines
 }
 
 // cloudToolStatusLine renders one tool call as the "工具 · action (name)"

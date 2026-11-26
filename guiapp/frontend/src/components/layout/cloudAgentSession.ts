@@ -1,3 +1,4 @@
+import { CodingAgentTrailBuilder, type CodingAgentTimelineItem } from '../ai/codingAgentTimeline';
 import { emptyViewerState, reduceViewerEvent, type ViewerReduceState } from '../ai/reduceViewerEvent';
 import type { CloudWorkflowState, RemoteWorkbenchState } from './remoteAssistantSession';
 
@@ -14,6 +15,114 @@ const roundListeners = new Set<() => void>();
 
 function notifyRounds() {
     roundListeners.forEach(listener => listener());
+}
+
+// --- Ordered thinking+tool trail (frame-arrival order) ---
+//
+// The reduced viewer state keeps thinking blocks and progress rows in
+// separate lists, and the srv watch snapshot emits thinking before progress,
+// so neither preserves the true interleave order. Only the frame stream
+// does. This journal folds frames per store key in arrival order with the
+// same rules the local coding transcript applies (tool_finished replaces its
+// tool_started; audit banners drop), so the live bubble paints one
+// interleaved trail exactly like a local coding turn.
+
+type CloudAgentTrail = {
+    requestId: string;
+    builder: CodingAgentTrailBuilder;
+};
+
+const trails = new Map<string, CloudAgentTrail>();
+
+function trailOf(key: string): CloudAgentTrail {
+    let trail = trails.get(key);
+    if (!trail) {
+        trail = { requestId: '', builder: new CodingAgentTrailBuilder() };
+        trails.set(key, trail);
+    }
+    return trail;
+}
+
+function feedTrailFrame(key: string, event: CloudFrame): void {
+    const name = String(event.event || '');
+    const requestId = String(event.request_id || '');
+    if (!name || name === 'heartbeat' || name === 'workbench_steps' || name === 'workflow_state' || name === 'snapshot') return;
+    const trail = trailOf(key);
+    if (name === 'round_started') {
+        if (requestId && trail.requestId && trail.requestId !== requestId) {
+            // A fresh round owns the key; the previous trail is that round's
+            // history (kept for the settled-row attachment until this point).
+            trail.builder.reset();
+        }
+        if (requestId) trail.requestId = requestId;
+        return;
+    }
+    if (requestId && trail.requestId && requestId !== trail.requestId) return;
+    if (requestId && !trail.requestId) trail.requestId = requestId;
+    const seq = typeof event.cursor === 'number' && event.cursor > 0
+        ? event.cursor
+        : (typeof event.seq === 'number' ? event.seq : undefined);
+    switch (name) {
+        case 'thinking': {
+            const state = String(event.state || 'delta');
+            const text = String(event.text || '');
+            if (state === 'done') trail.builder.thinkingDone(text);
+            else if (state === 'started') trail.builder.thinkingStarted();
+            else trail.builder.thinkingDelta(text);
+            return;
+        }
+        case 'progress':
+            trail.builder.progress(String(event.text || ''), seq);
+            return;
+        case 'token':
+        case 'new_round':
+        case 'stream_done':
+        case 'response':
+            // A token/terminal after a thought closes it — reasoning precedes
+            // its answer, the same seal the desktop relay applies.
+            trail.builder.sealThinking();
+            return;
+        default:
+            return;
+    }
+}
+
+/** Rebuild one trail from a watch snapshot. Snapshot parts carry the same
+ * order the frames arrived in, so a mid-turn join seeds the interleaved
+ * trail instead of waiting for the next frame. */
+function rebuildTrailFromSnapshot(key: string, requestId: string, parts: unknown): void {
+    const trail = trailOf(key);
+    trail.requestId = requestId || trail.requestId;
+    trail.builder.reset();
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+        if (!part || typeof part !== 'object') continue;
+        const row = part as Record<string, unknown>;
+        const kind = String(row.kind || '');
+        const text = String(row.text || '');
+        if (!text) continue;
+        const seq = typeof row.seq === 'number' && row.seq > 0 ? row.seq : undefined;
+        if (kind === 'thinking') {
+            if (row.done === true) trail.builder.thinkingDone(text);
+            else {
+                trail.builder.thinkingDelta(text);
+            }
+        } else if (kind === 'progress') {
+            trail.builder.progress(text, seq);
+        }
+    }
+}
+
+/** The ordered thinking+tool trail folded for this store key, or null. */
+export function cloudAgentTrail(key: string): CodingAgentTimelineItem[] | null {
+    const trail = trails.get(key);
+    if (!trail || trail.builder.length === 0) return null;
+    return trail.builder.snapshot();
+}
+
+/** Request id the stored trail belongs to ('' before the first round frame). */
+export function cloudAgentTrailRequestId(key: string): string {
+    return trails.get(key)?.requestId || '';
 }
 
 /** Both the main panel and the cloud page read this store. */
@@ -68,10 +177,11 @@ function noteCloudAgentWorkflow(key: string, workflow: unknown) {
 }
 
 export function resetCloudAgentRounds(): void {
-    if (rounds.size === 0 && workbenches.size === 0 && workflows.size === 0) return;
+    if (rounds.size === 0 && workbenches.size === 0 && workflows.size === 0 && trails.size === 0) return;
     rounds.clear();
     workbenches.clear();
     workflows.clear();
+    trails.clear();
     notifyRounds();
 }
 
@@ -157,6 +267,18 @@ export function applyCloudAgentWatch(grantID: string, sessionKey: string, snapsh
         console.debug('[cloud-agent] watch snapshot dropped: staler than live frames', { sessionKey, cursor, storedLast, floor });
         return key;
     }
+    // The frame-built trail is a superset of the snapshot's (the snapshot
+    // keeps only the last 40 progress rows and splits thinking from
+    // progress), so an existing trail for the same request stays. Rebuild
+    // only joins a round this controller has no trail for (mid-turn watch)
+    // or one whose request moved on.
+    const storedTrailRequestId = cloudAgentTrailRequestId(key);
+    const snapshotRequestId = String(live.request_id || '');
+    const hasStoredTrail = cloudAgentTrail(key) !== null;
+    const sameRequest = !snapshotRequestId || !storedTrailRequestId || storedTrailRequestId === snapshotRequestId;
+    if (!(hasStoredTrail && sameRequest)) {
+        rebuildTrailFromSnapshot(key, snapshotRequestId, live.parts);
+    }
     // Task-level workbench rides the snapshot. A snapshot rejected above as
     // stale keeps the live frames' workbench instead.
     noteCloudAgentWorkbench(key, live.workbench);
@@ -233,6 +355,7 @@ export function applyCloudAgentStream(payload: unknown): string {
         });
         return '';
     }
+    feedTrailFrame(key, event);
     if (String(event.event || '') === 'workbench_steps') {
         // The reducer ignores this event by design; the task-level payload
         // lives beside the round instead of inside it.

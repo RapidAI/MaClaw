@@ -50,6 +50,10 @@ type TaskRunResult struct {
 	Summary       string        `json:"summary,omitempty"`
 	FilesCreated  []string      `json:"files_created,omitempty"`
 	FilesModified []string      `json:"files_modified,omitempty"`
+	// FileChanges is in-memory structured per-file diff evidence used to render
+	// the final changed-files table. Like CommandsRun it is not persisted in
+	// workflow checkpoints; checkpoint recovery re-derives state from the host.
+	FileChanges []TaskFileChange `json:"-"`
 	// CommandsRun is in-memory presentation evidence only. It is deliberately
 	// not persisted in workflow checkpoints: command lines can carry tokens or
 	// other local secrets even when the host treats them as audit facts.
@@ -68,6 +72,16 @@ type TaskRunResult struct {
 	// completion: a queued child stays admitted until its own result exists.
 	Children []ChildTaskView `json:"children,omitempty"`
 	Duration time.Duration   `json:"duration"`
+}
+
+// TaskFileChange is host-observed per-file diff evidence. HasCounts separates
+// an exact zero-line change from unavailable line-count evidence.
+type TaskFileChange struct {
+	Path      string
+	Created   bool
+	Added     int
+	Removed   int
+	HasCounts bool
 }
 
 // ChildTaskView is the query shape for one internal coding task.

@@ -98,8 +98,13 @@ func TestCodingSubAgentDriftNoteRendersBothKinds(t *testing.T) {
 	if !strings.Contains(note, "a.go") || !strings.Contains(note, "b.go") {
 		t.Fatalf("note must name both drifted files: %q", note)
 	}
-	if !strings.Contains(note, "写入后又发生了变化") || !strings.Contains(note, "读取后被外部改动") {
-		t.Fatalf("note must distinguish the two drift kinds: %q", note)
+	if !strings.HasPrefix(note, "**") || !strings.HasSuffix(note, "**") {
+		t.Fatalf("host-generated drift warning must be structurally emphasized: %q", note)
+	}
+	postWriteText := codingExecText("changed again after being written", "写入后又发生了变化", "寫入後又發生了變化")
+	readOnlyText := codingExecText("externally modified after being read", "读取后被外部改动", "讀取後被外部改動")
+	if !strings.Contains(note, postWriteText) || !strings.Contains(note, readOnlyText) {
+		t.Fatalf("note must distinguish the two drift kinds in the current UI language: %q", note)
 	}
 	if got := codingSubAgentDriftNote(nil, nil); got != "" {
 		t.Fatalf("empty drift must produce no note, got %q", got)
