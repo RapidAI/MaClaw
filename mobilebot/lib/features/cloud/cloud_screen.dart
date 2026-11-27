@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../components/mermaid/mermaid.dart';
 import '../../core/locale.dart';
 import '../../core/providers.dart';
 import '../../core/theme.dart';
+import '../../core/ui_kit.dart' show linkifyMarkdownUrls, openExternalUrl;
 import '../bots/bots_controller.dart' show failureMessage;
 import 'cloud_api.dart';
 import 'cloud_models.dart';
@@ -395,28 +398,9 @@ class _CloudTaskScreenState extends ConsumerState<CloudTaskScreen> {
                     padding: const EdgeInsets.all(AppSpacing.lg),
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
-                      final row = messages[index];
-                      final mine = row.role == 'user';
-                      return Align(
-                        alignment: mine
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-                          padding: const EdgeInsets.all(AppSpacing.md),
-                          constraints: const BoxConstraints(maxWidth: 320),
-                          decoration: BoxDecoration(
-                            color: row.asError
-                                ? theme.colorScheme.errorContainer
-                                : mine
-                                ? theme.colorScheme.primaryContainer
-                                : theme.colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(AppRadius.md),
-                          ),
-                          child: Text(
-                            row.content.isEmpty ? row.role : row.content,
-                          ),
-                        ),
+                      return _CloudTranscriptBubble(
+                        row: messages[index],
+                        theme: theme,
                       );
                     },
                   ),
@@ -491,6 +475,89 @@ class _CloudMessage extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// One cloud-task transcript row. Assistant replies use the shared markdown
+/// body (links, code, mermaid). The user's own text and error rows stay plain
+/// Text so their wording is not reinterpreted as markup.
+class _CloudTranscriptBubble extends StatelessWidget {
+  const _CloudTranscriptBubble({required this.row, required this.theme});
+
+  final CloudMessage row;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final mine = row.role == 'user';
+    final plain = mine || row.asError;
+    final text = row.content.isEmpty ? row.role : row.content;
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+        padding: const EdgeInsets.all(AppSpacing.md),
+        constraints: const BoxConstraints(maxWidth: 320),
+        decoration: BoxDecoration(
+          color: row.asError
+              ? theme.colorScheme.errorContainer
+              : mine
+              ? theme.colorScheme.primaryContainer
+              : theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+        ),
+        child: plain
+            ? Text(text)
+            : _CloudMarkdownText(text: text, theme: theme),
+      ),
+    );
+  }
+}
+
+/// Assistant markdown body. Kept out of the list itemBuilder so linkify,
+/// selection and the shared style sheet stay in one widget.
+class _CloudMarkdownText extends StatelessWidget {
+  const _CloudMarkdownText({required this.text, required this.theme});
+
+  final String text;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return MermaidMarkdown(
+      data: linkifyMarkdownUrls(text),
+      selectable: true,
+      onTapLink: (label, href, title) {
+        if (href != null) openExternalUrl(href);
+      },
+      styleSheet: _style(theme),
+    );
+  }
+
+  static MarkdownStyleSheet _style(ThemeData theme) {
+    // The assistant bubble is already surfaceContainerHighest. A same-color
+    // code chip disappears in dark mode, so code lifts one surface step.
+    final codeSurface = theme.colorScheme.surfaceContainerHigh;
+    return MarkdownStyleSheet.fromTheme(theme).copyWith(
+      p: theme.textTheme.bodyMedium?.copyWith(height: 1.45),
+      h1: theme.textTheme.titleSmall,
+      h2: theme.textTheme.titleSmall,
+      h3: theme.textTheme.titleSmall,
+      a: theme.textTheme.bodyMedium?.copyWith(
+        color: theme.colorScheme.primary,
+        fontWeight: FontWeight.w600,
+        decoration: TextDecoration.underline,
+      ),
+      code: theme.textTheme.bodySmall?.copyWith(
+        fontFamily: 'monospace',
+        backgroundColor: codeSurface,
+      ),
+      codeblockDecoration: BoxDecoration(
+        color: codeSurface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      blockSpacing: 6,
     );
   }
 }

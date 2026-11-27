@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1030,24 +1031,373 @@ func TestServeFileFindsFilesStrandedByMidTurnGitConnect(t *testing.T) {
 	if !found {
 		t.Fatal("export omitted snake/game.cpp")
 	}
+}
 
-	// A file that does exist inside the checkout wins over the stranded copy.
-	if err := os.MkdirAll(filepath.Join(repo, "snake"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "snake", "game.cpp"), []byte("in-jail\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	raw, err = rt.serveFile(inst, "snake/game.cpp")
+// ConnectGit parks a colliding deliverable as <name>.pre-checkout and rewrites
+// the book key in the same publication as git.json. Fetch then uses the path
+// the file landed at. An empty checkout must not download as a successful
+// empty archive.
+func TestConnectGitRetargetsParkedArtifact(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, &served); err != nil {
+	t.Cleanup(func() { _ = b.Close() })
+	inst := &instance{dir: dir, meta: Spec{ID: "cag_park", Kind: KindCoding}, book: b}
+	rt := &Runtime{}
+	workspace := filepath.Join(dir, "workspace")
+	repo := filepath.Join(workspace, "repo")
+	const body = "agent-bytes\n"
+	const cloneBody = "clone-bytes\n"
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err = base64.StdEncoding.DecodeString(fmt.Sprint(served["data_base64"]))
-	if err != nil || string(got) != "in-jail\n" {
-		t.Fatalf("jail copy %q %v", got, err)
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "snake", "game.cpp"), []byte(cloneBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(cloneBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "snake", "game.cpp"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "写蛇", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Finish(requestID, "写好了", false, []string{"snake/game.cpp", "README.md"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	renames := mergeWorkspaceLoose(workspace, repo, "", inst.meta.ID)
+	if err := b.retargetProducedPaths(renames); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGit(dir, gitSecret{Token: "park-token", Clone: "https://github.com/acme/repo.git", Repo: "acme/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.producedPaths()["snake/game.cpp.pre-checkout"] || !b.producedPaths()["README.md.pre-checkout"] {
+		t.Fatalf("book keys = %#v", b.producedPaths())
+	}
+	if _, err := rt.serveFile(inst, "snake/game.cpp"); err == nil {
+		t.Fatal("old card path still served the clone file")
+	}
+
+	for _, rel := range []string{"snake/game.cpp.pre-checkout", "README.md.pre-checkout"} {
+		raw, err := rt.serveFile(inst, rel)
+		if err != nil {
+			t.Fatalf("serve %s: %v", rel, err)
+		}
+		var served map[string]any
+		if err := json.Unmarshal(raw, &served); err != nil {
+			t.Fatal(err)
+		}
+		got, err := base64.StdEncoding.DecodeString(fmt.Sprint(served["data_base64"]))
+		if err != nil || string(got) != body {
+			t.Fatalf("%s bytes %q %v", rel, got, err)
+		}
+	}
+	packed, err := rt.browsePackDir(inst, "/")
+	if err != nil {
+		t.Fatalf("pack parked: %v", err)
+	}
+	var pack struct {
+		Data string `json:"data_base64"`
+	}
+	if err := json.Unmarshal(packed, &pack); err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(pack.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+	gotNames := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			raw, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotNames[hdr.Name] = string(raw)
+		}
+	}
+	if gotNames["snake/game.cpp.pre-checkout"] != body || gotNames["README.md.pre-checkout"] != body {
+		t.Fatalf("export missed parked files: %#v", gotNames)
+	}
+	if gotNames["snake/game.cpp"] != cloneBody || gotNames["README.md"] != cloneBody {
+		t.Fatalf("export replaced clone bytes: %#v", gotNames)
+	}
+
+	empty := t.TempDir()
+	emptyBook, err := openBook(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = emptyBook.Close() })
+	emptyInst := &instance{dir: empty, meta: Spec{ID: "cag_empty", Kind: KindSession}, book: emptyBook}
+	if err := os.MkdirAll(filepath.Join(empty, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.browsePackDir(emptyInst, "/"); err == nil || !strings.Contains(err.Error(), "没有可导出的文件") {
+		t.Fatalf("empty pack err=%v", err)
+	}
+}
+
+func TestRetargetFollowsParkedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	workspace := filepath.Join(dir, "workspace")
+	repo := filepath.Join(workspace, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "snake"), []byte("clone-file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "snake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "int game;\n"
+	if err := os.WriteFile(filepath.Join(workspace, "snake", "game.cpp"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "写蛇", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Finish(requestID, "写好了", false, []string{"snake/game.cpp"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	renames := mergeWorkspaceLoose(workspace, repo, "", "cag_dir")
+	if err := b.retargetProducedPaths(renames); err != nil {
+		t.Fatal(err)
+	}
+	if !b.producedPaths()["snake.pre-checkout/game.cpp"] || b.producedPaths()["snake/game.cpp"] {
+		t.Fatalf("book keys = %#v renames=%#v", b.producedPaths(), renames)
+	}
+}
+
+// The reported path is a coding turn that finished before any repository was
+// connected, then ConnectGit. The card still names snake/game.cpp and
+// README.md. The clone already has both, so publication parks the deliverables
+// and rewrites the card. Fetch and export must follow that card, and a
+// workspace with no regular file must not download as an empty archive.
+func TestConnectGitPublicationServesAndExportsParkedArtifact(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is not installed")
+	}
+	bare := seedBare(t)
+	pointCloneAt(t, bare)
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(instanceDir(rt, spec), "workspace")
+	const body = "int game() { return 1; }\n"
+	for _, rel := range []string{"snake/game.cpp", "README.md"} {
+		path := filepath.Join(workspace, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	taskRaw, err := rt.Control(context.Background(), spec.ID, spec.OwnerUserID, "cloud_create_task", []byte(`{"title":"写蛇"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(taskRaw, &created); err != nil || created.TaskID == "" {
+		t.Fatalf("task: %s", taskRaw)
+	}
+	requestID, _, err := inst.book.Begin("c1", created.TaskID, "写贪吃蛇", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.book.Finish(requestID, "写好了", false, []string{"snake/game.cpp", "README.md"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitBareFile(t, bare, "snake/game.cpp", "clone-bytes\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ConnectGit(context.Background(), spec.ID, demoConnect()); err != nil {
+		t.Fatal(err)
+	}
+	card := publishedFiles(t, rt, spec, created.TaskID)
+	if len(card) != 2 || !containsAll(card, "snake/game.cpp.pre-checkout", "README.md.pre-checkout") {
+		t.Fatalf("card = %#v", card)
+	}
+	for _, rel := range card {
+		raw, err := rt.Control(context.Background(), spec.ID, spec.OwnerUserID, "cloud_fetch_file", []byte(`{"path":"`+rel+`"}`))
+		if err != nil {
+			t.Fatalf("fetch %s: %v", rel, err)
+		}
+		var served struct {
+			Data string `json:"data_base64"`
+		}
+		if err := json.Unmarshal(raw, &served); err != nil {
+			t.Fatal(err)
+		}
+		got, err := base64.StdEncoding.DecodeString(served.Data)
+		if err != nil || string(got) != body {
+			t.Fatalf("%s bytes %q %v", rel, got, err)
+		}
+	}
+	if _, err := rt.Control(context.Background(), spec.ID, spec.OwnerUserID, "cloud_fetch_file", []byte(`{"path":"snake/game.cpp"}`)); err == nil {
+		t.Fatal("old card path still fetched the clone file")
+	}
+	packed, err := rt.Control(context.Background(), spec.ID, spec.OwnerUserID, "cloud_pack_dir", []byte(`{"path":"/"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := unpackTarGz(t, packed)
+	for _, rel := range card {
+		if names[rel] != body {
+			t.Fatalf("export missed %s: %#v", rel, names)
+		}
+	}
+	if names["README.md"] == body || names["snake/game.cpp"] == body || !strings.Contains(names["snake/game.cpp"], "clone-bytes") {
+		t.Fatalf("export used the parked bytes as the clone file: %#v", names)
+	}
+	empty := putKind(t, rt, KindCoding)
+	if _, err := rt.Control(context.Background(), empty.ID, empty.OwnerUserID, "cloud_pack_dir", []byte(`{"path":"/"}`)); err == nil || !strings.Contains(err.Error(), "没有可导出的文件") {
+		t.Fatalf("empty export err=%v", err)
+	}
+}
+
+func containsAll(got []string, want ...string) bool {
+	have := map[string]bool{}
+	for _, item := range got {
+		have[item] = true
+	}
+	for _, item := range want {
+		if !have[item] {
+			return false
+		}
+	}
+	return true
+}
+
+func commitBareFile(t *testing.T, bare, name, body string) error {
+	t.Helper()
+	work := t.TempDir()
+	run := func(dir string, args ...string) error {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Seed", "GIT_AUTHOR_EMAIL=seed@example.com", "GIT_COMMITTER_NAME=Seed", "GIT_COMMITTER_EMAIL=seed@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("git %s: %v %s", strings.Join(args, " "), err, out)
+		}
+		return nil
+	}
+	if err := run(work, "clone", bare, "."); err != nil {
+		return err
+	}
+	path := filepath.Join(work, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return err
+	}
+	if err := run(work, "add", name); err != nil {
+		return err
+	}
+	if err := run(work, "commit", "-m", "add "+name); err != nil {
+		return err
+	}
+	return run(work, "push", "origin", "HEAD:main")
+}
+
+func publishedFiles(t *testing.T, rt *Runtime, spec Spec, taskID string) []string {
+	t.Helper()
+	raw, err := rt.Control(context.Background(), spec.ID, spec.OwnerUserID, "cloud_get_task", []byte(`{"task_id":"`+taskID+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Files [][]string `json:"files"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, row := range body.Files {
+		out = append(out, row...)
+	}
+	return out
+}
+
+func unpackTarGz(t *testing.T, packed json.RawMessage) map[string]string {
+	t.Helper()
+	var pack struct {
+		Data string `json:"data_base64"`
+	}
+	if err := json.Unmarshal(packed, &pack); err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(pack.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+	out := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != 0 {
+			continue
+		}
+		raw, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[hdr.Name] = string(raw)
 	}
 }
 

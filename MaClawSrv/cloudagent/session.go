@@ -517,8 +517,9 @@ func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error
 	}
 	// Lstat like the desktop fetch: a recorded path swapped for a symlink or
 	// special file after the turn must not leak an unrelated target. A miss
-	// inside the checkout can still be a file the same turn wrote beside it,
-	// before ConnectGit moved the jail root.
+	// inside the checkout can still be a file left beside it, before
+	// ConnectGit merged the loose workspace. A name collision is not guessed
+	// here: the merge rewrites the book key to the path that landed.
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		if alt, altInfo, ok := strandedRegular(inst.dir, root, key); ok {

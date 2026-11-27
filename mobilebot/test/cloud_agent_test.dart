@@ -173,4 +173,35 @@ void main() {
     expect(find.text('远程机'), findsNothing);
     expect(api.calls, contains('list:grant-cag-1'));
   });
+
+  testWidgets('assistant transcript is markdown; user and error stay plain', (
+    tester,
+  ) async {
+    final api = _FakeCloudApi()
+      ..detail = const CloudTaskDetail(
+        taskId: 'task-1',
+        messages: [
+          CloudMessage(role: 'user', content: '**mine** https://example.com'),
+          CloudMessage(role: 'assistant', content: '**done** https://example.com'),
+          CloudMessage(role: 'assistant', content: '**failed**', asError: true),
+        ],
+      );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [cloudApiProvider.overrideWithValue(api)],
+        child: l10nApp(
+          child: const CloudTaskScreen(
+            instance: CloudInstance(id: 'cag-1', name: '账号云端'),
+            task: CloudTask(id: 'task-1', title: '写文档'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('**mine** https://example.com'), findsOneWidget);
+    expect(find.text('**failed**'), findsOneWidget);
+    expect(find.text('**done** https://example.com'), findsNothing);
+    expect(find.textContaining('done'), findsWidgets);
+    expect(find.textContaining('example.com'), findsWidgets);
+  });
 }

@@ -890,10 +890,10 @@ func goDiagRelated(rawLine, projectPath string, changed []string, vetPhase bool)
 	if match == nil {
 		return false, false
 	}
+	rel := taskRelativePath(projectPath, match[1])
 	if toolErr || isCompilerDiagnostic(match[3]) {
 		return true, true
 	}
-	rel := taskRelativePath(projectPath, match[1])
 	if rel == "" || taskPathCovers(changed, rel) {
 		return true, true
 	}
