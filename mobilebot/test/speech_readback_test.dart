@@ -151,6 +151,117 @@ void main() {
     expect(original, 2);
   });
 
+  // FlutterTts() installs itself as the only channel receiver. A second page
+  // constructing its own instance used to drop the first turn's completion,
+  // so that page's mic stayed shut after the reply finished.
+  test('a later FlutterTts instance still completes the owning turn', () async {
+    final tts = FakeTtsChannel();
+    addTearDown(tts.dispose);
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final first = FlutterTtsProbe();
+    addTearDown(first.dispose);
+    var done = 0;
+    expect(
+      await speakReplyReadback(
+        engine,
+        '第一页还在读。',
+        onDone: () => done++,
+        systemTts: () => first.instance,
+      ),
+      '',
+    );
+    final second = FlutterTtsProbe();
+    addTearDown(second.dispose);
+    noteSystemTtsReceiver(second.instance);
+    expect(done, 1);
+    expect(tts.spoken, ['第一页还在读。']);
+  });
+
+  // The new page installs its own completion handler, then registers. That
+  // registration used to leave the new handler outside the wrapper, so the
+  // next utterance's completion never reached the voice loop.
+  test('a new page keeps its own completion after preempting another', () async {
+    final tts = FakeTtsChannel();
+    addTearDown(tts.dispose);
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final first = FlutterTtsProbe();
+    addTearDown(first.dispose);
+    var firstDone = 0;
+    expect(
+      await speakReplyReadback(
+        engine,
+        '第一页还在读。',
+        onDone: () => firstDone++,
+        systemTts: () => first.instance,
+      ),
+      '',
+    );
+    final second = FlutterTtsProbe();
+    addTearDown(second.dispose);
+    var pageDone = 0;
+    second.instance.setCompletionHandler(() => pageDone++);
+    noteSystemTtsReceiver(second.instance);
+    expect(firstDone, 1);
+    var readbackDone = 0;
+    expect(
+      await speakReplyReadback(
+        engine,
+        '第二页接着读。',
+        onDone: () => readbackDone++,
+        systemTts: () => second.instance,
+      ),
+      '',
+    );
+    await second.fireCompletion();
+    expect(readbackDone, 1);
+    expect(pageDone, 1);
+    expect(firstDone, 1);
+  });
+
+  // speak() failing after a later turn claimed the slot must not fire this
+  // turn's onDone again. The later turn still owns the completion.
+  test('a failed speak does not finish a turn the next one already owns', () async {
+    final messenger = FakeTtsChannel.messenger;
+    var failNextSpeak = false;
+    messenger.setMockMethodCallHandler(FakeTtsChannel.channel, (call) async {
+      if (call.method == 'speak' && failNextSpeak) {
+        throw PlatformException(code: 'tts');
+      }
+      return 1;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(FakeTtsChannel.channel, null));
+    final engine = VoiceEngine();
+    addTearDown(engine.dispose);
+    final system = FlutterTtsProbe();
+    addTearDown(system.dispose);
+    var firstDone = 0;
+    var secondDone = 0;
+    final first = speakReplyReadback(
+      engine,
+      '这一句会被后一轮抢走。',
+      onDone: () => firstDone++,
+      systemTts: () => system.instance,
+    );
+    await Future<void>.delayed(Duration.zero);
+    final second = speakReplyReadback(
+      engine,
+      '后一句先占了槽。',
+      onDone: () => secondDone++,
+      systemTts: () => system.instance,
+    );
+    await Future<void>.delayed(Duration.zero);
+    failNextSpeak = true;
+    expect(await first, '');
+    expect(firstDone, 0);
+    expect(await second, '');
+    expect(secondDone, 0);
+    await system.fireCompletion();
+    expect(firstDone, 0);
+    expect(secondDone, 1);
+  });
+
   // stop() can deliver the previous utterance's completion before speak().
   // Treating that as this turn's completion reopens the mic while the reply
   // is still queued.
