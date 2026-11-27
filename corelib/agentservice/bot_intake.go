@@ -89,11 +89,15 @@ type BotIntake struct {
 type BotIntakeClassifier func(ctx context.Context, system, user string) (string, error)
 
 // BotIntakeBudget bounds the whole decision, including the first sentence.
-// Hub cancels this call at 5s. The decision finishes well inside that so an
+// Hub cancels this call at 10s. The decision finishes well inside that so an
 // open spec is held and that answer reaches Hub, instead of Hub starting the
-// raw words. A slow model is better than dropping the first sentence, so the
-// budget leaves room for a couple of seconds of LLM latency.
-var BotIntakeBudget = 3000 * time.Millisecond
+// raw words. A slow model is better than dropping the first sentence. The
+// official pool is thinking-by-default now (glm-5.3-flash rejects
+// thinking.type=disabled, so the chain coerces the call to effort low): even
+// a cheap trace plus the instruction rewrite is 3-6s on a prompt this size,
+// which is why the earlier 1.5s/3s budgets never produced an ack in
+// production — every admit fell back to the canned line.
+var BotIntakeBudget = 8000 * time.Millisecond
 
 const botIntakeChangeMark = "【改变做法】"
 

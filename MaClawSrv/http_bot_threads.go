@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,8 +110,10 @@ func (s *HTTPServer) botIntakeClassifier(p agentservice.Principal) agentservice.
 		return botIntakeClassifierOverride
 	}
 	return func(ctx context.Context, system, user string) (string, error) {
+		started := time.Now()
 		cfg, err := s.svc.DemoSkillLLMConfig(p)
 		if err != nil {
+			log.Printf("[bot-intake] classify user=%s config_err=%v dur_ms=%d", p.UserID, err, time.Since(started).Milliseconds())
 			return "", err
 		}
 		cfg = srvIntentLLMConfig(cfg)
@@ -124,8 +127,13 @@ func (s *HTTPServer) botIntakeClassifier(p agentservice.Principal) agentservice.
 		client := &http.Client{Timeout: agentservice.BotIntakeBudget + time.Second}
 		resp, err := agent.DoSimpleLLMRequestContext(ctx, cfg, messages, client, agentservice.BotIntakeBudget)
 		if err != nil {
+			// The ack the person reads depends on this call. A timeout or a
+			// provider error both surface in the chat as the same canned
+			// receipt, so the cause has to live here.
+			log.Printf("[bot-intake] classify user=%s err=%v dur_ms=%d", p.UserID, err, time.Since(started).Milliseconds())
 			return "", err
 		}
+		log.Printf("[bot-intake] classify user=%s ok dur_ms=%d out_len=%d", p.UserID, time.Since(started).Milliseconds(), len(resp.Content))
 		return resp.Content, nil
 	}
 }

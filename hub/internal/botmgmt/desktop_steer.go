@@ -13,12 +13,13 @@ import (
 
 // desktopIntakeBudget bounds the srv decision. The ack is part of that
 // answer. On timeout or error the message is a new task. The LLM behind
-// srv's /bot-intake can be slow (a 1.5s LLM budget plus network), so this
-// wait stays generous: a slow ack is better than dropping the first sentence
-// every time the model takes a beat. The mobile and desktop clients already
+// srv's /bot-intake is thinking-by-default (effort low after the chain
+// coerces it), so even a fast decision costs several seconds on this prompt
+// size; this wait stays generous because a slow ack is better than dropping
+// the first sentence every time. The mobile and desktop clients already
 // allow a long POST (the mobile caps at 60s), so the extra wait is invisible
 // to them.
-var desktopIntakeBudget = 5 * time.Second
+var desktopIntakeBudget = 10 * time.Second
 
 // DesktopSchedule is a timer MaClawSrv decided and armed on its own clock
 // during bot-intake. Hub returns it so the GUI can show the ack. Hub does
@@ -81,13 +82,14 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 	}
 	explicitNew := desktopCanonicalContinue(in.BotID, in.ContinueSession) == strings.TrimSpace(in.BotID)
 	actionReturn := strings.EqualFold(strings.TrimSpace(in.Action), "return")
+	continuation, _ := desktopContinuation(ctx, in.Action, content)
 	running := s.desktopLiveRunBriefs(in.TenantID, in.UserID, in.BotID)
 	decision := desktopIntake{Kind: "new", Instruction: content, Pace: "direct", Reason: "explicit"}
 	if !explicitNew && !actionReturn {
 		var intakeErr error
 		decision, intakeErr = s.fetchDesktopIntake(ctx, in, running)
 		if nodeLinkOffline(intakeErr) {
-			admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, in.Admit, in.TenantID, in.UserID, in.BotID, in.NodeID, in.ClientMessageID, content, in.Phase, in.ContinueSession, intakeErr)
+			admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, in.Admit, in.TenantID, in.UserID, in.BotID, in.NodeID, in.ClientMessageID, content, in.Phase, in.ContinueSession, continuation, intakeErr)
 			if parked {
 				return content, admission, true, nil
 			}
@@ -142,6 +144,7 @@ func (s *Service) steerDesktopMessage(ctx context.Context, in desktopSteerReques
 			Ack:             heldAck,
 			Held:            true,
 			Secrets:         desktopSecretBag(ctx),
+			Continuation:    continuation,
 		})
 		if err == nil {
 			base.Accepted = true
@@ -301,6 +304,7 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 	}
 	var out desktopIntake
 	path := "/api/v1/instances/" + url.PathEscape(in.InstanceID) + "/bot-intake"
+	step := time.Now()
 	err := s.authAsOwner(rctx, in.TenantID, in.UserID, rec, token, http.MethodPost, path, body, &out)
 	if err != nil || strings.TrimSpace(out.Kind) == "" {
 		if nodeLinkOffline(err) {
@@ -309,6 +313,15 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 		if rctx.Err() != nil {
 			fallback.Reason = "timeout"
 		}
+		// The fallback decides the first sentence the person reads. Logging
+		// why the decision never arrived — timeout, transport error, or an
+		// empty answer — is what separates a slow model from a dead one;
+		// without this line both look like the canned ack in the chat.
+		traceBot(in.BotID, "intake_fell_back", err,
+			"reason", fallback.Reason,
+			"timeout", traceYes(rctx.Err() != nil),
+			"dur_ms", traceMS(time.Since(step)),
+		)
 		return fallback, nil
 	}
 	out.Kind = strings.ToLower(strings.TrimSpace(out.Kind))
@@ -316,6 +329,11 @@ func (s *Service) fetchDesktopIntake(ctx context.Context, in desktopSteerRequest
 	if strings.TrimSpace(out.Phase) != "plan" {
 		out.Phase = "execute"
 	}
+	traceBot(in.BotID, "intake_decided", nil,
+		"kind", out.Kind,
+		"ack", traceYes(strings.TrimSpace(out.Ack) != ""),
+		"dur_ms", traceMS(time.Since(step)),
+	)
 	return out, nil
 }
 
