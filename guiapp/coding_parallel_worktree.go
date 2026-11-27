@@ -221,6 +221,31 @@ func isASCIILetter(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
+// filesystemProviderPrefix is the PowerShell file-provider qualifier in front
+// of a drive path. FileSystem::D:\Repo and the module-qualified form both
+// address that drive path. A relative tail is not a provider path.
+func filesystemProviderPrefix(s string) (int, bool) {
+	const qualified = `Microsoft.PowerShell.Core\FileSystem::`
+	const short = `FileSystem::`
+	n := 0
+	switch {
+	case len(s) >= len(qualified) && strings.EqualFold(s[:len(qualified)], qualified):
+		n = len(qualified)
+	case len(s) >= len(short) && strings.EqualFold(s[:len(short)], short):
+		n = len(short)
+	default:
+		return 0, false
+	}
+	rest := s[n:]
+	if len(rest) < 3 || !isASCIILetter(rest[0]) || rest[1] != ':' {
+		return 0, false
+	}
+	if rest[2] != '\\' && rest[2] != '/' {
+		return 0, false
+	}
+	return n, true
+}
+
 func matchFlexibleRoot(command string, start int, rootNorm string) int {
 	ci := start
 	for ri := 0; ri < len(rootNorm); ri++ {
@@ -544,20 +569,22 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 				}
 			}
 		}
-		if !inSingle && !inDouble && quoteIsReal(ch, mode) && quoteStartsNestedShell(command, i, mode) {
-			bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i)
-			if ok {
-				nested := nestedShellDir(command, i, cwd, mode)
-				rewritten := walkShellCommand(command[bodyStart:bodyEnd], nested, mapPath, nestedShellParseMode(command, i, mode))
-				b.WriteByte(ch)
-				b.WriteString(rewritten)
-				if bodyEnd < len(command) {
-					b.WriteByte(command[bodyEnd])
+		if !inSingle && !inDouble {
+			if kind := quoteScriptKind(command, i, mode); kind != "" {
+				bodyStart, bodyEnd, close, ok := quotedPayloadBounds(command, i)
+				if ok {
+					nested := nestedShellDir(command, i, cwd, mode)
+					rewritten := walkShellCommand(command[bodyStart:bodyEnd], nested, mapPath, scriptParseMode(kind, mode))
+					b.WriteByte(ch)
+					b.WriteString(rewritten)
+					if bodyEnd < len(command) {
+						b.WriteByte(command[bodyEnd])
+					}
+					i = close
+					atCmd, expectDir, expectPush, skipValue, nameNext = false, false, false, false, false
+					stackName = ""
+					continue
 				}
-				i = close
-				atCmd, expectDir, expectPush, skipValue, nameNext = false, false, false, false, false
-				stackName = ""
-				continue
 			}
 		}
 		if ch == '\'' && !inDouble && mode != parseCmd {
@@ -635,8 +662,14 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 			// look like paths. At the command position they are commands;
 			// folding them into a path would miss the directory change.
 			spanIsCommand := false
-			if end > i && !quoted && atCmd {
+			// cmd runs cd after if/for and as @cd, so a glued form is still a
+			// command when it is not the first word. Eating it as a path
+			// would miss the directory change.
+			if end > i && !quoted && (atCmd || (mode == parseCmd && !expectDir)) {
 				token := command[i:end]
+				if mode == parseCmd {
+					token = cmdBareCommand(token)
+				}
 				if _, _, glued := splitGluedLocation(token); glued || commandLocationKind(token) != "" {
 					spanIsCommand = true
 				}
@@ -667,8 +700,19 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 			continue
 		}
 		word := command[i:end]
-		if atCmd {
-			if kind, path, glued := splitGluedLocation(word); glued {
+		// cmd's if/for/else run the later command in this process, and @
+		// only turns echo off (@cd, @D:). PowerShell still requires the
+		// first word: @cd there is not Set-Location.
+		bare := word
+		trackCmd := atCmd
+		// A word after cd is the directory, even when that directory is
+		// named call or D:.
+		if mode == parseCmd && !expectDir {
+			bare = cmdBareCommand(word)
+			trackCmd = true
+		}
+		if trackCmd {
+			if kind, path, glued := splitGluedLocation(bare); glued {
 				replaced, dir, resolved := mapResolvedSpan(path, cwd, mapPath)
 				if resolved {
 					if replaced != path {
@@ -688,24 +732,26 @@ func walkShellCommand(command string, cwd *commandShellDir, mapPath func(string)
 			}
 		}
 		switch {
-		case atCmd && isPopdToken(word):
+		case trackCmd && isPopdToken(bare):
 			cwd.pop()
 			atCmd = false
-		case atCmd && isPushdToken(word):
+		case trackCmd && isPushdToken(bare):
 			expectDir, expectPush = true, true
 			stackName = ""
 			nameNext = false
 			atCmd = false
-		case atCmd && isChdirToken(word):
+		case trackCmd && isChdirToken(bare):
 			expectDir, expectPush = true, false
 			atCmd = false
-		case atCmd && isCallToken(word):
+		case trackCmd && isCallToken(bare):
 			// cmd's call runs the next command in this process. Leaving
 			// atCmd set is what lets call cd climb before the next path.
-		case atCmd && isDriveSwitch(word):
+			atCmd = true
+		case trackCmd && isDriveSwitch(bare):
 			// Bare D: selects that drive's remembered directory. Later
 			// names on this line resolve there; the token itself stays D:.
-			cwd.chdir(cwd.dirOn(shellCommandToken(word)))
+			// if exist x D: and @D: are the same switch.
+			cwd.chdir(cwd.dirOn(shellCommandToken(bare)))
 			atCmd = false
 		case expectDir:
 			if replaced, dir, ok := mapResolvedSpan(word, cwd, mapPath); ok {
@@ -931,6 +977,10 @@ func resolveShellSpan(span string, cwd *commandShellDir) (string, bool) {
 	if span == "" || cwd == nil {
 		return "", false
 	}
+	// FileSystem::D:\Repo is a normal drive path. The qualifier is not a directory.
+	if n, ok := filesystemProviderPrefix(span); ok {
+		return resolveShellSpan(span[n:], cwd)
+	}
 	if len(span) >= 2 && span[1] == ':' && isASCIILetter(span[0]) {
 		rest := span[2:]
 		if rest == "" {
@@ -1019,6 +1069,13 @@ func rootRelativeStart(command string, i int) bool {
 }
 
 func cutResolvedSpan(command string, start int, quoted bool) int {
+	// Microsoft.PowerShell.Core\FileSystem::D:\Repo is one path. Cutting at
+	// the qualifier's colon would leave D:\Repo as a second word and miss it.
+	if n, ok := filesystemProviderPrefix(command[start:]); ok {
+		if end := cutResolvedSpan(command, start+n, quoted); end > start+n {
+			return end
+		}
+	}
 	end := start
 	// ':' ends a name, except the colon in D:.
 	if driveLikeStart(command, start) {
@@ -1150,6 +1207,15 @@ func isCallToken(token string) bool {
 	return shellCommandToken(token) == "call"
 }
 
+// cmdBareCommand strips one leading @. cmd treats that as "do not echo
+// this command", so @cd and @D: are cd and D:. A second @ is part of the name.
+func cmdBareCommand(word string) string {
+	if len(word) > 1 && word[0] == '@' {
+		return word[1:]
+	}
+	return word
+}
+
 // commandLocationKind reports a command that changes this process's
 // directory. A module qualifier counts (Microsoft.PowerShell.Management\cd).
 // A filesystem path does not: .\cd.exe is a program, not Set-Location.
@@ -1266,12 +1332,111 @@ func isLocationValueFlag(token string) bool {
 	}
 }
 
-func quoteStartsNestedShell(command string, quoteAt int, mode shellParseMode) bool {
+// quoteScriptKind is the shell that will run this quoted text. The executable
+// does not have to be the first word: start, call, and Start-Process cmd.exe
+// still run the quoted command. A quoted string that itself begins with cmd
+// is the script forfiles /c passes through.
+func quoteScriptKind(command string, quoteAt int, mode shellParseMode) string {
 	if quoteAt <= 0 || quoteAt >= len(command) || !quoteIsReal(command[quoteAt], mode) {
-		return false
+		return ""
 	}
 	head := strings.TrimSpace(command[statementStartBefore(command, quoteAt, mode):quoteAt])
-	return headInvokesNestedShell(head)
+	if kind := processShellKind(head); kind != "" {
+		return kind
+	}
+	bodyStart, bodyEnd, _, ok := quotedPayloadBounds(command, quoteAt)
+	if !ok {
+		return ""
+	}
+	kind := leadingProcessShell(command[bodyStart:bodyEnd])
+	if kind == "" {
+		return ""
+	}
+	// Inside cmd, the quoted text is a command line even when it starts
+	// with powershell. cd later in that line still changes the process.
+	if mode == parseCmd {
+		return "cmd"
+	}
+	return kind
+}
+
+func scriptParseMode(kind string, parent shellParseMode) shellParseMode {
+	switch kind {
+	case "cmd":
+		return parseCmd
+	case "powershell", "bash":
+		if parent == parseCmd {
+			return parseCmd
+		}
+		return parsePowerShell
+	default:
+		return parent
+	}
+}
+
+// processShellKind finds the shell whose quoted text follows head.
+// A script switch (-Command, /c) wins. Otherwise any cmd/powershell/bash
+// in the head still owns the quote, which is how Start-Process -ArgumentList
+// passes a command line through.
+func processShellKind(head string) string {
+	words := shellHeadWords(head)
+	script := ""
+	seen := ""
+	for start := 0; start < len(words); start++ {
+		kind := shellWrapperKind(words[start])
+		if kind == "" {
+			continue
+		}
+		if script == "" && wrapperTailIsScript(kind, words[start+1:]) {
+			script = kind
+		}
+		if seen == "" && kind != "inline" {
+			seen = kind
+		}
+	}
+	if script != "" {
+		return script
+	}
+	return seen
+}
+
+func leadingProcessShell(command string) string {
+	words := shellHeadWords(strings.TrimSpace(command))
+	if len(words) == 0 {
+		return ""
+	}
+	switch shellWrapperKind(words[0]) {
+	case "cmd", "powershell", "bash":
+		return shellWrapperKind(words[0])
+	default:
+		return ""
+	}
+}
+
+func wrapperTailIsScript(kind string, tail []string) bool {
+	for i := 0; i < len(tail); {
+		w := tail[i]
+		if isWrapperCommandFlag(kind, w) {
+			return i == len(tail)-1
+		}
+		if takesWrapperOptionValue(kind, w) {
+			// A following flag is another option, not this option's value.
+			// iex -Verbose -ErrorAction Stop "..." must still see the quote.
+			if i+1 < len(tail) && !wrapperFlagToken(tail[i+1]) {
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		}
+		if w != "" && (w[0] == '-' || w[0] == '/') {
+			i++
+			continue
+		}
+		return false
+	}
+	// iex "script" has no -Command. powershell "script" is not a script.
+	return kind == "inline"
 }
 
 func statementStartBefore(command string, at int, mode shellParseMode) int {
@@ -1299,40 +1464,6 @@ func statementStartBefore(command string, at int, mode shellParseMode) int {
 		i++
 	}
 	return start
-}
-
-func headInvokesNestedShell(head string) bool {
-	words := shellHeadWords(head)
-	if len(words) == 0 {
-		return false
-	}
-	kind := shellWrapperKind(words[0])
-	if kind == "" {
-		return false
-	}
-	for i := 1; i < len(words); {
-		w := words[i]
-		if isWrapperCommandFlag(kind, w) {
-			return i == len(words)-1
-		}
-		if takesWrapperOptionValue(kind, w) {
-			// A following flag is another option, not this option's value.
-			// iex -Verbose -ErrorAction Stop "..." must still see the quote.
-			if i+1 < len(words) && !wrapperFlagToken(words[i+1]) {
-				i += 2
-			} else {
-				i++
-			}
-			continue
-		}
-		if w != "" && (w[0] == '-' || w[0] == '/') {
-			i++
-			continue
-		}
-		return false
-	}
-	// iex "script" has no -Command. powershell "script" is not a script.
-	return kind == "inline"
 }
 
 func shellWrapperKind(token string) string {
@@ -1364,25 +1495,6 @@ func nestedShellDir(command string, quoteAt int, parent *commandShellDir, mode s
 		return newCommandShellDir("")
 	}
 	return newCommandShellDir(parent.cur)
-}
-
-// nestedShellParseMode is the quote rules of a quoted payload. cmd /c is
-// cmd even under PowerShell. powershell and bash keep single quotes.
-// Invoke-Expression inherits the process it runs in.
-func nestedShellParseMode(command string, quoteAt int, parent shellParseMode) shellParseMode {
-	head := command[statementStartBefore(command, quoteAt, parent):quoteAt]
-	words := shellHeadWords(head)
-	if len(words) == 0 {
-		return parent
-	}
-	switch shellWrapperKind(words[0]) {
-	case "cmd":
-		return parseCmd
-	case "powershell", "bash":
-		return parsePowerShell
-	default:
-		return parent
-	}
 }
 
 func escapedLineBreak(command string, i int) bool {

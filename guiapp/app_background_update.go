@@ -366,6 +366,15 @@ func (a *App) handleBackgroundUpdateResult(ctx context.Context, state *backgroun
 	if a.isUpdateVersionIgnored(version) {
 		return
 	}
+	// A deferred or next-startup install for this same version already
+	// schedules its own check-download-install at the chosen time. Treating
+	// it like a fresh discovery here would re-download the same installer
+	// (versioned file names make the bytes identical) and reopen the dialog
+	// over a decision the user already made — most visibly after a restart,
+	// when the durable record is the only thing remembering that choice.
+	if record, ok := a.readDeferredUpdateInstall(); ok && sameUpdateVersion(record.TargetVersion, version) {
+		return
+	}
 	canSilentDownload := silentEnabled && !result.DownloadUnavailable && strings.TrimSpace(result.DownloadUrl) != ""
 	if canSilentDownload {
 		if !state.beginSilentUpdate(version) {
@@ -463,8 +472,21 @@ func (a *App) updateDownloadInProgress(fileName string) bool {
 	}
 	a.downloadMutex.Lock()
 	defer a.downloadMutex.Unlock()
-	_, ok := a.downloadCancelers[fileName]
+	_, ok := a.downloadCancelers[downloadRegistryKey(fileName)]
 	return ok
+}
+
+// downloadRegistryKey normalizes the downloadCancelers map key. The key is a
+// bare file name joined with the downloads folder, so on a case-insensitive
+// filesystem differently-cased names for the same installer (a URL-carried
+// asset name vs the brand-derived fallback) name the same physical file:
+// without normalization two "different" downloads could hold the destination
+// open concurrently and corrupt each other's bytes.
+func downloadRegistryKey(fileName string) string {
+	if pathCaseInsensitive() {
+		return strings.ToLower(strings.TrimSpace(fileName))
+	}
+	return strings.TrimSpace(fileName)
 }
 
 // appUpdateVersion returns the normalized release version carried by a result.

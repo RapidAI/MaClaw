@@ -614,6 +614,13 @@ func desktopEnsureReceipt(scope agentruntime.Scope, run *agentservice.Run, msg *
 			}
 		}
 		desktopSyncVisible(msg)
+		status = string(run.Status)
+		if outcome != "" {
+			status += " outcome=" + outcome
+		}
+		if msg.Metadata["publish_state"] == "submitted_unconfirmed" {
+			status += " publish_unconfirmed"
+		}
 		desktopLedgerAdd(key, desktopLedgerEntry{Kind: "run_end", Run: run.ID, Detail: status})
 		return msg
 	}
@@ -747,11 +754,14 @@ func desktopReconcileDelivery(run *agentservice.Run, msg *agentservice.Message, 
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
 	}
+	if msg.Metadata["response_source"] == "ask_user" {
+		return outcome, why
+	}
 	switch outcome {
 	case agentservice.TaskOutcomePartial, agentservice.TaskOutcomeBlocked, agentservice.TaskOutcomeNotSubmitted, agentservice.TaskOutcomeUnconfirmed, agentservice.TaskOutcomeUnverified, agentservice.TaskOutcomeAwaitingUser, agentservice.TaskOutcomeRunning:
 		return outcome, why
 	}
-	files := deliveredFileCount(msg)
+	files := desktopDeliveredFileCount(run.ID, msg)
 	complete, incomplete, other := desktopPostEvidence(run.ID)
 	contract, resolved := desktopWaitForContract(run.ID)
 	if resolved && contract.failed {
@@ -918,6 +928,24 @@ func deliveredFileCount(msg *agentservice.Message) int {
 	return n
 }
 
+func desktopDeliveredFileCount(runID string, msg *agentservice.Message) int {
+	seen := map[string]bool{}
+	if msg != nil {
+		for _, item := range msg.Attachments {
+			if item.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(item.Data) == "" {
+				continue
+			}
+			seen[desktopFileClaimKey(fileFingerprint(item.Data), "")] = true
+		}
+	}
+	for _, claim := range desktopFileClaims(runID) {
+		if key := desktopFileClaimKey(claim.Fingerprint, claim.Ref); key != "" {
+			seen[key] = true
+		}
+	}
+	return len(seen)
+}
+
 func noteDeliveredFiles(msg *agentservice.Message, files int) {
 	if files == 0 || msg == nil || strings.TrimSpace(msg.Content) != "" {
 		return
@@ -1057,6 +1085,8 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 	byID := map[string]agent.DesktopDeliverable{}
 	textItems := 0
 	onlyText := ""
+	fileItems := 0
+	onlyFile := ""
 	for _, item := range items {
 		if item.ID == "" {
 			return agentservice.TaskOutcomeUnverified, "output contract open"
@@ -1065,6 +1095,10 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 		if item.Kind == desktopContractText {
 			textItems++
 			onlyText = item.ID
+		}
+		if item.Kind == desktopContractFile {
+			fileItems++
+			onlyFile = item.ID
 		}
 	}
 	satisfied := map[string]bool{}
@@ -1080,24 +1114,25 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 			if !ok || item.Kind != desktopContractFile || satisfied[id] {
 				continue
 			}
-			fp := fileFingerprint(att.Data)
-			if prev, taken := usedFile[fp]; taken && prev != id {
+			key := desktopFileClaimKey(fileFingerprint(att.Data), "")
+			if prev, taken := usedFile[key]; taken && prev != id {
 				continue
 			}
-			usedFile[fp] = id
+			usedFile[key] = id
 			satisfied[id] = true
 		}
 	}
 	for _, claim := range desktopFileClaims(runID) {
 		id := strings.TrimSpace(claim.ItemID)
 		item, ok := byID[id]
-		if !ok || item.Kind != desktopContractFile || satisfied[id] || claim.Fingerprint == "" {
+		key := desktopFileClaimKey(claim.Fingerprint, claim.Ref)
+		if !ok || item.Kind != desktopContractFile || satisfied[id] || key == "" {
 			continue
 		}
-		if prev, taken := usedFile[claim.Fingerprint]; taken && prev != id {
+		if prev, taken := usedFile[key]; taken && prev != id {
 			continue
 		}
-		usedFile[claim.Fingerprint] = id
+		usedFile[key] = id
 		satisfied[id] = true
 	}
 	for _, claim := range desktopPostClaims(runID) {
@@ -1118,6 +1153,37 @@ func desktopAttributedVerdict(runID string, msg *agentservice.Message, items []a
 		}
 		usedPost[ident] = id
 		satisfied[id] = true
+	}
+	if fileItems == 1 && !satisfied[onlyFile] {
+		type fileEvidence struct {
+			id  string
+			key string
+		}
+		var evidence []fileEvidence
+		if msg != nil {
+			for _, att := range msg.Attachments {
+				if att.Delivery != agent.AttachmentDeliveryFile || strings.TrimSpace(att.Data) == "" {
+					continue
+				}
+				evidence = append(evidence, fileEvidence{id: strings.TrimSpace(att.ItemID), key: desktopFileClaimKey(fileFingerprint(att.Data), "")})
+			}
+		}
+		for _, claim := range desktopFileClaims(runID) {
+			evidence = append(evidence, fileEvidence{id: strings.TrimSpace(claim.ItemID), key: desktopFileClaimKey(claim.Fingerprint, claim.Ref)})
+		}
+		unique := evidence[:0]
+		seen := map[string]bool{}
+		for _, item := range evidence {
+			if item.key == "" || seen[item.key] {
+				continue
+			}
+			seen[item.key] = true
+			unique = append(unique, item)
+		}
+		if len(unique) == 1 && unique[0].id == "" {
+			usedFile[unique[0].key] = onlyFile
+			satisfied[onlyFile] = true
+		}
 	}
 	if textItems == 1 && desktopVisibleAnswer(msg) != "" {
 		satisfied[onlyText] = true
@@ -1207,6 +1273,8 @@ var (
 type desktopFileClaim struct {
 	ItemID      string
 	Fingerprint string
+	Ref         string
+	Name        string
 }
 
 var (
@@ -1217,13 +1285,35 @@ var (
 func desktopNoteFileClaim(runID, itemID string, raw []byte) {
 	runID = strings.TrimSpace(runID)
 	itemID = strings.TrimSpace(itemID)
-	if runID == "" || itemID == "" || len(raw) == 0 {
+	if runID == "" || len(raw) == 0 {
 		return
 	}
 	fp := fileFingerprint(base64.StdEncoding.EncodeToString(raw))
 	desktopFileClaimMu.Lock()
 	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Fingerprint: fp})
 	desktopFileClaimMu.Unlock()
+}
+
+func desktopNoteFileRefClaim(runID, itemID, ref, name string) {
+	runID = strings.TrimSpace(runID)
+	itemID = strings.TrimSpace(itemID)
+	ref = strings.TrimSpace(ref)
+	if runID == "" || ref == "" {
+		return
+	}
+	desktopFileClaimMu.Lock()
+	desktopFileClaimsByRun[runID] = append(desktopFileClaimsByRun[runID], desktopFileClaim{ItemID: itemID, Ref: ref, Name: strings.TrimSpace(name)})
+	desktopFileClaimMu.Unlock()
+}
+
+func desktopFileClaimKey(fingerprint, ref string) string {
+	if strings.TrimSpace(fingerprint) != "" {
+		return "bytes:" + strings.TrimSpace(fingerprint)
+	}
+	if strings.TrimSpace(ref) != "" {
+		return "ref:" + strings.TrimSpace(ref)
+	}
+	return ""
 }
 
 func desktopFileClaims(runID string) []desktopFileClaim {

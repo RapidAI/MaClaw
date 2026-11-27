@@ -2,6 +2,7 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useLayoutEffect, us
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { useDialog } from '../CustomDialog';
 import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTaskLaunch';
+import { GitRepoCreatePanel, type GitRepoCreated } from '../layout/GitRepoCreatePanel';
 import { toolsBackHintLabel, toolsBackLabel } from '../../i18n/utilitiesLabels';
 import { startVisibleInterval } from '../../utils/visibleInterval';
 import './VirtualRepositoryWorkspace.css';
@@ -135,6 +136,12 @@ type Credential = {
     kind: 'git' | 'svn';
     username: string;
     scope?: string;
+    // provider tags the credential with its git platform ("github"/"gitlab")
+    // so the repo-creation flows can offer it; empty keeps the legacy
+    // provider-agnostic credential. origin pins a gitlab credential to its
+    // self-hosted site root.
+    provider?: string;
+    origin?: string;
 };
 
 const isCredential = (value: unknown): value is Credential => {
@@ -144,7 +151,9 @@ const isCredential = (value: unknown): value is Credential => {
 		&& typeof credential.name === 'string' && credential.name.trim().length > 0
 		&& (credential.kind === 'git' || credential.kind === 'svn')
 		&& typeof credential.username === 'string' && credential.username.trim().length > 0
-		&& (credential.scope == null || typeof credential.scope === 'string');
+		&& (credential.scope == null || typeof credential.scope === 'string')
+		&& (credential.provider == null || typeof credential.provider === 'string')
+		&& (credential.origin == null || typeof credential.origin === 'string');
 };
 
 const parseCredentials = (raw: unknown, label: string): Credential[] => {
@@ -704,6 +713,15 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
     status: tailText(lang, 'Status', '状态'),
     noCredential: tailText(lang, 'No credential', '不使用凭据'),
     anyHost: tailText(lang, 'any host', '任意主机'),
+    provider: tailText(lang, 'Platform (optional)', '平台（可选）'),
+    providerAny: tailText(lang, 'Generic', '通用'),
+    providerOrigin: tailText(lang, 'GitLab site origin', 'GitLab 站点地址'),
+    providerOriginHint: tailText(lang, 'Site root only, e.g. https://gitlab.com', '仅填站点根地址，如 https://gitlab.com'),
+    providerUsernameHint: tailText(lang, 'Leave blank to auto-fill from the token', '留空则自动读取令牌对应的账号'),
+    createRepoOnPlatform: tailText(lang, 'Create a new repository on GitHub/GitLab…', '在 GitHub/GitLab 上新建仓库…'),
+    hideCreateRepo: tailText(lang, 'Hide the create-repository panel', '收起新建仓库面板'),
+    createdRepoFilled: tailText(lang, 'Created and filled in below — review and save the mapping.', '已创建并回填，请检查后保存映射。'),
+    credentialImportedNote: tailText(lang, 'The connected account was saved as a repository credential for binding.', '已连接账号已保存为仓库凭据用于绑定。'),
     operationRunningHint: tailText(lang, 'The virtual tree and other operations are locked while a repository operation is running.', '仓库操作运行期间不能修改虚拟目录树或启动其他操作。'),
     location: tailText(lang, 'Location', '位置'),
     localLocation: tailText(lang, 'This computer', '本机'),
@@ -896,6 +914,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const [changesLoading, setChangesLoading] = useState(false);
 	    const [mode, setMode] = useState<'none' | 'repo' | 'group' | 'mapping' | 'credentials' | 'migration' | 'root-binding' | 'mapping-target' | 'coding-target'>('none');
     const [draft, setDraft] = useState<any>({});
+    // Create-on-provider panel inside the git mapping dialog: the panel owns
+    // platform/credential/namespace/name; onCreated fills remote_url and the
+    // credential so the user continues the normal mapping save.
+    const [gitCreateOpen, setGitCreateOpen] = useState(false);
+    const [gitCreateService, setGitCreateService] = useState('github');
+    const [gitCreateNote, setGitCreateNote] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [git, setGit] = useState<ClientStatus | null>(null);
@@ -2768,6 +2792,36 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 	};
 
+	// handleGitRepoCreated fills the mapping draft from a freshly created
+	// provider repository. When the creation ran on the settings account
+	// ('' credential id) the account token is snapshotted into the
+	// repository-credential store first — bindings resolve secrets from that
+	// store only — and the resulting credential is selected.
+	const handleGitRepoCreated = async (created: GitRepoCreated) => {
+		let credentialId = created.credentialId;
+		let note = text.createdRepoFilled;
+		if (!credentialId) {
+			try {
+				const saved = await app()?.ImportGitPlatformAccountCredential?.(created.service) as Credential | undefined;
+				credentialId = String(saved?.id || '');
+				if (credentialId) note = `${text.createdRepoFilled} ${text.credentialImportedNote}`;
+			} catch (e: any) {
+				setError(String(e?.message || e));
+			}
+		}
+		setGitCreateOpen(false);
+		setGitCreateNote(note);
+		setDraft((prev: any) => ({
+			...prev,
+			// The backend always returns a clone URL; the origin-aware fallback
+			// covers a self-hosted GitLab row where gitlab.com would be wrong.
+			remote_url: created.cloneUrl
+				|| (created.origin ? `${created.origin}/${created.fullName}.git` : `https://${created.service === 'gitlab' ? 'gitlab.com' : 'github.com'}/${created.fullName}.git`),
+			credential_id: credentialId || prev.credential_id || '',
+		}));
+		void loadMappingCredentials('git');
+	};
+
 	const deleteCredential = async (credential: Credential) => {
 		if (credentialDeleteInFlightRef.current) return;
 		if (!await showConfirm(tailText(lang, `Delete credential “${credential.name}”? All repository bindings to it will be removed.`, `确认删除凭据“${credential.name}”？所有仓库绑定将同时解除。`), text.remove, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
@@ -2789,6 +2843,22 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	};
 
     useEffect(() => { void loadCredentialBindings(repo?.id); }, [repo?.id, loadCredentialBindings]);
+
+    // A fresh dialog starts with the create-repository panel closed so a
+    // saved mapping never inherits the previous draft's panel state — but
+    // the credentials-manager roundtrip ('mapping' → 'credentials' →
+    // 'mapping') is NOT a fresh dialog: resetting on entering OR leaving the
+    // manager would close the panel the user was filling in right before
+    // going off to add the very credential it needs. The panel remounts
+    // fresh on return either way; only its open flag is preserved.
+    const prevModeRef = useRef<typeof mode>('none');
+    useEffect(() => {
+        if (mode !== 'credentials' && !(mode === 'mapping' && prevModeRef.current === 'credentials')) {
+            setGitCreateOpen(false);
+            setGitCreateNote('');
+        }
+        prevModeRef.current = mode;
+    }, [mode]);
 
 	const saveCredential = async () => {
 		if (credentialSaveInFlightRef.current) return;
@@ -3222,7 +3292,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                     {mode === 'mapping' ? <>
 	                        <label>{tailText(lang, 'Repository description (optional)', '仓库说明（可选）')}<input value={draft.description || ''} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></label>
                         <label>{text.type}<select value={draft.kind || 'git'} onChange={(e) => setDraft({ ...draft, kind: e.target.value, credential_id: '' })}><option value="git">Git</option><option value="svn">SVN</option><option value="local">{text.local}</option></select></label>
-							{draft.kind !== 'local' ? <><label>{text.remote}<input value={draft.remote_url || ''} onChange={(e) => setDraft({ ...draft, remote_url: e.target.value })} /></label><label>{text.refType}<select value={draft.ref_type || 'branch'} onChange={(e) => setDraft({ ...draft, ref_type: e.target.value })}><option value="branch">{text.branchRef}</option><option value="tag">{text.tagRef}</option></select></label><label>{text.refName}<input value={draft.ref_name || ''} placeholder={text.defaultRef} onChange={(e) => setDraft({ ...draft, ref_name: e.target.value })} /></label><label>{text.credentials}<div className="vrepo-inline"><select value={draft.credential_id || credentialBindings[draft.id] || ''} onFocus={() => { const kind = draft.kind === 'svn' ? 'svn' : 'git'; if (!credentials.some((item) => item.kind === kind)) void loadMappingCredentials(kind); }} onChange={(e) => setDraft({ ...draft, credential_id: e.target.value })}><option value="">{text.noCredential}</option>{credentials.filter((item) => item.kind === draft.kind).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select><button type="button" className="secondary vrepo-credential-add" title={tips.addCredential} onClick={() => void startCredentialManager(true)}>{text.addCredential}</button></div></label></> : null}
+							{draft.kind !== 'local' ? <><label>{text.remote}<input value={draft.remote_url || ''} onChange={(e) => setDraft({ ...draft, remote_url: e.target.value })} /></label><label>{text.refType}<select value={draft.ref_type || 'branch'} onChange={(e) => setDraft({ ...draft, ref_type: e.target.value })}><option value="branch">{text.branchRef}</option><option value="tag">{text.tagRef}</option></select></label><label>{text.refName}<input value={draft.ref_name || ''} placeholder={text.defaultRef} onChange={(e) => setDraft({ ...draft, ref_name: e.target.value })} /></label><label>{text.credentials}<div className="vrepo-inline"><select value={draft.credential_id || credentialBindings[draft.id] || ''} onFocus={() => { const kind = draft.kind === 'svn' ? 'svn' : 'git'; if (!credentials.some((item) => item.kind === kind)) void loadMappingCredentials(kind); }} onChange={(e) => setDraft({ ...draft, credential_id: e.target.value })}><option value="">{text.noCredential}</option>{credentials.filter((item) => item.kind === draft.kind).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.username}</option>)}</select><button type="button" className="secondary vrepo-credential-add" title={tips.addCredential} onClick={() => void startCredentialManager(true)}>{text.addCredential}</button></div></label>{draft.kind === 'git' ? <div className="vrepo-git-create"><button type="button" className="secondary vrepo-git-create-toggle" aria-expanded={gitCreateOpen} disabled={busy} onClick={() => setGitCreateOpen((open) => !open)}>{gitCreateOpen ? text.hideCreateRepo : text.createRepoOnPlatform}</button>{gitCreateOpen ? <GitRepoCreatePanel lang={lang} service={gitCreateService} onServiceChange={(next) => setGitCreateService(next)} submitLabel={tailText(lang, 'Create repository', '创建仓库')} onCreated={(created) => void handleGitRepoCreated(created)} testIdPrefix="vrepo-git-create" /> : null}{gitCreateNote ? <p className="vrepo-git-create-note" role="status">{gitCreateNote}</p> : null}</div> : null}</> : null}
 						{draft.kind !== 'local' ? <label className="vrepo-check"><input type="checkbox" disabled={draft.enabled === false} checked={!!draft.checkout_after_save} onChange={(e) => setDraft({ ...draft, checkout_after_save: e.target.checked })} />{text.checkoutAfterSave}</label> : null}
 	                        {draft.kind === 'local' ? <p className="vrepo-local-directory-note">{text.localDirectoryCreated}</p> : <label className="vrepo-check"><input type="checkbox" checked={!!draft.create_directory} onChange={(e) => setDraft({ ...draft, create_directory: e.target.checked })} />{text.createDir}</label>}
                         <label className="vrepo-check"><input type="checkbox" checked={draft.enabled !== false} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />{text.enabled}</label>
@@ -3232,8 +3302,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
 		{mode === 'credentials' ? <VRepoDialog title={text.manageCredentials} titleId="vrepo-credentials-dialog-title" className="vrepo-dialog--credentials" closeLabel={text.close} closeDisabled={busy} onClose={closeCredentialManager} footer={<button type="button" className="secondary" title={text.close} disabled={busy} onClick={closeCredentialManager}>{text.close}</button>}>
 			{errorBanner}
-            <div className="vrepo-credential-layout"><div>{credentials.length ? credentials.map((credential) => <div className="vrepo-credential-row" key={credential.id}><div><strong>{credential.name}</strong><span>{credential.kind.toUpperCase()} · {credential.username} · {credential.scope || text.anyHost}</span></div><div><button type="button" className="secondary" title={tips.editCredential} disabled={mutationLocked} onClick={() => setDraft(credential)}>{text.edit}</button><button type="button" className="danger" title={tips.removeCredential} disabled={mutationLocked} onClick={() => void deleteCredential(credential)}>{text.remove}</button></div></div>) : <p>{text.noCredentials}</p>}</div>
-                <div className="vrepo-editor"><h3>{draft.id ? text.edit : text.addCredential}</h3><label>{text.credentialName}<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>{text.type}<select value={draft.kind || 'git'} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}><option value="git">Git</option><option value="svn">SVN</option></select></label><label>{text.username}<input value={draft.username || ''} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></label><label>{text.password}<input type="password" autoComplete="new-password" value={draft.secret || ''} placeholder={draft.id ? text.passwordHint : ''} onChange={(e) => setDraft({ ...draft, secret: e.target.value })} /></label><label>{text.scope}<input value={draft.scope || ''} onChange={(e) => setDraft({ ...draft, scope: e.target.value })} /></label><button type="button" title={tips.save} onClick={() => void saveCredential()} disabled={busy}>{text.save}</button></div>
+            <div className="vrepo-credential-layout"><div>{credentials.length ? credentials.map((credential) => <div className="vrepo-credential-row" key={credential.id}><div><strong>{credential.name}</strong><span>{credential.provider ? `${credential.provider.toUpperCase()} · ` : ''}{credential.kind.toUpperCase()} · {credential.username} · {credential.scope || text.anyHost}</span></div><div><button type="button" className="secondary" title={tips.editCredential} disabled={mutationLocked} onClick={() => setDraft(credential)}>{text.edit}</button><button type="button" className="danger" title={tips.removeCredential} disabled={mutationLocked} onClick={() => void deleteCredential(credential)}>{text.remove}</button></div></div>) : <p>{text.noCredentials}</p>}</div>
+                <div className="vrepo-editor"><h3>{draft.id ? text.edit : text.addCredential}</h3><label>{text.credentialName}<input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>{text.type}<select value={draft.kind || 'git'} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, kind: e.target.value, provider: '', origin: '' })}><option value="git">Git</option><option value="svn">SVN</option></select></label>{(draft.kind || 'git') === 'git' ? <label>{text.provider}<select value={draft.provider || ''} onChange={(e) => setDraft({ ...draft, provider: e.target.value, origin: e.target.value === 'gitlab' ? (draft.origin || '') : '' })}><option value="">{text.providerAny}</option><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label> : null}{(draft.provider || '') === 'gitlab' ? <label>{text.providerOrigin}<input value={draft.origin || ''} placeholder={text.providerOriginHint} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} /></label> : null}<label>{text.username}<input value={draft.username || ''} placeholder={draft.provider ? text.providerUsernameHint : ''} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></label><label>{text.password}<input type="password" autoComplete="new-password" value={draft.secret || ''} placeholder={draft.id ? text.passwordHint : ''} onChange={(e) => setDraft({ ...draft, secret: e.target.value })} /></label><label>{text.scope}<input value={draft.scope || ''} onChange={(e) => setDraft({ ...draft, scope: e.target.value })} /></label><button type="button" title={tips.save} onClick={() => void saveCredential()} disabled={busy}>{text.save}</button></div>
             </div>
         </VRepoDialog> : null}
         {operation ? <VRepoDialog title={operation.action === 'sync' ? text.syncWorkingCopiesTitle : operation.action.replace('_', ' & ')} titleId="vrepo-operation-title" className="vrepo-operation" closeLabel={text.close} closeDisabled={busy} onClose={closeOperation} footer={<>

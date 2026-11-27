@@ -164,6 +164,14 @@
       }
     },
     {
+      "name": "new-request-clears-visible",
+      "events": [
+        {"event": "response", "cursor": 1, "request_id": "r1", "terminal": {"text": "上一句", "trial_reflect_status": "recovered", "trial_reflect_failures": 1}},
+        {"event": "round_started", "cursor": 2, "request_id": "r2", "display_text": "下一句"}
+      ],
+      "expect": {"visible": "", "body": "", "responded": false, "requestId": "r2", "displayText": "下一句", "trialStatus": "", "trialFailures": 0}
+    },
+    {
       "name": "omitted-cursor-from",
       "events": [
         {"event": "token", "cursor": 1, "cursor_from": 1, "text": "a"},

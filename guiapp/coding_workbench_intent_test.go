@@ -178,8 +178,8 @@ func TestOpeningTaskFirstCommandIsAnalyzedAndKeptAboveThePlan(t *testing.T) {
 	got := fallbackCodingRequestRestatementFor(ask, stickyCodingWorkbenchMemory{}, impl)
 	assertOpeningTaskHostAnalysis(t, got, ask)
 	echo := fallbackCodingRequestRestatementFor("再收紧阈值", follow, impl)
-	if !strings.Contains(echo, "这次再收紧阈值") || !strings.Contains(echo, "其它先不动") || !strings.Contains(echo, "「系统信息查看」") {
-		t.Fatalf("follow-up should still echo: %q", echo)
+	if strings.Contains(echo, "这次再收紧阈值") || !strings.Contains(echo, "再收紧阈值") || !strings.Contains(echo, "其它先不动") || !strings.Contains(echo, "「系统信息查看」") {
+		t.Fatalf("follow-up should name the want without gluing 这次: %q", echo)
 	}
 	if codingOpeningAnalysisUsable("这次开发c++版本的俄罗斯广场，其它先不动。", ask) {
 		t.Fatal("the old echo must not pass as an analysis")
@@ -190,6 +190,61 @@ func TestOpeningTaskFirstCommandIsAnalyzedAndKeptAboveThePlan(t *testing.T) {
 	analysis := "你想要一个用 C++ 编写的俄罗斯方块，完成后能在本地编译运行。我将只做这个游戏本身，不另加模式，确认前不改文件。"
 	if !codingOpeningAnalysisUsable(analysis, ask) {
 		t.Fatal("a real analysis should pass")
+	}
+	short := "你想要俄罗斯方块。我将先出计划再确认。"
+	if utf8.RuneCountInString(short) >= 24 || utf8.RuneCountInString(short) < 16 {
+		t.Fatalf("short two-beat fixture is no longer in the old rejection window: %d", utf8.RuneCountInString(short))
+	}
+	if !codingOpeningAnalysisUsable(short, ask) {
+		t.Fatal("a finished short two-beat reply must replace the host quote")
+	}
+	if codingOpeningAnalysisUsable("你想要。我将。", ask) {
+		t.Fatal("a fragment must not replace the host sentence")
+	}
+	if codingOpeningAnalysisUsable("我将先整理计划。你想要一个游戏。", ask) {
+		t.Fatal("the action beat has to follow the want")
+	}
+	if codingUnderstandingVoice("你想要把按钮改成「我将继续」。") {
+		t.Fatal("我将 inside the goal counted as the action beat")
+	}
+	if codingUnderstandingVoice("你想要把按钮改成我将继续") {
+		t.Fatal("我将 glued to the goal counted as the action beat")
+	}
+	if !codingUnderstandingVoice("你想要把按钮改成「我将继续」。我将先整理计划。") {
+		t.Fatal("an action sentence after a quoted 我将 was discarded")
+	}
+	if !codingUnderstandingVoice("你想要北京的天气信息并生成PDF，我将先获取最新天气数据。") {
+		t.Fatal("a comma between the two beats was discarded")
+	}
+	if codingEnglishUnderstandingVoice("You wanted the export. I willfully keep the logs.") {
+		t.Fatal("wanted and willfully counted as the two beats")
+	}
+	if codingUnderstandingVoice("「你想要北京天气，我将先获取数据」") {
+		t.Fatal("a quoted example counted as the two beats")
+	}
+	if codingUnderstandingVoice("这是你想要的按钮。我将先改文案。") {
+		t.Fatal("你想要 inside 是你想要的 counted as the want beat")
+	}
+	if !codingUnderstandingVoice("好的，你想要北京天气。我将去查。") {
+		t.Fatal("a want beat after a comma was discarded")
+	}
+	enGot := "You want a local Tetris game. I will draft the plan, 确认前不改文件."
+	if !codingUnderstandingVoiceFor(enGot, "build a c++ tetris") {
+		t.Fatal("an english two-beat reply was discarded because it also used the chinese lock")
+	}
+	if codingUnderstandingVoiceFor(enGot, "开发俄罗斯方块") {
+		t.Fatal("a chinese request accepted an english reply")
+	}
+	withPath := "build a c++ tetris\n\n" + filePathPromptPrefix + "\nC:\\文档\\notes.pdf\n"
+	if !codingUnderstandingVoiceFor(enGot, withPath) {
+		t.Fatal("a chinese path forced the english request into chinese")
+	}
+	onlyPath := filePathPromptPrefix + "\nC:\\文档\\notes.pdf\n"
+	if !codingUnderstandingVoiceFor(enGot, onlyPath) {
+		t.Fatal("an attachment with no typed words took its language from the path")
+	}
+	if !codingUnderstandingVoiceFor("你想要附上的笔记。我将先整理计划。", onlyPath) {
+		t.Fatal("a chinese two-beat reply was dropped for an attachment-only turn")
 	}
 
 	h := &IMMessageHandler{}
@@ -466,7 +521,7 @@ func TestFallbackShortEditWithAttachmentStaysAnEcho(t *testing.T) {
 	}
 	mem := stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看", TurnCount: 1}
 	got := fallbackCodingRequestRestatement(ask, mem)
-	if !strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
+	if strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "再收紧阈值") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
 		t.Fatalf("short edit lost its echo: %q", got)
 	}
 	if strings.Contains(got, "其余要求") || strings.Contains(got, `C:\Users`) || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "第一条指令") {
@@ -549,7 +604,7 @@ func TestFallbackFollowUpAttachmentOnlyStaysAnEcho(t *testing.T) {
 	user := filePathPromptPrefix + "\nC:\\docs\\note.pdf\n"
 	mem := stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看", TurnCount: 1}
 	got := fallbackCodingRequestRestatement(user, mem)
-	if !strings.Contains(got, "这次处理附上的文件") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
+	if strings.Contains(got, "这次处理附上的文件") || !strings.Contains(got, "处理附上的文件") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「系统信息查看」") {
 		t.Fatalf("follow-up file drop lost the echo: %q", got)
 	}
 	if strings.Contains(got, `C:\docs`) || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "其余要求") || strings.Contains(got, "第一条指令") {
@@ -1032,7 +1087,7 @@ func TestRestatementFollowsTheDecisionNotTheWording(t *testing.T) {
 	got = fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{}, impl)
 	assertOpeningTaskHostAnalysis(t, got, "改为图形界面版")
 	got = fallbackCodingRequestRestatementFor("改为图形界面版", stickyCodingWorkbenchMemory{SessionPlan: "控制台贪吃蛇"}, impl)
-	if !strings.Contains(got, "这次改为图形界面版") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「控制台贪吃蛇」") || strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") {
+	if strings.Contains(got, "这次改为图形界面版") || !strings.Contains(got, "改为图形界面版") || !strings.Contains(got, "其它先不动") || !strings.Contains(got, "「控制台贪吃蛇」") || strings.Contains(got, "图形界面版本") || strings.Contains(got, "重新构建") {
 		t.Fatalf("a later edit should still echo: %q", got)
 	}
 	got = fallbackCodingRequestRestatementFor("在图形界面里把按钮改成蓝色", stickyCodingWorkbenchMemory{}, impl)
@@ -1052,7 +1107,7 @@ func TestRestatementFollowsTheDecisionNotTheWording(t *testing.T) {
 
 func TestFallbackShortFollowUpKeepsWorkName(t *testing.T) {
 	got := fallbackCodingRequestRestatement("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
-	if !strings.Contains(got, "「系统信息查看」") || !strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "你想要") || !strings.Contains(got, "我将") {
+	if !strings.Contains(got, "「系统信息查看」") || strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "再收紧阈值") || !strings.Contains(got, "你想要") || !strings.Contains(got, "我将") {
 		t.Fatalf("short work name and the new ask should both stay: %q", got)
 	}
 	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") {
@@ -1070,6 +1125,71 @@ func TestFallbackBareContinueKeepsShortWorkName(t *testing.T) {
 	}
 	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") || strings.Contains(got, "只改这次提到的部分") {
 		t.Fatalf("bare continue invented a change: %q", got)
+	}
+}
+
+func TestFallbackContinueDoesNotDoubleTheWant(t *testing.T) {
+	plan := "你想要「开发c++版本的俄罗斯广场」。我将先对照当前项目整理开发计划，确认前不改文件。"
+	got := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: plan})
+	if strings.Count(got, "你想要") != 1 || strings.Count(got, "我将") != 1 {
+		t.Fatalf("continue doubled a beat: %q", got)
+	}
+	if !strings.Contains(got, "从上次停下的地方接着做") || !strings.Contains(got, "开发c++版本的俄罗斯广场") {
+		t.Fatalf("continue lost the stored goal: %q", got)
+	}
+	kept := fallbackCodingRequestRestatement("这次只改颜色", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
+	if !strings.Contains(kept, "这次只改颜色") || !strings.Contains(kept, "其它先不动") {
+		t.Fatalf("the user's own 这次 was dropped: %q", kept)
+	}
+	quoted := "你想要把按钮改成「我将继续」。我将先对照当前项目整理开发计划，只做提到的事，确认前不改文件。"
+	got = fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: quoted})
+	if !strings.Contains(got, "把按钮改成「我将继续」") || strings.Contains(got, "把按钮改成「。") {
+		t.Fatalf("continue cut the goal at 我将 inside the quote: %q", got)
+	}
+	if !strings.Contains(got, "从上次停下的地方接着做") || strings.Contains(got, "整理开发计划") {
+		t.Fatalf("continue kept the old action: %q", got)
+	}
+	enPlan := "You want a local Tetris game. I will draft the plan before editing."
+	got = fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: enPlan})
+	if strings.Contains(got, "I will") || strings.Contains(got, "You want") || !strings.Contains(got, "a local Tetris game") {
+		t.Fatalf("continue left the english action in the goal: %q", got)
+	}
+	if strings.Count(got, "你想要") != 1 || !strings.Contains(got, "从上次停下的地方接着做") {
+		t.Fatalf("english continue was not one chinese envelope: %q", got)
+	}
+	empty := codingContinueStoredGoal("你想要。我将先整理计划。")
+	bare := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{})
+	if empty != bare || empty != codingNoStoredGoalContinue() {
+		t.Fatalf("empty envelope=%q bare=%q", empty, bare)
+	}
+	wanted := fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: "You wanted the export kept."})
+	if !strings.Contains(wanted, "You wanted the export kept") {
+		t.Fatalf("continue cut you want out of wanted: %q", wanted)
+	}
+	willful := codingContinueStoredGoal("I willfully keep the logs.")
+	if !strings.Contains(willful, "I willfully keep the logs") {
+		t.Fatalf("continue treated willfully as the action beat: %q", willful)
+	}
+	comma := "你想要北京的天气信息并生成PDF，我将先获取最新天气数据。"
+	got = fallbackCodingRequestRestatement("继续", stickyCodingWorkbenchMemory{SessionPlan: comma})
+	if strings.Count(got, "我将") != 1 || strings.Contains(got, "先获取最新天气数据") {
+		t.Fatalf("continue kept the comma-joined action: %q", got)
+	}
+	if !strings.Contains(got, "北京的天气信息并生成PDF") || !strings.Contains(got, "从上次停下的地方接着做") {
+		t.Fatalf("continue lost the comma-joined goal: %q", got)
+	}
+	for _, prefixed := range []string{
+		"好的，你想要北京天气。我将去查。",
+		"好的。你想要北京天气。我将去查。",
+	} {
+		got = codingContinueStoredGoal(prefixed)
+		if strings.Count(got, "你想要") != 1 || strings.Contains(got, "好的") || strings.Contains(got, "去查") || !strings.Contains(got, "北京天气") {
+			t.Fatalf("continue kept the opener in %q: %q", prefixed, got)
+		}
+	}
+	keptGoal := codingContinueStoredGoal("先保留导出。你想要北京天气。")
+	if strings.Count(keptGoal, "你想要") != 1 || !strings.Contains(keptGoal, "先保留导出") || !strings.Contains(keptGoal, "北京天气") {
+		t.Fatalf("continue ate a later mention that is not an action envelope: %q", keptGoal)
 	}
 }
 
@@ -1165,7 +1285,7 @@ func TestFallbackShortNewAskIsNotReplacedByOldRequirement(t *testing.T) {
 	if strings.Contains(got, "完成度核查") || strings.Contains(got, "（1）") || strings.Contains(got, "在已有工作（") {
 		t.Fatalf("new ask was replaced by the old requirement: %q", got)
 	}
-	if !strings.Contains(got, "这次只查 AVX-512") {
+	if strings.Contains(got, "这次只查 AVX-512") || !strings.Contains(got, "只查 AVX-512") {
 		t.Fatalf("new ask missing from the echo: %q", got)
 	}
 }

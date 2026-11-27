@@ -286,23 +286,23 @@
   slash, so the file name alone is not a leak. The 48-rune gate, the
   short-edit echo, a continue cue, and the copy check use
   `codingTypedRequest` (the picker block removed). A short edit with an
-  attachment stays 「你想要…这次…，其它先不动。我将按这个范围修改并验证。」 and does not quote the path. A
+  attachment stays 「你想要…<ask>，其它先不动。我将按这个范围修改并验证。」 and does not quote the path. A
   bare document name such as paper.pdf still counts as an attached file.
   An attachment-only send keeps that empty typed text. A stored short title
   is the goal and the file is material; with no title the goal is
   处理附上的图片 or 处理附上的文件. A later file drop stays
-  「你想要在「name」里，这次处理附上的文件，其它先不动。我将按这个范围修改并验证。」. The path and the picker marker are
+  「你想要在「name」里处理附上的文件，其它先不动。我将按这个范围修改并验证。」. The path and the picker marker are
   not quoted.
   `publishCodingRequestUnderstanding` asks the lightweight model first
   (`codingOpeningTaskUnderstandingSystemPrompt`); the host stand-in for a
   long opening command is `codingDescribeOpeningCommand`
   (`codingDescribePeeledOpening` when the title is the leading clause,
   `codingDescribeLongOpeningAnalysis` otherwise). The short no-title
-  stand-in stays `codingDescribeOpeningTask` ("你想要「ask」。我将先按这句话确认要做到的结果和边界，…整理成开发计划，确认前不改文件。").
-  Every visible reply is two beats: 你想要 names the goal, 我将 names the next action. A model reply that skips those beats is discarded (`codingUnderstandingVoiceFor`).
+  stand-in stays `codingDescribeOpeningTask` ("你想要「ask」。我将先对照当前项目整理开发计划，只做提到的事，确认前不改文件。").
+  Every visible reply is two beats: 你想要 names the goal, then 我将 names the next action. A model reply that skips that order is discarded (`codingUnderstandingVoiceFor`). 你想要 / "you want" and 我将 / "I will" both have to stand outside quotes and not glued to the previous word, so 「你想要…我将…」 and 是你想要的 do not count; the same boundary keeps "you wanted" and "I willfully" from counting. Language follows the typed request. An English "You want / I will" reply still counts when it also says 确认前不改文件. A Chinese path does not choose the language, including when the user typed no words. Continue takes the goal as the span after that want and peels a trailing action with the same token, including a comma-joined "天气，我将…" (`codingContinueStoredGoal`). A preamble before the want, such as 好的，你想要, is not part of the goal. An empty remainder uses the same sentence as a continue with nothing stored.
   That paragraph is what the chat shows, and it stays in front of the
   plan-approval text. A later short edit (≤48 runes) still echoes itself via
-  `codingDescribeNewAsk` ("你想要在「name」里，这次<ask>，其它先不动。我将按这个范围修改并验证。"). Inquiry uses `codingDescribeQuestion`
+  `codingDescribeNewAsk` ("你想要在「name」里<ask>，其它先不动。我将按这个范围修改并验证。"). The host does not insert 这次; that word stays only when the user wrote it. Inquiry uses `codingDescribeQuestion`
   ("你想要对照当前实现，回答「q」。我将先看清相关代码再作答，这一步只读不改文件。"); a session that already
   wrote files drops 不改文件 ("你想要对照现有实现，回答「q」。我将先看清相关代码再作答。"). An operational
   launch (acceptance empty or launch, not command) says
@@ -628,6 +628,29 @@
 - Cheap commands (`go version`, `go env`, grep/rg, `go test` on small
   leaf packages) do not need the gate. If a run seems to hang, check
   `%LOCALAPPDATA%\MaclawHeavyLocks\` for who holds the slots.
+
+## Desktop bot local knowledge relay (MaClawSrv + guiapp)
+
+- Desktop bots reach the knowledge base on the person's own computer through
+  the `local_knowledge_search` runtime module tool (MaClawSrv/desktop_local_task.go),
+  which rides the existing Hub local-relay as `mcp_call` server="maclaw"
+  tool="knowledge_search". The nested `local_task tool=knowledge_search`
+  passthrough also works (aliases knowledge/search_knowledge, query/q folded).
+- GUI side: `App.mcpKnowledgeSearch` (guiapp/mcp_knowledge.go) reuses
+  `toolKnowledgeSearch`, so MCP clients and bots get the same merged
+  local+enterprise results as the GUI assistant. knowledge_search is exposed in
+  the MCP host tool list AND the bot relay allowlist, and deliberately bypasses
+  the MCP-service on/off switch (read-only, rides the relay local-access consent
+  envelope like file reads) — task tools stay gated.
+- Light prompt profile: runtime module tools are hidden on light turns unless
+  excepted in `coreAgentCallbacks.IsToolAllowedForPromptProfile`;
+  `local_knowledge_search` has such an exception (hub bot + module bound only).
+  Any new bot runtime tool that short messages legitimately need must be added
+  there or short user questions will silently lose the capability.
+- Server-side bot knowledge needs no relay: MaClawSrv wires
+  `executor.SetKnowledgeStore(knowledgeMgr.AgentStore())` and bots run with the
+  owner principal, so per-owner and access-service shared scopes are already
+  owner-wide across all bots (verified by TestKnowledgeManagerAgentStore*).
 
 ## Coding agent knowledge read scope
 
@@ -1220,6 +1243,76 @@
   AmbiguousParameter (-o prefix-matches -OutVariable/-OutBuffer); the shim
   now captures the dir first and routes through `powershell -Command` with
   single-quoted tokens (space grouping preserved, `-o` passes through).
+
+## Git 平台新建仓库 (guiapp — cloud connect dialog + virtual repository)
+
+- The cloud connect dialog (`CloudGitConnectDialog`) and the virtual-repository
+  mapping dialog share a "create a new GitHub/GitLab repository" flow:
+  credential pick → namespace (org) pick → name + debounced availability probe
+  → create → bind. Everything runs on the DESKTOP against provider APIs; hub
+  and maclawsrv are untouched (hub forwards the git connect verbatim, srv only
+  ever clones + writes git.json).
+- `guiapp/git_platform_repo.go` is the single backend surface:
+  `GitPlatformCreateCredentials` (multi-credential list: settings account FIRST
+  = default pick, then provider-tagged virtual-repo credentials; carries labels
+  only, NEVER tokens), `GitPlatformNamespaces` (returns
+  `GitPlatformNamespaceList{rows, org_warning}`: GitHub ALWAYS probes /user
+  first — it authoritatively resolves the login a stale stored username may
+  miss and doubles as the token-freshness check; a failed ORG listing keeps
+  the personal namespace usable and sets `org_warning` so the picker explains
+  the partial list instead of letting silence read as "no organizations";
+  GitLab `/namespaces` fails hard), `GitPlatformRepoNameStatus` (GitHub `GET /repos/{o}/{n}`
+  404=free / GitLab `GET /projects/{owner%2Fname}`; a FAILED probe returns an
+  error so a broken probe never reads as "available"), `GitPlatformCreateRepo`
+  (busts `cloudAgentRepoCache` for the service — a created repo must be
+  pickable immediately), and `ImportGitPlatformAccountCredential` (snapshot of
+  the settings-account token into the vrepo credential store, reused when an
+  equivalent provider+origin+username row exists; GitHub device-flow tokens and
+  GitLab PATs do not auto-rotate, so the snapshot is stable).
+- Provider REST calls live in `corelib/oauth` (`FetchGitHubOrgs`,
+  `GitHubRepoNameStatus`, `CreateGitHubRepo`, `FetchGitLabNamespaces`,
+  `GitLabProjectNameStatus`, `CreateGitLabProject`, `GitLabScopesHaveCreate`);
+  guiapp tests must NOT rely on them being injectable — the GitHub base is
+  host-pinned there. Tests override the `gitPlatformAPI` function-var bundle in
+  git_platform_repo.go instead (same pattern as `newGitHubHTTPClient`), and any
+  test that SAVES a provider-tagged credential must install the bundle stub
+  FIRST: the save path probes the token against the provider's /user endpoint.
+- Multi-credential storage = the virtual-repo credential store
+  (`virtual_repository_credentials.go`) extended with `provider`
+  (github/gitlab/""=generic) + `origin` (gitlab site root). A provider-tagged
+  save probes the token (fail = save fails with the provider's message),
+  auto-fills an empty username from the login, and auto-sets scope to the
+  host (feeds the existing `repositoryCredentialScopeAllowsRemote` matching).
+  GitLab creation is gated on `api` (write_repository can clone/push but
+  cannot POST /projects); empty scope lists stay optimistic.
+- The cloud bind carries the pick through: `CloudGitConnect` gained
+  `credential_id` and a NEW source value `"credential"` — 
+  `prepareCloudGitCredentialToken` resolves the vrepo credential (provider AND
+  origin/host must match), injects the keyring token, and fills author
+  identity from the credential username + a noreply email. `syncCloudAgentGitCredentials`
+  (github + gitlab) still refreshes ONLY `source=="account"` bindings; a
+  credential-sourced binding is user-managed and deliberately never
+  auto-refreshed. Unknown source values keep passing through untouched.
+- The token never crosses the webview in ANY of these flows: the create panel
+  (`components/layout/GitRepoCreatePanel.tsx` + `useGitRepoNameStatus.ts`,
+  500ms debounce, ok/taken/invalid states) only ever holds ids and labels; the
+  bind step forwards `credential_id` and the backend resolves the secret.
+- Create+bind failure recovery: the repository EXISTS on the provider when the
+  bind fails, so the dialog falls back to the pick list with the repo prefilled
+  and `retryCredential` (repo + credentialId + origin) remembered — 连接 then
+  retries the BIND (source="credential", never a second create). Editing the
+  repo path, picking another repo, or switching the service clears it; an empty
+  credentialId (settings-account create) retries through the normal account
+  source instead. GitHub's `NamespaceKind` empty + owner==login falls back to
+  POST /user/repos so a kindless input cannot 404 on /orgs/{user}/repos.
+  In the mapping dialog the panel's open flag survives the credentials-manager
+  roundtrip ('mapping' → 'credentials' → 'mapping' skips the fresh-dialog
+  reset via prevModeRef) — the user who went off to add the credential the
+  panel needs comes back to the panel still open; the panel itself remounts
+  and refetches credentials either way.
+- Known surface trap: existing vrepo tests assert credential names with
+  `getByText('GitHub')` — the provider select's `<option>GitHub</option>`
+  collides, so those queries are scoped with `{ selector: 'strong' }`.
 
 ## Cloud-agent workspace jail (MaClawSrv/cloudagent)
 

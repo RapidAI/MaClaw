@@ -35,7 +35,7 @@ func TestDesktopDeliverablesInJudgeAndNote(t *testing.T) {
 	items := []string{"运行截图，发到聊天", "知乎帖子链接"}
 	content := desktopOutcomeUserContentChecklist(corelib.MaclawLLMConfig{}, "做个游戏，运行后截屏发我", items, "", "desktop: Delivered shot.png (1 bytes)", nil)
 	text, _ := content.(string)
-	for _, want := range []string{"交付清单", "1. 运行截图，发到聊天", "2. 知乎帖子链接", "不要再要求当前截图"} {
+	for _, want := range []string{"交付清单", "1. 运行截图，发到聊天", "2. 知乎帖子链接", "bot_generate_pdf 的 Delivered 记录", "不要再要求当前截图"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("judge content misses %q:\n%s", want, text)
 		}
@@ -44,7 +44,7 @@ func TestDesktopDeliverablesInJudgeAndNote(t *testing.T) {
 	if strings.Contains(plain, "交付清单") {
 		t.Fatal("checklist shown without items")
 	}
-	if note := DesktopDeliverablesNote(items); !strings.Contains(note, "2. 知乎帖子链接") || !strings.Contains(note, "deliver") {
+	if note := DesktopDeliverablesNote(items); !strings.Contains(note, "2. 知乎帖子链接") || !strings.Contains(note, "deliver") || !strings.Contains(note, "item_id") {
 		t.Fatalf("note %q", note)
 	}
 	if DesktopDeliverablesNote(nil) != "" {

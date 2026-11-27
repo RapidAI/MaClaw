@@ -34,6 +34,9 @@ type turnBody struct {
 	MaxBytes        int64  `json:"max_bytes"`
 	DataBase64      string `json:"data_base64"`
 	Offset          int64  `json:"offset"`
+	// HistoryLimit windows cloud_get_task: the phone page size for the
+	// transcript tail. 0 keeps the historical full-history behavior.
+	HistoryLimit int `json:"history_limit"`
 	// Task persona + workflow setup shipped by the desktop at create time.
 	ExpertName   string         `json:"expert_name"`
 	ExpertPrompt string         `json:"expert_prompt"`
@@ -105,13 +108,13 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		}
 		return json.Marshal(map[string]any{"accepted": true, "task_id": taskID, "workflow_warning": warning})
 	case "cloud_list_tasks":
-		tasks, err := inst.book.Tasks()
+		summaries, err := inst.book.TaskSummaries()
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(map[string]any{"tasks": tasks})
+		return json.Marshal(map[string]any{"tasks": summaries})
 	case "cloud_get_task":
-		lines, flags, files, err := inst.book.history(payload.TaskID)
+		lines, flags, files, requestIDs, clientIDs, total, err := inst.book.historyWindow(payload.TaskID, payload.HistoryLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -119,12 +122,35 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 		if err != nil {
 			return nil, err
 		}
+		// Process rows ride on the last row of their request inside this
+		// window: the assistant reply carries its round's progress and
+		// thinking; a turn that never replied attaches them to the user line.
+		// A request entirely outside the window contributes none — the phone
+		// widens the page and picks them up.
+		eventsByRequest, err := inst.book.turnEventsByTask(payload.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		rowEvents := make([][]turnEvent, len(lines))
+		lastIndex := make(map[string]int)
+		for i, requestID := range requestIDs {
+			if requestID != "" {
+				lastIndex[requestID] = i
+			}
+		}
+		for requestID, idx := range lastIndex {
+			rowEvents[idx] = eventsByRequest[requestID]
+		}
 		return json.Marshal(map[string]any{
-			"task_id":     payload.TaskID,
-			"messages":    lines,
-			"as_error":    flags,
-			"files":       files,
-			"turn_status": turnStatus,
+			"task_id":            payload.TaskID,
+			"messages":           lines,
+			"as_error":           flags,
+			"files":              files,
+			"request_ids":        requestIDs,
+			"client_message_ids": clientIDs,
+			"message_total":      total,
+			"events":             rowEvents,
+			"turn_status":        turnStatus,
 		})
 	case "cloud_rename_task":
 		title := payload.Title
@@ -150,6 +176,31 @@ func (rt *Runtime) Control(ctx context.Context, id, owner, op string, body json.
 				}
 			}
 		}
+		return json.Marshal(map[string]any{"ok": true, "cancelled": ids})
+	case "cloud_delete_task":
+		if strings.TrimSpace(payload.TaskID) == "" {
+			return nil, errors.New("缺少 task_id")
+		}
+		ids, err := inst.book.CancelRunning(payload.TaskID, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		rt.cancelIDsAndDrain(ids, inst)
+		// Deleting also stops the task's workflow — delete is stop plus the
+		// transcript removal, never a live task left behind.
+		if machine, werr := rt.workflowMachine(inst); werr == nil {
+			if state := machine.GetActive(payload.TaskID); state != nil && state.Status == v2.StatusActive {
+				if cerr := machine.Cancel(payload.TaskID); cerr == nil {
+					rt.publishWorkflowState(inst, payload.TaskID, workflowLatest(machine, payload.TaskID))
+				}
+			}
+		}
+		if err := inst.book.DeleteTask(payload.TaskID); err != nil {
+			return nil, err
+		}
+		// Drop the live lane so a watcher snapshot cannot resurrect the
+		// deleted task's round.
+		rt.dropStreamLane(inst.meta.ID, payload.TaskID)
 		return json.Marshal(map[string]any{"ok": true, "cancelled": ids})
 	case "cloud_instance_state":
 		// Hub-side ground truth reconcile: a lost finish beat leaves a stale
@@ -330,7 +381,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 	if route.notice != "" {
 		// A workflow gate answers the turn itself — no agent loop, but the
 		// transcript keeps the same user/assistant pair a model turn leaves.
-		rt.publish(inst, taskID, requestID, "response", route.notice, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, route.notice, false, nil, map[string]any{
 			"terminal": map[string]any{"text": route.notice},
 		})
 		content = route.notice
@@ -358,7 +409,7 @@ func (rt *Runtime) runSession(ctx context.Context, inst *instance, requestID, ta
 // unmanaged reading keeps the workspace tools.
 func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, requestID, text, phasePrompt string) (string, bool, []string) {
 	fail := func(msg string) (string, bool, []string) {
-		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, msg, true, nil, map[string]any{
 			"terminal": map[string]any{"text": msg},
 		})
 		return msg, true, nil
@@ -402,6 +453,9 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	// publishTerminal seals the book row before the frame is queued.
+	// Stage the same keys so a fetch still works when that seal did not store.
+	inst.stageProduced(files)
 	rt.publishTurnReasoning(host, result)
 	if len(files) > 0 {
 		slog.Info("cloudagent turn produced files",
@@ -413,18 +467,18 @@ func (rt *Runtime) sessionResult(ctx context.Context, inst *instance, taskID, re
 		if strings.TrimSpace(result.Text) != "" {
 			question = strings.TrimSpace(result.Text) + "\n" + question
 		}
-		rt.publish(inst, taskID, requestID, "response", question, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, question, false, files, map[string]any{
 			"terminal": attachFiles(map[string]any{"text": question}, files),
 		})
 		return question, false, files
 	}
 	if strings.TrimSpace(result.Error) != "" {
-		rt.publish(inst, taskID, requestID, "response", result.Error, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, result.Error, true, files, map[string]any{
 			"terminal": attachFiles(map[string]any{"text": result.Error}, files),
 		})
 		return result.Error, true, files
 	}
-	rt.publish(inst, taskID, requestID, "response", result.Text, map[string]any{
+	rt.publishTerminal(inst, taskID, requestID, result.Text, false, files, map[string]any{
 		"terminal": attachFiles(map[string]any{"text": result.Text}, files),
 	})
 	return result.Text, false, files
@@ -512,7 +566,11 @@ func (rt *Runtime) serveFile(inst *instance, rel string) (json.RawMessage, error
 		return deny("jail", err)
 	}
 	key := canonicalArtifactRel(root, path)
-	if !inst.book.producedPaths()[key] {
+	// sealReply commits the book row before the response frame. Finish drops
+	// the staged key only after the turn closes. Check staged first so a seal
+	// that did not store (the turn was already interrupted) still serves, and
+	// a book read of an uncommitted insert cannot lose to clearStaged.
+	if key == "" || (!inst.stagedHas(key) && !inst.book.producedPaths()[key]) {
 		return deny("not-produced", errors.New("没有找到这个文件"))
 	}
 	// Lstat like the desktop fetch: a recorded path swapped for a symlink or

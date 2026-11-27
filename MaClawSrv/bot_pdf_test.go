@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
 func pdfBotTurn(mode, phase string) agentruntime.TurnRequest {
@@ -154,5 +155,31 @@ func TestDesktopRefuseBlankPDF(t *testing.T) {
 	}
 	if err := desktopRefuseBlankPDF("broken.pdf", []byte("not a pdf")); err != nil {
 		t.Fatalf("unparseable pdf refused: %v", err)
+	}
+}
+
+func TestDesktopDeliverEvidenceIncludesPDFText(t *testing.T) {
+	raw := testFirstPageTextPDF(t, "Beijing weather")
+	text := desktopDeliveredWithEvidence("weather.pdf", len(raw), raw)
+	if !strings.Contains(text, "Server-checked PDF first-page text: Beijing weather") {
+		t.Fatalf("delivery evidence missing PDF text: %q", text)
+	}
+	if plain := desktopDeliveredWithEvidence("notes.txt", 10, []byte("plain text")); strings.Contains(plain, "Server-checked") {
+		t.Fatalf("non-PDF gained PDF evidence: %q", plain)
+	}
+}
+
+func TestDesktopDeliverEvidenceReadsGeneratedPDF(t *testing.T) {
+	generator := swarm.NewSwarmDocGenerator()
+	if !generator.HasFont() {
+		t.Skip("no PDF font on this host")
+	}
+	raw, err := generator.GenerateSpecDoc("", "北京天气报告", "# 北京天气报告\n\n北京今天晴，未来七天以晴到多云为主。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := desktopDeliveredWithEvidence("北京天气报告.pdf", len(raw), raw)
+	if !strings.Contains(text, "Server-checked PDF first-page text:") || !strings.Contains(text, "北京") {
+		t.Fatalf("generated PDF evidence missing its text: %q", text)
 	}
 }

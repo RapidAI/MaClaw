@@ -114,6 +114,25 @@ func TestBotPDFStaysVisibleOnLightTurnsOnlyWhenModuleIsBound(t *testing.T) {
 	}
 }
 
+func TestBotKeepsLocalKnowledgeSearchOnLightTurnsOnlyWhenModuleIsBound(t *testing.T) {
+	bot := &coreAgentCallbacks{
+		instance:           Instance{Metadata: map[string]string{"hub_bot": "1"}},
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "local_knowledge_search"}},
+	}
+	if !bot.IsToolAllowedForPromptProfile("local_knowledge_search", agent.PromptProfileLight) {
+		t.Fatal("light bot turn lost the local knowledge search")
+	}
+	bot.runtimeTools = nil
+	if bot.IsToolAllowedForPromptProfile("local_knowledge_search", agent.PromptProfileLight) {
+		t.Fatal("advertised local knowledge search without a runtime handler")
+	}
+	employee := &coreAgentCallbacks{}
+	if employee.IsToolAllowedForPromptProfile("local_knowledge_search", agent.PromptProfileLight) {
+		t.Fatal("a digital employee gained the bot's local relay tool")
+	}
+}
+
 func TestBotModeKeepsContainerToolsAndDropsHostSystem(t *testing.T) {
 	bot := &coreAgentCallbacks{
 		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{"hub_bot": "1"}}},

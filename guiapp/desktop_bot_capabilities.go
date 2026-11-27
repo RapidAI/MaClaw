@@ -405,7 +405,7 @@ func mcpHostRelayTool(name string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "tools":
 		return "", true
-	case "list_models", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "cancel_task", "get_request", "retry_steps", "read_log":
+	case "list_models", "knowledge_search", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "cancel_task", "get_request", "retry_steps", "read_log":
 		return strings.ToLower(strings.TrimSpace(name)), true
 	default:
 		return "", false
@@ -413,9 +413,11 @@ func mcpHostRelayTool(name string) (string, bool) {
 }
 
 // localRelayMCP runs one MCP tool for a cloud bot.
-// Server "maclaw" is this app's task MCP (create a programming task here)
-// and runs only when that service is switched on. Any other id is a stdio
-// server stored on the account; its command and env stay in this app.
+// Server "maclaw" is this app's task MCP (create a programming task here);
+// task tools run only when that service is switched on, while the read-only
+// knowledge_search rides the local-access consent envelope like file reads.
+// Any other id is a stdio server stored on the account; its command and env
+// stay in this app.
 func (a *App) localRelayMCP(ctx context.Context, serverID, toolName, argsJSON string) (string, error) {
 	if mcpHostRelayServerID(serverID) {
 		return a.localRelayMCPHost(ctx, toolName, argsJSON)
@@ -463,7 +465,11 @@ func (a *App) localRelayMCP(ctx context.Context, serverID, toolName, argsJSON st
 }
 
 func (a *App) localRelayMCPHost(ctx context.Context, toolName, argsJSON string) (string, error) {
-	if !mcpHostEnabledForRelay(a) {
+	// knowledge_search is read-only access to the person's own knowledge base:
+	// it rides the same consent envelope as the relay's file access rather than
+	// the MCP task-service switch, which gates the power to create and drive tasks.
+	isKnowledgeRead := strings.EqualFold(strings.TrimSpace(toolName), "knowledge_search")
+	if !mcpHostEnabledForRelay(a) && !isKnowledgeRead {
 		return "", errMCPHostRelayOff
 	}
 	if ctx == nil {
@@ -506,7 +512,7 @@ func mcpCallHostTool(ctx context.Context, api mcpTaskAPI, toolName, argsJSON str
 	}
 	canonical, ok := mcpHostRelayTool(toolName)
 	if !ok {
-		return "", fmt.Errorf("this computer's MCP service does not expose %s to a bot. Use list_models, create_task, get_task, list_tasks, send_command, stop_task, get_request, retry_steps, or read_log", strings.TrimSpace(toolName))
+		return "", fmt.Errorf("this computer's MCP service does not expose %s to a bot. Use list_models, knowledge_search, create_task, get_task, list_tasks, send_command, stop_task, get_request, retry_steps, or read_log", strings.TrimSpace(toolName))
 	}
 	if canonical == "" {
 		return mcpHostRelayCatalog(), nil
@@ -570,7 +576,7 @@ func mcpHostRelayFailure(result any) error {
 func mcpHostRelayCatalog() string {
 	var b strings.Builder
 	b.WriteString("MCP tools on this computer:\n")
-	for _, name := range []string{"list_models", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "get_request", "retry_steps", "read_log"} {
+	for _, name := range []string{"list_models", "knowledge_search", "create_task", "get_task", "list_tasks", "send_command", "stop_task", "get_request", "retry_steps", "read_log"} {
 		fmt.Fprintf(&b, "- %s\n", name)
 	}
 	return b.String()

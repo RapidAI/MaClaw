@@ -204,6 +204,21 @@ func (h *mcpHTTP) callTool(ctx context.Context, params json.RawMessage) (any, *m
 	name := strings.TrimSpace(call.Name)
 	ctx = mcpContextWithOpts(ctx, mcpCallOptsFromArgs(name, args))
 	switch name {
+	case "knowledge_search":
+		searcher, ok := h.api.(interface {
+			mcpKnowledgeSearch(ctx context.Context, query string, limit int) (map[string]any, error)
+		})
+		if !ok {
+			return mcpToolError("这台电脑的知识库检索还没有准备好"), nil
+		}
+		payload, err := searcher.mcpKnowledgeSearch(ctx, mcpFirstString(args, "query", "q"), mcpLookupInt(args, "limit"))
+		if err != nil {
+			if payload == nil {
+				return mcpToolFail(err), nil
+			}
+			return mcpToolText(payload, true), nil
+		}
+		return mcpToolText(payload, false), nil
 	case "list_models":
 		catalog, err := h.api.mcpListModels(ctx)
 		if err != nil {
@@ -362,6 +377,14 @@ func mcpToolDefinitions() []map[string]any {
 			"name":        "list_models",
 			"description": "列出这台电脑上可用的模型服务商和模型。不含密钥。未通过连接测试、且不是当前服务商的项不会出现。",
 			"inputSchema": object(map[string]any{}, nil),
+		},
+		{
+			"name":        "knowledge_search",
+			"description": "搜索这台电脑的本地知识库。只读检索用户已经导入或保存的知识；query 必填，limit 默认 8、最大 50。结果包含可引用的知识摘要和来源信息，不修改知识库。",
+			"inputSchema": object(map[string]any{
+				"query": str("要检索的问题、主题或关键词。"),
+				"limit": map[string]any{"type": "integer", "description": "最多返回多少条。默认 8，最大 50。"},
+			}, []string{"query"}),
 		},
 		{
 			"name":        "create_task",

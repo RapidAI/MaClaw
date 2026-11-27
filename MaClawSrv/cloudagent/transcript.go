@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	content TEXT NOT NULL,
 	as_error INTEGER NOT NULL DEFAULT 0,
 	files TEXT NOT NULL DEFAULT '',
+	request_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS client_messages (
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS turns (
 	task_id TEXT NOT NULL,
 	status TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
-	finished_at TEXT NOT NULL DEFAULT ''
+	finished_at TEXT NOT NULL DEFAULT '',
+	reply_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS commit_approvals (
 	task_id TEXT NOT NULL,
@@ -102,15 +104,35 @@ CREATE TABLE IF NOT EXISTS plan_state (
 	revision INTEGER NOT NULL DEFAULT 0,
 	updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS turn_events (
+	request_id TEXT NOT NULL,
+	task_id TEXT NOT NULL,
+	seq INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	text TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (request_id, seq)
+);
 CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
 CREATE INDEX IF NOT EXISTS idx_turns_task ON turns(task_id);
-CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';`)
+CREATE INDEX IF NOT EXISTS idx_turns_running ON turns(request_id) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_turn_events_task ON turn_events(task_id);`)
 	if err != nil {
 		return err
 	}
 	// Artifact paths a turn produced ride on its assistant row. Older dbs get
 	// the column here; a fresh CREATE already has it through the ALTER too.
 	if _, err := b.db.Exec(`ALTER TABLE messages ADD COLUMN files TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	// reply_id is the assistant row sealed before the response frame. Empty
+	// means Finish still has to insert that row when it releases the turn.
+	if _, err := b.db.Exec(`ALTER TABLE turns ADD COLUMN reply_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	// request_id ties a transcript row to the turn that wrote it. The desktop
+	// retires a live round when the book reports this id, not by comparing text.
+	if _, err := b.db.Exec(`ALTER TABLE messages ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
 	// Task-scoped AI expert persona, shipped from the desktop at create time.
@@ -192,8 +214,8 @@ func (b *book) begin(clientID, taskID, text string, now time.Time, draining bool
 		requestID, taskID, stamp); err != nil {
 		return "", false, err
 	}
-	if _, err = tx.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, created_at) VALUES (?, ?, 'user', ?, 0, ?)`,
-		newID("msg_"), taskID, text, stamp); err != nil {
+	if _, err = tx.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, request_id, created_at) VALUES (?, ?, 'user', ?, 0, ?, ?)`,
+		newID("msg_"), taskID, text, requestID, stamp); err != nil {
 		return "", false, err
 	}
 	if clientID != "" {
@@ -284,40 +306,68 @@ func (b *book) TaskOf(requestID string) (string, error) {
 }
 
 func (b *book) History(taskID string) ([]string, error) {
-	lines, _, _, err := b.history(taskID)
+	lines, _, _, _, _, err := b.history(taskID)
 	return lines, err
 }
 
-// history returns the role\ncontent lines plus a parallel as_error flag and
-// the produced-file list of each row. Callers that feed the model or the
-// desktop split on the first newline, so the line stays role, newline,
-// content. The flag and files are separate values.
-func (b *book) history(taskID string) ([]string, []bool, [][]string, error) {
+// history returns the role\ncontent lines plus a parallel as_error flag,
+// the produced-file list, the turn request id, and the client message id of
+// each row. Callers that feed the model or the desktop split on the first
+// newline, so the line stays role, newline, content. The flag, files, request
+// id, and client id are separate values. The client id is the one Begin stored
+// for that turn; assistant rows leave it empty. It is how a parked send matches
+// the book row when the ack returns after admission.
+func (b *book) history(taskID string) ([]string, []bool, [][]string, []string, []string, error) {
 	// rowid breaks created_at ties: messages written inside one transaction
 	// share a stamp, and the transcript order is the insertion order.
-	rows, err := b.db.Query(`SELECT role, content, as_error, files FROM messages WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`, taskID)
+	rows, err := b.db.Query(`SELECT role, content, as_error, files, request_id,
+		CASE WHEN role = 'user' THEN COALESCE((SELECT c.client_message_id FROM client_messages c WHERE c.request_id = messages.request_id), '') ELSE '' END
+		FROM messages WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`, taskID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	var lines []string
 	var flags []bool
 	var files [][]string
+	var requestIDs []string
+	var clientIDs []string
 	for rows.Next() {
-		var role, content, rawFiles string
+		var role, content, rawFiles, requestID, clientID string
 		var asError int
-		if err := rows.Scan(&role, &content, &asError, &rawFiles); err != nil {
+		if err := rows.Scan(&role, &content, &asError, &rawFiles, &requestID, &clientID); err != nil {
 			_ = rows.Close()
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		lines = append(lines, role+"\n"+content)
 		flags = append(flags, asError != 0)
 		list := []string{}
 		_ = json.Unmarshal([]byte(rawFiles), &list)
 		files = append(files, list)
+		requestIDs = append(requestIDs, requestID)
+		clientIDs = append(clientIDs, clientID)
 	}
 	err = rows.Err()
 	_ = rows.Close()
-	return lines, flags, files, err
+	return lines, flags, files, requestIDs, clientIDs, err
+}
+
+// clientMessageID is the id the desktop sent for this turn. Empty when the
+// turn was admitted without one. round_started carries it so a parked send
+// can bind before its ack appends the local line.
+func (b *book) clientMessageID(requestID string) string {
+	if b == nil || b.db == nil {
+		return ""
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ""
+	}
+	var clientID string
+	err := b.db.QueryRow(`SELECT client_message_id FROM client_messages WHERE request_id = ?`, requestID).Scan(&clientID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(clientID)
 }
 
 // producedPaths is the fetch whitelist: every workspace-relative path a
@@ -436,38 +486,88 @@ func retargetArtifactKey(renames map[string]string, path string) string {
 	return best
 }
 
-// Finish writes the assistant reply only while the turn is still running.
-// An interrupted turn is left as it is, so a late model result is not a replay.
-// wrote is true only when this call moved the turn out of running. files are
-// the workspace-relative paths this turn produced, stored as JSON.
+// sealReply writes the assistant row while the turn is still running.
+// It does not finish the turn, so a second send still sees errBusy.
+// The response frame is published after this returns; the desktop reloads
+// history from that frame and has to see the row already. stored is false
+// when the turn is no longer running (a stop won). A second call is a no-op.
+func (b *book) sealReply(requestID, content string, asError bool, files []string, now time.Time) (stored bool, err error) {
+	return b.commitReply(requestID, content, asError, files, now, false)
+}
+
+// Finish releases a running turn. The assistant row is inserted here only
+// when sealReply has not already stored it. wrote is true only when this
+// call moved the turn out of running. An interrupted turn is left as it is,
+// so a late model result is not a replay. files are the workspace-relative
+// paths this turn produced, stored as JSON.
 func (b *book) Finish(requestID, content string, asError bool, files []string, now time.Time) (wrote bool, err error) {
-	taskID, err := b.TaskOf(requestID)
+	return b.commitReply(requestID, content, asError, files, now, true)
+}
+
+func (b *book) commitReply(requestID, content string, asError bool, files []string, now time.Time, closeTurn bool) (done bool, err error) {
+	if b == nil || b.db == nil {
+		return false, errors.New("transcript is closed")
+	}
+	tx, err := b.db.Begin()
 	if err != nil {
 		return false, err
 	}
-	stamp := formatTS(now)
-	res, err := b.db.Exec(`UPDATE turns SET status = 'finished', finished_at = ?, updated_at = ? WHERE request_id = ? AND status = 'running'`,
-		stamp, stamp, requestID)
+	defer func() { _ = tx.Rollback() }()
+	var taskID, status, replyID string
+	err = tx.QueryRow(`SELECT task_id, status, reply_id FROM turns WHERE request_id = ?`, requestID).Scan(&taskID, &status, &replyID)
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
+	if status != "running" {
 		return false, nil
 	}
-	flag := 0
-	if asError {
-		flag = 1
-	}
-	rawFiles := ""
-	if len(files) > 0 {
-		if raw, marshalErr := json.Marshal(files); marshalErr == nil {
-			rawFiles = string(raw)
+	if strings.TrimSpace(replyID) == "" {
+		msgID := newID("msg_")
+		flag := 0
+		if asError {
+			flag = 1
+		}
+		rawFiles := ""
+		if len(files) > 0 {
+			if raw, marshalErr := json.Marshal(files); marshalErr == nil {
+				rawFiles = string(raw)
+			}
+		}
+		if _, err = tx.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, files, request_id, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`,
+			msgID, taskID, content, flag, rawFiles, requestID, formatTS(now)); err != nil {
+			return false, err
+		}
+		res, updErr := tx.Exec(`UPDATE turns SET reply_id = ? WHERE request_id = ? AND status = 'running' AND reply_id = ''`, msgID, requestID)
+		if updErr != nil {
+			return false, updErr
+		}
+		n, rowsErr := res.RowsAffected()
+		if rowsErr != nil {
+			return false, rowsErr
+		}
+		if n != 1 {
+			return false, nil
 		}
 	}
-	_, err = b.db.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, files, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
-		newID("msg_"), taskID, content, flag, rawFiles, stamp)
-	return err == nil, err
+	if closeTurn {
+		stamp := formatTS(now)
+		res, updErr := tx.Exec(`UPDATE turns SET status = 'finished', finished_at = ?, updated_at = ? WHERE request_id = ? AND status = 'running'`,
+			stamp, stamp, requestID)
+		if updErr != nil {
+			return false, updErr
+		}
+		n, rowsErr := res.RowsAffected()
+		if rowsErr != nil {
+			return false, rowsErr
+		}
+		if n != 1 {
+			return false, nil
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (b *book) interrupt(now time.Time, note string, olderThan time.Time) ([]string, error) {
@@ -509,8 +609,8 @@ func (b *book) interrupt(now time.Time, note string, olderThan time.Time) ([]str
 			continue
 		}
 		ids = append(ids, item.request)
-		if _, err := b.db.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, created_at) VALUES (?, ?, 'assistant', ?, 1, ?)`,
-			newID("msg_"), item.task, note, stamp); err != nil {
+		if _, err := b.db.Exec(`INSERT INTO messages (id, task_id, role, content, as_error, request_id, created_at) VALUES (?, ?, 'assistant', ?, 1, ?, ?)`,
+			newID("msg_"), item.task, note, item.request, stamp); err != nil {
 			return ids, err
 		}
 	}
@@ -670,4 +770,235 @@ func (b *book) CancelRunning(taskID string, now time.Time) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// turnEventMaxText bounds one persisted process row. Thinking is the only
+// unbounded kind; progress lines are short. The cap keeps a page of rows
+// plus events comfortably inside the hub's 1MB op relay.
+const turnEventMaxText = 64 << 10
+
+// turnEvent is one persisted process row of a turn: the progress lines the
+// round streamed and the sealed thinking text. They are how the phone
+// restores the how of a past turn, not just the final answer.
+type turnEvent struct {
+	RequestID string `json:"request_id"`
+	Seq       int64  `json:"seq"`
+	Kind      string `json:"kind"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at"`
+}
+
+// AppendTurnEvent persists one progress row of a running turn. seq is
+// allocated per request inside the statement, so callers do not track it.
+// Failures are logged upstream and never break the round.
+func (b *book) AppendTurnEvent(requestID, taskID, kind, text string, now time.Time) error {
+	if b == nil || b.db == nil {
+		return errors.New("transcript is closed")
+	}
+	requestID, kind = strings.TrimSpace(requestID), strings.TrimSpace(kind)
+	text = strings.TrimSpace(text)
+	if requestID == "" || kind == "" || text == "" {
+		return nil
+	}
+	if len(text) > turnEventMaxText {
+		text = text[:turnEventMaxText]
+	}
+	_, err := b.db.Exec(`INSERT INTO turn_events (request_id, task_id, seq, kind, text, created_at)
+		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, ?, ?, ?`,
+		requestID, taskID, requestID, kind, text, formatTS(now))
+	return err
+}
+
+// SealThinking persists the round's accumulated reasoning once, at reply
+// time. It replaces any thinking rows the request already has, so a retried
+// seal cannot stack duplicates.
+func (b *book) SealThinking(requestID, taskID, text string, now time.Time) error {
+	if b == nil || b.db == nil {
+		return errors.New("transcript is closed")
+	}
+	requestID = strings.TrimSpace(requestID)
+	text = strings.TrimSpace(text)
+	if requestID == "" || text == "" {
+		return nil
+	}
+	if len(text) > turnEventMaxText {
+		text = text[:turnEventMaxText]
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec(`DELETE FROM turn_events WHERE request_id = ? AND kind = 'thinking'`, requestID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO turn_events (request_id, task_id, seq, kind, text, created_at)
+		SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM turn_events WHERE request_id = ?), 0) + 1, 'thinking', ?, ?`,
+		requestID, taskID, requestID, text, formatTS(now)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// turnEventsByTask groups a task's persisted process rows by request id, each
+// list already in seq order.
+func (b *book) turnEventsByTask(taskID string) (map[string][]turnEvent, error) {
+	out := map[string][]turnEvent{}
+	if b == nil || b.db == nil {
+		return out, nil
+	}
+	rows, err := b.db.Query(`SELECT request_id, seq, kind, text, created_at FROM turn_events WHERE task_id = ? ORDER BY request_id ASC, seq ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item turnEvent
+		if err := rows.Scan(&item.RequestID, &item.Seq, &item.Kind, &item.Text, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		out[item.RequestID] = append(out[item.RequestID], item)
+	}
+	return out, rows.Err()
+}
+
+// taskSummaryRow is one phone list row: identity plus the state the list can
+// render without opening the task.
+type taskSummaryRow struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// TaskSummaries lists every task with its latest turn status and last
+// transcript activity. The book is the status authority on the srv side:
+// Recover and the heartbeat pulse mark stale running turns interrupted, so a
+// summary never shows a running row the runtime cannot finish. A task
+// without turns (created, first send still parked) is empty on both fields.
+func (b *book) TaskSummaries() ([]taskSummaryRow, error) {
+	rows, err := b.db.Query(`SELECT t.id, t.title,
+		COALESCE((SELECT status FROM turns WHERE task_id = t.id ORDER BY updated_at DESC, rowid DESC LIMIT 1), ''),
+		COALESCE((SELECT created_at FROM messages WHERE task_id = t.id ORDER BY created_at DESC, rowid DESC LIMIT 1), '')
+		FROM tasks t ORDER BY t.created_at ASC, t.rowid ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []taskSummaryRow
+	for rows.Next() {
+		var item taskSummaryRow
+		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// DeleteTask removes one task and every row that hangs off it. There are no
+// foreign keys in this schema, so each table is cleared explicitly. The
+// caller cancels running work and drains first; queued input for the task
+// dies with it here.
+func (b *book) DeleteTask(id string) error {
+	if b == nil || b.db == nil {
+		return errors.New("transcript is closed")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("任务不存在")
+	}
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range []string{
+		`DELETE FROM turn_events WHERE task_id = ?`,
+		`DELETE FROM messages WHERE task_id = ?`,
+		`DELETE FROM turns WHERE task_id = ?`,
+		`DELETE FROM client_messages WHERE task_id = ?`,
+		`DELETE FROM queued_turns WHERE task_id = ?`,
+		`DELETE FROM plan_state WHERE task_id = ?`,
+		`DELETE FROM commit_approvals WHERE task_id = ?`,
+		`DELETE FROM commit_pending WHERE task_id = ?`,
+		`DELETE FROM tasks WHERE id = ?`,
+	} {
+		if _, err := tx.Exec(stmt, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// historyWindow is the phone page of one task: the LAST limit rows plus the
+// total row count, each with its turn request id and client message id.
+// limit <= 0 returns everything. The window keeps a long task inside the
+// hub's 1MB op relay instead of silently truncating it into unparseable JSON.
+func (b *book) historyWindow(taskID string, limit int) (lines []string, flags []bool, files [][]string, requestIDs []string, clientIDs []string, total int, err error) {
+	if b == nil || b.db == nil {
+		return nil, nil, nil, nil, nil, 0, errors.New("transcript is closed")
+	}
+	if err = b.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE task_id = ?`, taskID).Scan(&total); err != nil {
+		return nil, nil, nil, nil, nil, 0, err
+	}
+	query := `SELECT role, content, as_error, files, request_id,
+		CASE WHEN role = 'user' THEN COALESCE((SELECT c.client_message_id FROM client_messages c WHERE c.request_id = messages.request_id), '') ELSE '' END
+		FROM messages WHERE task_id = ?`
+	var args []any
+	desc := limit > 0
+	if desc {
+		query += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
+		args = append(args, taskID, limit)
+	} else {
+		query += ` ORDER BY created_at ASC, rowid ASC`
+		args = append(args, taskID)
+	}
+	rows, err := b.db.Query(query, args...)
+	if err != nil {
+		return nil, nil, nil, nil, nil, 0, err
+	}
+	type histRow struct {
+		line    string
+		flag    bool
+		files   []string
+		request string
+		client  string
+	}
+	var paged []histRow
+	for rows.Next() {
+		var item histRow
+		var role, content, rawFiles, requestID, clientID string
+		var asError int
+		if err := rows.Scan(&role, &content, &asError, &rawFiles, &requestID, &clientID); err != nil {
+			_ = rows.Close()
+			return nil, nil, nil, nil, nil, 0, err
+		}
+		list := []string{}
+		_ = json.Unmarshal([]byte(rawFiles), &list)
+		item.line = role + "\n" + content
+		item.flag = asError != 0
+		item.files = list
+		item.request = requestID
+		item.client = clientID
+		paged = append(paged, item)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, nil, nil, nil, nil, 0, err
+	}
+	_ = rows.Close()
+	if desc {
+		for i, j := 0, len(paged)-1; i < j; i, j = i+1, j-1 {
+			paged[i], paged[j] = paged[j], paged[i]
+		}
+	}
+	for _, item := range paged {
+		lines = append(lines, item.line)
+		flags = append(flags, item.flag)
+		files = append(files, item.files)
+		requestIDs = append(requestIDs, item.request)
+		clientIDs = append(clientIDs, item.client)
+	}
+	return lines, flags, files, requestIDs, clientIDs, total, nil
 }

@@ -573,6 +573,95 @@ func TestUserReferralLandingJSONRespectsTenantRegistrationPolicy(t *testing.T) {
 	}
 }
 
+// The invitee must recognize WHO invited them: the landing page names the
+// inviter's masked email or phone. A phone-registered inviter keeps a
+// synthesized "phone:..." account email, so the verified phone identity is the
+// contact; an account without any usable contact falls back to the masked id.
+func TestUserReferralLandingShowsInviterContactInsteadOfUID(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	createInviter := func(id, email string) {
+		t.Helper()
+		if err := services.store.Users.Create(ctx, &store.User{ID: id, TenantID: store.DefaultTenantID, Email: email, SN: "SN-" + id, Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("create inviter %s: %v", id, err)
+		}
+	}
+	createCode := func(codeID, inviterID, plain string) {
+		t.Helper()
+		encrypted, err := llmservice.EncryptCardCode(plain)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		if err := services.store.UserReferrals.CreateCode(ctx, &store.UserReferralCode{ID: codeID, TenantID: store.DefaultTenantID, InviterUserID: inviterID, CodeHash: userReferralCodeHash(store.DefaultTenantID, plain), EncryptedCode: encrypted, Status: "active", CreatedAt: now}); err != nil {
+			t.Fatalf("create referral code: %v", err)
+		}
+	}
+	enableConfig := func() {
+		t.Helper()
+		cfg := UserReferralConfig{Enabled: true, InviterCredits: 0, InviteeCredits: 0, DurationDays: 30, Downloads: defaultUserReferralDownloads()}
+		raw, _ := json.Marshal(cfg)
+		if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+			t.Fatalf("save config: %v", err)
+		}
+	}
+	landingInviter := func(plain string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/invite/"+plain, nil)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		services.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("landing status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Inviter map[string]any `json:"inviter"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode landing: %v", err)
+		}
+		return payload.Inviter
+	}
+
+	enableConfig()
+	createInviter("ref-contact-email", "mark-inviter@example.com")
+	createCode("ref-contact-email-code", "ref-contact-email", "rf_contact_email_0123456789")
+	inviter := landingInviter("rf_contact_email_0123456789")
+	if got, _ := inviter["contact"].(string); got != "m***@example.com" {
+		t.Fatalf("email inviter contact=%q want m***@example.com", got)
+	}
+	if _, ok := inviter["masked_id"]; ok {
+		t.Fatalf("landing payload must not expose masked_id: %#v", inviter)
+	}
+
+	createInviter("ref-contact-phone", "phone:17090134628")
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{ID: "ref-contact-phone-phone", TenantID: store.DefaultTenantID, UserID: "ref-contact-phone", Type: "phone", Value: "17090134628", Verified: true, VerifiedAt: &now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert phone identity: %v", err)
+	}
+	createCode("ref-contact-phone-code", "ref-contact-phone", "rf_contact_phone_0123456789")
+	inviter = landingInviter("rf_contact_phone_0123456789")
+	if got, _ := inviter["contact"].(string); got != "17****28" {
+		t.Fatalf("phone inviter contact=%q want 17****28", got)
+	}
+
+	createInviter("ref-contact-none", "")
+	createCode("ref-contact-none-code", "ref-contact-none", "rf_contact_none_0123456789")
+	inviter = landingInviter("rf_contact_none_0123456789")
+	if got, _ := inviter["contact"].(string); got != maskReferralID("ref-contact-none") {
+		t.Fatalf("contactless inviter contact=%q want fallback %q", got, maskReferralID("ref-contact-none"))
+	}
+
+	html := httptest.NewRequest(http.MethodGet, "/invite/rf_contact_email_0123456789", nil)
+	rec := httptest.NewRecorder()
+	services.handler.ServeHTTP(rec, html)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("html landing status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `data-inviter="m***@example.com"`) {
+		t.Fatalf("html landing missing masked inviter contact: %s", rec.Body.String())
+	}
+}
+
 func TestPublicUserReferralRegisterCreatesUserAndAttributionAtomically(t *testing.T) {
 	services := newAdminRouterTestContext(t)
 	ctx := context.Background()

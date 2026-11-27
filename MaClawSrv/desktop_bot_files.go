@@ -280,10 +280,20 @@ func desktopSayFileRef(ctx context.Context, scope agentruntime.Scope, name, ref 
 
 // deliverDesktopViaStore uploads a desktop file to the store and sends the
 // reference.
-func deliverDesktopViaStore(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
+func deliverDesktopViaStore(ctx context.Context, scope agentruntime.Scope, resolved, name, itemID string) (string, error) {
 	ref, size, err := botFileStoreFromDesktop(ctx, scope, resolved, name, 20*time.Minute)
 	if err != nil {
 		return "", fmt.Errorf("desktop document could not be sent: %v. Do not shrink it. Do not give the cloud path as the file to open", err)
 	}
-	return desktopSayFileRef(ctx, scope, name, ref, size)
+	text, err := desktopSayFileRef(ctx, scope, name, ref, size)
+	if err != nil {
+		return "", err
+	}
+	desktopNoteFileRefClaim(scope.RunID, itemID, ref, name)
+	if strings.HasSuffix(strings.ToLower(name), ".pdf") {
+		if body := desktopPDFFirstPageText(ctx, scope, resolved); body != "" {
+			text = desktopAppendPDFTextEvidence(text, body)
+		}
+	}
+	return text, nil
 }

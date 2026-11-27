@@ -101,8 +101,89 @@ func TestLocalTaskCatalogStaysLocal(t *testing.T) {
 	text, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("plan"), localTaskToolName, map[string]any{
 		"arguments": map[string]any{"tool": "tools"},
 	})
-	if err != nil || called || !strings.Contains(text, "create_task") || strings.Contains(text, "browser_test") {
+	if err != nil || called || !strings.Contains(text, "create_task") || !strings.Contains(text, "knowledge_search") || strings.Contains(text, "browser_test") {
 		t.Fatalf("catalog %q err=%v called=%v", text, err, called)
+	}
+}
+
+func TestLocalTaskKnowledgeSearchRidesTheHubRelay(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	var got map[string]any
+	localRelayPost = func(_ context.Context, body map[string]any) (localRelayReply, error) {
+		got = body
+		return localRelayReply{OK: true, Text: `{"ok":true,"query":"部署笔记","count":1}`}, nil
+	}
+	text, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("plan"), localTaskToolName, map[string]any{
+		"tool":  "knowledge",
+		"query": "部署笔记",
+		"limit": 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "部署笔记") {
+		t.Fatalf("result = %s", text)
+	}
+	if got["op"] != "mcp_call" || got["server"] != "maclaw" || got["tool"] != "knowledge_search" {
+		t.Fatalf("relay body = %+v", got)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(got["args"].(string)), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["query"] != "部署笔记" || args["limit"] != float64(3) {
+		t.Fatalf("args = %+v", args)
+	}
+}
+
+func TestLocalKnowledgeSearchToolRidesTheHubRelay(t *testing.T) {
+	prev := localRelayPost
+	t.Cleanup(func() { localRelayPost = prev })
+	var got map[string]any
+	localRelayPost = func(_ context.Context, body map[string]any) (localRelayReply, error) {
+		got = body
+		return localRelayReply{OK: true, Text: `{"ok":true,"query":"用户本地笔记","count":2}`}, nil
+	}
+	text, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("plan"), localKnowledgeToolName, map[string]any{
+		"query": "用户本地笔记",
+		"limit": 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "用户本地笔记") {
+		t.Fatalf("result = %s", text)
+	}
+	if got["op"] != "mcp_call" || got["server"] != "maclaw" || got["tool"] != "knowledge_search" {
+		t.Fatalf("relay body = %+v", got)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(got["args"].(string)), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["query"] != "用户本地笔记" || args["limit"] != float64(5) {
+		t.Fatalf("args = %+v", args)
+	}
+	if _, err := (localRelayModule{}).InvokeTool(context.Background(), localTaskTurn("execute"), localKnowledgeToolName, map[string]any{}); err == nil || !strings.Contains(err.Error(), "query") {
+		t.Fatalf("missing query err=%v", err)
+	}
+}
+
+func TestLocalKnowledgeSearchToolAdvertisedForBots(t *testing.T) {
+	prev := localRelayTestEnabled
+	localRelayTestEnabled = true
+	t.Cleanup(func() { localRelayTestEnabled = prev })
+	tools, err := (localRelayModule{}).Tools(context.Background(), localTaskTurn("plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Name] = true
+	}
+	if !names[localKnowledgeToolName] || !names[localTaskToolName] {
+		t.Fatalf("tools = %#v", names)
 	}
 }
 

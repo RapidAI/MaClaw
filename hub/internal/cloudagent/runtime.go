@@ -141,6 +141,14 @@ func (d *Dispatcher) DispatchCloud(ctx context.Context, grant remotecontrol.Gran
 			_ = d.svc.CancelTurns(ctx, instanceID, ids)
 		}
 	}
+	if op == remotecontrol.OpCloudDeleteTask {
+		// Delete answers with the same cancelled-ids shape; the Hub shadow
+		// rows retire the same way, otherwise they pin the send slot for the
+		// whole miss window on a task that no longer exists.
+		if ids := cancelledTurnIDs(raw); len(ids) > 0 {
+			_ = d.svc.CancelTurns(ctx, instanceID, ids)
+		}
+	}
 	return raw, nil
 }
 

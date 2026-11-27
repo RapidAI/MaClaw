@@ -148,6 +148,23 @@ describe('useAppUpdateFlow check_failed transparency', () => {
         expect(result.current.installerPath).toBe('');
     });
 
+    it('a dismissed version stays dismissed after a silent download completes', () => {
+        window.localStorage.setItem('maclaw:dismissed-app-update-version', 'V8.2.0.12010');
+        const { result } = renderFlow();
+        act(() => { emit(EVENT_APP_UPDATE_DOWNLOADED, { ...downloadedV82 }); });
+        // Neither the notice nor the modal state may resurface the version.
+        expect(result.current.appUpdateAvailable).toBeNull();
+        expect(result.current.installerPath).toBe('');
+        expect(result.current.showUpdateModal).toBe(false);
+    });
+
+    it('the downloaded event for a different version is unaffected by dismissal', () => {
+        window.localStorage.setItem('maclaw:dismissed-app-update-version', 'V8.1.0.11999');
+        const { result } = renderFlow();
+        act(() => { emit(EVENT_APP_UPDATE_DOWNLOADED, { ...downloadedV82 }); });
+        expect(result.current.installerPath).toBe(downloadedV82.installer_path);
+    });
+
     it('a direct target change still cancels the in-flight download', () => {
         const { result } = renderFlow();
         act(() => {

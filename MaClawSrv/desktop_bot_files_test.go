@@ -30,7 +30,7 @@ func TestDeliverLargeFileGoesThroughStore(t *testing.T) {
 	old := desktopDeliverLargeSay
 	desktopDeliverLargeSay = func(_ context.Context, body map[string]any) error { said = body; return nil }
 	defer func() { desktopDeliverLargeSay = old }()
-	out, err := deliverDesktopViaStore(context.Background(), scope, src, "big.pdf")
+	out, err := deliverDesktopViaStore(context.Background(), scope, src, "big.pdf", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +47,9 @@ func TestDeliverLargeFileGoesThroughStore(t *testing.T) {
 	if !bytes.Equal(got, data) {
 		t.Fatalf("store has %d bytes, want %d", len(got), len(data))
 	}
+	if desktopDeliveredFileCount("run_big", nil) != 1 {
+		t.Fatalf("store delivery was not counted: claims=%v", desktopFileClaims("run_big"))
+	}
 }
 
 func TestDeliverLargeRoutesBySize(t *testing.T) {
@@ -59,12 +62,14 @@ func TestDeliverLargeRoutesBySize(t *testing.T) {
 		return "MCLDL_STORE 50000000\n", nil
 	}
 	stored := false
-	desktopDeliverViaStore = func(context.Context, agentruntime.Scope, string, string) (string, error) {
+	gotItem := ""
+	desktopDeliverViaStore = func(_ context.Context, _ agentruntime.Scope, _, _, itemID string) (string, error) {
 		stored = true
+		gotItem = itemID
 		return "ok", nil
 	}
-	if out, err := deliverDesktopLarge(context.Background(), scope, "/root/x.zip", "x.zip"); err != nil || out != "ok" || !stored {
-		t.Fatalf("store route: %q %v", out, err)
+	if out, err := deliverDesktopLargeItem(context.Background(), scope, "/root/x.zip", "x.zip", "file-1"); err != nil || out != "ok" || !stored || gotItem != "file-1" {
+		t.Fatalf("store route: %q item=%q err=%v", out, gotItem, err)
 	}
 	if !strings.Contains(script, "-gt "+strconv.Itoa(saidInlineRawMax("x.zip", desktopDeliverMIME("x.zip")))+" ]") {
 		t.Fatalf("inline threshold missing: %s", script)
@@ -76,7 +81,7 @@ func TestDeliverLargeRoutesBySize(t *testing.T) {
 		calls++
 		return "MCLDL_STORE 3000000\n", nil
 	}
-	desktopDeliverViaStore = func(context.Context, agentruntime.Scope, string, string) (string, error) {
+	desktopDeliverViaStore = func(context.Context, agentruntime.Scope, string, string, string) (string, error) {
 		return "", errors.New("desktop document could not be sent: this server's Hub has no bot file store yet")
 	}
 	_, err := deliverDesktopLarge(context.Background(), scope, "/root/x.pdf", "x.pdf")

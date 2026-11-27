@@ -262,7 +262,13 @@ type CloudGitConnect struct {
 	AuthorEmail string `json:"author_email"`
 	// Source "account" binds the instance to the signed-in GitHub/GitLab
 	// account so the credential sync can refresh the token after re-login.
+	// Source "credential" binds it to a virtual-repository credential chosen
+	// in the create flow (CredentialID); that token is user-managed in the
+	// credential store and is deliberately NOT auto-refreshed.
 	Source string `json:"source,omitempty"`
+	// CredentialID references the virtual-repository credential whose token
+	// the backend injects when Source is "credential". Empty otherwise.
+	CredentialID string `json:"credential_id,omitempty"`
 }
 
 // CloudGitPublic is the repository view without a token.
@@ -298,15 +304,31 @@ func (a *App) postCloudAgentGit(instanceID string, body CloudGitConnect) (CloudG
 	return view, err
 }
 
-// prepareCloudGitAccountConnect resolves source="account" inside the backend.
-// The webview chooses a repository and submits no token; the credential store
-// is the only place where the GitHub/GitLab secret is read. This keeps the
-// simple path independent of a live /user refresh and prevents token round-trips
-// through the UI layer.
+// prepareCloudGitAccountConnect resolves source="account" and
+// source="credential" inside the backend. The webview chooses a repository
+// (and, for the create flow, a credential by reference) and submits no token;
+// the credential stores are the only places where a GitHub/GitLab secret is
+// read. This keeps the simple path independent of a live /user refresh and
+// prevents token round-trips through the UI layer. Unknown source values pass
+// through untouched, exactly as before.
 func (a *App) prepareCloudGitAccountConnect(body *CloudGitConnect) error {
-	if body == nil || !strings.EqualFold(strings.TrimSpace(body.Source), "account") {
+	if body == nil {
 		return nil
 	}
+	switch strings.ToLower(strings.TrimSpace(body.Source)) {
+	case "":
+		return nil
+	case "account":
+		return a.prepareCloudGitAccountToken(body)
+	case "credential":
+		return a.prepareCloudGitCredentialToken(body)
+	default:
+		return nil
+	}
+}
+
+// prepareCloudGitAccountToken injects the signed-in settings account's token.
+func (a *App) prepareCloudGitAccountToken(body *CloudGitConnect) error {
 	if strings.TrimSpace(body.Token) != "" {
 		return fmt.Errorf("使用已连接账号时不能同时提交手动令牌")
 	}
@@ -369,6 +391,53 @@ func (a *App) prepareCloudGitAccountConnect(body *CloudGitConnect) error {
 		}
 	default:
 		return fmt.Errorf("代码平台只支持 GitHub 或 GitLab")
+	}
+	return nil
+}
+
+// prepareCloudGitCredentialToken injects the token of the virtual-repository
+// credential the create flow picked (source="credential" + CredentialID).
+// The credential is provider- and host-restricted: the connect origin must be
+// the site the token was minted for, and the author identity falls back to
+// the credential's username with a provider-shaped noreply address.
+func (a *App) prepareCloudGitCredentialToken(body *CloudGitConnect) error {
+	if strings.TrimSpace(body.Token) != "" {
+		return fmt.Errorf("使用已选凭据时不能同时提交手动令牌")
+	}
+	credentialID := strings.TrimSpace(body.CredentialID)
+	if credentialID == "" {
+		return fmt.Errorf("缺少所选凭据")
+	}
+	body.Source = "credential"
+	resolved, err := a.gitPlatformResolveCredential(strings.ToLower(strings.TrimSpace(body.Service)), credentialID)
+	if err != nil {
+		return err
+	}
+	body.Service = resolved.service
+	body.Token = resolved.token
+	origin := strings.TrimSpace(body.Origin)
+	if origin == "" {
+		origin = resolved.origin
+	}
+	if !accountHTTPSRootOrigin(origin) {
+		return fmt.Errorf("站点地址必须是 HTTPS 站点根地址")
+	}
+	if hostOfOrigin(origin) != hostOfOrigin(resolved.origin) {
+		return fmt.Errorf("所选凭据只能用于 %s 的仓库", hostOfOrigin(resolved.origin))
+	}
+	body.Origin = origin
+	if strings.TrimSpace(body.AuthorName) == "" {
+		body.AuthorName = resolved.username
+		if body.AuthorName == "" {
+			body.AuthorName = "MaClaw"
+		}
+	}
+	if strings.TrimSpace(body.AuthorEmail) == "" {
+		if resolved.service == "github" {
+			body.AuthorEmail = resolved.username + "@users.noreply.github.com"
+		} else {
+			body.AuthorEmail = resolved.username + "@users.noreply." + hostOfOrigin(resolved.origin)
+		}
 	}
 	return nil
 }

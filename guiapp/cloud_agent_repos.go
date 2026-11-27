@@ -86,6 +86,15 @@ func (c *cloudAgentRepoCache) put(service, owner string, rows []CloudAgentGitRep
 	c.entries[service] = cloudAgentRepoCacheEntry{owner: owner, rows: rows, fetchedAt: c.clock()}
 }
 
+// invalidate drops the service's entry so a freshly created repository (the
+// GitPlatformCreateRepo path) shows up in the picker immediately instead of
+// after freshTTL.
+func (c *cloudAgentRepoCache) invalidate(service string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, service)
+}
+
 // cloudAgentGitHubCacheOwnerKey identifies the connected GitHub account for
 // the cache. Login is stable across re-logins (same account = same repo
 // space); UserID covers credentials stored before the login was recorded.

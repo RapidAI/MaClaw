@@ -441,6 +441,38 @@
   "cloudTurnFinished": "回合已结束",
   "cloudTurnCancelled": "回合已停止",
   "cloudTurnInterrupted": "回合已中断",
+  "cloudSessionList": "会话列表",
+  "cloudManageInstances": "管理实例",
+  "cloudTaskRunning": "执行中",
+  "cloudTaskFinished": "已完成",
+  "cloudTaskCancelled": "已取消",
+  "cloudTaskInterrupted": "已中断",
+  "cloudThinking": "思考过程",
+  "cloudLoadEarlier": "查看更早的对话",
+  "cloudShownCount": "已显示 {shown}/{total} 条",
+  "cloudDeleteTask": "删除任务",
+  "cloudDeleteTaskConfirm": "确认删除任务「{title}」？会话内容和产物记录将一并删除，且无法恢复。",
+  "cloudDelete": "删除",
+  "cloudTaskDeleted": "任务已删除",
+  "cloudRenameTask": "重命名任务",
+  "cloudRename": "重命名",
+  "@cloudShownCount": {
+    "placeholders": {
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "@cloudDeleteTaskConfirm": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
   "backToCloud": "返回云端",
   "rcNoMachines": "还没有可控制的机器。\n在下面的「我的设备」里挑一台配对，或让别的账号邀请你。",
   "rcControlledByOthers": "正在远控我的电脑",
@@ -566,8 +598,12 @@
   "rtShownCount": "已显示 {shown}/{total} 条",
   "@rtShownCount": {
     "placeholders": {
-      "shown": {"type": "int"},
-      "total": {"type": "int"}
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
     }
   },
   "rtLoadingEarlier": "正在加载更早的对话",
@@ -796,7 +832,13 @@
   "chatContinueTask": "继续这个任务",
   "chatFileParseFailed": "文件解析失败",
   "chatFilesOnDesktop": "{count, plural, =1{文件在电脑上，点此加载} other{{count} 个文件在电脑上，点此加载}}",
-  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
+  "@chatFilesOnDesktop": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "chatSecretRequired": "需要输入 {name}",
   "@chatSecretRequired": {
     "placeholders": {
@@ -1158,12 +1200,12 @@
   },
   "requestFailedShort": "请求失败",
   "assistantAttachQuery": "请阅读并总结这个附件。",
-    "homeEyebrow": "今天",
+  "homeEyebrow": "今天",
   "homeHeroTitle": "让 Bot 替你干活",
   "homeHeroBots": "{count} 个 Bot 在线待命",
   "homeHeroRunning": "{count} 项任务进行中",
   "homeSectionBots": "Bot",
-"chatMaterialFallbackPath": "~/素材/{bot}/{name}",
+  "chatMaterialFallbackPath": "~/素材/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {

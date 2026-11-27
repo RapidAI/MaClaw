@@ -2236,6 +2236,18 @@ func TestOwnsScheduledDispatch(t *testing.T) {
 	if !low.OwnsScheduledDispatch() {
 		t.Fatal("a probe blip that clears inside the grace must keep the owner")
 	}
+	higherDown := NewService("hc-1", "low", "https://hc-1.example", "secret", []StaticPeer{
+		{NodeID: "hc-2", BaseURL: "https://hc-2.example"},
+		{NodeID: "hc-3", BaseURL: "https://hc-3.example"},
+	})
+	higherDown.notePeerDispatchSynced("hc-2")
+	if higherDown.OwnsScheduledDispatch() {
+		t.Fatal("an unobserved higher peer must block until the first pull or probe")
+	}
+	higherDown.markPeerError("hc-3", "down")
+	if !higherDown.OwnsScheduledDispatch() {
+		t.Fatal("a higher peer whose pull failed must not stop the owner")
+	}
 
 	mid.markPeerPushDeferred("hc-1", "queue trimmed")
 	if mid.OwnsScheduledDispatch() {

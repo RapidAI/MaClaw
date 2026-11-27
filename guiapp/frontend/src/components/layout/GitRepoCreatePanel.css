@@ -1,0 +1,149 @@
+/* Shared "create a new GitHub/GitLab repository" panel (grc-*).
+   Used by the cloud connect dialog (inside .cgc-body) and the virtual
+   repository mapping dialog (inside .vrepo-dialog--node), so the styles stay
+   self-contained with theme-variable fallbacks and avoid host-specific
+   selectors. */
+
+.grc-panel {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px dashed color-mix(in srgb, var(--theme-border, #d7dce5) 88%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--theme-surface, #ffffff) 96%, var(--theme-primary, #4f6bed) 4%);
+}
+
+.grc-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.grc-row--options {
+    align-items: center;
+    justify-content: space-between;
+}
+
+.grc-field {
+    display: grid;
+    gap: 4px;
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.grc-label {
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+    font-size: 0.78rem;
+}
+
+.grc-field select,
+.grc-field input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #d7dce5) 90%, transparent);
+    border-radius: 8px;
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-text-primary, var(--theme-text, #172033));
+    font-size: 0.86rem;
+}
+
+.grc-field input:focus,
+.grc-field select:focus {
+    outline: none;
+    border-color: var(--theme-primary, #4f6bed);
+}
+
+.grc-segmented {
+    display: inline-flex;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #d7dce5) 90%, transparent);
+    border-radius: 8px;
+    align-self: center;
+}
+
+.grc-segmented button {
+    border: none;
+    background: transparent;
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+}
+
+.grc-segmented button + button {
+    border-left: 1px solid color-mix(in srgb, var(--theme-border, #d7dce5) 90%, transparent);
+}
+
+.grc-segmented button[aria-pressed='true'] {
+    background: var(--theme-primary, #4f6bed);
+    color: #ffffff;
+}
+
+.grc-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+    cursor: pointer;
+}
+
+.grc-note {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+}
+
+.grc-note--error {
+    color: var(--theme-danger, #c23b4b);
+}
+
+.grc-retry {
+    margin-left: 8px;
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 0.78rem;
+    color: var(--theme-primary, #4f6bed);
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.grc-availability {
+    margin: 0;
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.grc-availability--ok {
+    color: var(--theme-success, #1e8e5a);
+}
+
+.grc-availability--bad {
+    color: var(--theme-danger, #c23b4b);
+}
+
+.grc-submit {
+    justify-self: end;
+    padding: 8px 18px;
+    border: none;
+    border-radius: 8px;
+    background: var(--theme-primary, #4f6bed);
+    color: #ffffff;
+    font-size: 0.86rem;
+    cursor: pointer;
+}
+
+.grc-submit:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.grc-note small {
+    display: block;
+    margin-top: 2px;
+    color: color-mix(in srgb, var(--theme-text-secondary, var(--theme-text-muted, #667085)) 82%, transparent);
+    word-break: break-all;
+}

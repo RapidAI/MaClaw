@@ -167,6 +167,9 @@ describe('HubInvitationDialog', () => {
 
     renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy());
+    // A failed load must not read as a disabled feature — the header sentence
+    // stays silent while the error block carries the truth.
+    expect(screen.queryByText('Invitations are unavailable.')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
     await waitFor(() => expect(screen.getByText('user1@example.com')).toBeTruthy());
@@ -218,10 +221,31 @@ describe('HubInvitationDialog', () => {
     expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy();
   });
 
-  it('removes a link that becomes unavailable while it is open', async () => {
+  it('keeps the invitation visible when a failed refresh answers enabled:false with an error', async () => {
+    // The Go HubUserInvitation struct serializes Enabled without omitempty, so
+    // every failed hub request reaches the dialog as {enabled:false, error:...}
+    // — the exact wire shape behind the reported 邀请功能暂不可用 wipe.
     vi.mocked(RotateHubUserInvitation).mockResolvedValueOnce({
       enabled: false,
-      error: 'invitations disabled',
+      error: 'hub request failed: hub returned 404: INVITATION_UNAVAILABLE',
+    } as InvitationPage);
+
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    await waitFor(() => expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await confirmRefresh();
+
+    await waitFor(() => expect(screen.getByText('Could not refresh the invitation link. Your current link is still active.')).toBeTruthy());
+    expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy();
+    expect(screen.queryByText('Invitations are unavailable.')).toBeNull();
+  });
+
+  it('removes a link that becomes unavailable while it is open', async () => {
+    // Only a disabled response WITHOUT an error counts as a genuine disable;
+    // the hub rotate handler reports a disable as an HTTP error instead, so
+    // this shape is defensive rather than produced in production.
+    vi.mocked(RotateHubUserInvitation).mockResolvedValueOnce({
+      enabled: false,
     } as InvitationPage);
 
     renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);

@@ -136,6 +136,74 @@ func TestCreateBotUsesTheServerTheUserPicked(t *testing.T) {
 	}
 }
 
+func TestDesktopBotDoesNotUseASrvOnlyNode(t *testing.T) {
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeNodeStub(w, r, "public-token")
+	}))
+	defer publicSrv.Close()
+	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeNodeStub(w, r, "node-token")
+	}))
+	defer nodeSrv.Close()
+
+	svc, settings := newStubService(publicSrv)
+	useDirectNodeDial(svc)
+	svc.LanDesktopAvailable = func(context.Context, string, string) bool { return false }
+	alice := ownerPrincipal{HubUserID: "alice", TenantID: "t1", UserID: "u-alice", APIKey: "ak-alice", APISecret: "sk-alice"}
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL: publicSrv.URL, AccessToken: "public-access", AdminSecret: "public-admin",
+		Grants:     []Grant{{ID: "g-a", Scope: ScopeUser, TargetID: "alice"}},
+		Principals: []ownerPrincipal{alice},
+		NodeLinks: []nodeLink{{
+			NodeID: "node-1", BaseURL: nodeSrv.URL, AdminSecret: "node-admin",
+			Principals: []ownerPrincipal{alice},
+		}},
+		OwnerNode: map[string]string{"alice": "node-1"},
+	})
+	ctx := context.Background()
+	yes := true
+
+	pinned, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "fallback bot", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.NodeID != "" {
+		t.Fatalf("automatic pin stayed on the srv-only node: %+v", pinned)
+	}
+	if _, err := svc.CreateBotForUserOnNode(ctx, "tenant-a", "alice", "explicit bot", "", &yes, "node-1"); !errors.Is(err, ErrNodeDesktopUnavailable) {
+		t.Fatalf("explicit desktop bot err = %v", err)
+	}
+	no := false
+	plain, err := svc.CreateBotForUserDesktop(ctx, "tenant-a", "alice", "plain bot", "", &no)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.NodeID != "node-1" {
+		t.Fatalf("a no-computer bot can still use the node srv: %+v", plain)
+	}
+}
+
+func TestDesktopTurnOnASrvOnlyNodeFailsBeforeTheModel(t *testing.T) {
+	settings := &memSettings{}
+	svc := NewService(settings)
+	svc.LanDesktopAvailable = func(context.Context, string, string) bool { return false }
+	alice := ownerPrincipal{HubUserID: "alice", TenantID: "t1", UserID: "u-alice", APIKey: "ak-alice", APISecret: "sk-alice"}
+	seedRecord(t, settings, "tenant-a", record{
+		BaseURL: "http://public.example", AccessToken: "public-access", AdminSecret: "public-admin",
+		Grants:     []Grant{{ID: "g-a", Scope: ScopeUser, TargetID: "alice"}},
+		Principals: []ownerPrincipal{alice},
+		NodeLinks: []nodeLink{{
+			NodeID: "node-1", BaseURL: "http://srv.node-1.node.invalid", AdminSecret: "node-admin",
+			Principals: []ownerPrincipal{alice},
+		}},
+		Bots: []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice", NodeID: "node-1"}},
+	})
+	_, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "打开京东", "execute", "turn-node-gate")
+	if !errors.Is(err, ErrBotComputerUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestPinOwnerNodeRefusesAServerWithoutSrv(t *testing.T) {
 	settings := &memSettings{}
 	svc := NewService(settings)

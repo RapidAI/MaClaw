@@ -207,6 +207,9 @@ func userOwnsDesktopNode(ctx context.Context, pool *desktoppool.Pool, reg *edgen
 	if !node.HasSrv {
 		return errors.New("这个节点还没有 srv")
 	}
+	if !node.HasDesktopd {
+		return errors.New("这个节点还没有装好桌面服务，不能创建需要电脑的 Bot")
+	}
 	servers, _, err := pool.OwnedServers(ctx, tenantID, userID)
 	if err != nil {
 		return errors.New("这台服务器不能用来创建 Bot")
@@ -216,10 +219,7 @@ func userOwnsDesktopNode(ctx context.Context, pool *desktoppool.Pool, reg *edgen
 			return nil
 		}
 	}
-	if node.OwnerUserID == userID {
-		return nil
-	}
-	return errors.New("这台服务器不能用来创建 Bot")
+	return errors.New("这个节点的桌面服务还没有登记，不能创建需要电脑的 Bot")
 }
 
 // PatchBotUserHandler PATCH /api/v1/bots/{id}

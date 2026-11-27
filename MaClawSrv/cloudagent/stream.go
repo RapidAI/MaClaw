@@ -125,6 +125,63 @@ func (rt *Runtime) grantIDs(instanceID string) []string {
 	return out
 }
 
+// publishTerminal stores the assistant reply, then posts the response frame.
+// The desktop reloads history as soon as that frame is queued, so the row
+// has to be committed first. Status stays running until finishTurn: a second
+// send cannot begin while the frame is still going out. finishTurn inserts
+// the row only when this seal did not store it.
+func (rt *Runtime) publishTerminal(inst *instance, taskID, requestID, content string, asError bool, files []string, extra map[string]any) {
+	if inst != nil && inst.book != nil {
+		// The round's reasoning is sealed with the reply so a page reload
+		// restores the thinking block too. A retried seal replaces its row.
+		if thinking := rt.laneThinkingText(inst.meta.ID, taskID); thinking != "" {
+			if err := inst.book.SealThinking(requestID, taskID, thinking, time.Now()); err != nil {
+				slog.Warn("cloudagent seal thinking",
+					slog.String("instance", inst.meta.ID),
+					slog.String("request", requestID),
+					slog.Any("err", err))
+			}
+		}
+		if _, err := inst.book.sealReply(requestID, content, asError, files, time.Now()); err != nil {
+			slog.Warn("cloudagent seal reply",
+				slog.String("instance", inst.meta.ID),
+				slog.String("request", requestID),
+				slog.Any("err", err))
+		}
+	}
+	rt.publish(inst, taskID, requestID, "response", content, extra)
+}
+
+// laneThinkingText snapshots the round's accumulated thinking for the
+// transcript. Empty when the task has no live lane.
+func (rt *Runtime) laneThinkingText(instanceID, taskID string) string {
+	if rt == nil {
+		return ""
+	}
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+	lane := rt.stream[instanceID+"\n"+taskID]
+	if lane == nil {
+		return ""
+	}
+	return strings.TrimSpace(lane.thinking.String())
+}
+
+// dropStreamLane removes one task's live lane and stops its coalesce timer.
+// A deleted task must not be restorable through cloud_watch_task.
+func (rt *Runtime) dropStreamLane(instanceID, taskID string) {
+	if rt == nil {
+		return
+	}
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+	key := instanceID + "\n" + taskID
+	if lane := rt.stream[key]; lane != nil && lane.timer != nil {
+		lane.timer.Stop()
+	}
+	delete(rt.stream, key)
+}
+
 // publish posts one viewer event to every grant watching this instance.
 // A repeated progress line is dropped before a cursor is allocated.
 // project_path stays empty: the cloud page does not key on it.
@@ -138,6 +195,7 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		return
 	}
 	grants := rt.grantIDs(inst.meta.ID)
+	extra = withRoundClientMessage(inst, requestID, event, extra)
 	rt.streamMu.Lock()
 	key := inst.meta.ID + "\n" + taskID
 	lane := rt.lane(key)
@@ -171,6 +229,10 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 		}
 	}
 	rt.noteLive(lane, requestID, event, text, extra)
+	// Process rows ride along as they stream — progress is persisted
+	// regardless of watchers, so a page reload restores the how, not just
+	// the what. Failures log and never break the round.
+	persistProgress := event == "progress" && requestID != "" && strings.TrimSpace(text) != ""
 	if event == "token" || event == "thinking" {
 		if text == "" {
 			rt.streamMu.Unlock()
@@ -214,6 +276,15 @@ func (rt *Runtime) publish(inst *instance, taskID, requestID, event, text string
 	body := rt.nextFrame(lane, inst.meta.ID, taskID, requestID, event, text, extra)
 	files := lane.files
 	rt.streamMu.Unlock()
+	if persistProgress && inst.book != nil {
+		if err := inst.book.AppendTurnEvent(requestID, taskID, "progress", text, time.Now()); err != nil {
+			slog.Warn("cloudagent turn event",
+				slog.String("instance", inst.meta.ID),
+				slog.String("task", taskID),
+				slog.String("request", requestID),
+				slog.Any("err", err))
+		}
+	}
 	attrs := []any{
 		slog.String("instance", inst.meta.ID), slog.String("task", taskID), slog.String("request", requestID),
 		slog.String("event", event), slog.String("lane", eventLane(event)),
@@ -338,6 +409,26 @@ func (rt *Runtime) nextFrame(lane *streamLane, instanceID, taskID, requestID, ev
 		return nil
 	}
 	return raw
+}
+
+// withRoundClientMessage stamps the desktop's client message id onto
+// round_started. The ack for a parked send can still be in flight when this
+// frame arrives; the id is the join, not the display text.
+func withRoundClientMessage(inst *instance, requestID, event string, extra map[string]any) map[string]any {
+	if event != "round_started" || inst == nil || inst.book == nil {
+		return extra
+	}
+	clientID := inst.book.clientMessageID(requestID)
+	if clientID == "" {
+		return extra
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	if _, ok := extra["client_message_id"]; !ok {
+		extra["client_message_id"] = clientID
+	}
+	return extra
 }
 
 func cloudDisplay(text string) string {

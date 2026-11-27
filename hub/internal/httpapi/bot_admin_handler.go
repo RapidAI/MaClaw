@@ -126,6 +126,10 @@ func writeBotUserError(w http.ResponseWriter, r *http.Request, principal *auth.M
 		status, code, message = http.StatusConflict, "BOT_TURN_BUSY", botmgmt.ErrNoDesktopTurn.Error()
 	case errors.Is(err, botmgmt.ErrDesktopQuota):
 		status, code, message = http.StatusConflict, "DESKTOP_QUOTA_EXCEEDED", botmgmt.ErrDesktopQuota.Error()
+	case errors.Is(err, botmgmt.ErrNodeDesktopUnavailable):
+		status, code, message = http.StatusConflict, "NODE_DESKTOP_UNAVAILABLE", botmgmt.ErrNodeDesktopUnavailable.Error()
+	case errors.Is(err, botmgmt.ErrBotComputerUnavailable):
+		status, code, message = http.StatusConflict, "BOT_COMPUTER_UNAVAILABLE", botmgmt.ErrBotComputerUnavailable.Error()
 	case errors.Is(err, botmgmt.ErrCloudDesktopUnassigned):
 		status, code, message = http.StatusForbidden, "CLOUD_DESKTOP_NOT_ASSIGNED", botmgmt.ErrCloudDesktopUnassigned.Error()
 	case errors.Is(err, botmgmt.ErrNotPrimary):

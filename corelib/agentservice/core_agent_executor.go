@@ -3038,6 +3038,13 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	if c != nil && strings.TrimSpace(name) == "bot_generate_pdf" && c.hubBotInstance() && c.runtimeToolExposed(name) {
 		return true
 	}
+	// Reading the knowledge on the person's own computer is the same kind of
+	// read-only lookup as memory_search/knowledge_search, which the light
+	// allowlist already keeps: a short "what do my notes say about X" turn is
+	// exactly when the bot needs it. Only when the module is bound.
+	if c != nil && strings.TrimSpace(name) == "local_knowledge_search" && c.hubBotInstance() && c.runtimeToolExposed(name) {
+		return true
+	}
 	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
 		return true
 	}

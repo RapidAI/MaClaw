@@ -605,3 +605,44 @@
         justify-content: flex-end;
     }
 }
+
+/* Pick-existing vs create-new mode toggle in the repository section header.
+   Reuses the segmented look at caption size; pushed to the right edge so the
+   section label stays first. */
+.cgc-mode-toggle {
+    display: inline-flex;
+    overflow: hidden;
+    margin-left: auto;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #d7dce5) 90%, transparent);
+    border-radius: 8px;
+}
+
+.cgc-mode-toggle button {
+    border: none;
+    background: transparent;
+    padding: 4px 12px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    color: var(--theme-text-secondary, var(--theme-text-muted, #667085));
+}
+
+.cgc-mode-toggle button + button {
+    border-left: 1px solid color-mix(in srgb, var(--theme-border, #d7dce5) 90%, transparent);
+}
+
+.cgc-mode-toggle button[aria-pressed='true'] {
+    background: var(--theme-primary, #4f6bed);
+    color: #ffffff;
+}
+
+.cgc-mode-toggle button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.cgc-empty-note small {
+    display: block;
+    margin-top: 2px;
+    color: color-mix(in srgb, var(--theme-text-secondary, var(--theme-text-muted, #667085)) 82%, transparent);
+    word-break: break-all;
+}

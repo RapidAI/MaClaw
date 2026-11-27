@@ -194,6 +194,21 @@ func TestEnsureReceiptDoesNotClaimSuccessWithoutDelivery(t *testing.T) {
 	if claimRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified || !strings.Contains(claimRun.Content, "已经全部发好了") || !strings.Contains(claimRun.Metadata["send_to_user"], desktopUnverifiedSentence) || strings.Contains(claimRun.Metadata["task_outcome"], agentservice.TaskOutcomeDone) {
 		t.Fatalf("unverified claim became done: %+v", claimRun)
 	}
+	noteDesktopOutputSlots("run_ledger_outcome", []string{"file"})
+	ledgerMsg := &agentservice.Message{Content: "完成了"}
+	ledgerRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_ledger_outcome", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomeDone}}, ledgerMsg, nil, false, false)
+	if ledgerRun.Metadata["task_outcome"] != agentservice.TaskOutcomeUnverified {
+		t.Fatalf("open contract was not reconciled: %+v", ledgerRun)
+	}
+	ledgerOK := false
+	for _, entry := range desktopLedgerEntries(desktopLedgerKey(scope)) {
+		if entry.Kind == "run_end" && entry.Run == "run_ledger_outcome" {
+			ledgerOK = strings.Contains(entry.Detail, "outcome="+agentservice.TaskOutcomeUnverified) && !strings.Contains(entry.Detail, "outcome="+agentservice.TaskOutcomeDone)
+		}
+	}
+	if !ledgerOK {
+		t.Fatalf("run_end ledger kept the stale outcome: %+v", desktopLedgerEntries(desktopLedgerKey(scope)))
+	}
 	partial := &agentservice.Message{Content: "只做了一部分", Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomePartial, "send_to_user": "只做了一部分"}, Attachments: []agent.MessageAttachment{{Type: "file", FileName: "note.txt", Data: "aGVsbG8=", Delivery: agent.AttachmentDeliveryFile}}}
 	partialRun := desktopEnsureReceipt(scope, &agentservice.Run{ID: "run_partial", Status: agentservice.RunStatusSucceeded, Metadata: map[string]string{"task_outcome": agentservice.TaskOutcomePartial}}, partial, nil, false, false)
 	if partialRun.Metadata["task_outcome"] != agentservice.TaskOutcomePartial || strings.Contains(partialRun.Content, "结果文件已经附") {
@@ -265,5 +280,37 @@ func TestLedgerPendingAndRecent(t *testing.T) {
 	}
 	if _, ok := desktopLedgerRecentPost(es, "creator.xiaohongshu.com", "另一篇", now); ok {
 		t.Fatal("other title blocked")
+	}
+}
+
+func TestDesktopFileClaimCountsOwnMessageAndInfersTheSingleFileItem(t *testing.T) {
+	runID := "run-file-claim-infer"
+	desktopFileClaimMu.Lock()
+	delete(desktopFileClaimsByRun, runID)
+	desktopFileClaimMu.Unlock()
+	desktopNoteFileClaim(runID, "", []byte("%PDF-1.4 report"))
+	if got := desktopDeliveredFileCount(runID, nil); got != 1 {
+		t.Fatalf("count=%d", got)
+	}
+	items := []agent.DesktopDeliverable{{ID: "file-1", Kind: desktopContractFile, Text: "报告"}}
+	outcome, why := desktopAttributedVerdict(runID, &agentservice.Message{}, items)
+	if outcome != agentservice.TaskOutcomeDone || why != "outputs delivered" {
+		t.Fatalf("outcome=%q why=%q", outcome, why)
+	}
+}
+
+func TestDesktopFileRefClaimAttributesAStoreDelivery(t *testing.T) {
+	runID := "run-file-ref-claim"
+	desktopFileClaimMu.Lock()
+	delete(desktopFileClaimsByRun, runID)
+	desktopFileClaimMu.Unlock()
+	desktopNoteFileRefClaim(runID, "file-1", "bf_00000000000000000000001", "report.pdf")
+	if got := desktopDeliveredFileCount(runID, nil); got != 1 {
+		t.Fatalf("count=%d", got)
+	}
+	items := []agent.DesktopDeliverable{{ID: "file-1", Kind: desktopContractFile, Text: "报告"}}
+	outcome, why := desktopAttributedVerdict(runID, &agentservice.Message{}, items)
+	if outcome != agentservice.TaskOutcomeDone || why != "outputs delivered" {
+		t.Fatalf("outcome=%q why=%q", outcome, why)
 	}
 }

@@ -143,14 +143,14 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	rt.publish(inst, taskID, requestID, "round_started", text, map[string]any{"display_text": text})
 	route := rt.workflowRoute(inst, taskID, text)
 	if route.notice != "" {
-		rt.publish(inst, taskID, requestID, "response", route.notice, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, route.notice, false, nil, map[string]any{
 			"terminal": map[string]any{"text": route.notice},
 		})
 		return route.notice, false, nil
 	}
 	phaseRan := route.phaseRan
 	fail := func(msg string) (string, bool, []string) {
-		rt.publish(inst, taskID, requestID, "response", msg, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, msg, true, nil, map[string]any{
 			"terminal": map[string]any{"text": msg},
 		})
 		return msg, true, nil
@@ -193,7 +193,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			_ = inst.book.planClear(taskID)
 			rt.publishWorkbench(inst, taskID, requestID, nil)
 			note := "已取消这个计划，本轮不会修改文件。"
-			rt.publish(inst, taskID, requestID, "response", note, map[string]any{
+			rt.publishTerminal(inst, taskID, requestID, note, false, nil, map[string]any{
 				"terminal": map[string]any{"text": note},
 			})
 			return note, false, nil
@@ -270,7 +270,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		if rec != nil {
 			note = "这个计划已经处理过，无需重复确认。"
 		}
-		rt.publish(inst, taskID, requestID, "response", note, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, note, false, nil, map[string]any{
 			"terminal": map[string]any{"text": note},
 		})
 		return note, false, nil
@@ -295,7 +295,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 			if err := inst.book.planSave(taskID, rec); err == nil {
 				rt.publishWorkbench(inst, taskID, requestID, rec)
 				note := "我先把这次任务拆成了执行计划，确认后开始实施。"
-				rt.publish(inst, taskID, requestID, "response", note, map[string]any{
+				rt.publishTerminal(inst, taskID, requestID, note, false, nil, map[string]any{
 					"terminal": planTerminal(taskID),
 				})
 				return note, false, nil
@@ -322,6 +322,9 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		return "", true, nil
 	}
 	files := host.producedFiles()
+	// publishTerminal seals the book row before the frame is queued.
+	// Stage the same keys so a fetch still works when that seal did not store.
+	inst.stageProduced(files)
 	filesCreated, filesModified := host.explicitFileChanges()
 	// The change set lands on the trail before any terminal, so every
 	// ending (answer, ask, failure) carries what the turn wrote.
@@ -337,7 +340,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 		if strings.TrimSpace(result.Text) != "" {
 			question = strings.TrimSpace(result.Text) + "\n" + question
 		}
-		rt.publish(inst, taskID, requestID, "response", question, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, question, false, files, map[string]any{
 			"terminal": attachFiles(askTerminal(question, taskID), files),
 		})
 		return question, false, files
@@ -345,7 +348,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	if strings.TrimSpace(result.Error) != "" {
 		rt.emitCodingTaskStatus(inst, taskID, requestID, "failed", input)
 		rt.settlePlan(inst, taskID, requestID, true)
-		rt.publish(inst, taskID, requestID, "response", result.Error, map[string]any{
+		rt.publishTerminal(inst, taskID, requestID, result.Error, true, files, map[string]any{
 			"terminal": attachFiles(map[string]any{"text": result.Error}, files),
 		})
 		return result.Error, true, files
@@ -353,7 +356,7 @@ func (rt *Runtime) codingResult(ctx context.Context, inst *instance, taskID, req
 	rt.emitCodingTaskStatus(inst, taskID, requestID, "completed", input)
 	rt.settlePlan(inst, taskID, requestID, false)
 	finalText := cloudFinalAnswerText(result.Text, filesCreated, filesModified, host.fileChangeFacts(), host.verificationFacts())
-	rt.publish(inst, taskID, requestID, "response", finalText, map[string]any{
+	rt.publishTerminal(inst, taskID, requestID, finalText, false, files, map[string]any{
 		"terminal": attachFiles(map[string]any{"text": finalText}, files),
 	})
 	if phaseRan {

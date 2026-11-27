@@ -1668,6 +1668,90 @@ func TestCodingParallelToolPathsStayOnCheckout(t *testing.T) {
 		}
 	}
 
+	// if, for/do, and the @ echo prefix run cd in this cmd process.
+	// PowerShell @cd is not Set-Location, so that line stays put.
+	for _, same := range []string{
+		`cmd /c "if exist C:\Windows cd ..\..\.. & copy Repo\a.go ."`,
+		`cmd /c "if exist C:\Windows cd..\..\..& copy Repo\a.go ."`,
+		`cmd /c "for %I in (.) do cd ..\..\.. & copy Repo\a.go ."`,
+		`cmd /c "@cd ..\..\.. & copy Repo\a.go ."`,
+		`cmd /c "@cd..\..\..& copy Repo\a.go ."`,
+		`cmd /c "if exist C:\Windows @cd ..\..\.. & copy Repo\a.go ."`,
+		`if exist C:\Windows cd ..\..\.. & copy Repo\a.go . 2>nul`,
+		`cmd /c "cd /d D:\ & cd /d C:\Windows & if exist C:\Windows D: & copy Repo\a.go ."`,
+		`cmd /c "cd /d D:\ & cd /d C:\Windows & @D: & copy Repo\a.go ."`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(same, exec); msg == "" {
+			t.Fatalf("cmd same-process cd was allowed to enter the shared tree: %s", same)
+		}
+		sameArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": same})
+		got, _ := sameArgs["command"].(string)
+		want := strings.Replace(same, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("cmd same-process cd = %q", got)
+		}
+	}
+	atCd := `cmd /c "@cd..\..\..\Repo"`
+	if msg := cb.parallelCheckoutCommandRejection(atCd, exec); msg == "" {
+		t.Fatal("@cd glued path was allowed to enter the shared tree")
+	}
+	atCdArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": atCd})
+	if got, _ := atCdArgs["command"].(string); got != `cmd /c "@cd `+wt+`"` {
+		t.Fatalf("@cd glued path = %q", got)
+	}
+	psAt := `@cd ..\..\..; Copy-Item Repo .`
+	psAtArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": psAt})
+	if got, _ := psAtArgs["command"].(string); got != psAt {
+		t.Fatalf("powershell @cd = %q", got)
+	}
+	if msg := cb.parallelCheckoutCommandRejection(psAt, exec); msg != "" {
+		t.Fatalf("powershell @cd rejected: %s", msg)
+	}
+
+	// FileSystem::D:\Repo is the drive path. The qualifier is not a directory.
+	for _, prov := range []string{
+		`Copy-Item FileSystem::` + filepath.Join(root, "pkg", "a.go") + ` .`,
+		`Copy-Item filesystem::` + filepath.Join(root, "pkg", "a.go") + ` .`,
+		`Copy-Item Microsoft.PowerShell.Core\FileSystem::` + filepath.Join(root, "pkg", "a.go") + ` .`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(prov, exec); msg == "" {
+			t.Fatalf("provider path was allowed to enter the shared tree: %s", prov)
+		}
+		provArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": prov})
+		got, _ := provArgs["command"].(string)
+		want := strings.Replace(prov, filepath.Join(root, "pkg", "a.go"), filepath.Join(exec, "a.go"), 1)
+		if got != want {
+			t.Fatalf("provider path = %q", got)
+		}
+	}
+	provCd := `Set-Location FileSystem::D:\; Copy-Item Repo\a.go .`
+	if msg := cb.parallelCheckoutCommandRejection(provCd, exec); msg == "" {
+		t.Fatal("provider cd was allowed to enter the shared tree")
+	}
+	provCdArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": provCd})
+	if got, _ := provCdArgs["command"].(string); got != `Set-Location FileSystem::D:\; Copy-Item `+filepath.Join(wt, "a.go")+` .` {
+		t.Fatalf("provider cd = %q", got)
+	}
+
+	// start, call, forfiles, and Start-Process run the quoted command.
+	// The parent's next Copy-Item stays on the checkout.
+	for _, hosted := range []string{
+		`start /b /wait cmd /c "cd ..\..\.. & copy Repo\a.go ." 2>nul`,
+		`call cmd /c "cd ..\..\.. & copy Repo\a.go ." 2>nul`,
+		`forfiles /m notepad.exe /c "cmd /c cd ..\..\.. & copy Repo\a.go ." 2>nul`,
+		`Start-Process -FilePath cmd.exe -ArgumentList 'cd ..\..\.. & copy Repo\a.go .' -Wait; Copy-Item Repo .`,
+	} {
+		if msg := cb.parallelCheckoutCommandRejection(hosted, exec); msg == "" {
+			t.Fatalf("hosted shell was allowed to enter the shared tree: %s", hosted)
+		}
+		hostedArgs := cb.withDefaultWorkingDir(map[string]interface{}{"command": hosted})
+		got, _ := hostedArgs["command"].(string)
+		want := strings.Replace(hosted, `copy Repo\a.go .`, `copy `+filepath.Join(wt, "a.go")+` .`, 1)
+		if got != want {
+			t.Fatalf("hosted shell = %q", got)
+		}
+	}
+
 	// /d/Repo is a root-relative PowerShell name, and D:\Repo to nested bash.
 	msys := `bash -lc "cat /d/Repo/pkg/a.go"`
 	if msg := cb.parallelCheckoutCommandRejection(msys, exec); msg == "" {

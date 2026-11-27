@@ -48,16 +48,19 @@ const (
 	OpCloudSubmitWorkflowForm = "cloud_submit_workflow_form"
 	OpCloudStopTask           = "cloud_stop_task"
 	OpCloudRenameTask         = "cloud_rename_task"
-	OpCloudWatchTask          = "cloud_watch_task"
-	OpCloudUnwatchTask        = "cloud_unwatch_task"
-	OpCloudFetchFile          = "cloud_fetch_file"
-	OpCloudListDir            = "cloud_list_dir"
-	OpCloudReadFile           = "cloud_read_file"
-	OpCloudStat               = "cloud_stat"
-	OpCloudDeleteFile         = "cloud_delete_file"
-	OpCloudPackDir            = "cloud_pack_dir"
-	OpCloudWriteFile          = "cloud_write_file"
-	OpCloudMkdir              = "cloud_mkdir"
+	// OpCloudDeleteTask removes one cloud task and its whole transcript;
+	// the runtime cancels a running turn first.
+	OpCloudDeleteTask  = "cloud_delete_task"
+	OpCloudWatchTask   = "cloud_watch_task"
+	OpCloudUnwatchTask = "cloud_unwatch_task"
+	OpCloudFetchFile   = "cloud_fetch_file"
+	OpCloudListDir     = "cloud_list_dir"
+	OpCloudReadFile    = "cloud_read_file"
+	OpCloudStat        = "cloud_stat"
+	OpCloudDeleteFile  = "cloud_delete_file"
+	OpCloudPackDir     = "cloud_pack_dir"
+	OpCloudWriteFile   = "cloud_write_file"
+	OpCloudMkdir       = "cloud_mkdir"
 
 	TargetKindDesktop    = "desktop"
 	TargetKindCloudAgent = "cloud_agent"
@@ -1313,7 +1316,7 @@ func permissionAllows(permission, op string) bool {
 		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudPackDir:
 		return permission == PermView || permission == PermOperate
 	case OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpListDirs, OpAttachBegin,
-		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteFile,
+		OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteTask, OpCloudDeleteFile,
 		OpCloudWriteFile, OpCloudMkdir, OpCloudSubmitWorkflowForm:
 		return permission == PermOperate
 	default:
@@ -1324,7 +1327,7 @@ func permissionAllows(permission, op string) bool {
 func allowedOp(op string) bool {
 	switch op {
 	case OpListTasks, OpGetTask, OpCreateTask, OpSendMessage, OpStopTask, OpRenameTask, OpPinTask, OpFetchFile, OpWatchTask, OpUnwatchTask, OpListDirs, OpAttachBegin,
-		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile,
+		OpCloudListTasks, OpCloudGetTask, OpCloudCreateTask, OpCloudSendMessage, OpCloudStopTask, OpCloudRenameTask, OpCloudDeleteTask, OpCloudWatchTask, OpCloudUnwatchTask, OpCloudFetchFile,
 		OpCloudListDir, OpCloudReadFile, OpCloudStat, OpCloudDeleteFile, OpCloudPackDir,
 		OpCloudWriteFile, OpCloudMkdir, OpCloudSubmitWorkflowForm:
 		return true

@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -87,5 +88,64 @@ func TestDesktopOutcomeSeesSpilledDeliveryAndSendToUser(t *testing.T) {
 	cb.connectorAsk.Text = "要发这封邮件吗？"
 	if d := cb.ReviewDesktopOutcome("发邮件", "草稿", spilled[1:], nil); d.Replace != "" {
 		t.Fatalf("a run whose send_to_user is set was replaced: %+v", d)
+	}
+}
+
+func TestDesktopOutcomeEvidenceKeepsBotPDFAndWebEvidence(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "tool", ToolName: "web_fetch", Content: "北京当前晴，未来七天预报"},
+		{Role: "tool", ToolName: "desktop", Content: "Error: docker service rejected: no docker service is assigned to this user key"},
+		{Role: "tool", ToolName: "bot_generate_pdf", Content: "PDF generation failed: PDF font is unavailable on this server"},
+		{Role: "tool", ToolName: "desktop", Content: "Delivered 北京天气报告.pdf (1700 bytes) on this chat reply."},
+	}
+	used, ask, remoteOnly, sawSSH, text := desktopOutcomeEvidence(history)
+	if !used || ask || remoteOnly || sawSSH {
+		t.Fatalf("used=%v ask=%v remoteOnly=%v sawSSH=%v", used, ask, remoteOnly, sawSSH)
+	}
+	for _, want := range []string{"web_fetch: 北京当前晴", "bot_generate_pdf: PDF generation failed", "Delivered 北京天气报告.pdf"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("evidence missing %q: %s", want, text)
+		}
+	}
+	if !desktopOutcomeDelivered(history) {
+		t.Fatal("desktop delivery was not recognized with support evidence present")
+	}
+}
+
+func TestDesktopOutcomeDeliveredRecognizesBotPDF(t *testing.T) {
+	history := []agent.ConversationEntry{{Role: "tool", ToolName: "bot_generate_pdf", Content: "Delivered 北京天气报告.pdf (1700 bytes) on this chat reply."}}
+	if !desktopOutcomeDelivered(history) {
+		t.Fatal("bot_generate_pdf delivery was not recognized")
+	}
+}
+
+func TestDesktopOutcomeJudgeSeesWebAndBotPDFEvidence(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		raw, _ := json.Marshal(req.Messages)
+		body = string(raw)
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"{\"ok\":true,\"gap\":\"\"}"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	cb := &coreAgentCallbacks{
+		llmCfg:          corelib.MaclawLLMConfig{URL: server.URL, Model: "judge", Key: "k"},
+		httpClient:      server.Client(),
+		messageMetadata: map[string]string{"bot_phase": "execute"},
+	}
+	history := []agent.ConversationEntry{
+		{Role: "tool", ToolName: "web_fetch", Content: "北京天气事实"},
+		{Role: "tool", ToolName: "bot_generate_pdf", Content: "Delivered 北京天气报告.pdf (1700 bytes) on this chat reply."},
+	}
+	if decision := cb.ReviewDesktopOutcome("北京天气，生成pdf", "PDF已发送", history, nil); decision != (agent.DesktopOutcomeDecision{}) {
+		t.Fatalf("decision=%+v", decision)
+	}
+	if !strings.Contains(body, "北京天气事实") || !strings.Contains(body, "bot_generate_pdf") || !strings.Contains(body, "北京天气报告.pdf") {
+		t.Fatalf("judge did not receive support evidence: %s", body)
 	}
 }

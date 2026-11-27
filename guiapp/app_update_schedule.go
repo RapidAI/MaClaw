@@ -263,11 +263,14 @@ func (a *App) unmarkDownloadedUpdateActionRunning() {
 }
 
 func (a *App) executeDeferredUpdateInstall(targetVersion string, startupExecution bool) {
-	if a == nil || !a.markDownloadedUpdateActionRunning() {
+	if a == nil {
 		return
 	}
-	defer a.unmarkDownloadedUpdateActionRunning()
-
+	// The decision lock is deliberately NOT held across this function: the
+	// check + download phases below can take minutes on a slow link, and a
+	// user install/defer/ignore click during that window would otherwise be
+	// refused outright. Only the final launch decision takes the lock, with a
+	// record-equality re-check so a choice the user made mid-download wins.
 	record, ok := a.readDeferredUpdateInstall()
 	if !ok || !sameUpdateVersion(record.TargetVersion, targetVersion) {
 		return
@@ -365,9 +368,26 @@ func (a *App) executeDeferredUpdateInstall(targetVersion string, startupExecutio
 	if a.ctx != nil && a.ctx.Err() != nil {
 		return
 	}
+	if !a.markDownloadedUpdateActionRunning() {
+		// A user decision (install now / a different defer / ignore) owns the
+		// record right now and supersedes this execution. The durable record
+		// — or its replacement — keeps the choice alive either way.
+		a.log(fmt.Sprintf("[update-install] deferred install for %s yielded to a concurrent update decision", record.TargetVersion))
+		return
+	}
+	// A user decision made while the check/download ran (install now, ignore,
+	// or a different defer) rewrote or removed the durable record. Anything
+	// that no longer matches the record this execution started with drives
+	// its own path, so this stale run must stop before launching.
+	latest, stillRecorded := a.readDeferredUpdateInstall()
+	if !stillRecorded || !deferredUpdateRecordsEquivalent(record, latest) {
+		a.unmarkDownloadedUpdateActionRunning()
+		return
+	}
 	// The user may have ignored this release while a retry/check/download was
 	// in flight. Re-check immediately before the launch decision is consumed.
 	if a.isUpdateVersionIgnored(record.TargetVersion) {
+		a.unmarkDownloadedUpdateActionRunning()
 		_ = a.clearDeferredUpdateInstall()
 		return
 	}
@@ -377,6 +397,7 @@ func (a *App) executeDeferredUpdateInstall(targetVersion string, startupExecutio
 	} else {
 		launchErr = a.LaunchInstallerAndExit(installerPath, result.LatestVersion)
 	}
+	a.unmarkDownloadedUpdateActionRunning()
 	if launchErr != nil {
 		if errors.Is(launchErr, errInstallerElevationCancelled) {
 			// A declined elevation prompt must not turn into repeated UAC
@@ -410,12 +431,32 @@ func (a *App) retryDeferredUpdateInstall(record deferredUpdateInstall) {
 		a.log(fmt.Sprintf("[update-install] next-startup update install for %s will retry on a later launch", record.TargetVersion))
 		return
 	}
+	// The retry rewrites the durable record, so it needs the same decision
+	// lock as the user-facing choices. A busy lock means a user decision is
+	// writing the record right now; that choice supersedes this retry and
+	// must not be clobbered by it.
+	if !a.markDownloadedUpdateActionRunning() {
+		return
+	}
+	defer a.unmarkDownloadedUpdateActionRunning()
 	retry := record
 	retry.DueAt = time.Now().Add(deferredUpdateInstallRetryDelay)
 	if err := writeDeferredUpdateInstall(a.deferredUpdateInstallPath(), retry); err != nil {
 		a.log(fmt.Sprintf("[update-install] deferred update retry state was not persisted for %s: %v", record.TargetVersion, err))
 	}
 	a.scheduleDeferredUpdateInstall(retry, false)
+}
+
+// deferredUpdateRecordsEquivalent reports whether the durable record still
+// describes the same user choice an execution started from. The decision
+// fields are compared; InstallerPath is deliberately excluded because the
+// execution itself may have rebound it to a freshly downloaded file.
+func deferredUpdateRecordsEquivalent(started, current deferredUpdateInstall) bool {
+	return started.TargetVersion == current.TargetVersion &&
+		started.Channel == current.Channel &&
+		started.NextStartup == current.NextStartup &&
+		started.DueAt.Equal(current.DueAt) &&
+		started.CreatedAt.Equal(current.CreatedAt)
 }
 
 // deferredUpdateCheckHook is a test seam for executeDeferredUpdateInstall.

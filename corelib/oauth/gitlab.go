@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -224,4 +225,204 @@ func GitLabScopesHaveRepo(scopeList string) bool {
 // the creation form (GitLab 15.5+); an older instance ignores them.
 func GitLabTokenPageURL(origin string) string {
 	return strings.TrimSuffix(origin, "/") + "/-/user_settings/personal_access_tokens?name=MaClaw&scopes=api"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project creation — namespace listing, name-availability probing, and
+// create. These are the write-capable counterparts of FetchGitLabProjects,
+// used by the cloud-agent / virtual-repository "create and bind" flows.
+// Creating a project via the API needs the api scope; write_repository alone
+// only covers clone and push.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GitLabNamespace is one namespace the token can see (GET /api/v4/namespaces):
+// kind "user" is the account's personal namespace, "group" is a group the
+// account belongs to. Creating inside a group additionally requires the
+// group role that grants project creation; the create call surfaces the
+// provider's refusal when it is missing.
+type GitLabNamespace struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	FullPath string `json:"full_path"`
+	Kind     string `json:"kind"`
+}
+
+// FetchGitLabNamespaces lists the personal namespace and groups the token
+// can target for project creation.
+func FetchGitLabNamespaces(ctx context.Context, origin, token string, limit int) ([]GitLabNamespace, error) {
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	body, err := gitLabAPI(ctx, strings.TrimSuffix(origin, "/"), token, fmt.Sprintf("namespaces?per_page=%d", limit))
+	if err != nil {
+		return nil, err
+	}
+	var rows []GitLabNamespace
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("gitlab namespaces: parse response: %w", err)
+	}
+	out := rows[:0]
+	for _, row := range rows {
+		if strings.TrimSpace(row.FullPath) == "" || row.ID <= 0 {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// gitLabAPIPost is the write counterpart of gitLabAPI: one authenticated
+// POST with a JSON payload. Status mapping matches gitLabAPI (401 revoked,
+// otherwise GitLab's own message), so callers add only their 2xx handling.
+func gitLabAPIPost(ctx context.Context, origin, token, path string, payload any) ([]byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab api: encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", origin+"/api/v4/"+strings.TrimPrefix(path, "/"), bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab api: create request: %w", err)
+	}
+	req.Header.Set("PRIVATE-TOKEN", token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab api: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab api: read response: %w", err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, fmt.Errorf("gitlab api: token is invalid or revoked (HTTP %d)", resp.StatusCode)
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		// GitLab answers 201 Created on a successful POST, so the whole 2xx
+		// band is accepted here and the caller parses its own shape.
+		return nil, gitLabHTTPError(resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+// GitLabProjectNameStatus probes whether the full project path (for example
+// "group/name") can still be created: HTTP 200 means it exists (taken), 404
+// means the path is free. Anything else is an error, so a failed probe never
+// reads as "available".
+func GitLabProjectNameStatus(ctx context.Context, origin, token, fullPath string) (available bool, reason string, err error) {
+	fullPath = strings.TrimSpace(fullPath)
+	if fullPath == "" || strings.ContainsAny(fullPath, " ") {
+		return false, "归属或仓库名格式无效", nil
+	}
+	probe := strings.TrimSuffix(origin, "/") + "/api/v4/projects/" + url.PathEscape(fullPath)
+	req, err := http.NewRequestWithContext(ctx, "GET", probe, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("gitlab project status: create request: %w", err)
+	}
+	req.Header.Set("PRIVATE-TOKEN", token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return false, "", fmt.Errorf("gitlab project status: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, "", fmt.Errorf("gitlab project status: read response: %w", err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return false, "该仓库已存在", nil
+	case http.StatusNotFound:
+		return true, "", nil
+	case http.StatusUnauthorized:
+		return false, "", fmt.Errorf("gitlab project status: token is invalid or revoked (HTTP %d)", resp.StatusCode)
+	default:
+		return false, "", gitLabHTTPError(resp.StatusCode, body)
+	}
+}
+
+// GitLabCreatedProject is the subset of the create-project response the
+// callers surface after a successful POST. DefaultBranch is empty for a
+// repository without an initial commit.
+type GitLabCreatedProject struct {
+	PathWithNamespace string `json:"path_with_namespace"`
+	WebURL            string `json:"web_url"`
+	HTTPURLToRepo     string `json:"http_url_to_repo"`
+	DefaultBranch     string `json:"default_branch"`
+	Visibility        string `json:"visibility"`
+}
+
+// CreateGitLabProject creates a project in the namespace selected by the
+// user (namespace_id comes from FetchGitLabNamespaces; the personal
+// namespace is one of those rows). initReadme seeds an initial README commit
+// so the fresh repository has a real default branch for the first push.
+func CreateGitLabProject(ctx context.Context, origin, token, name, path string, namespaceID int64, private, initReadme bool) (*GitLabCreatedProject, error) {
+	origin = strings.TrimSuffix(strings.TrimSpace(origin), "/")
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+	if name == "" || path == "" {
+		return nil, fmt.Errorf("gitlab create project: 仓库名不能为空")
+	}
+	if namespaceID <= 0 {
+		return nil, fmt.Errorf("gitlab create project: 缺少归属空间")
+	}
+	visibility := "public"
+	if private {
+		visibility = "private"
+	}
+	payload := map[string]any{
+		"name":         name,
+		"path":         path,
+		"namespace_id": namespaceID,
+		"visibility":   visibility,
+	}
+	if initReadme {
+		payload["initialize_with_readme"] = true
+	}
+	body, err := gitLabAPIPost(ctx, origin, token, "projects", payload)
+	if err != nil {
+		if strings.Contains(err.Error(), "already been taken") || strings.Contains(err.Error(), "already exists") {
+			return nil, fmt.Errorf("gitlab create project: 仓库名已被占用")
+		}
+		return nil, err
+	}
+	var created GitLabCreatedProject
+	if err := json.Unmarshal(body, &created); err != nil {
+		return nil, fmt.Errorf("gitlab create project: parse response: %w", err)
+	}
+	if created.PathWithNamespace == "" {
+		created.PathWithNamespace = path
+	}
+	if created.HTTPURLToRepo == "" {
+		created.HTTPURLToRepo = origin + "/" + created.PathWithNamespace + ".git"
+	}
+	return &created, nil
+}
+
+// GitLabScopesHaveCreate reports the token can create projects via the API:
+// only the api scope grants POST /projects — write_repository covers clone
+// and push but not creation. A stored empty scope list means the scope could
+// not be read and stays optimistic, like GitLabScopesHaveRepo; the create
+// call surfaces a real permission error anyway.
+func GitLabScopesHaveCreate(scopeList string) bool {
+	scopeList = strings.TrimSpace(scopeList)
+	if scopeList == "" {
+		return true
+	}
+	for _, part := range strings.FieldsFunc(scopeList, func(r rune) bool {
+		return r == ',' || r == ' '
+	}) {
+		if part == "api" {
+			return true
+		}
+	}
+	return false
 }

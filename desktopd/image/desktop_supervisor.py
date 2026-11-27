@@ -779,6 +779,10 @@ def ensure(key):
     else:
         ensure_vnc(key, display)
         ensure_proxy(key, display)
+    # The gate is a long-running Python process, not a file deployment by
+    # itself. Reconcile it here too: an owner-only desktop has no bot watcher
+    # to replace a gate that is still running the pre-deploy supervisor.
+    ensure_gates()
     ensure_watch(key, display)
     reap(users, key)
     save_registry(registry)
@@ -4098,6 +4102,7 @@ def watch_vnc(key, display):
             if desktop_running(key):
                 ensure_vnc(key, display)
                 ensure_proxy(key, display)
+                ensure_gates()
                 keep_screen_awake(display)
                 try:
                     ensure_bot_panel(key, display)
@@ -4471,16 +4476,19 @@ def request_authorized(head, token):
 #     JSON header {seq, key, ts, codec, w, h}, H.264 Annex B access unit
 #     (SPS/PPS in front of every IDR). With ?mse=1 the binary messages are
 #     fragmented MP4 instead, for a Media Source player (one frame later).
-#   server -> client text: hello, lease, clipboard, input_error.
-#   client -> server text: input {seq, events}, frame_ack, request_keyframe,
-#     clipboard_set, clipboard_get.
+#   server -> client text: hello (with display_state), display_state, lease,
+#     clipboard, input_error.
+#   client -> server text: input {seq, events}, frame_ack,
+#     request_keyframe {reason?}, clipboard_set, clipboard_get.
 #
-# Every viewer gets its own ffmpeg, so its first frame is an IDR. ffmpeg's
-# mpdecimate drops frames that did not change and the output is variable
-# frame rate, so an idle screen sends almost nothing. The encoder writes FLV,
-# whose tags carry exact frame sizes with no muxer delay. When the viewer falls
-# behind (queued frames or unacknowledged frames pile up) deltas are dropped
-# until the next IDR; an encoder restart forces one when it does not come.
+# Annex B viewers share one ffmpeg per display and start from its cached
+# keyframe chain. ffmpeg's mpdecimate drops frames that did not change and the
+# output is variable frame rate, so an idle screen sends almost nothing. The
+# encoder writes FLV, whose tags carry exact frame sizes with no muxer delay.
+# When one viewer falls behind (queued frames or unacknowledged frames pile
+# up) its deltas are dropped; resynchronization atomically replays the cached
+# GOP for that viewer or waits for the encoder's next periodic IDR. Consumer
+# loss is never a reason to restart the shared capture.
 #
 # Input is injected through one XTEST connection per display, spoken directly
 # over the X11 socket (no python-xlib needed, so older images work too).
@@ -4501,10 +4509,16 @@ H264_DEFAULT_FPS = 15
 # timed out at 90-100 s. 20 fps with a light mpdecimate still sends a moving
 # pointer or caret (they change whole 8x8 blocks) but nothing on a still screen.
 H264_INTERACTIVE_FPS = 20
+H264_MAX_FPS = 30
 H264_GOP_SECONDS = 2
 H264_MAX_QUEUED = 3
 H264_MAX_INFLIGHT = 8
 H264_IDR_WAIT_SECONDS = 1.0
+# A consumer resync never restarts the shared encoder. Recovery replays at
+# most one complete encoder GOP (bounded by the keyframe interval); anything
+# longer is closer to the next periodic IDR than to a useful retransmission.
+H264_RESYNC_REPLAY_MAX = H264_MAX_FPS * H264_GOP_SECONDS
+H264_RESYNC_SECONDS = 2.0
 INPUT_LEASE_SECONDS = 5
 _h264_streams = threading.BoundedSemaphore(H264_MAX_STREAMS)
 
@@ -4521,7 +4535,7 @@ def h264_fps(env=None):
         value = int(str(env.get("MACLAW_DESKTOP_H264_FPS", "")).strip() or H264_DEFAULT_FPS)
     except ValueError:
         value = H264_DEFAULT_FPS
-    return max(5, min(30, value))
+    return max(5, min(H264_MAX_FPS, value))
 
 
 def request_target(head):
@@ -4628,6 +4642,17 @@ def h264_display(credential, owner_token):
     """The display a gate token may watch, or None."""
     screen = h264_screen(credential, owner_token)
     return screen[0] if screen else None
+
+
+def x_display_running(key, display):
+    """The X screen itself is up, whether or not Chromium currently is."""
+    try:
+        pid = read_pids(key).get("xvfb")
+        if pid_alive(pid) and desktop_part(pid, key, display) == "xvfb":
+            return True
+        return bool(find_desktop_parts(key, display).get("xvfb"))
+    except OSError:
+        return False
 
 
 def h264_input_allowed(key, owner):
@@ -5144,8 +5169,9 @@ def clipboard_get(display):
 H264_PLAYER = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>desktop</title>
 <style>html,body{margin:0;height:100%;background:#111;overflow:hidden}#s{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;outline:none;touch-action:none;cursor:default}
 #b{position:absolute;top:8px;right:8px;padding:3px 10px;border-radius:12px;font:12px/18px system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.55);pointer-events:none;z-index:2}
-#b.you{background:rgba(22,128,61,.85)}#b.bot{background:rgba(180,83,9,.85)}</style>
-<canvas id=s tabindex=0></canvas><div id=b>连接中…</div>
+#b.you{background:rgba(22,128,61,.85)}#b.bot{background:rgba(180,83,9,.85)}
+#m{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ddd;background:#111;font:14px/1.7 system-ui,sans-serif;text-align:center;padding:0 28px;white-space:pre-line;z-index:1}</style>
+<canvas id=s tabindex=0></canvas><div id=m>连接中…</div><div id=b>连接中…</div>
 <script>
 // MaClaw desktop player (maclaw-h264/1, see docs/desktop-h264-takeover.md).
 "use strict";
@@ -5158,36 +5184,41 @@ const HAS_MSE=typeof MediaSource!=="undefined"&&MediaSource.isTypeSupported('vid
 // dots). The <video> element composites in hardware and looks correct.
 const USE_MSE=HAS_MSE&&(MSE||!HAS_WC);
 const badge=document.getElementById("b");
-let surface=document.getElementById("s"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false;
+let surface=document.getElementById("s"),overlay=document.getElementById("m"),ctx=null,ws=null,decoder=null,needKey=true,lastKeyReq=0,fails=0,gotFrame=false,lastRender=0,connectAt=0,streamStopped=false;
 let seq=Math.floor(Math.random()*1e6),pending=[],flushQueued=false,inputOn=false,lease="",held=new Map(),pasteHold=null,wheelAcc=[0,0];
-function fallback(){if(VNC){location.replace(VNC);return true}badge.textContent="此浏览器不支持 H.264 播放";return false}
+function status(text){overlay.textContent=text;overlay.style.display=text?"flex":"none"}
+function markRender(){gotFrame=true;fails=0;lastRender=performance.now();status("")}
+function fallback(){if(VNC){location.replace(VNC);return true}status("此浏览器不支持 H.264 播放\n桌面本身可能仍在运行");return false}
+function streamFailed(){if(VNC){location.replace(VNC);return true}status("桌面视频流异常，正在重连\n桌面本身可能仍在运行");noteStream("error");return false}
 function noteStream(event){try{parent.postMessage({source:"maclaw-desktop",event:event},"*")}catch(_){}}
 function show(){let t,c="";if(!ws||ws.readyState!==1)t="连接中…";else if(lease==="you"){t="你在控制";c="you"}else if(lease==="bot"){t="Bot 正在操作";c="bot"}else if(lease==="human")t="其他人在控制";else t=inputOn?"可以操作":"仅观看";badge.textContent=t;badge.className=c;try{parent.postMessage({type:"maclaw-desktop-lease",holder:lease,input:inputOn},"*")}catch(_){}}
 function send(type,payload){if(ws&&ws.readyState===1)ws.send(JSON.stringify(Object.assign({type},payload||{})))}
-function requestKey(){const n=performance.now();if(n-lastKeyReq<500)return;lastKeyReq=n;send("request_keyframe")}
+function requestKey(reason){const n=performance.now();if(n-lastKeyReq<500)return;lastKeyReq=n;send("request_keyframe",{reason:reason||""})}
 // ---- video
 function parseVideo(buf){const dv=new DataView(buf),hl=dv.getUint32(0),pl=dv.getUint32(4);const h=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,8,hl)));return{h,data:new Uint8Array(buf,8+hl,pl)}}
 function resetDecoder(){try{decoder&&decoder.state!=="closed"&&decoder.close()}catch(_){}decoder=null;needKey=true}
-function onVideo(buf){const{h,data}=parseVideo(buf);gotFrame=true;fails=0;
- if(!decoder||decoder.state==="closed"){if(!h.key){requestKey();return}
-  decoder=new VideoDecoder({output:f=>{try{if(surface.width!==f.displayWidth)surface.width=f.displayWidth;if(surface.height!==f.displayHeight)surface.height=f.displayHeight;ctx.drawImage(f,0,0)}finally{f.close()}},error:()=>{resetDecoder();requestKey()}});
+function onVideo(buf){const{h,data}=parseVideo(buf);
+ if(!decoder||decoder.state==="closed"){if(!h.key){requestKey("missing_key");return}
+  decoder=new VideoDecoder({output:f=>{try{if(surface.width!==f.displayWidth)surface.width=f.displayWidth;if(surface.height!==f.displayHeight)surface.height=f.displayHeight;ctx.drawImage(f,0,0);markRender()}finally{f.close()}},error:()=>{resetDecoder();requestKey("decoder_error")}});
   decoder.configure({codec:h.codec||"avc1.42C029",optimizeForLatency:true});needKey=true}
- if(needKey&&!h.key){requestKey();return}
- if(decoder.decodeQueueSize>4&&!h.key){needKey=true;requestKey();return}
+ if(needKey&&!h.key){requestKey("missing_key");return}
+ if(decoder.decodeQueueSize>4&&!h.key){needKey=true;requestKey("decoder_busy");return}
  if(h.key)needKey=false;
- try{decoder.decode(new EncodedVideoChunk({type:h.key?"key":"delta",timestamp:h.ts||0,data}))}catch(_){resetDecoder();requestKey();return}
+ try{decoder.decode(new EncodedVideoChunk({type:h.key?"key":"delta",timestamp:h.ts||0,data}))}catch(_){resetDecoder();requestKey("decoder_error");return}
  send("frame_ack",{seq:h.seq})}
 let ms=null,sb=null,mq=[];
-function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=v.muted=v.playsInline=true;v.tabIndex=0;v.style.cssText=surface.style.cssText;surface.replaceWith(v);surface=v;ms=new MediaSource();v.src=URL.createObjectURL(ms);
+function setupMSE(){const v=document.createElement("video");v.id="s";v.autoplay=v.muted=v.playsInline=true;v.tabIndex=0;v.style.cssText=surface.style.cssText;v.addEventListener("playing",markRender);v.addEventListener("timeupdate",markRender);surface.replaceWith(v);surface=v;ms=new MediaSource();v.src=URL.createObjectURL(ms);
  return new Promise(r=>ms.addEventListener("sourceopen",()=>{sb=ms.addSourceBuffer('video/mp4; codecs="avc1.42E029"');sb.mode="sequence";sb.addEventListener("updateend",pump);r()}))}
 function pump(){if(!sb||sb.updating||!mq.length)return;sb.appendBuffer(mq.shift());const b=sb.buffered,v=surface;if(b.length&&v.currentTime<b.end(0)-0.3)v.currentTime=b.end(0)-0.05;if(b.length&&b.end(0)-b.start(0)>30&&!sb.updating){try{sb.remove(b.start(0),b.end(0)-10)}catch(_){}}}
 // ---- connection
-function connect(){const qs=[];if(USE_MSE)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
+function watchVideo(){if(!ws||ws.readyState!==1)return;const idle=performance.now()-(gotFrame?lastRender:connectAt);if(idle>1800)requestKey("stalled");if(idle>6000){try{ws.close()}catch(_){}}}
+setInterval(watchVideo,1000);
+function connect(){connectAt=performance.now();gotFrame=false;streamStopped=false;const qs=[];if(USE_MSE)qs.push("mse=1");if(WANT_INPUT)qs.push("input=1");for(const k of["w","fps"]){const v=Q.get(k);if(v)qs.push(k+"="+encodeURIComponent(v))}const url=location.href.split("#")[0].replace(/^http/,"ws").replace(/h264\.html.*$/,"h264")+(qs.length?"?"+qs.join("&"):"");
  ws=new WebSocket(url);ws.binaryType="arraybuffer";show();
  ws.onopen=()=>noteStream("connect");
- ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{if(mq.length>=8){mq=[];ws.close();return}gotFrame=true;fails=0;mq.push(e.data);pump()}};
- ws.onclose=()=>{mq=[];noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();fails++;if(!gotFrame&&fails>=3&&fallback())return;setTimeout(connect,Math.min(5000,500*fails))}}
-function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;show()}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
+ ws.onmessage=e=>{if(typeof e.data==="string"){control(JSON.parse(e.data));return}if(!USE_MSE)onVideo(e.data);else{if(mq.length>=8){mq=[];ws.close();return}mq.push(e.data);pump()}};
+ ws.onclose=()=>{mq=[];noteStream("disconnect");ws=null;resetDecoder();releaseLocal();show();if(streamStopped){status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");setTimeout(connect,5000);return}fails++;if(!gotFrame&&fails>=3){if(streamFailed())return}else{status(gotFrame?"视频连接中断，正在重连…":"正在等待桌面画面…")}setTimeout(connect,Math.min(5000,500*fails))}}
+function control(m){if(m.type==="hello"){inputOn=WANT_INPUT&&!!m.input;if(m.display_state&&m.display_state!=="running"){streamStopped=true;status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");try{ws.close()}catch(_){}}show()}else if(m.type==="display_state"){if(m.state&&m.state!=="running"){streamStopped=true;status("桌面画面未运行（可能正在休眠）\n桌面任务本身可能仍在继续");try{ws.close()}catch(_){}}}else if(m.type==="lease"){const was=lease;lease=m.holder||"";inputOn=WANT_INPUT&&!!m.input;if(was==="you"&&lease!=="you")releaseLocal();show()}
  else if(m.type==="clipboard"&&typeof m.text==="string"){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(m.text).catch(()=>{})}
  else if(m.type==="input_error"){if(m.code==="sequence_gap"&&typeof m.expected==="number")seq=m.expected}}
 // ---- input
@@ -5231,7 +5262,7 @@ class H264SharedEncoder:
     The fragmented-MP4 (MSE) fallback keeps its own encoder: each MSE viewer
     needs its own init segment."""
 
-    GOP_CACHE_MAX = 240
+    GOP_CACHE_MAX = H264_RESYNC_REPLAY_MAX
 
     def __init__(self, display, width, height, fps):
         self.display = display
@@ -5257,8 +5288,12 @@ class H264SharedEncoder:
     def subscribe(self, viewer):
         with self.lock:
             self.viewers.append(viewer)
-            for frame, key in self.gop:
-                viewer.offer(frame, key)
+            gop = list(self.gop)
+            if gop and gop[0][1] and viewer.replay_gop(gop):
+                pass
+            else:
+                with viewer.cond:
+                    viewer._want_idr()
             mode = self._mode()
             start = self.thread is None
             change = not start and mode != self.interactive
@@ -5305,14 +5340,38 @@ class H264SharedEncoder:
         return h264_ffmpeg_argv(self.display, grab, fps, False, self.interactive, out_size=self.size)
 
     def fan_out(self, frame, key):
+        # Cache update, replay, and live delivery are one serialization order.
+        # viewer.offer only touches that viewer's condition variable, never the
+        # encoder lock, so holding the encoder lock here cannot deadlock; it is
+        # what makes a resynchronized chain contiguous instead of missing the
+        # frames produced while the replay was being prepared.
         with self.lock:
             if key:
                 self.gop = []
             if len(self.gop) < self.GOP_CACHE_MAX:
                 self.gop.append((frame, key))
             viewers = list(self.viewers)
-        for viewer in viewers:
-            viewer.offer(frame, key)
+            for viewer in viewers:
+                viewer.offer(frame, key)
+
+    def resync(self, viewer):
+        """Re-send the current GOP to one consumer without touching ffmpeg.
+
+        H.264 P frames are only useful as a complete chain back to their
+        IDR, so the replay is all-or-nothing. fan_out holds this encoder lock
+        while offering live frames, which makes the copy-and-replay atomic:
+        frames cannot be dropped by the viewer while it is still marked as
+        needing an IDR and then be missing from the replayed reference chain.
+        """
+        with self.lock:
+            gop = list(self.gop)
+            if not gop or not gop[0][1] or len(gop) > H264_RESYNC_REPLAY_MAX:
+                return False
+            # Keep the encoder lock through the replay itself. fan_out offers
+            # live frames under the same lock, so a frame cannot be dropped by
+            # this viewer after the copy but before the replay; such a hole
+            # would make the replayed P-chain permanently undecodable.
+            return viewer.replay_gop(gop)
 
     def spawn(self, argv, env):
         return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -5353,6 +5412,18 @@ class H264SharedEncoder:
                 self.proc = None
             if self.stopped.is_set():
                 break
+            if not x_display_running("", self.display):
+                # Xvfb is the capture source. Once it is gone there is no
+                # encoder failure to retry: restarting ffmpeg would only turn a
+                # sleeping display into a black-frame restart loop. Tell the
+                # viewers the authoritative state before ending the shared
+                # encoder.
+                log_event("h264_encoder_display_stopped", display=self.display)
+                with self.lock:
+                    stopped_viewers = list(self.viewers)
+                for viewer in stopped_viewers:
+                    viewer.display_stopped()
+                break
             if self.restart.is_set():
                 continue
             failures = failures + 1 if time.monotonic() - started < 5 else 1
@@ -5383,8 +5454,8 @@ def h264_shared_encoder(display, width, height, fps):
 
 
 class H264Viewer:
-    """One /h264 WebSocket: an encoder for this viewer, the video sender,
-    the control reader and the lease ticker."""
+    """One /h264 WebSocket: the shared-encoder subscription, video sender,
+    control reader and lease ticker."""
 
     def __init__(self, client, display, key, owner, mse=False, fps=H264_DEFAULT_FPS, want_input=False, view_width=0):
         self.client = client
@@ -5404,6 +5475,7 @@ class H264Viewer:
         self.queue = []
         self.need_idr = False
         self.need_idr_since = 0.0
+        self.last_resync = 0.0
         self.restart = threading.Event()
         self.finished = False
         self.last_restart = 0.0
@@ -5441,7 +5513,6 @@ class H264Viewer:
     def offer(self, frame, key):
         """Queue one access unit, dropping deltas while the viewer is behind."""
         with self.cond:
-            self.sequence += 1
             behind = len(self.queue) >= H264_MAX_QUEUED
             if self.acked is not None and self.sent - self.acked > H264_MAX_INFLIGHT:
                 behind = True
@@ -5449,15 +5520,32 @@ class H264Viewer:
                 self.queue = [item for item in self.queue if item[2]]
                 self._want_idr()
             if self.need_idr and not key:
-                if time.monotonic() - self.need_idr_since > H264_IDR_WAIT_SECONDS:
-                    self._restart_encoder()
+                # Sequence numbers describe access units the server actually
+                # queued; a frame dropped before enqueue does not get one.
                 return
             if key:
                 # Everything queued before an IDR is useless after it.
                 self.queue = []
                 self.need_idr = False
+            self.sequence += 1
             self.queue.append((self.sequence, frame, key))
             self.cond.notify()
+
+    def replay_gop(self, gop):
+        """Queue a complete cached GOP again for this viewer only."""
+        if not gop or len(gop) > H264_RESYNC_REPLAY_MAX:
+            return False
+        with self.cond:
+            if self.closed.is_set():
+                return False
+            # Any older deltas still waiting here belong to the broken chain.
+            self.queue = []
+            for frame, key in gop:
+                self.sequence += 1
+                self.queue.append((self.sequence, frame, key))
+            self.need_idr = False
+            self.cond.notify_all()
+            return True
 
     def offer_mse(self, chunk):
         with self.cond:
@@ -5482,11 +5570,18 @@ class H264Viewer:
             self.finished = True
             self.cond.notify_all()
 
-    def _restart_encoder(self):
+    def _resynchronize(self):
         shared = getattr(self, "shared", None)
         if shared is not None:
-            self.need_idr_since = time.monotonic()
-            shared.request_restart()
+            # Consumer desynchronization is not an encoder failure. Replaying
+            # the small cached GOP restores this viewer's reference chain while
+            # other viewers keep their uninterrupted capture.
+            now = time.monotonic()
+            if now - self.last_resync < H264_RESYNC_SECONDS:
+                return
+            self.last_resync = now
+            if shared.resync(self):
+                self.need_idr_since = now
             return
         now = time.monotonic()
         if now - self.last_restart < H264_IDR_WAIT_SECONDS:
@@ -5591,7 +5686,11 @@ class H264Viewer:
         elif kind == "request_keyframe":
             with self.cond:
                 self._want_idr()
-                self._restart_encoder()
+            # A full decoder is already the congestion signal; adding a replay
+            # to it positive-feedbacks. It still needs the next IDR, just not
+            # duplicate bandwidth. Decoder loss/stalls get the cached chain.
+            if str(message.get("reason") or "") != "decoder_busy":
+                self._resynchronize()
         elif kind == "input":
             self.handle_input(message)
         elif kind == "clipboard_set":
@@ -5671,6 +5770,30 @@ class H264Viewer:
             self.send_json({"type": "lease", "holder": holder, "input": allowed,
                             "takeover": bool(self.key) and takeover_state(self.key) is not None})
 
+    def display_stopped(self):
+        """Close this stream as a stopped display, not as a video failure."""
+        try:
+            self.send_json({"type": "display_state", "state": "display_stopped"})
+        except OSError:
+            pass
+        self.close_reason = getattr(self, "close_reason", "") or "display_stopped"
+        self.close()
+
+    def display_watch_loop(self):
+        """A stream is valid only while its X screen exists.
+
+        ffmpeg can keep a viewer connected across the display's shutdown path
+        long enough to present a black canvas; the stream's authoritative
+        state is the X screen itself. Closing here makes the player show the
+        sleeping/stopped state and retry, instead of treating the loss as a
+        video decode problem.
+        """
+        while not self.closed.wait(1.0):
+            if x_display_running(self.key, self.display):
+                continue
+            self.display_stopped()
+            return
+
     def lease_loop(self):
         try:
             while not self.closed.wait(0.5):
@@ -5716,10 +5839,18 @@ class H264Viewer:
             heal_browser_window(self.key, self.display, "viewer_open")
         except Exception:
             pass
+        screen_up = x_display_running(self.key, self.display)
         self.send_json({"type": "hello", "proto": "maclaw-h264/1", "width": self.width, "height": self.height,
                         "fps": self.fps, "mode": "fmp4" if self.mse else "annexb", "input": allowed,
-                        "clipboard": clipboard_tool() is not None})
-        targets = [self.reader_loop, self.lease_loop]
+                        "clipboard": clipboard_tool() is not None,
+                        "display_state": "running" if screen_up else "display_stopped"})
+        if not screen_up:
+            log_event("h264_display_stopped", key=self.key, display=self.display)
+            self.close()
+            log_event("h264_close", key=self.key, display=self.display, interactive=self.want_input,
+                      frames=0, seconds=round(time.monotonic() - started, 1), reason="display_stopped")
+            return
+        targets = [self.reader_loop, self.lease_loop, self.display_watch_loop]
         if self.mse:
             targets.append(self.encoder_loop)
         else:

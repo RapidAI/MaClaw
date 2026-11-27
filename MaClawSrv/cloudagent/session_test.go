@@ -919,6 +919,223 @@ func TestServeFileOnlyServesProducedPaths(t *testing.T) {
 	}
 }
 
+// The response frame is published before Finish writes messages.files, and
+// the desktop does not retry a failed auto-fetch. The staged key has to be
+// servable in that gap, then the book takes over once Finish stores it.
+func TestServeFileServesStagedPathBeforeFinish(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	inst := &instance{dir: dir, meta: Spec{ID: "cag_stage", Kind: KindSession}, book: b}
+	rt := &Runtime{}
+
+	workspace := filepath.Join(dir, "workspace")
+	bodies := map[string]string{
+		"report.txt": "ok-bytes",
+		"extra.txt":  "extra-bytes",
+		"stray.txt":  "not-produced",
+		"held.txt":   "held-bytes",
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range bodies {
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "写报告", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.serveFile(inst, "report.txt"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("unstaged before finish: %v", err)
+	}
+	inst.stageProduced([]string{"report.txt", "extra.txt", "", "  "})
+	if !inst.stagedHas(" report.txt ") {
+		t.Fatal("staged lookup did not trim")
+	}
+	assertServedFile(t, rt, inst, "report.txt", "ok-bytes")
+	if _, err := rt.serveFile(inst, "stray.txt"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("stray: %v", err)
+	}
+	inst.stageProduced([]string{"../git.json"})
+	if _, err := rt.serveFile(inst, "../git.json"); err == nil || !strings.Contains(err.Error(), "路径超出工作区") {
+		t.Fatalf("staged escape: %v", err)
+	}
+
+	rt.finishTurn(inst, requestID, "task_1", "报告好了", false, []string{"report.txt"}, time.Now())
+	if inst.stagedHas("report.txt") {
+		t.Fatal("successful finish left the stored path staged")
+	}
+	if !inst.stagedHas("extra.txt") {
+		t.Fatal("finish cleared a path it did not store")
+	}
+	if !b.producedPaths()["report.txt"] || b.producedPaths()["extra.txt"] {
+		t.Fatalf("book keys = %#v", b.producedPaths())
+	}
+	assertServedFile(t, rt, inst, "report.txt", "ok-bytes")
+	assertServedFile(t, rt, inst, "extra.txt", "extra-bytes")
+	if _, err := rt.serveFile(inst, "stray.txt"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("stray after finish: %v", err)
+	}
+
+	heldID, _, err := b.Begin("c2", "task_2", "再写", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.stageProduced([]string{"held.txt"})
+	if _, err := b.interrupt(time.Now(), "中断", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	rt.finishTurn(inst, heldID, "task_2", "晚了", false, []string{"held.txt"}, time.Now())
+	if !inst.stagedHas("held.txt") {
+		t.Fatal("failed finish dropped the staged path")
+	}
+	if b.producedPaths()["held.txt"] {
+		t.Fatal("interrupted turn recorded the file")
+	}
+	assertServedFile(t, rt, inst, "held.txt", "held-bytes")
+}
+
+func TestRetargetStagedFollowsMovedKey(t *testing.T) {
+	inst := &instance{}
+	inst.stageProduced([]string{"snake/game.cpp", "stay.txt"})
+	inst.retargetStaged(map[string]string{"snake": "snake.pre-checkout"})
+	if inst.stagedHas("snake/game.cpp") {
+		t.Fatal("old staged key still fetchable")
+	}
+	if !inst.stagedHas("snake.pre-checkout/game.cpp") || !inst.stagedHas("stay.txt") {
+		t.Fatal("staged keys did not follow the book rename")
+	}
+	inst.retargetStaged(nil)
+	if !inst.stagedHas("stay.txt") {
+		t.Fatal("empty rename dropped a staged key")
+	}
+}
+
+// The desktop reloads history when the response frame arrives, which is
+// before finishTurn. The assistant row and its files have to be in the book
+// while the turn is still the running lock, and a fetch must succeed from
+// that row alone.
+func TestServeFileServesSealedReplyBeforeFinish(t *testing.T) {
+	dir := t.TempDir()
+	b, err := openBook(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	inst := &instance{dir: dir, meta: Spec{ID: "cag_seal", Kind: KindSession}, book: b}
+	rt := &Runtime{}
+	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "weather.pdf"), []byte("%PDF-seal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "stray.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requestID, _, err := b.Begin("c1", "task_1", "生成pdf", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.serveFile(inst, "weather.pdf"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("before seal: %v", err)
+	}
+	stored, err := b.sealReply(requestID, "天气已写入 PDF", false, []string{"weather.pdf"}, time.Now())
+	if err != nil || !stored {
+		t.Fatalf("seal %v %v", err, stored)
+	}
+	status, err := b.Status(requestID)
+	if err != nil || status != "running" {
+		t.Fatalf("status after seal %q %v", status, err)
+	}
+	if _, _, err := b.Begin("c2", "task_1", "另一轮", time.Now()); !errors.Is(err, errBusy) {
+		t.Fatalf("seal released the running lock: %v", err)
+	}
+	lines, _, files, requestIDs, _, err := b.history("task_1")
+	if err != nil || len(lines) != 2 || lines[1] != "assistant\n天气已写入 PDF" {
+		t.Fatalf("history %#v %v", lines, err)
+	}
+	if len(requestIDs) != 2 || requestIDs[0] != requestID || requestIDs[1] != requestID {
+		t.Fatalf("request ids %#v", requestIDs)
+	}
+	if len(files) != 2 || len(files[1]) != 1 || files[1][0] != "weather.pdf" {
+		t.Fatalf("files %#v", files)
+	}
+	assertServedFile(t, rt, inst, "weather.pdf", "%PDF-seal")
+	if _, err := rt.serveFile(inst, "stray.txt"); err == nil || !strings.Contains(err.Error(), "没有找到这个文件") {
+		t.Fatalf("stray after seal: %v", err)
+	}
+	again, err := b.sealReply(requestID, "另一份正文", false, []string{"stray.txt"}, time.Now())
+	if err != nil || !again {
+		t.Fatalf("second seal %v %v", err, again)
+	}
+	lines, _, files, requestIDs, _, err = b.history("task_1")
+	if err != nil || len(lines) != 2 || lines[1] != "assistant\n天气已写入 PDF" || files[1][0] != "weather.pdf" {
+		t.Fatalf("second seal rewrote history %#v %#v %v", lines, files, err)
+	}
+	wrote, err := b.Finish(requestID, "晚到的另一份正文", false, nil, time.Now())
+	if err != nil || !wrote {
+		t.Fatalf("finish %v %v", err, wrote)
+	}
+	lines, err = b.History("task_1")
+	if err != nil || len(lines) != 2 || lines[1] != "assistant\n天气已写入 PDF" {
+		t.Fatalf("finish duplicated %#v %v", lines, err)
+	}
+	if status, err = b.Status(requestID); err != nil || status != "finished" {
+		t.Fatalf("status after finish %q %v", status, err)
+	}
+	assertServedFile(t, rt, inst, "weather.pdf", "%PDF-seal")
+
+	heldID, _, err := b.Begin("c3", "task_2", "再生成", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "held.pdf"), []byte("%PDF-held"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.sealReply(heldID, "已生成", false, []string{"held.pdf"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.interrupt(time.Now(), "已停止", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err = b.Finish(heldID, "晚了", false, []string{"held.pdf"}, time.Now())
+	if err != nil || wrote {
+		t.Fatalf("finish after stop %v %v", err, wrote)
+	}
+	if !b.producedPaths()["held.pdf"] {
+		t.Fatal("stop after seal dropped the stored file")
+	}
+	heldLines, err := b.History("task_2")
+	if err != nil || len(heldLines) != 3 || heldLines[1] != "assistant\n已生成" {
+		t.Fatalf("stopped history %#v %v", heldLines, err)
+	}
+	assertServedFile(t, rt, inst, "held.pdf", "%PDF-held")
+}
+
+func assertServedFile(t *testing.T, rt *Runtime, inst *instance, rel, want string) {
+	t.Helper()
+	raw, err := rt.serveFile(inst, rel)
+	if err != nil {
+		t.Fatalf("serve %s: %v", rel, err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	got, err := base64.StdEncoding.DecodeString(fmt.Sprint(body["data_base64"]))
+	if err != nil || string(got) != want {
+		t.Fatalf("serve %s bytes %q %v", rel, got, err)
+	}
+}
+
 // A coding turn that started before ConnectGit keeps writing beside the
 // checkout. The book still names snake/game.cpp, and the checkout itself
 // can be empty. Fetch and export have to see the stranded file.
@@ -1579,4 +1796,140 @@ func TestFinishTurnDoesNotBlockOnHubHeartbeatRetry(t *testing.T) {
 		t.Fatal("finishTurn blocked behind the Hub heartbeat retry")
 	}
 	unblock()
+}
+
+// 手机页：cloud_get_task 窗口化返回尾部并按请求把过程行挂到最后一行，
+// cloud_list_tasks 带状态，cloud_delete_task 先取消在跑的回合再整链清除。
+func TestCloudGetTaskWindowEventsAndDelete(t *testing.T) {
+	rt := openRuntime(t)
+	spec := putSession(t, rt, "http://127.0.0.1:9")
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每回合一个互不重叠的 10 秒窗：用户行在窗头、回复在窗尾，时间序天然成立。
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	runTurn := func(taskID, text, reply string, at time.Time) string {
+		t.Helper()
+		requestID, created, err := inst.book.Begin("", taskID, text, at)
+		if err != nil || !created || requestID == "" {
+			t.Fatalf("begin %s: %v %v", taskID, err, created)
+		}
+		wrote, err := inst.book.Finish(requestID, reply, false, nil, at.Add(time.Second))
+		if err != nil || !wrote {
+			t.Fatalf("finish %s: %v %v", taskID, err, wrote)
+		}
+		return requestID
+	}
+	var lastReq string
+	for i := 0; i < 3; i++ {
+		lastReq = runTurn("task-a", fmt.Sprintf("第%d步", i+1), fmt.Sprintf("完成%d", i+1), base.Add(time.Duration(i)*10*time.Second))
+	}
+	if err := inst.book.AppendTurnEvent(lastReq, "task-a", "progress", "读取 README", base.Add(31*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.AppendTurnEvent(lastReq, "task-a", "progress", "改写标题", base.Add(32*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.book.SealThinking(lastReq, "task-a", "先看结构", base.Add(33*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	lastReqB := runTurn("task-b", "另一件事", "搞定", base.Add(40*time.Second))
+
+	raw, err := rt.Control(context.Background(), spec.ID, "user-a", "cloud_list_tasks", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Tasks []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil || len(list.Tasks) != 2 {
+		t.Fatalf("list: %s", raw)
+	}
+	for _, row := range list.Tasks {
+		if row.Status != "finished" {
+			t.Fatalf("list status %s = %q", row.ID, row.Status)
+		}
+	}
+
+	// 窗口=4：回合 2、3。过程行挂在回合 3 的助手行（该请求在本窗口的最后一行）。
+	raw, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_get_task", []byte(`{"task_id":"task-a","history_limit":4}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		Messages     []string `json:"messages"`
+		MessageTotal int      `json:"message_total"`
+		Events       [][]struct {
+			Seq  int    `json:"seq"`
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		} `json:"events"`
+		TurnStatus string `json:"turn_status"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.MessageTotal != 6 || len(detail.Messages) != 4 || len(detail.Events) != 4 {
+		t.Fatalf("window total=%d msgs=%d events=%d", detail.MessageTotal, len(detail.Messages), len(detail.Events))
+	}
+	if detail.Messages[2] != "user\n第3步" || detail.Messages[3] != "assistant\n完成3" {
+		t.Fatalf("window rows %#v", detail.Messages)
+	}
+	if len(detail.Events[3]) != 3 || detail.Events[3][0].Text != "读取 README" ||
+		detail.Events[3][1].Text != "改写标题" || detail.Events[3][2].Text != "先看结构" {
+		t.Fatalf("aligned events %#v", detail.Events[3])
+	}
+	if len(detail.Events[0]) != 0 || len(detail.Events[2]) != 0 {
+		t.Fatalf("stray events %#v", detail.Events)
+	}
+	if detail.TurnStatus != "finished" {
+		t.Fatalf("turn status %q", detail.TurnStatus)
+	}
+
+	// 删除带在跑回合与排队输入的任务：先取消，再全链清除。
+	if _, _, err := inst.book.Begin("", "task-b", "第三件事", base.Add(60*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inst.book.Enqueue("", "task-a", "排队的输入", base.Add(70*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_delete_task", []byte(`{"task_id":"task-a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deleted struct {
+		OK        bool     `json:"ok"`
+		Cancelled []string `json:"cancelled"`
+	}
+	if err := json.Unmarshal(raw, &deleted); err != nil || !deleted.OK {
+		t.Fatalf("delete: %s", raw)
+	}
+	raw, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_list_tasks", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &list); err != nil || len(list.Tasks) != 1 || list.Tasks[0].ID != "task-b" {
+		t.Fatalf("list after delete: %s", raw)
+	}
+	raw, err = rt.Control(context.Background(), spec.ID, "user-a", "cloud_get_task", []byte(`{"task_id":"task-a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil || len(detail.Messages) != 0 || detail.MessageTotal != 0 || detail.TurnStatus != "" {
+		t.Fatalf("deleted task detail: %s", raw)
+	}
+	var queued int
+	if err := inst.book.db.QueryRow(`SELECT COUNT(*) FROM queued_turns WHERE task_id = 'task-a'`).Scan(&queued); err != nil || queued != 0 {
+		t.Fatalf("queued rows after delete %d %v", queued, err)
+	}
+	// 在跑的回合被取消（book 状态），删除本身不让位给任何残留 running。
+	status, err := inst.book.latestTurn("task-b")
+	if err != nil || status != "running" {
+		t.Fatalf("task-b turn after deleting task-a: %q %v", status, err)
+	}
+	_ = lastReqB
 }

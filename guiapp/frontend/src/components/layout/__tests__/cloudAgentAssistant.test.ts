@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyCloudAgentStream, applyCloudAgentWatch, cloudAgentRound, cloudAgentSessionKey, cloudAgentStoreKey, resetCloudAgentRounds, cloudAgentWorkflow as workflowForKey } from '../cloudAgentSession';
-import { cloudAgentCatalog, openCloudAgent, resetCloudAssistantForTests, startCloudAgentFromNewTask, submitCloudWorkflowForm } from '../cloudAgentAssistant';
+import { cloudAgentCatalog, openCloudAgent, refreshCloudGit, resetCloudAssistantForTests, startCloudAgentFromNewTask, submitCloudWorkflowForm } from '../cloudAgentAssistant';
 import { remoteAssistantSend, remoteAssistantSessionSnapshot, remoteAssistantStop } from '../remoteAssistantSession';
 import { cloudTurnRunning, noteCloudTurn, resetCloudTurnNotes, type CloudAgentListItem } from '../taskPlace';
 
@@ -772,11 +772,14 @@ describe('cloud agent assistant', () => {
         });
         for (let tick = 0; tick < 8 && historyCalls < 2; tick += 1) await Promise.resolve();
         expect(historyCalls).toBe(2);
-        releaseReload(JSON.stringify({ messages: ['user\n之前', 'assistant\n好'] }));
+        releaseReload(JSON.stringify({
+            messages: ['user\n之前', 'assistant\n好'],
+            request_ids: ['req-1', 'req-1'],
+        }));
         for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
         const contents = remoteAssistantSessionSnapshot()?.messages.map(message => message.content) || [];
         expect(contents.filter(content => content.includes('下一句'))).toEqual(['下一句']);
-        expect(contents.some(content => content.includes('好'))).toBe(true);
+        expect(contents.filter(content => content.includes('好'))).toEqual(['好']);
         const sentAt = contents.findIndex(content => content.includes('下一句'));
         const replyAt = contents.findIndex(content => content.includes('好'));
         expect(replyAt).toBeGreaterThanOrEqual(0);
@@ -787,7 +790,10 @@ describe('cloud agent assistant', () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
         const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
-            if (name === 'cloud_get_task') return JSON.stringify({ messages: ['assistant\n旧回复'] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['assistant\n旧回复'],
+                request_ids: ['req-1'],
+            });
             if (name === 'cloud_watch_task') {
                 return JSON.stringify({
                     request_id: 'req-1',
@@ -888,6 +894,374 @@ describe('cloud agent assistant', () => {
         expect(started?.queued).toBeFalsy();
     });
 
+    it('keeps an identical parked send queued when a later one starts', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const clientIDs: string[] = [];
+        const op = vi.fn(async (_grant: string, name: string, payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                clientIDs.push(String(JSON.parse(String(payload || '{}')).client_message_id || ''));
+                return JSON.stringify({ accepted: true, queued: true, queue_id: 'que_1', task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('你好')).toBe(true);
+        expect(await remoteAssistantSend('你好')).toBe(true);
+        expect(clientIDs).toHaveLength(2);
+        const rows = () => (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.role === 'user' && message.content === '你好');
+        expect(rows().map(message => !!message.queued)).toEqual([true, true]);
+
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-2',
+            cursor: 1,
+            display_text: '你好',
+            client_message_id: clientIDs[1],
+        });
+        const after = rows();
+        expect(after).toHaveLength(2);
+        expect(!!after[0].queued).toBe(true);
+        expect(after[1].queued).toBeFalsy();
+    });
+
+    it('keeps the open answer above every parked send', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let sent = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                sent += 1;
+                if (sent === 1) return JSON.stringify({ accepted: true, request_id: 'req-1', task_id: 'task-1' });
+                return JSON.stringify({ accepted: true, queued: true, queue_id: `que_${sent}`, task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('先问')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '先问',
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'token',
+            request_id: 'req-1',
+            text: '正在答',
+            cursor: 2,
+        });
+        expect(await remoteAssistantSend('甲')).toBe(true);
+        expect(await remoteAssistantSend('乙')).toBe(true);
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(messages.map(message => message.content)).toEqual(['先问', '正在答', '甲', '乙']);
+        expect(messages.filter(message => message.queued).map(message => message.content)).toEqual(['甲', '乙']);
+    });
+
+    it('keeps the open round card and notice above parked sends', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let sent = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                sent += 1;
+                if (sent === 1) return JSON.stringify({ accepted: true, request_id: 'req-1', task_id: 'task-1' });
+                return JSON.stringify({ accepted: true, queued: true, queue_id: `que_${sent}`, task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('先问')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '先问',
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'token',
+            request_id: 'req-1',
+            text: '正在答',
+            cursor: 2,
+        });
+        expect(await remoteAssistantSend('甲')).toBe(true);
+        expect(await remoteAssistantSend('乙')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'card',
+            request_id: 'req-1',
+            cursor: 3,
+            kind: 'confirmation',
+            text: '请确认',
+            confirmation: { id: 'gate-1' },
+            actions: [{ label: '好', command: '好' }],
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'card',
+            request_id: 'req-1',
+            cursor: 4,
+            kind: 'notice',
+            text: '注意一下',
+        });
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(messages.map(message => message.content)).toEqual(['先问', '正在答', '注意一下', '甲', '乙']);
+        const answer = messages.find(message => message.content === '正在答');
+        expect(answer?.actions?.map(action => action.command)).toEqual(['好']);
+        expect(answer?.confirmation?.id).toBe('gate-1');
+        expect(messages.filter(message => message.queued).map(message => message.content)).toEqual(['甲', '乙']);
+    });
+
+    it('keeps a card that arrives before the answer above parked sends', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let sent = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                sent += 1;
+                if (sent === 1) return JSON.stringify({ accepted: true, request_id: 'req-1', task_id: 'task-1' });
+                return JSON.stringify({ accepted: true, queued: true, queue_id: `que_${sent}`, task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('先问')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '先问',
+        });
+        expect(await remoteAssistantSend('甲')).toBe(true);
+        expect(await remoteAssistantSend('乙')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'card',
+            request_id: 'req-1',
+            cursor: 2,
+            kind: 'confirmation',
+            text: '请确认',
+            confirmation: { id: 'gate-1' },
+            actions: [{ label: '好', command: '好' }],
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'card',
+            request_id: 'req-1',
+            cursor: 3,
+            kind: 'notice',
+            text: '注意一下',
+        });
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(messages.map(message => message.content)).toEqual(['先问', '请确认', '注意一下', '甲', '乙']);
+        const ask = messages.find(message => message.content === '请确认');
+        expect(ask?.actions?.map(action => action.command)).toEqual(['好']);
+        expect(ask?.confirmation?.id).toBe('gate-1');
+        expect(messages.filter(message => message.queued).map(message => message.content)).toEqual(['甲', '乙']);
+    });
+
+    it('keeps the admitted round above sends that are still parked', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const clientIDs: string[] = [];
+        let sent = 0;
+        const op = vi.fn(async (_grant: string, name: string, payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                sent += 1;
+                clientIDs.push(String(JSON.parse(String(payload || '{}')).client_message_id || ''));
+                if (sent === 1) return JSON.stringify({ accepted: true, request_id: 'req-1', task_id: 'task-1' });
+                return JSON.stringify({ accepted: true, queued: true, queue_id: `que_${sent}`, task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('先问')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-1',
+            cursor: 1,
+            display_text: '先问',
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'token',
+            request_id: 'req-1',
+            text: '正在答',
+            cursor: 2,
+        });
+        expect(await remoteAssistantSend('甲')).toBe(true);
+        expect(await remoteAssistantSend('乙')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'round_started',
+            request_id: 'req-2',
+            cursor: 3,
+            display_text: '甲',
+            client_message_id: clientIDs[1],
+        });
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            project_path: '',
+            event: 'token',
+            request_id: 'req-2',
+            text: '答甲',
+            cursor: 4,
+        });
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(messages.map(message => message.content)).toEqual(['先问', '甲', '答甲', '乙']);
+        expect(messages.filter(message => message.queued).map(message => message.content)).toEqual(['乙']);
+    });
+
+    it('binds a parked send when its round starts before the ack', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let clientID = '';
+        let releaseSend: (value: string) => void = () => {};
+        const sendGate = new Promise<string>((resolve) => { releaseSend = resolve; });
+        const op = vi.fn(async (_grant: string, name: string, payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            if (name === 'cloud_send_message') {
+                clientID = String(JSON.parse(String(payload || '{}')).client_message_id || '');
+                streamHandlers[0]?.({
+                    grant_id: 'grant-1',
+                    session_key: session,
+                    project_path: '',
+                    event: 'round_started',
+                    request_id: 'req-9',
+                    cursor: 1,
+                    display_text: '排队的话',
+                    client_message_id: clientID,
+                });
+                return sendGate;
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        const sending = remoteAssistantSend('排队的话');
+        for (let tick = 0; tick < 8 && !clientID; tick += 1) await Promise.resolve();
+        expect(clientID).not.toBe('');
+        releaseSend(JSON.stringify({ accepted: true, queued: true, queue_id: 'que_1', task_id: 'task-1' }));
+        expect(await sending).toBe(true);
+        const rows = remoteAssistantSessionSnapshot()?.messages.filter(message => message.content === '排队的话') || [];
+        expect(rows).toHaveLength(1);
+        expect(rows[0].queued).toBeFalsy();
+    });
+
+    it('does not append a parked send the book already admitted', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let clientID = '';
+        const op = vi.fn(async (_grant: string, name: string, payload?: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') {
+                if (!clientID) return JSON.stringify({ messages: [] });
+                return JSON.stringify({
+                    messages: ['user\n排队的话', 'assistant\n好'],
+                    request_ids: ['req-9', 'req-9'],
+                    client_message_ids: [clientID, ''],
+                });
+            }
+            if (name === 'cloud_send_message') {
+                clientID = String(JSON.parse(String(payload || '{}')).client_message_id || '');
+                streamHandlers[0]?.({
+                    grant_id: 'grant-1',
+                    session_key: session,
+                    project_path: '',
+                    event: 'round_started',
+                    request_id: 'req-9',
+                    cursor: 1,
+                    display_text: '排队的话',
+                    client_message_id: clientID,
+                });
+                streamHandlers[0]?.({
+                    grant_id: 'grant-1',
+                    session_key: session,
+                    project_path: '',
+                    event: 'response',
+                    request_id: 'req-9',
+                    cursor: 2,
+                    terminal: { text: '好' },
+                });
+                await Promise.resolve();
+                return JSON.stringify({ accepted: true, queued: true, queue_id: 'que_1', task_id: 'task-1' });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('排队的话')).toBe(true);
+        const contents = remoteAssistantSessionSnapshot()?.messages.map(message => message.content) || [];
+        expect(contents.filter(content => content === '排队的话')).toEqual(['排队的话']);
+        expect(contents.filter(content => content === '好')).toEqual(['好']);
+        const user = remoteAssistantSessionSnapshot()?.messages.find(message => message.content === '排队的话');
+        expect(user?.queued).toBeFalsy();
+    });
+
     it('folds styled tool progress into the live row tool calls', async () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
         const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
@@ -949,7 +1323,9 @@ describe('cloud agent assistant', () => {
         const session = cloudAgentSessionKey('cag_1', 'task-1');
         const op = vi.fn(async (_grant: string, name: string, _payload?: string) => {
             if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
-            if (name === 'cloud_get_task') return JSON.stringify({ messages: [] });
+            // The book snapshot still has only the prompt. The answer must
+            // stay after that prompt anyway.
+            if (name === 'cloud_get_task') return JSON.stringify({ messages: ['user\n出图'], files: [[]] });
             return '{}';
         });
         setBindings({
@@ -977,8 +1353,9 @@ describe('cloud agent assistant', () => {
         const row = remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths);
         expect(row?.localFilePaths).toEqual(['pics/a.png']);
 
-        // A new turn owns a new artifact list — the previous round's files
-        // stay on its history row, not on the next live row.
+        // A new turn owns a new artifact list. The previous terminal stays
+        // retired until the book reports that request id. A stale snapshot
+        // must not drop it.
         streamHandlers[0]?.({
             grant_id: 'grant-1',
             session_key: session,
@@ -989,6 +1366,204 @@ describe('cloud agent assistant', () => {
         });
         const key = cloudAgentStoreKey('grant-1', session);
         expect(cloudAgentRound(key).artifacts).toEqual([]);
+        const texts = () => (remoteAssistantSessionSnapshot()?.messages || []).map(message => message.content);
+        expect(texts()).toEqual(['出图', '图好了', '再来一张']);
+        const kept = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.localFilePaths?.includes('pics/a.png'));
+        expect(kept.map(message => message.content)).toEqual(['图好了']);
+        expect(kept.every(message => message.role === 'assistant' && !message.remoteLive)).toBe(true);
+        await vi.waitFor(() => {
+            expect(texts()).toEqual(['出图', '图好了', '再来一张']);
+        });
+    });
+
+    it('does not fold a later turn into an earlier row with the same text', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['user\n甲', 'assistant\n好'],
+                request_ids: ['req-1', 'req-1'],
+            });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'response',
+            request_id: 'req-2',
+            cursor: 1,
+            text: '好',
+            terminal: { text: '好' },
+        });
+        const contents = remoteAssistantSessionSnapshot()?.messages.map(message => message.content) || [];
+        expect(contents.filter(content => content === '好')).toEqual(['好', '好']);
+    });
+
+    it('keeps every closed round until the book names its request id', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['user\n问'],
+                request_ids: ['req-0'],
+            });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        const frame = (event: string, requestId: string, cursor: number, text: string) => {
+            streamHandlers[0]?.({
+                grant_id: 'grant-1',
+                session_key: session,
+                event,
+                request_id: requestId,
+                cursor,
+                text,
+                display_text: event === 'round_started' ? text : undefined,
+                terminal: event === 'response' ? { text } : undefined,
+            });
+        };
+        frame('response', 'req-1', 1, '第一句');
+        frame('round_started', 'req-2', 2, '二');
+        frame('response', 'req-2', 3, '第二句');
+        frame('round_started', 'req-3', 4, '三');
+        const messages = remoteAssistantSessionSnapshot()?.messages || [];
+        expect(messages.filter(message => message.content === '第一句').map(message => message.remoteLive)).toEqual([undefined]);
+        expect(messages.filter(message => message.content === '第二句').map(message => message.remoteLive)).toEqual([undefined]);
+    });
+
+    it('shows a produced file when the assistant row has no text', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['user\n出图', 'assistant\n'],
+                files: [[], ['pics/a.png']],
+                request_ids: ['req-1', 'req-1'],
+            });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'response',
+            request_id: 'req-1',
+            cursor: 1,
+            terminal: { text: '', local_file_paths: ['pics/a.png'] },
+        });
+        const kept = (remoteAssistantSessionSnapshot()?.messages || []).filter(message => message.localFilePaths?.includes('pics/a.png'));
+        expect(kept).toHaveLength(1);
+        expect(kept[0].remoteLive).toBeUndefined();
+    });
+
+    it('binds the send ack request id so a different display text is not a second prompt', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') return JSON.stringify({
+                messages: ['user\n之前'],
+                request_ids: ['req-1'],
+            });
+            if (name === 'cloud_send_message') return JSON.stringify({ request_id: 'req-2' });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('下一句')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'round_started',
+            request_id: 'req-2',
+            cursor: 1,
+            display_text: '另一句',
+        });
+        const contents = remoteAssistantSessionSnapshot()?.messages.map(message => message.content) || [];
+        expect(contents.filter(content => content === '下一句')).toEqual(['下一句']);
+        expect(contents.filter(content => content === '另一句')).toEqual([]);
+    });
+
+    it('reloads the interrupt note after stop and does not keep the partial beside it', async () => {
+        const session = cloudAgentSessionKey('cag_1', 'task-1');
+        let reads = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') {
+                reads += 1;
+                if (reads === 1) return JSON.stringify({ messages: [] });
+                return JSON.stringify({
+                    messages: ['user\n你好', 'assistant\n已停止'],
+                    request_ids: ['req_1', 'req_1'],
+                });
+            }
+            if (name === 'cloud_send_message') return JSON.stringify({ request_id: 'req_1' });
+            if (name === 'cloud_stop_task') return JSON.stringify({ ok: true, cancelled: ['req_1'] });
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+        });
+        await openCloudAgent(item, 'zh');
+        expect(await remoteAssistantSend('你好')).toBe(true);
+        streamHandlers[0]?.({
+            grant_id: 'grant-1',
+            session_key: session,
+            event: 'token',
+            request_id: 'req_1',
+            text: 'pong',
+            cursor: 1,
+        });
+        expect(await remoteAssistantStop()).toBe(true);
+        await vi.waitFor(() => {
+            const contents = remoteAssistantSessionSnapshot()?.messages.map(message => message.content) || [];
+            expect(contents.filter(content => content === '已停止')).toEqual(['已停止']);
+            expect(contents.filter(content => content === 'pong')).toEqual([]);
+        });
+    });
+
+    it('reloads produced paths after the repository binding moves them', async () => {
+        let reads = 0;
+        const op = vi.fn(async (_grant: string, name: string) => {
+            if (name === 'cloud_list_tasks') return JSON.stringify({ tasks: [{ id: 'task-1' }] });
+            if (name === 'cloud_get_task') {
+                reads += 1;
+                const path = reads === 1 ? 'old.pdf' : 'new.pdf';
+                return JSON.stringify({
+                    messages: ['assistant\n好'],
+                    files: [[path]],
+                    request_ids: ['req-1'],
+                });
+            }
+            return '{}';
+        });
+        setBindings({
+            OpenCloudAgentGrant: vi.fn(async () => 'grant-1'),
+            RemoteControlOp: op,
+            GetCloudAgentGit: vi.fn(async () => ({ connected: true, repo: 'ada/fresh' })),
+        });
+        await openCloudAgent({ ...item, kind: 'coding' }, 'zh');
+        expect(remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths)?.localFilePaths).toEqual(['old.pdf']);
+        await refreshCloudGit('cag_1');
+        await vi.waitFor(() => {
+            expect(remoteAssistantSessionSnapshot()?.messages.find(message => message.localFilePaths)?.localFilePaths).toEqual(['new.pdf']);
+        });
     });
 });
 

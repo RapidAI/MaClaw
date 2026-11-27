@@ -1436,7 +1436,9 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
 
         fireEvent.click(popout);
-        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledWith(0, 10));
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledWith(expect.stringContaining('/api/v1/desktop-handoff/abc/h264.html')));
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('view_only=1');
+        expect(stageBinding.OpenDesktopStageWindow.mock.calls[0][0]).toContain('fps=10');
         // the in-panel iframe is unmounted while the native window streams
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
         expect(popout.textContent).toContain('回到主窗口');
@@ -5016,6 +5018,53 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('bot-b'));
         fireEvent.click(screen.getByTestId('desktop-bot-handback'));
         await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1'));
+    });
+
+    it('switches the desktop stream to watch-only as soon as hand-back starts', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_2', title: 'Bot B', description: '自己的桌面', instance_id: 'inst_2', desktop_mode: 'isolated' },
+        ]);
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-b/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({
+            novnc_url: isolated,
+            user_control: false,
+            attention_reason: '',
+            input_granted: true,
+            desktop_mode: 'isolated',
+        });
+        getScreen.mockResolvedValue({
+            novnc_url: isolated,
+            user_control: false,
+            attention_reason: '',
+            desktop_mode: 'isolated',
+        });
+        let finishHandBack: ((value: { handed_back: boolean; accepted: boolean; run_id: string; status: string }) => void) | undefined;
+        handBack.mockImplementation(() => new Promise(resolve => {
+            finishHandBack = resolve as (value: { handed_back: boolean; accepted: boolean; run_id: string; status: string }) => void;
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot B'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-take-control'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live'));
+        act(() => {
+            responseListeners.byEvent['desktop-bot-view']?.({
+                request_id: 'desktop-bot-login',
+                session_key: 'alice:bot_2',
+                novnc_url: isolated,
+                desktop_handoff: true,
+                attention_reason: '请登录 Google',
+            });
+        });
+        fireEvent.click(await screen.findByTestId('desktop-bot-handoff-notice'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-handback'));
+        await waitFor(() => expect(handBack).toHaveBeenCalledWith('bot_2'));
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1'));
+        finishHandBack?.({ handed_back: true, accepted: true, run_id: 'run_1', status: 'running' });
+        await waitFor(() => expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1'));
     });
 
     it('says a failed hand-back in the persona instead of raw red text', async () => {

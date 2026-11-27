@@ -362,6 +362,14 @@ func TestDesktopDeliverableExtractionChain(t *testing.T) {
 			want: agentservice.TaskOutcomeDone, part: "zhuanlan.zhihu.com/p/1", contractID: "file-1",
 		},
 		{
+			name: "one file item attributes the only file",
+			turn: receiptTurn{
+				content: "交一份报告", modelJSON: `{"items":[{"id":"file-1","kind":"file","text":"报告"}]}`,
+				file: true, fileName: "report.pdf",
+			},
+			want: agentservice.TaskOutcomeDone, part: "report.pdf", contractID: "file-1",
+		},
+		{
 			name: "two distinct files",
 			turn: receiptTurn{
 				content: "交两份文件", modelJSON: `{"items":[{"id":"a","kind":"file","text":"甲"},{"id":"b","kind":"file","text":"乙"}]}`,

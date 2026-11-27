@@ -115,6 +115,9 @@ func newStubService(srv *httptest.Server) (*Service, *memSettings) {
 	settings := &memSettings{}
 	svc := NewService(settings)
 	svc.HTTP = srv.Client()
+	// These routing tests use the node as a working LAN computer. Tests of
+	// the capability gate replace this hook explicitly.
+	svc.LanDesktopAvailable = func(context.Context, string, string) bool { return true }
 	return svc, settings
 }
 

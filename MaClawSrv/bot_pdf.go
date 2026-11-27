@@ -96,7 +96,7 @@ func (m botPDFModule) InvokeTool(ctx context.Context, request agentruntime.TurnR
 		if err := noteDesktopFileItem(ctx, name, "application/pdf", pdf, desktopArg(args, "item_id")); err != nil {
 			return "", err
 		}
-		return desktopDelivered(name, len(pdf)), nil
+		return desktopDeliveredWithEvidence(name, len(pdf), pdf), nil
 	}
 	scope, _, err := desktopScopeForTurn(request)
 	if err != nil {

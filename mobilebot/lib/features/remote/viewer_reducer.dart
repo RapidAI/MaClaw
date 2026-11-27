@@ -378,6 +378,11 @@ void _apply(ViewerReduceState state, Map<String, dynamic> event) {
     state.responded = false;
     state.gap = false;
     state.displayText = _text(event['display_text']);
+    // Terminal sentence and trial echo are per request. A new round must
+    // not keep showing the previous answer or its trial.
+    state.visible = '';
+    state.trialStatus = '';
+    state.trialFailures = 0;
   } else if (requestId.isNotEmpty && state.requestId.isEmpty) {
     state.requestId = requestId;
   }

@@ -81,6 +81,8 @@ func desktopErrorClass(out string, err error) string {
 		return "cross_origin_block"
 	case err == nil:
 		return ""
+	case strings.Contains(msg, "no docker service is assigned") || strings.Contains(msg, "desktop service was not recorded"):
+		return "desktop_unavailable"
 	case desktopInfraErrRe.MatchString(msg):
 		// The browser or the network did not answer: not a lesson about
 		// the method (no "avoid" experience), blocked per site.
@@ -232,6 +234,8 @@ func desktopFailClassAdvice(class string) string {
 		return "The site shows a sign-in form, a captcha/安全验证 check, or stays blank. Do not wait or retry: call request_takeover so the person signs in or passes the check, then continue."
 	case "infra_timeout":
 		return "The browser or the site did not respond: this is the infrastructure, not your method. Take a screenshot or probe to see the real state, continue with the other parts of the task, call request_takeover, or report this part as blocked with the error."
+	case "desktop_unavailable":
+		return "This bot has no usable computer. Do not retry desktop actions or request a takeover: finish as failed and say the bot must be moved to a node with desktop service or use the cloud computer."
 	case "timeout":
 		return "Switch interface: take a screenshot to see the real state and use a different action, or call request_takeover."
 	}

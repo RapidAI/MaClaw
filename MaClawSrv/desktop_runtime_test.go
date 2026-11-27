@@ -72,8 +72,11 @@ func TestNoneDesktopTurnOmitsDesktopAndLocalComputer(t *testing.T) {
 	previous := localRelayTestEnabled
 	localRelayTestEnabled = true
 	t.Cleanup(func() { localRelayTestEnabled = previous })
+	// Even with no cloud desktop the bot still reaches the person's computer:
+	// local_task schedules work there and local_knowledge_search reads its
+	// knowledge base. Neither needs a desktop of this bot's own.
 	relay, err := localRelayModule{}.Tools(context.Background(), none)
-	if err != nil || len(relay) != 1 || relay[0].Name != localTaskToolName {
+	if err != nil || len(relay) != 2 || relay[0].Name != localTaskToolName || relay[1].Name != localKnowledgeToolName {
 		t.Fatalf("relay tools=%v err=%v", relay, err)
 	}
 	normal := agentruntime.TurnRequest{Input: agentservice.ExecuteRequest{
@@ -84,7 +87,7 @@ func TestNoneDesktopTurnOmitsDesktopAndLocalComputer(t *testing.T) {
 		t.Fatalf("ordinary turn tools=%v err=%v", got, err)
 	}
 	relay, err = localRelayModule{}.Tools(context.Background(), normal)
-	if err != nil || len(relay) != 2 || relay[0].Name != localRelayToolName || relay[1].Name != localTaskToolName {
+	if err != nil || len(relay) != 3 || relay[0].Name != localRelayToolName || relay[1].Name != localTaskToolName || relay[2].Name != localKnowledgeToolName {
 		t.Fatalf("ordinary relay tools=%v err=%v", relay, err)
 	}
 }

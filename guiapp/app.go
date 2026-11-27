@@ -11808,7 +11808,7 @@ func (a *App) downloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	}
 	destPath := filepath.Join(downloadsDir, fileName)
 	ctx, cancel := context.WithCancel(context.Background())
-	downloadID := fileName
+	downloadID := downloadRegistryKey(fileName)
 	canceler := &downloadCanceler{cancel: cancel, done: make(chan struct{})}
 	// A cancelled download keeps the destination open until its next read
 	// returns, and on Windows an open file can neither be deleted nor
@@ -12087,7 +12087,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 func (a *App) CancelDownload(downloadID string) {
 	a.downloadMutex.Lock()
 	defer a.downloadMutex.Unlock()
-	if canceler, ok := a.downloadCancelers[downloadID]; ok {
+	if canceler, ok := a.downloadCancelers[downloadRegistryKey(downloadID)]; ok {
 		// Keep the entry: the cancelled download still holds the destination
 		// open, and the next download of the same installer waits on done to
 		// let it go. The download's own cleanup removes the entry on return.

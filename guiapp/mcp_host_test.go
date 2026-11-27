@@ -1827,14 +1827,24 @@ func TestMCPHTTPLanRemoteGate(t *testing.T) {
 }
 
 type fakeMCPTasks struct {
-	mu       sync.Mutex
-	created  mcpCreateArgs
-	command  string
-	released chan struct{}
+	mu             sync.Mutex
+	created        mcpCreateArgs
+	command        string
+	knowledgeQuery string
+	knowledgeLimit int
+	released       chan struct{}
 }
 
 func (f *fakeMCPTasks) mcpListModels(ctx context.Context) (mcpModelCatalog, error) {
 	return mcpModelCatalog{Current: "Daily", Providers: []mcpProviderInfo{{ID: "p1", Name: "Daily", DefaultModel: "m", Models: []string{"m"}}}}, nil
+}
+
+func (f *fakeMCPTasks) mcpKnowledgeSearch(ctx context.Context, query string, limit int) (map[string]any, error) {
+	f.mu.Lock()
+	f.knowledgeQuery = query
+	f.knowledgeLimit = limit
+	f.mu.Unlock()
+	return map[string]any{"ok": true, "query": query, "count": 1, "results": []map[string]any{{"title": "本地知识", "snippet": "来自这台电脑"}}}, nil
 }
 
 func (f *fakeMCPTasks) mcpCreateTask(ctx context.Context, args mcpCreateArgs) (mcpTaskView, error) {

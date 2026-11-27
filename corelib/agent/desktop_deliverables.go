@@ -255,15 +255,15 @@ func DesktopDeliverablesNote(items []string) string {
 	if len(items) == 0 {
 		return ""
 	}
-	return "[系统] 用户这次明确要的交付物（结束前每一项都要交到用户聊天里：文件和图片用 deliver，链接和答案写进回复；做不到的项要在回复里点名说明原因）：\n" +
+	return "[系统] 用户这次明确要的交付物（结束前每一项都要交到用户聊天里：文件和图片用 deliver 或 bot_generate_pdf，并把清单项 id 填进工具的 item_id；链接和答案写进回复；做不到的项要在回复里点名说明原因）：\n" +
 		desktopDeliverablesList(items) +
 		"\n某项的证据已经有了（例如截图已经截好）就直接交付，不要反复核对同一件事。"
 }
 
 func desktopDeliverablesJudgeBlock(items []string) string {
 	return "交付清单（从用户要求里提取的明确交付物）：\n" + desktopDeliverablesList(items) + "\n" +
-		"逐项核对这份清单：每一项都要在工具结果里有交到用户聊天的证据——deliver 成功（Delivered …）、send_to_user，或发布后读回的链接和页面；答案类的项可以由回复正文给出。" +
-		"要的是图片或文件时，工具结果显示它已经用 deliver 交付、且更早的工具结果说明了它是怎么得到的（例如在程序运行时截取），这一项就算已交付：不要再要求当前截图去核对这张图的内容。" +
+		"逐项核对这份清单：每一项都要在工具结果里有交到用户聊天的证据——deliver 成功（Delivered …）、bot_generate_pdf 的 Delivered 记录、send_to_user，或发布后读回的链接和页面；答案类的项可以由回复正文给出。" +
+		"要的是图片或文件时，工具结果显示它已经用 deliver 或 bot_generate_pdf 交付、且更早的工具结果说明了它是怎么得到的（例如在程序运行时截取），这一项就算已交付：不要再要求当前截图去核对这张图的内容。" +
 		"清单每一项都有证据时 ok 为 true；否则 ok 为 false，gap 写出还缺哪几项。"
 }
 

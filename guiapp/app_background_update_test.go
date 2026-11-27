@@ -435,6 +435,90 @@ func TestHandleBackgroundUpdateResultNonSilentKeepsCurrentNotice(t *testing.T) {
 	}
 }
 
+func TestCancelDownloadMatchesDifferentlyCasedNames(t *testing.T) {
+	if !pathCaseInsensitive() {
+		t.Skip("case-variant file names only collide on case-insensitive filesystems")
+	}
+	app := &App{downloadCancelers: make(map[string]*downloadCanceler)}
+	cancelled := make(chan struct{})
+	app.downloadCancelers[downloadRegistryKey("MaClaw-Setup-9.9.9.exe")] = &downloadCanceler{
+		cancel: func() { close(cancelled) },
+		done:   make(chan struct{}),
+	}
+
+	// The manual dialog cancels with the URL-carried asset name, which can
+	// differ in case from the brand-derived name the backend registered.
+	app.CancelDownload("maclaw-setup-9.9.9.exe")
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not reach the differently-cased download entry")
+	}
+	if !app.updateDownloadInProgress("MACLAW-SETUP-9.9.9.EXE") {
+		t.Fatal("in-flight check did not match the normalized key")
+	}
+}
+
+func TestHandleBackgroundUpdateResultSkipsVersionWithDeferredInstall(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	var events []string
+	app.testEmit = func(name string, _ ...interface{}) { events = append(events, name) }
+
+	// The durable choice to install this version later must not be undone by
+	// a background recheck re-downloading it and reopening the dialog.
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: "V9.9.9",
+		InstallerPath: "C:/Downloads/MaClaw-Setup-9.9.9.exe",
+		Channel:       "stable",
+		DueAt:         time.Now().Add(time.Hour),
+		CreatedAt:     time.Now(),
+	})
+	installSilentUpdateHooks(t,
+		func(_ *App, _, _, _ string) (string, error) {
+			t.Fatal("deferred version was silently re-downloaded")
+			return "", nil
+		},
+		nil,
+	)
+
+	state := &backgroundUpdateCheckState{}
+	app.handleBackgroundUpdateResult(context.Background(), state, UpdateResult{
+		HasUpdate: true, LatestVersion: "V9.9.9", DownloadUrl: "https://example.invalid/setup.exe",
+	}, true)
+
+	if len(events) != 0 {
+		t.Fatalf("deferred version emitted UI events: %v", events)
+	}
+
+	// A different version is unaffected by the record.
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: "V9.9.9",
+		InstallerPath: "C:/Downloads/MaClaw-Setup-9.9.9.exe",
+		Channel:       "stable",
+		DueAt:         time.Now().Add(time.Hour),
+		CreatedAt:     time.Now(),
+	})
+	downloadStarted := make(chan struct{})
+	installSilentUpdateHooks(t,
+		func(_ *App, _, _, _ string) (string, error) {
+			close(downloadStarted)
+			return "", errors.New("stop before install")
+		},
+		nil,
+	)
+	app.handleBackgroundUpdateResult(context.Background(), state, UpdateResult{
+		HasUpdate: true, LatestVersion: "V9.9.10", DownloadUrl: "https://example.invalid/setup.exe",
+	}, true)
+	select {
+	case <-downloadStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unrelated newer version was suppressed by the deferred record")
+	}
+}
+
 func TestRegisterDownloadedUpdateAllowsManualDeferChoice(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1417,5 +1501,124 @@ func TestDownloadedUpdatesCoexistAcrossVersions(t *testing.T) {
 	}
 	if ready := app.downloadedUpdateForVersion("V9.9.9"); ready == nil {
 		t.Fatal("clearing the rollback update evicted the latest download")
+	}
+}
+
+func TestExecuteDeferredUpdateInstallYieldsToConcurrentDecision(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	withLinkedTestVersion(t, "9.9.8")
+
+	result := UpdateResult{HasUpdate: true, LatestVersion: "V9.9.9", DownloadUrl: "https://example.invalid/setup.exe", Channel: "stable"}
+	app.storeDownloadedUpdate(result, "C:/Downloads/MaClaw-Setup.exe")
+	originalDueAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: result.LatestVersion,
+		InstallerPath: "C:/Downloads/MaClaw-Setup.exe",
+		Channel:       "stable",
+		DueAt:         originalDueAt,
+	})
+
+	installDeferredUpdateCheckHook(t, func(_ *App, _, _ string) (UpdateResult, error) {
+		return result, nil
+	})
+	// Simulate a user decision in flight while the deferred execution finishes
+	// its check: the action lock stays held through the launch decision.
+	if !app.markDownloadedUpdateActionRunning() {
+		t.Fatal("action lock unexpectedly busy before deferred execution")
+	}
+	t.Cleanup(app.unmarkDownloadedUpdateActionRunning)
+	installSilentUpdateHooks(t, nil, func(_ *App, _, _ string) error {
+		t.Fatal("deferred installer launched over a concurrent update decision")
+		return nil
+	})
+
+	app.executeDeferredUpdateInstall("v9.9.9", false)
+	record, ok := app.readDeferredUpdateInstall()
+	if !ok {
+		t.Fatal("yielding deferred execution removed the durable record")
+	}
+	if !record.DueAt.Equal(originalDueAt) {
+		t.Fatalf("yielding deferred execution rewrote DueAt to %v", record.DueAt)
+	}
+}
+
+func TestExecuteDeferredUpdateInstallAbortsWhenRecordChangedMidFlight(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	withLinkedTestVersion(t, "9.9.8")
+
+	result := UpdateResult{HasUpdate: true, LatestVersion: "V9.9.9", DownloadUrl: "https://example.invalid/setup.exe", Channel: "stable"}
+	app.storeDownloadedUpdate(result, "C:/Downloads/MaClaw-Setup.exe")
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: result.LatestVersion,
+		InstallerPath: "C:/Downloads/MaClaw-Setup.exe",
+		Channel:       "stable",
+		DueAt:         time.Now().Add(-time.Minute),
+	})
+
+	newDueAt := time.Now().Add(2 * time.Hour)
+	installDeferredUpdateCheckHook(t, func(_ *App, _, _ string) (UpdateResult, error) {
+		// Mid-check the user picks a different defer option; the durable record
+		// now belongs to that newer choice.
+		if err := writeDeferredUpdateInstall(app.deferredUpdateInstallPath(), deferredUpdateInstall{
+			TargetVersion: result.LatestVersion,
+			InstallerPath: "C:/Downloads/MaClaw-Setup.exe",
+			Channel:       "stable",
+			DueAt:         newDueAt,
+			CreatedAt:     time.Now(),
+		}); err != nil {
+			t.Fatalf("rewrite deferred record mid-check: %v", err)
+		}
+		return result, nil
+	})
+	installSilentUpdateHooks(t, nil, func(_ *App, _, _ string) error {
+		t.Fatal("stale deferred execution launched over the user's newer choice")
+		return nil
+	})
+
+	app.executeDeferredUpdateInstall("v9.9.9", false)
+	record, ok := app.readDeferredUpdateInstall()
+	if !ok {
+		t.Fatal("aborted deferred execution removed the user's newer record")
+	}
+	if !record.DueAt.Equal(newDueAt) {
+		t.Fatalf("newer deferred record DueAt = %v, want %v", record.DueAt, newDueAt)
+	}
+}
+
+func TestRetryDeferredUpdateInstallDoesNotOverwriteConcurrentDecision(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	originalDueAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: "V9.9.9",
+		Channel:       "stable",
+		DueAt:         originalDueAt,
+	})
+	if !app.markDownloadedUpdateActionRunning() {
+		t.Fatal("action lock unexpectedly busy before retry")
+	}
+	t.Cleanup(app.unmarkDownloadedUpdateActionRunning)
+
+	app.retryDeferredUpdateInstall(deferredUpdateInstall{
+		TargetVersion: "V9.9.9",
+		Channel:       "stable",
+		DueAt:         originalDueAt,
+	})
+
+	record, ok := app.readDeferredUpdateInstall()
+	if !ok {
+		t.Fatal("locked retry removed the durable record")
+	}
+	if !record.DueAt.Equal(originalDueAt) {
+		t.Fatalf("locked retry rewrote DueAt to %v", record.DueAt)
 	}
 }

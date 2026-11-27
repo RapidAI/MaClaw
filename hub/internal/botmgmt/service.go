@@ -61,6 +61,14 @@ var (
 	// no assigned cloud desktop and no usable LAN node. Clients surface it so
 	// the person picks a no-desktop bot or installs a LAN node.
 	ErrCloudDesktopUnassigned = errors.New("你的账号还没有分配云端电脑，只能创建无电脑的 bot")
+	// ErrNodeDesktopUnavailable is a computer request explicitly pinned to a
+	// node that carries srv but no registered desktopd. Such a node can host
+	// cloud agents and no-computer bots; it cannot be a bot's computer.
+	ErrNodeDesktopUnavailable = errors.New("这个节点没有装好桌面服务，不能创建需要电脑的 bot")
+	// ErrBotComputerUnavailable is an existing desktop bot whose node pin no
+	// longer names a usable computer. Refusing the turn before it reaches the
+	// model is cheaper and clearer than letting every desktop tool call fail.
+	ErrBotComputerUnavailable = errors.New("这个 Bot 绑定的节点没有可用的电脑。请把它重新创建在有桌面服务的节点，或改用云端电脑。")
 	// ErrNotPrimary is a bot other than this account's primary trying to
 	// notify or hand work to another bot.
 	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
@@ -257,8 +265,8 @@ type Service struct {
 	// so the check does not repeat a directory round trip under s.mu.
 	CloudDesktopAssigned func(ctx context.Context, tenantID, userID string, departments []string) error
 	// LanDesktopAvailable reports whether a node id is a registered edge node
-	// of this tenant carrying MaClawSrv — i.e. a usable LAN computer. A nil
-	// hook reports no LAN desktop.
+	// of this tenant carrying both MaClawSrv and a registered desktopd — i.e.
+	// a usable LAN computer. A nil hook reports no LAN desktop.
 	LanDesktopAvailable func(ctx context.Context, tenantID, nodeID string) bool
 
 	mu       sync.RWMutex

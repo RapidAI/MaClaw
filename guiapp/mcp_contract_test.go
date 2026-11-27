@@ -809,7 +809,7 @@ func TestInboundMCPProtocolOptionalArgs(t *testing.T) {
 	if !opts.HasExpectedSHA || opts.ExpectedSHA != "abc" {
 		t.Fatalf("read opts %+v", opts)
 	}
-	errAPI := &mcpHTTP{api: &mcpErrAPI{}, tokens: func() []string { return []string{"t"} }}
+	errAPI := &mcpHTTP{api: &mcpErrAPI{fakeMCPTasks: &fakeMCPTasks{}}, tokens: func() []string { return []string{"t"} }}
 	result, rpcErr := errAPI.callTool(context.Background(), json.RawMessage(`{"name":"get_task","arguments":{"project_path":"p","run_id":"run-x"}}`))
 	if rpcErr != nil {
 		t.Fatal(rpcErr.Message)
@@ -1743,7 +1743,7 @@ func (f *mcpOptCapture) mcpReadArtifact(ctx context.Context, projectPath, relPat
 	return f.fakeMCPTasks.mcpReadArtifact(ctx, projectPath, relPath, download)
 }
 
-type mcpErrAPI struct{ fakeMCPTasks }
+type mcpErrAPI struct{ *fakeMCPTasks }
 
 func (mcpErrAPI) mcpGetTask(ctx context.Context, projectPath, runID string) (mcpTaskView, error) {
 	return mcpTaskView{}, mcpErr(mcpCodeRunNotFound, "没有这一轮执行", "p", "run-x")

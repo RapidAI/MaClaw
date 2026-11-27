@@ -17,10 +17,11 @@ type DesktopQuota struct {
 	// It is true when no check is wired so a hub without the pool never hides
 	// the option. LAN nodes are a separate path the client lists itself.
 	CloudDesktop bool `json:"cloud_desktop"`
-	// LanDesktop reports whether the owner's pinned bot node currently has
-	// MaClawSrv — the LAN computer a desktop:true create without node_id
-	// would land on. Clients that cannot pick a node read
-	// cloud_desktop || lan_desktop as "a computer bot is possible".
+	// LanDesktop reports whether the owner's pinned bot node is a usable LAN
+	// computer (srv plus a registered desktopd). A srv-only node is not one:
+	// desktop:true creation falls back to the cloud instead of landing there.
+	// Clients that cannot pick a node read cloud_desktop || lan_desktop as
+	// "a computer bot is possible".
 	LanDesktop bool `json:"lan_desktop"`
 }
 

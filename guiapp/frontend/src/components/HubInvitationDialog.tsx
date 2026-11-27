@@ -171,7 +171,13 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
         setCopied(false);
         setCopyUnavailable(false);
       } else {
-        if (next.enabled === false) setData(null);
+        // A failed rotate request also serializes as enabled:false (the Go
+        // HubUserInvitation struct has no omitempty on Enabled), so treat an
+        // error as a failed refresh — the current link stays valid — and only
+        // trust enabled:false as a genuine "feature disabled" state when the
+        // response carries no error. Wiping on the error shape left the dialog
+        // showing 邀请功能暂不可用 with the actual failure never rendered.
+        if (!next.error && next.enabled === false) setData(null);
         setRotateError(next.error || 'Unable to rotate invitation link');
       }
     } catch (error) {
@@ -200,13 +206,15 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
             <p>
               {initialLoading
                 ? t('Fetching your invitation information…', '正在获取你的邀请信息…')
+                : loadError
+                ? null /* A failed request is not a disabled feature; the error block below carries the truth and the retry. */
                 : data?.enabled
                 ? td(
                   `A successful registration earns you ${data.inviter_credits || 0} Credits and your friend ${data.invitee_credits || 0} Credits.`,
                   `好友成功注册后，你获得 ${data.inviter_credits || 0} Credits，好友获得 ${data.invitee_credits || 0} Credits。`,
                   `Амжилттай бүртгэлээр танд ${data.inviter_credits || 0} Credits, найздаа ${data.invitee_credits || 0} Credits олгоно.`,
                 )
-        : t('Invitations are unavailable.', '邀请功能暂不可用。', '邀請功能暫不可用。')}
+                : t('Invitations are unavailable.', '邀请功能暂不可用。', '邀請功能暫不可用。')}
             </p>
           </div>
           <button ref={closeButtonRef} className="hub-invitation-dialog__close" type="button" onClick={close} aria-label={t('Close', '关闭')}>×</button>

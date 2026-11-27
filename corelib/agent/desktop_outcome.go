@@ -39,8 +39,9 @@ const DesktopOutcomeEvidenceOmission = "…[核对时略去中间]"
 
 const desktopOutcomeJudgeSystem = "你只判断这一步的结果是否已经满足用户要求。只回复一个 JSON 对象 {\"ok\":true或false,\"gap\":\"...\"}。\n" +
 	"ok 为 true 只在给出的工具结果或附上的桌面截图本身显示要求已经达成。\n" +
-	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图。没有可看的截图，并且用户消息也没有把最后一条桌面结果里的 screen_vision 标成这次截到的画面时，ok 为 false。看不到图片时，用户消息写明这次判断带着当前截图，或写明最后一条桌面工具结果里的 screen_vision 是这次截到的画面，那段读数才是这一屏：它列出本地 OCR 和 OmniParser 读到的文字和控件。用它确认这是不是用户要的那一屏。更早一条桌面结果里的 screen_vision 不是现在的画面。用户消息写明没有当前截图、且没有把最后一条读数标成这次截到的画面时，那些读数是更早的画面。没有这段读数、也没有可看的截图时，不能把画面算成已经达成。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
+	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图。要求必须由这台桌面的画面证明时，没有可看的截图，并且用户消息也没有把最后一条桌面结果里的 screen_vision 标成这次截到的画面，ok 为 false；但 ssh 输出、网页读数、对话答复或 bot_generate_pdf 的 Delivered/PDF 校验已经足以证明对应结果时，不因为没有桌面截图判 false。看不到图片时，用户消息写明这次判断带着当前截图，或写明最后一条桌面工具结果里的 screen_vision 是这次截到的画面，那段读数才是这一屏：它列出本地 OCR 和 OmniParser 读到的文字和控件。用它确认这是不是用户要的那一屏。更早一条桌面结果里的 screen_vision 不是现在的画面。用户消息写明没有当前截图、且没有把最后一条读数标成这次截到的画面时，那些读数是更早的画面。没有这段读数、也没有可看的截图时，不能把画面算成已经达成。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
 	"用户消息附上的回复正文只说明回复里写了什么：要求只是在对话里回答问题、给建议或写一段话给用户看，回复正文已经答到时 ok 为 true，不需要截图；要求涉及桌面、网页、文件或发送时，回复正文不能当作已经做成的证据。\n" +
+	"web_search 和 web_fetch 的结果证明查到或读到的来源内容，但不证明文件已经生成或交付。bot_generate_pdf 的 Delivered 结果证明该 PDF 已由服务器生成并交给用户，不需要桌面截图证明这次交付。该结果里的「Server-checked PDF first-page text:」是服务器校验链路从交付的 PDF 第一页提取的文本，是对附件内容的直接校验：它与用户要求相符时，可以把对应 PDF 交付判为达成；它缺失或不足以证明正文时，只能说明缺少这部分证据。send_to_user 的结果证明这段文字已发给用户，不证明文件或桌面效果。\n" +
 	"例外：最后一条桌面结果是浏览器页面本身的读数（script ok: url … 或 probed page …）且要求是网页上的结果时，这段读数就是当前页面，不需要截图。\n" +
 	"gap 用一句中文说明还缺什么。不要写步骤，不要声称已经完成。"
 
@@ -148,6 +149,9 @@ func desktopOutcomeUserContentChecklist(cfg corelib.MaclawLLMConfig, userText st
 	if desktopOutcomeEvidenceHasSSH(evidence) {
 		text += "\n\nssh 的输出判断远程命令。桌面截图不是那台机器的画面，不能用来否定 ssh 的输出。"
 	}
+	if desktopOutcomeEvidenceHasSupport(evidence) {
+		text += "\n\nweb_search/web_fetch 是来源内容证据；bot_generate_pdf 的 Delivered 记录本身就是 PDF 已交付的证据，Server-checked PDF first-page text 是服务器校验链路从该附件第一页提取的内容校验。这样的 PDF 交付不需要桌面截图证明；截图只用于判断必须在桌面画面上看到的结果。"
+	}
 	if desktopOutcomePageRead(evidence) {
 		// A page script or probe reads the live DOM of the attached tab:
 		// URL, title and body text. For a result on a web page that is the
@@ -202,6 +206,15 @@ func desktopOutcomeEvidenceHasSSH(evidence string) bool {
 	return desktopOutcomeEvidenceHasRecord(evidence, "ssh: ")
 }
 
+func desktopOutcomeEvidenceHasSupport(evidence string) bool {
+	for _, prefix := range []string{"web_search: ", "web_fetch: ", "bot_generate_pdf: ", "send_to_user: "} {
+		if desktopOutcomeEvidenceHasRecord(evidence, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func desktopOutcomeEvidenceHasScreenVision(evidence string) bool {
 	return strings.Contains(evidence, "screen_vision:")
 }
@@ -235,8 +248,10 @@ func lastDesktopOutcomeRecord(evidence string) string {
 	} else if !strings.HasPrefix(evidence, "desktop: ") {
 		return ""
 	}
-	if idx := strings.Index(rest, "\nssh: "); idx >= 0 {
-		rest = rest[:idx]
+	for _, next := range []string{"\nssh: ", "\nweb_search: ", "\nweb_fetch: ", "\nbot_generate_pdf: ", "\nsend_to_user: "} {
+		if idx := strings.Index(rest, next); idx >= 0 {
+			rest = rest[:idx]
+		}
 	}
 	return rest
 }

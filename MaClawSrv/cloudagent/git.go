@@ -195,6 +195,7 @@ func (rt *Runtime) ConnectGit(ctx context.Context, id string, in GitConnect) (Gi
 	if err := inst.book.retargetProducedPaths(moved); err != nil {
 		return GitPublic{}, err
 	}
+	inst.retargetStaged(moved)
 	return secret.public(), nil
 }
 

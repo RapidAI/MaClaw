@@ -172,7 +172,7 @@ func TestReplyOutputRefusedByTheDesktopUsesLargeDelivery(t *testing.T) {
 	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
 		return "MCLDL_STORE 300000\n", nil
 	}
-	desktopDeliverViaStore = func(context.Context, agentruntime.Scope, string, string) (string, error) {
+	desktopDeliverViaStore = func(context.Context, agentruntime.Scope, string, string, string) (string, error) {
 		return "stored out.bin", nil
 	}
 	ctx, _ := withDesktopShotSlot(context.Background())

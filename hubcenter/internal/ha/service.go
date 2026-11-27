@@ -679,11 +679,13 @@ func accessNodeHost(raw string) string {
 // failed probe, or a deferred push, is not long enough for another node to
 // send the same draft.
 //
-// A candidate this process has never pulled blocks dispatch, and so does a
-// candidate whose outage already lasted through the dispatch grace: the
-// next pull is what shows a lease written while it was gone. A single
-// failed probe does not clear a pull that already succeeded, so the current
-// owner keeps sending.
+// A higher peer this process has not yet observed may be mid-send from
+// while this node was down, so dispatch waits for that first pull or probe.
+// Once the attempt has failed, that higher peer no longer blocks: a down
+// peer with a greater id is not the sender, and the grace decides when it
+// is out. A lower peer stays the owner until it has been unreachable
+// through the grace, so a missing pull does not add another wait. A single
+// failed probe does not clear a pull that already succeeded.
 func (s *Service) OwnsScheduledDispatch() bool {
 	if s == nil {
 		return true
@@ -708,7 +710,7 @@ func (s *Service) OwnsScheduledDispatch() bool {
 		if peerScheduledDispatchDown(peer, now, grace) {
 			continue
 		}
-		if !peer.dispatchSynced {
+		if !peer.dispatchSynced && id > self && peer.unreachableSince == nil {
 			return false
 		}
 		if id < best {

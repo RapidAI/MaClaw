@@ -195,6 +195,13 @@ function applyPayload(state: ViewerReduceState, event: ViewerEvent): void {
         state.responded = false;
         state.gap = false;
         state.displayText = text(event.display_text);
+        // The terminal sentence and its trial echo belong to the request that
+        // produced them. Leaving them set makes the next round render the
+        // previous answer (visible wins over the new draft) and carry the
+        // previous trial onto a turn that has not finished.
+        state.visible = '';
+        state.trialStatus = '';
+        state.trialFailures = 0;
         // Produced files belong to the turn: a new request must not inherit
         // the previous round's artifact list onto its live row.
         state.artifacts = [];

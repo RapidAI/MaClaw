@@ -356,6 +356,13 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
   .vrepo-actions__label { text-align: left; }
 }
 
+/* Create-on-provider panel inside the git mapping dialog (vrepo-git-create).
+   The shared panel itself is styled by GitRepoCreatePanel.css; this block
+   only places the toggle and note inside the node dialog. */
+.vrepo-git-create { display: grid; gap: 8px; padding-top: 2px; }
+.vrepo-git-create-toggle { justify-self: start; font-size: .78rem; }
+.vrepo-git-create-note { margin: 0; font-size: .76rem; color: var(--vrepo-secondary); }
+
 @media (max-width: 820px) {
   .vrepo-page { padding: 16px; }
   .vrepo-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }

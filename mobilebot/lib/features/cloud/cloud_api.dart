@@ -116,8 +116,18 @@ class CloudApi {
     return CloudTask(id: id, title: title.trim());
   }
 
-  Future<CloudTaskDetail> getTask(String grantId, String taskId) async {
-    final result = await _op(grantId, 'cloud_get_task', {'task_id': taskId});
+  /// [historyLimit] windows the transcript tail. 0 means the runtime default
+  /// (40 rows); a poll passes the already-loaded count so a wider window is
+  /// not dropped back to the default page.
+  Future<CloudTaskDetail> getTask(
+    String grantId,
+    String taskId, {
+    int historyLimit = 0,
+  }) async {
+    final result = await _op(grantId, 'cloud_get_task', {
+      'task_id': taskId,
+      if (historyLimit > 0) 'history_limit': historyLimit,
+    });
     return CloudTaskDetail.fromJson(result);
   }
 
@@ -136,5 +146,22 @@ class CloudApi {
 
   Future<void> stopTask(String grantId, String taskId) async {
     await _op(grantId, 'cloud_stop_task', {'task_id': taskId});
+  }
+
+  /// Deletes the task and its whole transcript on the runtime. A running
+  /// turn is cancelled first server-side.
+  Future<void> deleteTask(String grantId, String taskId) async {
+    await _op(grantId, 'cloud_delete_task', {'task_id': taskId});
+  }
+
+  Future<void> renameTask(
+    String grantId,
+    String taskId,
+    String title,
+  ) async {
+    await _op(grantId, 'cloud_rename_task', {
+      'task_id': taskId,
+      'title': title.trim(),
+    });
   }
 }

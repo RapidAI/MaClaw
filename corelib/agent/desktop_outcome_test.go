@@ -46,6 +46,20 @@ func TestDesktopOutcomeJudgeKeepsCommandTextApartFromTheScreen(t *testing.T) {
 	if !strings.Contains(desktopOutcomeJudgeSystem, "只有要求出现在这台桌面的画面上时，才以截图为准") || !strings.Contains(desktopOutcomeJudgeSystem, "桌面截图也不能把它判成未达成") {
 		t.Fatal("screen and ssh rules dropped")
 	}
+	if !strings.Contains(desktopOutcomeJudgeSystem, "bot_generate_pdf 的 Delivered 结果证明") || !strings.Contains(desktopOutcomeJudgeSystem, "Server-checked PDF first-page text") {
+		t.Fatal("bot PDF delivery rules dropped")
+	}
+}
+
+func TestDesktopOutcomeUserContentExplainsSupportEvidence(t *testing.T) {
+	evidence := "desktop: Error: docker service rejected\nweb_fetch: 北京天气事实\nbot_generate_pdf: Delivered 北京天气报告.pdf (1700 bytes) on this chat reply. Server-checked PDF first-page text: 北京天气"
+	got, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "北京天气，生成pdf", evidence, nil).(string)
+	if !ok {
+		t.Fatalf("support content is not text: %#v", got)
+	}
+	if !strings.Contains(got, "bot_generate_pdf 的 Delivered 记录本身就是 PDF 已交付的证据") || !strings.Contains(got, "Server-checked PDF first-page text") {
+		t.Fatalf("support rule missing: %q", got)
+	}
 }
 
 func TestDesktopOutcomeUserContentKeepsADesktopCommandApartFromTheShot(t *testing.T) {

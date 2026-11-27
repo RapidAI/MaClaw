@@ -18,6 +18,7 @@ func TestDesktopErrorClass(t *testing.T) {
 		{"", errors.New("browser policy blocked cross-origin navigation from a to b"), "cross_origin_block"},
 		{"", errors.New("ref e12 is stale; run probe again"), "element_not_found"},
 		{"", errors.New("wait timed out"), "timeout"},
+		{"", errors.New("maclawsrv request failed: no docker service is assigned"), "desktop_unavailable"},
 		{"ok", nil, ""},
 		{"", errors.New("not_password_field"), ""},
 	}

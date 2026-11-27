@@ -441,6 +441,38 @@
   "cloudTurnFinished": "Ээлж дууссан",
   "cloudTurnCancelled": "Ээлж зогссон",
   "cloudTurnInterrupted": "Ээлж тасалдсан",
+  "cloudSessionList": "Харилцааны жагсаалт",
+  "cloudManageInstances": "Инстанс удирдах",
+  "cloudTaskRunning": "Ажиллаж байна",
+  "cloudTaskFinished": "Дууссан",
+  "cloudTaskCancelled": "Цуцалсан",
+  "cloudTaskInterrupted": "Тасалдсан",
+  "cloudThinking": "Бодох процесс",
+  "cloudLoadEarlier": "Өмнөх харилцааг харах",
+  "cloudShownCount": "{shown}/{total} мессеж харуулж байна",
+  "cloudDeleteTask": "Даалгавар устгах",
+  "cloudDeleteTaskConfirm": "「{title}」даалгаврыг устгах уу? Харилцаа болон бүтээгдэхүүний тэмдэглэл хамт устгагдаж, сэргээх боломжгүй.",
+  "cloudDelete": "Устгах",
+  "cloudTaskDeleted": "Даалгавар устгагдлаа",
+  "cloudRenameTask": "Даалгаврын нэр өөрчлөх",
+  "cloudRename": "Нэр өөрчлөх",
+  "@cloudShownCount": {
+    "placeholders": {
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "@cloudDeleteTaskConfirm": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
   "backToCloud": "Үүл рүү буцах",
   "rcNoMachines": "Удирдах боломжтой компьютер одоогоор байхгүй.\nДоорх «Миний төхөөрөмжүүд» хэсэгт нэгийг хослуулах эсвэл өөр дансаас урилга хүлээнэ үү.",
   "rcControlledByOthers": "Миний компьютерийг бусад алсаас удирдаж байна",
@@ -566,8 +598,12 @@
   "rtShownCount": "{shown}/{total} харуулж байна",
   "@rtShownCount": {
     "placeholders": {
-      "shown": {"type": "int"},
-      "total": {"type": "int"}
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
     }
   },
   "rtLoadingEarlier": "Өмнөх яриаг ачаалж байна",
@@ -582,10 +618,43 @@
   "rtAttachTooLarge": "{name} хэт том, нэг хавсралт хамгийн ихдээ {limit} MB",
   "rtAttachDesktopUnknown": "Файлыг аль компьютерт илгээхийг тодорхойлж чадсангүй (машины ID байхгүй)",
   "rtAttachRemove": "Хавсралт хасах",
-  "@rtAttachUploadingName": {"placeholders": {"name": {"type": "String"}, "percent": {"type": "int"}}},
-  "@rtAttachFailed": {"placeholders": {"name": {"type": "String"}, "error": {"type": "String"}}},
-  "@rtAttachFailedShort": {"placeholders": {"name": {"type": "String"}}},
-  "@rtAttachTooLarge": {"placeholders": {"name": {"type": "String"}, "limit": {"type": "int"}}},
+  "@rtAttachUploadingName": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "@rtAttachFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "@rtAttachFailedShort": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "@rtAttachTooLarge": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "limit": {
+        "type": "int"
+      }
+    }
+  },
   "rtConfirmInvalid": "Баталгаажуулалт хүчингүй болсон",
   "rtConfirmRequired": "Баталгаажуулалт шаардлагатай",
   "rtFailures": "{count} удаа амжилтгүй",
@@ -742,7 +811,13 @@
   "chatContinueTask": "Энэ даалгаврыг үргэлжлүүлэх",
   "chatFileParseFailed": "Файлыг задлан шинжлэх амжилтгүй боллоо",
   "chatFilesOnDesktop": "{count, plural, =1{Файл компьютер дээр байна — дарж ачаална} other{{count} файл компьютер дээр байна — дарж ачаална}}",
-  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
+  "@chatFilesOnDesktop": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "chatSecretRequired": "{name} оруулах шаардлагатай",
   "@chatSecretRequired": {
     "placeholders": {
@@ -1104,12 +1179,12 @@
   },
   "requestFailedShort": "Хүсэлт амжилтгүй",
   "assistantAttachQuery": "Энэ хавсралтыг уншаад товч тайлбарлаж өгөөч.",
-    "homeEyebrow": "ӨНӨӨДӨР",
+  "homeEyebrow": "ӨНӨӨДӨР",
   "homeHeroTitle": "Bot-оор ажлаа хийлгэ",
   "homeHeroBots": "{count} Bot бэлэн",
   "homeHeroRunning": "{count} ажил гүйцэтгэж байна",
   "homeSectionBots": "Bot",
-"chatMaterialFallbackPath": "~/материал/{bot}/{name}",
+  "chatMaterialFallbackPath": "~/материал/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {

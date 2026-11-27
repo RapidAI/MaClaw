@@ -43,8 +43,11 @@ func TestDeliverLargeSendsThePiecesAsOneMessage(t *testing.T) {
 		t.Fatalf("%q %v", out, err)
 	}
 	files, _ := said["files"].([]map[string]string)
-	if uploaded != 900000 || files[0]["ref"] == "" || files[0]["data"] != "" || said["instance_id"] != "inst_1" || !strings.Contains(cmds[0], `'/tmp/a b'\''c.pdf'`) || !strings.HasPrefix(cmds[len(cmds)-1], "rm -rf -- ") {
+	if uploaded != 900000 || files[0]["ref"] == "" || files[0]["data"] != "" || said["instance_id"] != "inst_1" || !strings.Contains(cmds[0], `'/tmp/a b'\''c.pdf'`) || !strings.Contains(cmds[0], "-gt 8388608") || !strings.HasPrefix(cmds[len(cmds)-1], "rm -rf -- ") {
 		t.Fatalf("said %v uploaded=%d files=%v cmds=%v", said["text"], uploaded, files, cmds)
+	}
+	if desktopDeliveredFileCount("run_1", nil) != 1 {
+		t.Fatalf("piecewise delivery was not counted: claims=%v", desktopFileClaims("run_1"))
 	}
 }
 
@@ -115,5 +118,23 @@ func TestDeliverLargeOverTheCapNamesTheLimit(t *testing.T) {
 	_, err := deliverDesktopLarge(context.Background(), agentruntime.Scope{InstanceID: "i", UserID: "u"}, "/tmp/x.pdf", "x.pdf")
 	if err == nil || !strings.Contains(err.Error(), "8388608") || !strings.Contains(err.Error(), "Do not shrink") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestDesktopPDFFirstPageTextDropsEmptyShellOutput(t *testing.T) {
+	old := desktopDeliverLargeBash
+	defer func() { desktopDeliverLargeBash = old }()
+	scope := agentruntime.Scope{UserID: "u::desk::bot_x", InstanceID: "inst"}
+	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
+		return "(no output)", nil
+	}
+	if got := desktopPDFFirstPageText(context.Background(), scope, "/home/desktop/work/bot_x/a.pdf"); got != "" {
+		t.Fatalf("empty output became evidence: %q", got)
+	}
+	desktopDeliverLargeBash = func(context.Context, agentruntime.Scope, string) (string, error) {
+		return "北京\n天气 报告\f", nil
+	}
+	if got := desktopPDFFirstPageText(context.Background(), scope, "/home/desktop/work/bot_x/a.pdf"); got != "北京 天气 报告" {
+		t.Fatalf("text %q", got)
 	}
 }

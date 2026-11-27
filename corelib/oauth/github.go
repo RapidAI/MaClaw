@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -459,4 +460,227 @@ func DoGitHubAPI(token, method, apiPath string) (string, error) {
 		return "", fmt.Errorf("github api: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body[:min(len(body), 512)])))
 	}
 	return string(body), nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Repository creation — org listing, name-availability probing, and create.
+// These are the write-capable counterparts of FetchGitHubRepositories, used by
+// the cloud-agent / virtual-repository "create and bind" flows. The apiBase
+// parameterization follows the fetchGitHubRepositories test pattern.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GitHubOrg is one organization the connected account belongs to
+// (GET /user/orgs). Creating a repository inside one additionally requires
+// the member's create permission; the create call surfaces the provider's
+// refusal when it is missing.
+type GitHubOrg struct {
+	Login       string `json:"login"`
+	Description string `json:"description"`
+}
+
+// FetchGitHubOrgs lists the organizations the token's account belongs to.
+func FetchGitHubOrgs(ctx context.Context, token string, limit int) ([]GitHubOrg, error) {
+	return fetchGitHubOrgs(ctx, GitHubAPIBase, token, limit)
+}
+
+func fetchGitHubOrgs(ctx context.Context, apiBase, token string, limit int) ([]GitHubOrg, error) {
+	if limit < 1 || limit > 100 {
+		limit = 100
+	}
+	endpoint := strings.TrimRight(apiBase, "/") + "/user/orgs?per_page=" + fmt.Sprint(limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("github /user/orgs: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return nil, fmt.Errorf("github /user/orgs: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return nil, fmt.Errorf("github /user/orgs: read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, gitHubResponseError("github /user/orgs", resp, body)
+	}
+	var rows []GitHubOrg
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("github /user/orgs: parse response: %w", err)
+	}
+	out := rows[:0]
+	for _, row := range rows {
+		if strings.TrimSpace(row.Login) == "" {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// GitHubRepoNameShape reports whether one owner/name path segment is
+// plausibly a GitHub repository path segment: letters, digits, dot,
+// underscore, hyphen; 1-200 chars; not "." or "..". GitHub itself normalizes
+// and validates names on create; this pre-check only catches obvious typos
+// before a network round-trip. Callers outside the package (the guiapp
+// create flows) reuse it so the client-side rule cannot drift from the
+// probe's.
+func GitHubRepoNameShape(segment string) bool {
+	segment = strings.TrimSpace(segment)
+	if segment == "" || len(segment) > 200 || segment == "." || segment == ".." {
+		return false
+	}
+	for _, r := range segment {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// GitHubRepoNameStatus probes whether owner/name can still be created:
+// HTTP 200 means the repository already exists (taken), 404 means the path
+// is free. Anything else — exhausted quota, revoked token — is an error, so
+// a failed probe never reads as "available".
+func GitHubRepoNameStatus(ctx context.Context, token, owner, name string) (available bool, reason string, err error) {
+	return githubRepoNameStatus(ctx, GitHubAPIBase, token, owner, name)
+}
+
+func githubRepoNameStatus(ctx context.Context, apiBase, token, owner, name string) (bool, string, error) {
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if !GitHubRepoNameShape(owner) || !GitHubRepoNameShape(name) {
+		return false, "归属或仓库名格式无效", nil
+	}
+	endpoint := strings.TrimRight(apiBase, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("github /repos/%s/%s: create request: %w", owner, name, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return false, "", fmt.Errorf("github /repos/%s/%s: request failed: %w", owner, name, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, "", fmt.Errorf("github /repos/%s/%s: read response: %w", owner, name, err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return false, "该仓库已存在", nil
+	case http.StatusNotFound:
+		return true, "", nil
+	default:
+		return false, "", gitHubResponseError(fmt.Sprintf("github /repos/%s/%s", owner, name), resp, body)
+	}
+}
+
+// GitHubCreatedRepo is the subset of the create-repository response the
+// callers surface after a successful POST.
+type GitHubCreatedRepo struct {
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	CloneURL      string `json:"clone_url"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+}
+
+// CreateGitHubRepo creates a repository under the token's own account
+// (owner empty) or under an organization the account belongs to. autoInit
+// seeds an initial README commit so the fresh repository has a real default
+// branch for the first clone and push.
+func CreateGitHubRepo(ctx context.Context, token, owner, name string, private, autoInit bool) (*GitHubCreatedRepo, error) {
+	return createGitHubRepo(ctx, GitHubAPIBase, token, owner, name, private, autoInit)
+}
+
+func createGitHubRepo(ctx context.Context, apiBase, token, owner, name string, private, autoInit bool) (*GitHubCreatedRepo, error) {
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if name == "" || !GitHubRepoNameShape(name) {
+		return nil, fmt.Errorf("github create repo: 仓库名格式无效")
+	}
+	if owner != "" && !GitHubRepoNameShape(owner) {
+		return nil, fmt.Errorf("github create repo: 组织名格式无效")
+	}
+	endpoint := strings.TrimRight(apiBase, "/") + "/user/repos"
+	if owner != "" {
+		endpoint = strings.TrimRight(apiBase, "/") + "/orgs/" + url.PathEscape(owner) + "/repos"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"name":      name,
+		"private":   private,
+		"auto_init": autoInit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("github create repo: encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("github create repo: create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := DoNoFollow(req)
+	if err != nil {
+		return nil, fmt.Errorf("github create repo: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("github create repo: read response: %w", err)
+	}
+	if resp.StatusCode == http.StatusCreated {
+		var created GitHubCreatedRepo
+		if err := json.Unmarshal(body, &created); err != nil {
+			return nil, fmt.Errorf("github create repo: parse response: %w", err)
+		}
+		if created.FullName == "" {
+			created.FullName = name
+		}
+		return &created, nil
+	}
+	return nil, gitHubCreateRepoError(resp, body)
+}
+
+// gitHubCreateRepoError maps the create-specific failures to readable text:
+// 422 name-already-exists and 403 organization permission are the two the
+// create dialog must explain; everything else keeps GitHub's own message.
+func gitHubCreateRepoError(resp *http.Response, body []byte) error {
+	endpoint := "github create repo"
+	if resp != nil && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0" {
+		return gitHubRateLimitError(endpoint, resp, body)
+	}
+	var payload struct {
+		Message string   `json:"message"`
+		Errors  []string `json:"errors"`
+	}
+	message := ""
+	if json.Unmarshal(body, &payload) == nil {
+		message = strings.TrimSpace(payload.Message)
+		for _, item := range payload.Errors {
+			message += " " + strings.TrimSpace(item)
+		}
+	}
+	if resp != nil && resp.StatusCode == http.StatusUnprocessableEntity && strings.Contains(strings.ToLower(message), "already exists") {
+		return fmt.Errorf("%s: 仓库名已被占用", endpoint)
+	}
+	if message != "" {
+		return fmt.Errorf("%s: HTTP %d: %s", endpoint, resp.StatusCode, message)
+	}
+	return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode)
 }

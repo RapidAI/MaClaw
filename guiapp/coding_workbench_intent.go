@@ -69,14 +69,157 @@ func codingRequestShouldRestate(decision codingRequestDecision, userText string)
 }
 
 // codingUnderstandingVoice is the two-beat reply: what the user wants, then
-// what this turn will do. The shape is
+// what this turn will do. The second beat has to follow the first.
 // "你想要北京的天气信息并生成PDF。我将先获取最新天气数据，再整合成PDF文件。"
 func codingUnderstandingVoice(s string) bool {
-	if strings.Contains(s, "你想要") && strings.Contains(s, "我将") {
-		return true
+	return codingChineseUnderstandingVoice(s) || codingEnglishUnderstandingVoice(s)
+}
+
+func codingChineseUnderstandingVoice(s string) bool {
+	// 你想要 inside 「」 or glued on, as in 是你想要的, is the goal naming
+	// those words. The beat stands outside quotes, after a non-letter.
+	rest, ok := codingUnquotedPhraseRest(s, "你想要", false)
+	if !ok {
+		return false
 	}
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "you want") && (strings.Contains(lower, "i will") || strings.Contains(lower, "i'll"))
+	return codingUnquotedAction(rest, func(tok string) bool {
+		return strings.HasPrefix(tok, "我将")
+	})
+}
+
+func codingEnglishUnderstandingVoice(s string) bool {
+	rest, ok := codingFoldPhraseRest(s, "you want")
+	if !ok {
+		return false
+	}
+	return codingUnquotedAction(rest, codingStartsWithEnglishAction)
+}
+
+// codingUnquotedAction reports an action token in s that is outside
+// quotation and not glued onto the previous word. prev == 0 is the start
+// of the text after 你想要 / "you want", where the action may follow at once.
+func codingUnquotedAction(s string, token func(string) bool) bool {
+	return codingUnquotedActionAt(s, token) >= 0
+}
+
+// codingUnquotedActionAt is the byte offset of the first action token that
+// stands outside quotes and is not glued to the previous word. -1 means
+// there is none. Offset 0 is the start of s, where the token may follow
+// 你想要 / "you want" at once.
+func codingUnquotedActionAt(s string, token func(string) bool) int {
+	quote := rune(0)
+	prev := rune(0)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if quote == 0 && codingActionBoundary(prev) && token(s[i:]) {
+			return i
+		}
+		quote = codingStepQuote(quote, r)
+		prev = r
+		i += size
+	}
+	return -1
+}
+
+func codingActionBoundary(prev rune) bool {
+	return prev == 0 || !unicode.IsLetter(prev)
+}
+
+func codingStepQuote(quote, r rune) rune {
+	switch r {
+	case '「':
+		if quote == 0 {
+			return '」'
+		}
+	case '『':
+		if quote == 0 {
+			return '』'
+		}
+	case '」', '』':
+		if quote == r {
+			return 0
+		}
+	case '"':
+		if quote == '"' {
+			return 0
+		}
+		if quote == 0 {
+			return '"'
+		}
+	case '“':
+		if quote == 0 {
+			return '"'
+		}
+	case '”':
+		if quote == '"' {
+			return 0
+		}
+	}
+	return quote
+}
+
+// codingFoldPhraseRest returns the text after the first whole-word phrase
+// outside quotes. "you want" does not match inside "you wanted" or 「」.
+func codingFoldPhraseRest(s, phrase string) (string, bool) {
+	return codingUnquotedPhraseRest(s, phrase, true)
+}
+
+// codingUnquotedPhraseRest returns the text after phrase. endBoundary
+// rejects a longer word ("you wanted"). Chinese 你想要的 stays a want, so
+// that call passes endBoundary false. A phrase inside quotes is not a beat.
+func codingUnquotedPhraseRest(s, phrase string, endBoundary bool) (string, bool) {
+	_, rest, ok := codingUnquotedPhraseAt(s, phrase, endBoundary)
+	return rest, ok
+}
+
+// codingUnquotedPhraseAt is the byte offset of the first phrase that stands
+// outside quotes and is not glued to the previous word, plus the text after
+// it. -1 means there is none.
+func codingUnquotedPhraseAt(s, phrase string, endBoundary bool) (int, string, bool) {
+	quote := rune(0)
+	prev := rune(0)
+	for i := 0; i < len(s); {
+		if quote == 0 && codingActionBoundary(prev) {
+			if rest, ok := codingMatchPhrase(s[i:], phrase, endBoundary); ok {
+				return i, rest, true
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		quote = codingStepQuote(quote, r)
+		prev = r
+		i += size
+	}
+	return -1, "", false
+}
+
+// codingFirstVoiceWant is the want beat the voice gate would count.
+// The earlier of 你想要 and "you want" wins.
+func codingFirstVoiceWant(s string) (at int, rest string, ok bool) {
+	zhAt, zhRest, zhOK := codingUnquotedPhraseAt(s, "你想要", false)
+	enAt, enRest, enOK := codingUnquotedPhraseAt(s, "you want", true)
+	switch {
+	case zhOK && enOK:
+		if enAt < zhAt {
+			return enAt, enRest, true
+		}
+		return zhAt, zhRest, true
+	case zhOK:
+		return zhAt, zhRest, true
+	case enOK:
+		return enAt, enRest, true
+	default:
+		return -1, "", false
+	}
+}
+
+func codingMatchPhrase(s, phrase string, endBoundary bool) (string, bool) {
+	if endBoundary {
+		return codingFoldPrefixAtBoundary(s, phrase)
+	}
+	if len(s) < len(phrase) || s[:len(phrase)] != phrase {
+		return "", false
+	}
+	return s[len(phrase):], true
 }
 
 func codingTextHasHan(s string) bool {
@@ -89,10 +232,17 @@ func codingTextHasHan(s string) bool {
 }
 
 // codingUnderstandingVoiceFor accepts the Chinese two-beat reply, or the
-// English one when the user wrote English. A Chinese request must use 你想要 / 我将.
+// English one when the user wrote English. Language follows the typed
+// request. An attached path is not a language, including when the user
+// typed no words. 确认前不改文件 inside an English reply does not make the
+// request Chinese. A Chinese request must use 你想要 then 我将.
 func codingUnderstandingVoiceFor(got, userText string) bool {
-	if codingTextHasHan(userText) || codingTextHasHan(got) {
-		return strings.Contains(got, "你想要") && strings.Contains(got, "我将")
+	spoken := strings.TrimSpace(codingTypedRequest(userText))
+	if spoken == "" {
+		return codingUnderstandingVoice(got)
+	}
+	if codingTextHasHan(spoken) {
+		return codingChineseUnderstandingVoice(got)
 	}
 	return codingUnderstandingVoice(got)
 }
@@ -724,15 +874,14 @@ func fallbackCodingRequestRestatementFor(userText string, mem stickyCodingWorkbe
 			echo := codingClosedRequirementSnippet(mem.SessionPlan)
 			if echo != "" || codingRequirementGoalCut(mem.SessionPlan) >= 0 {
 				if sentence := codingDescribeStoredGoal(echo, mem.SessionPlan); sentence != "" {
-					sentence = strings.TrimRight(sentence, "。")
-					return "你想要" + sentence + "。我将从上次停下的地方接着做。"
+					return codingContinueStoredGoal(sentence)
 				}
 			}
 			if prior != "" {
 				return "你想要继续做" + codingQuoteWorkName(prior) + "。我将从上次停下的地方接着做。"
 			}
 			// A bare continue with nothing stored has no ask to name.
-			return "你想要接着做上次停下的事。我将先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+			return codingNoStoredGoalContinue()
 		}
 		if ask != "" {
 			if codingRequirementGoalCut(ask) >= 0 {
@@ -1200,7 +1349,7 @@ func codingDescribeLongOpeningAnalysis(head string, more bool) string {
 	} else {
 		s += "。"
 	}
-	s += "我将先按这些要求确认要做到的结果和边界，只做提到的事，不额外加功能，整理成开发计划，确认前不改文件。"
+	s += "我将先对照当前项目整理开发计划，只做提到的事，确认前不改文件。"
 	return s
 }
 
@@ -1585,7 +1734,206 @@ func codingDescribeOpeningTask(ask string) string {
 	if ask == "" {
 		return ""
 	}
-	return "你想要「" + ask + "」。我将先按这句话确认要做到的结果和边界，只做提到的事，不额外加功能，整理成开发计划，确认前不改文件。"
+	return "你想要「" + ask + "」。我将先对照当前项目整理开发计划，只做提到的事，确认前不改文件。"
+}
+
+// codingNoStoredGoalContinue is the continue reply when the session has no
+// goal text left to name. An understanding that peels down to only the
+// voice envelope is the same situation.
+func codingNoStoredGoalContinue() string {
+	return "你想要接着做上次停下的事。我将先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+}
+
+// codingContinueStoredGoal is the continue reply for a stored requirement.
+// SessionPlan is seeded from the previous understanding. The goal is the
+// span after the same unquoted want the voice gate counts, through the
+// trailing action beat. A preamble such as 好的，你想要 is not the goal.
+// 我将 inside the goal is content: only the trailing action beat is removed.
+func codingContinueStoredGoal(sentence string) string {
+	sentence = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sentence), "。．."))
+	peeled, actionGone := codingTrimTrailingActionSentences(sentence)
+	if goal, ok := codingGoalAfterWant(peeled, actionGone); ok {
+		sentence = goal
+	} else {
+		sentence = peeled
+	}
+	sentence = strings.Trim(sentence, " 。．.，,")
+	if sentence == "" {
+		return codingNoStoredGoalContinue()
+	}
+	lead := ""
+	if r, _ := utf8.DecodeRuneInString(sentence); r < 128 && unicode.IsLetter(r) {
+		lead = " "
+	}
+	return "你想要" + lead + sentence + "。我将从上次停下的地方接着做。"
+}
+
+// codingGoalAfterWant removes the voice want. Once the action beat is gone,
+// everything before that want is preamble and the remainder is the goal.
+// Without an action beat, a want in the first sentence still drops its
+// opener, and a want in a later sentence drops only the token so earlier
+// sentences stay.
+func codingGoalAfterWant(s string, actionPeeled bool) (string, bool) {
+	at, rest, ok := codingFirstVoiceWant(s)
+	if !ok {
+		return "", false
+	}
+	rest = strings.Trim(strings.TrimSpace(rest), " 。．.，,")
+	if actionPeeled || !codingPrefixHasSentence(s[:at]) {
+		return rest, true
+	}
+	head := codingSentenceHeadBefore(s, at)
+	if head == "" || rest == "" {
+		if head == "" {
+			return rest, true
+		}
+		return head, true
+	}
+	return codingJoinKeptGoal(head, rest), true
+}
+
+// codingPrefixHasSentence reports a sentence end before the want. The ASCII
+// marks follow codingSplitLastSentence, so v1.2 is not a boundary.
+func codingPrefixHasSentence(prefix string) bool {
+	for i := 0; i < len(prefix); {
+		r, size := utf8.DecodeRuneInString(prefix[i:])
+		switch r {
+		case '。', '．', '！', '？', '\n':
+			return true
+		case '.', '!', '?':
+			if i+size < len(prefix) && prefix[i+size] == ' ' {
+				return true
+			}
+		}
+		i += size
+	}
+	return false
+}
+
+// codingSentenceHeadBefore keeps complete sentences that end before at.
+func codingSentenceHeadBefore(s string, at int) string {
+	bestEnd := -1
+	for i := 0; i < at && i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		end := -1
+		switch r {
+		case '。', '．', '！', '？', '\n':
+			end = i + size
+		case '.', '!', '?':
+			if i+size < len(s) && s[i+size] == ' ' {
+				end = i + size + 1
+			}
+		}
+		if end > 0 && end <= at {
+			bestEnd = end
+		}
+		i += size
+	}
+	if bestEnd < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[:bestEnd])
+}
+
+func codingJoinKeptGoal(head, rest string) string {
+	hr, _ := utf8.DecodeLastRuneInString(head)
+	rr, _ := utf8.DecodeRuneInString(rest)
+	if (hr == '.' || hr == '!' || hr == '?') && rr < 128 && unicode.IsLetter(rr) {
+		return head + " " + rest
+	}
+	return head + rest
+}
+
+// codingFoldPrefixAtBoundary matches prefix only when it ends on a word
+// boundary. "you want" must not eat "you wanted", and "i will" must not
+// eat "i willfully".
+func codingFoldPrefixAtBoundary(s, prefix string) (string, bool) {
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return "", false
+	}
+	rest := s[len(prefix):]
+	if rest == "" {
+		return "", true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	if unicode.IsLetter(r) {
+		return "", false
+	}
+	return rest, true
+}
+
+// codingTrimTrailingActionSentences drops the action beat from the end.
+// A sentence that starts with 我将 / I will / I'll goes away. A comma-joined
+// beat in the last sentence ("天气，我将…") goes away from that token, using
+// the same outside-quote boundary as the voice gate. An earlier sentence
+// stays, and 我将 inside the goal is not a beat. The bool is true when an
+// action beat was removed.
+func codingTrimTrailingActionSentences(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	peeled := false
+	for s != "" {
+		boundary, seg := codingSplitLastSentence(s)
+		cut := codingUnquotedActionAt(seg, codingActionToken)
+		if cut < 0 {
+			return s, peeled
+		}
+		peeled = true
+		if cut == 0 {
+			if boundary < 0 {
+				return "", true
+			}
+			s = strings.TrimSpace(strings.TrimRight(s[:boundary], "。．.！？!?"))
+			continue
+		}
+		kept := strings.TrimSpace(seg[:cut])
+		if boundary < 0 {
+			return kept, true
+		}
+		punct, _ := utf8.DecodeRuneInString(s[boundary:])
+		return strings.TrimSpace(s[:boundary] + string(punct) + kept), true
+	}
+	return "", peeled
+}
+
+func codingActionToken(rest string) bool {
+	return strings.HasPrefix(rest, "我将") || codingStartsWithEnglishAction(rest)
+}
+
+func codingStartsWithEnglishAction(s string) bool {
+	_, will := codingFoldPrefixAtBoundary(s, "i will")
+	_, plain := codingFoldPrefixAtBoundary(s, "i'll")
+	_, curly := codingFoldPrefixAtBoundary(s, "i’ll")
+	return will || plain || curly
+}
+
+// codingSplitLastSentence returns the byte index of the boundary before the
+// last sentence, and that sentence. boundary < 0 means s is one sentence.
+// An ASCII mark counts only when a space follows, so v1.2 stays one token.
+func codingSplitLastSentence(s string) (boundary int, seg string) {
+	best, bestSkip := -1, 0
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		skip := size
+		split := false
+		switch r {
+		case '。', '．', '！', '？', '\n':
+			split = true
+		case '.', '!', '?':
+			if i+size < len(s) && s[i+size] == ' ' {
+				split = true
+				skip = size + 1
+			}
+		}
+		if split && strings.TrimSpace(s[i+skip:]) != "" {
+			best = i
+			bestSkip = skip
+		}
+		i += size
+	}
+	if best < 0 {
+		return -1, strings.TrimSpace(s)
+	}
+	return best, strings.TrimSpace(s[best+bestSkip:])
 }
 
 // codingOpeningAnalysisUsable rejects a model reply that only repeats the
@@ -1593,7 +1941,9 @@ func codingDescribeOpeningTask(ask string) string {
 func codingOpeningAnalysisUsable(got, userText string) bool {
 	got = strings.TrimSpace(got)
 	userText = strings.TrimSpace(userText)
-	if utf8.RuneCountInString(got) < 24 || strings.Contains(got, "其它先不动") {
+	// 16 is the shortest finished two-beat reply (a named want and a named
+	// action). The old 24 floor discarded that shape and kept the host quote.
+	if utf8.RuneCountInString(got) < 16 || strings.Contains(got, "其它先不动") {
 		return false
 	}
 	// A path block must not keep a copy of the typed sentence. The quote
@@ -1856,16 +2206,22 @@ func codingDescribeNewAsk(name, ask string) string {
 	if ask == "" {
 		return ""
 	}
-	if !strings.HasPrefix(ask, "这次") && !strings.HasPrefix(ask, "继续") && !strings.HasPrefix(ask, "请") && !strings.HasPrefix(ask, "先") && !strings.HasPrefix(ask, "把") {
-		ask = "这次" + ask
-	}
+	// 你想要这次再收紧阈值 does not name the want. 这次 stays only when the
+	// user wrote it. Scope stays in 其它先不动.
 	tail := "，其它先不动"
 	if codingAskAlreadyCoversTheRest(ask) {
 		tail = ""
 	}
 	line := ask + tail
 	if name = strings.TrimSpace(name); name != "" {
-		line = "在" + codingQuoteWorkName(name) + "里，" + line
+		sep := ""
+		switch {
+		case strings.HasPrefix(ask, "请"), strings.HasPrefix(ask, "继续"),
+			strings.HasPrefix(ask, "先"), strings.HasPrefix(ask, "把"),
+			strings.HasPrefix(ask, "这次"), strings.HasPrefix(ask, "本次"):
+			sep = "，"
+		}
+		line = "在" + codingQuoteWorkName(name) + "里" + sep + line
 	}
 	return "你想要" + line + "。我将按这个范围修改并验证。"
 }
@@ -2002,7 +2358,11 @@ func (h *IMMessageHandler) llmCodingRequestRestatement(userID, userText string, 
 		return ""
 	}
 	got := parseCodingRequestRestatement(h.callLightweightLLM(cfg, codingRequestUnderstandingSystemPrompt, buildCodingUnderstandingUserPrompt(userText, mem), 20))
-	if got == "" || codingRestatementCopiesUser(got, userText) || utf8.RuneCountInString(got) < 8 {
+	spoken := codingTypedRequest(userText)
+	if strings.TrimSpace(spoken) == "" {
+		spoken = userText
+	}
+	if got == "" || codingRestatementCopiesUser(got, spoken) || utf8.RuneCountInString(got) < 8 {
 		return ""
 	}
 	if !codingUnderstandingVoiceFor(got, userText) {

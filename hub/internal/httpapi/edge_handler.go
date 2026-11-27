@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -251,7 +252,7 @@ func PostEdgeRotateCodeAdminHandler(reg *edgenode.Registry) http.HandlerFunc {
 
 // refreshRotatedDesktop writes the new desktopd key onto the server this node
 // already has. A missing server is created. A second server is not.
-func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID, nodeID, name, key string) error {
+func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID, nodeID, name, ownerUserID, key string, ramBytes uint64, logicalCPUs int) error {
 	if pool == nil {
 		return errors.New("desktop service store is unavailable")
 	}
@@ -275,10 +276,36 @@ func refreshRotatedDesktop(ctx context.Context, pool *desktoppool.Pool, tenantID
 	if strings.TrimSpace(name) == "" {
 		name = nodeID
 	}
-	_, err = pool.CreateServer(ctx, tenantID, desktoppool.Server{
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	server, err := desktoppool.PrepareOwnedResources(desktoppool.Server{
 		Name: name, BaseURL: desktoppool.NodeBaseURL(nodeID), AccessToken: key, NodeID: nodeID,
-	})
+	}, ramBytes, logicalCPUs)
+	if err != nil {
+		return err
+	}
+	if ownerUserID != "" {
+		_, err = pool.AttachOwnedServer(ctx, tenantID, ownerUserID, server)
+		return err
+	}
+	_, err = pool.CreateServer(ctx, tenantID, server)
 	return err
+}
+
+// ensureEdgeDesktopRecorded repairs the pool row of a node whose enrollment
+// succeeded but whose desktop service record was lost (or predates the pool).
+// The node already proved this desktopd key at enrollment, so a reconnect may
+// restore the record without asking the user to install again.
+func ensureEdgeDesktopRecorded(ctx context.Context, pool *desktoppool.Pool, node edgenode.Node) error {
+	if pool == nil || !node.HasDesktopd || strings.TrimSpace(node.DesktopdKey) == "" {
+		return nil
+	}
+	if err := refreshRotatedDesktop(ctx, pool, node.TenantID, node.ID, node.Name, node.OwnerUserID, node.DesktopdKey, 0, 0); err != nil {
+		return err
+	}
+	if strings.TrimSpace(node.OwnerUserID) != "" {
+		return pool.SetNodeServersOwner(ctx, node.TenantID, node.ID, node.OwnerUserID)
+	}
+	return nil
 }
 
 // abortEdgeEnroll undoes a registration whose srv connection was not stored.
@@ -288,7 +315,7 @@ func abortEdgeEnroll(ctx context.Context, reg *edgenode.Registry, pool *desktopp
 	if out.Rotated {
 		_ = reg.Restore(ctx, out.Previous)
 		if hadDesktop && strings.TrimSpace(out.Previous.DesktopdKey) != "" {
-			_ = refreshRotatedDesktop(ctx, pool, out.TenantID, out.NodeID, out.Previous.Name, out.Previous.DesktopdKey)
+			_ = refreshRotatedDesktop(ctx, pool, out.TenantID, out.NodeID, out.Previous.Name, out.Previous.OwnerUserID, out.Previous.DesktopdKey, 0, 0)
 		}
 		return
 	}
@@ -349,9 +376,13 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			return
 		}
 		if out.Rotated && in.HasDesktopd {
-			if err := refreshRotatedDesktop(r.Context(), pool, out.TenantID, out.NodeID, out.Previous.Name, in.DesktopdKey); err != nil {
+			if err := refreshRotatedDesktop(r.Context(), pool, out.TenantID, out.NodeID, out.Previous.Name, out.Previous.OwnerUserID, in.DesktopdKey, in.HostRAMBytes, in.HostCPUs); err != nil {
 				_ = reg.Restore(r.Context(), out.Previous)
-				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", "desktop service was not recorded; issue a new code")
+				msg := "desktop service was not recorded; issue a new code"
+				if errors.Is(err, desktop.ErrHostTooSmall) {
+					msg = err.Error()
+				}
+				writeError(w, http.StatusBadGateway, "EDGE_ENROLL", msg)
 				return
 			}
 		} else if in.HasDesktopd {
@@ -363,12 +394,17 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 			case node.OwnerUserID != "":
 				createErr = attachOwnedNode(r.Context(), pool, node, in.DesktopdKey, in.HostRAMBytes, in.HostCPUs)
 			default:
-				_, createErr = pool.CreateServer(r.Context(), node.TenantID, desktoppool.Server{
+				server, fitErr := desktoppool.PrepareOwnedResources(desktoppool.Server{
 					Name:        node.Name,
 					BaseURL:     desktoppool.NodeBaseURL(node.ID),
 					AccessToken: strings.TrimSpace(in.DesktopdKey),
 					NodeID:      node.ID,
-				})
+				}, in.HostRAMBytes, in.HostCPUs)
+				if fitErr != nil {
+					createErr = fitErr
+				} else {
+					_, createErr = pool.CreateServer(r.Context(), node.TenantID, server)
+				}
 			}
 			if createErr != nil {
 				_ = reg.Remove(r.Context(), out.NodeID)
@@ -395,7 +431,11 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 					attachErr = bots.AttachNodeSrv(r.Context(), node.TenantID, out.NodeID, "http://srv."+out.NodeID+".node.invalid", in.SrvAdmin)
 				}
 			}
-			if attachErr == nil && bots != nil && strings.TrimSpace(node.OwnerUserID) != "" {
+			// Only a node that is both srv and desktop can be the default home
+			// of the owner's new bots. A srv-only node remains usable for cloud
+			// agents, but pinning it here would make every new desktop bot a
+			// computerless one while still advertising a computer.
+			if attachErr == nil && bots != nil && in.HasDesktopd && strings.TrimSpace(node.OwnerUserID) != "" {
 				attachErr = bots.PinOwnerNode(r.Context(), node.TenantID, node.OwnerUserID, out.NodeID)
 			}
 			if attachErr != nil {
@@ -410,7 +450,7 @@ func PostEdgeEnrollHandler(reg *edgenode.Registry, pool *desktoppool.Pool, bots 
 
 // GetEdgeLinkHandler GET /api/v1/edge/link
 // The node authenticates with its node secret, not the desktop API token.
-func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service) http.HandlerFunc {
+func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker, bots *botmgmt.Service, pool *desktoppool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reg == nil || broker == nil || !edgenode.Enabled() {
 			writeError(w, http.StatusNotFound, "EDGE_DISABLED", "edge nodes are disabled")
@@ -422,6 +462,9 @@ func GetEdgeLinkHandler(reg *edgenode.Registry, broker *edgenode.Broker, bots *b
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "EDGE_AUTH", "node secret is required")
 			return
+		}
+		if err := ensureEdgeDesktopRecorded(r.Context(), pool, node); err != nil {
+			log.Printf("[edge] restore desktop record node=%s: %v", node.ID, err)
 		}
 		ws, err := edgeUpgrader.Upgrade(w, r, nil)
 		if err != nil {

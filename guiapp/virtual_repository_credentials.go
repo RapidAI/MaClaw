@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/google/uuid"
 	"github.com/zalando/go-keyring"
 )
@@ -19,11 +20,19 @@ import (
 const virtualRepositoryKeyringService = "MaClaw Virtual Repository"
 
 type RepositoryCredentialMetadata struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	Username  string    `json:"username"`
-	Scope     string    `json:"scope,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Username string `json:"username"`
+	Scope    string `json:"scope,omitempty"`
+	// Provider tags the credential with the git platform it authenticates to
+	// ("github" or "gitlab") so the repo-creation flows can offer it as a
+	// pickable credential. Empty keeps the legacy provider-agnostic git/svn
+	// credential, which clone/push behave exactly as before.
+	Provider string `json:"provider,omitempty"`
+	// Origin pins a gitlab provider credential to its self-hosted site root;
+	// GitHub's API host is fixed so github credentials never carry one.
+	Origin    string    `json:"origin,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -40,6 +49,8 @@ type saveRepositoryCredentialInput struct {
 	Username string `json:"username"`
 	Scope    string `json:"scope,omitempty"`
 	Secret   string `json:"secret,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Origin   string `json:"origin,omitempty"`
 }
 
 type repositoryCredentialBindingFile struct {
@@ -58,22 +69,61 @@ func validateRepositoryCredentialInput(input *saveRepositoryCredentialInput) err
 	input.Kind = strings.ToLower(strings.TrimSpace(input.Kind))
 	input.Username = strings.TrimSpace(input.Username)
 	input.Scope = strings.TrimSpace(input.Scope)
-	if input.Name == "" || input.Username == "" {
+	input.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
+	input.Origin = strings.TrimSpace(input.Origin)
+	// A provider-tagged credential may leave the username empty: the live
+	// provider probe fills it with the login the secret belongs to.
+	if input.Name == "" || (input.Username == "" && input.Provider == "") {
 		return errors.New("credential name and username are required")
 	}
 	if input.Kind != "git" && input.Kind != "svn" {
 		return errors.New("credential kind must be git or svn")
 	}
-	if len(input.ID) > virtualRepositoryNameMaxLength || len(input.Name) > virtualRepositoryNameMaxLength || len(input.Username) > virtualRepositoryNameMaxLength || len(input.Scope) > virtualRepositoryFieldMaxLength || len(input.Secret) > virtualRepositoryFieldMaxLength {
+	normalizedOrigin, err := validateRepositoryCredentialProviderFields(input.Provider, input.Origin)
+	if err != nil {
+		return err
+	}
+	input.Origin = normalizedOrigin
+	if len(input.ID) > virtualRepositoryNameMaxLength || len(input.Name) > virtualRepositoryNameMaxLength || len(input.Username) > virtualRepositoryNameMaxLength || len(input.Scope) > virtualRepositoryFieldMaxLength || len(input.Secret) > virtualRepositoryFieldMaxLength || len(input.Provider) > virtualRepositoryNameMaxLength || len(input.Origin) > virtualRepositoryFieldMaxLength {
 		return errors.New("credential field is too long")
 	}
-	if containsControlCharacter(input.ID) || containsControlCharacter(input.Name) || containsControlCharacter(input.Username) || containsControlCharacter(input.Scope) {
+	if containsControlCharacter(input.ID) || containsControlCharacter(input.Name) || containsControlCharacter(input.Username) || containsControlCharacter(input.Scope) || containsControlCharacter(input.Provider) || containsControlCharacter(input.Origin) {
 		return errors.New("credential id, name, username and scope must not contain control characters")
 	}
 	if strings.ContainsAny(input.Secret, "\r\n\x00") {
 		return errors.New("credential password must not contain line breaks or NUL characters")
 	}
 	return nil
+}
+
+// validateRepositoryCredentialProviderFields enforces the provider/origin
+// pairing: github's API host is fixed, gitlab needs the self-hosted site
+// root, and an origin without a provider is a stray field. It returns the
+// normalized origin ("" unless gitlab) so scope matching and the platform
+// API origin agree regardless of how the user typed the host.
+func validateRepositoryCredentialProviderFields(provider, origin string) (string, error) {
+	switch provider {
+	case "":
+		if origin != "" {
+			return "", errors.New("credential origin requires a provider")
+		}
+	case "github":
+		if origin != "" {
+			return "", errors.New("github credentials do not take an origin")
+		}
+	case "gitlab":
+		if origin == "" {
+			return "", errors.New("gitlab credentials require the site origin")
+		}
+		normalized, err := oauth.NormalizeGitLabOrigin(origin)
+		if err != nil {
+			return "", err
+		}
+		return normalized, nil
+	default:
+		return "", errors.New("credential provider must be github or gitlab")
+	}
+	return "", nil
 }
 
 func (a *App) repositoryCredentialPath() string {
@@ -95,6 +145,9 @@ func validateRepositoryCredentialFile(file *repositoryCredentialFile) error {
 		}
 		if item.Kind != "git" && item.Kind != "svn" {
 			return fmt.Errorf("repository credential %q has an invalid kind", item.Name)
+		}
+		if _, err := validateRepositoryCredentialProviderFields(strings.ToLower(strings.TrimSpace(item.Provider)), strings.TrimSpace(item.Origin)); err != nil {
+			return fmt.Errorf("repository credential %q: %w", item.Name, err)
 		}
 		if len(item.ID) > virtualRepositoryNameMaxLength || len(item.Name) > virtualRepositoryNameMaxLength || len(item.Username) > virtualRepositoryNameMaxLength || len(item.Scope) > virtualRepositoryFieldMaxLength {
 			return fmt.Errorf("repository credential %q contains a field that is too long", item.Name)
@@ -225,8 +278,6 @@ func (a *App) ListRepositoryCredentials(kind string) (string, error) {
 }
 
 func (a *App) SaveRepositoryCredential(inputJSON string) (string, error) {
-	virtualRepositoryStateMu.Lock()
-	defer virtualRepositoryStateMu.Unlock()
 	var input saveRepositoryCredentialInput
 	if err := unmarshalVirtualRepositoryInput(inputJSON, "repository credential", &input); err != nil {
 		return "", err
@@ -234,12 +285,36 @@ func (a *App) SaveRepositoryCredential(inputJSON string) (string, error) {
 	if err := validateRepositoryCredentialInput(&input); err != nil {
 		return "", err
 	}
+	// A provider-tagged secret is validated with a live provider /user call
+	// BEFORE anything is stored: this token is what the repo-creation flows
+	// will use, so a typoed or revoked secret fails here with the provider's
+	// own message instead of inside a later create call. The probe is network
+	// work and must stay outside virtualRepositoryStateMu so a slow provider
+	// cannot stall manifest writes.
+	if input.Provider != "" && input.Secret != "" {
+		login, err := a.gitPlatformProbeLogin(input.Provider, input.Origin, input.Secret)
+		if err != nil {
+			return "", err
+		}
+		if input.Username == "" {
+			input.Username = login
+		}
+		if input.Scope == "" {
+			if input.Provider == "github" {
+				input.Scope = "github.com"
+			} else {
+				input.Scope = hostOfOrigin(input.Origin)
+			}
+		}
+	}
+	virtualRepositoryStateMu.Lock()
+	defer virtualRepositoryStateMu.Unlock()
 	file, err := a.loadRepositoryCredentials()
 	if err != nil {
 		return "", err
 	}
 	now := time.Now().UTC()
-	item := RepositoryCredentialMetadata{ID: strings.TrimSpace(input.ID), Name: input.Name, Kind: input.Kind, Username: input.Username, Scope: input.Scope, UpdatedAt: now}
+	item := RepositoryCredentialMetadata{ID: strings.TrimSpace(input.ID), Name: input.Name, Kind: input.Kind, Username: input.Username, Scope: input.Scope, Provider: input.Provider, Origin: input.Origin, UpdatedAt: now}
 	var previousSecret string
 	hadPreviousSecret := false
 	if item.ID == "" {

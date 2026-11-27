@@ -55,6 +55,7 @@ class BotChatScreen extends ConsumerStatefulWidget {
 class _BotChatScreenState extends ConsumerState<BotChatScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _speech = stt.SpeechToText();
   double? _uploadProgress;
   String _uploadingName = '';
@@ -1336,7 +1337,14 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     );
     final state = ref.watch(botChatProvider);
     return Scaffold(
+      key: _scaffoldKey,
+      endDrawer: Drawer(child: _BotListDrawer(currentBotId: widget.bot.id)),
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: context.S.cloudSessionList,
+          onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          icon: const Icon(Icons.segment),
+        ),
         titleSpacing: 0,
         title: Row(
           children: [
@@ -2265,4 +2273,95 @@ String _queueTag(ChatMessage message, AppLocalizations S) {
     return S.chatQueuedPosition(message.queuePosition);
   }
   return S.chatQueuedBusy;
+}
+
+/// Bot 聊天右侧的会话列表抽屉：全部 bot，色点 + 主用标记，点开切换会话。
+/// 右滑收回到会话是 Drawer 的原生手势；管理入口去 bot 列表页。
+class _BotListDrawer extends ConsumerWidget {
+  const _BotListDrawer({required this.currentBotId});
+
+  final String currentBotId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final bots = ref.watch(botsProvider).bots;
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.sm,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    context.S.botsTitle,
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
+                IconButton(
+                  tooltip: context.S.botsTitle,
+                  onPressed: () => context.go('/'),
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: bots.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    child: Text(
+                      context.S.botsEmptyTitle,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                : ListView(
+                    children: [
+                      for (final bot in bots)
+                        ListTile(
+                          selected: bot.id == currentBotId,
+                          leading: Container(
+                            width: 14,
+                            height: 14,
+                            decoration: BoxDecoration(
+                              color: hexColor(bot.color),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          title: Text(
+                            bot.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: bot.primary
+                              ? Icon(
+                                  Icons.push_pin_outlined,
+                                  size: 16,
+                                  color: theme.colorScheme.primary,
+                                )
+                              : const Icon(Icons.chevron_right),
+                          onTap: () {
+                            Navigator.pop(context);
+                            if (bot.id != currentBotId) {
+                              context.push('/bot/${Uri.encodeComponent(bot.id)}');
+                            }
+                          },
+                        ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
 }

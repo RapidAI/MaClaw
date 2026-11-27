@@ -34,8 +34,8 @@ nginx（maclaw.top）无需新增端口或路由。noVNC 保留为备用。
 ```
 GUI iframe ─ Hub /api/v1/desktop-handoff/<t>/h264.html?view_only=0|1&vnc=<noVNC 页>
            └ WS  /api/v1/desktop-handoff/<t>/h264     (Hub 附加 gate Bearer)
-                → gate 6080 → 每个观看者一个 ffmpeg(x11grab → libx264 → 分片 MP4)
-                → supervisor 解析 fMP4 → Annex B 访问单元 → WebSocket
+                → gate 6080 → 每个 (display, 宽, 高, fps) 一个共享 ffmpeg(x11grab → libx264 → FLV)
+                → supervisor 解析 FLV → Annex B 访问单元 → 扇出到各观看者 WebSocket
 浏览器：WebCodecs VideoDecoder(optimizeForLatency) → canvas
         无 WebCodecs → `/h264?mse=1`（原始 fMP4，MSE <video>）
         `h264.html?mse=1` 也可强制走 <video>——移动端 Android WebView 的
@@ -52,10 +52,12 @@ Hub 兜底：上游对 `h264.html` 返回 404（旧 supervisor）时，Hub hando
 服务端 → 客户端
 - 二进制（默认 Annex B 模式）：`u32 BE 头长度` `u32 BE 负载长度` `JSON 头` `负载`。
   头：`{seq, key, ts(µs, 单调时钟), codec("avc1.PPCCLL"，仅关键帧), w, h}`；负载为一个完整
-  H.264 访问单元，IDR 前总带 SPS/PPS。帧边界来自 fMP4 的 moof/mdat 盒子长度，帧完成即发送。
+  H.264 访问单元，IDR 前总带 SPS/PPS。Annex B 模式的帧边界来自 FLV tag 的精确长度，帧完成即发送；MSE 模式保留原始 fMP4 字节。
 - 二进制（`?mse=1`）：编码器原始 fMP4 字节。
 - 文本：
-  - `hello {proto:"maclaw-h264/1", width, height, fps, mode, input, clipboard}`
+  - `hello {proto:"maclaw-h264/1", width, height, fps, mode, input, clipboard, display_state}`；
+    `display_state!="running"` 时服务端不启动编码器，播放器显示休眠/未运行说明并慢速重试，不留黑画布
+  - `display_state {state}`：观看中 X 屏幕停止/休眠时发送 `display_stopped`，服务端随后关闭流；播放器显示休眠说明并慢速重试
   - `lease {holder: "you"|"human"|"bot"|"", input, takeover}`（变化时发送，0.5 s 检查）
   - `clipboard {text}`、`input_error {code: sequence_gap(带 expected)|view_only|lease_busy|inject_failed|clipboard_unavailable}`
 
@@ -63,16 +65,22 @@ Hub 兜底：上游对 `h264.html` 返回 404（旧 supervisor）时，Hub hando
 - `input {seq, events:[...]}`：批次序号必须连续（第一批任意起点）。事件：
   `{t:"move",x,y}`、`{t:"down"|"up",b:1|2|3|8|9,x,y}`、`{t:"wheel",dx,dy,x,y}`（步数）、
   `{t:"key",code:<KeyboardEvent.code>,down}`、`{t:"release"}`。x/y 为 0..1 归一化坐标。
-- `frame_ack {seq}`、`request_keyframe`、`clipboard_set {text}`、`clipboard_get`。
+- `frame_ack {seq}`、`request_keyframe {reason?}`（`decoder_busy` 只等待下一个周期 IDR，不重放缓存）、`clipboard_set {text}`、`clipboard_get`。
 
 ## 低延迟与背压
 
-- 每个观看者独立 ffmpeg → 首帧必为 IDR（连接即关键帧）。
+- Annex B 观看者共享同屏 ffmpeg；新观看者从编码器缓存的最近 IDR 链开始，不为新观看者重启采集。
 - `libx264 ultrafast zerolatency baseline`，`-g fps*2`，`mpdecimate`（含 `max=fps*2`）+ VFR：
   画面不变几乎不发数据，但至多 2 s 出一个小帧用于重同步。这是损伤驱动的近似，未写 XDamage 原生代码。
-- 服务端队列 ≥3 帧或未确认帧 >8（收到过 `frame_ack` 后启用）时丢弃全部 P 帧，直到下一个 IDR；
-  1 s 内没有 IDR 则重启编码器强制 IDR。`request_keyframe` 立即重启编码器（限频 1 s）。
-- 浏览器端解码队列 >4 时丢 P 帧并请求关键帧；解码错误时重建解码器。
+- 服务端某观看者队列 ≥3 帧或未确认帧 >8（收到过 `frame_ack` 后启用）时，只丢弃该观看者的 P 帧，
+  直到下一个 IDR；被丢弃且从未发送的帧不消耗 seq，避免 ack 空洞把拥塞判断永久锁死。
+- `request_keyframe` 不再重启共享编码器：把编码器缓存的一段完整 GOP（至多一个关键帧周期）原子重放给
+  这一个观看者；缓存更新、重放和实时帧扇出在同一把编码器锁下排序，所以重放链不会漏掉准备期间产生的帧。
+  更长的链等待编码器周期 IDR（最多 2 s）。原因明确为 `decoder_busy` 时不重放，避免向已经拥塞的解码器追加带宽。
+  编码器只因输入模式变化重启；X 屏幕消失时编码器退出且不重启。
+- 浏览器端解码队列 >4 时丢 P 帧并请求关键帧；解码错误时重建解码器。只有真正渲染出帧才算收到画面：
+  若 WebSocket 有数据但解码/渲染停滞，播放器先请求关键帧，持续 6 s 无渲染则重连；反复失败回退 noVNC，
+  没有 noVNC 时显示明确错误说明而不是黑屏。
 
 ## 输入、租约、剪贴板
 
@@ -94,7 +102,7 @@ Hub 兜底：上游对 `h264.html` 返回 404（旧 supervisor）时，Hub hando
 
 ## 未做 / 限制
 
-- 每个观看者一个编码器（未做同屏共享编码器）；无 GPU 时 CPU 成本按 libx264 ultrafast 估算，未实测。
+- 无 GPU 时 CPU 成本按 libx264 ultrafast 估算；共享编码器避免同屏多观看者线性放大采集/编码成本。
 - 无音频、无远端光标/presence 图层（光标由 ffmpeg 画进视频）。
 - 只读观看者（非 takeover）不显示他人的指针。
 - 浏览器：WebCodecs 需 Chrome/Edge 94+、Safari 16.4+/17、Firefox 130+；更旧的走 MSE 或 noVNC。

@@ -425,3 +425,200 @@ describe('CloudGitConnectDialog', () => {
     });
 
 });
+
+describe('CloudGitConnectDialog create-new mode', () => {
+    afterEach(() => {
+        cleanup();
+        delete (window as unknown as { go?: unknown }).go;
+    });
+
+    function createBindings(overrides: Record<string, (...args: never[]) => Promise<unknown>> = {}) {
+        return {
+            CloudAgentGitHubAccount: vi.fn(async () => ({
+                connected: true, login: 'ada', name: 'Ada', email: 'ada@example.com', repo_scope: true,
+            })),
+            CloudAgentGitRepositories: vi.fn(async () => []),
+            GitPlatformCreateCredentials: vi.fn(async () => [
+                { id: '', kind: 'account', login: 'ada', name: 'Ada' },
+                { id: 'vcred_1', kind: 'credential', name: 'GH PAT', login: 'ada' },
+            ]),
+            GitPlatformNamespaces: vi.fn(async () => ({
+                rows: [
+                    { key: 'ada', label: 'ada', kind: 'personal' },
+                    { key: 'acme', label: 'acme', kind: 'org' },
+                ],
+            })),
+            GitPlatformRepoNameStatus: vi.fn(async (_service?: string, _cred?: string, _owner?: string, name?: string) => (
+                name === 'taken' ? { available: false, reason: '该仓库已存在' } : { available: true, reason: '' }
+            )),
+            GitPlatformCreateRepo: vi.fn(async (_input?: any) => ({
+                full_name: 'ada/fresh', clone_url: 'https://github.com/ada/fresh.git', default_branch: 'main', private: true,
+            })),
+            ConnectCloudAgentGit: vi.fn(async (_id?: string, _opts?: any) => ({ connected: true, repo: 'ada/fresh' })),
+            GetCloudAgentGit: vi.fn(async () => ({ connected: false })),
+            ...overrides,
+        };
+    }
+
+    it('creates a repository in the personal namespace and binds it with the settings account', async () => {
+        const bindings = createBindings();
+        setBindings(bindings);
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-git-create-toggle'));
+        fireEvent.change(await screen.findByTestId('cloud-git-create-name'), { target: { value: 'fresh' } });
+
+        // The availability suggestion names owner/name once the probe returns;
+        // wait for the OK verdict specifically (the checking phase renders the
+        // same test id).
+        await waitFor(() => {
+            const status = screen.getByTestId('cloud-git-create-status');
+            expect(status.className).toContain('grc-availability--ok');
+        }, { timeout: 3000 });
+        expect(screen.getByTestId('cloud-git-create-status').textContent).toContain('ada/fresh');
+        fireEvent.click(screen.getByTestId('cloud-git-create-submit'));
+
+        await waitFor(() => expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledTimes(1));
+        expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledWith(expect.objectContaining({
+            service: 'github', credential_id: undefined, owner: 'ada', namespace_kind: 'personal', name: 'fresh', private: true,
+        }));
+        await waitFor(() => expect(bindings.ConnectCloudAgentGit).toHaveBeenCalledTimes(1));
+        expect(bindings.ConnectCloudAgentGit.mock.calls[0][1]).toMatchObject({
+            service: 'github', repo: 'ada/fresh', source: 'account', credential_id: undefined,
+        });
+    });
+
+    it('binds with the picked credential (source=credential) when a stored credential is selected', async () => {
+        const bindings = createBindings();
+        setBindings(bindings);
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-git-create-toggle'));
+        const credentialSelect = await screen.findByTestId('cloud-git-create-credential') as HTMLSelectElement;
+        fireEvent.change(credentialSelect, { target: { value: 'vcred_1' } });
+        // A credential switch reloads namespaces before the name can be typed.
+        await waitFor(() => expect(bindings.GitPlatformNamespaces).toHaveBeenLastCalledWith('github', 'vcred_1'));
+        fireEvent.change(screen.getByTestId('cloud-git-create-name'), { target: { value: 'fresh' } });
+        await waitFor(() => {
+            const status = screen.getByTestId('cloud-git-create-status');
+            expect(status.className).toContain('grc-availability--ok');
+        }, { timeout: 3000 });
+        fireEvent.click(screen.getByTestId('cloud-git-create-submit'));
+
+        await waitFor(() => expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledTimes(1));
+        expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledWith(expect.objectContaining({
+            service: 'github', credential_id: 'vcred_1',
+        }));
+        await waitFor(() => expect(bindings.ConnectCloudAgentGit).toHaveBeenCalledTimes(1));
+        expect(bindings.ConnectCloudAgentGit.mock.calls[0][1]).toMatchObject({
+            repo: 'ada/fresh', source: 'credential', credential_id: 'vcred_1',
+        });
+    });
+
+    it('blocks creation while the name is taken and shows the provider reason', async () => {
+        const bindings = createBindings();
+        setBindings(bindings);
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-git-create-toggle'));
+        fireEvent.change(await screen.findByTestId('cloud-git-create-name'), { target: { value: 'taken' } });
+
+        await waitFor(() => {
+            const status = screen.getByTestId('cloud-git-create-status');
+            expect(status.className).toContain('grc-availability--bad');
+        }, { timeout: 3000 });
+        expect(screen.getByTestId('cloud-git-create-status').textContent).toContain('该仓库已存在');
+        expect((screen.getByTestId('cloud-git-create-submit') as HTMLButtonElement).disabled).toBe(true);
+        expect(bindings.GitPlatformCreateRepo).not.toHaveBeenCalled();
+    });
+
+    it('explains a failed permission probe instead of silently hiding creation', async () => {
+        setBindings(createBindings({
+            GitPlatformCreateCredentials: vi.fn(async () => { throw new Error('credential store unreadable'); }),
+        }));
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        expect(await screen.findByTestId('cloud-git-create-error')).toBeTruthy();
+        expect(screen.getByTestId('cloud-git-create-error').textContent).toContain('credential store unreadable');
+        expect(screen.queryByTestId('cloud-git-create-toggle')).toBeNull();
+        // The pick flow keeps working despite the failure.
+        expect(await screen.findByText('@ada')).toBeTruthy();
+    });
+
+    it('does not switch service when the user already typed a repository path', async () => {
+        // Only GitLab usable; the probe would normally switch — but the user
+        // typed a path on GitHub within the probe window, and switching would
+        // wipe their input.
+        setBindings({
+            CloudAgentGitHubAccount: vi.fn(async () => ({ connected: false })),
+            CloudAgentGitLabAccount: vi.fn(async () => ({ connected: true, login: 'ada', name: 'Ada', email: 'a@e.com', repo_scope: true })),
+            CloudAgentGitRepositories: vi.fn(async (service?: string) => service === 'gitlab' ? [] : []),
+            ConnectCloudAgentGit: vi.fn(async () => ({ connected: true })),
+        });
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        const repoInput = screen.getByLabelText('仓库');
+        fireEvent.change(repoInput, { target: { value: 'typed/repo' } });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect((screen.getByLabelText('仓库') as HTMLInputElement).value).toBe('typed/repo');
+    });
+
+    it('keeps the credential reference when a create+bind fails and retries the bind from the pick list', async () => {
+        const bindings = createBindings();
+        bindings.ConnectCloudAgentGit = vi.fn(async (_id?: string, _opts?: any) => ({ connected: true, repo: 'ada/fresh' }))
+            .mockRejectedValueOnce(new Error('hub unreachable'));
+        setBindings(bindings);
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-git-create-toggle'));
+        // Create with the STORED credential so the retry must carry its
+        // reference (a settings-account retry legitimately falls back to the
+        // account source).
+        fireEvent.change(await screen.findByTestId('cloud-git-create-credential'), { target: { value: 'vcred_1' } });
+        await waitFor(() => expect((screen.getByTestId('cloud-git-create-namespace') as HTMLSelectElement).disabled).toBe(false));
+        fireEvent.change(screen.getByTestId('cloud-git-create-name'), { target: { value: 'fresh' } });
+        await waitFor(() => {
+            const status = screen.getByTestId('cloud-git-create-status');
+            expect(status.className).toContain('grc-availability--ok');
+        }, { timeout: 3000 });
+        fireEvent.click(screen.getByTestId('cloud-git-create-submit'));
+
+        // The bind failure surfaces and the dialog falls back to the pick list
+        // with the created repository prefilled.
+        await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('hub unreachable'));
+        expect((screen.getByLabelText('仓库') as HTMLInputElement).value).toBe('ada/fresh');
+
+        // 连接 retries the BIND (not the creation) with the same credential
+        // reference; the provider is never asked to create it again.
+        expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByText('连接'));
+        await waitFor(() => expect(bindings.ConnectCloudAgentGit).toHaveBeenCalledTimes(2));
+        expect(bindings.ConnectCloudAgentGit.mock.calls[1][1]).toMatchObject({
+            repo: 'ada/fresh', source: 'credential', credential_id: 'vcred_1',
+        });
+        expect(bindings.GitPlatformCreateRepo).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps creation usable and explains a partial list when the org enumeration fails', async () => {
+        const bindings = createBindings();
+        bindings.GitPlatformNamespaces = vi.fn(async () => ({
+            rows: [{ key: 'ada', label: 'ada', kind: 'personal' }],
+            org_warning: 'github /user/orgs: quota exhausted',
+        }));
+        setBindings(bindings);
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        fireEvent.click(await screen.findByTestId('cloud-git-create-toggle'));
+        expect(await screen.findByTestId('cloud-git-create-ns-warning')).toBeTruthy();
+        expect(screen.getByTestId('cloud-git-create-ns-warning').textContent).toContain('quota exhausted');
+        // The personal namespace stays usable despite the failure.
+        expect((screen.getByTestId('cloud-git-create-namespace') as HTMLSelectElement).value).toBe('ada');
+    });
+
+    it('hides the create toggle when no usable credential exists', async () => {
+        setBindings(createBindings({ GitPlatformCreateCredentials: vi.fn(async () => []) }));
+
+        render(<CloudGitConnectDialog lang="zh" instanceId="cag_1" onClose={() => {}} />);
+        expect(await screen.findByText('@ada')).toBeTruthy();
+        expect(screen.queryByTestId('cloud-git-create-toggle')).toBeNull();
+    });
+});

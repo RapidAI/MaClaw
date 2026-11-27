@@ -251,6 +251,11 @@ func applyViewerPayload(state *viewerReduceState, event map[string]any) {
 		state.Responded = false
 		state.Gap = false
 		state.DisplayText = viewerText(event["display_text"])
+		// Terminal sentence and trial echo are per request. A new round must
+		// not keep showing the previous answer or its trial.
+		state.Visible = ""
+		state.TrialStatus = ""
+		state.TrialFailures = 0
 	} else if requestID != "" && state.RequestID == "" {
 		state.RequestID = requestID
 	}

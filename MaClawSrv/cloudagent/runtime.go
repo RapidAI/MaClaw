@@ -92,6 +92,10 @@ type instance struct {
 	jailOnce     sync.Once
 	jailIdle     sync.Cond
 	jailInflight int
+	// stagedMu guards stagedProduced. Never acquire jailMu while holding it.
+	// serveFile holds jailMu and then takes stagedMu.
+	stagedMu       sync.Mutex
+	stagedProduced map[string]bool
 }
 
 // ensureJail binds the idle condition to jailMu. The zero Cond is not
@@ -155,6 +159,75 @@ func (inst *instance) endJailWork() {
 		inst.jailIdle.Broadcast()
 	}
 	inst.jailMu.Unlock()
+}
+
+// stageProduced remembers artifact keys before the response is published.
+// The desktop fetches as soon as that frame is queued, and one miss stays
+// failed. sealReply commits the book row before that frame; this set still
+// covers a fetch when that seal did not store the row. serveFile still
+// resolves the path inside the jail. Only a successful Finish drops the
+// keys it stored.
+func (inst *instance) stageProduced(paths []string) {
+	if inst == nil || len(paths) == 0 {
+		return
+	}
+	inst.stagedMu.Lock()
+	defer inst.stagedMu.Unlock()
+	if inst.stagedProduced == nil {
+		inst.stagedProduced = map[string]bool{}
+	}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		inst.stagedProduced[path] = true
+	}
+}
+
+func (inst *instance) stagedHas(path string) bool {
+	if inst == nil {
+		return false
+	}
+	inst.stagedMu.Lock()
+	defer inst.stagedMu.Unlock()
+	return inst.stagedProduced[strings.TrimSpace(path)]
+}
+
+// clearStaged drops keys this turn just persisted. A path another turn
+// staged stays until that turn's own Finish.
+func (inst *instance) clearStaged(paths []string) {
+	if inst == nil || len(paths) == 0 {
+		return
+	}
+	inst.stagedMu.Lock()
+	defer inst.stagedMu.Unlock()
+	for _, path := range paths {
+		delete(inst.stagedProduced, strings.TrimSpace(path))
+	}
+}
+
+// retargetStaged moves the in-memory whitelist with the book. ConnectGit
+// rewrites produced paths after loose files move; the old key must miss and
+// the new key must hit, the same rename producedPaths records.
+func (inst *instance) retargetStaged(renames map[string]string) {
+	if inst == nil || len(renames) == 0 {
+		return
+	}
+	inst.stagedMu.Lock()
+	defer inst.stagedMu.Unlock()
+	if len(inst.stagedProduced) == 0 {
+		return
+	}
+	next := make(map[string]bool, len(inst.stagedProduced))
+	for path := range inst.stagedProduced {
+		moved := retargetArtifactKey(renames, path)
+		if moved == "" {
+			moved = path
+		}
+		next[moved] = true
+	}
+	inst.stagedProduced = next
 }
 
 type trackedCancel struct {
@@ -283,8 +356,11 @@ func (rt *Runtime) finishTurn(inst *instance, requestID, taskID, content string,
 		slog.Bool("as_error", asError), slog.Int("artifacts", len(files)),
 		slog.Int("content_len", len(content)), slog.Any("err", err))
 	if err != nil || !wrote {
+		// The response already named these paths. Keep the in-memory
+		// whitelist when the book did not store them.
 		return
 	}
+	inst.clearStaged(files)
 	go func() {
 		for attempt := 0; attempt < 4; attempt++ {
 			if _, ok := rt.postHeartbeat(context.Background(), inst, taskID, requestID, true); ok {

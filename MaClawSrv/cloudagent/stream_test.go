@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
@@ -208,10 +209,15 @@ func TestStreamPublishesViewerFrameWithoutProjectPath(t *testing.T) {
 	rt.publish(inst, "task-1", "req-1", "progress", "running", nil)
 	rt.publish(inst, "task-1", "req-1", "token", "hi", nil)
 	rt.publish(inst, "task-1", "req-1", "round_started", "改 README", map[string]any{"display_text": "改 README"})
+	requestID, created, err := inst.book.Begin("cm_round", "task-client", "带上身份", time.Now())
+	if err != nil || !created || requestID == "" {
+		t.Fatalf("begin %v %v %s", err, created, requestID)
+	}
+	rt.publish(inst, "task-client", requestID, "round_started", "带上身份", nil)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 3 {
+	if len(bodies) != 4 {
 		t.Fatalf("frames = %d %v", len(bodies), bodies)
 	}
 	for _, secret := range secrets {
@@ -242,6 +248,16 @@ func TestStreamPublishesViewerFrameWithoutProjectPath(t *testing.T) {
 	}
 	if started["display_text"] != "〔云端〕改 README" || started["cursor"] != float64(3) {
 		t.Fatalf("round = %s", bodies[2])
+	}
+	if _, ok := started["client_message_id"]; ok {
+		t.Fatalf("unbound round carried a client id: %s", bodies[2])
+	}
+	var admitted map[string]any
+	if err := json.Unmarshal([]byte(bodies[3]), &admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted["client_message_id"] != "cm_round" || admitted["request_id"] != requestID || admitted["event"] != "round_started" {
+		t.Fatalf("admitted round = %s", bodies[3])
 	}
 }
 
@@ -321,5 +337,62 @@ func TestStreamResponseSealsThinkingAndEndsStream(t *testing.T) {
 	}
 	if done["text"] != "reasoning" {
 		t.Fatalf("thinking done frame = %s", bodies[1])
+	}
+}
+
+// Progress lines persist as they stream and the sealed thinking lands with
+// the reply — with no watcher attached, so history does not depend on
+// someone watching. dropStreamLane then hides the live lane from a later
+// watch snapshot, which is what cloud_delete_task leans on.
+func TestStreamPersistsProcessRowsAndDropLaneHidesRound(t *testing.T) {
+	previous := streamCoalesce
+	streamCoalesce = 0
+	t.Cleanup(func() { streamCoalesce = previous })
+
+	rt := openRuntime(t)
+	spec := putKind(t, rt, KindCoding)
+	if err := rt.Put(spec); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := rt.instance(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID, created, err := inst.book.Begin("cm-1", "task-1", "改 README", time.Now())
+	if err != nil || !created || requestID == "" {
+		t.Fatalf("begin %v %v %s", err, created, requestID)
+	}
+	rt.publish(inst, "task-1", requestID, "round_started", "改 README", nil)
+	rt.publish(inst, "task-1", requestID, "progress", "读取 README", nil)
+	rt.publish(inst, "task-1", requestID, "progress", "读取 README", nil) // 重复进度不落库
+	rt.publish(inst, "task-1", requestID, "thinking", "想一想", map[string]any{"state": "delta"})
+	rt.publishTerminal(inst, "task-1", requestID, "改完了", false, nil, nil)
+	// 第二次 terminal：seal 幂等，思考行替换不叠加。
+	rt.publishTerminal(inst, "task-1", requestID, "改完了", false, nil, nil)
+
+	events, err := inst.book.turnEventsByTask("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := events[requestID]
+	if len(list) != 2 {
+		t.Fatalf("persisted events %#v", list)
+	}
+	if list[0].Kind != "progress" || list[0].Text != "读取 README" || list[0].Seq != 1 {
+		t.Fatalf("progress row %#v", list[0])
+	}
+	if list[1].Kind != "thinking" || list[1].Text != "想一想" {
+		t.Fatalf("thinking row %#v", list[1])
+	}
+
+	if rt.laneThinkingText(spec.ID, "task-1") == "" {
+		t.Fatal("lane thinking lost before the drop")
+	}
+	rt.dropStreamLane(spec.ID, "task-1")
+	if got := rt.laneThinkingText(spec.ID, "task-1"); got != "" {
+		t.Fatalf("lane survived the drop: %q", got)
+	}
+	if _, ok := rt.stream[spec.ID+"\n"+"task-1"]; ok {
+		t.Fatal("lane map entry survived the drop")
 	}
 }

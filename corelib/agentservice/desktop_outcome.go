@@ -18,6 +18,11 @@ import (
 // command's own output.
 const desktopOutcomeEvidenceRunes = desktop.BashOutputMax + 64
 
+// desktopOutcomeSupportEvidenceRunes bounds non-desktop evidence. Search and
+// fetch results can be long; their first and last lines still identify the
+// source and whether the lookup succeeded.
+const desktopOutcomeSupportEvidenceRunes = 4000
+
 // An execute-phase desktop bot may finish only when a separate check says the
 // tool results and the latest screenshot meet the request. Two failed checks
 // keep the same turn going. The next one replaces the draft with what is
@@ -115,19 +120,19 @@ func desktopOutcomeNudge(gap string, sawSSH, remoteOnly bool) string {
 func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remoteOnly, sawSSH bool, text string) {
 	var desktopParts []string
 	var sshParts []string
+	var supportParts []string
 	sawDesktop := false
 	var deliverIndexes []int
+	var supportDeliverIndexes []int
 	for _, entry := range history {
 		if entry.Role != "tool" {
 			continue
 		}
 		name := strings.TrimSpace(entry.ToolName)
-		if name != "desktop" && name != "ssh" {
-			continue
-		}
-		used = true
 		body := strings.TrimSpace(fmt.Sprint(entry.Content))
-		if name == "desktop" {
+		switch name {
+		case "desktop":
+			used = true
 			sawDesktop = true
 			if agent.IsAskUserResult(body) {
 				ask = true
@@ -137,10 +142,22 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 				deliverIndexes = append(deliverIndexes, len(desktopParts))
 			}
 			desktopParts = append(desktopParts, formatDesktopOutcomeEvidence("desktop", body))
-			continue
+		case "ssh":
+			used = true
+			sawSSH = true
+			sshParts = append(sshParts, formatDesktopOutcomeEvidence("ssh", body))
+		case "web_search", "web_fetch", "bot_generate_pdf", "send_to_user":
+			// A Hub bot can satisfy a file or research request without touching
+			// the screen: web_search/web_fetch carry the source evidence and
+			// bot_generate_pdf/send_to_user carry the delivery. Restricting the
+			// checker to desktop/ssh made a delivered weather PDF look
+			// unsupported because only the failed desktop probes were visible.
+			used = true
+			if desktopOutcomeDeliverBody(body) {
+				supportDeliverIndexes = append(supportDeliverIndexes, len(supportParts))
+			}
+			supportParts = append(supportParts, formatDesktopOutcomeEvidence(name, clipDesktopOutcomeEvidence(body, desktopOutcomeSupportEvidenceRunes)))
 		}
-		sawSSH = true
-		sshParts = append(sshParts, formatDesktopOutcomeEvidence("ssh", body))
 	}
 	remoteOnly = sawSSH && !sawDesktop
 	if len(desktopParts) > 4 {
@@ -163,7 +180,20 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 	if len(sshParts) > 2 {
 		sshParts = sshParts[len(sshParts)-2:]
 	}
+	if len(supportParts) > 6 {
+		var delivered []string
+		for _, i := range supportDeliverIndexes {
+			if i < len(supportParts)-6 {
+				delivered = append(delivered, supportParts[i])
+			}
+		}
+		if len(delivered) > 4 {
+			delivered = delivered[len(delivered)-4:]
+		}
+		supportParts = append(delivered, supportParts[len(supportParts)-6:]...)
+	}
 	parts := append(desktopParts, sshParts...)
+	parts = append(parts, supportParts...)
 	return used, ask, remoteOnly, sawSSH, strings.Join(parts, "\n")
 }
 
@@ -293,6 +323,10 @@ func desktopOutcomeDelivered(history []agent.ConversationEntry) bool {
 		case "send_to_user":
 			// PR-1's single exit: a sentence already reached the person.
 			if strings.TrimSpace(fmt.Sprint(entry.Content)) != "" {
+				return true
+			}
+		case "bot_generate_pdf":
+			if desktopOutcomeDeliverBody(strings.TrimSpace(fmt.Sprint(entry.Content))) {
 				return true
 			}
 		}

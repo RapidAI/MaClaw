@@ -960,3 +960,17 @@ func TestExecRetiresAStaleDuplicateController(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCloudDeleteTaskOpRequiresOperate(t *testing.T) {
+	// cloud_delete_task removes a task and its whole transcript — write-tier
+	// like cloud_stop_task, never reachable from a view grant.
+	if !allowedOp(OpCloudDeleteTask) {
+		t.Fatal("cloud_delete_task must be a known op")
+	}
+	if permissionAllows(PermView, OpCloudDeleteTask) {
+		t.Fatal("cloud_delete_task must reject view grants")
+	}
+	if !permissionAllows(PermOperate, OpCloudDeleteTask) {
+		t.Fatal("cloud_delete_task must be allowed for operate grants")
+	}
+}

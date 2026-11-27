@@ -3518,7 +3518,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // The current ask is on this screen. An older login left in the transcript
     // does not count: the live flags are the keyboard this poll reported.
     const personOperates = !!selected && !handoffReturned(selected.id) && liveOnShownScreen && (liveControl || liveReason !== '');
-    const wantsInput = showDesktop && (otherIsolated
+    // Hand-back is a control-generation boundary, not a continuation reply.
+    // Hub ends the takeover before admitting the follow-up run; keeping the
+    // interactive document mounted until that admission returns leaves a dead
+    // input lease alive for seconds and races the watch stream rebuild.
+    const handbackInFlight = !!handingBack && ((!!selected && handingBack === selected.id) || handingBack === screenPickNow);
+    const wantsInput = showDesktop && !handbackInFlight && (otherIsolated
         ? otherHandoff && !handoffReturned(otherScreen)
         : takeoverHeld || personOperates || (!agentOperating && takeover));
     const controlBlocked = !!selected && !!controlBlockedByBot[selected.id];
@@ -3579,7 +3584,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // body are parsed as JSX by esbuild.
     interface StagePopOutApp {
         DesktopStageWindowSupported?: () => Promise<boolean>;
-        OpenDesktopStageWindow?: (width: number, fps: number) => Promise<void>;
+        DesktopStageWindowPreferred?: () => Promise<boolean>;
+        DesktopStageWindowOpen?: () => Promise<boolean>;
+        OpenDesktopStageWindow?: (url: string) => Promise<void>;
         CloseDesktopStageWindow?: () => Promise<void>;
     }
     const stagePopOutBinding = (): StagePopOutApp | undefined => {
@@ -3590,10 +3597,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
     // wails3 pop-out: the standalone desktop-stage window (native second
     // window) replaces the in-panel iframe while open, eliminating the
-    // cross-origin OOPIF renderer for watch mode. v2 builds (and any build
-    // without the binding) keep the iframe: the probe fails closed.
+    // cross-origin OOPIF renderer for watch mode. In an RDP composition-hosted
+    // WebView that OOPIF is not a reliable presentation surface at all: the
+    // stream can arrive and decode while the iframe compositor stays black.
     const [stagePoppedOut, setStagePoppedOut] = useState(false);
     const [stagePopOutSupported, setStagePopOutSupported] = useState(false);
+    const [stagePopOutPreferred, setStagePopOutPreferred] = useState(false);
+    const stagePopOutManualPanelRef = useRef(false);
+    const openStagePopOut = useCallback(async (url: string) => {
+        const w3App = stagePopOutBinding();
+        if (!w3App || !url) return false;
+        try {
+            await w3App.OpenDesktopStageWindow?.(url);
+            setStagePoppedOut(true);
+            return true;
+        } catch { /* probe race or window subsystem busy — keep the iframe */ }
+        return false;
+    }, []);
     useEffect(() => {
         let cancelled = false;
         const probe = async () => {
@@ -3601,25 +3621,69 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 const w3App = stagePopOutBinding();
                 const supported = await w3App?.DesktopStageWindowSupported?.();
                 if (!cancelled && supported) setStagePopOutSupported(true);
-            } catch { /* v2: binding absent — keep the iframe */ }
+                const preferred = await w3App?.DesktopStageWindowPreferred?.();
+                if (!cancelled && preferred) setStagePopOutPreferred(true);
+            } catch { /* older builds: binding absent — keep the iframe */ }
         };
         void probe();
         return () => { cancelled = true; };
     }, []);
+    // The remote URL carries the handoff token, view_only, width and fps. When
+    // watch/live or the stage size changes, navigate the existing native window
+    // to that new player URL instead of leaving it on a dead control generation.
+    useEffect(() => {
+        if (!stagePoppedOut || !desktopFrameSource) return;
+        void openStagePopOut(desktopFrameSource);
+    }, [stagePoppedOut, desktopFrameSource, openStagePopOut]);
+    // RDP composition hosting is the environment where the cross-origin iframe
+    // blacks out despite a healthy stream. Prefer the native top-level window
+    // there automatically; an explicit "回到主窗口" remains authoritative.
+    useEffect(() => {
+        if (!stagePopOutPreferred || !stagePopOutSupported || stagePoppedOut || stagePopOutManualPanelRef.current) return;
+        if (!showDesktop || streamHidden || !desktopFrameSource) return;
+        void openStagePopOut(desktopFrameSource);
+    }, [stagePopOutPreferred, stagePopOutSupported, stagePoppedOut, showDesktop, streamHidden, desktopFrameSource, openStagePopOut]);
+    // Closing the native window directly must return the panel to a consistent
+    // state. Treat that as the same user intent as "回到主窗口" so the RDP
+    // auto-preference does not fight the close every second.
+    useEffect(() => {
+        if (!stagePoppedOut) return;
+        let cancelled = false;
+        const timer = window.setInterval(() => {
+            void (async () => {
+                try {
+                    const open = await stagePopOutBinding()?.DesktopStageWindowOpen?.();
+                    if (!cancelled && open === false) {
+                        stagePopOutManualPanelRef.current = true;
+                        setStagePoppedOut(false);
+                    }
+                } catch { /* older binding or transient window subsystem failure */ }
+            })();
+        }, 1000);
+        return () => { cancelled = true; window.clearInterval(timer); };
+    }, [stagePoppedOut]);
+    // Hidden panels unmount their iframe after the same dwell; the native stream
+    // must not keep a hidden decoder alive either. A live frame is exempt from
+    // streamHidden already, so this only affects watch mode.
+    useEffect(() => {
+        if (!stagePoppedOut || (!streamHidden && showDesktop)) return;
+        const w3App = stagePopOutBinding();
+        void (async () => {
+            try { await w3App?.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
+        })();
+        setStagePoppedOut(false);
+    }, [stagePoppedOut, streamHidden, showDesktop]);
     const toggleStagePopOut = async () => {
         const w3App = stagePopOutBinding();
         if (!w3App) return;
         if (stagePoppedOut) {
+            stagePopOutManualPanelRef.current = true;
             try { await w3App.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
             setStagePoppedOut(false);
             return;
         }
-        // fps mirrors desktopFrameSource: watch-only streams at 10fps to
-        // save bandwidth; interactive keeps the server default.
-        try {
-            await w3App.OpenDesktopStageWindow?.(0, stageInteractive ? 0 : 10);
-            setStagePoppedOut(true);
-        } catch { /* probe race or window subsystem busy — keep the iframe */ }
+        stagePopOutManualPanelRef.current = false;
+        await openStagePopOut(desktopFrameSource);
     };
     useEffect(() => {
         const botId = selectedId || '';
@@ -5299,12 +5363,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     useEffect(() => {
         if (handBackError && agentOperating) setHandBackError('');
     }, [handBackError, agentOperating]);
-    // The bot driving again means the hand-back is done, even while the
-    // call that asked for it has not returned yet.
-    useEffect(() => {
-        if (handingBack && selected?.id === handingBack && agentOperating) setHandingBack('');
-    }, [handingBack, agentOperating, selected?.id]);
-
     const saveDesktopMode = async (botId: string, mode: 'isolated' | 'shared') => {
         setModeSaving(true);
         setModeError('');

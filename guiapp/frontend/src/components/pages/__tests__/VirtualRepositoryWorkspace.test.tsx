@@ -51,6 +51,11 @@ function installBackend() {
 		SyncVirtualRepositories: vi.fn().mockResolvedValue(JSON.stringify({ status: 'success', last_synced_at: '2026-07-23T00:00:00Z' })),
 		IsVirtualRepositoryBackgroundSyncPending: vi.fn().mockResolvedValue(false),
 		GetVirtualRepositoryBackgroundSyncStatus: vi.fn().mockResolvedValue(JSON.stringify({ pending: false, phase: 'idle' })),
+		GitPlatformCreateCredentials: vi.fn().mockResolvedValue([{ id: '', kind: 'account', login: 'ada', name: 'Ada' }]),
+		GitPlatformNamespaces: vi.fn().mockResolvedValue({ rows: [{ key: 'ada', label: 'ada', kind: 'personal' }] }),
+		GitPlatformRepoNameStatus: vi.fn().mockResolvedValue({ available: true, reason: '' }),
+		GitPlatformCreateRepo: vi.fn().mockResolvedValue({ full_name: 'ada/fresh', clone_url: 'https://github.com/ada/fresh.git', default_branch: 'main', private: true }),
+		ImportGitPlatformAccountCredential: vi.fn().mockResolvedValue({ id: 'cred_imp', name: 'GitHub account @ada', kind: 'git', username: 'ada', provider: 'github', scope: 'github.com' }),
     };
     (window as any).go = { main: { App: backend } };
     return backend;
@@ -1973,6 +1978,88 @@ describe('Virtual repository utility', () => {
 		expect(JSON.parse(backend.SaveRepositoryCredential.mock.calls[0][0])).toMatchObject({ kind: 'svn', name: 'Replacement SVN account', username: 'bob' });
 	});
 
+
+	it('creates a repository on the provider and fills the mapping remote URL and credential', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		// The settings-account snapshot lands in the credential store, so the
+		// refreshed list carries it and the select can show the binding.
+		backend.ListRepositoryCredentials.mockResolvedValue(JSON.stringify([
+			{ id: 'cred_imp', name: 'GitHub account @ada', kind: 'git', username: 'ada', provider: 'github', scope: 'github.com' },
+		]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
+		fireEvent.click(await screen.findByText('Create a new repository on GitHub/GitLab…'));
+		fireEvent.change(await screen.findByLabelText('Repository name'), { target: { value: 'fresh' } });
+		await waitFor(() => {
+			const status = screen.getByTestId('vrepo-git-create-status');
+			expect(status.className).toContain('grc-availability--ok');
+		}, { timeout: 3000 });
+		fireEvent.click(screen.getByTestId('vrepo-git-create-submit'));
+
+		await waitFor(() => expect(backend.GitPlatformCreateRepo).toHaveBeenCalledTimes(1));
+		expect(backend.GitPlatformCreateRepo.mock.calls[0][0]).toMatchObject({
+			service: 'github', owner: 'ada', namespace_kind: 'personal', name: 'fresh', private: true,
+		});
+		await waitFor(() => expect(backend.ImportGitPlatformAccountCredential).toHaveBeenCalledWith('github'));
+		expect((screen.getByLabelText('Repository URL') as HTMLInputElement).value).toBe('https://github.com/ada/fresh.git');
+		expect(screen.getByText(/Created and filled in below/)).toBeTruthy();
+	});
+
+	it('keeps the create-repository panel open across a credential-manager roundtrip', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByLabelText('Add mapping'));
+		fireEvent.click(await screen.findByText('Create a new repository on GitHub/GitLab…'));
+		expect(await screen.findByTestId('vrepo-git-create-panel')).toBeTruthy();
+		// The user goes off to add the credential the panel needs; returning
+		// to the mapping dialog must not close the panel they were filling in.
+		fireEvent.click(screen.getByText('Add credential'));
+		fireEvent.change(await screen.findByLabelText('Credential name'), { target: { value: 'GH PAT' } });
+		fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ada' } });
+		fireEvent.change(screen.getByLabelText('Password or token'), { target: { value: 'secret' } });
+		fireEvent.click(screen.getByText('Save'));
+		await waitFor(() => expect(backend.SaveRepositoryCredential).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(screen.getByTestId('vrepo-git-create-panel')).toBeTruthy());
+		expect(screen.getByText('Hide the create-repository panel')).toBeTruthy();
+	});
+
+	it('persists the platform and gitlab origin fields in the credential form', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		fireEvent.click(await screen.findByText('Repository credentials'));
+		// The editor pane is always rendered in credentials mode; fill it directly.
+		fireEvent.change(await screen.findByLabelText('Credential name'), { target: { value: 'GH PAT' } });
+		fireEvent.change(screen.getByLabelText('Platform (optional)'), { target: { value: 'github' } });
+		fireEvent.change(screen.getByLabelText('Password or token'), { target: { value: 'secret' } });
+		fireEvent.click(screen.getByText('Save'));
+		await waitFor(() => expect(backend.SaveRepositoryCredential).toHaveBeenCalledTimes(1));
+		expect(JSON.parse(backend.SaveRepositoryCredential.mock.calls[0][0])).toMatchObject({ kind: 'git', provider: 'github' });
+
+		fireEvent.change(screen.getByLabelText('Platform (optional)'), { target: { value: 'gitlab' } });
+		expect(screen.getByLabelText('GitLab site origin')).toBeTruthy();
+		fireEvent.change(screen.getByLabelText('GitLab site origin'), { target: { value: 'https://gitlab.example.com' } });
+		fireEvent.click(screen.getByText('Save'));
+		await waitFor(() => expect(backend.SaveRepositoryCredential).toHaveBeenCalledTimes(2));
+		expect(JSON.parse(backend.SaveRepositoryCredential.mock.calls[1][0])).toMatchObject({
+			provider: 'gitlab', origin: 'https://gitlab.example.com',
+		});
+	});
+
 	it('prevents a second credential deletion while the first is pending', async () => {
 		const backend = (window as any).go.main.App;
 		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
@@ -2008,7 +2095,9 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(await screen.findByText('Remove'));
 		fireEvent.click(within(await screen.findByRole('dialog', { name: 'Remove' })).getByRole('button', { name: 'Remove' }));
 		await waitFor(() => expect(backend.DeleteRepositoryCredential).toHaveBeenCalledWith('cred_1'));
-		expect(screen.queryByText('GitHub')).toBeNull();
+		// Credential names render in <strong>; scope the query so the new
+		// provider-select option (also 'GitHub') cannot satisfy it.
+		expect(screen.queryByText('GitHub', { selector: 'strong' })).toBeNull();
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
 
@@ -2051,7 +2140,7 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(screen.getByText('Save'));
 		await waitFor(() => expect(backend.SaveRepositoryCredential).toHaveBeenCalledTimes(1));
 		await act(async () => resolveCredentials('[]'));
-		expect(await screen.findByText('GitHub')).toBeTruthy();
+		expect(await screen.findByText('GitHub', { selector: 'strong' })).toBeTruthy();
 	});
 
 	it('keeps a manager-created credential when an older mapping list resolves late', async () => {
@@ -2125,11 +2214,11 @@ describe('Virtual repository utility', () => {
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Workspace'));
 		fireEvent.click(await screen.findByText('Repository credentials'));
-		expect(await screen.findByText('GitHub')).toBeTruthy();
+		expect(await screen.findByText('GitHub', { selector: 'strong' })).toBeTruthy();
 		fireEvent.click(screen.getByText('Close'));
 		fireEvent.click(screen.getByText('Repository credentials'));
 		expect((await screen.findByRole('alert')).textContent).toMatch(/credential state unavailable/i);
-		expect(screen.queryByText('GitHub')).toBeNull();
+		expect(screen.queryByText('GitHub', { selector: 'strong' })).toBeNull();
 	});
 
 	it('rejects duplicate credential ids returned by the backend', async () => {

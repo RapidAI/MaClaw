@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { localizeText } from '../../i18n';
 import { refreshCloudGit } from './cloudAgentAssistant';
+import { GitRepoCreatePanel, GitPlatformCredentialView, GitRepoCreated } from './GitRepoCreatePanel';
 import { noRepoScopeNote } from '../../utils/githubScopes';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import './CloudGitConnectDialog.css';
@@ -86,6 +87,20 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const [busy, setBusy] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [bound, setBound] = useState<{ service: string; repo: string } | null>(null);
+    // Create-new mode: the repository is created on the provider with a
+    // picked credential and then bound through the normal connect path.
+    // createCreds is the permission probe — creation is offered only when at
+    // least one usable credential exists (account with repo scope, or a
+    // provider-tagged virtual-repository credential).
+    const [repoMode, setRepoMode] = useState<'pick' | 'create'>('pick');
+    const [createCreds, setCreateCreds] = useState<GitPlatformCredentialView[]>([]);
+    const [createCredsBusy, setCreateCredsBusy] = useState(true);
+    const [createCredsError, setCreateCredsError] = useState('');
+    // Create+bind failure memory: the repository exists on the provider but
+    // the bind failed, so the pick list prefills it and the connect keeps
+    // the credential reference (source=credential) it was created with.
+    // Cleared as soon as the user edits the repo path or switches service.
+    const [retryCredential, setRetryCredential] = useState<{ repo: string; credentialId: string; origin: string } | null>(null);
     const dialogRef = useRef<HTMLDivElement | null>(null);
     const loadGeneration = useRef(0);
     const repoCache = useRef<Partial<Record<string, RepoView[]>>>({});
@@ -140,9 +155,40 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
         setAccountState('loading');
         setAccountMessage('');
         setRepoLoadError('');
+        setRepoMode('pick');
+        setRetryCredential(null);
         const cachedRepos = repoCache.current[service];
         setRepos(cachedRepos || []);
         setReposBusy(false);
+        setCreateCredsError('');
+        setCreateCredsBusy(true);
+
+        // The create-repo permission probe runs regardless of the settings
+        // account's state: provider-tagged virtual-repository credentials
+        // keep creation available even when the account itself cannot list
+        // repositories.
+        void (async () => {
+            const credsBinding = appBinding('GitPlatformCreateCredentials');
+            if (!credsBinding) {
+                if (current()) setCreateCredsBusy(false);
+                return;
+            }
+            try {
+                const rows = await credsBinding(service) as GitPlatformCredentialView[];
+                if (current()) setCreateCreds(Array.isArray(rows) ? rows.filter((row) => row && typeof row.kind === 'string') : []);
+            } catch (err) {
+                // A failed permission probe must not silently swallow the
+                // create affordance: the toggle disappears either way, but
+                // the user deserves to know it was a local read failure, not
+                // "you have no credentials".
+                if (current()) {
+                    setCreateCreds([]);
+                    setCreateCredsError(err instanceof Error ? err.message : String(err));
+                }
+            } finally {
+                if (current()) setCreateCredsBusy(false);
+            }
+        })();
 
         void (async () => {
             let view: AccountView | null = null;
@@ -228,6 +274,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const switchService = (service: string) => {
         if (service === git.service) return;
         setError('');
+        setRetryCredential(null);
         setRepoQuery('');
         setRepoListOpen(true);
         setRepoSelectionLocked(false);
@@ -287,8 +334,9 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
             };
             const [github, gitlab] = await Promise.all([readAccount(false), readAccount(true)]);
             // Only switch while the user is still on the untouched default —
-            // a manual service switch wins and the probe must not stomp it.
-            if (serviceRef.current === 'github' && usable(gitlab) && !usable(github)) switchService('gitlab');
+            // a manual service switch wins, and so does any typed repository
+            // path: switching would wipe their input along with the service.
+            if (serviceRef.current === 'github' && !repoRef.current.trim() && usable(gitlab) && !usable(github)) switchService('gitlab');
         })();
     }, []);
 
@@ -327,6 +375,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const updateRepo = (value: string) => {
         // A connect failure refers to the previous input; editing starts fresh.
         setError('');
+        setRetryCredential(null);
         setRepoQuery(value);
         setRepoListOpen(true);
         setRepoSelectionLocked(false);
@@ -335,6 +384,7 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
 
     const selectRepo = (repo: RepoView) => {
         setError('');
+        setRetryCredential(null);
         setRepoQuery(repo.name);
         setRepoListOpen(false);
         setRepoSelectionLocked(true);
@@ -344,25 +394,37 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
     const accountReady = git.source === 'account' && accountState === 'ready';
     const authorReady = !!git.authorName.trim() && !!git.authorEmail.trim();
     const manualReady = !!git.token.trim() && authorReady;
+    const retryReady = !!retryCredential && retryCredential.repo === git.repo.trim() && retryCredential.credentialId !== '';
     // instanceId gates here (not inside submit) so a missing id disables the
-    // button instead of clicking through to a silent no-op.
-    const canSubmit = !busy && !!instanceId && !!git.repo.trim() && ((accountReady && authorReady) || manualReady);
+    // button instead of clicking through to a silent no-op. Pick mode only —
+    // the create panel has its own submit affordances.
+    const canSubmit = repoMode === 'pick' && !busy && !!instanceId && !!git.repo.trim() && ((accountReady && authorReady) || manualReady || retryReady);
     const selectedRepo = repos.find((repo) => repo.name === git.repo.trim());
 
     const submit = async () => {
         const connect = appBinding('ConnectCloudAgentGit');
         if (!connect || !instanceId || !canSubmit) return;
+        // canSubmit is pick-mode-only, so a form submit while the create panel
+        // is up — e.g. Enter with the panel's name not yet ready — can never
+        // connect the repo prefilled by an earlier failed create.
+        // A prefilled repository created moments ago reconnects with the
+        // credential reference it was created with — the settings account
+        // may not have access (or may not be connected at all). A retry on
+        // the settings-account path (empty credential id) falls through to
+        // the normal account connect.
+        const retry = retryCredential && retryCredential.repo === git.repo.trim() && retryCredential.credentialId !== '' ? retryCredential : null;
         setBusy(true);
         setError('');
         try {
             const view = await connect(instanceId, {
                 service: git.service,
-                origin: git.origin.trim(),
+                origin: (retry?.origin || git.origin).trim(),
                 repo: git.repo.trim(),
                 author_name: git.authorName.trim(),
                 author_email: git.authorEmail.trim(),
                 token: git.token,
-                source: git.source || undefined,
+                source: retry ? 'credential' : (git.source || undefined),
+                credential_id: retry?.credentialId || undefined,
             }) as { repo?: string; token?: string };
             if (view && view.token) {
                 setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
@@ -375,6 +437,48 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
             onClose();
         } catch (err) {
             fail(err);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    // submitCreate binds a freshly created repository. The create step already
+    // ran in the panel (it owns credential/namespace/name); the backend
+    // injects the picked credential's token (source="credential") or the
+    // settings account's (source="account"). A bind failure leaves the
+    // repository created on the provider: the dialog switches to the pick
+    // list with the repository prefilled and the credential reference kept
+    // (retryCredential) so 连接 retries the bind without recreating anything.
+    const submitCreate = async (created: GitRepoCreated) => {
+        const connect = appBinding('ConnectCloudAgentGit');
+        if (!connect || !instanceId) return;
+        setBusy(true);
+        setError('');
+        try {
+            const view = await connect(instanceId, {
+                service: created.service,
+                origin: created.origin || git.origin.trim(),
+                repo: created.fullName,
+                author_name: git.authorName.trim(),
+                author_email: git.authorEmail.trim(),
+                token: git.token,
+                source: created.credentialId ? 'credential' : (git.source || undefined),
+                credential_id: created.credentialId || undefined,
+            }) as { repo?: string; token?: string };
+            if (view && view.token) {
+                setError(text('The token came back', '令牌被返回了', '權杖被返回了'));
+                return;
+            }
+            onConnected?.(String(view?.repo || created.fullName).trim());
+            void refreshCloudGit(instanceId);
+            onClose();
+        } catch (err) {
+            fail(err);
+            setRepoMode('pick');
+            setRetryCredential({ repo: created.fullName, credentialId: created.credentialId, origin: created.origin });
+            setGit((prev) => ({ ...prev, repo: created.fullName }));
+            setRepoQuery(created.fullName);
+            setRepoSelectionLocked(true);
         } finally {
             setBusy(false);
         }
@@ -469,111 +573,144 @@ export function CloudGitConnectDialog({ lang, instanceId, onClose, onConnected }
 
                     <section className="cgc-section cgc-repo-section">
                         <div className="cgc-repo-heading">
-                            <label className="cgc-label" htmlFor="cloud-git-repo-input">{text('Repository', '选择仓库', '選擇倉庫')}</label>
-                            {reposBusy ? <span className="cgc-inline-status">{text('Loading repositories…', '正在加载仓库…', '正在載入倉庫…')}</span> : null}
+                            <label className="cgc-label" htmlFor="cloud-git-repo-input">{repoMode === 'create' ? text('New repository', '新建仓库', '新建倉庫') : text('Repository', '选择仓库', '選擇倉庫')}</label>
+                            {reposBusy && repoMode === 'pick' ? <span className="cgc-inline-status">{text('Loading repositories…', '正在加载仓库…', '正在載入倉庫…')}</span> : null}
+                            {!createCredsBusy && createCreds.length > 0 ? (
+                                <div className="cgc-mode-toggle" role="group" aria-label={text('Pick or create', '选择或新建', '選擇或新建')}>
+                                    <button type="button" aria-pressed={repoMode === 'pick'} disabled={busy} onClick={() => setRepoMode('pick')}>
+                                        {text('Pick existing', '选择仓库', '選擇倉庫')}
+                                    </button>
+                                    <button type="button" aria-pressed={repoMode === 'create'} disabled={busy} onClick={() => setRepoMode('create')} data-testid="cloud-git-create-toggle">
+                                        {text('Create new', '新建仓库', '新建倉庫')}
+                                    </button>
+                                </div>
+                            ) : null}
                         </div>
-                        <input
-                            id="cloud-git-repo-input"
-                            className="cgc-repo-input"
-                            aria-label={text('Repository', '仓库', '倉庫')}
-                            value={repoQuery}
-                            disabled={busy}
-                            placeholder={isGitLab ? 'group/project' : 'owner/repo'}
-                            autoComplete="off"
-                            spellCheck={false}
-                            onFocus={() => setRepoListOpen(true)}
-                            onClick={() => setRepoListOpen(true)}
-                            onChange={(event) => updateRepo(event.target.value)}
-                        />
-                        {selectedRepo ? (
-                            <div className="cgc-selected-meta">
-                                <span>{selectedRepo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</span>
-                                {selectedRepo.default_branch ? <span>{selectedRepo.default_branch}</span> : null}
-                            </div>
+                        {createCredsError ? (
+                            <p className="cgc-empty-note" data-testid="cloud-git-create-error" role="status">
+                                {text('Repository creation is unavailable: reading the stored credentials failed.', '新建仓库暂不可用：读取已存凭据失败。', '新建倉庫暫不可用：讀取已存憑據失敗。')}
+                                <small>{createCredsError}</small>
+                            </p>
                         ) : null}
+                        {repoMode === 'create' ? (
+                            <GitRepoCreatePanel
+                                lang={lang}
+                                service={git.service}
+                                submitLabel={text('Create and connect', '创建并连接', '建立並連接')}
+                                busy={busy}
+                                onCreated={(created) => void submitCreate(created)}
+                                testIdPrefix="cloud-git-create"
+                            />
+                        ) : (
+                            <>
+                                <input
+                                    id="cloud-git-repo-input"
+                                    className="cgc-repo-input"
+                                    aria-label={text('Repository', '仓库', '倉庫')}
+                                    value={repoQuery}
+                                    disabled={busy}
+                                    placeholder={isGitLab ? 'group/project' : 'owner/repo'}
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                    onFocus={() => setRepoListOpen(true)}
+                                    onClick={() => setRepoListOpen(true)}
+                                    onChange={(event) => updateRepo(event.target.value)}
+                                />
+                                {selectedRepo ? (
+                                    <div className="cgc-selected-meta">
+                                        <span>{selectedRepo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</span>
+                                        {selectedRepo.default_branch ? <span>{selectedRepo.default_branch}</span> : null}
+                                    </div>
+                                ) : null}
+                                {repoLoadError ? (
+                                    <div className="cgc-alert cgc-alert--warning">
+                                        <strong>{text('Repository list unavailable', '无法自动读取仓库列表', '無法自動讀取倉庫列表')}</strong>
+                                        <span>{text('You can still type the repository path and connect.', '仍然可以手动输入仓库路径后连接。', '仍然可以手動輸入倉庫路徑後連接。')}</span>
+                                        <small>{repoLoadError}</small>
+                                        <button
+                                            type="button"
+                                            className="cgc-retry"
+                                            onClick={() => {
+                                                delete repoCache.current[git.service];
+                                                setRepoReloadNonce((nonce) => nonce + 1);
+                                            }}
+                                        >
+                                            {text('Retry', '重试', '重試')}
+                                        </button>
+                                    </div>
+                                ) : null}
+                                {repoListOpen && accountState === 'ready' && repos.length > 0 ? (
+                                    <div className="cgc-repo-list" role="listbox" aria-label={text('Available repositories', '可用仓库', '可用倉庫')}>
+                                        {filteredRepos.map((repo) => {
+                                            const updated = updatedLabel(repo.updated_at || '');
+                                            return (
+                                                <button
+                                                    type="button"
+                                                    role="option"
+                                                    aria-selected={repo.name === git.repo.trim()}
+                                                    key={repo.name}
+                                                    className="cgc-repo-option"
+                                                    onMouseDown={(event) => event.preventDefault()}
+                                                    onClick={() => selectRepo(repo)}
+                                                >
+                                                    <span className="cgc-repo-option-main">
+                                                        <strong>{repo.name}</strong>
+                                                        <em>{repo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</em>
+                                                    </span>
+                                                    {repo.description ? <span className="cgc-repo-description">{repo.description}</span> : null}
+                                                    <span className="cgc-repo-meta">
+                                                        {repo.default_branch ? <span>{repo.default_branch}</span> : null}
+                                                        {updated ? <span>{updated}</span> : null}
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                                {repos.length >= 100 ? (
+                                    <p className="cgc-empty-note">{text('Only the 100 most recently updated repositories are listed; type the full path if yours is not shown.', '列表最多读取最近更新的 100 个仓库；未显示时可直接输入完整路径。', '列表最多讀取最近更新的 100 個倉庫；未顯示時可直接輸入完整路徑。')}</p>
+                                ) : null}
+                                {!reposBusy && !repoLoadError && accountState === 'ready' && repos.length === 0 ? (
+                                    <p className="cgc-empty-note">{text('No repositories were returned. You can type the path manually.', '没有读取到仓库，可以手动输入路径。', '沒有讀取到倉庫，可以手動輸入路徑。')}</p>
+                                ) : null}
+                            </>
+                        )}
                         {bound ? (
                             <p className="cgc-bound-note" data-testid="cloud-git-bound-note">{text(
                                 `This instance is already bound to ${bound.repo}. Reconnecting the same repository refreshes its authorization.`,
                                 `该实例已绑定 ${bound.repo}；重新连接同一仓库将刷新授权。`,
                                 `該實例已綁定 ${bound.repo}；重新連接同一倉庫將刷新授權。`)}</p>
                         ) : null}
-                        {repoLoadError ? (
-                            <div className="cgc-alert cgc-alert--warning">
-                                <strong>{text('Repository list unavailable', '无法自动读取仓库列表', '無法自動讀取倉庫列表')}</strong>
-                                <span>{text('You can still type the repository path and connect.', '仍然可以手动输入仓库路径后连接。', '仍然可以手動輸入倉庫路徑後連接。')}</span>
-                                <small>{repoLoadError}</small>
-                                <button
-                                    type="button"
-                                    className="cgc-retry"
-                                    onClick={() => {
-                                        delete repoCache.current[git.service];
-                                        setRepoReloadNonce((nonce) => nonce + 1);
-                                    }}
-                                >
-                                    {text('Retry', '重试', '重試')}
-                                </button>
-                            </div>
-                        ) : null}
-                        {repoListOpen && accountState === 'ready' && repos.length > 0 ? (
-                            <div className="cgc-repo-list" role="listbox" aria-label={text('Available repositories', '可用仓库', '可用倉庫')}>
-                                {filteredRepos.map((repo) => {
-                                    const updated = updatedLabel(repo.updated_at || '');
-                                    return (
-                                        <button
-                                            type="button"
-                                            role="option"
-                                            aria-selected={repo.name === git.repo.trim()}
-                                            key={repo.name}
-                                            className="cgc-repo-option"
-                                            onMouseDown={(event) => event.preventDefault()}
-                                            onClick={() => selectRepo(repo)}
-                                        >
-                                            <span className="cgc-repo-option-main">
-                                                <strong>{repo.name}</strong>
-                                                <em>{repo.private ? text('Private', '私有', '私有') : text('Public', '公开', '公開')}</em>
-                                            </span>
-                                            {repo.description ? <span className="cgc-repo-description">{repo.description}</span> : null}
-                                            <span className="cgc-repo-meta">
-                                                {repo.default_branch ? <span>{repo.default_branch}</span> : null}
-                                                {updated ? <span>{updated}</span> : null}
-                                            </span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        ) : null}
-                        {repos.length >= 100 ? (
-                            <p className="cgc-empty-note">{text('Only the 100 most recently updated repositories are listed; type the full path if yours is not shown.', '列表最多读取最近更新的 100 个仓库；未显示时可直接输入完整路径。', '列表最多讀取最近更新的 100 個倉庫；未顯示時可直接輸入完整路徑。')}</p>
-                        ) : null}
-                        {!reposBusy && !repoLoadError && accountState === 'ready' && repos.length === 0 ? (
-                            <p className="cgc-empty-note">{text('No repositories were returned. You can type the path manually.', '没有读取到仓库，可以手动输入路径。', '沒有讀取到倉庫，可以手動輸入路徑。')}</p>
-                        ) : null}
                     </section>
 
-                    <section className="cgc-advanced">
-                        <button type="button" className="cgc-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
-                            {advancedOpen
-                                ? text('Hide manual connection options', '收起手动连接选项', '收起手動連接選項')
-                                : text('Manual token or server settings', '手动令牌或服务器设置', '手動權杖或伺服器設定')}
-                        </button>
-                        {advancedOpen ? (
-                            <div className="cgc-advanced-panel">
-                                {manualField(text('Author name', '提交作者', '提交作者'), 'authorName')}
-                                {manualField(text('Author email', '提交邮箱', '提交郵箱'), 'authorEmail')}
-                                {manualField(text('Origin', '服务地址', '服務位址'), 'origin', 'text', defaultOrigin(git.service))}
-                                {manualField(text('Token', '访问令牌', '存取權杖'), 'token', 'password', accountReady ? text('Leave empty to use the connected account', '留空则使用已连接账号', '留空則使用已連接帳號') : '')}
-                                <p>{text('Manual tokens are used only for this connection and are not shown again.', '手动令牌仅用于本次连接，不会再次显示。', '手動權杖僅用於本次連接，不會再次顯示。')}</p>
-                            </div>
-                        ) : null}
-                    </section>
+                    {repoMode === 'pick' ? (
+                        <section className="cgc-advanced">
+                            <button type="button" className="cgc-advanced-toggle" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
+                                {advancedOpen
+                                    ? text('Hide manual connection options', '收起手动连接选项', '收起手動連接選項')
+                                    : text('Manual token or server settings', '手动令牌或服务器设置', '手動權杖或伺服器設定')}
+                            </button>
+                            {advancedOpen ? (
+                                <div className="cgc-advanced-panel">
+                                    {manualField(text('Author name', '提交作者', '提交作者'), 'authorName')}
+                                    {manualField(text('Author email', '提交邮箱', '提交郵箱'), 'authorEmail')}
+                                    {manualField(text('Origin', '服务地址', '服務位址'), 'origin', 'text', defaultOrigin(git.service))}
+                                    {manualField(text('Token', '访问令牌', '存取權杖'), 'token', 'password', accountReady ? text('Leave empty to use the connected account', '留空则使用已连接账号', '留空則使用已連接帳號') : '')}
+                                    <p>{text('Manual tokens are used only for this connection and are not shown again.', '手动令牌仅用于本次连接，不会再次显示。', '手動權杖僅用於本次連接，不會再次顯示。')}</p>
+                                </div>
+                            ) : null}
+                        </section>
+                    ) : null}
 
                     <footer className="cgc-footer">
                         <span>{text('After connecting, the agent can commit and push with git_commit / git_push.', '连接后，agent 可使用 git_commit / git_push 提交和推送。', '連接後，agent 可使用 git_commit / git_push 提交和推送。')}</span>
                         <div className="cgc-actions">
                             <button type="button" className="cgc-secondary" disabled={busy} onClick={onClose}>{text('Cancel', '取消', '取消')}</button>
-                            <button type="submit" className="cgc-primary" disabled={!canSubmit}>
-                                {busy ? text('Connecting…', '连接中…', '連接中…') : text('Connect', '连接', '連接')}
-                            </button>
+                            {repoMode === 'pick' ? (
+                                <button type="submit" className="cgc-primary" disabled={!canSubmit}>
+                                    {busy ? text('Connecting…', '连接中…', '連接中…') : text('Connect', '连接', '連接')}
+                                </button>
+                            ) : null}
                         </div>
                     </footer>
                 </form>

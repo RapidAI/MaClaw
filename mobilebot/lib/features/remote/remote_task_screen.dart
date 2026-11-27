@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
@@ -67,6 +68,7 @@ class RemoteTaskScreen extends ConsumerStatefulWidget {
 class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   Timer? _pollTimer;
   Timer? _slowTimer;
   RemoteTaskDetail? _detail;
@@ -1146,7 +1148,19 @@ class _RemoteTaskScreenState extends ConsumerState<RemoteTaskScreen> {
               : context.S.rtDefaultTaskName);
     final task = detail?.task;
     return Scaffold(
+      key: _scaffoldKey,
+      endDrawer: Drawer(
+        child: _RemoteTaskDrawer(
+          grant: widget.grant,
+          currentTaskPath: widget.taskPath,
+        ),
+      ),
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: context.S.cloudSessionList,
+          onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+          icon: const Icon(Icons.segment),
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2345,6 +2359,31 @@ MarkdownStyleSheet _taskMarkdownStyle(ThemeData theme) {
   return null;
 }
 
+/// 状态徽标 chip 的统一渲染：列表卡片、详情标题、抽屉行都用同一份。
+/// badge 为 null 时返回 null（不占位）。
+Widget? badgeChip(
+  BuildContext context,
+  ({String label, Color color})? badge,
+) {
+  if (badge == null) return null;
+  final theme = Theme.of(context);
+  return Container(
+    margin: const EdgeInsets.only(right: AppSpacing.xs),
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+    decoration: BoxDecoration(
+      color: badge.color.withValues(alpha: 0.14),
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+    ),
+    child: Text(
+      badge.label,
+      style: theme.textTheme.labelSmall?.copyWith(
+        color: badge.color,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
+}
+
 class _KindChip extends StatelessWidget {
   final String label;
   final Color color;
@@ -2980,6 +3019,134 @@ class _FileCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 远控任务聊天右侧的会话列表抽屉：当前机器的任务，状态徽标与列表页同源
+/// （taskStateBadge）。右滑收回到会话是 Drawer 的原生手势；管理操作留在
+/// 屏内菜单，抽屉只负责切换。
+class _RemoteTaskDrawer extends ConsumerWidget {
+  const _RemoteTaskDrawer({required this.grant, required this.currentTaskPath});
+
+  final RcGrant grant;
+  final String currentTaskPath;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final tasks = ref.watch(remoteTasksProvider(grant.id));
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.sm,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        grant.title,
+                        style: theme.textTheme.titleSmall,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        grant.permissionLabel(context.S),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: context.S.rcTitle,
+                  onPressed: () => context.go('/remote'),
+                  icon: const Icon(Icons.settings_outlined),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: tasks.when(
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, _) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: Text(
+                    failureMessage(error),
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                ),
+              ),
+              data: (rows) {
+                if (rows.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    child: Text(
+                      context.S.rcNoTasks,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  );
+                }
+                return ListView(
+                  children: [
+                    for (final task in rows)
+                      ListTile(
+                        selected: task.path == currentTaskPath,
+                        title: Text(
+                          task.title.isEmpty
+                              ? context.S.rtDefaultTaskName
+                              : task.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: task.lastActivity.isEmpty
+                            ? null
+                            : Text(
+                                task.lastActivity,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                        trailing: badgeChip(context, taskStateBadge(
+                          context,
+                          task,
+                        )),
+                        onTap: () {
+                          Navigator.pop(context);
+                          context.push(
+                            '/remote/task',
+                            extra: (
+                              grant: grant,
+                              taskPath: task.path,
+                              taskName: task.title,
+                            ),
+                          );
+                        },
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

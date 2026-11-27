@@ -511,6 +511,16 @@ export function useAppUpdateFlow({
             const installer = String(payload?.installer_path || "").trim();
             const latestVersion = String(payload?.latest_version || "").trim();
             if (!installer || !latestVersion) return;
+            // Honor a dismissal made before this version was silently
+            // downloaded (earlier session or before silent mode was enabled):
+            // a completed download must not reopen an offer the user already
+            // waved away. The ready installer stays registered in the backend;
+            // a manual check can still reach it.
+            try {
+                if (window.localStorage.getItem(DISMISSED_APP_UPDATE_VERSION_KEY) === latestVersion) return;
+            } catch {
+                // localStorage may be unavailable in some embedded/dev contexts.
+            }
             // Keep the notice either way, but a user-picked rollback is a
             // deliberate choice: a background download of the newest release
             // completing right now must not cancel that download or steal the

@@ -3949,7 +3949,7 @@ func deliverHeldBytes(ctx context.Context, scope agentruntime.Scope, name, mime 
 	} else if err = noteDesktopFileItem(ctx, name, mime, raw, itemID); err != nil {
 		return "", err
 	} else {
-		text = desktopDelivered(name, len(raw))
+		text = desktopDeliveredWithEvidence(name, len(raw), raw)
 	}
 	if err != nil {
 		return "", err
@@ -4064,9 +4064,9 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 			// The desktop service refuses a file over the reply's inline
 			// budget; it goes as its own message instead.
 			if desktopShotSlotFrom(ctx) == nil {
-				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+				return deliverLargeOnItsOwnItem(ctx, scope, resolved, name, itemID)
 			}
-			return deliverDesktopLarge(ctx, scope, resolved, name)
+			return deliverDesktopLargeItem(ctx, scope, resolved, name, itemID)
 		}
 		return "", err
 	}
@@ -4074,9 +4074,9 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 	if err != nil {
 		if strings.Contains(err.Error(), "too large") {
 			if desktopShotSlotFrom(ctx) == nil {
-				return deliverLargeOnItsOwn(ctx, scope, resolved, name)
+				return deliverLargeOnItsOwnItem(ctx, scope, resolved, name, itemID)
 			}
-			return deliverDesktopLarge(ctx, scope, resolved, name)
+			return deliverDesktopLargeItem(ctx, scope, resolved, name, itemID)
 		}
 		if strings.Contains(err.Error(), "empty") {
 			return "", fmt.Errorf("desktop deliver file is empty")
@@ -4090,7 +4090,11 @@ func deliverDesktopPath(ctx context.Context, scope agentruntime.Scope, filePath,
 // were not already read. The result never tells the model to hand out the
 // cloud path.
 func deliverLargeOnItsOwn(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
-	text, err := deliverDesktopLarge(ctx, scope, resolved, name)
+	return deliverLargeOnItsOwnItem(ctx, scope, resolved, name, "")
+}
+
+func deliverLargeOnItsOwnItem(ctx context.Context, scope agentruntime.Scope, resolved, name, itemID string) (string, error) {
+	text, err := deliverDesktopLargeItem(ctx, scope, resolved, name, itemID)
 	if err != nil {
 		return "", deliverOwnError(err)
 	}
@@ -4113,7 +4117,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 		}
 		desktopNoteScheduleDelivered(ctx, scope, name, raw)
 		desktopNoteFileClaim(scope.RunID, itemID, raw)
-		return deliverOwnText(text), nil
+		return desktopAppendDeliverEvidence(deliverOwnText(text), name, raw), nil
 	}
 	if !saidFileFitsInbox(name, desktopDeliverMIME(name), len(raw)) {
 		return "", deliverOwnError(fmt.Errorf("desktop document (%d bytes) could not be sent: %v. Do not shrink it", len(raw), err))
@@ -4123,7 +4127,7 @@ func deliverFileOnItsOwn(ctx context.Context, scope agentruntime.Scope, name str
 	}
 	desktopNoteScheduleDelivered(ctx, scope, name, raw)
 	desktopNoteFileClaim(scope.RunID, itemID, raw)
-	return deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), nil
+	return desktopAppendDeliverEvidence(deliverOwnText(fmt.Sprintf("Delivered %s (%d bytes) as its own chat message. The person's MaClaw app has the file. Say that it was sent as a separate message.", name, len(raw))), name, raw), nil
 }
 
 // A schedule firing was handing the person the same PDF again. Touching the
@@ -4264,6 +4268,36 @@ func deliverOwnError(err error) error {
 
 func desktopDelivered(name string, size int) string {
 	return fmt.Sprintf("Delivered %s (%d bytes) on this chat reply. Tell the user the file is attached to this message. Do not ask them to choose another way to receive it.", name, size)
+}
+func desktopDeliveredWithEvidence(name string, size int, raw []byte) string {
+	return desktopAppendDeliverEvidence(desktopDelivered(name, size), name, raw)
+}
+
+// desktopAppendDeliverEvidence records what the server itself verified in
+// the delivered bytes. The outcome checker otherwise sees only "Delivered"
+// and cannot tell whether an attached PDF carries the requested content;
+// that mismatch made a real weather PDF report itself unconfirmed.
+func desktopAppendDeliverEvidence(text, name string, raw []byte) string {
+	if !strings.HasSuffix(strings.ToLower(name), ".pdf") || len(raw) == 0 {
+		return text
+	}
+	pages, err := agent.PDFSelectableText(raw, []int{1})
+	if err != nil {
+		return text
+	}
+	return desktopAppendPDFTextEvidence(text, pages[1])
+}
+
+func desktopAppendPDFTextEvidence(text, body string) string {
+	body = strings.Join(strings.Fields(body), " ")
+	if body == "" {
+		return text
+	}
+	runes := []rune(body)
+	if len(runes) > 500 {
+		body = string(runes[:500]) + "…"
+	}
+	return text + " Server-checked PDF first-page text: " + body
 }
 
 func noteDesktopFile(ctx context.Context, name, mime string, raw []byte) error {

@@ -26,6 +26,11 @@ type HubUserRanking struct {
 // endpoint. Keeping it local prevents the React layer from handling bearer
 // tokens or Hub URLs directly.
 type HubUserInvitation struct {
+	// Enabled carries the zero value on every error response (no omitempty —
+	// `{"enabled":false}` is also the legitimate "feature disabled" body), so
+	// consumers MUST branch on Error first: reading Enabled alone conflates a
+	// failed request with a disabled feature. The dialog's rotate() wiped its
+	// content on that shape once, leaving 邀请功能暂不可用 with no failure hint.
 	Enabled        bool             `json:"enabled"`
 	InviteURL      string           `json:"invite_url,omitempty"`
 	InviterCredits float64          `json:"inviter_credits,omitempty"`

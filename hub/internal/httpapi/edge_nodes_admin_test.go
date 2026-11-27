@@ -143,6 +143,129 @@ func TestRotateEnrollmentKeepsTheSameDesktopServer(t *testing.T) {
 	}
 }
 
+func TestOwnedSrvOnlyNodeUpgradeOnRotationCreatesAnOwnedDesktop(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "alice-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","srv_admin_secret":"srv-1","version":"v1","has_srv":true}`))
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("srv-only enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	rotate, err := reg.IssueRotateCode(ctx, store.DefaultTenantID, first.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	upgrade := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+rotate.Code+`","desktopd_key":"key-2","srv_admin_secret":"srv-2","version":"v2","has_desktopd":true,"has_srv":true,"host_ram_bytes":15032385536,"host_cpus":8}`))
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, upgrade)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("desktop upgrade %d %s", rec.Code, rec.Body.String())
+	}
+	servers, active, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 || servers[0].NodeID != first.NodeID || servers[0].OwnerUserID != "alice" || !servers[0].Intranet {
+		t.Fatalf("owned servers = %+v", servers)
+	}
+	if active != servers[0].ID {
+		t.Fatalf("active = %q, want %q", active, servers[0].ID)
+	}
+	if servers[0].Memory != "4g" || servers[0].CPUs != "4" || !servers[0].ResourcesAuto {
+		t.Fatalf("host resources were not recorded: %+v", servers[0])
+	}
+}
+
+func TestOwnedSrvOnlyNodeUpgradeOnRotationRefusesASmallHost(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	bots := botmgmt.NewService(&botSettingsMem{})
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "alice-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+code.Code+`","srv_admin_secret":"srv-1","version":"v1","has_srv":true}`))
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("srv-only enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var first edgenode.EnrollResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	rotate, err := reg.IssueRotateCode(ctx, store.DefaultTenantID, first.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	upgrade := httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(`{"code":"`+rotate.Code+`","desktopd_key":"key-2","srv_admin_secret":"srv-2","version":"v2","has_desktopd":true,"has_srv":true,"host_ram_bytes":6442450944,"host_cpus":4}`))
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, upgrade)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "内存不到 8G") {
+		t.Fatalf("small host upgrade %d %s", rec.Code, rec.Body.String())
+	}
+	servers, _, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 {
+		t.Fatalf("small host still recorded a desktop: %+v", servers)
+	}
+	node, err := reg.Lookup(ctx, first.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.HasDesktopd {
+		t.Fatal("failed upgrade left the node marked as having a desktop")
+	}
+}
+
+func TestEdgeLinkRestoresAMissingDesktopRecord(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "alice-pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, err := reg.Enroll(ctx, code.Code, "desk-key", "srv-admin", "v1", true, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := reg.Lookup(ctx, enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureEdgeDesktopRecorded(ctx, pool, node); err != nil {
+		t.Fatal(err)
+	}
+	servers, active, err := pool.OwnedServers(ctx, store.DefaultTenantID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 || servers[0].NodeID != node.ID || servers[0].OwnerUserID != "alice" || active != servers[0].ID {
+		t.Fatalf("restored servers=%+v active=%q err=%v", servers, active, err)
+	}
+}
+
 func TestEdgeCodeNamesTheIssuingAdmin(t *testing.T) {
 	t.Setenv("HUB_EDGE_NODES", "on")
 	reg := edgenode.NewRegistry(&edgeMemSettings{})
@@ -370,6 +493,33 @@ func TestEnrollWithSrvRollsBackWhenTheConnectionIsNotStored(t *testing.T) {
 	view, err := pool.View(ctx, store.DefaultTenantID)
 	if err != nil || len(view.Servers) != 0 {
 		t.Fatalf("servers = %+v err %v", view.Servers, err)
+	}
+}
+
+func TestSrvOnlyEnrollmentDoesNotBecomeTheDefaultBotHome(t *testing.T) {
+	t.Setenv("HUB_EDGE_NODES", "on")
+	settings := &edgeMemSettings{}
+	reg := edgenode.NewRegistry(settings)
+	pool := desktoppool.New(settings, nil)
+	botSettings := &botSettingsMem{}
+	bots := botmgmt.NewService(botSettings)
+	ctx := context.Background()
+	code, err := reg.IssueOwnedCode(ctx, store.DefaultTenantID, "alice", "srv only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	body := `{"code":"` + code.Code + `","srv_admin_secret":"srv-admin","version":"v1","has_srv":true}`
+	PostEdgeEnrollHandler(reg, pool, bots).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/edge/enroll", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("enroll %d %s", rec.Code, rec.Body.String())
+	}
+	var stored struct {
+		OwnerNode map[string]string `json:"owner_node"`
+	}
+	_ = json.Unmarshal([]byte(botSettings.value), &stored)
+	if stored.OwnerNode["alice"] != "" {
+		t.Fatalf("srv-only node became the default bot home: %+v", stored.OwnerNode)
 	}
 }
 

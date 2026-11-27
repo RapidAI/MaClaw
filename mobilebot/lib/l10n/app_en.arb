@@ -441,6 +441,38 @@
   "cloudTurnFinished": "Turn finished",
   "cloudTurnCancelled": "Turn stopped",
   "cloudTurnInterrupted": "Turn interrupted",
+  "cloudSessionList": "Sessions",
+  "cloudManageInstances": "Manage instances",
+  "cloudTaskRunning": "Running",
+  "cloudTaskFinished": "Done",
+  "cloudTaskCancelled": "Cancelled",
+  "cloudTaskInterrupted": "Interrupted",
+  "cloudThinking": "Reasoning",
+  "cloudLoadEarlier": "Load earlier messages",
+  "cloudShownCount": "Showing {shown}/{total} messages",
+  "cloudDeleteTask": "Delete task",
+  "cloudDeleteTaskConfirm": "Delete task “{title}”? Its conversation and artifact records are removed too and cannot be recovered.",
+  "cloudDelete": "Delete",
+  "cloudTaskDeleted": "Task deleted",
+  "cloudRenameTask": "Rename task",
+  "cloudRename": "Rename",
+  "@cloudShownCount": {
+    "placeholders": {
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "@cloudDeleteTaskConfirm": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
   "backToCloud": "Back to cloud",
   "rcNoMachines": "No controllable machines yet.\nPair one under “My devices” below, or have another account invite you.",
   "rcControlledByOthers": "Others controlling my computer",
@@ -566,8 +598,12 @@
   "rtShownCount": "Showing {shown}/{total}",
   "@rtShownCount": {
     "placeholders": {
-      "shown": {"type": "int"},
-      "total": {"type": "int"}
+      "shown": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
     }
   },
   "rtLoadingEarlier": "Loading earlier messages",
@@ -582,10 +618,43 @@
   "rtAttachTooLarge": "{name} is too large; one attachment can be up to {limit} MB",
   "rtAttachDesktopUnknown": "Could not tell which computer to upload to (machine id missing)",
   "rtAttachRemove": "Remove attachment",
-  "@rtAttachUploadingName": {"placeholders": {"name": {"type": "String"}, "percent": {"type": "int"}}},
-  "@rtAttachFailed": {"placeholders": {"name": {"type": "String"}, "error": {"type": "String"}}},
-  "@rtAttachFailedShort": {"placeholders": {"name": {"type": "String"}}},
-  "@rtAttachTooLarge": {"placeholders": {"name": {"type": "String"}, "limit": {"type": "int"}}},
+  "@rtAttachUploadingName": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "@rtAttachFailed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "@rtAttachFailedShort": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "@rtAttachTooLarge": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      },
+      "limit": {
+        "type": "int"
+      }
+    }
+  },
   "rtConfirmInvalid": "Confirmation expired",
   "rtConfirmRequired": "Confirmation required",
   "rtFailures": "{count} failures",
@@ -742,7 +811,13 @@
   "chatContinueTask": "Continue this task",
   "chatFileParseFailed": "Failed to parse the file",
   "chatFilesOnDesktop": "{count, plural, =1{The file is on the computer — tap to load} other{{count} files are on the computer — tap to load}}",
-  "@chatFilesOnDesktop": {"placeholders": {"count": {"type": "int"}}},
+  "@chatFilesOnDesktop": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "chatSecretRequired": "“{name}” is required",
   "@chatSecretRequired": {
     "placeholders": {
@@ -1104,12 +1179,12 @@
   },
   "requestFailedShort": "Request failed",
   "assistantAttachQuery": "Please read and summarize this attachment.",
-    "homeEyebrow": "TODAY",
+  "homeEyebrow": "TODAY",
   "homeHeroTitle": "Put a bot to work",
   "homeHeroBots": "{count} bots ready",
   "homeHeroRunning": "{count} tasks running",
   "homeSectionBots": "BOTS",
-"chatMaterialFallbackPath": "~/material/{bot}/{name}",
+  "chatMaterialFallbackPath": "~/material/{bot}/{name}",
   "@chatMaterialFallbackPath": {
     "placeholders": {
       "bot": {

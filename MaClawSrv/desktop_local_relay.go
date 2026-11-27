@@ -187,6 +187,7 @@ func (localRelayModule) Tools(_ context.Context, request agentruntime.TurnReques
 	}
 	if localTaskAvailable(request) {
 		tools = append(tools, localTaskTool())
+		tools = append(tools, localKnowledgeTool())
 	}
 	return tools, nil
 }
@@ -225,6 +226,8 @@ func (m localRelayModule) InvokeTool(ctx context.Context, request agentruntime.T
 	switch strings.TrimSpace(name) {
 	case localTaskToolName:
 		return m.invokeLocalTask(ctx, request, args)
+	case localKnowledgeToolName:
+		return m.invokeLocalKnowledge(ctx, request, args)
 	case localRelayToolName:
 	default:
 		return "", fmt.Errorf("unknown tool %s", name)

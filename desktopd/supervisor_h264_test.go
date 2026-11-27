@@ -630,3 +630,164 @@ print(e1.stopped.is_set(), (31, 1280, 800, 15) in sup._h264_encoders, e1.proc is
 		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// Consumer desynchronization is local to that consumer: the shared encoder is
+// not killed, and recovery is the complete cached keyframe chain. Sequence
+// numbers are assigned only to access units actually queued for that viewer.
+func TestSupervisorH264ResyncDoesNotRestartSharedEncoder(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+e = sup.H264SharedEncoder(31, 1280, 800, 15)
+e.gop = [(b"K", True), (b"d1", False), (b"d2", False)]
+restarts = []
+e.request_restart = lambda force=False: restarts.append(force)
+v = sup.H264Viewer(socket.socketpair()[0], 31, "", True)
+v.shared = e
+v.need_idr = True
+v._resynchronize()
+print(restarts, [f for _, f, _ in v.queue], v.need_idr, [n for n, _, _ in v.queue])
+v.queue = []
+v.sent, v.acked = 30, 10
+v.offer(b"late", False)
+print([n for n, _, _ in v.queue], v.sequence, v.need_idr)
+v.need_idr = True
+v.handle({"type": "request_keyframe", "reason": "decoder_busy"})
+print([f for _, f, _ in v.queue], restarts, v.need_idr)
+`)
+	want := "[] [b'K', b'd1', b'd2'] False [1, 2, 3]\n[] 3 True\n[] [] True"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// The replay window is one whole encoder GOP, not a partial chain that would
+// break again on the next live delta; live fan-out happens under the same
+// encoder lock as the copy-and-replay so the chain is contiguous.
+func TestSupervisorH264ResyncReplaysOneWholeGOPAtomically(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+e = sup.H264SharedEncoder(31, 1280, 800, 15)
+v = sup.H264Viewer(socket.socketpair()[0], 31, "", True)
+v.shared = e
+for n in (sup.H264_RESYNC_REPLAY_MAX, sup.H264_RESYNC_REPLAY_MAX + 1):
+    e.gop = [(b"K", True)] + [(b"d", False)] * (n - 1)
+    v.queue = []
+    v.sequence = 0
+    v.need_idr = True
+    v.last_resync = 0
+    print(n, e.resync(v), len(v.queue), bool(v.queue and v.queue[0][2]), v.need_idr)
+e.viewers.append(v)
+seen = []
+v.offer = lambda frame, key: seen.append((frame, key, e.lock.locked()))
+e.fan_out(b"live", False)
+print(seen)
+e.gop = [(b"K2", True), (b"d2", False)]
+locked_during_replay = []
+real_replay = v.replay_gop
+def replay(gop):
+    locked_during_replay.append(e.lock.locked())
+    return real_replay(gop)
+v.replay_gop = replay
+v.last_resync = 0
+print(e.resync(v), locked_during_replay)
+`)
+	want := "60 True 60 True False\n61 False 0 False True\n[(b'live', False, True)]\nTrue [True]"
+	if out != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// Once the X capture source is gone, an encoder exit is terminal for that
+// display generation. It is not retried as an encoder failure, and viewers
+// get display_stopped rather than a black video-chain close.
+func TestSupervisorH264EncoderDoesNotRestartAfterDisplayStops(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket, subprocess, sys, time
+spawned = []
+def spawn(self, argv, env):
+    spawned.append(argv)
+    return subprocess.Popen([sys.executable, "-c", ""], stdout=subprocess.PIPE)
+sup.H264SharedEncoder.spawn = spawn
+sup.x_display_running = lambda key, display: False
+sup.desktop_geometry = lambda: "1280x800x24"
+sa, sb = socket.socketpair()
+v = sup.H264Viewer(sa, 31, "", True)
+e = sup.H264SharedEncoder(31, 1280, 800, 15)
+v.shared = e
+e.subscribe(v)
+time.sleep(0.6)
+print(len(spawned), e.proc is None, v.closed.is_set(), getattr(v, "close_reason", ""))
+sa.close(); sb.close()
+`)
+	if out != "1 True True display_stopped" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// The stream's display state is the X screen itself: a missing browser does
+// not make a running X screen stopped, and a missing X screen is never video.
+func TestSupervisorH264DisplayStateIsTheXScreen(t *testing.T) {
+	out := runSupervisorPython(t, fakeProcPrelude+`
+proc(1, 0, 5000, ["/bin/sh", "-c", "hold"])
+proc(44, 1, 5100, ["Xvfb", ":31", "-screen", "0", "1280x800x24"])
+print(sup.x_display_running(key, 31), sup.x_display_running(key, 32))
+`)
+	if out != "True False" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestSupervisorH264DisplayStopClosesLiveStream(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+states = [False]
+sup.x_display_running = lambda key, display: states[0]
+a, b = socket.socketpair()
+v = sup.H264Viewer(a, 31, "ab" * 8, False)
+sent = []
+v.send_json = sent.append
+v.display_watch_loop()
+print(sent, v.closed.is_set(), v.close_reason)
+a.close(); b.close()
+`)
+	want := "[{'type': 'display_state', 'state': 'display_stopped'}] True display_stopped"
+	if out != want {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestSupervisorH264StoppedDisplayDoesNotStartEncoder(t *testing.T) {
+	out := runSupervisorPython(t, `
+import socket
+sup.x_display_running = lambda key, display: False
+called = []
+def shared(*args):
+    called.append(args)
+    raise AssertionError("encoder started")
+sup.h264_shared_encoder = shared
+a, b = socket.socketpair()
+v = sup.H264Viewer(a, 31, "ab" * 8, False)
+sent = []
+v.send_json = sent.append
+v.run()
+print(sent[0]["display_state"], called, v.closed.is_set())
+a.close(); b.close()
+`)
+	if out != "display_stopped [] True" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+// A black canvas is not a valid stream state: the player only treats a frame
+// as received when it is rendered, reconnects when rendering stalls, and puts
+// an explanatory overlay (or the noVNC fallback) in front of repeated failure.
+func TestSupervisorH264PlayerNeverPresentsUnexplainedBlack(t *testing.T) {
+	out := runSupervisorPython(t, `
+p = sup.H264_PLAYER
+print("function watchVideo()" in p, "markRender()" in p, "视频流异常" in p, "streamStopped=false;const qs" in p)
+print("display_state" in p, "桌面画面未运行" in p, "function onVideo(buf){const{h,data}=parseVideo(buf);gotFrame" in p)
+`)
+	if out != "True True True True\nTrue True False" {
+		t.Fatalf("got %q", out)
+	}
+}

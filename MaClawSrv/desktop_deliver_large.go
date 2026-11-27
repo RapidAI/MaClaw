@@ -70,7 +70,11 @@ var desktopDeliverViaStore = deliverDesktopViaStore
 // deliverDesktopLarge fetches a file over the inbox budget and sends it
 // to the person as its own message.
 func deliverDesktopLarge(ctx context.Context, scope agentruntime.Scope, resolved, name string) (string, error) {
-	return deliverDesktopLargeAt(ctx, scope, resolved, name, saidInlineRawMax(name, desktopDeliverMIME(name)))
+	return deliverDesktopLargeItem(ctx, scope, resolved, name, "")
+}
+
+func deliverDesktopLargeItem(ctx context.Context, scope agentruntime.Scope, resolved, name, itemID string) (string, error) {
+	return deliverDesktopLargeAtItem(ctx, scope, resolved, name, saidInlineRawMax(name, desktopDeliverMIME(name)), itemID)
 }
 
 // deliverDesktopLargeAt: a file over inlineMax goes through Hub's bot file
@@ -78,15 +82,27 @@ func deliverDesktopLarge(ctx context.Context, scope agentruntime.Scope, resolved
 // one is read in pieces and sent inside the inbox response. A file the
 // inbox JSON cannot hold is not inlined when the store is missing.
 func deliverDesktopLargeAt(ctx context.Context, scope agentruntime.Scope, resolved, name string, inlineMax int) (string, error) {
+	return deliverDesktopLargeAtItem(ctx, scope, resolved, name, inlineMax, "")
+}
+
+func deliverDesktopLargeAtItem(ctx context.Context, scope agentruntime.Scope, resolved, name string, inlineMax int, itemID string) (string, error) {
 	q := desktopShellQuote(resolved)
+	storeAt := inlineMax
+	if strings.HasSuffix(strings.ToLower(name), ".pdf") && storeAt < desktopDeliverLargeMax {
+		// A streamed store reference never passes through this server, so
+		// desktopAppendDeliverEvidence cannot verify the PDF text. Read a
+		// PDF within the delivery cap through this server instead; the extra
+		// hop is what lets the outcome checker validate the attachment.
+		storeAt = desktopDeliverLargeMax
+	}
 	out, err := desktopDeliverLargeBash(ctx, scope, fmt.Sprintf(
 		`s=$(stat -c %%s -- %s) || exit 3; if [ "$s" -gt %d ]; then echo "MCLDL_STORE $s"; exit 0; fi; if [ "$s" -gt %d ]; then echo "MCLDL_BIG $s"; exit 0; fi; d=$(mktemp -d /tmp/maclaw-deliver.XXXXXXXX) && split -b %d -d -a 3 -- %s "$d/p." && echo "MCLDL $d $s"`,
-		q, inlineMax, desktopDeliverLargeMax, desktopDeliverPieceBytes, q))
+		q, storeAt, desktopDeliverLargeMax, desktopDeliverPieceBytes, q))
 	if err != nil {
 		return "", fmt.Errorf("desktop file could not be read: %v", err)
 	}
 	if i := strings.Index(out, "MCLDL_STORE "); i >= 0 {
-		text, serr := desktopDeliverViaStore(ctx, scope, resolved, name)
+		text, serr := desktopDeliverViaStore(ctx, scope, resolved, name, itemID)
 		return text, serr
 	}
 	if i := strings.Index(out, "MCLDL_BIG "); i >= 0 {
@@ -120,7 +136,28 @@ func deliverDesktopLargeAt(ctx context.Context, scope agentruntime.Scope, resolv
 	if len(raw) != size {
 		return "", fmt.Errorf("desktop file changed while it was read; deliver it again")
 	}
-	return desktopSayFile(ctx, scope, name, raw)
+	text, err := desktopSayFile(ctx, scope, name, raw)
+	if err != nil {
+		return "", err
+	}
+	desktopNoteScheduleDelivered(ctx, scope, name, raw)
+	desktopNoteFileClaim(scope.RunID, itemID, raw)
+	return desktopAppendDeliverEvidence(text, name, raw), nil
+}
+
+// desktopPDFFirstPageText reads only the first page on the desktop. The
+// streamed store path never gives this server the bytes, so this is the
+// verification text attached to the delivery result.
+func desktopPDFFirstPageText(ctx context.Context, scope agentruntime.Scope, resolved string) string {
+	out, err := desktopDeliverLargeBash(ctx, scope, "pdftotext -f 1 -l 1 "+desktopShellQuote(resolved)+" - 2>/dev/null | head -c 4000")
+	if err != nil {
+		return ""
+	}
+	body := strings.Join(strings.Fields(out), " ")
+	if body == "(no output)" || strings.HasPrefix(body, "(exit ") || strings.Contains(body, "(command timed out)") {
+		return ""
+	}
+	return body
 }
 
 // desktopHubReplyFileMax is the largest base64 file a run reply carries

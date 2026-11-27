@@ -461,7 +461,22 @@ func NewRouter(
 			return false
 		}
 		node, err := edgeRegistry.Lookup(ctx, nodeID)
-		return err == nil && node.HasSrv && !edgeTenantMismatch(node.TenantID, tenantID)
+		if err != nil || !node.HasSrv || !node.HasDesktopd || edgeTenantMismatch(node.TenantID, tenantID) {
+			return false
+		}
+		// HasDesktopd is the enrolling process' claim. The bot can use that
+		// computer only when the corresponding desktopd is also present in the
+		// pool; a failed or partial install must not count as a LAN computer.
+		view, err := desktopPool.View(ctx, tenantID)
+		if err != nil {
+			return false
+		}
+		for _, server := range view.Servers {
+			if server.NodeID == nodeID {
+				return true
+			}
+		}
+		return false
 	}
 	if edgenode.Enabled() {
 		edgeRegistry = edgenode.NewRegistry(system)
@@ -497,7 +512,7 @@ func NewRouter(
 		edgeBroker.OnAttach = func(tenantID, nodeID string) {
 			botSvc.ReleaseNodeQueue(tenantID, nodeID)
 		}
-		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc))
+		mux.HandleFunc("GET /api/v1/edge/link", GetEdgeLinkHandler(edgeRegistry, edgeBroker, botSvc, desktopPool))
 		mux.HandleFunc(edgeDesktopRelayPrefix+"{node}/{rest...}", EdgeDesktopRelayHandler(edgeRegistry, edgeBroker))
 		mux.HandleFunc(edgeCDPPrefix+"{ticket}/{rest...}", EdgeCDPRelayHandler(edgeRegistry, edgeBroker))
 		mux.HandleFunc("GET /api/v1/edge/viewer/{id}", EdgeViewerConfirmHandler(edgeRegistry))
