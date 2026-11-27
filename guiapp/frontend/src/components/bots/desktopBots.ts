@@ -100,6 +100,24 @@ export function protocolControl(text: string): 'confirm' | 'resume' | '' {
     return '';
 }
 
+// A hand-back or an automatic resume always carries 交还给你 (Hub's own
+// sentences in bot_desktop_resume.go and the hand-back default). A continue
+// label typed out exactly is the same control the button sends. None of these
+// is a request, so they must never be presented as the task.
+const HANDBACK_RESUME = /交还给你/;
+// The first alternative is BOT_RETURN_TASK as Hub's desktopContinueRe reads
+// it: typed out by hand it may lack the exact punctuation of the constant,
+// so protocolControl's exact match is not enough on its own.
+const CONTINUE_LABEL = /^(?:登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续|登录完成，继续|登入完成，繼續|验证完成，继续|驗證完成，繼續|已发布，继续|已發布，繼續|完成，继续|完成，繼續|login done, continue|verified, continue|published, continue|done, continue)[。.!！]?$/i;
+
+export function desktopBotControlText(text: string): boolean {
+    const trimmed = (text || '').replace(/\s+/g, ' ').trim();
+    if (!trimmed) return false;
+    if (protocolControl(trimmed)) return true;
+    if (HANDBACK_RESUME.test(trimmed)) return true;
+    return CONTINUE_LABEL.test(trimmed);
+}
+
 // The instant path. A short line made only of stop words cancels before any
 // model call. Other languages and phrasings are classified while work is
 // active; this list is not the only way a stop is recognized. A phrase that
@@ -268,6 +286,14 @@ function desktopBotVoice(lang: string): 'en' | 'hant' | 'hans' | 'mn' {
 export function desktopBotRunningSentence(titles: string[], lang: string): string {
     const names = titles.map(item => item.trim()).filter(Boolean);
     const voice = desktopBotVoice(lang);
+    // A continuation run carries no name of its own — its stored title is the
+    // control instruction, which the caller blanks. The work still goes on,
+    // so say that much rather than a head line with nothing under it.
+    if (names.length === 0) {
+        if (voice === 'mn') return 'Ажиллаж байна.';
+        if (voice === 'en') return 'Working on it.';
+        return '在做。';
+    }
     if (names.length === 1) {
         if (voice === 'mn') return `「${names[0]}」 дээр ажиллаж байна.`;
         if (voice === 'en') return `Working on "${names[0]}".`;
@@ -422,7 +448,7 @@ function asideUser(messages: DesktopBotMessage[], userIndex: number, end: number
 
 function taskAnchor(text: string): string {
     const content = text.trim();
-    if (!content || protocolControl(content)) return '';
+    if (!content || desktopBotControlText(content)) return '';
     return content;
 }
 
@@ -458,7 +484,7 @@ export function botTaskText(messages: DesktopBotMessage[], index: number): strin
             confirmed = true;
             continue;
         }
-        if (kind === 'resume') continue;
+        if (kind === 'resume' || desktopBotControlText(item.content || '')) continue;
         const content = (item.content || '').trim();
         if (!content || asideUser(messages, i, index)) continue;
         if (!confirmed) return content;

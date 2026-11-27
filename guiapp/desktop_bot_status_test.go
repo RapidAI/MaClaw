@@ -317,3 +317,27 @@ func TestDesktopBotDeliveryCarriesItsOwnTask(t *testing.T) {
 		t.Fatalf("delivery must name the request it answers: %s", payloads)
 	}
 }
+
+func TestDesktopBotDeliveryDropsContinuationTask(t *testing.T) {
+	var payloads []string
+	desktopBotReportSink = func(raw string) { payloads = append(payloads, raw) }
+	t.Cleanup(func() { desktopBotReportSink = nil })
+	app := &App{}
+	item := desktopBotDelivery{BotID: "bot_1", RunID: "run_cont", Task: "我已经在桌面上完成了需要我做的操作（登录/验证），桌面交还给你，请继续刚才的任务。", Status: "succeeded", Continuation: true}
+	item.Reply.SendToUser = "做成了。"
+	if !app.emitDesktopBotDelivery("local", item) {
+		t.Fatal("emit continuation")
+	}
+	if len(payloads) != 1 || strings.Contains(payloads[0], `"task"`) || strings.Contains(payloads[0], "交还给你") {
+		t.Fatalf("continuation payload = %s", payloads)
+	}
+	payloads = nil
+	plain := desktopBotDelivery{BotID: "bot_1", RunID: "run_plain", Task: "发小红书", Status: "succeeded"}
+	plain.Reply.SendToUser = "发好了。"
+	if !app.emitDesktopBotDelivery("local", plain) {
+		t.Fatal("emit plain")
+	}
+	if len(payloads) != 1 || !strings.Contains(payloads[0], `"task":"发小红书"`) {
+		t.Fatalf("plain payload = %s", payloads)
+	}
+}

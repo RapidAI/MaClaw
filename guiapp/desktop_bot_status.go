@@ -212,6 +212,9 @@ type desktopBotDelivery struct {
 	Task   string `json:"task"`
 	Status string `json:"status"`
 	Phase  string `json:"phase"`
+	// Continuation is Hub's mark that Task holds control text (a hand-back
+	// or resume instruction), not the person's request.
+	Continuation bool `json:"continuation"`
 	Reply  struct {
 		Text               string            `json:"text"`
 		SendToUser         string            `json:"send_to_user"`
@@ -258,8 +261,9 @@ func (a *App) emitDesktopBotDelivery(owner string, item desktopBotDelivery) bool
 	}
 	// The run's own request travels with its result. A delivery arrives out of
 	// band — a run started elsewhere, or one this window missed — so without
-	// it the result would read as the answer to whatever was said last.
-	if task := strings.TrimSpace(item.Task); task != "" {
+	// it the result would read as the answer to whatever was said last. A
+	// continuation's task is the control instruction, not that request.
+	if task := strings.TrimSpace(item.Task); task != "" && !item.Continuation {
 		payload["task"] = task
 	}
 	// send_to_user is the only sentence. Assistant prose stays off the event.

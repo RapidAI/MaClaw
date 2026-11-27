@@ -5,6 +5,7 @@ import { startDesktopBotSync } from './desktopBotSync';
 import { desktopTurnFromPayload, isDesktopBotFiller } from './visibleDesktopTurn';
 import {
     appendDesktopBotReport,
+    desktopBotControlText,
     applySupplementOutcomes,
     desktopBotFiles,
     desktopBotImages,
@@ -368,7 +369,7 @@ export function turnHasVisibleResult(result: { silent: boolean }, ask: DesktopBo
  */
 export function deliveryAnswering(sentence: string, task: string, messages: Array<{ role: string; content: string }>): string {
     const asked = oneLineTask(task);
-    if (!asked || !sentence) return sentence;
+    if (!asked || !sentence || desktopBotControlText(asked)) return sentence;
     let lastUser = '';
     for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].role === 'user') { lastUser = oneLineTask(messages[i].content); break; }

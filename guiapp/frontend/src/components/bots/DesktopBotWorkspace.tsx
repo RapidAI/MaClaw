@@ -161,6 +161,7 @@ import {
 
     BOT_CONFIRM_TASK,
     protocolControl,
+    desktopBotControlText,
     stripConfirmedOrderLead,
     BOT_RETURN_TASK,
     saveBotMessages,
@@ -3812,7 +3813,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const running = (rows || []).filter(row => row && row.status === 'running' && !row.stale);
         const queued = (rows || []).filter(row => row && row.status === 'queued').length + (queueRef.current.get(botId)?.length || 0);
         return {
-            active_run: running.map(row => oneLine(stripConfirmedOrderLead(row.task || '')).slice(0, 120)).filter(Boolean).join(' / ') || undefined,
+            active_run: running.map(row => oneLine(stripConfirmedOrderLead(row.task || '')).slice(0, 120)).filter(task => task && !desktopBotControlText(task)).join(' / ') || undefined,
             current_step: running[0]?.step || running[0]?.next_step || undefined,
             queued: queued || undefined,
             last_task: lastTask || undefined,
@@ -5956,7 +5957,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const local = (rows || []).flatMap(item => {
             const runId = String(item?.run_id || '').trim();
             if (!runId) return [];
-            const title = oneLine(stripConfirmedOrderLead(String(item?.task_text || ''))) || runId;
+            const named = oneLine(stripConfirmedOrderLead(String(item?.task_text || '')));
+            const title = desktopBotControlText(named) ? '' : named || runId;
             return [{ runId, title, waiting: item?.waiting_for_user === true }];
         });
         if (local.length > 0) return local;
@@ -5968,7 +5970,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return remote.flatMap(item => {
             const runId = String(item?.run_id || '').trim();
             if (!runId || item?.status !== 'running') return [];
-            const title = oneLine(stripConfirmedOrderLead(String(item?.task || ''))) || runId;
+            const named = oneLine(stripConfirmedOrderLead(String(item?.task || '')));
+            const title = desktopBotControlText(named) ? '' : named || runId;
             return [{ runId, title, waiting: item?.waiting_for_user === true }];
         });
     };

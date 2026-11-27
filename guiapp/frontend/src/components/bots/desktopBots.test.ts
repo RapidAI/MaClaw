@@ -451,6 +451,13 @@ describe('desktop bots', () => {
             { id: 'c', role: 'user', content: confirm },
             { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
         ], 3)).toBe('截屏发我');
+
+        expect(botTaskText([
+            { id: 'u2', role: 'user', content: '发小红书，标题写新品上市' },
+            { id: 'captcha', role: 'assistant', content: '请完成滑块验证。', userControl: true, attentionReason: 'captcha' },
+            { id: 'typed', role: 'user', content: '验证完成，继续', phase: 'execute' },
+            { id: 'run2', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 3)).toBe('发小红书，标题写新品上市');
     });
 
     it('keeps a handoff after the turn settles, until a later reply takes over', () => {
@@ -666,6 +673,8 @@ describe('desktop bots', () => {
         expect(desktopFalseStopClaim('continue_other', '好的，已停下。')).toBe(true);
         expect(desktopFalseStopClaim('skip', '已停下')).toBe(false);
         expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hans')).toBe('在做。这件是「安装 Evince」。');
+        expect(desktopBotRunningSentence([''], 'zh-Hans')).toBe('在做。');
+        expect(desktopBotRunningSentence([''], 'en')).toBe('Working on it.');
         expect(desktopBotRunningSentence(['安装 Evince', '下载报表'], 'zh-Hans')).toBe('在做这几件：\n安装 Evince\n下载报表');
         expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hant')).toBe('在做。這件是「安装 Evince」。');
         expect(desktopBotAdmittingSentence('zh-Hans')).toBe('刚接下，还在交给后台。');
