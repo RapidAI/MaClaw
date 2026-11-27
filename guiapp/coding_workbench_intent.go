@@ -18,14 +18,20 @@ const codingRequestUnderstandingSystemPrompt = `Restate the user's coding-workbe
 
 Schema: {"restatement":"..."}
 
+The reply is an understanding the user can check, in two beats:
+- First sentence starts with 你想要 and names what they want, in your own words.
+- Second sentence starts with 我将 and names the next actions, in order.
+- Shape: 你想要北京的天气信息并生成PDF。我将先获取最新天气数据，再整合成PDF文件。
+- For an English request, use the same two beats: "You want .... I will ...."
+
 Rules:
-- 1 to 3 sentences.
+- 2 sentences. A third only when a real constraint would otherwise be dropped.
 - Do not copy the user's wording. Paraphrase the goal, the expected deliverable, and any constraint you can infer.
-- If the request is a short follow-up, use the session context to name the current software and what will change.
+- If the request is a short follow-up, use the session context to name the current software and what will change. Keep the rest of the project out of scope when the request is one change.
 - If the session record says project files were already written, the workspace is not read-only. Do not describe it as unable to change files.
 - Do not invent features the user did not imply.
 - Write in the same language as the user request.
-- No markdown headings, no file lists, no step plan.`
+- No markdown headings, no file lists, no numbered step plan.`
 
 // codingOpeningTaskUnderstandingSystemPrompt is the first command of a new
 // coding task. The next thing the user sees is a plan they must approve, so
@@ -34,8 +40,14 @@ const codingOpeningTaskUnderstandingSystemPrompt = `Analyze the first command of
 
 Schema: {"restatement":"..."}
 
-Write a task analysis they can check against that plan:
-- Say what will exist when the task is done, in your own words. Do not paste the user's sentence, and do not start with 这次.
+Write the analysis as an understanding they can check, in two beats:
+- First sentence starts with 你想要 and says what will exist when the task is done, in your own words.
+- Second sentence starts with 我将先 and says you will match the work to the current project, draft the plan, and not edit files before they confirm.
+- Shape: 你想要一个能在本地编译运行的 C++ 俄罗斯方块。我将先对照当前项目整理开发计划，确认前不改文件。
+- For an English request, use the same two beats: "You want .... I will ...."
+- Do not paste the user's sentence. Do not start with 这次, 这是新建任务, or 要完成的是.
+
+Also:
 - If the first clause only repeats the task title, name the requirement after it. Do not spend the answer repeating that title.
 - If a colon introduces a long body or an attached document, say what that material is for. Do not paste the body. A placeholder ［已附正文，N字，M行，此处不引用］ stands in for that document; do not invent its contents and do not repeat the placeholder.
 - If the notes say images or files are attached, say they are the input for the requirement. Do not invent what an image shows, and do not repeat a path.
@@ -54,6 +66,35 @@ func codingRequestShouldRestate(decision codingRequestDecision, userText string)
 	default:
 		return false
 	}
+}
+
+// codingUnderstandingVoice is the two-beat reply: what the user wants, then
+// what this turn will do. The shape is
+// "你想要北京的天气信息并生成PDF。我将先获取最新天气数据，再整合成PDF文件。"
+func codingUnderstandingVoice(s string) bool {
+	if strings.Contains(s, "你想要") && strings.Contains(s, "我将") {
+		return true
+	}
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "you want") && (strings.Contains(lower, "i will") || strings.Contains(lower, "i'll"))
+}
+
+func codingTextHasHan(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// codingUnderstandingVoiceFor accepts the Chinese two-beat reply, or the
+// English one when the user wrote English. A Chinese request must use 你想要 / 我将.
+func codingUnderstandingVoiceFor(got, userText string) bool {
+	if codingTextHasHan(userText) || codingTextHasHan(got) {
+		return strings.Contains(got, "你想要") && strings.Contains(got, "我将")
+	}
+	return codingUnderstandingVoice(got)
 }
 
 func normalizeCodingRestatementKey(s string) string {
@@ -667,11 +708,11 @@ func fallbackCodingRequestRestatementFor(userText string, mem stickyCodingWorkbe
 			return codingDescribeQuestion(prior, question, codingSessionHasImplementationTrajectory(mem))
 		case codingRequestOperational:
 			if decision.Acceptance != codingOperationalAcceptanceCommand {
-				line := "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+				line := "运行当前已有程序并确认它能正常工作"
 				if prior != "" {
-					return "在" + codingQuoteWorkName(prior) + "里，" + line
+					line = "在" + codingQuoteWorkName(prior) + "里，" + line
 				}
-				return line
+				return "你想要" + line + "。我将先启动它核对结果，这一步不改源代码。"
 			}
 		}
 	}
@@ -683,14 +724,15 @@ func fallbackCodingRequestRestatementFor(userText string, mem stickyCodingWorkbe
 			echo := codingClosedRequirementSnippet(mem.SessionPlan)
 			if echo != "" || codingRequirementGoalCut(mem.SessionPlan) >= 0 {
 				if sentence := codingDescribeStoredGoal(echo, mem.SessionPlan); sentence != "" {
-					return sentence
+					sentence = strings.TrimRight(sentence, "。")
+					return "你想要" + sentence + "。我将从上次停下的地方接着做。"
 				}
 			}
 			if prior != "" {
-				return "继续做" + codingQuoteWorkName(prior) + "，从上次停下的地方接着做。"
+				return "你想要继续做" + codingQuoteWorkName(prior) + "。我将从上次停下的地方接着做。"
 			}
 			// A bare continue with nothing stored has no ask to name.
-			return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+			return "你想要接着做上次停下的事。我将先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
 		}
 		if ask != "" {
 			if codingRequirementGoalCut(ask) >= 0 {
@@ -735,7 +777,7 @@ func fallbackCodingRequestRestatementFor(userText string, mem stickyCodingWorkbe
 			return codingDescribeHeadline(prior, head, more)
 		}
 	}
-	return "先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。"
+	return "你想要按这次的要求修改当前项目。我将先看清当前项目里相关的实现和约束，再修改并验证。"
 }
 
 // codingDescribeOpeningCommand is the host analysis of a new task's first
@@ -1063,7 +1105,7 @@ func codingDescribePeeledOpening(goal, constraint, extra string, more, material 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("要完成的是「")
+	b.WriteString("你想要「")
 	b.WriteString(goal)
 	b.WriteString("」。")
 	if constraint != "" {
@@ -1097,7 +1139,7 @@ func codingDescribePeeledOpening(goal, constraint, extra string, more, material 
 	}
 	scopeSaid := material || more || named != ""
 	b.WriteString(codingAttachedMaterialPhrase(attached, scopeSaid))
-	b.WriteString("我先对照当前项目里能完成这件事的部分，整理成开发计划，确认前不改文件。")
+	b.WriteString("我将先对照当前项目里能完成这件事的部分，整理成开发计划，确认前不改文件。")
 	return b.String()
 }
 
@@ -1152,13 +1194,13 @@ func codingDescribeLongOpeningAnalysis(head string, more bool) string {
 	if head == "" {
 		return ""
 	}
-	s := "这是新建任务的第一条指令。要完成的是「" + head + "」"
+	s := "你想要「" + head + "」"
 	if more {
 		s += "，其余要求一并处理。"
 	} else {
 		s += "。"
 	}
-	s += "我先按这些要求确认要做到的结果和边界，只做提到的事，不额外加功能；整理成开发计划后请你确认，确认前不改文件。"
+	s += "我将先按这些要求确认要做到的结果和边界，只做提到的事，不额外加功能，整理成开发计划，确认前不改文件。"
 	return s
 }
 
@@ -1170,9 +1212,9 @@ func codingDescribeHeadline(prior, head string, more bool) string {
 		line += "，其余要求一并处理"
 	}
 	if prior != "" {
-		return "在" + codingQuoteWorkName(prior) + "里，" + line + "。"
+		line = "在" + codingQuoteWorkName(prior) + "里，" + line
 	}
-	return line + "。"
+	return "你想要" + line + "。我将按这些要求修改并验证。"
 }
 
 // codingLeadingInterjection marks a discourse opener that is not itself a
@@ -1453,9 +1495,9 @@ func codingDescribeQuestion(prior, userText string, written bool) string {
 		line = "在" + codingQuoteWorkName(prior) + "里，" + line
 	}
 	if written {
-		return line + "。"
+		return "你想要" + line + "。我将先看清相关代码再作答。"
 	}
-	return line + "，这一步只读不改文件。"
+	return "你想要" + line + "。我将先看清相关代码再作答，这一步只读不改文件。"
 }
 
 // codingQuestionQuote keeps the question name short enough for the chat
@@ -1543,7 +1585,7 @@ func codingDescribeOpeningTask(ask string) string {
 	if ask == "" {
 		return ""
 	}
-	return "这是新建任务的第一条指令。要完成的是「" + ask + "」。我先按这句话确认要做到的结果和边界，只做提到的事，不额外加功能；整理成开发计划后请你确认，确认前不改文件。"
+	return "你想要「" + ask + "」。我将先按这句话确认要做到的结果和边界，只做提到的事，不额外加功能，整理成开发计划，确认前不改文件。"
 }
 
 // codingOpeningAnalysisUsable rejects a model reply that only repeats the
@@ -1573,6 +1615,11 @@ func codingOpeningAnalysisUsable(got, userText string) bool {
 		return false
 	}
 	if codingAnalysisQuotesSuppliedBody(got, userText) {
+		return false
+	}
+	// The opening bubble is the understanding the user reads. A paraphrase
+	// that skips the two beats is weaker than the host sentence.
+	if !codingUnderstandingVoiceFor(got, instruction) {
 		return false
 	}
 	return true
@@ -1812,14 +1859,15 @@ func codingDescribeNewAsk(name, ask string) string {
 	if !strings.HasPrefix(ask, "这次") && !strings.HasPrefix(ask, "继续") && !strings.HasPrefix(ask, "请") && !strings.HasPrefix(ask, "先") && !strings.HasPrefix(ask, "把") {
 		ask = "这次" + ask
 	}
-	tail := "，其它先不动。"
+	tail := "，其它先不动"
 	if codingAskAlreadyCoversTheRest(ask) {
-		tail = "。"
+		tail = ""
 	}
+	line := ask + tail
 	if name = strings.TrimSpace(name); name != "" {
-		return "在" + codingQuoteWorkName(name) + "里，" + ask + tail
+		line = "在" + codingQuoteWorkName(name) + "里，" + line
 	}
-	return ask + tail
+	return "你想要" + line + "。我将按这个范围修改并验证。"
 }
 
 func codingAskAlreadyCoversTheRest(ask string) bool {
@@ -1955,6 +2003,9 @@ func (h *IMMessageHandler) llmCodingRequestRestatement(userID, userText string, 
 	}
 	got := parseCodingRequestRestatement(h.callLightweightLLM(cfg, codingRequestUnderstandingSystemPrompt, buildCodingUnderstandingUserPrompt(userText, mem), 20))
 	if got == "" || codingRestatementCopiesUser(got, userText) || utf8.RuneCountInString(got) < 8 {
+		return ""
+	}
+	if !codingUnderstandingVoiceFor(got, userText) {
 		return ""
 	}
 	return truncateRunesV2(got, codingRequestUnderstandingMaxRunes)

@@ -137,7 +137,7 @@ func TestJoinCodingUnderstandingAndBody(t *testing.T) {
 func assertOpeningTaskHostAnalysis(t *testing.T, got, ask string) {
 	t.Helper()
 	ask = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(ask), "。！？!? "))
-	if !strings.Contains(got, "第一条指令") || !strings.Contains(got, "「"+ask+"」") || !strings.Contains(got, "开发计划") || !strings.Contains(got, "确认前不改文件") {
+	if !strings.Contains(got, "你想要") || !strings.Contains(got, "我将先") || !strings.Contains(got, "「"+ask+"」") || !strings.Contains(got, "开发计划") || !strings.Contains(got, "确认前不改文件") {
 		t.Fatalf("opening analysis=%q ask=%q", got, ask)
 	}
 	if strings.Contains(got, "其它先不动") || strings.Contains(got, "回答「") || strings.Contains(got, "不改源代码") || strings.Contains(got, "只读不改文件") {
@@ -187,7 +187,7 @@ func TestOpeningTaskFirstCommandIsAnalyzedAndKeptAboveThePlan(t *testing.T) {
 	if codingOpeningAnalysisUsable("开发c++版本的俄罗斯广场，确认要做到的结果和边界。", ask) {
 		t.Fatal("a near-copy of the command must not pass")
 	}
-	analysis := "要做一个用 C++ 编写的俄罗斯方块。完成后能在本地编译运行。只做这个游戏本身，不另加模式。方案确认前不改文件。"
+	analysis := "你想要一个用 C++ 编写的俄罗斯方块，完成后能在本地编译运行。我将只做这个游戏本身，不另加模式，确认前不改文件。"
 	if !codingOpeningAnalysisUsable(analysis, ask) {
 		t.Fatal("a real analysis should pass")
 	}
@@ -260,7 +260,7 @@ func TestFallbackOpeningTitleClauseIsAnalyzed(t *testing.T) {
 	if codingOpeningAnalysisUsable(pasted, user) {
 		t.Fatal("an analysis that quotes the supplied body must not replace the host sentence")
 	}
-	paraphrase := "用当前项目里已有的实现，识别用户给出的文书上的印章。正文只作为输入，不另做无关功能。确认前不改文件。"
+	paraphrase := "你想要用当前项目里已有的实现，识别用户给出的文书上的印章。我将把正文只作为输入，不另做无关功能，确认前不改文件。"
 	if !codingOpeningAnalysisUsable(paraphrase, user) {
 		t.Fatal("a paraphrase that does not quote the body should stand")
 	}
@@ -377,7 +377,7 @@ func TestFallbackOpeningImageAttachmentIsTheMaterial(t *testing.T) {
 	if codingOpeningAnalysisUsable(leaked, user) {
 		t.Fatal("quoting the image path must not replace the host sentence")
 	}
-	ok := "用当前项目里已有的代码识别附上图片中的印章。图片是输入，不另做无关功能。确认前不改文件。"
+	ok := "你想要用当前项目里已有的代码识别附上图片中的印章。我将把图片作为输入，不另做无关功能，确认前不改文件。"
 	if !codingOpeningAnalysisUsable(ok, user) {
 		t.Fatal("an analysis that names the image without its path should stand")
 	}
@@ -411,7 +411,7 @@ func TestFallbackOpeningImageWithoutColonIsNotAnotherRequirement(t *testing.T) {
 func TestFallbackOpeningDocumentFileIsNamed(t *testing.T) {
 	user := "识别文件中的印章\n\n" + filePathPromptPrefix + "\nC:\\docs\\paper.pdf\n"
 	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
-	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "附上的文件") || !strings.Contains(got, "第一条指令") {
+	if !strings.Contains(got, "「识别文件中的印章」") || !strings.Contains(got, "附上的文件") || !strings.Contains(got, "你想要") || !strings.Contains(got, "确认前不改文件") {
 		t.Fatalf("a document file should stay on the short opening: %q", got)
 	}
 	if strings.Contains(got, "附上的图片") || strings.Contains(got, "其余要求") || strings.Contains(got, `C:\docs`) {
@@ -433,7 +433,7 @@ func TestFallbackOpeningDocumentAndImageStayDistinct(t *testing.T) {
 
 func TestOpeningAnalysisKeepsRequirementAlsoWrittenInTheBody(t *testing.T) {
 	user := "识别文件中的印章：\n识别文件中的印章就写在抬头。\n" + strings.Repeat("单位组织人事处盖章。", 4)
-	analysis := "要做的是识别文件中的印章，用项目里已有的代码完成。正文只作输入，不另写新功能。确认前不改文件。"
+	analysis := "你想要识别文件中的印章，用项目里已有的代码完成。我将把正文只作输入，不另写新功能，确认前不改文件。"
 	if !codingOpeningAnalysisUsable(analysis, user) {
 		t.Fatal("naming the requirement must stay even when the body repeats it")
 	}
@@ -537,7 +537,7 @@ func TestFallbackAttachmentOnlyNamesTheTaskAndTheImage(t *testing.T) {
 func TestFallbackAttachmentOnlyWithoutTitleNamesTheFile(t *testing.T) {
 	user := filePathPromptPrefix + "\npaper.pdf\n"
 	got := fallbackCodingRequestRestatement(user, stickyCodingWorkbenchMemory{})
-	if !strings.Contains(got, "「处理附上的文件」") || !strings.Contains(got, "第一条指令") || !strings.Contains(got, "附上的文件") {
+	if !strings.Contains(got, "「处理附上的文件」") || !strings.Contains(got, "你想要") || !strings.Contains(got, "确认前不改文件") || !strings.Contains(got, "附上的文件") {
 		t.Fatalf("bare file drop was not an opening: %q", got)
 	}
 	if strings.Contains(got, "paper.pdf") || strings.Contains(got, "用户选择的本地文件路径") || strings.Contains(got, "其余要求") {
@@ -1052,7 +1052,7 @@ func TestRestatementFollowsTheDecisionNotTheWording(t *testing.T) {
 
 func TestFallbackShortFollowUpKeepsWorkName(t *testing.T) {
 	got := fallbackCodingRequestRestatement("再收紧阈值", stickyCodingWorkbenchMemory{SessionPlan: "系统信息查看"})
-	if !strings.Contains(got, "「系统信息查看」") || !strings.Contains(got, "这次再收紧阈值") {
+	if !strings.Contains(got, "「系统信息查看」") || !strings.Contains(got, "这次再收紧阈值") || !strings.Contains(got, "你想要") || !strings.Contains(got, "我将") {
 		t.Fatalf("short work name and the new ask should both stay: %q", got)
 	}
 	if strings.Contains(got, "上继续你这次提出的改动") || strings.Contains(got, "再动手") {

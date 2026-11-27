@@ -286,28 +286,29 @@
   slash, so the file name alone is not a leak. The 48-rune gate, the
   short-edit echo, a continue cue, and the copy check use
   `codingTypedRequest` (the picker block removed). A short edit with an
-  attachment stays 「这次…，其它先不动」 and does not quote the path. A
+  attachment stays 「你想要…这次…，其它先不动。我将按这个范围修改并验证。」 and does not quote the path. A
   bare document name such as paper.pdf still counts as an attached file.
   An attachment-only send keeps that empty typed text. A stored short title
   is the goal and the file is material; with no title the goal is
   处理附上的图片 or 处理附上的文件. A later file drop stays
-  「这次处理附上的文件，其它先不动」. The path and the picker marker are
+  「你想要在「name」里，这次处理附上的文件，其它先不动。我将按这个范围修改并验证。」. The path and the picker marker are
   not quoted.
   `publishCodingRequestUnderstanding` asks the lightweight model first
   (`codingOpeningTaskUnderstandingSystemPrompt`); the host stand-in for a
   long opening command is `codingDescribeOpeningCommand`
   (`codingDescribePeeledOpening` when the title is the leading clause,
   `codingDescribeLongOpeningAnalysis` otherwise). The short no-title
-  stand-in stays `codingDescribeOpeningTask` ("这是新建任务的第一条指令。要完成的是「ask」。…确认前不改文件。").
+  stand-in stays `codingDescribeOpeningTask` ("你想要「ask」。我将先按这句话确认要做到的结果和边界，…整理成开发计划，确认前不改文件。").
+  Every visible reply is two beats: 你想要 names the goal, 我将 names the next action. A model reply that skips those beats is discarded (`codingUnderstandingVoiceFor`).
   That paragraph is what the chat shows, and it stays in front of the
   plan-approval text. A later short edit (≤48 runes) still echoes itself via
-  `codingDescribeNewAsk` ("这次<ask>，其它先不动"). Inquiry uses `codingDescribeQuestion`
-  ("对照当前实现，回答「q」，这一步只读不改文件"); a session that already
-  wrote files drops 不改文件 ("对照现有实现，回答「q」。"). An operational
+  `codingDescribeNewAsk` ("你想要在「name」里，这次<ask>，其它先不动。我将按这个范围修改并验证。"). Inquiry uses `codingDescribeQuestion`
+  ("你想要对照当前实现，回答「q」。我将先看清相关代码再作答，这一步只读不改文件。"); a session that already
+  wrote files drops 不改文件 ("你想要对照现有实现，回答「q」。我将先看清相关代码再作答。"). An operational
   launch (acceptance empty or launch, not command) says
-  "运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  "你想要运行当前已有程序并确认它能正常工作。我将先启动它核对结果，这一步不改源代码。"
   With a work name that becomes
-  "在「name」里，运行当前已有程序并确认它能正常工作，这一步不改源代码。"
+  "你想要在「name」里，运行当前已有程序并确认它能正常工作。我将先启动它核对结果，这一步不改源代码。"
   A continue cue (`codingWorkbenchContinueCue`) wins before kind, so 继续
   stays a resume. When the classifier is down the decision is
   implementation. An opening command then uses the opening-task paragraph
@@ -335,7 +336,7 @@
   project name. A task titled with the user's command
   is not repeated as 在「同一句话」里, and that title does not hide the
   project name. A longer follow-up still leads with its first requirement via
-  `codingRequestHeadline` ("先处理「<head>」，其余要求一并处理"). The opening
+  `codingRequestHeadline` ("你想要先处理「<head>」，其余要求一并处理。我将按这些要求修改并验证。"). The opening
   command, including a long one, uses `codingDescribeOpeningCommand` instead
   of that headline template. The
   headline peels leading discourse openers ("太好了！", "帮我，") and
@@ -346,9 +347,9 @@
   ("改A、改B" — first item in full when titles exceed the 16-rune cap),
   and any remainder past the head keeps `more` so "其余要求一并处理"
   acknowledges it. The generic process filler
-  ("先看清当前项目里相关的实现和约束…") survives only for inputs with no
-  nameable ask — punctuation-only text or a bare continue with nothing
-  stored. The lightweight-LLM refinement (`llmCodingRequestRestatement`)
+  ("你想要按这次的要求修改当前项目。我将先看清当前项目里相关的实现和约束…") survives only for inputs with no
+  nameable ask, such as punctuation-only text. A bare continue with nothing
+  stored is "你想要接着做上次停下的事。我将先看清当前项目里相关的实现和约束，再按你这次的要求修改并验证。" The lightweight-LLM refinement (`llmCodingRequestRestatement`)
   still replaces the fallback when the host sentence is not locked. An
   opening-task analysis is not refined again:
   `refineCodingRequestUnderstanding` keeps the paragraph already shown, and
