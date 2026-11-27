@@ -2520,7 +2520,9 @@ jobs:
             darwin)
               # macOS ships as an .app bundle (matrix.executable = <App>.app/Contents/MacOS/<bin>).
               exec_dir="$(dirname "$exec_path")"
-              app_bundle="$(dirname "$(dirname "$exec_path")")"
+              # exec_path = build/bin/<App>.app/Contents/MacOS/<bin>; the .app
+              # bundle root is three levels up from the binary.
+              app_bundle="$(dirname "$(dirname "$(dirname "$exec_path")")")"
               mkdir -p "$exec_dir" "$app_bundle/Contents/Resources"
               bin_name="$(basename "$exec_path")"
               {
