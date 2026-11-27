@@ -93,6 +93,8 @@ func desktopBlockerKind(class string) (kind string, self bool) {
 		return "login", false
 	case "payment_confirm", "publish_needs_confirmation":
 		return "permission", false
+	case "desktop_unavailable":
+		return "computer", false
 	case "infra_timeout", "timeout", "element_not_found", "script_error", "not_applied", "cross_origin_block", "rich_text_dom_write":
 		return "resource", true
 	default:
@@ -110,6 +112,8 @@ func desktopBlockerWords(kind string) string {
 		return "账号不对"
 	case "permission":
 		return "需要你确认"
+	case "computer":
+		return "这台 Bot 的电脑不可用"
 	case "resource":
 		return "这一步的条件还不具备"
 	default:
@@ -130,6 +134,8 @@ func desktopUnblockFor(kind string, self bool, ask string) string {
 		return "你补充这一步缺少的信息"
 	case "account":
 		return "你指定要用的账号"
+	case "computer":
+		return "把这个 Bot 换到有桌面服务的节点，或改用云端电脑"
 	case "resource":
 		if self {
 			return "我换一种做法再试"
@@ -275,21 +281,46 @@ func desktopRunFinishSentence(f desktopRunFinish) string {
 		}
 		return s
 	}
+	// One flowing sentence per blocker kind — the person reads what
+	// happened and what (if anything) they need to do, not a form with
+	// 卡在/要继续需要/建议 labels. Kinds the bot can remove itself say so
+	// and ask for nothing; kinds that need the person name the one action.
+	switch f.Blocker {
+	case "login":
+		return "这一步没能做成，卡在登录/验证这一关。你在这个桌面完成登录或验证，我就从这一页接着做。"
+	case "permission":
+		return "这一步没能做成，就差你确认一下。你确认之后我马上继续。"
+	case "missing_info":
+		if len(f.Unblock) > 0 && f.Unblock[0] != "你补充这一步缺少的信息" {
+			return "这一步没能做成，还差个信息：" + strings.Join(f.Unblock, "；") + "。你告诉我，我马上继续。"
+		}
+		return "这一步没能做成，还差些信息。你补给我，我马上继续。"
+	case "account":
+		return "这一步没能做成，是账号的问题。你告诉我用哪个账号，我再继续。"
+	case "computer":
+		return "这一步没能做成，这台 Bot 的电脑现在不可用。把它换到有桌面服务的节点，或改用云端电脑后再试。"
+	case "resource":
+		if desktopImprovementReady(f.Blocker, true, f.Remediated) {
+			return "这一步没能做成，条件还不具备。我自己换个做法再试，你不用管。"
+		}
+		if f.Remediated {
+			return "这一步没能做成，我自己试过处理还是没成。要么换个做法，要么你接手这一步。"
+		}
+		return "这一步没能做成，条件还不具备。要么换个做法，要么你接手这一步。"
+	}
 	var b strings.Builder
-	b.WriteString("没有做成。")
+	b.WriteString("这一步没能做成。")
 	if f.Blocker != "" {
-		b.WriteString("\n卡在：" + desktopBlockerWords(f.Blocker))
+		b.WriteString("卡在" + desktopBlockerWords(f.Blocker) + "。")
 	}
 	if len(f.Unblock) > 0 {
-		b.WriteString("\n要继续需要：" + strings.Join(f.Unblock, "；"))
+		b.WriteString(strings.Join(f.Unblock, "；") + "，之后我继续。")
 	}
 	if f.Remediated {
-		b.WriteString("\n我已经自己试过处理。")
-	} else {
-		b.WriteString("\n我还没能自己处理。")
+		b.WriteString("我自己试过处理，没能解决。")
 	}
-	if suggestion := desktopFinishSuggestion(f); suggestion != "" {
-		b.WriteString("\n建议：" + suggestion)
+	if suggestion := desktopFinishSuggestion(f); suggestion != "" && f.Blocker == "" {
+		b.WriteString(suggestion + "。")
 	}
 	return b.String()
 }
@@ -304,6 +335,8 @@ func desktopFinishSuggestion(f desktopRunFinish) string {
 		return "你补充缺的信息之后，我继续"
 	case "account":
 		return "你指定账号之后，我继续"
+	case "computer":
+		return "把这个 Bot 重新创建到有桌面服务的节点，或改用云端电脑后再试"
 	case "resource":
 		if desktopImprovementReady(f.Blocker, true, f.Remediated) {
 			return "这一步我可以自己换做法，我接着做"

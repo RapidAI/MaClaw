@@ -72,7 +72,7 @@ func TestRunFinishFailureNamesTheUnblockCondition(t *testing.T) {
 		t.Fatalf("outcome %v", md)
 	}
 	got := md["send_to_user"]
-	if !strings.HasPrefix(got, "没有做成。") || !strings.Contains(got, "卡在：登录") || !strings.Contains(got, "要继续需要：你在这个桌面完成登录或验证") || !strings.Contains(got, "建议：你在这个桌面登录或通过验证后，我从这一页继续") {
+	if !strings.HasPrefix(got, "这一步没能做成") || !strings.Contains(got, "登录") || !strings.Contains(got, "你在这个桌面完成登录或验证") || !strings.Contains(got, "接着做") {
 		t.Fatalf("sentence %q", got)
 	}
 	if strings.Contains(got, "cdp") || strings.Contains(got, "{") {
@@ -86,6 +86,26 @@ func TestRunFinishFailureNamesTheUnblockCondition(t *testing.T) {
 	}
 }
 
+func TestRunFinishFailureNamesAnUnavailableComputer(t *testing.T) {
+	run := "run-finish-computer"
+	finishRunSteps(t, run)
+	desktopNoteRunBlocker(run, "desktop_unavailable")
+	if _, err := desktopFinishTurn(agentruntime.Scope{RunID: run}, map[string]any{"outcome": "failed", "text": "没有做成"}); err != nil {
+		t.Fatal(err)
+	}
+	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "no docker service is assigned"})
+	got := md["send_to_user"]
+	if md["outcome_blocker"] != "computer" || md["outcome_next"] != "ask_user" {
+		t.Fatalf("fields %v", md)
+	}
+	if !strings.Contains(got, "这台 Bot 的电脑现在不可用") || !strings.Contains(got, "有桌面服务的节点，或改用云端电脑") {
+		t.Fatalf("sentence %q", got)
+	}
+	if strings.Contains(got, "指出卡在哪一步") {
+		t.Fatalf("configuration failure fell back to the generic suggestion: %q", got)
+	}
+}
+
 func TestRunFinishContinuesWhenTheBotCanFixIt(t *testing.T) {
 	run := "run-finish-retry"
 	finishRunSteps(t, run)
@@ -94,7 +114,7 @@ func TestRunFinishContinuesWhenTheBotCanFixIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := desktopTaskOutcomeMetadata(run, agentservice.Message{Content: "trace:\n" + strings.Repeat("x", 40)})
-	if md["outcome_next"] != "improve" || md["outcome_blocker"] != "resource" || !strings.Contains(md["send_to_user"], "建议：") {
+	if md["outcome_next"] != "improve" || md["outcome_blocker"] != "resource" || !strings.Contains(md["send_to_user"], "换个做法再试") {
 		t.Fatalf("should continue without a terminal sentence: %v", md)
 	}
 	child := "run-finish-retry-2"
@@ -109,7 +129,7 @@ func TestRunFinishContinuesWhenTheBotCanFixIt(t *testing.T) {
 	if again["outcome_next"] != "ask_user" || again["outcome_remediated"] != "true" {
 		t.Fatalf("second try %v", again)
 	}
-	if !strings.HasPrefix(got, "没有做成。") || !strings.Contains(got, "我已经自己试过处理。") || !strings.Contains(got, "要继续需要：") {
+	if !strings.HasPrefix(got, "这一步没能做成") || !strings.Contains(got, "我自己试过处理") || !strings.Contains(got, "接手") {
 		t.Fatalf("sentence %q", got)
 	}
 	if strings.Contains(got, "still") || strings.Contains(got, "{") {
