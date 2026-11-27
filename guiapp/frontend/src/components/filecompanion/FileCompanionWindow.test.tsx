@@ -791,6 +791,8 @@ describe("FileCompanionWindow", () => {
         renderWindow();
         const menu = await screen.findByTestId("file-companion-open-menu");
         expect(choose).not.toHaveBeenCalled();
+        // The bug-report control lives in the title bar even with no tab open.
+        expect(screen.getByTestId("task-bug-report-btn")).toBeTruthy();
         // No native player is on screen, so the panel stays centred.
         expect(menu.className).not.toContain("file-companion-open-menu--beside-player");
         expect(screen.getByTestId("file-companion-open-local").textContent).toContain("打开文档或导入项目");

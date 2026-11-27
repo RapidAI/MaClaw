@@ -52,7 +52,8 @@ set "GO_EXE=C:\Program Files\Go\bin\go.exe"
 
 REM -- Ensure Go tools are in PATH --
 set "GOPATH=%USERPROFILE%\go"
-set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin"
+set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin;C:\msys64\mingw64\bin"
+REM wails3 CGO needs gcc; C:/msys64/mingw64/bin appended to PATH above
 set "GOMAXPROCS=1"
 
 REM -- Clean previous MaClaw build artifacts (preserve other brands' files) --

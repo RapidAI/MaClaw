@@ -147,6 +147,13 @@
   `powershell -Command` with single-quoted tokens — dash tokens like `-o` no
   longer trip AmbiguousParameter, but regex quoting still loses one layer;
   the same verify-the-`=== RUN`-line rule applies.)
+- Silent-update flow: background checks download the installer silently but
+  never launch it. A downloaded installer is memory-only until the user
+  chooses install/defer; durable defer state in
+  `<base>/update/deferred-install.json` deliberately stores no URL/hash, and
+  execution re-fetches release metadata before launching. Ignored versions
+  are persisted in `<base>/update/ignored-versions.json` and filtered from
+  both prompts and silent downloads.
 
 ## Owner turn-window serialization (guiapp)
 
@@ -429,6 +436,38 @@
   `canSend`, and the wiring's `showComposerText` stash-restore clears the ref
   first because it runs before the overlay-closed re-render.
 
+## 云端 Agent 开通开关 (guiapp/frontend)
+
+- `ListCloudAgents().enabled` is the Hub TENANT switch for cloud agents, and
+  the settings rail's 云端 Agent tab is gated by it:
+  `SettingsTabVisibility.hideCloudAgent` (`config/settingsTabs.ts`) filters
+  the rail entry and `resolveSettingsTabId` redirects a cloudAgent request to
+  general; `SettingsActiveContent` receives it as the REQUIRED prop
+  `cloudAgentAvailable` and resolves before render, so a hidden tab never
+  paints an empty body. Nothing deep-links `tab: 'cloudAgent'` today, and if
+  one ever does it lands on general like every other hidden tab.
+- The single source of truth is `components/layout/cloudAgentAvailability.ts`
+  — a module store (`noteCloudAgentsEnabled` / `useCloudAgentsEnabled`) with a
+  REFCOUNTED poller (starts on the first subscriber, stops at zero; visible
+  interval + `cloud-agent-list-refresh` event). POLL_MS is 60s ON PURPOSE: the
+  task list polls the same endpoint every 30s anyway (it needs instances) and
+  feeds the store via `noteCloudAgentsEnabled`, so the shared poller only has
+  to keep the value warm while the sidebar is absent.
+- Do NOT gate the settings tab off `useCloudTaskPlace()`: that snapshot's
+  publisher (`SidebarTaskManagement`) only lives while
+  `navTab === 'ai' && !taskPaneCollapsed`, and pane collapse is PERSISTED — a
+  collapsed user would never see the tab. The availability store exists
+  precisely to decouple the gate from the sidebar's lifecycle.
+- Semantics: unproven = closed (the `noted` flag — no successful answer yet
+  hides the tab, same as the 云端 place); a REJECTED call is not an answer
+  (signed-out / transient network) and keeps the last value; only the newest
+  fetch may write (`fetchGeneration` retires in-flight requests on
+  unsubscribe).
+- Tests: the store is module-global, so any suite rendering a consumer must
+  call `resetCloudAgentsEnabledForTests()` (SidebarTaskManagement's afterEach
+  does). No test renders the whole `App`, so the poller only starts where a
+  consumer is actually mounted.
+
 ## Sidebar collapse 功能栏/任务列表折叠 (guiapp/frontend)
 
 - State home: `src/components/layout/useSidebarCollapse.ts` — two booleans
@@ -437,13 +476,23 @@
   the task pane (AI workbench tab only), Ctrl/Cmd+Shift+B toggles the nav rail
   (every tab). The hook owns the global keydown listener; don't add another.
 - The toggle pair (`SidebarToggleCluster`, tests
-  `__tests__/SidebarToggleCluster.test.tsx`) is pinned to the LEADING EDGE of
-  three window-chrome headers — welcome `AssistantTitleBar`, execution
-  `.mc-task-execution-header`, non-AI `MainTopHeader` (rail toggle only there;
-  the pane does not exist off the AI tab). It lives OUTSIDE the collapsible
-  columns so it survives both being hidden (window top-left corner then,
-  WorkBuddy-style). The buttons are plain `<button>` (already excluded from
-  drag arming by `WINDOW_DRAG_EXCLUDE_SELECTOR`); their mousedown/double-click
+  `__tests__/SidebarToggleCluster.test.tsx`) lives at the RIGHT END of the
+  task pane's search row (`.mc-task-pane__search-row` in
+  `SidebarTaskManagement`, fed the `sidebarToggles` prop — a
+  `SidebarTogglesState` object). AppSidebarShell composes that object from
+  its existing collapse props plus its `onToggleRail` prop (App passes
+  `toggleNavRailCollapsed`) and threads it down `SidebarAiPane` →
+  `SidebarTasksPane` → `SidebarTaskManagement` as ONE object — keep the
+  object shape, do not split it back into flat props (SidebarAiPane sits at
+  its 385-line file-size guard). When the pane collapses the search row goes
+  with it, so the AI headers (welcome `AssistantTitleBar`, execution
+  `.mc-task-execution-header`) render the cluster as a restore-only fallback
+  gated on `sidebarToggles.paneCollapsed` — expanded headers show NO
+  collapse buttons. Non-AI `MainTopHeader` keeps its rail-only instance (the
+  pane does not exist off the AI tab). With both columns collapsed it sits
+  at the window's top-left corner, WorkBuddy-style. The buttons are plain
+  `<button>` (already excluded from drag arming by
+  `WINDOW_DRAG_EXCLUDE_SELECTOR`); their mousedown/double-click
   stopPropagation keeps the header's drag + double-click-to-maximize intact.
 - Collapsing is UNMOUNT, not CSS: `AppSidebarShell` drops `SidebarNavRail` /
   `SidebarAiPane` and recomputes
@@ -1068,6 +1117,15 @@
   ALL visible ids for the SESSION (`sessionDismissedIds` in
   usePinnedNotifications.ts, in-memory: restart shows the banner again, a
   newly-published id still pops).
+- The banner's fixed left/bottom/width are measured from the anchor rect and
+  MUST be re-measured when the sidebar relayouts: a nav-rail collapse/expand
+  or pane-divider drag moves the row without any window resize/scroll event,
+  and a stale measure made the card overhang into the workspace. The
+  reposition effect therefore adds a ResizeObserver (guarded for jsdom) on
+  the anchor row AND its `.sidebar` shell ancestor — the row's own box
+  covers pane-width changes, the shell covers rail toggles (pure
+  translation). `sessionDismissedIds` is module-scoped, so the pane
+  collapse→remount cycle does not resurrect dismissed cards.
 - Admin forms: hub `notification-tab.js` (CJK via \uXXXX escapes) and hubcenter
   `notification-admin.js` both gate the pinned extras (永久置顶/链接/按钮名)
   behind the 置顶 checkbox; the list/detail views badge pinned rows.
@@ -1150,3 +1208,98 @@
   are untracked, and scaffold→connect→commit is the whole point. The
   `rejectSecretIndex` gate (.env/git.json/keys…) is what makes the wide
   stage safe.
+
+## Wails v3 migration (branch wails3-migration)
+
+- State: guiapp ports to wails/v3 v3.1.0 behind the `wails3` build tag; the
+  default build stays wails v2 (vendored `third_party/wails`). Both runtimes
+  are in go.mod; the v3 fork is vendored at `third_party/wails3` (replace in
+  go.mod, examples/ trimmed) with two local patches: second-instance exit via
+  `TerminateProcess` without DLL_PROCESS_DETACH (OBS graphics-hook zombie
+  fix, port of 9818e301) and fullscreen drag deny in `startDrag` (port of
+  the v2 caption_drag patch).
+- Seam: `guiapp/wruntime` (package NAME is `runtime` — 40 files import it
+  unaliased as `runtime.X`; only the import path changed). `!wails3` build
+  delegates to wails/v2/pkg/runtime byte-for-byte; `wails3` build implements
+  v3 objects. Entry dispatch: `cmd/maclaw-gui` checks `guiapp.Wails3Enabled()`
+  → `Main3` (main_wails3.go) / `Main` (main.go, untouched).
+- Frontend shim: `frontend/wailsjs/runtime/runtime.js` keeps the 52-export
+  surface (803 call sites / 174 vitest mocks untouched) and routes through
+  `v3bridge.js`; every function has a `hasV2Runtime()` fast path — the v2
+  build MUST delegate to `window.runtime` or all events die (white screen).
+  Bindings: index.html installs a synchronous `window.go.main.App` Proxy →
+  `Call.ByName('github.com/RapidAI/CodeClaw/guiapp.App.' + method)` — the
+  FQN is pkgPath.TypeName.Method with the FULL import path
+  (v3 bindings.go: `namedType.PkgPath()`; only `package main` shortens to
+  `main.` — why the spike worked with `main.SpikeService.X`). index.html
+  also preloads `/wails/runtime.js` at parse time (`window.__maclawV3Runtime`)
+  so EventsOn registrations land before Go emits early lifecycle events.
+- RDP white screen (root cause, three layers): (1) GPU self-heal wired via
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-gpu` env var — v3.1.0 has
+  no Windows GPU toggle in options; (2) preload kills the early-event race on
+  `env-check-done`; (3) **RDP sessions need visual hosting**:
+  `WindowsOptions.UseVisualHosting: true` gated on `perfSessionIsRemote()`
+  (official wails3 RDP issue — stock windowed hosting never presents over
+  RDP; COREWEBVIEW2_FORCED_HOSTING_MODE is set before WebView2 init).
+  Control experiment: the spike is equally unrendered over RDP, so this is
+  environment-level, not app code.
+- Build: `scripts\goheavy.cmd go build -tags "wails3 production" -ldflags
+  "-s -w -H windowsgui" -o dist/gate_wails3_prod.exe ./cmd/maclaw-gui/`.
+  No `wails3 generate bindings` needed (the Proxy routes by name). wails/v3
+  desktop targets require CGO on darwin/linux (`internal/buildguard`
+  refuses plain cross-compiles; `-tags purego` is the escape hatch but
+  prefer a native CGO toolchain). Rapid sequential relaunch can stall
+  WebView2 env creation for seconds (watchdog added in the spike, C0).
+- EditMenu parity: Main3 attaches an application EditMenu role
+  (SetApplicationMenu — Windows never renders the bar, it exists for the
+  Ctrl+A/C/V/X accelerators, same as the v2 setupTray attach). Companion close paths: the frontend title-bar close button calls
+  WindowHide, and the fork's HideOnClose window option covers Alt+F4
+  (Main3 sets it for file-companion launches); `firstPaintMark` renderer reports were
+  unverified under wails3 so the GPU-failure marker write is suppressed
+  there (frontend_paint_watch.go gate). TigerProxy is migrated
+  (wruntime seam + dual-tag dispatch, `go build ./TigerProxy` honours the
+  wails3 tag); ClawMateMaker is fully on v3 (own module, go 1.26, replaces
+  to ../third_party/wails3, ShouldQuit maps the v2 OnBeforeClose
+  flash-active guard).
+- Desktop-stage pop-out (wails3 exclusive): the 2026-11-24 OOPIF OOM fix is
+  now real — `desktop_stage_window.go` (wails3 tag) exposes
+  DesktopStageWindowSupported/Open/Close bindings and DesktopBotWorkspace
+  renders an 独立窗口/回到主窗口 toggle in the stage dock (fail-closed
+  probe; iframe unmounts while the native h264 window streams, takeover
+  heartbeats continue from the standalone page).
+- Resize cursors: the v2 fork patch (8-way edge cursors for frameless
+  windows, 406407d5) needs NO port — v3's runtime implements all 8 natively
+  (drag.ts cursorForEdge + corner detection) plus `wails:resize:` IPC.
+- This machine runs MaClaw over an RDP session without GPU acceleration —
+  keep `UseVisualHosting` on for wails3 builds here.
+- Debugging caveat on this machine: when the RDP session is disconnected or
+  locked, DWM stops composing and EVERY window reports as unrendered —
+  CUA/Playwright screenshots refuse (even for known-visible apps like ZCode)
+  and PowerShell CopyFromScreen fails with 句柄无效. Those verdicts are
+  session-state artifacts, not app evidence: pixel-level verification
+  requires an attached session. In-app render instrumentation
+  (`[perf] mark=first-paint` via the binding channel, paint-watchdog silence)
+  is the reliable signal while disconnected.
+
+- **PROMOTED (2026-11-27): wails3 is the shipped runtime.** The user passed
+  the visual pass and approved v2 removal. guiapp's v2 Main, main_wails2.go,
+  wruntime/v2.go, the hasV2Runtime frontend guards and the TigerProxy v2
+  path are DELETED; build_win.bat builds wails3+CGO by default (/w3 kept as
+  a no-op compat switch). main_wails3.go's Main is THE entry;
+  frontend_paint_watch's GPU-marker suppression is LIFTED (the renderer
+  report channel is proven — firstPaintMark/FCP arrive via bindings).
+  Still pending: maclawplayer/maclawcapture (file-companion playback host +
+  capture bridge, living inside third_party/wails) need a v3-native port
+  (second-WebviewWindow via the desktop_stage_window pattern) before
+  third_party/wails can be deleted — until then the v2 fork directory stays
+  in-tree solely for those two packages, and the wails3 build tag is dormant
+  scaffold no file consumes.
+- Old promotion checklist (superseded): `build_win.bat /w3` is the promoted release path — the /w3
+  switch flips the GUI steps (amd64+arm64) to -tags wails3 with CGO_ENABLED=1
+  (default without /w3 stays v2, CGO off); build_win_wails3.bat remains the
+  single-arch dev loop; then retire the wailsjs runtime.js v2 fast path and
+  main_wails2.go once the v2 binaries are gone from all install bases. The
+  47-file wruntime import swap is already applied in the working tree and
+  rides with the next user commit batch. `qwinsta` is the fastest check for
+  why pixels are unavailable (状态=断开 → session artifact). over an RDP session without GPU acceleration —
+  keep `UseVisualHosting` on for wails3 builds here.

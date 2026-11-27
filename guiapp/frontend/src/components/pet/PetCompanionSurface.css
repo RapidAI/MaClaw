@@ -40,7 +40,39 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
 }
+
+/* The bug report control hugs the 关闭 button on the right; space-between
+   alone would center it between the title and the close button. Skinned with
+   the shared theme palette — the sheet's own buttons are unstyled defaults,
+   and the control should read as chrome, not content. */
+.pet-companion-sheet-card header .task-bug-report-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 32px;
+    height: 28px;
+    margin-left: auto;
+    padding: 0;
+    flex-shrink: 0;
+    line-height: 1;
+    border: 1px solid var(--theme-border, #d9e1ec);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-surface, #ffffff);
+    color: var(--theme-text-secondary, #46586f);
+    cursor: pointer;
+}
+
+.pet-companion-sheet-card header .task-bug-report-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #d9e1ec));
+    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+    color: var(--theme-primary, #2e75cb);
+}
+
+.pet-companion-sheet-card header .task-bug-report-btn svg { display: block; }
+.pet-companion-sheet-card header .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
 
 .pet-companion-sheet-card pre {
     margin: 0;

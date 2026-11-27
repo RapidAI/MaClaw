@@ -240,4 +240,38 @@ describe("TaskExecutionHeading", () => {
             act(() => { __resetCloudWorkspaceDisplayNamesForTests(); });
         }
     });
+
+    it("shows the connected cloud git repository beside the server label", () => {
+        const status = { tone: "running", label: "云端" };
+        const { rerender } = render(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudGitRepo="rapidai-research-group/rapidai-research-project"
+                title="开发贪吃蛇"
+            />,
+        );
+        const repo = screen.getByTestId("task-execution-cloud-git");
+        expect(repo.textContent).toBe("rapidai-research-group/rapidai-research-project");
+        expect(repo.getAttribute("title")).toBe("rapidai-research-group/rapidai-research-project");
+        expect(repo.querySelector("svg")?.getAttribute("data-icon")).toBe("git");
+        // The location meta keeps its own text; the repo is an extra segment.
+        expect(screen.getByTestId("task-execution-meta").textContent).toContain("官方云端服务");
+        expect(screen.getByTestId("task-execution-meta").textContent).not.toContain("rapidai-research-group");
+
+        rerender(
+            <TaskExecutionHeading
+                activeTab={tab}
+                lang="zh-CN"
+                status={status}
+                remoteWorkspaceLabel="官方云端服务"
+                cloudGitRepo=""
+                title="开发贪吃蛇"
+            />,
+        );
+        // Nothing connected → no repo segment at all.
+        expect(screen.queryByTestId("task-execution-cloud-git")).toBeNull();
+    });
 });

@@ -79,6 +79,7 @@ type TaskRunResult struct {
 type TaskFileChange struct {
 	Path      string
 	Created   bool
+	Deleted   bool
 	Added     int
 	Removed   int
 	HasCounts bool

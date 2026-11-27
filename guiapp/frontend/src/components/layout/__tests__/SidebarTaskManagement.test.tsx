@@ -14,6 +14,7 @@ import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREAT
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 import { DialogProvider } from '../../CustomDialog';
 import { requestCloudAgentListRefresh, resetCloudAssistantForTests } from '../cloudAgentAssistant';
+import { resetCloudAgentsEnabledForTests } from '../cloudAgentAvailability';
 import { cloudTaskPlaceSnapshot, resetCloudTaskPlaceForTests } from '../taskPlace';
 import { remoteAssistantSessionSnapshot } from '../remoteAssistantSession';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
@@ -262,6 +263,7 @@ function openCreateDialog() {
 
 afterEach(async () => {
     resetCloudTaskPlaceForTests();
+    resetCloudAgentsEnabledForTests();
     localStorage.removeItem('maclaw.cloud-agent-opened.v1');
     delete (window as unknown as { go?: unknown }).go;
     // Flush pending openEditRemoteDialog / save / test microtasks so unmount is quiet.
@@ -1944,6 +1946,28 @@ describe('SidebarTaskManagement', () => {
             window.removeEventListener('maclaw:open-task-search', listener);
             window.removeEventListener('maclaw:close-task-search', listener);
         }
+    });
+
+    it('hosts the sidebar collapse toggles at the search row while the pane is mounted', () => {
+        const onTogglePane = vi.fn();
+        const onToggleRail = vi.fn();
+        renderTaskManagement({
+            lang: 'zh',
+            sidebarToggles: { paneCollapsed: false, railCollapsed: false, onTogglePane, onToggleRail },
+        });
+
+        // Both buttons live in the search row's wrapper, next to the field.
+        const row = screen.getByTestId('task-pane-search-row');
+        const paneToggle = row.querySelector('[data-testid="task-pane-toggle"]');
+        const railToggle = row.querySelector('[data-testid="nav-rail-toggle"]');
+        expect(paneToggle).toBeTruthy();
+        expect(railToggle).toBeTruthy();
+        expect(paneToggle!.getAttribute('title')).toBe('收起任务列表 (Ctrl+B)');
+        expect(railToggle!.getAttribute('title')).toBe('收起功能栏 (Ctrl+Shift+B)');
+        fireEvent.click(paneToggle!);
+        fireEvent.click(railToggle!);
+        expect(onTogglePane).toHaveBeenCalledTimes(1);
+        expect(onToggleRail).toHaveBeenCalledTimes(1);
     });
 
     it('header 新建任务 button opens the assistant wizard page instead of the create dialog', () => {

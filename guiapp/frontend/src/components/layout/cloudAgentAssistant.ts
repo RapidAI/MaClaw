@@ -428,7 +428,9 @@ function publishOwner() {
         canSend: !!current.grant,
         offline: false,
         error: current.error,
-        cloudGit: current.item.kind === 'coding' && current.git.checked ? { connected: current.git.connected, repo: current.git.repo || undefined } : undefined,
+        cloudGit: current.item.kind === 'coding' && current.git.checked
+            ? { connected: current.git.connected, repo: current.git.repo.trim() || undefined }
+            : undefined,
         loading: !current.grant && !current.error,
         busy: observeTurn(current, round),
         activity: current.stopping ? { stopping: true } : undefined,

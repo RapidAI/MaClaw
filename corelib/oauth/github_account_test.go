@@ -2,10 +2,13 @@ package oauth
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitHubAccountClientHonorsRepoScope(t *testing.T) {
@@ -125,5 +128,65 @@ func TestGitHubHTTPErrorKeepsAPIMessage(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "body_len=") {
 		t.Fatalf("error still uses opaque body length: %v", err)
+	}
+}
+
+// A 403/429 with X-RateLimit-Remaining: 0 is an exhausted quota. The error
+// must stay typed so the caller can show the reset time instead of GitHub's
+// raw scraping-policy paragraph, and must still carry GitHub's own message.
+func TestFetchGitHubRepositoriesRateLimitIsTyped(t *testing.T) {
+	reset := time.Now().Add(30 * time.Minute).Truncate(time.Minute)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(reset.Unix()))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded for user ID 123"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchGitHubRepositories(context.Background(), server.URL, "repo-token", 1)
+	var rlErr *GitHubRateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("rate limit is not typed: %v", err)
+	}
+	if !rlErr.ResetAt.Equal(reset) {
+		t.Fatalf("reset = %s want %s", rlErr.ResetAt, reset)
+	}
+	if !strings.Contains(err.Error(), "API rate limit exceeded for user ID 123") {
+		t.Fatalf("error hides GitHub message: %v", err)
+	}
+	if !strings.Contains(err.Error(), reset.Format("15:04")) {
+		t.Fatalf("error hides reset time: %v", err)
+	}
+
+	// A plain 403 without the exhausted header stays an untyped HTTP error —
+	// e.g. a revoked token must not be misread as "wait for the reset".
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "4999")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer server2.Close()
+	_, err = fetchGitHubRepositories(context.Background(), server2.URL, "repo-token", 1)
+	if errors.As(err, &rlErr) {
+		t.Fatalf("normal 403 misclassified as rate limit: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("plain 403 lost its HTTP status: %v", err)
+	}
+
+	// 429 with the exhausted header is the same primary-limit signature.
+	server3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	}))
+	defer server3.Close()
+	_, err = fetchGitHubRepositories(context.Background(), server3.URL, "repo-token", 1)
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("429 with remaining=0 is not typed: %v", err)
 	}
 }

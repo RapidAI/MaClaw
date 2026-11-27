@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { UpdateModal, downloadSourceName, failedUpdateResult, formatVersion, isRestorableStableResult, latestVersionLabel, rollbackReleaseLabel } from './UpdateModal';
 
 describe('downloadSourceName', () => {
@@ -89,8 +89,8 @@ describe('failedUpdateResult', () => {
     });
 });
 
-// The update flow installs automatically after a successful download, so these
-// states decide what the user sees in the moment before the app quits.
+// The update flow waits for an explicit install decision after a successful
+// download, so these states decide what the user sees before the app quits.
 describe('UpdateModal install states', () => {
     const translations: Record<string, string> = {
         installingUpdate: 'Installing the update…',
@@ -106,6 +106,11 @@ describe('UpdateModal install states', () => {
         onlineUpdate: 'Online Update',
         betaChannel: 'Beta',
         downloadSource: 'Source',
+        downloadedUpdateReadyMessage: 'The update package is ready.',
+        postponeInstall: 'Postpone',
+        installAfterHours: 'Install in {hours}h',
+        installNextStartup: 'Install at next startup',
+        ignoreThisUpdate: 'Ignore this update',
     };
     const t = (key: string) => translations[key] || key;
     const baseProps = {
@@ -147,5 +152,62 @@ describe('UpdateModal install states', () => {
         render(<UpdateModal {...baseProps} />);
         expect(screen.getByText('Install Now')).toBeTruthy();
         expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('offers install-now, deferral, next-startup, and ignore choices after download', () => {
+        const onDeferInstall = vi.fn();
+        const onDeferInstallToNextStartup = vi.fn();
+        const onIgnoreUpdate = vi.fn();
+        render(<UpdateModal
+            {...baseProps}
+            onDeferInstall={onDeferInstall}
+            onDeferInstallToNextStartup={onDeferInstallToNextStartup}
+            onIgnoreUpdate={onIgnoreUpdate}
+        />);
+
+        expect(screen.getByText('The update package is ready.')).toBeTruthy();
+        for (const label of ['Install in 1h', 'Install in 2h', 'Install in 5h', 'Install in 10h']) {
+            expect(screen.getByText(label)).toBeTruthy();
+        }
+        fireEvent.click(screen.getByText('Install in 5h'));
+        fireEvent.click(screen.getByText('Install at next startup'));
+        fireEvent.click(screen.getAllByText('Ignore this update')[0]);
+        expect(onDeferInstall).toHaveBeenCalledWith(5);
+        expect(onDeferInstallToNextStartup).toHaveBeenCalledTimes(1);
+        expect(onIgnoreUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer update deferral controls for a rollback target', () => {
+        render(<UpdateModal
+            {...baseProps}
+            updateResult={{ has_update: true, latest_version: '12434', is_rollback: true }}
+            onDeferInstall={vi.fn()}
+            onDeferInstallToNextStartup={vi.fn()}
+            onIgnoreUpdate={vi.fn()}
+        />);
+        expect(screen.getByText('Install Now')).toBeTruthy();
+        expect(screen.queryByText('Install at next startup')).toBeNull();
+        expect(screen.queryByText('Ignore this update')).toBeNull();
+    });
+
+    it('disables target-changing controls while an install decision is being saved', () => {
+        render(<UpdateModal {...baseProps} updateDecisionPending />);
+        expect((screen.getByText('Install Now') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByText('Close') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByText('Roll back') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('lets the user close a downloaded-update choice without deciding yet', () => {
+        render(<UpdateModal {...baseProps} />);
+        const close = screen.getByText('Close') as HTMLButtonElement;
+        expect(close.disabled).toBe(false);
+    });
+
+    it('offers ignore before the download starts', () => {
+        const onIgnoreUpdate = vi.fn();
+        render(<UpdateModal {...baseProps} installerPath="" downloadProgress={0} onIgnoreUpdate={onIgnoreUpdate} />);
+        fireEvent.click(screen.getByText('Ignore this update'));
+        expect(onIgnoreUpdate).toHaveBeenCalledTimes(1);
     });
 });

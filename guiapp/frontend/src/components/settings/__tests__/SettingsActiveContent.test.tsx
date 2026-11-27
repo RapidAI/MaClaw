@@ -37,6 +37,7 @@ vi.mock('../../../appLazyComponents', () => ({
     ProxySettingsPanel: () => <div>Proxy</div>,
     LLMCacheSettingsPanel: () => <div>Cache</div>,
     VirtualEmployeeSettingsPanel: () => <div>VE</div>,
+    CloudAgentSettingsPanel: () => <div data-testid="cloud-agent-settings">Cloud Agent</div>,
     TokenBankPanel: ({ initialClaimCode }: { initialClaimCode?: string }) => (
         <div data-testid="token-bank-settings">{initialClaimCode || 'Token Bank'}</div>
     ),
@@ -113,6 +114,7 @@ const baseProps = {
     setQQBotQRError: vi.fn(),
     veNavigationAvailable: false,
     desktopBotTabsAvailable: false,
+    cloudAgentAvailable: false,
     veSettingsAuthorized: false,
     virtualEmployeeLayoutClassName: 'settings-ve-layout',
     userFavoriteEmployeeIds: [] as string[],
@@ -182,6 +184,29 @@ describe('SettingsActiveContent', () => {
         );
         expect(await screen.findByTestId('general-settings')).toBeTruthy();
         await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('general'));
+    });
+
+    it('falls back to general when cloudAgent is requested but Hub has not enabled cloud agents', async () => {
+        render(
+            <SettingsActiveContent
+                {...baseProps}
+                settingsTab="cloudAgent"
+                cloudAgentAvailable={false}
+            />,
+        );
+        expect(await screen.findByTestId('general-settings')).toBeTruthy();
+        await waitFor(() => expect(GetSettingsTabConfigMock).toHaveBeenCalledWith('general'));
+    });
+
+    it('keeps the cloud-agent panel while Hub has enabled cloud agents', async () => {
+        render(
+            <SettingsActiveContent
+                {...baseProps}
+                settingsTab="cloudAgent"
+                cloudAgentAvailable={true}
+            />,
+        );
+        expect(await screen.findByTestId('cloud-agent-settings')).toBeTruthy();
     });
 
     it('merges per-tab DTO into setConfig without stomping local edits', async () => {

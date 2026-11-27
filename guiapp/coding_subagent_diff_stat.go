@@ -27,6 +27,7 @@ type SubAgentFileDiffStat struct {
 	Path       string
 	Insertions int
 	Deletions  int
+	Deleted    bool
 	// HasCounts distinguishes measured line counts (including an exact zero)
 	// from a merely observed file touch. Progress UI may still use the numeric
 	// fields, but final user-facing tables must not present unknown counts as zero.

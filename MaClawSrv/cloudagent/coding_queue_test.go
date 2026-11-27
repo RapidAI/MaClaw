@@ -1124,6 +1124,28 @@ func TestCloudWriteFileChangeFactsCreatedFileCountsAddedOnly(t *testing.T) {
 	}
 }
 
+func TestCloudWriteFileChangeFactsDeletedFileCountsRemovedLines(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "old.txt")
+	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := &agentHost{root: root}
+	out, abs, created, added, removed, hasCounts, baseline, baselineOK := (&Runtime{}).execWriteFile(nil, root, `{"path":"old.txt","content":"a\nx\n"}`)
+	if abs == "" || strings.Contains(out, "无效") {
+		t.Fatalf("write failed: %q", out)
+	}
+	host.noteFileChange(abs, created, added, removed, hasCounts)
+	host.noteFileBaseline(abs, baseline, baselineOK)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	facts := host.fileChangeFacts()
+	if len(facts) != 1 || !facts[0].Deleted || !facts[0].HasCounts || facts[0].Added != 0 || facts[0].Removed != 2 {
+		t.Fatalf("deleted file fact = %+v, want deleted +0 -2", facts)
+	}
+}
+
 func TestCloudRepeatedWriteWithoutFirstBaselineBecomesUnknown(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "demo.bin")

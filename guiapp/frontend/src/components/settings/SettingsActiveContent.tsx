@@ -137,6 +137,8 @@ export type SettingsActiveContentProps = {
     setQQBotQRError: Dispatch<SetStateAction<string>>;
     veNavigationAvailable: boolean;
     desktopBotTabsAvailable: boolean;
+    /** Hub 云端 Agent 开关；关着时 cloudAgent 页签重定向到 general。 */
+    cloudAgentAvailable: boolean;
     veSettingsAuthorized: boolean;
     virtualEmployeeLayoutClassName: string;
     userFavoriteEmployeeIds: string[];
@@ -250,6 +252,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         setQQBotQRError,
         veNavigationAvailable,
         desktopBotTabsAvailable,
+        cloudAgentAvailable,
         veSettingsAuthorized,
         virtualEmployeeLayoutClassName,
         userFavoriteEmployeeIds,
@@ -282,7 +285,11 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
     } = props;
 
     // Resolve before switch so invalid / currently-hidden tabs never paint an empty body.
-    const activeTab = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable, hideDesktopBotTabs: !desktopBotTabsAvailable });
+    const activeTab = resolveSettingsTabId(settingsTab, {
+        hideVirtualEmployee: !veNavigationAvailable,
+        hideDesktopBotTabs: !desktopBotTabsAvailable,
+        hideCloudAgent: !cloudAgentAvailable,
+    });
 
     // Per-tab fine-grained DTO: merge only the keys this panel needs (backend
     // GetSettingsTabConfig). Avoids re-shipping full AppConfig on every tab switch.

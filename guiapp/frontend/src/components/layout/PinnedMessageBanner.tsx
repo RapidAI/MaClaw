@@ -130,6 +130,13 @@ export function PinnedMessageBanner({
             return;
         }
         const rect = anchor.getBoundingClientRect();
+        // A display:none anchor (the ≤900px bucket keeps the pane mounted but
+        // CSS-hides it) reports an all-zero rect: park the card instead of
+        // pinning a degenerate or stale position.
+        if (rect.width === 0 && rect.height === 0) {
+            setPos((prev) => (prev === null ? prev : null));
+            return;
+        }
         const width = Math.max(160, Math.round(rect.width));
         const left = Math.min(
             Math.max(Math.round(rect.left), 8),
@@ -156,15 +163,31 @@ export function PinnedMessageBanner({
         if (messages.length === 0) return;
         window.addEventListener('resize', scheduleReposition);
         window.addEventListener('scroll', scheduleReposition, true);
+        // Sidebar layout changes — collapsing/expanding the nav rail, dragging
+        // the pane divider — move the status row without firing any window
+        // resize or scroll, which used to leave this fixed card at a stale
+        // left/width overhanging into the workspace. The row's own box covers
+        // pane-width changes; the .sidebar shell covers rail toggles (the row
+        // translates without resizing).
+        let anchorObserver: ResizeObserver | null = null;
+        const anchor = anchorRef.current;
+        if (anchor && typeof ResizeObserver !== 'undefined') {
+            anchorObserver = new ResizeObserver(scheduleReposition);
+            anchorObserver.observe(anchor);
+            const shell = anchor.closest('.sidebar');
+            if (shell && shell !== anchor) anchorObserver.observe(shell);
+        }
         return () => {
             window.removeEventListener('resize', scheduleReposition);
             window.removeEventListener('scroll', scheduleReposition, true);
+            anchorObserver?.disconnect();
+            anchorObserver = null;
             if (rafRef.current != null) {
                 cancelAnimationFrame(rafRef.current);
                 rafRef.current = null;
             }
         };
-    }, [messages.length, scheduleReposition]);
+    }, [messages.length, scheduleReposition, anchorRef]);
 
     const openLink = useCallback(() => {
         if (!current?.link_url) return;

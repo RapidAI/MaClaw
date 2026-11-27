@@ -4223,6 +4223,8 @@ describe('DesktopBotWorkspace', () => {
         const chat = screen.getByTestId('desktop-bot-chat');
         const header = screen.getByTestId('desktop-bot-identity');
         const button = screen.getByTestId('desktop-bot-open-desktop');
+        // Every agent-chat header carries the bug-report control.
+        expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();
         Object.defineProperty(chat, 'clientWidth', { configurable: true, value: 800 });
         Object.defineProperty(chat, 'clientHeight', { configurable: true, value: 600 });
         Object.defineProperty(header, 'offsetWidth', { configurable: true, value: 160 });

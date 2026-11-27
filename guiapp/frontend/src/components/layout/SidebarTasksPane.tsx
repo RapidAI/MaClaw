@@ -22,6 +22,7 @@ type SidebarTasksPaneProps = Pick<SidebarTaskManagementProps,
     | 'openProjectTabPaths' | 'openProjectTabIdentities' | 'openExpertTabIDs'
     | 'activeAssistantTask' | 'activeAssistantTaskRunning' | 'busyTaskRuns'
     | 'showCloudWorkspaceManagement' | 'showCloudWorkspaceCreation' | 'restoreCloudWorkspaceTasks'
+    | 'sidebarToggles'
     | 'taskListVisible'>;
 
 /** Tasks middle pane: owns the keep-mounted wrapper and the task-management surface. */

@@ -6646,11 +6646,20 @@ func (c *codingSubAgentCallbacks) getNetFileLineDeltas() []SubAgentFileDiffStat 
 	c.mu.Unlock()
 	out := make([]SubAgentFileDiffStat, 0, len(baselines))
 	for _, baseline := range baselines {
+		if _, err := os.Stat(baseline.Path); os.IsNotExist(err) {
+			// readCodingTextForDiff deliberately maps a missing before-image to an
+			// empty baseline for write_file creation, so deletion must be detected
+			// before calling it. Count the removal against the start-of-turn baseline;
+			// a create→delete lifecycle remains exact zero.
+			added, removed := codingagent.CountTextLineChanges(baseline.Text, "")
+			out = append(out, SubAgentFileDiffStat{Path: c.displayProjectPath(baseline.Path), Insertions: added, Deletions: removed, Deleted: true, HasCounts: true})
+			continue
+		}
 		after, ok := readCodingTextForDiff(baseline.Path)
 		if !ok {
 			// The file was measurably text at the first mutation, but its final
-			// bytes are missing, binary, or too large to diff. Keep explicit unknown
-			// evidence so merging cannot borrow HEAD-relative git precision.
+			// bytes are binary or too large to diff. Keep explicit unknown evidence
+			// so merging cannot borrow HEAD-relative git precision.
 			out = append(out, SubAgentFileDiffStat{Path: c.displayProjectPath(baseline.Path), HasCounts: false})
 			continue
 		}
@@ -20426,6 +20435,8 @@ func runTaskWithSubAgentRuntimeOptions(
 	if runtimeOptions == nil {
 		runtimeOptions = defaultGUICodingRuntimeOptions(task, projectPath)
 	}
+	runtimeOptionsCopy := *runtimeOptions
+	runtimeOptions = &runtimeOptionsCopy
 	// OpenHuman-inspired + sticky RoutePref (auto/primary/reasoning/vision).
 	userID := ""
 	if loopCtx != nil {
@@ -20540,6 +20551,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	if loopCtx != nil {
 		ctx, cancel = loopCtx.Context()
 		defer cancel()
+		runtimeOptions.OnExecutorCancel = loopCtx.Cancel
 	}
 	ownerID := "gui:local"
 	workflowID, phaseID := "", ""

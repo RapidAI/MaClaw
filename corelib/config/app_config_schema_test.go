@@ -51,6 +51,9 @@ func TestAppConfigSchemaHonorsHostAndUserVisibility(t *testing.T) {
 	if !IsUserWebVisibleField("maclaw_llm_url") {
 		t.Fatal("basic LLM URL should remain user-web visible")
 	}
+	if IsAvailableInMaClawSrv("silent_update_enabled") || IsUserWebVisibleField("silent_update_enabled") {
+		t.Fatal("desktop silent-update setting must stay out of service and user-web config")
+	}
 }
 
 func TestAppConfigSchemaReturnsIndependentMapCopies(t *testing.T) {

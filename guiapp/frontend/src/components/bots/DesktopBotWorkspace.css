@@ -4401,7 +4401,40 @@ button.desktop-bot-feed__file {
 }
 
 /* Bot collaboration: status row, prompts, said bubbles, rooms */
-.desktop-bot-chat__rooms-btn { margin-left: auto; align-self: center; }
+/* The header is a pointer-events:none overlay; the rooms button re-enables
+   events like the identity button does (jsdom ignores the property, so only
+   a real browser click ever catches this). */
+.desktop-bot-chat__rooms-btn { margin-left: auto; align-self: center; pointer-events: auto; }
+/* The chat header is a pointer-events:none overlay; the bug-report button
+   re-enables events like the identity button does. Sizing and skin mirror
+   .mc-task-execution-actions .task-bug-report-btn (the cluster-scoped task
+   header skin does not reach this bar, so the palette repeats here). */
+.desktop-bot-chat__header .task-bug-report-btn {
+    pointer-events: auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 36px;
+    height: 32px;
+    margin-left: 6px;
+    padding: 0;
+    flex-shrink: 0;
+    line-height: 1;
+    border: 1px solid color-mix(in srgb, var(--theme-border, #e4e7ec) 85%, transparent);
+    border-radius: var(--radius-md, 8px);
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-secondary, #46586f);
+    cursor: pointer;
+}
+.desktop-bot-chat__header .task-bug-report-btn:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary, #2e75cb) 32%, var(--theme-border, #e4e7ec));
+    background: var(--theme-primary-soft, rgba(47, 111, 188, 0.10));
+    color: var(--theme-primary, #2e75cb);
+}
+.desktop-bot-chat__header .task-bug-report-btn svg { display: block; }
+.desktop-bot-chat__header .task-bug-report-btn:disabled { cursor: progress; opacity: 0.72; }
 .bot-collab { display: flex; flex-direction: column; gap: 6px; padding: 6px 16px; border-bottom: 1px solid var(--border-color, rgba(127,127,127,.2)); font-size: 12px; }
 .bot-collab__row { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 2px 0; color: inherit; text-align: left; cursor: pointer; font: inherit; }
 .bot-collab__row > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

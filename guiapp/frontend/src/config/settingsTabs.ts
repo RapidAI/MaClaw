@@ -49,6 +49,8 @@ export function isSettingsContentTabId(id: string): id is SettingsTabId {
 export interface SettingsTabVisibility {
     hideVirtualEmployee?: boolean;
     hideDesktopBotTabs?: boolean;
+    /** 云端 Agent needs the Hub tenant switch; no switch, no tab. */
+    hideCloudAgent?: boolean;
 }
 
 /** Tabs whose panels only work while Hub desktop-bot access is granted. */
@@ -67,6 +69,7 @@ export function resolveSettingsTabId(
     if (!isSettingsContentTabId(raw)) return 'general';
     if (options.hideVirtualEmployee && raw === 'virtualEmployee') return 'general';
     if (options.hideDesktopBotTabs && DESKTOP_BOT_SETTINGS_TAB_IDS.has(raw)) return 'general';
+    if (options.hideCloudAgent && raw === 'cloudAgent') return 'general';
     return raw;
 }
 
@@ -359,5 +362,6 @@ export const getSettingsTabOptions = (lang: string, options: SettingsTabVisibili
     let filtered = tabs;
     if (options.hideVirtualEmployee) filtered = filtered.filter(tab => tab.id !== 'virtualEmployee');
     if (options.hideDesktopBotTabs) filtered = filtered.filter(tab => !DESKTOP_BOT_SETTINGS_TAB_IDS.has(tab.id));
+    if (options.hideCloudAgent) filtered = filtered.filter(tab => tab.id !== 'cloudAgent');
     return filtered.map((tab) => attachSettingsTabGroup(lang, tab));
 };

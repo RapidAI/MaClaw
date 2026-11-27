@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -98,11 +100,29 @@ func (r Runner) Run(ctx context.Context, task Task, policy PolicySnapshot, execu
 }
 
 func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy PolicySnapshot, continuation ContinuationReview, executor Executor) (*Task, *Attempt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	cancelToken := new(int)
+	sqliteStore, _ := r.Store.(*SQLiteStore)
+	sqlitePath := ""
+	if sqliteStore != nil {
+		sqlitePath = sqliteStore.path
+	}
+	localLiveAttemptCancels.Store(cancelToken, liveCodingAttemptCancel{sqliteStore: sqliteStore, sqlitePath: sqlitePath, cancel: cancel})
+	defer func() {
+		localLiveAttemptCancels.Delete(cancelToken)
+		cancel()
+	}()
 	if r.Store == nil || executor == nil {
 		return nil, nil, fmt.Errorf("coding runtime runner requires store and executor")
 	}
 	if r.LeaseOwner == "" {
 		return nil, nil, fmt.Errorf("coding runtime runner requires lease owner")
+	}
+	if sqliteStore != nil && sqliteStore.retired() {
+		return nil, nil, ErrStoreRetired
 	}
 	parentAttemptID := strings.TrimSpace(continuation.ParentAttemptID)
 	// A continuation is a capability for one already-persisted parent task; it
@@ -290,7 +310,12 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 		}
 	}
 
-	result := executor.Execute(ctx, ExecutionRequest{Task: *created, Attempt: *attempt})
+	var result ExecutionResult
+	if sqliteStore != nil && sqliteStore.retired() {
+		result = ExecutionResult{Status: TaskInterrupted, SideEffectState: SideEffectUncertain, ErrorCode: "coding_runtime_store_retired", ErrorSummary: "coding runtime data directory was replaced; inspect workspace before continuation"}
+	} else {
+		result = executor.Execute(ctx, ExecutionRequest{Task: *created, Attempt: *attempt})
+	}
 	// An executor may admit read-only child work through ChildTaskService. That
 	// transition closes the parent attempt and releases its lease while the
 	// host callback is still on the stack. Do not append a competing terminal
@@ -493,6 +518,90 @@ func unmarkLocalLiveWriter(attemptID string) {
 func localWriterLive(attemptID string) bool {
 	_, ok := localLiveWriters.Load(attemptID)
 	return ok
+}
+
+var localLiveAttemptCancels sync.Map
+
+type liveCodingAttemptCancel struct {
+	sqliteStore *SQLiteStore
+	sqlitePath  string
+	cancel      context.CancelFunc
+}
+
+func CancelLiveCodingAttempts() int {
+	return cancelLiveCodingAttemptsMatching(func(liveCodingAttemptCancel) bool { return true })
+}
+
+// CancelLiveCodingAttemptsOutsideSQLiteStorePath fences attempts owned by a
+// retired data directory without cancelling attempts that have already opened
+// the replacement ledger. Memory-store attempts have no durable directory and
+// are therefore outside every persistent replacement path.
+func CancelLiveCodingAttemptsOutsideSQLiteStorePath(currentPath string) int {
+	return cancelLiveCodingAttemptsMatching(func(entry liveCodingAttemptCancel) bool {
+		return !sameSQLiteStorePath(entry.sqlitePath, currentPath)
+	})
+}
+
+func sameSQLiteStorePath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func cancelLiveCodingAttemptsForSQLiteStore(store *SQLiteStore) int {
+	return cancelLiveCodingAttemptsMatching(func(entry liveCodingAttemptCancel) bool {
+		return store != nil && entry.sqliteStore == store
+	})
+}
+
+func cancelLiveCodingAttemptsMatching(match func(liveCodingAttemptCancel) bool) int {
+	cancelled := 0
+	localLiveAttemptCancels.Range(func(_, value any) bool {
+		if entry, ok := value.(liveCodingAttemptCancel); ok && entry.cancel != nil && match(entry) {
+			entry.cancel()
+			cancelled++
+		}
+		return true
+	})
+	return cancelled
+}
+
+func WaitLiveCodingAttempts(timeout time.Duration) bool {
+	return waitLiveCodingAttemptsMatching(timeout, func(liveCodingAttemptCancel) bool { return true })
+}
+
+// WaitLiveCodingAttemptsOutsideSQLiteStorePath is the scoped counterpart to
+// CancelLiveCodingAttemptsOutsideSQLiteStorePath. A data-dir reset must not
+// wait behind (or cancel) a replacement-directory attempt that legitimately
+// started while teardown was in progress.
+func WaitLiveCodingAttemptsOutsideSQLiteStorePath(currentPath string, timeout time.Duration) bool {
+	return waitLiveCodingAttemptsMatching(timeout, func(entry liveCodingAttemptCancel) bool {
+		return !sameSQLiteStorePath(entry.sqlitePath, currentPath)
+	})
+}
+
+func waitLiveCodingAttemptsMatching(timeout time.Duration, match func(liveCodingAttemptCancel) bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		live := false
+		localLiveAttemptCancels.Range(func(_, value any) bool {
+			if entry, ok := value.(liveCodingAttemptCancel); ok && match(entry) {
+				live = true
+				return false
+			}
+			return true
+		})
+		if !live {
+			return true
+		}
+		if timeout <= 0 || !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // runningAttemptDead is the one rule for a running row that no longer holds

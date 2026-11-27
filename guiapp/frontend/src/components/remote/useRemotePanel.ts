@@ -66,6 +66,7 @@ const atomicPatchFields = new Set([
     'maclaw_role_name',
     'maclaw_role_description',
     'im_progress_nudge_enabled',
+    'silent_update_enabled',
     'qqbot_enabled',
     'qqbot_app_id',
     'qqbot_app_secret',

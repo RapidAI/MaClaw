@@ -3268,6 +3268,10 @@ type sseFunctionCallDelta struct {
 // This handles the case where an API gateway returns streaming SSE format
 // even though the request did not ask for streaming.
 func ParseSSEToResponse(body []byte) (*Response, error) {
+	return parseSSEToResponseWithToolParser(body, nil)
+}
+
+func parseSSEToResponseWithToolParser(body []byte, contentToolParser contentToolCallParser) (*Response, error) {
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
@@ -3439,7 +3443,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			finishReason = "tool_calls"
 		}
 	}
-	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+	if finish, changed := adoptLeakedToolCallsWithParser(&msg, visibleContent, contentToolParser); changed {
 		finishReason = finish
 	}
 	if skippedLine {

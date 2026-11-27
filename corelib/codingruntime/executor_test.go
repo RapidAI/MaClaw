@@ -3,6 +3,8 @@ package codingruntime
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,186 @@ type executorFunc func(context.Context, ExecutionRequest) ExecutionResult
 
 func (f executorFunc) Execute(ctx context.Context, request ExecutionRequest) ExecutionResult {
 	return f(ctx, request)
+}
+
+func TestCancelLiveCodingAttemptsTreatsWindowsCaseOnlyPathAsSameLedger(t *testing.T) {
+	ledgerPath := filepath.Join(t.TempDir(), "coding_runtime.db")
+	alternateCasePath := strings.ToUpper(ledgerPath)
+	if alternateCasePath == ledgerPath {
+		t.Skip("test path has no case-sensitive characters")
+	}
+	cancelled := false
+	token := new(int)
+	localLiveAttemptCancels.Store(token, liveCodingAttemptCancel{
+		sqlitePath: ledgerPath,
+		cancel: func() {
+			cancelled = true
+		},
+	})
+	defer localLiveAttemptCancels.Delete(token)
+
+	got := CancelLiveCodingAttemptsOutsideSQLiteStorePath(alternateCasePath)
+	if runtime.GOOS == "windows" {
+		if got != 0 || cancelled {
+			t.Fatalf("case-only path cancelled replacement attempt: count=%d cancelled=%v", got, cancelled)
+		}
+		if !WaitLiveCodingAttemptsOutsideSQLiteStorePath(alternateCasePath, 20*time.Millisecond) {
+			t.Fatal("case-only path made replacement attempt look outside its own ledger while waiting")
+		}
+		return
+	}
+	if got != 1 || !cancelled {
+		t.Fatalf("case-sensitive path should remain outside replacement ledger: count=%d cancelled=%v", got, cancelled)
+	}
+	if WaitLiveCodingAttemptsOutsideSQLiteStorePath(alternateCasePath, 20*time.Millisecond) {
+		t.Fatal("case-sensitive path should remain a live outside-ledger attempt while waiting")
+	}
+}
+
+func TestCancelLiveCodingAttemptsCancelsRunnerContext(t *testing.T) {
+	store := NewMemoryStore()
+	runner := Runner{Store: store, LeaseOwner: "owner", LeaseDuration: time.Minute}
+	started := make(chan struct{})
+	type outcome struct {
+		task *Task
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		task, _, err := runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, executorFunc(func(ctx context.Context, _ ExecutionRequest) ExecutionResult {
+			close(started)
+			<-ctx.Done()
+			return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+		}))
+		done <- outcome{task: task, err: err}
+	}()
+	<-started
+	if cancelled := CancelLiveCodingAttempts(); cancelled != 1 {
+		t.Fatalf("cancelled live attempts = %d, want 1", cancelled)
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.task == nil || result.task.Status != TaskInterrupted {
+		t.Fatalf("task=%+v, want interrupted", result.task)
+	}
+}
+
+func TestSQLiteStoreCloseCancelsRegisteredRunner(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := Runner{Store: store, LeaseOwner: "owner", LeaseDuration: time.Minute}
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, executorFunc(func(ctx context.Context, _ ExecutionRequest) ExecutionResult {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			return ExecutionResult{Status: TaskInterrupted, SideEffectState: SideEffectUncertain}
+		}))
+	}()
+	<-started
+	if err := store.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sqlite store close did not cancel the registered runner context")
+	}
+	<-done
+}
+
+func TestRetiredSQLiteStoreFencesNewRunner(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	task, err := store.CreateTask(Task{ProjectRef: "repo", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.RetireForReplacement()
+	if _, err = store.RegisterSemanticTaskAnchor(SemanticTaskAnchor{RuntimeTaskID: task.TaskID, RuntimeAttemptID: attempt.AttemptID, TenantID: "tenant", PrincipalID: "principal", SessionID: "session", RootTaskID: "root", TurnID: "turn"}); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired anchor registration err=%v, want ErrStoreRetired", err)
+	}
+	if err = store.RenewAttemptLease(attempt.AttemptID, "owner", time.Minute, time.Now().UTC()); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired lease renewal err=%v, want ErrStoreRetired", err)
+	}
+	if _, err = store.AppendEvent(attempt.AttemptID, "owner", "post_retire", "digest", time.Now().UTC()); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired event append err=%v, want ErrStoreRetired", err)
+	}
+	if _, err = store.FinishAttempt(attempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, EvidenceDigest: "evidence", ExpectedVersion: attempt.Version}, time.Now().UTC()); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired finish err=%v, want ErrStoreRetired", err)
+	}
+	if _, err = store.ExpireLeases(time.Now().UTC()); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired lease sweep err=%v, want ErrStoreRetired", err)
+	}
+	if _, err = store.InterruptAbandonedRuns(time.Now().UTC()); !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("retired restart reconciliation err=%v, want ErrStoreRetired", err)
+	}
+	stored, err := store.GetAttempt(attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != TaskRunning {
+		t.Fatalf("retired finish changed attempt status to %q", stored.Status)
+	}
+	called := false
+	_, _, err = (Runner{Store: store, LeaseOwner: "owner", LeaseDuration: time.Minute}).Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		called = true
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if !errors.Is(err, ErrStoreRetired) {
+		t.Fatalf("err=%v, want ErrStoreRetired", err)
+	}
+	if called {
+		t.Fatal("retired store still invoked an executor")
+	}
+}
+
+func TestCancelLiveCodingAttemptsOutsideSQLiteStorePathSparesReplacementLedger(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runner := Runner{Store: store, LeaseOwner: "owner", LeaseDuration: time.Minute}
+	started := make(chan struct{})
+	runnerCtx := make(chan context.Context, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{ProjectRoot: "repo", Mode: "local"}, executorFunc(func(ctx context.Context, _ ExecutionRequest) ExecutionResult {
+			runnerCtx <- ctx
+			close(started)
+			<-ctx.Done()
+			return ExecutionResult{Status: TaskInterrupted, SideEffectState: SideEffectUncertain}
+		}))
+	}()
+	<-started
+	ctx := <-runnerCtx
+	if cancelled := CancelLiveCodingAttemptsOutsideSQLiteStorePath(store.path); cancelled != 0 {
+		t.Fatalf("replacement-ledger cancellations=%d, want 0", cancelled)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("replacement-ledger runner context was cancelled: %v", err)
+	}
+	if cancelled := CancelLiveCodingAttempts(); cancelled != 1 {
+		t.Fatalf("cleanup cancellations=%d, want 1", cancelled)
+	}
+	<-done
 }
 
 type approvalGateFunc func(Task, PolicySnapshot) error

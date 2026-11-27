@@ -195,6 +195,7 @@ import { DesktopBotLocalTransfers } from './DesktopBotLocalTransfers';
 import { BotNetworkSettingsDialog, BotSettingsTabs, type BotSettingsTab, type DesktopProxyModeState, type DesktopProxyModeValue } from './BotNetworkSettingsDialog';
 import { BotVoiceSettingsDialog } from './BotVoiceSettingsDialog';
 import { TaskResultArtifacts } from '../ai/assistantTaskArtifacts';
+import { BugReportButton } from '../ai/BugReportButton';
 import { BotArtifactTable, BotFileArtifactCard } from './BotFileArtifactCard';
 import { artifactFileSizes, collectBotArtifacts, ensureSaidFilePath, saveDesktopDeliveredFile, type BotArtifactRow } from './botFileArtifacts';
 import { BotFilePreview } from './BotFilePreview';
@@ -3597,7 +3598,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const probe = async () => {
             try {
                 const w3App = stagePopOutBinding();
-                const supported = await w3App?.DesktopStageWindowSupported();
+                const supported = await w3App?.DesktopStageWindowSupported?.();
                 if (!cancelled && supported) setStagePopOutSupported(true);
             } catch { /* v2: binding absent — keep the iframe */ }
         };
@@ -3608,14 +3609,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const w3App = stagePopOutBinding();
         if (!w3App) return;
         if (stagePoppedOut) {
-            try { await w3App.CloseDesktopStageWindow(); } catch { /* window may already be gone */ }
+            try { await w3App.CloseDesktopStageWindow?.(); } catch { /* window may already be gone */ }
             setStagePoppedOut(false);
             return;
         }
         // fps mirrors desktopFrameSource: watch-only streams at 10fps to
         // save bandwidth; interactive keeps the server default.
         try {
-            await w3App.OpenDesktopStageWindow(0, stageInteractive ? 0 : 10);
+            await w3App.OpenDesktopStageWindow?.(0, stageInteractive ? 0 : 10);
             setStagePoppedOut(true);
         } catch { /* probe race or window subsystem busy — keep the iframe */ }
     };
@@ -7926,6 +7927,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             {collab.features.rooms ? (
                                 <button type="button" className="btn-secondary desktop-bot-chat__rooms-btn" data-testid="bot-rooms-open" onClick={() => setRoomsOpen(true)}>群聊</button>
                             ) : null}
+                            <BugReportButton lang={lang} />
                         </header>
                         {collab.features.assignments ? <BotCollabStatus assignments={collab.assignments} bots={bots} lang={lang} busy={bots.flatMap(bot => { const phase = busyPhase(bot.id, messagesByBot[bot.id] || messagesForBot(userId, bot.id)); return phase === 'execute' || phase === 'plan' ? [{ bot: bot.id, phase, task: shownDesktopBotActivity(activityByBot[bot.id]) }] : []; })} /> : null}
                         <div

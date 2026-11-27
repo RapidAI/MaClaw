@@ -2362,7 +2362,7 @@ func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string)
 	}
 
 	if cancelled {
-		return fmt.Errorf("installer elevation was declined; the update was not installed (%s)", filepath.Base(verifiedPath))
+		return fmt.Errorf("%w; the update was not installed (%s)", errInstallerElevationCancelled, filepath.Base(verifiedPath))
 	}
 
 	if !launched {

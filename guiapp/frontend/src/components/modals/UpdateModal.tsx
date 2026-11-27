@@ -30,10 +30,14 @@ type UpdateModalProps = {
     // Other platforms never show that prompt, so the hint stays hidden there.
     needsElevationHint?: boolean;
     preferBetaChannel?: boolean;
+    updateDecisionPending?: boolean;
     t: (key: string) => string;
     onCancelDownload: () => void;
     onDownload: () => void;
     onInstall: () => void;
+    onDeferInstall?: (hours: number) => void;
+    onDeferInstallToNextStartup?: () => void;
+    onIgnoreUpdate?: () => void;
     onClose: () => void;
     onUpdateResultChange?: (result: any) => void;
     onRollbackReleaseChange?: (release: RollbackRelease | null) => void;
@@ -135,10 +139,14 @@ export const UpdateModal = ({
     isInstalling = false,
     needsElevationHint = false,
     preferBetaChannel,
+    updateDecisionPending = false,
     t,
     onCancelDownload,
     onDownload,
     onInstall,
+    onDeferInstall,
+    onDeferInstallToNextStartup,
+    onIgnoreUpdate,
     onClose,
     onUpdateResultChange,
     onRollbackReleaseChange,
@@ -290,7 +298,7 @@ export const UpdateModal = ({
                             type="checkbox"
                             checked={betaChecked}
                             onChange={(e) => handleBetaToggle(e.target.checked)}
-                            disabled={isDownloading || betaLoading || isInstalling}
+                            disabled={isDownloading || betaLoading || isInstalling || updateDecisionPending}
                         />
                         <span className="update-modal__switch" aria-hidden="true">
                             <span className="update-modal__switch-thumb" />
@@ -319,7 +327,7 @@ export const UpdateModal = ({
                                             type="button"
                                             className="update-modal__rollback-item"
                                             key={String(release.build)}
-                                            disabled={isDownloading || isInstalling || release.download_unavailable}
+                                            disabled={isDownloading || isInstalling || updateDecisionPending || release.download_unavailable}
                                             onClick={() => selectRollbackRelease(release)}
                                         >
                                             <strong>{release.build}</strong>
@@ -454,9 +462,61 @@ export const UpdateModal = ({
                                         <StatusGlyph kind="ok" size={18} />
                                     </span>
                                     <p className="update-modal__complete-title">{t("downloadComplete")}</p>
-                                    <button type="button" className="update-modal__cta-button" onClick={onInstall}>
-                                        {t("installNow")}
-                                    </button>
+                                    <p className="update-modal__complete-message">{t("downloadedUpdateReadyMessage")}</p>
+                                    <div className="update-modal__install-choice">
+                                        <button
+                                            type="button"
+                                            className="update-modal__cta-button"
+                                            disabled={updateDecisionPending}
+                                            onClick={onInstall}
+                                        >
+                                            {t("installNow")}
+                                        </button>
+                                    </div>
+                                    {!updateResult?.is_rollback && (onDeferInstall || onDeferInstallToNextStartup || onIgnoreUpdate) && (
+                                        <div className="update-modal__defer-panel">
+                                            {onDeferInstall && (
+                                                <div className="update-modal__defer-row">
+                                                    <span className="update-modal__defer-label">{t("postponeInstall")}</span>
+                                                    <div className="update-modal__defer-options">
+                                                        {[1, 2, 5, 10].map((hours) => (
+                                                            <button
+                                                                key={hours}
+                                                                type="button"
+                                                                className="update-modal__defer-button"
+                                                                disabled={updateDecisionPending}
+                                                                onClick={() => onDeferInstall(hours)}
+                                                            >
+                                                                {t("installAfterHours").replace("{hours}", String(hours))}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="update-modal__defer-row update-modal__defer-row--secondary">
+                                                {onDeferInstallToNextStartup && (
+                                                    <button
+                                                        type="button"
+                                                        className="update-modal__defer-button"
+                                                        disabled={updateDecisionPending}
+                                                        onClick={onDeferInstallToNextStartup}
+                                                    >
+                                                        {t("installNextStartup")}
+                                                    </button>
+                                                )}
+                                                {onIgnoreUpdate && (
+                                                    <button
+                                                        type="button"
+                                                        className="update-modal__defer-button update-modal__defer-button--danger"
+                                                        disabled={updateDecisionPending}
+                                                        onClick={onIgnoreUpdate}
+                                                    >
+                                                        {t("ignoreThisUpdate")}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
                                 </section>
                             ) : downloadError ? (
                                 <section className="update-modal__status-panel update-modal__status-panel--error" role="alert">
@@ -516,18 +576,30 @@ export const UpdateModal = ({
                         <button
                             type="button"
                             className="update-modal__link-button update-modal__rollback-link"
-                            disabled={isDownloading || betaLoading || isInstalling}
+                            disabled={isDownloading || betaLoading || isInstalling || updateDecisionPending}
                             onClick={showRollback}
                         >
                             {t('rollback')}
                         </button>
                     )}
+                    {onIgnoreUpdate && hasUpdate && !installerPath && !updateResult?.is_rollback && (
+                        <button
+                            type="button"
+                            className="update-modal__link-button update-modal__ignore-link"
+                            disabled={isDownloading || betaLoading || isInstalling || updateDecisionPending}
+                            onClick={onIgnoreUpdate}
+                        >
+                            {t("ignoreThisUpdate")}
+                        </button>
+                    )}
                     {/* While installing, the app is about to quit; closing the
-                        modal would only hide the reason the window disappears. */}
+                        modal would only hide the reason the window disappears.
+                        Once the installer is merely downloaded, closing remains
+                        available and the update notice can reopen this choice. */}
                     <button
                         type="button"
                         className="update-modal__close"
-                        disabled={isDownloading || isInstalling}
+                        disabled={isDownloading || isInstalling || updateDecisionPending}
                         onClick={onClose}
                     >
                         {t("close")}

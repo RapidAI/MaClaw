@@ -427,6 +427,10 @@ func openAIContentThinkingSignature(raw interface{}) string {
 }
 
 func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
+	return projectOpenAIWireResponseWithToolParser(wire, nil)
+}
+
+func projectOpenAIWireResponseWithToolParser(wire openAIWireResponse, contentToolParser contentToolCallParser) *Response {
 	result := &Response{ResponseID: strings.TrimSpace(wire.ID), Usage: wire.Usage}
 	if len(wire.Choices) == 0 {
 		return result
@@ -459,7 +463,7 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 				finishReason = "tool_calls"
 			}
 		}
-		if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+		if finish, changed := adoptLeakedToolCallsWithParser(&msg, visibleContent, contentToolParser); changed {
 			finishReason = finish
 		}
 		finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
@@ -474,9 +478,13 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 }
 
 func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
+	return parseNonStreamOpenAIResponseBodyWithToolParser(body, nil)
+}
+
+func parseNonStreamOpenAIResponseBodyWithToolParser(body []byte, contentToolParser contentToolCallParser) (*Response, error) {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return ParseSSEToResponse(body)
+		return parseSSEToResponseWithToolParser(body, contentToolParser)
 	}
 	if upstreamErr := upstreamModelErrorFromPayload(trimmed); upstreamErr != nil {
 		return nil, upstreamErr
@@ -486,7 +494,7 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
-	return projectOpenAIWireResponse(wire), nil
+	return projectOpenAIWireResponseWithToolParser(wire, contentToolParser), nil
 }
 
 func ParseNonStreamOpenAIResponse(resp *http.Response) (*Response, error) {

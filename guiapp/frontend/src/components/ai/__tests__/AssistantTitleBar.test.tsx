@@ -376,4 +376,44 @@ describe('AssistantTitleBar', () => {
         fireEvent.keyDown(document, { key: 'Escape' });
         expect(notificationState.current.dismissUrgentToast).toHaveBeenCalled();
     });
+
+    describe('sidebar restore cluster', () => {
+        const toggles = (paneCollapsed: boolean) => ({
+            paneCollapsed,
+            railCollapsed: false,
+            onTogglePane: vi.fn(),
+            onToggleRail: vi.fn(),
+        });
+
+        const renderInline = (paneCollapsed: boolean) => render(
+            <AssistantTitleBar
+                active
+                clearHistory={vi.fn()}
+                inline
+                lang="zh"
+                maximized={false}
+                onClose={vi.fn()}
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="默认任务"
+                trialReflectEnabled={false}
+                sidebarToggles={toggles(paneCollapsed)}
+            />,
+        );
+
+        it('keeps the header clean of collapse buttons while the task pane is expanded', () => {
+            const { container } = renderInline(false);
+            // The pair lives in the task pane's search row now.
+            expect(container.querySelector('[data-testid="sidebar-toggle-cluster"]')).toBeNull();
+            expect(screen.queryByTestId('task-pane-toggle')).toBeNull();
+        });
+
+        it('shows the restore cluster only while the task pane is collapsed', () => {
+            renderInline(true);
+            expect(screen.getByTestId('task-pane-toggle').getAttribute('title')).toBe('展开任务列表 (Ctrl+B)');
+            expect(screen.getByTestId('nav-rail-toggle')).toBeTruthy();
+        });
+    });
 });

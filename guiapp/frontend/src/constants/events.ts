@@ -86,6 +86,9 @@ export const EVENT_EXPERT_INSTALLED = "maclaw:expert-installed";
 /** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
 
+/** Emitted when a silent background download is ready for the user's install decision. */
+export const EVENT_APP_UPDATE_DOWNLOADED = "app-update-downloaded";
+
 /** Skill usage stats updated after a run. */
 export const EVENT_SKILL_USAGE_UPDATED = "skill:usage_updated";
 

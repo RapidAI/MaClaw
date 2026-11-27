@@ -12,6 +12,8 @@ import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { closeCloudAssistant, cloudAgentCatalog, cloudAgentsFromList, onCloudAgentListRefresh, openCloudAgent, requestCloudAgentListRefresh, useCloudAssistantId } from './cloudAgentAssistant';
+import { noteCloudAgentsEnabled, useCloudAgentsEnabled } from './cloudAgentAvailability';
+import { SidebarToggleCluster, type SidebarTogglesState } from './SidebarToggleCluster';
 import { CloudAgentListRow, TaskPlaceIcon, TaskStatusMark, cloudAgentRecency, cloudTurnRunning, mixRecentEntries, publishCloudTaskPlace, readCloudOpenStamps, useCloudOpenRevision, type CloudAgentListItem, type TaskListStatusKind } from './taskPlace';
 import { CloudAgentFilesDialog } from './CloudAgentFilesDialog';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
@@ -585,6 +587,8 @@ export type SidebarTaskManagementProps = {
     showCloudWorkspaceCreation?: boolean;
     /** Restore durable cloud task rows while keeping project controls hidden. */
     restoreCloudWorkspaceTasks?: boolean;
+    /** Sidebar collapse toggles for the search-row cluster. */
+    sidebarToggles?: SidebarTogglesState;
 };
 
 /** True when projectPath matches an open project tab (path-normalized). Exported for tests. */
@@ -2710,6 +2714,7 @@ export const SidebarTaskManagement = ({
     showCloudWorkspaceManagement = true,
     showCloudWorkspaceCreation = showCloudWorkspaceManagement,
     restoreCloudWorkspaceTasks = false,
+    sidebarToggles,
 }: SidebarTaskManagementProps) => {
     const { showConfirm } = useDialog();
     const remote = useTaskRemoteControl();
@@ -2770,7 +2775,7 @@ export const SidebarTaskManagement = ({
     };
     const [creatingTask, setCreatingTask] = useState(false);
     const [cloudPlaceSelected, setCloudPlaceSelected] = useState(false);
-    const [cloudAgentsEnabled, setCloudAgentsEnabled] = useState(false);
+    const cloudAgentsEnabled = useCloudAgentsEnabled();
     const [cloudAgents, setCloudAgents] = useState<CloudAgentListItem[]>([]);
     const [cloudListEpoch, setCloudListEpoch] = useState(0);
     const [cloudFolderCollapsed, setCloudFolderCollapsed] = useState(false);
@@ -2787,7 +2792,7 @@ export const SidebarTaskManagement = ({
                 if (cancelled) return;
                 const catalog = cloudAgentCatalog(rows);
                 setCloudAgents(cloudAgentsFromList(catalog.instances));
-                setCloudAgentsEnabled(catalog.enabled);
+                noteCloudAgentsEnabled(catalog.enabled);
                 if (!catalog.enabled) setCloudPlaceSelected(false);
             }).catch(() => {
                 // Hub answers with enabled. A rejected call is not that answer,
@@ -6129,6 +6134,7 @@ export const SidebarTaskManagement = ({
             </div>
         )}
         <div className="mc-task-pane__header stsm-pane-header">
+            <div className="mc-task-pane__search-row" data-testid="task-pane-search-row">
             <label className="mc-task-pane__search">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.2-3.2" /></svg>
                 <input
@@ -6189,6 +6195,10 @@ export const SidebarTaskManagement = ({
                     </button>
                 ) : null}
             </label>
+            {/* Collapse pair lives here while the pane is mounted; a collapsed
+                pane gets the restore cluster back in the window headers. */}
+            {sidebarToggles && <SidebarToggleCluster {...sidebarToggles} lang={lang} />}
+            </div>
             <div className="mc-task-pane__toolbar">
             <button
                 type="button"

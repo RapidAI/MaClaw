@@ -87,6 +87,7 @@ import { NoteResultCard } from "./NoteResultCard";
 import { FILE_COMPANION_OPEN_HINT, companionVideoNotePhrase, looksLikeArxivReference, looksLikeCompanionShare, noteStampAtLineStart, type NoteStampLine } from "./companionNoteSeek";
 import { windowDragHandleProps, windowNoDragRegionProps } from "../../utils/windowDrag";
 import { AssistantTitleBarNotifications } from "../ai/AssistantTitleBarNotifications";
+import { BugReportButton } from "../ai/BugReportButton";
 import { CompanionAppearanceProvider, useCompanionAppearance } from "./useCompanionAppearance";
 import { companionProjectExportJSON, companionProjectMarksJSON, loadPdfBookmarks, PDF_BOOKMARKS_CHANGED_EVENT, savePdfBookmarks } from "./pdfBookmarks";
 import { loadPdfMarks, PDF_MARKS_CHANGED_EVENT, savePdfMarks } from "./pdfMarks";
@@ -6961,6 +6962,7 @@ function FileCompanionWindowBody({ askOnOpen = true }: { askOnOpen?: boolean } =
                         </button>
                     </div>
                 ) : null}
+                <BugReportButton lang={uiLang} />
                 <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--fullscreen" data-testid="file-companion-fullscreen" aria-pressed={readingFull} aria-label={readingFull ? cs("恢复原始大小") : cs("全屏")} title={readingFull ? cs("恢复进入全屏前的窗口大小") : cs("全屏阅读")} onClick={() => { void toggleReadingFrame(); }}><CompanionActionIcon name={readingFull ? "restore" : "fullscreen"} /><span className="file-companion-sr">{readingFull ? cs("恢复原始大小") : cs("全屏")}</span></button>
                 {/* runtime WindowHide. App.WindowHide also shows the tray pet. */}
                 <button type="button" className="file-companion-tool file-companion-tool--icon file-companion-tool--close" data-testid="file-companion-close" aria-label={cs("隐藏")} title={cs("隐藏窗口，已打开的文件会保留")} onClick={() => { windowHiddenRef.current = true; windowRevealRef.current = false; WindowHide(); }}><CompanionActionIcon name="hide" /><span className="file-companion-sr">{cs("隐藏")}</span></button>

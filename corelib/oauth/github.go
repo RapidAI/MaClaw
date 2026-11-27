@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -91,7 +92,7 @@ func fetchGitHubRepositories(ctx context.Context, apiBase, token string, limit i
 		return nil, fmt.Errorf("github /user/repos: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, gitHubHTTPError("github /user/repos", resp.StatusCode, body)
+		return nil, gitHubResponseError("github /user/repos", resp, body)
 	}
 	var rows []GitHubRepository
 	if err := json.Unmarshal(body, &rows); err != nil {
@@ -120,6 +121,63 @@ func gitHubHTTPError(endpoint string, status int, body []byte) error {
 		}
 	}
 	return fmt.Errorf("%s: HTTP %d", endpoint, status)
+}
+
+// GitHubRateLimitError is an exhausted GitHub API quota (HTTP 403/429 with
+// X-RateLimit-Remaining: 0). Callers use errors.As to tell "wait for the
+// reset" apart from a revoked token or a missing permission, and to show the
+// reset time instead of GitHub's raw scraping-policy paragraph.
+type GitHubRateLimitError struct {
+	Endpoint string
+	Message  string
+	// ResetAt is when the hourly window rolls over, from X-RateLimit-Reset
+	// (unix seconds). Zero when GitHub did not answer with the header.
+	ResetAt time.Time
+}
+
+func (e *GitHubRateLimitError) Error() string {
+	msg := e.Message
+	if msg == "" {
+		msg = "API rate limit exceeded"
+	}
+	base := fmt.Sprintf("%s: quota exhausted: %s", e.Endpoint, msg)
+	if e.ResetAt.IsZero() {
+		return base
+	}
+	return base + fmt.Sprintf(" (resets at %s)", e.ResetAt.Format("15:04"))
+}
+
+// gitHubRateLimitError converts a rate-limited response into a
+// GitHubRateLimitError. remaining==0 plus the 403/429 status is the primary
+// rate limit signature; the body alone ("rate limit exceeded") also appears
+// for secondary limits without the header, so the status check stays the
+// authority.
+func gitHubRateLimitError(endpoint string, resp *http.Response, body []byte) *GitHubRateLimitError {
+	err := &GitHubRateLimitError{Endpoint: endpoint}
+	if resp != nil {
+		if v := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); v != "" {
+			if sec, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && sec > 0 {
+				err.ResetAt = time.Unix(sec, 0)
+			}
+		}
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		err.Message = strings.TrimSpace(payload.Message)
+	}
+	return err
+}
+
+// gitHubResponseError maps a non-200 GitHub response: an exhausted quota
+// becomes a typed GitHubRateLimitError, everything else keeps GitHub's own
+// explanation.
+func gitHubResponseError(endpoint string, resp *http.Response, body []byte) error {
+	if resp != nil && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0" {
+		return gitHubRateLimitError(endpoint, resp, body)
+	}
+	return gitHubHTTPError(endpoint, resp.StatusCode, body)
 }
 
 // RequestGitHubDeviceCodeWith is RequestGitHubDeviceCode parameterized by
@@ -337,7 +395,7 @@ func FetchGitHubUser(ctx context.Context, token string) (*GitHubUser, string, er
 		return nil, "", fmt.Errorf("github /user: token is invalid or revoked")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", gitHubHTTPError("github /user", resp.StatusCode, body)
+		return nil, "", gitHubResponseError("github /user", resp, body)
 	}
 
 	var user GitHubUser

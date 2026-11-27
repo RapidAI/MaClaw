@@ -1,11 +1,13 @@
 package guiapp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testInstallerExt returns an extension the current platform accepts for
@@ -186,6 +188,26 @@ func TestAuthorizeInstallerLaunchWithoutManifestHashUsesFileIdentity(t *testing.
 	}
 }
 
+func TestAuthorizeInstallerLaunchWithoutManifestHashRejectsInPlaceRewrite(t *testing.T) {
+	app := &App{}
+	path := writeInstallerFixture(t, "setup", "payload")
+	verifiedTime := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, verifiedTime, verifiedTime); err != nil {
+		t.Fatalf("set fixture verification time: %v", err)
+	}
+	app.rememberVerifiedInstaller(path, "")
+
+	// Keep the length unchanged so only the metadata captured at verification
+	// can catch the rewrite. The content is deliberately the same size: size
+	// alone is not enough for the hashless fallback.
+	if err := os.WriteFile(path, []byte("payloae"), 0o600); err != nil {
+		t.Fatalf("rewrite fixture in place: %v", err)
+	}
+	if _, err := app.authorizeInstallerLaunch(path); err == nil {
+		t.Fatal("expected an in-place rewritten installer to be refused")
+	}
+}
+
 // goFuncBody returns the source of the function starting at signature, up to
 // the next top-level func. Source-level checks are the only way to guard a
 // syscall path that cannot run on the test machine.
@@ -275,5 +297,124 @@ func TestWindowsElevatedLaunchesShareCheckedHelper(t *testing.T) {
 	}
 	if strings.Contains(text, `StringToUTF16Ptr("runas")`) {
 		t.Fatal("runas launches must go through shellExecuteFile")
+	}
+}
+
+func TestVersionedInstallerFileNameQualifiesDestination(t *testing.T) {
+	cases := []struct {
+		fileName string
+		version  string
+		want     string
+	}{
+		{"MaClaw-Setup.exe", "8.2.0.12010", "MaClaw-Setup-8.2.0.12010.exe"},
+		{"MaClaw-Setup.exe", "V9.0.0-beta.3", "MaClaw-Setup-V9.0.0-beta.3.exe"},
+		{"MaClaw-Universal.pkg", "11970", "MaClaw-Universal-11970.pkg"},
+		{"MaClaw-Setup.exe", "", "MaClaw-Setup.exe"},
+		{"MaClaw-Setup.exe", "   ", "MaClaw-Setup.exe"},
+		{"", "8.2.0", ""},
+		// Characters that are unsafe or meaningless in a file name collapse
+		// instead of producing path separators or shell metacharacters.
+		{"MaClaw-Setup.exe", `8.2/\\x`, "MaClaw-Setup-8.2___x.exe"},
+	}
+	for _, tc := range cases {
+		if got := versionedInstallerFileName(tc.fileName, tc.version); got != tc.want {
+			t.Fatalf("versionedInstallerFileName(%q, %q) = %q, want %q", tc.fileName, tc.version, got, tc.want)
+		}
+	}
+}
+
+func TestVerifiedInstallersCoexistAcrossTargets(t *testing.T) {
+	// A silent background download and a manual rollback install different
+	// versions at the same time. Neither may revoke the other's launch
+	// authorization while the user is still deciding.
+	app := &App{}
+	first := writeInstallerFixture(t, "latest-setup", "latest payload")
+	rollback := writeInstallerFixture(t, "rollback-setup", "rollback payload")
+	app.rememberVerifiedInstaller(first, testDigest("latest payload"))
+	app.rememberVerifiedInstaller(rollback, testDigest("rollback payload"))
+
+	if _, err := app.authorizeInstallerLaunch(first); err != nil {
+		t.Fatalf("first verified installer refused after a second download: %v", err)
+	}
+	if _, err := app.authorizeInstallerLaunch(rollback); err != nil {
+		t.Fatalf("rollback verified installer refused: %v", err)
+	}
+}
+
+func TestForgetVerifiedInstallerOnlyDropsMatchingPath(t *testing.T) {
+	app := &App{}
+	first := writeInstallerFixture(t, "first-setup", "first payload")
+	second := writeInstallerFixture(t, "second-setup", "second payload")
+	app.rememberVerifiedInstaller(first, testDigest("first payload"))
+	app.rememberVerifiedInstaller(second, testDigest("second payload"))
+
+	// A re-download truncates only its own destination; the other target must
+	// keep its launch authorization.
+	app.forgetVerifiedInstaller(first)
+	if _, err := app.authorizeInstallerLaunch(first); err == nil {
+		t.Fatal("expected the re-downloaded installer to lose its authorization")
+	}
+	if _, err := app.authorizeInstallerLaunch(second); err != nil {
+		t.Fatalf("unrelated installer lost its authorization: %v", err)
+	}
+}
+
+func TestCleanupStaleVersionedInstallers(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	downloads := filepath.Join(tmpHome, "Downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatalf("create downloads dir: %v", err)
+	}
+	target := updateTargetFileName()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(downloads, name)
+		if err := os.WriteFile(path, []byte("installer"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return path
+	}
+
+	stale := write(versionedInstallerFileName(target, "8.1.0"))
+	deferredPath := write(versionedInstallerFileName(target, "8.2.0"))
+	verifiedPath := write(versionedInstallerFileName(target, "8.3.0"))
+	inFlightName := versionedInstallerFileName(target, "8.4.0")
+	inFlightPath := write(inFlightName)
+	unversioned := write(target)
+	foreign := write("unrelated-tool-setup-1.0.exe")
+	nonInstaller := write("notes-8.5.0.txt")
+
+	// Protect one version through the deferred-install record, one through the
+	// in-session verified set, and one through an in-flight download.
+	writeTestDeferredUpdateInstall(t, app, deferredUpdateInstall{
+		TargetVersion: "V8.2.0",
+		InstallerPath: deferredPath,
+		Channel:       "stable",
+		DueAt:         time.Now().Add(time.Hour),
+		CreatedAt:     time.Now(),
+	})
+	app.rememberVerifiedInstaller(verifiedPath, "")
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.downloadMutex.Lock()
+	if app.downloadCancelers == nil {
+		app.downloadCancelers = make(map[string]*downloadCanceler)
+	}
+	app.downloadCancelers[inFlightName] = &downloadCanceler{cancel: cancel, done: make(chan struct{})}
+	app.downloadMutex.Unlock()
+
+	app.cleanupStaleVersionedInstallers()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale versioned installer survived cleanup")
+	}
+	for _, kept := range []string{deferredPath, verifiedPath, inFlightPath, unversioned, foreign, nonInstaller} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("protected file %s was removed: %v", filepath.Base(kept), err)
+		}
 	}
 }

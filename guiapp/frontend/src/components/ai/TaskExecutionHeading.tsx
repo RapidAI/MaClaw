@@ -21,6 +21,8 @@ type Props = {
     workingDirPath?: string;
     remoteWorkspace?: { host?: string; workDir?: string; port?: number } | null;
     remoteWorkspaceLabel?: string;
+    /** Connected cloud git repository (owner/repo). Empty = nothing shown. */
+    cloudGitRepo?: string;
     /** Already resolved against the sidebar task list by the panel. */
     title?: string;
 };
@@ -46,7 +48,7 @@ function executionWorkspaceKindLabel(kind: ExecutionWorkspaceKind, lang?: string
     return localizeText(lang, "Local", "本地", "本地");
 }
 
-export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel, title }: Props) {
+export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel, cloudGitRepo, title }: Props) {
     const workingDir = workingDirPath || "";
     const cloudId = isCloudWorkspacePath(workingDir) ? cloudWorkspaceIdFromPath(workingDir) : "";
     const cloudName = useCloudWorkspaceDisplayName(cloudId);
@@ -93,6 +95,12 @@ export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel
             <div className="mc-task-execution-subline">
                 {status.label ? <span className={`mc-task-execution-status mc-task-execution-status--${status.tone}`} data-status={status.tone} role="status"><i aria-hidden="true" />{status.label}</span> : null}
                 {metaText ? <div className="mc-task-execution-meta" data-testid="task-execution-meta" title={metaTitle}>{metaText}</div> : null}
+                {cloudGitRepo ? (
+                    <div className="mc-task-execution-cloud-git" data-testid="task-execution-cloud-git" title={cloudGitRepo}>
+                        <TaskConfigIcon name="git" size={13} />
+                        <span>{cloudGitRepo}</span>
+                    </div>
+                ) : null}
             </div>
         </div>
     );

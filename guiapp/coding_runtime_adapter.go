@@ -17,10 +17,11 @@ import (
 // terminal evidence semantics. MaclawSrv and TUI can replace this adapter
 // without importing GUI internals.
 type guiCodingRuntimeAdapter struct {
-	run            func() *CodingSubAgentResult
-	onStart        func(codingruntime.ExecutionRequest)
-	finalizeWriter func(*CodingSubAgentResult) (bool, error)
-	result         *CodingSubAgentResult
+	run              func() *CodingSubAgentResult
+	onStart          func(codingruntime.ExecutionRequest)
+	onExecutorCancel func()
+	finalizeWriter   func(*CodingSubAgentResult) (bool, error)
+	result           *CodingSubAgentResult
 }
 
 // guiCodingRuntimeOptions is an opt-in bridge for an already-isolated GUI
@@ -34,6 +35,12 @@ type guiCodingRuntimeOptions struct {
 	ExistingTaskID              string
 	ParentContinuationAttemptID string
 	DeclaredWrites              []string
+	// OnExecutorCancel is the host cancellation boundary that must be signaled
+	// when the runtime-owned executor context is cancelled independently of the
+	// originating turn (for example a data-dir hard reset). Context cancellation
+	// is one-directional in Go, so the runner cannot cancel the host LoopContext
+	// through its child context.
+	OnExecutorCancel func()
 	// ReadOnly is an explicit host assertion for inquiry/reviewer turns. It is
 	// intentionally separate from an empty DeclaredWrites slice: an empty
 	// writer declaration is unknown and must never silently become read-only.
@@ -71,9 +78,10 @@ func (g codingRuntimeApprovalGate) Check(task codingruntime.Task, policy codingr
 }
 
 type guiRemoteCodingRuntimeAdapter struct {
-	run     func() *RemoteCodingSubAgentResult
-	onStart func(codingruntime.ExecutionRequest)
-	result  *RemoteCodingSubAgentResult
+	run              func() *RemoteCodingSubAgentResult
+	onStart          func(codingruntime.ExecutionRequest)
+	onExecutorCancel func()
+	result           *RemoteCodingSubAgentResult
 }
 
 func (a *guiRemoteCodingRuntimeAdapter) Execute(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
@@ -86,7 +94,19 @@ func (a *guiRemoteCodingRuntimeAdapter) Execute(ctx context.Context, request cod
 	if a.onStart != nil {
 		a.onStart(request)
 	}
-	result := a.run()
+	var result *RemoteCodingSubAgentResult
+	if a.onExecutorCancel == nil || ctx == nil {
+		result = a.run()
+	} else {
+		done := make(chan *RemoteCodingSubAgentResult, 1)
+		go func() { done <- a.run() }()
+		select {
+		case result = <-done:
+		case <-ctx.Done():
+			a.onExecutorCancel()
+			result = <-done
+		}
+	}
 	a.result = result
 	if ctx != nil && ctx.Err() != nil {
 		return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "cancelled_during_remote_executor", ErrorSummary: "remote execution cancelled; remote workspace requires read-only recovery probe"}
@@ -138,7 +158,19 @@ func (a *guiCodingRuntimeAdapter) Execute(ctx context.Context, request codingrun
 	if a.onStart != nil {
 		a.onStart(request)
 	}
-	result := a.run()
+	var result *CodingSubAgentResult
+	if a.onExecutorCancel == nil || ctx == nil {
+		result = a.run()
+	} else {
+		done := make(chan *CodingSubAgentResult, 1)
+		go func() { done <- a.run() }()
+		select {
+		case result = <-done:
+		case <-ctx.Done():
+			a.onExecutorCancel()
+			result = <-done
+		}
+	}
 	a.result = result
 	if ctx != nil && ctx.Err() != nil {
 		return codingruntime.ExecutionResult{Status: codingruntime.TaskInterrupted, SideEffectState: codingruntime.SideEffectUncertain, ErrorCode: "cancelled_during_executor", ErrorSummary: "execution cancelled; workspace requires read-only recovery probe"}
@@ -280,6 +312,9 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 		OnAdmissionWait: waitHook,
 	}
 	adapter := &guiCodingRuntimeAdapter{run: run, onStart: onStart}
+	if options != nil {
+		adapter.onExecutorCancel = options.OnExecutorCancel
+	}
 	// GUI's existing quality and isolated-worktree gates support non-Git local
 	// projects as well. The stricter final-workspace Git gate is therefore an
 	// explicit host policy (currently used by TUI/MaClawSrv), not an implicit
@@ -421,7 +456,7 @@ func runGUIRemoteCodingTaskWithLedgerWithStart(ctx context.Context, store coding
 // runGUIRemoteCodingTaskWithLedgerWithStartAndTaskID starts a new attempt of
 // an existing task only when the caller has already performed the Runtime's
 // explicit recovery/continuation admission.
-func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, readOnly bool, workspaceProber codingruntime.WorkspaceProber, existingTaskID, parentContinuationAttemptID string, approvalGate codingruntime.ApprovalGate, onStart func(codingruntime.ExecutionRequest), run func() *RemoteCodingSubAgentResult) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
+func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, readOnly bool, workspaceProber codingruntime.WorkspaceProber, existingTaskID, parentContinuationAttemptID string, approvalGate codingruntime.ApprovalGate, onStart func(codingruntime.ExecutionRequest), run func() *RemoteCodingSubAgentResult, executorCancelHooks ...func()) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
 	if store == nil {
 		return nil, nil, fmt.Errorf("coding runtime store is unavailable")
 	}
@@ -429,6 +464,15 @@ func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store c
 		ownerID = "gui:remote"
 	}
 	adapter := &guiRemoteCodingRuntimeAdapter{run: run, onStart: onStart}
+	if len(executorCancelHooks) > 0 {
+		adapter.onExecutorCancel = func() {
+			for _, hook := range executorCancelHooks {
+				if hook != nil {
+					hook()
+				}
+			}
+		}
+	}
 	remoteTarget = strings.TrimSpace(remoteTarget)
 	runner := codingruntime.Runner{Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute, ApprovalGate: approvalGate, WorkspaceProber: workspaceProber, OnAdmissionWait: logCodingWriterAdmissionWait}
 	// Inquiry matches the local workbench: it is read-only and does not need a

@@ -21,11 +21,16 @@ interface SidebarToggleClusterProps {
 }
 
 /**
- * The collapse/expand button pair pinned to the leading edge of every window
- * chrome header (assistant title bar, task execution header, main top
- * header). Lives OUTSIDE the collapsible columns so the restore affordance
- * survives both columns being hidden — with both collapsed it sits at the
- * window's top-left corner, like WorkBuddy's 收起侧边栏 button.
+ * The collapse/expand button pair for the task pane and the nav rail.
+ *
+ * Home while the pane is mounted: the right end of the task pane's search row
+ * (SidebarTaskManagement). When the pane collapses, its search row goes with
+ * it, so the AI-workbench headers (assistant title bar, task execution
+ * header) render this cluster as a restore-only fallback — it then carries
+ * the rail toggle too. On non-AI tabs the pane does not exist and
+ * MainTopHeader keeps a rail-only instance. With both columns collapsed the
+ * cluster sits at the window's top-left corner, like WorkBuddy's 收起侧边栏
+ * button.
  *
  * The headers it renders into are window-drag regions: plain <button>s are
  * already excluded from drag arming (WINDOW_DRAG_EXCLUDE_SELECTOR), but

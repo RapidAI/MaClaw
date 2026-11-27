@@ -3694,6 +3694,26 @@ export function ShowFileCompanionLibrary() {
   return window['go']['main']['App']['ShowFileCompanionLibrary']();
 }
 
+export function DeferDownloadedUpdateInstall(arg1, arg2) {
+  return window['go']['main']['App']['DeferDownloadedUpdateInstall'](arg1, arg2);
+}
+
+export function DeferDownloadedUpdateInstallToNextStartup(arg1) {
+  return window['go']['main']['App']['DeferDownloadedUpdateInstallToNextStartup'](arg1);
+}
+
+export function IgnoreUpdateVersion(arg1) {
+  return window['go']['main']['App']['IgnoreUpdateVersion'](arg1);
+}
+
+export function InstallDownloadedUpdate(arg1) {
+  return window['go']['main']['App']['InstallDownloadedUpdate'](arg1);
+}
+
+export function RegisterDownloadedUpdate(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RegisterDownloadedUpdate'](arg1, arg2, arg3);
+}
+
 export function LaunchInstallerAndExit(arg1, arg2) {
   return window['go']['main']['App']['LaunchInstallerAndExit'](arg1, arg2);
 }

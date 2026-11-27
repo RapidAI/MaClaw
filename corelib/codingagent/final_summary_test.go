@@ -394,6 +394,18 @@ func TestFileChangeTableOmitsNetZeroModifiedFiles(t *testing.T) {
 	}
 }
 
+func TestFileChangeTableRendersDeletedAndCreatedThenDeletedStates(t *testing.T) {
+	got := AppendFinalAnswerHostFactsWithFileChanges("已完成", nil, []string{"old.go", "tmp.go"}, []FinalAnswerFileChangeFact{
+		{Path: "old.go", Deleted: true, Removed: 7, HasCounts: true},
+		{Path: "tmp.go", Created: true, Deleted: true, HasCounts: true},
+	}, nil)
+	for _, want := range []string{"| `old.go` | 删除 | 0 | 7 |", "| `tmp.go` | 新建后删除 | 0 | 0 |"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("deleted states missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestStructuredFileChangeTableExistsEvenWhenCountsUnavailable(t *testing.T) {
 	got := AppendFinalAnswerHostFactsWithFileChanges("已完成。", []string{"new.bin"}, []string{"large.dat"}, nil, nil)
 	for _, want := range []string{"## 文件改动（2 个文件）", "| `large.dat` | 修改 | — | — |", "| `new.bin` | 新建 | — | — |"} {

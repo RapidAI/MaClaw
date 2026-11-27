@@ -95,6 +95,33 @@ func TestPendingUpdateClearsForNewerRunningVersion(t *testing.T) {
 	}
 }
 
+func TestPendingUpdateClearsForBareRollbackBuildTarget(t *testing.T) {
+	for _, current := range []string{"8.1.0.11970", "8.1.0.11971"} {
+		t.Run(current, func(t *testing.T) {
+			setLinkedVersionForTest(t, current)
+			app := newPendingUpdateTestApp(t)
+			app.recordPendingUpdate("11970", filepath.Join(t.TempDir(), "MaClaw-Setup.exe"))
+
+			if notice := app.GetPendingUpdateNotice(); notice != nil {
+				t.Fatalf("GetPendingUpdateNotice() = %+v, want nil when rollback build %s or newer is running", notice, current)
+			}
+			if _, err := os.Stat(app.pendingUpdatePath()); err == nil {
+				t.Error("pending record must be deleted when the rollback build is confirmed")
+			}
+		})
+	}
+}
+
+func TestPendingUpdateDoesNotClearForOlderBareRollbackBuild(t *testing.T) {
+	setLinkedVersionForTest(t, "8.1.0.11969")
+	app := newPendingUpdateTestApp(t)
+	app.recordPendingUpdate("11970", filepath.Join(t.TempDir(), "MaClaw-Setup.exe"))
+
+	if notice := app.GetPendingUpdateNotice(); notice == nil {
+		t.Fatal("GetPendingUpdateNotice() = nil, want a notice while the rollback build has not landed")
+	}
+}
+
 func TestPendingUpdateExpires(t *testing.T) {
 	setLinkedVersionForTest(t, "1.2.3")
 	app := newPendingUpdateTestApp(t)
@@ -118,6 +145,32 @@ func TestPendingUpdateExpires(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Error("expired pending record must be deleted")
+	}
+}
+
+func TestPendingUpdateDropsRecordWithoutLaunchTime(t *testing.T) {
+	setLinkedVersionForTest(t, "1.2.3")
+	app := newPendingUpdateTestApp(t)
+	path := app.pendingUpdatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	data, err := json.Marshal(map[string]string{
+		"target_version": "2.0.0",
+		"installer_path": filepath.Join(t.TempDir(), "MaClaw-Setup.exe"),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if notice := app.GetPendingUpdateNotice(); notice != nil {
+		t.Fatalf("GetPendingUpdateNotice() = %+v, want nil for a malformed record", notice)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("malformed pending record must be deleted")
 	}
 }
 

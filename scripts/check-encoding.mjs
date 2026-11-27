@@ -17,6 +17,7 @@ const sourceExtensions = new Set([
 
 const ignoredDirectories = new Set([
   '.claude', '.diag', '.git', '.gocache', '.gomodcache', '.testhome', '.workbuddy',
+  '.devin-tmp', '.tmp_diag',
   'build', 'dist', 'node_modules', 'official-sensevoice', 'vendor', '.vite', '.npm_cache',
   '__pycache__', 'tmp',
 ]);

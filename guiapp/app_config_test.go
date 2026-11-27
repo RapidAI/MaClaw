@@ -89,6 +89,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if !cfg.CheckUpdateOnStartup {
 		t.Fatal("CheckUpdateOnStartup = false, want true for first-run default config")
 	}
+	if !cfg.SilentUpdateEnabled {
+		t.Fatal("SilentUpdateEnabled = false, want true for first-run default config")
+	}
 	if !cfg.VectorSearchEnabled {
 		t.Fatal("VectorSearchEnabled = false, want true for first-run default config")
 	}
@@ -267,6 +270,31 @@ func TestPreserveBackendOwnedFieldsKeepsPersistedHubCenterCandidates(t *testing.
 
 	if !reflect.DeepEqual(incoming.RemoteHubCenterURLs, ondisk.RemoteHubCenterURLs) {
 		t.Fatalf("persisted HubCenter candidates were not protected: got %#v want %#v", incoming.RemoteHubCenterURLs, ondisk.RemoteHubCenterURLs)
+	}
+}
+
+func TestLoadConfigDefaultsSilentUpdateForLegacyConfigMissingTheKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll config directory: %v", err)
+	}
+	// Existing installs predate silent_update_enabled. Because the feature is
+	// default-on, absence must decode through AppConfigDefaults rather than as
+	// the zero value false.
+	if err := os.WriteFile(configPath, []byte(`{"check_update_on_startup":true}`), 0o600); err != nil {
+		t.Fatalf("Write legacy config: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.SilentUpdateEnabled {
+		t.Fatal("SilentUpdateEnabled = false for a legacy config missing the key, want default true")
 	}
 }
 
@@ -1930,6 +1958,28 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 	if !patched.LogDetailEnabled {
 		t.Fatal("LogDetailEnabled = false, want preserved true")
+	}
+}
+
+func TestPatchConfigFieldsSilentUpdateEnabled(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	patched, err := app.PatchConfigFields(map[string]interface{}{"silent_update_enabled": false})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.SilentUpdateEnabled {
+		t.Fatal("SilentUpdateEnabled = true, want false")
+	}
+	reloaded, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if reloaded.SilentUpdateEnabled {
+		t.Fatal("SilentUpdateEnabled did not persist as false")
 	}
 }
 

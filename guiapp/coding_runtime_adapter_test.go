@@ -689,3 +689,106 @@ func TestGUICodingRuntimeVerifiedNoChangeEvidencePassesFinalWorkspaceGate(t *tes
 		t.Fatalf("execution result=%#v", out)
 	}
 }
+
+func TestGUICodingRuntimeAdapterExecutorCancelSignalsHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	hostCancelled := make(chan struct{})
+	adapter := &guiCodingRuntimeAdapter{
+		onExecutorCancel: func() { close(hostCancelled) },
+		run: func() *CodingSubAgentResult {
+			close(started)
+			<-hostCancelled
+			return &CodingSubAgentResult{Status: TaskExecInterrupted, Summary: "host cancelled"}
+		},
+	}
+	done := make(chan codingruntime.ExecutionResult, 1)
+	go func() { done <- adapter.Execute(ctx, codingruntime.ExecutionRequest{}) }()
+	<-started
+	cancel()
+	select {
+	case <-hostCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime executor cancellation did not reach the host cancellation boundary")
+	}
+	select {
+	case result := <-done:
+		if result.Status != codingruntime.TaskInterrupted || result.ErrorCode != "cancelled_during_executor" {
+			t.Fatalf("execution result=%#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor did not finish after host cancellation")
+	}
+}
+
+func TestGUIRemoteCodingRuntimeAdapterExecutorCancelSignalsHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	hostCancelled := make(chan struct{})
+	adapter := &guiRemoteCodingRuntimeAdapter{
+		onExecutorCancel: func() { close(hostCancelled) },
+		run: func() *RemoteCodingSubAgentResult {
+			close(started)
+			<-hostCancelled
+			return &RemoteCodingSubAgentResult{Status: "cancelled", Summary: "host cancelled"}
+		},
+	}
+	done := make(chan codingruntime.ExecutionResult, 1)
+	go func() { done <- adapter.Execute(ctx, codingruntime.ExecutionRequest{}) }()
+	<-started
+	cancel()
+	select {
+	case <-hostCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime executor cancellation did not reach the remote host cancellation boundary")
+	}
+	select {
+	case result := <-done:
+		if result.Status != codingruntime.TaskInterrupted || result.ErrorCode != "cancelled_during_remote_executor" {
+			t.Fatalf("execution result=%#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote executor did not finish after host cancellation")
+	}
+}
+
+func TestRunGUICodingTaskLedgerCancelPropagatesThroughRuntimeOptions(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	started := make(chan struct{})
+	hostCancelled := make(chan struct{})
+	type outcome struct {
+		result *CodingSubAgentResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, _, err := runGUICodingTaskWithLedgerWithOptions(
+			context.Background(), store, "gui:test", "workflow", "phase", "D:/repo", "change", nil, nil,
+			&guiCodingRuntimeOptions{ReadOnly: true, OnExecutorCancel: func() { close(hostCancelled) }},
+			func() *CodingSubAgentResult {
+				close(started)
+				<-hostCancelled
+				return &CodingSubAgentResult{Status: TaskExecInterrupted, Summary: "host cancelled"}
+			},
+		)
+		done <- outcome{result: result, err: err}
+	}()
+	<-started
+	codingruntime.CancelLiveCodingAttempts()
+	select {
+	case <-hostCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime cancellation did not reach the options host-cancel boundary")
+	}
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("ledger run err=%v", out.err)
+		}
+		if out.result == nil || out.result.Status != TaskExecInterrupted {
+			t.Fatalf("result=%#v", out.result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ledger run did not finish after cancellation")
+	}
+}

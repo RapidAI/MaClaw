@@ -236,6 +236,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"workstation_mode",
 		"power_optimization",
 		"check_update_on_startup",
+		"silent_update_enabled",
 		"prefer_beta_channel",
 		"audio_input_device_id",
 		"audio_output_device_id",

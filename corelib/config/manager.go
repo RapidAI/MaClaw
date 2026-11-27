@@ -309,6 +309,7 @@ func (m *Manager) formatGeneralConfig(cfg corelib.AppConfig) string {
 	b.WriteString(fmt.Sprintf("power_optimization: %v\n", cfg.PowerOptimization))
 	b.WriteString(fmt.Sprintf("screen_dim_timeout_min: %d\n", cfg.ScreenDimTimeoutMin))
 	b.WriteString(fmt.Sprintf("check_update_on_startup: %v\n", cfg.CheckUpdateOnStartup))
+	b.WriteString(fmt.Sprintf("silent_update_enabled: %v\n", cfg.SilentUpdateEnabled))
 	b.WriteString(fmt.Sprintf("hide_startup_popup: %v\n", cfg.HideStartupPopup))
 	b.WriteString(fmt.Sprintf("hide_maclaw_llm_popup: %v\n", cfg.HideMaclawLLMPopup))
 	return b.String()
@@ -832,6 +833,10 @@ func (m *Manager) applyGeneralChange(cfg *corelib.AppConfig, key, value string) 
 		old := fmt.Sprintf("%v", cfg.CheckUpdateOnStartup)
 		cfg.CheckUpdateOnStartup = strings.EqualFold(value, "true")
 		return old, nil
+	case "silent_update_enabled":
+		old := fmt.Sprintf("%v", cfg.SilentUpdateEnabled)
+		cfg.SilentUpdateEnabled = strings.EqualFold(value, "true")
+		return old, nil
 	case "prefer_beta_channel":
 		old := fmt.Sprintf("%v", cfg.PreferBetaChannel)
 		cfg.PreferBetaChannel = strings.EqualFold(value, "true")
@@ -1030,6 +1035,7 @@ func (m *Manager) initSchema() {
 				{Key: "power_optimization", Description: "是否启用省电优化", Type: "bool", Default: "false"},
 				{Key: "screen_dim_timeout_min", Description: "无操作多少分钟后熄屏（0=禁用）", Type: "int", Default: "3"},
 				{Key: "check_update_on_startup", Description: "启动时检查更新", Type: "bool", Default: "true"},
+				{Key: "silent_update_enabled", Description: "静默下载更新（安装前需确认）", Type: "bool", Default: "true"},
 				{Key: "hide_startup_popup", Description: "隐藏启动弹窗", Type: "bool", Default: "false"},
 				{Key: "hide_maclaw_llm_popup", Description: "隐藏MaClaw LLM未配置提示弹窗", Type: "bool", Default: "false"},
 				{Key: "maclaw_debug_tool_calls", Description: "MaClaw Debug 开关：开启后显示工具调用过程", Type: "bool", Default: "false"},

@@ -1,11 +1,18 @@
 package guiapp
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// errInstallerElevationCancelled marks the one launch failure the user
+// intentionally caused at the OS consent prompt. Deferred installs must not
+// retry that failure automatically, or every retry would become another UAC
+// prompt the user already declined.
+var errInstallerElevationCancelled = errors.New("installer elevation was declined")
 
 // Installer silent-install switches.
 //
@@ -76,10 +83,22 @@ type verifiedInstaller struct {
 	Info os.FileInfo
 }
 
+// verifiedInstallerKey canonicalizes an absolute installer path for map
+// lookup. Windows paths compare case-insensitively; POSIX paths do not.
+func verifiedInstallerKey(absPath string) string {
+	key := filepath.Clean(absPath)
+	if pathCaseInsensitive() {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
 // rememberVerifiedInstaller records the installer produced by a successful
 // download. LaunchInstallerAndExit runs silent (and on Windows possibly
 // elevated) installs, so it must never be pointed at a file this process did
-// not fetch and verify itself.
+// not fetch and verify itself. Entries are keyed by canonical path: a later
+// download of a different target must not revoke the launch authorization of
+// an installer the user is still deciding on.
 func (a *App) rememberVerifiedInstaller(path, sha256 string) {
 	if a == nil || strings.TrimSpace(path) == "" {
 		return
@@ -97,11 +116,29 @@ func (a *App) rememberVerifiedInstaller(path, sha256 string) {
 		return
 	}
 	a.verifiedInstallerMu.Lock()
-	a.verifiedInstaller = &verifiedInstaller{
+	if a.verifiedInstallers == nil {
+		a.verifiedInstallers = make(map[string]*verifiedInstaller)
+	}
+	a.verifiedInstallers[verifiedInstallerKey(abs)] = &verifiedInstaller{
 		Path:   abs,
 		SHA256: strings.TrimSpace(strings.ToLower(sha256)),
 		Info:   info,
 	}
+	a.verifiedInstallerMu.Unlock()
+}
+
+// forgetVerifiedInstaller drops the launch authorization for one installer
+// path, for example when a fresh download is about to truncate that file.
+func (a *App) forgetVerifiedInstaller(path string) {
+	if a == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	abs, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return
+	}
+	a.verifiedInstallerMu.Lock()
+	delete(a.verifiedInstallers, verifiedInstallerKey(abs))
 	a.verifiedInstallerMu.Unlock()
 }
 
@@ -134,7 +171,7 @@ func (a *App) authorizeInstallerLaunch(installerPath string) (string, error) {
 	}
 
 	a.verifiedInstallerMu.Lock()
-	record := a.verifiedInstaller
+	record := a.verifiedInstallers[verifiedInstallerKey(abs)]
 	a.verifiedInstallerMu.Unlock()
 	if record == nil || record.Path == "" {
 		return "", fmt.Errorf("refusing to run an installer that was not downloaded and verified in this session")
@@ -160,9 +197,17 @@ func (a *App) authorizeInstallerLaunch(installerPath string) (string, error) {
 		}
 		return abs, nil
 	}
-	// No manifest hash to compare against: fall back to file identity so a
-	// swapped file is still rejected.
-	if record.Info != nil && !os.SameFile(record.Info, info) {
+	// No manifest hash to compare against: fall back to file identity plus the
+	// size/mtime captured at verification so an in-place rewrite is rejected
+	// too. This still cannot close the final launch TOCTOU, but it is strictly
+	// stronger than inode identity alone when no content hash exists.
+	if record.Info == nil {
+		return "", fmt.Errorf("verified installer has no file identity: %s", abs)
+	}
+	if !os.SameFile(record.Info, info) {
+		return "", fmt.Errorf("installer changed after verification: %s", abs)
+	}
+	if info.Size() != record.Info.Size() || !info.ModTime().Equal(record.Info.ModTime()) {
 		return "", fmt.Errorf("installer changed after verification: %s", abs)
 	}
 	a.log("[update-install] manifest carried no sha256; launching verified download by path/file identity")
@@ -178,4 +223,85 @@ func installerPathsEqual(left, right string) bool {
 		return true
 	}
 	return left == right
+}
+
+// cleanupStaleVersionedInstallers removes version-qualified installer files
+// left in the downloads folder by earlier update attempts. Version-qualified
+// names are only ever created by this update flow (server assets themselves
+// are unversioned), so they are safe to garbage-collect once no live decision
+// can still use them; the fixed unversioned name is deliberately left alone
+// because it is also what a manual website download produces.
+//
+// Protected from deletion:
+//   - the installer referenced by a deferred/next-startup install record
+//   - the installer referenced by a pending-update (did-it-land) record
+//   - installers verified in this session and still awaiting a user decision
+//   - files with a download currently in flight
+func (a *App) cleanupStaleVersionedInstallers() {
+	if a == nil {
+		return
+	}
+	downloadsDir, err := a.GetDownloadsFolder()
+	if err != nil || strings.TrimSpace(downloadsDir) == "" {
+		return
+	}
+	target := updateTargetFileName()
+	ext := filepath.Ext(target)
+	stem := strings.TrimSuffix(target, ext)
+	if stem == "" || ext == "" {
+		return
+	}
+
+	protected := make(map[string]bool)
+	protect := func(path string) {
+		abs, err := filepath.Abs(strings.TrimSpace(path))
+		if err != nil || strings.TrimSpace(path) == "" {
+			return
+		}
+		protected[verifiedInstallerKey(abs)] = true
+	}
+	if record, ok := a.readDeferredUpdateInstall(); ok {
+		protect(record.InstallerPath)
+	}
+	if record, ok := a.readPendingUpdate(); ok {
+		protect(record.InstallerPath)
+	}
+	a.verifiedInstallerMu.Lock()
+	for _, verified := range a.verifiedInstallers {
+		if verified != nil {
+			protect(verified.Path)
+		}
+	}
+	a.verifiedInstallerMu.Unlock()
+
+	inFlight := make(map[string]bool)
+	a.downloadMutex.Lock()
+	for name := range a.downloadCancelers {
+		inFlight[name] = true
+	}
+	a.downloadMutex.Unlock()
+
+	entries, err := os.ReadDir(downloadsDir)
+	if err != nil {
+		return
+	}
+	prefix := stem + "-"
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) || inFlight[name] {
+			continue
+		}
+		full := filepath.Join(downloadsDir, name)
+		if protected[verifiedInstallerKey(full)] {
+			continue
+		}
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			a.log(fmt.Sprintf("[update-install] cannot remove stale installer %s: %v", full, err))
+			continue
+		}
+		a.log(fmt.Sprintf("[update-install] removed stale installer %s", full))
+	}
 }

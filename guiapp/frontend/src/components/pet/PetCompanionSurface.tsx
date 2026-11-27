@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { GetPetCompanionTranscript } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime";
+import { BugReportButton } from "../ai/BugReportButton";
 import "./PetCompanionSurface.css";
 
 function wavSource(payload: unknown): string {
@@ -24,7 +25,7 @@ function fadeOut(audio: HTMLAudioElement) {
     }, 20);
 }
 
-export function PetCompanionSurface() {
+export function PetCompanionSurface({ lang = "en" }: { lang?: string }) {
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const [caption, setCaption] = useState("");
     const [transcriptOpen, setTranscriptOpen] = useState(false);
@@ -89,6 +90,7 @@ export function PetCompanionSurface() {
                     <div className="pet-companion-sheet-card">
                         <header>
                             <strong>宠物对话</strong>
+                            <BugReportButton lang={lang} />
                             <button type="button" onClick={() => setTranscriptOpen(false)}>关闭</button>
                         </header>
                         <pre>{transcript.trim() ? transcript : "还没有对话"}</pre>

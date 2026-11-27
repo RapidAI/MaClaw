@@ -14,6 +14,11 @@ vi.mock("../../../wailsjs/runtime", () => ({
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetPetCompanionTranscript: vi.fn().mockResolvedValue("你：写一份周报\n码卡龙：周报好了。"),
+    // The transcript sheet hosts a BugReportButton; mock its capture bindings.
+    CaptureGUIBugReportScreenshot: vi.fn(),
+    GUIBugReportScreenshotDataURL: vi.fn(),
+    DiscardGUIBugReportScreenshot: vi.fn(),
+    SubmitGUIBugReport: vi.fn(),
 }));
 
 describe("PetCompanionSurface", () => {
@@ -28,6 +33,7 @@ describe("PetCompanionSurface", () => {
         });
         expect(await screen.findByRole("dialog", { name: "宠物对话" })).toBeTruthy();
         expect(screen.getByText(/周报好了/)).toBeTruthy();
+        expect(screen.getByTestId("task-bug-report-btn")).toBeTruthy();
         fireEvent.click(screen.getByRole("button", { name: "关闭" }));
         expect(screen.queryByRole("dialog", { name: "宠物对话" })).toBeNull();
     });

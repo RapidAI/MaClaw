@@ -460,6 +460,13 @@ func TestCodingTaskRelationBindsOnlyVerifiedHandleToOneRuntimeAttempt(t *testing
 	if identity.RootTaskID != handle.rootTaskID || identity.TurnID != handle.turnID {
 		t.Fatalf("bound identity %#v does not match verified handle %#v", identity, handle)
 	}
+	var bridgeRows int
+	if err := service.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bridgeRows); err != nil {
+		t.Fatal(err)
+	}
+	if bridgeRows != 0 {
+		t.Fatalf("bind wrote %d legacy bridge rows, want runtime anchor as sole authorization commit", bridgeRows)
+	}
 	if _, err := service.BindCodingAttempt(subject, handle, store, request, now.Add(time.Second)); err != nil {
 		t.Fatalf("same attempt binding must be idempotent: %v", err)
 	}
@@ -473,6 +480,38 @@ func TestCodingTaskRelationBindsOnlyVerifiedHandleToOneRuntimeAttempt(t *testing
 	}
 	if _, err := service.BindCodingAttempt(subject, handle, store, codingruntime.ExecutionRequest{Task: *otherTask, Attempt: *otherAttempt}, now); !errors.Is(err, errCodingTaskHandleConsumed) {
 		t.Fatalf("second attempt binding error=%v, want consumed", err)
+	}
+}
+
+func TestBindCodingAttemptLegacyBridgeRowStillFencesDifferentAttempt(t *testing.T) {
+	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	subject, err := newVerifiedCodingSubject("tenant-a", "principal-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	handle, err := service.CreateCodingTask(subject, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := codingruntime.NewMemoryStore()
+	task, err := store.CreateTask(codingruntime.Task{OwnerID: "owner", ProjectRef: "project", Mode: "local", RequestedWork: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(task.TaskID, "owner", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "project", Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`INSERT INTO coding_task_attempt_bindings(handle_id,runtime_task_id,runtime_attempt_id,bound_at) VALUES(?,?,?,?)`, handle.handleID, "legacy-task", "legacy-attempt", now.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BindCodingAttempt(subject, handle, store, codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}, now); !errors.Is(err, errCodingTaskHandleConsumed) {
+		t.Fatalf("legacy bridge mismatch error=%v, want consumed", err)
 	}
 }
 
@@ -1719,13 +1758,10 @@ func (s *failFirstSemanticAnchorStore) ResolveSemanticTaskAnchor(runtimeTaskID, 
 	return s.Store.(codingruntime.SemanticTaskAnchorStore).ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID)
 }
 
-// Regression: the relation-service attempt fence and the runtime semantic
-// anchor are separate stores. Committing the fence first used to leave a
-// permanently half-bound handle when anchor registration failed. The anchor is
-// now the first durable fence; a transient failure must leave the relation row
-// absent so retrying the same attempt can complete the bridge atomically in
-// effect, rather than entombing a handle with no anchor.
-func TestBindCodingAttemptAnchorFailureDoesNotCommitAttemptFence(t *testing.T) {
+// Regression: a transient anchor failure must not consume the verified handle.
+// The runtime anchor is the only durable authorization commit, so retrying the
+// same attempt can complete that single commit after the transient failure.
+func TestBindCodingAttemptAnchorFailureDoesNotWriteAuthorization(t *testing.T) {
 	service, err := newCodingTaskRelationService(filepath.Join(t.TempDir(), "relations.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -1766,8 +1802,8 @@ func TestBindCodingAttemptAnchorFailureDoesNotCommitAttemptFence(t *testing.T) {
 	if err := service.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
 		t.Fatal(err)
 	}
-	if bindings != 1 {
-		t.Fatalf("healed bind rows = %d, want 1", bindings)
+	if bindings != 0 {
+		t.Fatalf("healed bind wrote %d legacy bridge rows, want the runtime anchor to remain the sole authorization commit", bindings)
 	}
 }
 
@@ -1790,11 +1826,11 @@ func (s *closeRelationsAfterAnchorStore) ResolveSemanticTaskAnchor(runtimeTaskID
 	return s.Store.(codingruntime.SemanticTaskAnchorStore).ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID)
 }
 
-// Regression for the inverse half-write: once the runtime anchor has been
-// committed, a relation-store failure must fail the bind closed but remain
-// retryable for the same attempt. The caller must not treat the orphaned anchor
-// as authorization before this bridge completes.
-func TestBindCodingAttemptBridgeFailureHealsOnRetry(t *testing.T) {
+// Regression for the inverse failure: once the runtime anchor has been
+// committed, a relation-store validation failure must fail the bind closed but
+// remain retryable for the same attempt. The caller must not treat the
+// unvalidated anchor as authorization.
+func TestBindCodingAttemptPostvalidationFailureHealsOnRetry(t *testing.T) {
 	relationPath := filepath.Join(t.TempDir(), "relations.db")
 	service, err := newCodingTaskRelationService(relationPath)
 	if err != nil {
@@ -1821,7 +1857,7 @@ func TestBindCodingAttemptBridgeFailureHealsOnRetry(t *testing.T) {
 	request := codingruntime.ExecutionRequest{Task: *task, Attempt: *attempt}
 	closingStore := &closeRelationsAfterAnchorStore{Store: store, relationDB: service.db}
 	if _, err := service.BindCodingAttempt(subject, handle, closingStore, request, now); err == nil {
-		t.Fatal("relation bridge failure did not fail the bind")
+		t.Fatal("relation postvalidation failure did not fail the bind")
 	}
 
 	reopened, err := newCodingTaskRelationService(relationPath)
@@ -1830,14 +1866,14 @@ func TestBindCodingAttemptBridgeFailureHealsOnRetry(t *testing.T) {
 	}
 	defer reopened.Close()
 	if _, err := reopened.BindCodingAttempt(subject, handle, store, request, now.Add(time.Second)); err != nil {
-		t.Fatalf("same attempt did not heal after relation bridge failure: %v", err)
+		t.Fatalf("same attempt did not heal after relation postvalidation failure: %v", err)
 	}
 	var bindings int
 	if err := reopened.db.QueryRow(`SELECT COUNT(1) FROM coding_task_attempt_bindings WHERE handle_id=?`, handle.handleID).Scan(&bindings); err != nil {
 		t.Fatal(err)
 	}
-	if bindings != 1 {
-		t.Fatalf("healed bridge rows = %d, want 1", bindings)
+	if bindings != 0 {
+		t.Fatalf("healed bind wrote %d legacy bridge rows, want the runtime anchor to remain the sole authorization commit", bindings)
 	}
 }
 

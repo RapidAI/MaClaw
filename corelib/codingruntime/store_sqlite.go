@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +17,11 @@ import (
 
 // SQLiteStore is the durable execution ledger. It uses a standalone database
 // so deployment and recovery can evolve independently from workflow state.
-type SQLiteStore struct{ db *sql.DB }
+type SQLiteStore struct {
+	db       *sql.DB
+	path     string
+	retiring atomic.Bool
+}
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	// modernc.org/sqlite ignores the mattn-style _journal_mode/_busy_timeout
@@ -29,7 +35,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	// row this process just committed and the implementation turn loses its
 	// writable surface. One connection keeps that insert behind the commit.
 	db.SetMaxOpenConns(1)
-	s := &SQLiteStore{db: db}
+	s := &SQLiteStore{db: db, path: filepath.Clean(dbPath)}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -205,10 +211,27 @@ func (s *SQLiteStore) ensureAttemptColumn(name, decl string) error {
 	return err
 }
 
+// RetireForReplacement permanently fences this store instance before the DB
+// handle is closed. Runners that already hold the pointer are cancelled, and
+// runners that acquire the stale pointer afterwards must fail before creating
+// or executing new work.
+func (s *SQLiteStore) RetireForReplacement() {
+	if s == nil {
+		return
+	}
+	s.retiring.Store(true)
+	cancelLiveCodingAttemptsForSQLiteStore(s)
+}
+
+func (s *SQLiteStore) retired() bool {
+	return s == nil || s.retiring.Load()
+}
+
 func (s *SQLiteStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.RetireForReplacement()
 	return s.db.Close()
 }
 
@@ -227,6 +250,9 @@ func (s *SQLiteStore) CreateTask(task Task) (*Task, error) {
 		task.CreatedAt = time.Now().UTC()
 	}
 	task.UpdatedAt = task.CreatedAt
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	_, err := s.db.Exec(`INSERT INTO coding_runtime_tasks(task_id,workflow_id,phase_id,owner_id,parent_task_id,project_ref,mode,requested_work,policy_digest,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, task.TaskID, task.WorkflowID, task.PhaseID, task.OwnerID, task.ParentTaskID, task.ProjectRef, task.Mode, task.RequestedWork, task.PolicyDigest, task.Status, unixNanos(task.CreatedAt), unixNanos(task.UpdatedAt))
 	if err != nil {
 		return nil, err
@@ -604,6 +630,9 @@ func (s *SQLiteStore) ListAttempts(taskID string) ([]*Attempt, error) {
 }
 
 func (s *SQLiteStore) MarkTaskWaitingApproval(taskID string, now time.Time) (*Task, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	result, err := s.db.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status IN (?,?)`, TaskWaitingApproval, unixNanos(now), taskID, TaskQueued, TaskWaitingApproval)
 	if err != nil {
 		return nil, err
@@ -622,6 +651,9 @@ func (s *SQLiteStore) MarkTaskWaitingApproval(taskID string, now time.Time) (*Ta
 }
 
 func (s *SQLiteStore) MarkTaskReadyForRecovery(taskID string, now time.Time) (*Task, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	result, err := s.db.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status=?`, TaskQueued, unixNanos(now), taskID, TaskInterrupted)
 	if err != nil {
 		return nil, err
@@ -642,6 +674,9 @@ func (s *SQLiteStore) MarkTaskReadyForRecovery(taskID string, now time.Time) (*T
 func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Duration, policy PolicySnapshot, now time.Time) (*Attempt, error) {
 	if leaseOwner == "" || leaseFor <= 0 {
 		return nil, fmt.Errorf("%w: start attempt", ErrInvalidTransition)
+	}
+	if s.retired() {
+		return nil, ErrStoreRetired
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -822,6 +857,9 @@ func (s *SQLiteStore) RenewAttemptLease(attemptID, leaseOwner string, leaseFor t
 	if leaseOwner == "" || leaseFor <= 0 {
 		return fmt.Errorf("%w: renew attempt lease", ErrInvalidTransition)
 	}
+	if s.retired() {
+		return ErrStoreRetired
+	}
 	res, err := s.db.Exec(`UPDATE coding_runtime_attempts SET lease_until=? WHERE attempt_id=? AND lease_owner=? AND status=?`, unixNanos(now.Add(leaseFor)), attemptID, leaseOwner, TaskRunning)
 	if err != nil {
 		return err
@@ -847,6 +885,9 @@ func (s *SQLiteStore) RenewAttemptLease(attemptID, leaseOwner string, leaseFor t
 }
 
 func (s *SQLiteStore) ConsumeParentContinuation(taskID, parentAttemptID, reviewAttemptID string, now time.Time) error {
+	if s.retired() {
+		return ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -893,6 +934,9 @@ func (s *SQLiteStore) RecordWorkspaceBefore(attemptID, leaseOwner string, probe 
 	if probe == nil {
 		return nil, fmt.Errorf("%w: nil workspace before probe", ErrInvalidTransition)
 	}
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -928,6 +972,9 @@ func (s *SQLiteStore) RecordWorkspaceBefore(attemptID, leaseOwner string, probe 
 func (s *SQLiteStore) AdmitReadOnlyChildren(parentAttemptID, leaseOwner string, specs []ChildTaskSpec, policy PolicySnapshot, now time.Time) ([]ChildTaskHandle, error) {
 	if leaseOwner == "" || len(specs) == 0 {
 		return nil, fmt.Errorf("%w: admit child", ErrInvalidTransition)
+	}
+	if s.retired() {
+		return nil, ErrStoreRetired
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -978,6 +1025,9 @@ func (s *SQLiteStore) AdmitReadOnlyChildren(parentAttemptID, leaseOwner string, 
 }
 
 func (s *SQLiteStore) CompleteChildTask(childTaskID string, result ChildTaskResult, now time.Time) (*Task, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1048,6 +1098,9 @@ func (s *SQLiteStore) ListChildResults(parentTaskID string) ([]ChildTaskResult, 
 }
 
 func (s *SQLiteStore) AppendEvent(attemptID, leaseOwner, eventType, payloadDigest string, now time.Time) (*Event, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1080,6 +1133,9 @@ func (s *SQLiteStore) AppendEvent(attemptID, leaseOwner, eventType, payloadDiges
 }
 
 func (s *SQLiteStore) RecordStaleCallback(attemptID, payloadDigest string, now time.Time) (*Event, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1132,6 +1188,9 @@ func (s *SQLiteStore) ListEvents(attemptID string) ([]Event, error) {
 // an already-ended uncertain attempt. It cannot mutate attempt execution state
 // and therefore does not accept a lease owner.
 func (s *SQLiteStore) AppendRecoveryEvent(attemptID, eventType, payloadDigest string, now time.Time) (*Event, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1163,6 +1222,9 @@ func (s *SQLiteStore) FinishAttempt(attemptID, leaseOwner string, input FinishIn
 	input = normalizeFinishInputForLedger(input)
 	if !validTerminalStatus(input.Status) {
 		return nil, fmt.Errorf("%w: finish attempt", ErrInvalidTransition)
+	}
+	if s.retired() {
+		return nil, ErrStoreRetired
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1211,6 +1273,9 @@ func (s *SQLiteStore) FinishAttempt(attemptID, leaseOwner string, input FinishIn
 // cannot complete after an explicit cancellation and silently re-queue its
 // parent.
 func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1296,6 +1361,9 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	// Startup sweeps unconditionally. A task-list read calls this only after it
 	// has already seen a dead lease. This store has one connection. A write
 	// transaction here would queue behind, and in front of, the live coding
@@ -1365,12 +1433,36 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 // ExpireLeases stays the live-process sweep for leases that run out while
 // the app is up.
 func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
+	return s.interruptRuns(now, false)
+}
+
+// InterruptRunsForReplacement is the data-directory replacement sweep. Unlike
+// restart reconciliation it must not spare a still-registered local writer:
+// that writer has already been cancelled, and allowing it to remain running in
+// the copied snapshot would transfer transition-era execution state into the
+// replacement ledger even if its executor never observes cancellation.
+func (s *SQLiteStore) InterruptRunsForReplacement(now time.Time) ([]*Attempt, error) {
+	return s.interruptRuns(now, true)
+}
+
+func (s *SQLiteStore) interruptRuns(now time.Time, includeLocalWriters bool) ([]*Attempt, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
+	// Scan inside the same immediate transaction that closes the rows. With a
+	// scan outside the transaction a runner could enter running after the scan
+	// but before the sweep commit and remain live in a replacement snapshot.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	// lease_until then attempt id matches the sweep order every other pass
 	// uses, so the first dead child stamps its waiting parent the same way.
-	rows, err := s.db.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? ORDER BY lease_until ASC, attempt_id ASC`, TaskRunning)
+	rows, err := tx.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? ORDER BY lease_until ASC, attempt_id ASC`, TaskRunning)
 	if err != nil {
 		return nil, err
 	}
@@ -1381,7 +1473,7 @@ func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) 
 			rows.Close()
 			return nil, err
 		}
-		if localWriterLive(id) {
+		if !includeLocalWriters && localWriterLive(id) {
 			continue
 		}
 		attemptIDs = append(attemptIDs, id)
@@ -1394,7 +1486,7 @@ func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) 
 	}
 	type queuedRow struct{ taskID, parentID string }
 	var queued []queuedRow
-	qrows, err := s.db.Query(`SELECT task_id, parent_task_id FROM coding_runtime_tasks WHERE status=?`, TaskQueued)
+	qrows, err := tx.Query(`SELECT task_id, parent_task_id FROM coding_runtime_tasks WHERE status=?`, TaskQueued)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,17 +1504,12 @@ func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) 
 	if err = qrows.Err(); err != nil {
 		return nil, err
 	}
-	if len(attemptIDs) == 0 && len(queued) == 0 {
+	if len(attemptIDs) == 0 && len(queued) == 0 && !includeLocalWriters {
 		return nil, nil
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 	var out []*Attempt
 	for _, id := range attemptIDs {
-		a, err := s.interruptDeadAttemptTx(tx, id, now, false)
+		a, err := s.interruptDeadAttemptTx(tx, id, now, false, includeLocalWriters)
 		if err != nil {
 			return nil, err
 		}
@@ -1441,9 +1528,48 @@ func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) 
 			return nil, err
 		}
 		if parentID := strings.TrimSpace(row.parentID); parentID != "" {
-			if err := s.interruptWaitingParentTx(tx, parentID, now); err != nil {
+			if includeLocalWriters {
+				err = s.interruptWaitingParentTxWithEvent(tx, parentID, now, "data_dir_replaced")
+			} else {
+				err = s.interruptWaitingParentTx(tx, parentID, now)
+			}
+			if err != nil {
 				return nil, err
 			}
+		}
+	}
+	if includeLocalWriters {
+		// Replacement is a hard epoch boundary, not merely lease reconciliation.
+		// waiting_approval and waiting_child are not terminal execution states:
+		// copying either one forward would transfer a live approval/review
+		// capability into the replacement ledger. Restart reconciliation keeps
+		// them resumable; only the data-dir replacement sweep closes them.
+		waitingRows, err := tx.Query(`SELECT task_id FROM coding_runtime_tasks WHERE status=? ORDER BY task_id`, TaskWaitingChild)
+		if err != nil {
+			return nil, err
+		}
+		var waitingParents []string
+		for waitingRows.Next() {
+			var taskID string
+			if err = waitingRows.Scan(&taskID); err != nil {
+				waitingRows.Close()
+				return nil, err
+			}
+			waitingParents = append(waitingParents, taskID)
+		}
+		if err = waitingRows.Close(); err != nil {
+			return nil, err
+		}
+		if err = waitingRows.Err(); err != nil {
+			return nil, err
+		}
+		for _, parentID := range waitingParents {
+			if err := s.interruptWaitingParentTxWithEvent(tx, parentID, now, "data_dir_replaced"); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE status=?`, TaskInterrupted, unixNanos(now), TaskWaitingApproval); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1456,6 +1582,9 @@ func (s *SQLiteStore) InterruptAbandonedRuns(now time.Time) ([]*Attempt, error) 
 // Unlike a running attempt, a queued child has no lease or executor that can
 // survive process exit. It is never auto-dispatched from durable state.
 func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, error) {
+	if s.retired() {
+		return nil, ErrStoreRetired
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -1515,7 +1644,7 @@ func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 }
 
 func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, now time.Time) (*Attempt, error) {
-	return s.interruptDeadAttemptTx(tx, attemptID, now, true)
+	return s.interruptDeadAttemptTx(tx, attemptID, now, true, false)
 }
 
 // interruptDeadAttemptTx closes a running attempt whose executor is not on
@@ -1526,7 +1655,7 @@ func (s *SQLiteStore) interruptExpiredAttemptTx(tx *sql.Tx, attemptID string, no
 // status is not rewritten. requireDeadLease gates the close on the lease
 // clock; the startup sweep passes false because an attempt with no live
 // local executor is dead even while its lease is still open.
-func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now time.Time, requireDeadLease bool) (*Attempt, error) {
+func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now time.Time, requireDeadLease bool, includeLocalWriter bool) (*Attempt, error) {
 	// The attempt row carries the workspace probes. Lease death only needs
 	// the status, the lease end, and the parent link.
 	var taskID, status, parentID string
@@ -1539,7 +1668,7 @@ func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now t
 		return nil, err
 	}
 	leaseTime := fromUnixNanos(leaseUntil)
-	if TaskStatus(status) != TaskRunning || localWriterLive(attemptID) {
+	if TaskStatus(status) != TaskRunning || (!includeLocalWriter && localWriterLive(attemptID)) {
 		return nil, nil
 	}
 	if requireDeadLease && !runningAttemptDead(leaseTime, now, attemptID) {
@@ -1564,7 +1693,12 @@ func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now t
 	// process loses a running child, interrupt that parent too so recovery
 	// is explicit instead of leaving it permanently waiting_child.
 	if parentID != "" {
-		if err = s.interruptWaitingParentTx(tx, parentID, died); err != nil {
+		if includeLocalWriter {
+			err = s.interruptWaitingParentTxWithEvent(tx, parentID, died, "data_dir_replaced")
+		} else {
+			err = s.interruptWaitingParentTx(tx, parentID, died)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -1573,6 +1707,9 @@ func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now t
 	event := "lease_expired"
 	if !requireDeadLease {
 		event = "attempt_abandoned"
+		if includeLocalWriter {
+			event = "data_dir_replaced"
+		}
 	}
 	if _, err = s.appendEventTx(tx, attemptID, taskID, event, "", died); err != nil {
 		return nil, err
@@ -1581,6 +1718,13 @@ func (s *SQLiteStore) interruptDeadAttemptTx(tx *sql.Tx, attemptID string, now t
 }
 
 func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, now time.Time) error {
+	return s.interruptWaitingParentTxWithEvent(tx, parentTaskID, now, "child_lease_expired")
+}
+
+func (s *SQLiteStore) interruptWaitingParentTxWithEvent(tx *sql.Tx, parentTaskID string, now time.Time, eventType string) error {
+	if strings.TrimSpace(eventType) == "" {
+		eventType = "child_lease_expired"
+	}
 	var parentStatus string
 	var updatedAt int64
 	err := tx.QueryRow(`SELECT status, updated_at FROM coding_runtime_tasks WHERE task_id=?`, parentTaskID).Scan(&parentStatus, &updatedAt)
@@ -1597,7 +1741,7 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 	if TaskStatus(parentStatus) == TaskInterrupted {
 		var attemptID string
 		var finishedAt int64
-		err = tx.QueryRow(`SELECT a.attempt_id, a.finished_at FROM coding_runtime_attempts a JOIN coding_runtime_events e ON e.attempt_id=a.attempt_id AND e.type='child_lease_expired' WHERE a.task_id=? AND a.status=? ORDER BY a.attempt_no DESC LIMIT 1`, parentTaskID, TaskInterrupted).Scan(&attemptID, &finishedAt)
+		err = tx.QueryRow(`SELECT a.attempt_id, a.finished_at FROM coding_runtime_attempts a JOIN coding_runtime_events e ON e.attempt_id=a.attempt_id AND e.type=? WHERE a.task_id=? AND a.status=? ORDER BY a.attempt_no DESC LIMIT 1`, eventType, parentTaskID, TaskInterrupted).Scan(&attemptID, &finishedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -1614,7 +1758,7 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 		if _, err = tx.Exec(`UPDATE coding_runtime_attempts SET finished_at=? WHERE attempt_id=? AND finished_at=?`, died, attemptID, finishedAt); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE coding_runtime_events SET created_at=? WHERE attempt_id=? AND type='child_lease_expired' AND created_at=?`, died, attemptID, finishedAt)
+		_, err = tx.Exec(`UPDATE coding_runtime_events SET created_at=? WHERE attempt_id=? AND type=? AND created_at=?`, died, attemptID, eventType, finishedAt)
 		return err
 	}
 	if TaskStatus(parentStatus) != TaskWaitingChild {
@@ -1623,7 +1767,12 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 	var attemptID string
 	err = tx.QueryRow(`SELECT attempt_id FROM coding_runtime_attempts WHERE task_id=? AND status=? ORDER BY attempt_no DESC LIMIT 1`, parentTaskID, TaskWaitingChild).Scan(&attemptID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		// A waiting_child task without its waiting attempt is already corrupt or
+		// partially migrated evidence. Leaving the task waiting would make it
+		// look live forever; close the task even though there is no attempt row
+		// available for the usual audit event.
+		_, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status=?`, TaskInterrupted, unixNanos(now), parentTaskID, TaskWaitingChild)
+		return err
 	}
 	if err != nil {
 		return err
@@ -1640,7 +1789,7 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 	if _, err = tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE parent_task_id=? AND status=?`, TaskInterrupted, unixNanos(now), parentTaskID, TaskQueued); err != nil {
 		return err
 	}
-	_, err = s.appendEventTx(tx, attemptID, parentTaskID, "child_lease_expired", "", now)
+	_, err = s.appendEventTx(tx, attemptID, parentTaskID, eventType, "", now)
 	return err
 }
 
@@ -1684,6 +1833,9 @@ func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*Se
 	normalized, err := normalizeSemanticTaskAnchor(anchor)
 	if err != nil {
 		return nil, err
+	}
+	if s.retired() {
+		return nil, ErrStoreRetired
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
