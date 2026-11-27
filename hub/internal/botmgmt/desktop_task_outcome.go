@@ -108,10 +108,17 @@ func desktopOutcomeStatusLine(outcome string, hant, en bool) string {
 // run spoke (send_to_user), so every client that shows only that sentence —
 // older GUIs included — says the task is not finished. The run's own prose
 // already carries MaClawSrv's line.
-func desktopOutcomeSentence(outcome, sentence string) string {
+func desktopOutcomeSentence(outcome, sentence string, meta map[string]string) string {
 	sentence = desktopbot.CleanUserText(strings.TrimSpace(sentence))
 	line := desktopOutcomeStatusLine(outcome, false, false)
 	if line == "" || sentence == "" || strings.Contains(sentence, line) {
+		return sentence
+	}
+	// A run the bot continues by itself (outcome_next=improve, a follow-up
+	// is already started) is not waiting for the person: the sentence says
+	// what happened and that the bot retries on its own, so prepending a
+	// "not done, waiting for your reply" line would contradict it.
+	if meta != nil && strings.TrimSpace(meta["outcome_next"]) == "improve" {
 		return sentence
 	}
 	return line + "\n" + sentence

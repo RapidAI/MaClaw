@@ -584,6 +584,16 @@ func (s *Service) AdmitDesktopMessageAct(ctx context.Context, tenantID, userID, 
 	return s.deliverDesktopMessage(ctx, tenantID, userID, botID, content, phase, clientMessageID, continueSession, true, action)
 }
 
+// desktopAckContent is what an ack may echo: the person's own words. A
+// continuation's content is the control instruction, not their words, so the
+// ack falls back to its generic line instead of quoting it.
+func desktopAckContent(content string, continuation bool) string {
+	if continuation {
+		return ""
+	}
+	return content
+}
+
 // desktopQueuedAck returns the first sentence a queued message shows when the
 // intake LLM produced no ack of its own (timeout or fallback). It names the
 // person's own command — clipped to a short lead — so the reply reads like
@@ -670,7 +680,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// own display when it is isolated.
 	desktopUser := desktopUserForBot(userID, rec.Bots[index])
 	isolated := botIsolated(rec.Bots[index])
-	if continues, explicit := desktopContinuation(ctx, action, content); admit && !desktopReplay(ctx) && continues {
+	continues, explicit := desktopContinuation(ctx, action, content)
+	if admit && !desktopReplay(ctx) && continues {
 		joined, ok, release := s.joinDesktopContinue(tenantID, userID, desktopUser, botID, clientMessageID, explicit)
 		if ok {
 			if strings.EqualFold(strings.TrimSpace(action), "return") {
@@ -707,6 +718,12 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if noDesktop {
 		botNode = ""
 	}
+	// A bot created before the node capability check may still point at a
+	// srv-only node. That turn can never open its computer, so stop before
+	// token exchange/model work and say which configuration is broken.
+	if !noDesktop && botNode != "" && s.LanDesktopAvailable != nil && !s.LanDesktopAvailable(ctx, tenantID, botNode) {
+		return BotAdmission{}, ErrBotComputerUnavailable
+	}
 	gate := rec
 	if botNode != "" {
 		if view, ok := nodeView(rec, botNode); ok {
@@ -734,7 +751,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			} else {
 				routeErr = err
 			}
-			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, routeErr); parked || offlineErr != nil {
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, continues, routeErr); parked || offlineErr != nil {
 				traceBot(botID, "route_done", offlineErr, "via", route.Via, "dur_ms", traceMS(time.Since(step)))
 				if parked {
 					return admission, nil
@@ -790,8 +807,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// read is under the line.
 	if admit && !noDesktop && !hubStartedTurn(clientMessageID) {
 		pressed, memErr := s.desktopMemoryState(desktoppool.WithComputer(ctx, botNode), tenantID, userID)
+		if errors.Is(memErr, desktoppool.ErrNotAssigned) {
+			if botNode != "" {
+				return BotAdmission{}, ErrBotComputerUnavailable
+			}
+			return BotAdmission{}, ErrCloudDesktopUnassigned
+		}
 		if nodeSessionMissing(memErr) {
-			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, memErr); parked || offlineErr != nil {
+			if admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, continues, memErr); parked || offlineErr != nil {
 				if parked {
 					return admission, nil
 				}
@@ -815,6 +838,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 				WaitKind:        desktopQueueWaitMemory,
 				Surface:         queueSurfaceFrom(ctx),
 				Secrets:         desktopSecretBag(ctx),
+				Continuation:    continues,
 			})
 			if qerr == nil {
 				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: desktopMemoryLine, Kind: "new", ClientMessageID: clientMessageID}, nil
@@ -832,7 +856,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		if admit && errors.Is(busyErr, ErrDesktopBusy) && !desktopQueueSuppressed(ctx) && !hubStartedTurn(clientMessageID) {
 			queuedAck := intakeAck
 			if strings.TrimSpace(queuedAck) == "" {
-				queuedAck = desktopQueuedAck(content)
+				queuedAck = desktopQueuedAck(desktopAckContent(content, continues))
 			}
 			pos, qerr := s.enqueueDesktopMessage(tenantID, userID, botID, desktopQueueItem{
 				ClientMessageID: clientMessageID,
@@ -843,6 +867,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 				Instruction:     content,
 				Ack:             queuedAck,
 				Secrets:         desktopSecretBag(ctx),
+				Continuation:    continues,
 			})
 			if qerr == nil {
 				return BotAdmission{Accepted: true, Queued: true, Position: pos, Ack: queuedAck, Kind: "new", ClientMessageID: clientMessageID}, nil
@@ -895,7 +920,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		fresh, token, tokenErr = s.ownerTokenOn(ctx, tenantID, userID, botNode)
 	}
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, tokenErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, continues, tokenErr); stop {
 		return admission, stopErr
 	}
 	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
@@ -907,7 +932,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	step = time.Now()
 	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID, rec.Bots[index])
 	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, metaErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, continues, metaErr); stop {
 		return admission, stopErr
 	}
 	step = time.Now()
@@ -919,7 +944,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"metadata": metadata,
 	}, nil); err != nil {
 		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-		if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, err); stop {
+		if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, continues, err); stop {
 			return admission, stopErr
 		}
 	} else {
@@ -942,7 +967,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"group", botLLMServiceGroupID,
 		"dur_ms", traceMS(time.Since(step)),
 	)
-	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, llmErr); stop {
+	if admission, stopErr, stop := s.failAdmit(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, desktopUser, instanceID, opened, continues, llmErr); stop {
 		return admission, stopErr
 	}
 	// MCP and skills are not required for the turn. A missed push is retried
@@ -1028,7 +1053,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"dur_ms", traceMS(time.Since(step)),
 	)
 	if callErr != nil {
-		admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, callErr)
+		admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, botNode, clientMessageID, content, phase, continueSession, continues, callErr)
 		if parked {
 			return admission, offlineErr
 		}
@@ -1058,6 +1083,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			ClientMessageID: clientMessageID,
 			Session:         claim.session,
 			DesktopUser:     desktopUser,
+			Continuation:    continues,
 		})
 		traceBot(botID, "admit", nil,
 			"instance", instanceID,
@@ -1072,7 +1098,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		// is running, not waiting in a line, so the fallback says so.
 		ack := intakeAck
 		if strings.TrimSpace(ack) == "" {
-			ack = desktopStartedAck(content)
+			ack = desktopStartedAck(desktopAckContent(content, continues))
 		}
 		return BotAdmission{Accepted: true, RunID: payload.Run.ID, ClientMessageID: clientMessageID, Session: claim.session, RoutedVia: via, RoutedTitle: title, Kind: intakeKind, Ack: ack}, nil
 	}
@@ -1253,7 +1279,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
 	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
-	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
+	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser, body.Metadata)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
@@ -1325,7 +1351,7 @@ func noneDesktopSettle(body desktopCommandBody) (Reply, error) {
 	visible := desktopbot.Visible(desktopbot.Turn{Prose: text, SendToUser: sendToUser, Waiting: body.Waiting})
 	reply := Reply{Text: text, SendToUser: visible.Sentence, Images: replyImages(body.Attachments), Files: replyFiles(body.Attachments)}
 	reply.TaskOutcome = desktopSettleOutcome(body.Metadata)
-	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser)
+	reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, reply.SendToUser, body.Metadata)
 	if meta := body.Metadata; meta != nil {
 		reply.AskUserInputType = strings.TrimSpace(meta["ask_user_input_type"])
 		reply.AskUserSecretName = strings.TrimSpace(meta["ask_user_secret_name"])
@@ -1348,7 +1374,7 @@ func desktopSentenceReply(body desktopCommandBody) Reply {
 	visible := desktopbot.Visible(desktopbot.Turn{SendToUser: sendToUser})
 	reply := Reply{TaskOutcome: desktopSettleOutcome(body.Metadata)}
 	if visible.Bubble && !visible.Failed {
-		reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, visible.Sentence)
+		reply.SendToUser = desktopOutcomeSentence(reply.TaskOutcome, visible.Sentence, body.Metadata)
 		reply.Images = replyImages(body.Attachments)
 		reply.Files = replyFiles(body.Attachments)
 	}
@@ -1951,9 +1977,37 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 	if err != nil {
 		return Bot{}, err
 	}
+	mode := ownerDefaultDesktopMode(rec, ownerUserID)
+	if wantDesktop != nil {
+		if *wantDesktop {
+			if mode == desktop.BotDesktopModeNone {
+				mode = desktop.BotDesktopModeIsolated
+			}
+		} else {
+			mode = desktop.BotDesktopModeNone
+		}
+	}
 	nodeID := ownerNodeID(rec, ownerUserID)
 	if nodeChoice != nil {
 		nodeID = strings.TrimSpace(*nodeChoice)
+	}
+	// A desktop bot's node is its computer, not only the srv that runs the
+	// agent. A srv-only node (for example one whose desktopd install was
+	// refused because the machine is too small) must not accept one. When the
+	// node came from the owner's automatic pin, fall back to the cloud
+	// computer instead of manufacturing a bot that can never open a screen;
+	// an explicit node choice is refused so the person can pick another node.
+	if mode != desktop.BotDesktopModeNone && nodeID != "" {
+		available := false
+		if s.LanDesktopAvailable != nil {
+			available = s.LanDesktopAvailable(ctx, tenantID, nodeID)
+		}
+		if !available {
+			if nodeChoice != nil {
+				return Bot{}, ErrNodeDesktopUnavailable
+			}
+			nodeID = ""
+		}
 	}
 	callRec, err := callTarget(rec, nodeID)
 	if err != nil {
@@ -1965,13 +2019,13 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		}
 	}
 	var token string
-	switch {
-	case nodeID != "":
+	if nodeID != "" {
 		token, err = s.ensureNodeOwnerToken(ctx, tenantID, &rec, ownerUserID, nodeID)
-	case nodeChoice != nil:
+	} else {
+		// Empty nodeID is the cloud computer, even when the owner still has
+		// a pin to a node that cannot be this bot's computer. The bearer must
+		// come from the same srv that will create the instance.
 		token, err = s.ensurePublicOwnerToken(ctx, tenantID, &rec, ownerUserID)
-	default:
-		token, err = s.ensureOwnerToken(ctx, tenantID, &rec, ownerUserID)
 	}
 	if err != nil {
 		return Bot{}, err
@@ -1982,16 +2036,6 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 			return Bot{}, fmt.Errorf("%w: 这个节点还没有 srv", ErrSrv)
 		}
 		callRec = view
-	}
-	mode := ownerDefaultDesktopMode(rec, ownerUserID)
-	if wantDesktop != nil {
-		if *wantDesktop {
-			if mode == desktop.BotDesktopModeNone {
-				mode = desktop.BotDesktopModeIsolated
-			}
-		} else {
-			mode = desktop.BotDesktopModeNone
-		}
 	}
 	if mode != desktop.BotDesktopModeNone {
 		if err := desktopQuotaAllows(rec, ownerUserID, departments); err != nil {
