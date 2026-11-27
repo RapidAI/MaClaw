@@ -269,6 +269,64 @@ func TestMobileAgentJobProgressAppendWhilePurgeWriterWaits(t *testing.T) {
 	}
 }
 
+func TestMobileAgentJobProgressBroadcastKeepsNumericContract(t *testing.T) {
+	resetMobilePurgeState(t)
+	t.Cleanup(mobileResetKnowledgePurgeStateForTest)
+	const (
+		jobID    = "job-progress-broadcast"
+		tenantID = "tenant-progress-broadcast"
+		ownerID  = "owner-progress-broadcast"
+	)
+	mobileAgentJobs.Lock()
+	mobileAgentJobs.jobs[jobID] = mobileAgentJobRecord{
+		JobID: jobID, OwnerID: ownerID, TenantID: tenantID,
+		Status: mobileAgentJobStatusRunning, Query: "查一下",
+	}
+	mobileAgentJobs.Unlock()
+	t.Cleanup(func() {
+		mobileAgentJobs.Lock()
+		delete(mobileAgentJobs.jobs, jobID)
+		mobileAgentJobs.Unlock()
+	})
+
+	mobileRealtimeClients.Lock()
+	previous := mobileRealtimeClients.clients
+	mobileRealtimeClients.clients = make(map[string]map[*mobileRealtimeClient]struct{})
+	mobileRealtimeClients.Unlock()
+	t.Cleanup(func() {
+		mobileRealtimeClients.Lock()
+		mobileRealtimeClients.clients = previous
+		mobileRealtimeClients.Unlock()
+	})
+	sink := &mobileRealtimeFakeWriter{}
+	_, cleanup := mobileRealtimeRegister(tenantID, ownerID, sink)
+	defer cleanup()
+
+	mobileKnowledgePurgeState.RLock()
+	mobileAgentJobAppendProgressLocked(jobID, "调用 web_search")
+	mobileKnowledgePurgeState.RUnlock()
+
+	if len(sink.messages) != 1 {
+		t.Fatalf("realtime messages = %d, want the running assistant_job frame", len(sink.messages))
+	}
+	frame := sink.messages[0]
+	if frame["type"] != "assistant_job" || frame["job_id"] != jobID || frame["status"] != mobileAgentJobStatusRunning {
+		t.Fatalf("frame = %#v, want running assistant_job", frame)
+	}
+	task, ok := frame["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("task = %#v, want payload map", frame["task"])
+	}
+	progress, ok := task["progress"].(float64)
+	if !ok || progress != 0.5 {
+		t.Fatalf("task.progress = %#v, want numeric 0.5", task["progress"])
+	}
+	thinking, ok := task["thinking"].([]string)
+	if !ok || len(thinking) != 1 || thinking[0] != "调用 web_search" {
+		t.Fatalf("task.thinking = %#v, want the trace array", task["thinking"])
+	}
+}
+
 func TestMobileSearchAsyncEnqueuesJob(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, _ := issueViewerToken(t, identity, "mobile-search-async@example.com")
