@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/energye/systray"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 var (
@@ -28,11 +26,7 @@ var UpdateTrayVisibility = func(v bool) {
 	}
 }
 
-func setupTray(app *App, appOptions *options.App) {
-	editMenu := menu.NewMenu()
-	editMenu.Append(menu.EditMenu())
-	appOptions.Menu = editMenu
-
+func setupTray(app *App) {
 	go func() {
 		stdruntime.LockOSThread()
 		systray.Run(func() {

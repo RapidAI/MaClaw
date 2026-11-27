@@ -690,12 +690,20 @@ const sseStreamMaxSkippedLines = 8
 // not wait for the final [DONE] event: hosts use the live callback to keep the
 // thinking panel expanded while a model such as DeepSeek is still working.
 func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReasoning TokenCallback) (*Response, error) {
+	return parseSSEStreamWithReasoningToolParser(body, onToken, onReasoning, nil)
+}
+
+func parseSSEStreamWithReasoningToolParser(body io.Reader, onToken TokenCallback, onReasoning TokenCallback, contentToolParser contentToolCallParser) (*Response, error) {
+	return parseSSEStreamWithReasoningToolParserCompactNames(body, onToken, onReasoning, contentToolParser, nil)
+}
+
+func parseSSEStreamWithReasoningToolParserCompactNames(body io.Reader, onToken TokenCallback, onReasoning TokenCallback, contentToolParser contentToolCallParser, allowCompactName func(string) bool) (*Response, error) {
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
 	var responseID string
 	var thoughtSignature string
-	contentFilter := newContentToolCallDeltaFilter(onToken)
+	contentFilter := newContentToolCallDeltaFilterWithCompactNames(onToken, allowCompactName)
 	contentProtocol := newReasoningProtocolStreamFilter(contentFilter.Write)
 	reasoningProtocol := newReasoningProtocolStreamFilter(onReasoning)
 	var taggedReasoningBuf strings.Builder
@@ -908,7 +916,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			finishReason = "tool_calls"
 		}
 	}
-	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+	if finish, changed := adoptLeakedToolCallsWithParser(&msg, visibleContent, contentToolParser); changed {
 		finishReason = finish
 	}
 	if skippedLine {

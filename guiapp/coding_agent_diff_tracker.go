@@ -169,6 +169,7 @@ func mergeSubAgentDiffStat(stat *SubAgentDiffStat, fallbacks []SubAgentFileDiffS
 				// may include work that was already dirty before the turn.
 				merged.FileStats[i].Insertions = fallback.Insertions
 				merged.FileStats[i].Deletions = fallback.Deletions
+				merged.FileStats[i].Deleted = fallback.Deleted
 				merged.FileStats[i].HasCounts = true
 				continue
 			}
@@ -181,6 +182,7 @@ func mergeSubAgentDiffStat(stat *SubAgentDiffStat, fallbacks []SubAgentFileDiffS
 				// changes which already existed before this turn.
 				merged.FileStats[i].Insertions = 0
 				merged.FileStats[i].Deletions = 0
+				merged.FileStats[i].Deleted = fallback.Deleted
 				merged.FileStats[i].HasCounts = false
 				continue
 			}
@@ -189,6 +191,7 @@ func mergeSubAgentDiffStat(stat *SubAgentDiffStat, fallbacks []SubAgentFileDiffS
 			Path:       path,
 			Insertions: fallback.Insertions,
 			Deletions:  fallback.Deletions,
+			Deleted:    fallback.Deleted,
 			HasCounts:  fallback.HasCounts,
 		})
 	}

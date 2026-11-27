@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryAboutProblemReport, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitAboutProblemReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, RestoreMainWindowGeometry, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatBubblesEnabled, GetChatFontFamily, GetChatFontSize, GetCodingFontFamily, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMessengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryAboutProblemReport, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitAboutProblemReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { DesktopBotAccess, GetCurrentLanguage, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, currentBotAccessEnabled, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
@@ -12,7 +12,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { a2a, corelib } from '../wailsjs/go/models';
-import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_PROBLEM_REPORT, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
+import { EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_PROBLEM_REPORT, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, EVENT_TOKEN_BANK_CREDIT, type OpenTaskLaunchDetail } from './constants/events';
 import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
 import { hasLoadedOnboardingFlag, shouldReopenOnboardingForInactiveHub, shouldReopenOnboardingForOfflineLLM } from './components/remote/onboardingFlow';
 import { useRemotePanel } from './components/remote/useRemotePanel';
@@ -25,7 +25,6 @@ import { useOpenTaskModelChoice } from './components/ai/useOpenTaskModelChoice';
 import { setViewerReducerEnabled } from './components/ai/viewerReducerFlag';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
-import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
@@ -198,6 +197,7 @@ import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmplo
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
 import { taskbarInProgressCount } from './components/layout/taskbarInProgressCount';
 import { useBotAccessEnabled, useInProgressBotTaskCount } from './components/layout/useInProgressBotTaskCount';
+import { useCloudAgentsEnabled } from './components/layout/cloudAgentAvailability';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -205,23 +205,12 @@ import { useOpenCloudDriveTab } from './components/layout/useOpenCloudDriveTab';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
-import { UpdateModal, rollbackUpdateResult, type RollbackRelease } from './components/modals/UpdateModal';
+import { UpdateModal } from './components/modals/UpdateModal';
+import { useAppUpdateFlow } from './components/layout/useAppUpdateFlow';
 import { checkAppUpdate } from './utils/checkAppUpdate';
 import { buildPendingUpdateDialog } from './utils/pendingUpdateNotice';
 import { InstallLogModal } from './components/modals/InstallLogModal';
 import { ProjectProxySettingsDialog } from './components/modals/ProjectProxySettingsDialog';
-
-function installerFileNameFromURL(value: unknown): string {
-    const first = String(value || '').split(/[|\r\n]/).map(v => v.trim()).find(Boolean);
-    if (!first) return '';
-    try {
-        const pathname = new URL(first).pathname;
-        const name = decodeURIComponent(pathname.slice(pathname.lastIndexOf('/') + 1));
-        return /^(MaClaw|TigerClaw|QAgent|MetaStaff)-(Setup\.exe|Universal\.pkg)$/i.test(name) ? name : '';
-    } catch {
-        return '';
-    }
-}
 import { InstallSkillModal } from './components/modals/InstallSkillModal';
 import { RemoteActivationDialog } from './components/modals/RemoteActivationDialog';
 import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
@@ -252,7 +241,6 @@ import type { PendingExpertOpen } from './components/ai/usePendingAssistantTabOp
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
-const DISMISSED_APP_UPDATE_VERSION_KEY = "maclaw:dismissed-app-update-version";
 const unavailableDigitalEmployeeFeatureStatus = { visible: false, reason: 'unavailable' };
 
 function callBackend<T>(call: () => T | Promise<T>): Promise<T> {
@@ -1267,10 +1255,18 @@ function App() {
     // Bot Catalog / Agent Groups / Shared Pages are desktop-bot features; the
     // rail grant poll (useSidebarHubAccess) publishes this flag.
     const botAccessEnabled = useBotAccessEnabled();
+    // 云端 Agent settings tab follows the Hub tenant switch. The shared store
+    // polls on its own, so the tab stays correct even while the task pane is
+    // collapsed or this session never mounted the workbench sidebar.
+    const cloudAgentsEnabled = useCloudAgentsEnabled();
     // Shared visibility gates for every settings-tab resolution below.
     const settingsTabVisibility = useMemo<SettingsTabVisibility>(
-        () => ({ hideVirtualEmployee: !veNavigationAvailable, hideDesktopBotTabs: !botAccessEnabled }),
-        [veNavigationAvailable, botAccessEnabled],
+        () => ({
+            hideVirtualEmployee: !veNavigationAvailable,
+            hideDesktopBotTabs: !botAccessEnabled,
+            hideCloudAgent: !cloudAgentsEnabled,
+        }),
+        [veNavigationAvailable, botAccessEnabled, cloudAgentsEnabled],
     );
     // Sync setState only — startTransition deferred paint and caused intermittent blank settings.
     const selectSettingsTab = useCallback((tab: SettingsTabId) => {
@@ -1748,7 +1744,6 @@ function App() {
     const [projectSortMode, setProjectSortMode] = useState<'default' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc'>('default');
     const [projectCurrentPage, setProjectCurrentPage] = useState<number>(1);
     const [showInstallLog, setShowInstallLog] = useState(false);
-    const [showUpdateModal, setShowUpdateModal] = useState(false);
     const [showProblemReport, setShowProblemReport] = useState(false);
     const [problemKind, setProblemKind] = useState<'bug' | 'feature'>('bug');
     const [problemDescription, setProblemDescription] = useState('');
@@ -1866,17 +1861,6 @@ function App() {
             problemReportReturnFocusRef.current = null;
         };
     }, [showProblemReport]);
-    const [updateResult, setUpdateResult] = useState<any>(null);
-    const [appUpdateAvailable, setAppUpdateAvailable] = useState<AssistantUpdatePayload | null>(null);
-    const [isDownloading, setIsDownloading] = useState(false);
-    const [downloadProgress, setDownloadProgress] = useState(0);
-    const [activeDownloadSource, setActiveDownloadSource] = useState("");
-    const [downloadError, setDownloadError] = useState("");
-    const [installerPath, setInstallerPath] = useState("");
-    // True between a successful download and the app quitting for the
-    // installer. The window closes on its own, so the modal has to say what is
-    // happening instead of leaving the user on a "download complete" screen.
-    const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
     const isWindows = /window/i.test(navigator.userAgent);
     const [lang, setLang] = useState("en");
     useEffect(() => {
@@ -2063,253 +2047,38 @@ function App() {
         });
     };
 
-    // Escape hatch for a launch that reported success but never quit the app.
-    // Armed only after LaunchInstallerAndExit resolves — see startInstaller.
-    const installQuitWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const clearInstallQuitWatchdog = useCallback(() => {
-        if (installQuitWatchdogRef.current != null) {
-            clearTimeout(installQuitWatchdogRef.current);
-            installQuitWatchdogRef.current = null;
-        }
-    }, []);
-    useEffect(() => () => clearInstallQuitWatchdog(), [clearInstallQuitWatchdog]);
-
-    // Name of the installer currently being downloaded. Cancel must target the
-    // same key the backend registered; rebuilding it from the brand can miss.
-    const activeDownloadFileNameRef = useRef("");
-    const cancelActiveDownload = useCallback(() => {
-        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
-        const fileName = activeDownloadFileNameRef.current ||
-            `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
-        CancelDownload(fileName);
-        activeDownloadFileNameRef.current = "";
-    }, [brandInfo?.displayName, isWindows]);
-
-    // Bumped whenever the update target changes. An in-flight download or
-    // installer launch captures it so a late completion cannot offer or run
-    // a file the dialog no longer describes.
-    const updateTargetGenerationRef = useRef(0);
-    // Swap the check result, dropping any downloaded-installer state when the
-    // target changed. A same-target refresh keeps the completed download so a
-    // re-check does not force a second download; a different version/channel
-    // must never let "Install Now" run a file that does not match the
-    // version the dialog shows.
-    const handleUpdateResultChange = useCallback((next: any) => {
-        const targetOf = (r: any) => [r?.latest_version, r?.channel, r?.is_rollback ? 1 : 0, r?.sha256].join("|");
-        setUpdateResult((previous: any) => {
-            if (targetOf(previous) !== targetOf(next)) {
-                updateTargetGenerationRef.current += 1;
-                // A download for the superseded target is useless: stop it so
-                // a fresh download can start right away instead of waiting for
-                // the old one to finish and be discarded.
-                cancelActiveDownload();
-                clearInstallQuitWatchdog();
-                setIsDownloading(false);
-                setIsInstallingUpdate(false);
-                setInstallerPath("");
-                setDownloadError("");
-                setDownloadProgress(0);
-                setActiveDownloadSource("");
-            }
-            return next;
-        });
-    }, [clearInstallQuitWatchdog, cancelActiveDownload]);
-
-    const handleOpenAppUpdate = useCallback(() => {
-        if (!appUpdateAvailable) return;
-        handleUpdateResultChange(appUpdateAvailable);
-        // Opening the dialog is a fresh attempt: never inherit an "installing"
-        // state from a launch that never quit the app, or the dialog would
-        // reopen with its buttons disabled.
-        clearInstallQuitWatchdog();
-        installLaunchInFlightRef.current = false;
-        setIsInstallingUpdate(false);
-        setShowUpdateModal(true);
-    }, [appUpdateAvailable, clearInstallQuitWatchdog, handleUpdateResultChange]);
-
-    const handleOpenAppReleaseNotes = useCallback(() => {
-        const releaseUrl = String(appUpdateAvailable?.release_url || appUpdateAvailable?.ReleaseUrl || "").trim();
-        if (releaseUrl) {
-            safeBrowserOpenURL(releaseUrl);
-            return;
-        }
-        handleOpenAppUpdate();
-    }, [appUpdateAvailable, handleOpenAppUpdate]);
-
-    const handleDismissAppUpdate = useCallback((latestVersion: string) => {
-        const normalizedVersion = String(latestVersion || "").trim();
-        if (normalizedVersion) {
-            try {
-                window.localStorage.setItem(DISMISSED_APP_UPDATE_VERSION_KEY, normalizedVersion);
-            } catch {
-                // Ignore storage failures; clearing in-memory notice still honors this click.
-            }
-        }
-        setAppUpdateAvailable(null);
-    }, []);
-
-    // Hands a downloaded installer to the backend and quits the app.
-    //
-    // Shared by the automatic path (download finished) and the manual fallback
-    // button, so both report failures the same way. Returns true when the
-    // installer was launched; the app is about to exit in that case.
-    //
-    // `t` is read through a ref: it is rebuilt on every render, so depending on
-    // it directly would give this callback a new identity each time and defeat
-    // the point of memoising it.
-    const translateRef = useRef(translate);
-    translateRef.current = translate;
-    // Re-entrancy across a single render: isInstallingUpdate only flips after
-    // the next commit, so a fast double invoke would launch the installer
-    // twice (two ShellExecute calls / stacked consent prompts).
-    const installLaunchInFlightRef = useRef(false);
-    const startInstaller = useCallback(async (path: string): Promise<boolean> => {
-        if (!path || installLaunchInFlightRef.current) return false;
-        installLaunchInFlightRef.current = true;
-        setIsInstallingUpdate(true);
-        // Clear the previous failure: a retry should not show the old reason
-        // while it is in progress.
-        setDownloadError("");
-        const generation = updateTargetGenerationRef.current;
-        try {
-            // The target version lets the app detect on the next start
-            // whether this silent install actually landed.
-            const targetVersion = String(updateResult?.latest_version || "").trim();
-            await LaunchInstallerAndExit(path, targetVersion);
-            if (generation !== updateTargetGenerationRef.current) {
-                // The update target changed while the launch was in flight
-                // (consent prompt or launch-retry wait). Do not arm the quit
-                // watchdog for a superseded install; release the guard so the
-                // new target can be launched.
-                installLaunchInFlightRef.current = false;
-                return false;
-            }
-            // The backend quits ~500ms after this returns and the exit
-            // controller bounds the whole shutdown, so surviving well past
-            // this window means the quit never happened (a browser/dev
-            // session, a blocked shutdown) and the manual fallback is due.
-            // The timer cannot start earlier: the awaited call legitimately
-            // blocks on the elevation consent prompt and on the launch
-            // retry, and on slower machines either can stretch past any
-            // fixed deadline without anything being wrong.
-            // Drop a previous attempt's timer: in a session that never quits
-            // it would otherwise fire inside this launch's grace window.
-            clearInstallQuitWatchdog();
-            installQuitWatchdogRef.current = setTimeout(() => {
-                // Quit never came — reopen the manual path, which means
-                // letting a fresh launch run again.
-                installLaunchInFlightRef.current = false;
-                setIsInstallingUpdate(false);
-                setDownloadError((previous) => previous || translateRef.current("installStillPending"));
-            }, 20000);
-            return true;
-        } catch (err) {
-            installLaunchInFlightRef.current = false;
-            // A superseded launch failure belongs to the old target; the
-            // result change already reset the dialog, so report nothing.
-            if (generation !== updateTargetGenerationRef.current) return false;
-            console.error("Install launch error:", err);
-            // The app stays open (the backend refuses to quit when the
-            // installer did not start), so surface why and fall back to the
-            // manual button instead of leaving the user on a dead screen.
-            // The message goes in the dialog, which is already open: a toast
-            // would show the same text twice.
-            setIsInstallingUpdate(false);
-            setDownloadError(err instanceof Error ? err.message : String(err));
-            return false;
-        }
-    }, [updateResult, clearInstallQuitWatchdog]);
-
-    // Same-render double-invoke guard: isDownloading only flips on the next
-    // commit, so a fast double click could still run two downloads (the
-    // backend would cancel one, but that churn is avoidable).
-    const downloadInFlightRef = useRef(false);
-    const handleDownload = async () => {
-        if (!updateResult || downloadInFlightRef.current) return;
-        // Use download_url if available (added in backend update), fallback to release_url
-        const downloadUrl = updateResult.download_url || updateResult.release_url;
-        if (!downloadUrl) return;
-        downloadInFlightRef.current = true;
-        const generation = updateTargetGenerationRef.current;
-
-        setIsDownloading(true);
-        setDownloadProgress(0);
-        setActiveDownloadSource("");
-        setDownloadError("");
-        setInstallerPath("");
-        setIsInstallingUpdate(false);
-
-        // Keep the installer name aligned with the active OEM brand. The
-        // backend selects the same target when building rollback URLs.
-        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
-        const fallbackFileName = `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
-        // Prefer the asset name carried by the signed update URL. This keeps
-        // OEM installers correct even if brand metadata is still loading.
-        const fileName = installerFileNameFromURL(downloadUrl) || fallbackFileName;
-        // Remember the exact name: cancel has to target the same key the
-        // backend registered, and the fallback name can differ from the one
-        // the release URL actually carries.
-        activeDownloadFileNameRef.current = fileName;
-        const expectedSHA256 = updateResult.sha256 || "";
-
-        try {
-            const path = await DownloadUpdateWithSHA256(downloadUrl, fileName, expectedSHA256);
-            if (generation !== updateTargetGenerationRef.current) {
-                // The update target changed while this download ran (a
-                // recheck or a rollback pick): the file belongs to the old
-                // target, so do not offer or auto-launch it under the new
-                // version the dialog now shows.
-                setIsDownloading(false);
-                return;
-            }
-            setInstallerPath(path);
-            // The promise result is authoritative; progress events are auxiliary
-            // and may be unavailable in browser-based development sessions.
-            setDownloadProgress(100);
-            setIsDownloading(false);
-            // "Download and Update" is a single action: the user already asked
-            // for the update, so installing is not a second decision. The modal
-            // switches to an "installing" state and the app quits for the
-            // installer; a failure falls back to the manual button.
-            void startInstaller(path);
-        } catch (err: any) {
-            // A superseded download's failure belongs to the old target; the
-            // result change already reset the dialog, so report nothing.
-            if (generation !== updateTargetGenerationRef.current) return;
-            console.error("Download error:", err);
-            const message = err instanceof Error ? err.message : String(err);
-            if (/cancelled|canceled/i.test(message)) {
-                // A user cancel is not a failure: the cancelled progress event
-                // may already have set the localized note — clear it and return
-                // to the update offer rather than showing an error band.
-                setDownloadError("");
-            } else {
-                // Some failures (for example, an unavailable Downloads folder) happen
-                // before the backend can emit a download-progress error event.
-                setDownloadError(message);
-            }
-            setIsDownloading(false);
-        } finally {
-            downloadInFlightRef.current = false;
-        }
-    };
-
-    const handleRollbackRelease = (release: RollbackRelease | null) => {
-        if (!release?.download_url) return;
-        // The shared fingerprint guard decides whether the previous
-        // download/install state still applies to this target; re-picking the
-        // same rollback keeps a completed download instead of forcing a
-        // second one.
-        handleUpdateResultChange(rollbackUpdateResult(release));
-    };
-    const handleCancelDownload = () => cancelActiveDownload();
-
-    // Manual fallback: only reachable when the automatic launch failed, or when
-    // a download finished before this change and the button is still shown.
-    const handleInstall = async () => {
-        if (!installerPath) return;
-        await startInstaller(installerPath);
-    };
+    const {
+        showUpdateModal,
+        setShowUpdateModal,
+        updateResult,
+        appUpdateAvailable,
+        isDownloading,
+        downloadProgress,
+        activeDownloadSource,
+        downloadError,
+        setDownloadError,
+        installerPath,
+        isInstallingUpdate,
+        setIsInstallingUpdate,
+        updateDecisionPending,
+        handleUpdateResultChange,
+        handleOpenAppUpdate,
+        handleOpenAppReleaseNotes,
+        handleDismissAppUpdate,
+        handleDownload,
+        handleCancelDownload,
+        handleInstall,
+        handleRollbackRelease,
+        handleDeferInstall,
+        handleDeferInstallToNextStartup,
+        handleIgnoreThisUpdate,
+    } = useAppUpdateFlow({
+        brandDisplayName: brandInfo?.displayName,
+        isWindows,
+        translate,
+        formatText,
+        showToastMessage,
+    });
 
     const handleAIPanelMaximizeToggle = async () => {
         if (aiPanelMaximized) {
@@ -2620,44 +2389,6 @@ function App() {
         });
         safeEventsOn("tool-repair-failed", (toolName: string, error: string) => {
             setToolRepairStatus({show: true, toolName, status: 'failed', message: error});
-        });
-
-        safeEventsOn("download-progress", (data: any) => {
-            console.log("Download progress event:", data);
-            if (data.status === "downloading") {
-                // The source-switch event carries only the host: coercing a
-                // missing percentage would put NaN on the bar and aria-valuenow.
-                if (data.percentage != null) setDownloadProgress(Math.floor(data.percentage));
-                if (data.source) setActiveDownloadSource(String(data.source));
-            } else if (data.status === "verifying") {
-                // SHA256 verification in progress — keep showing progress at 100%
-                setDownloadProgress(100);
-                setIsDownloading(true);
-            } else if (data.status === "completed") {
-                setDownloadProgress(100);
-                setIsDownloading(false);
-            } else if (data.status === "error") {
-                setDownloadError(data.error);
-                setIsDownloading(false);
-            } else if (data.status === "cancelled") {
-                // A user cancel is not a failure: return to the update offer.
-                setDownloadError("");
-                setIsDownloading(false);
-            }
-        });
-
-        safeEventsOn(EVENT_APP_UPDATE_AVAILABLE, (result: AssistantUpdatePayload) => {
-            const payload = result as AssistantUpdatePayload & Record<string, unknown>;
-            if (!(payload.has_update || payload.HasUpdate)) return;
-            const latestVersion = String(payload.latest_version || payload.LatestVersion || "").trim();
-            if (latestVersion) {
-                try {
-                    if (window.localStorage.getItem(DISMISSED_APP_UPDATE_VERSION_KEY) === latestVersion) return;
-                } catch {
-                    // localStorage may be unavailable in some embedded/dev contexts.
-                }
-            }
-            setAppUpdateAvailable({ ...result, has_update: true, latest_version: latestVersion });
         });
 
         void callBackend(() => CheckEnvironment(false)); // Start checks
@@ -3056,8 +2787,6 @@ function App() {
             safeEventsOff("tool-repair-start");
             safeEventsOff("tool-repair-success");
             safeEventsOff("tool-repair-failed");
-            safeEventsOff("download-progress");
-            safeEventsOff(EVENT_APP_UPDATE_AVAILABLE);
             safeEventsOff("config-changed");
             safeEventsOff("config-updated");
             safeEventsOff("qqbot-status-changed");
@@ -6378,7 +6107,7 @@ ${instruction}`;
         >
             <DataMigrationOverlay />
             <BotLocalAccessPrompt lang={lang} />
-            <PetCompanionSurface />
+            <PetCompanionSurface lang={lang} />
             <div className="app-scale-layer">
                 <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined} data-window-move-locked={windowFullscreen || aiPanelOwnsWindowMaximize ? "true" : undefined}>
             <AppSidebarShell
@@ -6389,6 +6118,7 @@ ${instruction}`;
                 taskPaneCollapsed={taskPaneCollapsed}
                 navRailCollapsed={navRailCollapsed}
                 onToggleTaskPane={toggleTaskPaneCollapsed}
+                onToggleRail={toggleNavRailCollapsed}
                 onRequestTaskPaneOpen={openTaskPane}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
@@ -6718,6 +6448,7 @@ ${instruction}`;
                             setQQBotQRError={setQQBotQRError}
                             veNavigationAvailable={veNavigationAvailable}
                             desktopBotTabsAvailable={botAccessEnabled}
+                            cloudAgentAvailable={cloudAgentsEnabled}
                             veSettingsAuthorized={veSettingsAuthorized}
                             virtualEmployeeLayoutClassName={virtualEmployeeLayoutClassName}
                             userFavoriteEmployeeIds={userFavoriteEmployeeIds}
@@ -7177,10 +6908,14 @@ ${instruction}`;
                     isInstalling={isInstallingUpdate}
                     needsElevationHint={isWindows}
                     preferBetaChannel={config?.prefer_beta_channel}
+                    updateDecisionPending={updateDecisionPending}
                     t={t}
                     onCancelDownload={handleCancelDownload}
                     onDownload={handleDownload}
                     onInstall={handleInstall}
+                    onDeferInstall={handleDeferInstall}
+                    onDeferInstallToNextStartup={handleDeferInstallToNextStartup}
+                    onIgnoreUpdate={handleIgnoreThisUpdate}
                     onUpdateResultChange={handleUpdateResultChange}
                     onRollbackReleaseChange={handleRollbackRelease}
                     onClose={() => {

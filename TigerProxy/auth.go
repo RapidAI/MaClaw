@@ -16,8 +16,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"github.com/pkg/browser"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type AuthModeInfo struct {

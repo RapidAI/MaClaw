@@ -3,6 +3,7 @@ import { EventsOn } from "../../../wailsjs/runtime";
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { localizeText } from "./aiAssistantI18n";
+import { BugReportButton } from "./BugReportButton";
 import { handleTaskExecutionHeaderDoubleClick } from "./assistantTaskExecutionChrome";
 import { participantIdentityMatches } from "./participantIdentity";
 import { TaskHideWindowButton } from "./TaskHideWindowButton";
@@ -85,7 +86,6 @@ export function VEConversationTitleBar({ tab, tabs, lang, participantCount = 0, 
                     {skill ? <div className="mc-task-execution-meta" title={skill}>{skill}</div> : null}
                 </div>
             </div>
-            {(showSwitcher || showWindowControls) ? (
             <div className="mc-task-execution-actions" data-testid="ve-conversation-title-actions" {...windowNoDragRegionProps()}>
                 {showSwitcher ? (
                     <TaskTabSwitcher
@@ -96,6 +96,7 @@ export function VEConversationTitleBar({ tab, tabs, lang, participantCount = 0, 
                         onClose={chrome.onCloseTab!}
                     />
                 ) : null}
+                <BugReportButton lang={lang} />
                 {showWindowControls ? (
                     <div className="mc-task-execution-window-controls" data-testid="ve-window-controls" role="group" aria-label={localizeText(lang, "Window controls", "窗口控制", "窗口控制")}>
                         {chrome?.onHideWindow ? <TaskHideWindowButton lang={lang} onHideWindow={chrome.onHideWindow} /> : null}
@@ -103,7 +104,6 @@ export function VEConversationTitleBar({ tab, tabs, lang, participantCount = 0, 
                     </div>
                 ) : null}
             </div>
-            ) : null}
         </div>
     );
 }

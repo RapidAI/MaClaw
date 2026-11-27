@@ -6,6 +6,7 @@ import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
 import { SystemTimeoutField } from './SystemTimeoutField';
 import { SystemCleanupSection } from './SystemCleanupSection';
+import { SystemSilentUpdateOption } from './SystemSilentUpdateOption';
 import { buildSystemDiagnostics } from './systemSettingsDiagnostics';
 
 type AudioDeviceOption = {
@@ -102,6 +103,8 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                         {textForLang(lang, 'Prevents sleep and screen lock while allowing display off. Useful for screenshot testing and debugging.', '\u9632\u6b62\u7cfb\u7edf\u7761\u7720\u548c\u9501\u5c4f\uff0c\u4f46\u5141\u8bb8\u5c4f\u5e55\u5728\u7a7a\u95f2\u540e\u5173\u95ed\uff0c\u9002\u5408\u622a\u56fe\u6d4b\u8bd5\u548c\u8c03\u8bd5\u3002', '\u9632\u6b62\u7cfb\u7d71\u7761\u7720\u548c\u9396\u5c4f\uff0c\u4f46\u5141\u8a31\u87a2\u5e55\u5728\u7a7a\u9592\u5f8c\u95dc\u9589\uff0c\u9069\u5408\u622a\u5716\u6e2c\u8a66\u548c\u9664\u932f\u3002')}
                     </small>
                 </label>
+
+                <SystemSilentUpdateOption config={config} lang={lang} saveRemoteConfigField={saveRemoteConfigField} />
 
                 <label className="system-settings-option" title={!npuPresent ? textForLang(lang, 'No NPU detected on this machine.', '\u672c\u673a\u672a\u68c0\u6d4b\u5230 NPU', '\u672c\u6a5f\u672a\u5075\u6e2c\u5230 NPU') : undefined}>
                     <input

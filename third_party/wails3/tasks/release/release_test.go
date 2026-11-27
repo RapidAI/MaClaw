@@ -1,0 +1,1329 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"golang.org/x/mod/semver"
+)
+
+// setupTestEnvironment creates a proper directory structure for tests
+// It returns the cleanup function and the project root directory
+func setupTestEnvironment(t *testing.T) (cleanup func(), projectRoot string) {
+	// Save current directory
+	originalDir, _ := os.Getwd()
+
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Create the wails project structure within temp directory
+	projectRoot = filepath.Join(tmpDir, "wails")
+	v3Dir := filepath.Join(projectRoot, "v3")
+	releaseDir := filepath.Join(v3Dir, "tasks", "release")
+
+	// Create all necessary directories
+	err := os.MkdirAll(releaseDir, 0755)
+	if err != nil {
+		t.Fatalf("Failed to create test directory structure: %v", err)
+	}
+
+	// Change to the release directory (where the script would run from)
+	os.Chdir(releaseDir)
+
+	// Return cleanup function and project root
+	cleanup = func() {
+		os.Chdir(originalDir)
+	}
+	return cleanup, projectRoot
+}
+
+func TestExtractChangelogContent_EmptySections(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a test file with only one section having content
+	testContent := `# Unreleased Changes
+
+<!-- 
+This file is used to collect changelog entries for the next v3 alpha release.
+-->
+
+## Added
+<!-- New features, capabilities, or enhancements -->
+
+## Changed
+<!-- Changes in existing functionality -->
+
+## Fixed
+- Fix critical bug in the system
+
+## Deprecated
+<!-- Soon-to-be removed features -->
+
+## Removed
+<!-- Features removed in this release -->
+
+## Security
+<!-- Security-related changes -->
+
+---
+
+### Example Entries:
+
+**Added:**
+- Example entry that should not be included`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Extract the content
+	content, err := extractChangelogContent()
+	if err != nil {
+		t.Fatalf("extractChangelogContent() failed: %v", err)
+	}
+
+	// Verify we got content
+	if content == "" {
+		t.Fatal("Expected to extract content, but got empty string")
+	}
+
+	// Verify ONLY the Fixed section is included (the only one with content)
+	if !strings.Contains(content, "## Fixed") {
+		t.Error("Expected to find '## Fixed' section header")
+	}
+
+	if !strings.Contains(content, "Fix critical bug in the system") {
+		t.Error("Expected to find the Fixed content")
+	}
+
+	// Verify empty sections are NOT included
+	sections := []string{"## Added", "## Changed", "## Deprecated", "## Removed", "## Security"}
+	for _, section := range sections {
+		if strings.Contains(content, section) {
+			t.Errorf("Expected NOT to find empty section '%s'", section)
+		}
+	}
+
+	// Verify comments are not included
+	if strings.Contains(content, "<!--") || strings.Contains(content, "-->") {
+		t.Error("Expected NOT to find HTML comments")
+	}
+
+	// Verify example content is not included
+	if strings.Contains(content, "Example entry that should not be included") {
+		t.Error("Expected NOT to find example content")
+	}
+}
+
+func TestExtractChangelogContent_AllEmpty(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a test file with all empty sections (just the template)
+	testContent := getUnreleasedChangelogTemplate()
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Extract the content
+	content, err := extractChangelogContent()
+	if err != nil {
+		t.Fatalf("extractChangelogContent() failed: %v", err)
+	}
+
+	// Verify we got empty string (no content)
+	if content != "" {
+		t.Fatalf("Expected empty string for template-only file, got: %s", content)
+	}
+}
+
+func TestRunRelease_EmptyChangelogSkipsAutomaticRelease(t *testing.T) {
+	cleanup, projectRoot := setupTestEnvironment(t)
+	defer cleanup()
+
+	unreleasedFile := filepath.Join(projectRoot, "v3", "release_changelog.md")
+	if err := os.WriteFile(unreleasedFile, []byte(getUnreleasedChangelogTemplate()), 0o644); err != nil {
+		t.Fatalf("Failed to create unreleased changelog: %v", err)
+	}
+
+	githubOutput := filepath.Join(t.TempDir(), "github-output")
+	if err := os.WriteFile(githubOutput, nil, 0o644); err != nil {
+		t.Fatalf("Failed to create GitHub output file: %v", err)
+	}
+	t.Setenv("GITHUB_OUTPUT", githubOutput)
+
+	if err := runRelease(releaseOptions{dryRun: true, branch: defaultReleaseBranch, target: defaultReleaseTarget}); err != nil {
+		t.Fatalf("runRelease() failed: %v", err)
+	}
+
+	output, err := os.ReadFile(githubOutput)
+	if err != nil {
+		t.Fatalf("Failed to read GitHub output: %v", err)
+	}
+	got := string(output)
+	if !strings.Contains(got, "release_skipped=true\n") {
+		t.Fatalf("Expected automatic release to be skipped, got output:\n%s", got)
+	}
+	if strings.Contains(got, "release_version=") {
+		t.Fatalf("Skipped release unexpectedly produced a version, got output:\n%s", got)
+	}
+}
+
+func TestRunRelease_ExplicitVersionContinuesWithEmptyChangelog(t *testing.T) {
+	cleanup, projectRoot := setupTestEnvironment(t)
+	defer cleanup()
+
+	unreleasedFile := filepath.Join(projectRoot, "v3", "release_changelog.md")
+	if err := os.WriteFile(unreleasedFile, []byte(getUnreleasedChangelogTemplate()), 0o644); err != nil {
+		t.Fatalf("Failed to create unreleased changelog: %v", err)
+	}
+
+	versionDir := filepath.Join(projectRoot, "v3", "internal", "version")
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatalf("Failed to create version directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "version.txt"), []byte("v3.0.0-beta.8"), 0o644); err != nil {
+		t.Fatalf("Failed to create version file: %v", err)
+	}
+
+	githubOutput := filepath.Join(t.TempDir(), "github-output")
+	if err := os.WriteFile(githubOutput, nil, 0o644); err != nil {
+		t.Fatalf("Failed to create GitHub output file: %v", err)
+	}
+	t.Setenv("GITHUB_OUTPUT", githubOutput)
+
+	opts := releaseOptions{
+		version: "3.0.0-beta.9",
+		dryRun:  true,
+		branch:  defaultReleaseBranch,
+		target:  defaultReleaseTarget,
+	}
+	if err := runRelease(opts); err != nil {
+		t.Fatalf("runRelease() failed: %v", err)
+	}
+
+	output, err := os.ReadFile(githubOutput)
+	if err != nil {
+		t.Fatalf("Failed to read GitHub output: %v", err)
+	}
+	got := string(output)
+	if strings.Contains(got, "release_skipped=true\n") {
+		t.Fatalf("Explicit-version release was unexpectedly skipped, got output:\n%s", got)
+	}
+	if !strings.Contains(got, "release_version=v3.0.0-beta.9\n") {
+		t.Fatalf("Expected explicit version output, got:\n%s", got)
+	}
+	if !strings.Contains(got, "release_outcome=dry-run\n") {
+		t.Fatalf("Expected dry-run outcome, got:\n%s", got)
+	}
+}
+
+func TestExtractChangelogContent_MixedSections(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a test file with some sections having content, others empty
+	testContent := `# Unreleased Changes
+
+## Added
+- New feature A
+- New feature B
+
+## Changed
+<!-- No changes -->
+
+## Fixed
+<!-- No fixes -->
+
+## Deprecated
+- Deprecated feature X
+
+## Removed
+<!-- Nothing removed -->
+
+## Security
+- Security fix for CVE-2024-1234`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Extract the content
+	content, err := extractChangelogContent()
+	if err != nil {
+		t.Fatalf("extractChangelogContent() failed: %v", err)
+	}
+
+	// Verify we got content
+	if content == "" {
+		t.Fatal("Expected to extract content, but got empty string")
+	}
+
+	// Verify sections WITH content are included
+	if !strings.Contains(content, "## Added") {
+		t.Error("Expected to find '## Added' section header")
+	}
+	if !strings.Contains(content, "New feature A") {
+		t.Error("Expected to find Added content")
+	}
+
+	if !strings.Contains(content, "## Deprecated") {
+		t.Error("Expected to find '## Deprecated' section header")
+	}
+	if !strings.Contains(content, "Deprecated feature X") {
+		t.Error("Expected to find Deprecated content")
+	}
+
+	if !strings.Contains(content, "## Security") {
+		t.Error("Expected to find '## Security' section header")
+	}
+	if !strings.Contains(content, "Security fix for CVE-2024-1234") {
+		t.Error("Expected to find Security content")
+	}
+
+	// Verify empty sections are NOT included
+	emptyHeaders := []string{"## Changed", "## Fixed", "## Removed"}
+	for _, header := range emptyHeaders {
+		if strings.Contains(content, header) {
+			t.Errorf("Expected NOT to find empty section '%s'", header)
+		}
+	}
+
+	// Print the extracted content for debugging
+	t.Logf("Extracted content:\n%s", content)
+}
+
+func TestGetUnreleasedChangelogTemplate(t *testing.T) {
+	template := getUnreleasedChangelogTemplate()
+
+	// Check that template contains required sections
+	requiredSections := []string{
+		"# Unreleased Changes",
+		"## Added",
+		"## Changed",
+		"## Fixed",
+		"## Deprecated",
+		"## Removed",
+		"## Security",
+	}
+
+	for _, section := range requiredSections {
+		if !strings.Contains(template, section) {
+			t.Errorf("Template missing required section: %s", section)
+		}
+	}
+
+	if !strings.Contains(template, "AUTO-GENERATED FILE: do not edit") {
+		t.Error("Template must identify generated changelog ownership")
+	}
+	if strings.Contains(template, "Add your changes") || strings.Contains(template, "### Example Entries") {
+		t.Error("Template must not invite manual contribution entries")
+	}
+}
+
+func TestHasUnreleasedContent_WithContent(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file with actual content
+	testContent := `# Unreleased Changes
+
+## Added
+- Add new feature for testing
+- Add another important feature
+
+## Fixed
+- Fix critical bug in system`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	hasContent, err := hasUnreleasedContent()
+	if err != nil {
+		t.Fatalf("hasUnreleasedContent() failed: %v", err)
+	}
+
+	if !hasContent {
+		t.Error("Expected hasUnreleasedContent() to return true for file with content")
+	}
+}
+
+func TestHasUnreleasedContent_WithoutContent(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file with only template content (no actual entries)
+	template := getUnreleasedChangelogTemplate()
+	err := os.WriteFile(unreleasedChangelogFile, []byte(template), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	hasContent, err := hasUnreleasedContent()
+	if err != nil {
+		t.Fatalf("hasUnreleasedContent() failed: %v", err)
+	}
+
+	if hasContent {
+		t.Error("Expected hasUnreleasedContent() to return false for template-only file")
+	}
+}
+
+func TestHasUnreleasedContent_WithEmptyBullets(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file with empty bullet points
+	testContent := `# Unreleased Changes
+
+## Added
+- 
+-   
+
+## Fixed
+<!-- No content -->`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	hasContent, err := hasUnreleasedContent()
+	if err != nil {
+		t.Fatalf("hasUnreleasedContent() failed: %v", err)
+	}
+
+	if hasContent {
+		t.Error("Expected hasUnreleasedContent() to return false for file with empty bullets")
+	}
+}
+
+func TestHasUnreleasedContent_NonexistentFile(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Don't create the file
+	hasContent, err := hasUnreleasedContent()
+	if err == nil {
+		t.Error("Expected hasUnreleasedContent() to return an error for nonexistent file")
+	}
+
+	if hasContent {
+		t.Error("Expected hasUnreleasedContent() to return false for nonexistent file")
+	}
+}
+
+func TestSafeFileOperation_Success(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.txt")
+
+	// Create initial file
+	initialContent := "initial content"
+	err := os.WriteFile(testFile, []byte(initialContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Perform safe operation that succeeds
+	newContent := "new content"
+	err = safeFileOperation(testFile, func() error {
+		return os.WriteFile(testFile, []byte(newContent), 0o644)
+	})
+
+	if err != nil {
+		t.Fatalf("safeFileOperation() failed: %v", err)
+	}
+
+	// Verify the file has new content
+	content, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read file after operation: %v", err)
+	}
+
+	if string(content) != newContent {
+		t.Errorf("Expected file content '%s', got '%s'", newContent, string(content))
+	}
+
+	// Verify backup file was cleaned up
+	backupFile := testFile + ".backup"
+	if _, err := os.Stat(backupFile); !os.IsNotExist(err) {
+		t.Error("Backup file was not cleaned up after successful operation")
+	}
+}
+
+func TestSafeFileOperation_Failure(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.txt")
+
+	// Create initial file
+	initialContent := "initial content"
+	err := os.WriteFile(testFile, []byte(initialContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Perform safe operation that fails
+	err = safeFileOperation(testFile, func() error {
+		// First write something to the file
+		os.WriteFile(testFile, []byte("corrupted content"), 0o644)
+		// Then return an error to simulate failure
+		return os.ErrInvalid
+	})
+
+	if err == nil {
+		t.Error("Expected safeFileOperation() to return error")
+	}
+
+	// Verify the file was restored to original content
+	content, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read file after failed operation: %v", err)
+	}
+
+	if string(content) != initialContent {
+		t.Errorf("Expected file content to be restored to '%s', got '%s'", initialContent, string(content))
+	}
+
+	// Verify backup file was cleaned up
+	backupFile := testFile + ".backup"
+	if _, err := os.Stat(backupFile); !os.IsNotExist(err) {
+		t.Error("Backup file was not cleaned up after failed operation")
+	}
+}
+
+func TestSafeFileOperation_NewFile(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "newfile.txt")
+
+	// Perform safe operation on non-existent file
+	content := "new file content"
+	err := safeFileOperation(testFile, func() error {
+		return os.WriteFile(testFile, []byte(content), 0o644)
+	})
+
+	if err != nil {
+		t.Fatalf("safeFileOperation() failed: %v", err)
+	}
+
+	// Verify the file was created with correct content
+	fileContent, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read created file: %v", err)
+	}
+
+	if string(fileContent) != content {
+		t.Errorf("Expected file content '%s', got '%s'", content, string(fileContent))
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "source.txt")
+	dstFile := filepath.Join(tmpDir, "destination.txt")
+
+	// Create source file
+	content := "test content for copying"
+	err := os.WriteFile(srcFile, []byte(content), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create source file: %v", err)
+	}
+
+	// Copy the file
+	err = copyFile(srcFile, dstFile)
+	if err != nil {
+		t.Fatalf("copyFile() failed: %v", err)
+	}
+
+	// Verify destination file exists and has correct content
+	dstContent, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read destination file: %v", err)
+	}
+
+	if string(dstContent) != content {
+		t.Errorf("Expected destination content '%s', got '%s'", content, string(dstContent))
+	}
+}
+
+func TestCopyFile_NonexistentSource(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "nonexistent.txt")
+	dstFile := filepath.Join(tmpDir, "destination.txt")
+
+	// Try to copy non-existent file
+	err := copyFile(srcFile, dstFile)
+	if err == nil {
+		t.Error("Expected copyFile() to return error for non-existent source")
+	}
+
+	// Verify destination file was not created
+	if _, err := os.Stat(dstFile); !os.IsNotExist(err) {
+		t.Error("Destination file should not exist after failed copy")
+	}
+}
+
+// TestAlpha2OutranksStrayTuiTag is the core regression guard for the release-tag
+// fix. A manually-pushed v3.0.0-alpha.98-tui tag hijacked `go install ...@latest`:
+// semver splits the prerelease on dots into alpha + 98-tui, and the alphanumeric
+// "98-tui" outranks every numeric alpha.N, so newer alphas were skipped. Moving to
+// the alpha2.N series fixes it because the label "alpha2" > "alpha".
+//
+// We assert with golang.org/x/mod/semver — the exact comparator the go command
+// uses to resolve @latest — so this test fails if the chosen tag format ever stops
+// out-ranking the stray tag.
+func TestAlpha2OutranksStrayTuiTag(t *testing.T) {
+	const (
+		strayTag     = "v3.0.0-alpha.98-tui" // the tag stuck as @latest
+		legacyLatest = "v3.0.0-alpha.102"    // highest legacy numeric alpha
+		nextTag      = "v3.0.0-alpha2.103"   // first tag the new scheme publishes
+	)
+
+	for _, v := range []string{strayTag, legacyLatest, nextTag} {
+		if !semver.IsValid(v) {
+			t.Fatalf("%q is not a valid semver version", v)
+		}
+	}
+
+	// Sanity: the bug actually exists — the stray tag really does outrank the
+	// legacy numeric alphas (otherwise the fix would be unnecessary).
+	if semver.Compare(strayTag, legacyLatest) <= 0 {
+		t.Fatalf("expected stray %s to outrank legacy %s (the bug); got Compare=%d",
+			strayTag, legacyLatest, semver.Compare(strayTag, legacyLatest))
+	}
+
+	// The fix: the new alpha2 tag must outrank BOTH the stray tag and the legacy
+	// latest, so `go install ...@latest` selects it.
+	if semver.Compare(nextTag, strayTag) <= 0 {
+		t.Errorf("alpha2 tag %s must outrank stray %s, but Compare=%d",
+			nextTag, strayTag, semver.Compare(nextTag, strayTag))
+	}
+	if semver.Compare(nextTag, legacyLatest) <= 0 {
+		t.Errorf("alpha2 tag %s must outrank legacy latest %s, but Compare=%d",
+			nextTag, legacyLatest, semver.Compare(nextTag, legacyLatest))
+	}
+
+	// And the alpha2 series keeps proper numeric ordering across the digit
+	// boundary (no lexical-string footgun like a dash-only format would have).
+	if semver.Compare("v3.0.0-alpha2.999", "v3.0.0-alpha2.1000") >= 0 {
+		t.Errorf("alpha2 series lost numeric ordering: alpha2.999 should be < alpha2.1000")
+	}
+}
+
+func TestUpdateVersion(t *testing.T) {
+	tests := []struct {
+		name            string
+		currentVersion  string
+		expectedVersion string
+	}{
+		{
+			name:            "Alpha version increment",
+			currentVersion:  "v3.0.0-alpha.12",
+			expectedVersion: "v3.0.0-alpha.13",
+		},
+		{
+			name:            "Beta version increment",
+			currentVersion:  "v3.0.0-beta.5",
+			expectedVersion: "v3.0.0-beta.6",
+		},
+		{
+			name:            "First beta from staged beta.0",
+			currentVersion:  "v3.0.0-beta.0",
+			expectedVersion: "v3.0.0-beta.1",
+		},
+		{
+			name:            "RC version increment",
+			currentVersion:  "v2.5.0-rc.1",
+			expectedVersion: "v2.5.0-rc.2",
+		},
+		{
+			name:            "Patch version increment",
+			currentVersion:  "v3.0.0",
+			expectedVersion: "v3.0.1",
+		},
+		{
+			name:            "Patch version with higher number",
+			currentVersion:  "v1.2.15",
+			expectedVersion: "v1.2.16",
+		},
+		{
+			name:            "Pre-release without number becomes patch",
+			currentVersion:  "v3.0.0-alpha",
+			expectedVersion: "v3.0.1",
+		},
+		{
+			name:            "Version without v prefix",
+			currentVersion:  "3.0.0",
+			expectedVersion: "v3.0.1",
+		},
+		{
+			name:            "Alpha with large number",
+			currentVersion:  "v3.0.0-alpha.999",
+			expectedVersion: "v3.0.0-alpha.1000",
+		},
+		{
+			// The "alpha2" series outranks the legacy "alpha.*" tags in semver
+			// (label "alpha2" > "alpha"), while keeping a dotted numeric suffix so
+			// ordering stays numeric. The number continues from the legacy series
+			// (alpha.102 -> alpha2.102 -> alpha2.103). See version.txt.
+			name:            "Alpha2 series increment",
+			currentVersion:  "v3.0.0-alpha2.102",
+			expectedVersion: "v3.0.0-alpha2.103",
+		},
+		{
+			name:            "Alpha2 keeps numeric ordering at boundary",
+			currentVersion:  "v3.0.0-alpha2.999",
+			expectedVersion: "v3.0.0-alpha2.1000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a temporary directory for this test
+			tmpDir := t.TempDir()
+			tempVersionFile := filepath.Join(tmpDir, "version.txt")
+
+			// Save original versionFile path
+			originalVersionFile := versionFile
+			defer func() {
+				// Restore original value
+				_ = originalVersionFile
+			}()
+
+			// Write the current version to temp file
+			err := os.WriteFile(tempVersionFile, []byte(tt.currentVersion), 0o644)
+			if err != nil {
+				t.Fatalf("Failed to write test version file: %v", err)
+			}
+
+			// Test the updateVersion function logic directly
+			result := func() string {
+				currentVersionData, err := os.ReadFile(tempVersionFile)
+				if err != nil {
+					t.Fatalf("Failed to read version file: %v", err)
+				}
+				currentVersion := strings.TrimSpace(string(currentVersionData))
+
+				// Check if it has a pre-release suffix (e.g., -alpha.12, -beta.1)
+				if strings.Contains(currentVersion, "-") {
+					// Split on the dash to separate version and pre-release
+					parts := strings.SplitN(currentVersion, "-", 2)
+					baseVersion := parts[0]
+					preRelease := parts[1]
+
+					// Check if pre-release has a numeric suffix (e.g., alpha.12)
+					lastDotIndex := strings.LastIndex(preRelease, ".")
+					if lastDotIndex != -1 {
+						preReleaseTag := preRelease[:lastDotIndex]
+						numberStr := preRelease[lastDotIndex+1:]
+
+						// Try to parse the number
+						if number, err := strconv.Atoi(numberStr); err == nil {
+							// Increment the pre-release number
+							number++
+							newVersion := fmt.Sprintf("%s-%s.%d", baseVersion, preReleaseTag, number)
+							return newVersion
+						}
+					}
+
+					// If we can't parse the pre-release format, just increment patch version
+					// and remove pre-release suffix
+					return testIncrementPatchVersion(baseVersion)
+				}
+
+				// No pre-release suffix, just increment patch version
+				return testIncrementPatchVersion(currentVersion)
+			}()
+
+			if result != tt.expectedVersion {
+				t.Errorf("updateVersion() = %v, want %v", result, tt.expectedVersion)
+			}
+		})
+	}
+}
+
+// testIncrementPatchVersion is a test version of incrementPatchVersion that doesn't write to file
+func testIncrementPatchVersion(version string) string {
+	// Remove 'v' prefix if present
+	versionWithoutV := strings.TrimPrefix(version, "v")
+
+	// Split into major.minor.patch
+	parts := strings.Split(versionWithoutV, ".")
+	if len(parts) != 3 {
+		// Not a valid semver, return as-is
+		return version
+	}
+
+	// Parse patch version
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return version
+	}
+
+	// Increment patch
+	patch++
+
+	// Reconstruct version
+	return fmt.Sprintf("v%s.%s.%d", parts[0], parts[1], patch)
+}
+
+// extractTestContent is a test helper that extracts changelog content using the same logic as extractChangelogContent
+func extractTestContent(contentStr string) string {
+	lines := strings.Split(contentStr, "\n")
+
+	var result []string
+	var inExampleSection bool
+	var inCommentBlock bool
+	var hasActualContent bool
+	var currentSection string
+
+	for i, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// Track comment blocks (handle multi-line comments)
+		if strings.Contains(line, "<!--") {
+			inCommentBlock = true
+			// Check if comment ends on same line
+			if strings.Contains(line, "-->") {
+				inCommentBlock = false
+			}
+			continue
+		}
+		if inCommentBlock {
+			if strings.Contains(line, "-->") {
+				inCommentBlock = false
+			}
+			continue
+		}
+
+		// Skip the main title
+		if strings.HasPrefix(trimmedLine, "# Unreleased Changes") {
+			continue
+		}
+
+		// Check if we're entering the example section
+		if strings.HasPrefix(trimmedLine, "---") || strings.HasPrefix(trimmedLine, "### Example Entries") {
+			inExampleSection = true
+			continue
+		}
+
+		// Skip example section content
+		if inExampleSection {
+			continue
+		}
+
+		// Handle section headers
+		if strings.HasPrefix(trimmedLine, "##") {
+			currentSection = trimmedLine
+			// Only include section headers that have content after them
+			// We'll add it later if we find content
+			continue
+		}
+
+		// Handle bullet points
+		if strings.HasPrefix(trimmedLine, "-") || strings.HasPrefix(trimmedLine, "*") {
+			// Check if this is actual content (not empty)
+			content := strings.TrimSpace(trimmedLine[1:])
+			if content != "" {
+				// If this is the first content in a section, add the section header first
+				if currentSection != "" {
+					// Only add empty line if this isn't the first section
+					if len(result) > 0 {
+						result = append(result, "")
+					}
+					result = append(result, currentSection)
+					currentSection = "" // Reset so we don't add it again
+				}
+				result = append(result, line)
+				hasActualContent = true
+			}
+		} else if trimmedLine != "" && !strings.HasPrefix(trimmedLine, "<!--") {
+			// Include other non-empty, non-comment lines that aren't section headers
+			if !strings.HasPrefix(trimmedLine, "##") {
+				// Check if next line exists and is not a comment placeholder
+				if i+1 < len(lines) {
+					nextLine := strings.TrimSpace(lines[i+1])
+					if !strings.HasPrefix(nextLine, "<!--") {
+						result = append(result, line)
+					}
+				}
+			}
+		}
+	}
+
+	if !hasActualContent {
+		return ""
+	}
+
+	// Clean up result - remove any trailing empty lines
+	for len(result) > 0 && strings.TrimSpace(result[len(result)-1]) == "" {
+		result = result[:len(result)-1]
+	}
+
+	return strings.Join(result, "\n")
+}
+
+func TestHasUnreleasedContent_IgnoresExampleSection(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file with content only in the example section
+	testContent := `# Unreleased Changes
+
+## Added
+<!-- No content -->
+
+## Fixed
+<!-- No content -->
+
+---
+
+### Example Entries:
+
+**Added:**
+- Add support for custom window icons in application options
+- Add new SetWindowIcon() method to runtime API (#1234)`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	hasContent, err := hasUnreleasedContent()
+	if err != nil {
+		t.Fatalf("hasUnreleasedContent() failed: %v", err)
+	}
+
+	if hasContent {
+		t.Error("Expected hasUnreleasedContent() to return false when content is only in example section")
+	}
+}
+
+func TestHasUnreleasedContent_WithMixedContent(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file with both real content and example content
+	testContent := `# Unreleased Changes
+
+## Added
+- Real feature addition here
+
+## Fixed
+<!-- No content -->
+
+---
+
+### Example Entries:
+
+**Added:**
+- Add support for custom window icons in application options`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	hasContent, err := hasUnreleasedContent()
+	if err != nil {
+		t.Fatalf("hasUnreleasedContent() failed: %v", err)
+	}
+
+	if !hasContent {
+		t.Error("Expected hasUnreleasedContent() to return true when file has real content")
+	}
+}
+
+func TestFullReleaseWorkflow_OnlyNonEmptySections(t *testing.T) {
+	cleanup, projectRoot := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create subdirectories to match expected structure
+	err := os.MkdirAll(filepath.Join(projectRoot, "v3", "internal", "version"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create version directory: %v", err)
+	}
+
+	err = os.MkdirAll(filepath.Join(projectRoot, "docs", "mpress", "content"), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+
+	// Create version file
+	versionFile := filepath.Join(projectRoot, "v3", "internal", "version", "version.txt")
+	err = os.WriteFile(versionFile, []byte("v1.0.0-alpha.5"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create version file: %v", err)
+	}
+
+	// Create initial changelog
+	changelogFile := filepath.Join(projectRoot, "docs", "mpress", "content", "changelog.md")
+	initialChangelog := `---
+schema = 1
+title = "Changelog"
+---
+
+## [Unreleased]
+
+## v1.0.0-alpha.4 - 2024-01-01
+
+### Added
+- Previous feature
+
+`
+	err = os.WriteFile(changelogFile, []byte(initialChangelog), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create changelog file: %v", err)
+	}
+
+	// Create release_changelog.md with mixed content
+	unreleasedContent := `# Unreleased Changes
+
+## Added
+- New amazing feature
+- Another cool addition
+
+## Changed
+<!-- No changes -->
+
+## Fixed
+<!-- No fixes -->
+
+## Deprecated
+- Old API method
+
+## Removed
+<!-- Nothing removed -->
+
+## Security
+<!-- No security updates -->
+`
+	// The script expects the file at ../../release_changelog.md relative to release dir
+	unreleasedFile := filepath.Join(projectRoot, "v3", "release_changelog.md")
+	err = os.WriteFile(unreleasedFile, []byte(unreleasedContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create unreleased changelog: %v", err)
+	}
+
+	// Run the release process simulation
+	// Read and process the files manually since we can't override constants
+	content, err := os.ReadFile(unreleasedFile)
+	if err != nil {
+		t.Fatalf("Failed to read unreleased file: %v", err)
+	}
+
+	// Extract content using the same logic as extractChangelogContent
+	changelogContent := extractTestContent(string(content))
+	if changelogContent == "" {
+		t.Fatal("Failed to extract any content")
+	}
+
+	// Verify only non-empty sections were extracted
+	if !strings.Contains(changelogContent, "## Added") {
+		t.Error("Expected '## Added' section to be included")
+	}
+	if !strings.Contains(changelogContent, "## Deprecated") {
+		t.Error("Expected '## Deprecated' section to be included")
+	}
+
+	// Verify empty sections were NOT extracted
+	emptySections := []string{"## Changed", "## Fixed", "## Removed", "## Security"}
+	for _, section := range emptySections {
+		if strings.Contains(changelogContent, section) {
+			t.Errorf("Expected empty section '%s' to NOT be included", section)
+		}
+	}
+
+	// Simulate updating the main changelog
+	changelogData, _ := os.ReadFile(changelogFile)
+	changelog := string(changelogData)
+	changelogSplit := strings.Split(changelog, "## [Unreleased]")
+
+	newVersion := "v1.0.0-alpha.6"
+	today := "2024-01-15"
+	newChangelog := changelogSplit[0] + "## [Unreleased]\n\n## " + newVersion + " - " + today + "\n\n" + changelogContent + changelogSplit[1]
+
+	// Verify the final changelog format
+	if !strings.Contains(newChangelog, "## v1.0.0-alpha.6 - 2024-01-15") {
+		t.Error("Expected new version header in changelog")
+	}
+
+	// Count occurrences of section headers in the new version section
+	newVersionSection := strings.Split(newChangelog, "## v1.0.0-alpha.4")[0]
+
+	addedCount := strings.Count(newVersionSection, "## Added")
+	if addedCount != 1 {
+		t.Errorf("Expected exactly 1 '## Added' section, got %d", addedCount)
+	}
+
+	deprecatedCount := strings.Count(newVersionSection, "## Deprecated")
+	if deprecatedCount != 1 {
+		t.Errorf("Expected exactly 1 '## Deprecated' section, got %d", deprecatedCount)
+	}
+
+	// Ensure no empty sections in the new version section
+	for _, section := range []string{"## Changed", "## Fixed", "## Removed", "## Security"} {
+		count := strings.Count(newVersionSection, section)
+		if count > 0 {
+			t.Errorf("Expected 0 occurrences of empty section '%s', got %d", section, count)
+		}
+	}
+}
+
+// Test error handling during cleanup
+func TestCleanupWorkflow_ErrorHandling(t *testing.T) {
+	cleanup, _ := setupTestEnvironment(t)
+	defer cleanup()
+
+	// Create a changelog file with content
+	testContent := `# Unreleased Changes
+
+## Added
+- Test content that should be preserved on error`
+
+	err := os.WriteFile(unreleasedChangelogFile, []byte(testContent), 0o644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Simulate an error during cleanup by making the operation fail
+	err = safeFileOperation(unreleasedChangelogFile, func() error {
+		// First corrupt the file
+		os.WriteFile(unreleasedChangelogFile, []byte("corrupted"), 0o644)
+		// Then return an error
+		return os.ErrPermission
+	})
+
+	if err == nil {
+		t.Error("Expected safeFileOperation to return error")
+	}
+
+	// Verify original content was restored
+	content, err := os.ReadFile(unreleasedChangelogFile)
+	if err != nil {
+		t.Fatalf("Failed to read file after error: %v", err)
+	}
+
+	if string(content) != testContent {
+		t.Error("Original content was not restored after error")
+	}
+}
+
+// TestReleaseChannel verifies the channel label derived from a version string,
+// which drives the release-notes heading and warning wording.
+func TestReleaseChannel(t *testing.T) {
+	tests := []struct {
+		version string
+		want    string
+	}{
+		{"v3.0.0-alpha.40", "Alpha"},
+		{"v3.0.0-alpha2.114", "Alpha"},
+		{"v3.0.0-beta.1", "Beta"},
+		{"v3.0.0-rc.1", "Release Candidate"},
+		{"v3.0.0", ""},
+	}
+	for _, tt := range tests {
+		if got := releaseChannel(tt.version); got != tt.want {
+			t.Errorf("releaseChannel(%q) = %q, want %q", tt.version, got, tt.want)
+		}
+	}
+}
+
+// TestBuildReleaseBody verifies the release notes adapt their heading and
+// warning to the release channel encoded in the version string.
+func TestBuildReleaseBody(t *testing.T) {
+	changelog := "### Added\n- something new"
+
+	t.Run("alpha", func(t *testing.T) {
+		body := buildReleaseBody("v3.0.0-alpha2.115", changelog)
+		if !strings.Contains(body, "## Wails v3 Alpha Release - v3.0.0-alpha2.115") {
+			t.Errorf("alpha body missing Alpha heading:\n%s", body)
+		}
+		if !strings.Contains(body, "**⚠️ Alpha Warning:** This is pre-release software and may contain bugs or incomplete features.") {
+			t.Errorf("alpha body missing Alpha warning:\n%s", body)
+		}
+		if strings.Contains(body, "Beta") {
+			t.Errorf("alpha body unexpectedly mentions Beta:\n%s", body)
+		}
+	})
+
+	t.Run("beta", func(t *testing.T) {
+		body := buildReleaseBody("v3.0.0-beta.1", changelog)
+		if !strings.Contains(body, "## Wails v3 Beta Release - v3.0.0-beta.1") {
+			t.Errorf("beta body missing Beta heading:\n%s", body)
+		}
+		if !strings.Contains(body, "**⚠️ Beta Warning:**") {
+			t.Errorf("beta body missing Beta warning:\n%s", body)
+		}
+		if strings.Contains(body, "Alpha") {
+			t.Errorf("beta body unexpectedly mentions Alpha:\n%s", body)
+		}
+		if !strings.Contains(body, "go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.1") {
+			t.Errorf("beta body missing install command:\n%s", body)
+		}
+	})
+}
+
+// TestFirstBetaIncrement pins the beta staging contract: version.txt is staged
+// at v3.0.0-beta.0 so the first released beta becomes v3.0.0-beta.1.
+func TestFirstBetaIncrement(t *testing.T) {
+	if got := computeNextVersion("v3.0.0-beta.0"); got != "v3.0.0-beta.1" {
+		t.Errorf("computeNextVersion(v3.0.0-beta.0) = %q, want v3.0.0-beta.1", got)
+	}
+}
+
+func TestSyncRuntimePackageVersion(t *testing.T) {
+	repoDir := t.TempDir()
+	runtimeDir := filepath.Join(repoDir, "v3", "internal", "runtime", "desktop", "@wailsio", "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	packageJSON := `{
+  "name": "@wailsio/runtime",
+  "version": "3.0.0-beta.7",
+  "scripts": {"test": "vitest"}
+}
+`
+	packageLockJSON := `{
+  "name": "@wailsio/runtime",
+  "version": "3.0.0-beta.7",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "@wailsio/runtime",
+      "version": "3.0.0-beta.7"
+    },
+    "node_modules/example": {
+      "version": "1.2.3"
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(runtimeDir, "package.json"), []byte(packageJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile(package.json) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "package-lock.json"), []byte(packageLockJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile(package-lock.json) error = %v", err)
+	}
+
+	if err := syncRuntimePackageVersion(repoDir, "v3.0.0-beta.8"); err != nil {
+		t.Fatalf("syncRuntimePackageVersion() error = %v", err)
+	}
+
+	var packageMetadata struct {
+		Version string `json:"version"`
+	}
+	data, err := os.ReadFile(filepath.Join(runtimeDir, "package.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(package.json) error = %v", err)
+	}
+	if err := json.Unmarshal(data, &packageMetadata); err != nil {
+		t.Fatalf("Unmarshal(package.json) error = %v", err)
+	}
+	if packageMetadata.Version != "3.0.0-beta.8" {
+		t.Fatalf("package.json version = %q, want %q", packageMetadata.Version, "3.0.0-beta.8")
+	}
+
+	var lockMetadata struct {
+		Version  string `json:"version"`
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	data, err = os.ReadFile(filepath.Join(runtimeDir, "package-lock.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(package-lock.json) error = %v", err)
+	}
+	if err := json.Unmarshal(data, &lockMetadata); err != nil {
+		t.Fatalf("Unmarshal(package-lock.json) error = %v", err)
+	}
+	if lockMetadata.Version != "3.0.0-beta.8" {
+		t.Fatalf("package-lock.json version = %q, want %q", lockMetadata.Version, "3.0.0-beta.8")
+	}
+	if got := lockMetadata.Packages[""].Version; got != "3.0.0-beta.8" {
+		t.Fatalf("package-lock.json root version = %q, want %q", got, "3.0.0-beta.8")
+	}
+	if got := lockMetadata.Packages["node_modules/example"].Version; got != "1.2.3" {
+		t.Fatalf("dependency version = %q, want %q", got, "1.2.3")
+	}
+}
+
+func TestReleasePublishesMarkdownChangelog(t *testing.T) {
+	cleanup, root := setupTestEnvironment(t)
+	defer cleanup()
+	archive := filepath.Join(root, "docs/mpress/content/changelog.md")
+	if err := os.MkdirAll(filepath.Dir(archive), 0755); err != nil {
+		t.Fatal(err)
+	}
+	original := "---\ntitle: \"Changelog\"\n---\n\n## [Unreleased]\n\n## v3.0.0-beta.8\nOld notes\n"
+	if err := os.WriteFile(archive, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unreleasedChangelogFile, []byte("## Fixed\n- A fix\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyChangelogUpdates("v3.0.0-beta.9", "### Fixed\n- A fix\n"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), strings.Split(original, "## [Unreleased]")[0]) || !strings.Contains(string(data), "## v3.0.0-beta.9") || !strings.Contains(string(data), "Old notes") {
+		t.Fatalf("Invalid published Markdown: %s", data)
+	}
+	remaining, err := os.ReadFile(unreleasedChangelogFile)
+	if err != nil || string(remaining) != "## Fixed\n- A fix\n" {
+		t.Fatalf("Release-local input must remain available for inspection: %s, %v", remaining, err)
+	}
+}
+
+// getUnreleasedChangelogTemplate returns the template content for release_changelog.md
+func getUnreleasedChangelogTemplate() string {
+	return `# Unreleased Changes
+
+<!--
+AUTO-GENERATED FILE: do not edit.
+
+Generated at release time from merged PRs in the tested commit range.
+This temporary input is ignored by Git and is never committed.
+-->
+
+## Added
+<!-- New features, capabilities, or enhancements -->
+
+## Changed
+<!-- Changes in existing functionality -->
+
+## Fixed
+<!-- Bug fixes -->
+
+## Deprecated
+<!-- Soon-to-be removed features -->
+
+## Removed
+<!-- Features removed in this release -->
+
+## Security
+<!-- Security-related changes -->
+
+---
+`
+}

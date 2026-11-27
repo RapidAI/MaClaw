@@ -33,8 +33,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"github.com/fsnotify/fsnotify"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	_ "golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -99,7 +99,10 @@ type App struct {
 	pendingCreditGift          CreditGiftLaunch
 	cloudWorkspaceShareMu      sync.Mutex
 	pendingCloudWorkspaceShare CloudWorkspaceShareLaunch
-	watcher                    *fsnotify.Watcher
+	// cloudAgentRepos caches the connect dialog's repository list per service
+	// (github/gitlab). In-memory only; see cloud_agent_repos.go for the TTLs.
+	cloudAgentRepos cloudAgentRepoCache
+	watcher         *fsnotify.Watcher
 	// knowledgeFolderWatch tracks user-selected folders and imports document changes.
 	knowledgeFolderWatchOnce sync.Once
 	knowledgeFolderWatch     *knowledgeFolderWatchState
@@ -133,13 +136,25 @@ type App struct {
 	// re-pointed or external edits to the database would go unnoticed.
 	watchedConfigStoragePath atomic.Value // stores string
 	configWatchMu            sync.Mutex
-	// verifiedInstaller is the installer produced by the most recent
-	// successful DownloadUpdate*. LaunchInstallerAndExit runs it silently (and
-	// on Windows with elevation), so it only ever accepts that exact file,
-	// re-verified at launch time. Kept in memory only: it is a launch
-	// authorization, not application state.
+	// verifiedInstallers are the installers produced by successful
+	// DownloadUpdate* calls, keyed by canonical file path. LaunchInstallerAndExit
+	// runs one silently (and on Windows with elevation), so it only ever accepts
+	// an exact file this process fetched, re-verified at launch time. Different
+	// update targets (for example a manual rollback next to a silent background
+	// download) coexist here because their destination file names differ.
+	// Kept in memory only: these are launch authorizations, not application state.
 	verifiedInstallerMu sync.Mutex
-	verifiedInstaller   *verifiedInstaller
+	verifiedInstallers  map[string]*verifiedInstaller
+	// downloadedUpdates are the verified installers awaiting the user's install
+	// decision, keyed by normalized version, whether they came from a silent
+	// background or a manual dialog download. The timer drives a deferred
+	// install that the user already authorized; the flag serializes
+	// install/defer decisions. Neither is an automatic update approval.
+	downloadedUpdateMu            sync.Mutex
+	downloadedUpdates             map[string]*downloadedUpdateReady
+	downloadedUpdateTimer         *time.Timer
+	downloadedUpdateActionRunning bool
+	updateIgnoreMu                sync.Mutex
 	// pendingBugReportUpload keeps the most recent locally-created diagnostics
 	// archive available after an upload failure. It is deliberately kept outside
 	// config: the archive contains sensitive diagnostics and should not become a
@@ -571,6 +586,17 @@ type App struct {
 	// changes; drainPendingDataDirReset must run only after releasing configMu
 	// so DB/memory teardown never blocks LoadConfig readers.
 	pendingDataDirReset atomic.Bool
+	// dataDirResetMu serializes the full path-bound teardown and lets one
+	// drain coalesce changes published while that teardown was running. A
+	// second config change may be published while the first drain is already
+	// inside teardown; without this mutex both drains would consume the
+	// migration source and migrate overlapping coding epochs concurrently.
+	dataDirResetMu sync.Mutex
+	// pendingDataDirMigrationSource records the pre-switch data directory for
+	// the coding authorization stores. The reset drain consumes it after the
+	// old stores have been quiesced so their durable history can be copied
+	// without copying live capabilities.
+	pendingDataDirMigrationSource atomic.Value // stores string
 	// pendingConfigDiskWrite is set when loadConfigLocked produced an in-memory
 	// config that must be written after releasing configMu (first-run bootstrap,
 	// legacy migration materialize, pet-field migration). Unified drain is
@@ -609,6 +635,10 @@ type App struct {
 	codingRuntimeStoreMu       sync.Mutex
 	codingRuntimeStorePath     string
 	codingRuntimeStoreClosed   bool
+	// codingAuthorizationDataDir is the coding store epoch directory. It lags
+	// GetDataDir during a data-dir switch until old runners/capabilities have
+	// been quiesced and durable history migration has reached its commit point.
+	codingAuthorizationDataDir atomic.Value                   // stores string
 	enterpriseKnowledgeStore   *knowledge.SQLiteStore         // enterprise digital assets local KB (legacy pointer; prefer enterpriseClient)
 	enterpriseClient           *enterpriseknowledge.Client    // shared enterprise knowledge client
 	enterpriseSync             *enterpriseknowledge.SyncAgent // Hub→local one-way sync for digital assets
@@ -6055,9 +6085,18 @@ func (a *App) applyDataDirFromConfigLocked(config corelib.AppConfig) (dataDirCha
 		corelib.SetMaclawBaseDirFromConfig(config.DataDir)
 		newBase = corelib.MaclawBaseDir()
 	}
+	oldDataDir := filepath.Join(filepath.Clean(oldBase), "data")
+	if current, ok := a.codingAuthorizationDataDir.Load().(string); !ok || strings.TrimSpace(current) == "" {
+		a.codingAuthorizationDataDir.Store(oldDataDir)
+	}
 	a.effectiveBaseDir.Store(newBase)
-	changed := strings.TrimSpace(oldBase) != "" && filepath.Clean(oldBase) != filepath.Clean(newBase)
+	changed := strings.TrimSpace(oldBase) != "" && !sameCodingDataDirPath(oldBase, newBase)
 	if changed {
+		if current, ok := a.codingAuthorizationDataDir.Load().(string); ok && strings.TrimSpace(current) != "" {
+			a.pendingDataDirMigrationSource.Store(filepath.Clean(current))
+		} else {
+			a.pendingDataDirMigrationSource.Store(oldDataDir)
+		}
 		a.pendingDataDirReset.Store(true)
 	}
 	return changed
@@ -6066,10 +6105,16 @@ func (a *App) applyDataDirFromConfigLocked(config corelib.AppConfig) (dataDirCha
 // drainPendingDataDirReset runs path-bound store teardown if a prior locked
 // apply flagged a data-dir change. Safe and idempotent; never call under configMu.
 func (a *App) drainPendingDataDirReset() {
-	if a == nil {
+	if a == nil || !a.pendingDataDirReset.Load() {
 		return
 	}
-	if a.pendingDataDirReset.CompareAndSwap(true, false) {
+	a.dataDirResetMu.Lock()
+	defer a.dataDirResetMu.Unlock()
+	// Keep draining inside the serialization lock. If another data-dir change
+	// is published while this reset is running, performing it here uses the
+	// newest effective directory and prevents a queued duplicate drain from
+	// tearing down stores a second time for a transition already coalesced.
+	for a.pendingDataDirReset.CompareAndSwap(true, false) {
 		a.resetPathBoundStateForDataDirChange()
 	}
 }
@@ -6815,6 +6860,13 @@ func (a *App) applyDataDirFromConfig(config corelib.AppConfig) {
 }
 
 func (a *App) resetPathBoundStateForDataDirChange() {
+	// Capture the transition target once. A newer config write may become
+	// effective while the generic teardown below is still running; it must be
+	// handled by the serialized drain as the next epoch rather than silently
+	// retargeting this teardown halfway through.
+	replacementDataDir := filepath.Clean(a.GetDataDir())
+	a.retireCodingRuntimeStoreForDataDirChangeTo(replacementDataDir)
+	codingruntime.CancelLiveCodingAttemptsOutsideSQLiteStorePath(filepath.Join(replacementDataDir, "coding_runtime.db"))
 	invalidateLatexVerifiedCache()
 	a.answerCacheMu.Lock()
 	answerCache := a.answerCache
@@ -6865,8 +6917,9 @@ func (a *App) resetPathBoundStateForDataDirChange() {
 		a.imAuditStore = nil
 	}
 	a.imAuditStoreMu = sync.Once{}
-	a.codingCaps.resetRelationServiceForDataDirChange()
-	a.resetCodingRuntimeStoreForDataDirChange()
+	migrationSource, _ := a.pendingDataDirMigrationSource.Load().(string)
+	a.pendingDataDirMigrationSource.Store("")
+	a.resetCodingAuthorizationStoresForDataDirChangeTo(migrationSource, replacementDataDir)
 	if a.codingKnowledgeStore != nil {
 		codingKnowledgeStoreMu.Lock()
 		_ = a.codingKnowledgeStore.Close()
@@ -8735,6 +8788,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				break
 			}
 			cfg.OnboardingDone = v
+		case "silent_update_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SilentUpdateEnabled = v
 		case "prefer_beta_channel":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -10700,6 +10759,37 @@ func updateTargetFileName() string {
 	return updateTargetFileNameFor(brand.Current().DisplayName, goruntime.GOOS)
 }
 
+// versionedInstallerFileName qualifies the download destination with the
+// target version so installers of different releases never share one path.
+// Every download truncates its destination before writing; sharing a fixed
+// name across versions let a silent background download overwrite the bytes
+// of a rollback (or vice versa) while the user was still deciding, and even
+// a hash re-check could not distinguish them once the verified record was
+// replaced. The version is stripped to file-name-safe characters only.
+func versionedInstallerFileName(fileName, version string) string {
+	fileName = strings.TrimSpace(fileName)
+	version = strings.TrimSpace(version)
+	if fileName == "" || version == "" {
+		return fileName
+	}
+	var clean strings.Builder
+	for _, r := range version {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			clean.WriteRune(r)
+		default:
+			clean.WriteByte('_')
+		}
+	}
+	suffix := strings.Trim(clean.String(), "._-")
+	if suffix == "" {
+		return fileName
+	}
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+	return base + "-" + suffix + ext
+}
+
 func updateTargetFileNameFor(brandName, goos string) string {
 	if strings.TrimSpace(brandName) == "" {
 		brandName = "MaClaw"
@@ -11694,6 +11784,15 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 }
 
 func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA256 string) (string, error) {
+	return a.downloadUpdateWithSHA256(url, fileName, expectedSHA256, true)
+}
+
+func (a *App) downloadUpdateWithSHA256(url string, fileName string, expectedSHA256 string, emitProgress bool) (string, error) {
+	emitDownloadProgress := func(progress DownloadProgress) {
+		if emitProgress {
+			a.emitEvent("download-progress", progress)
+		}
+	}
 	// The name is joined with the Downloads folder and that path is what
 	// LaunchInstallerAndExit later runs silently and elevated: keep it a bare
 	// file name so a crafted manifest cannot aim the launch elsewhere.
@@ -11735,12 +11834,12 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	a.downloadCancelers[downloadID] = canceler
 	a.downloadMutex.Unlock()
 	// This attempt rewrites the destination file. A record left over from an
-	// earlier verified download must not authorize it again: os.Create
-	// truncates in place, so a no-hash manifest's file-identity check could
-	// otherwise bless a half-written installer if a launch ran mid-download.
-	a.verifiedInstallerMu.Lock()
-	a.verifiedInstaller = nil
-	a.verifiedInstallerMu.Unlock()
+	// earlier verified download of this same file must not authorize it again:
+	// os.Create truncates in place, so a no-hash manifest's file-identity check
+	// could otherwise bless a half-written installer if a launch ran
+	// mid-download. Other targets keep their own verified entries: their files
+	// are version-qualified and do not share this destination.
+	a.forgetVerifiedInstaller(destPath)
 	defer func() {
 		a.downloadMutex.Lock()
 		// Only clear our own entry: a newer download may already own the key.
@@ -11759,12 +11858,12 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 			_ = os.Remove(destPath)
 		}
 		a.log(fmt.Sprintf("DownloadUpdate: Trying source %d/%d: %s", index+1, len(urls), candidateURL))
-		a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusDownloading, Source: downloadSourceHost(candidateURL)})
-		path, err := a.downloadUpdateFromURL(ctx, candidateURL, fileName, destPath)
+		emitDownloadProgress(DownloadProgress{Status: downloadProgressStatusDownloading, Source: downloadSourceHost(candidateURL)})
+		path, err := a.downloadUpdateFromURL(ctx, candidateURL, fileName, destPath, emitDownloadProgress)
 		if err == nil {
 			// SHA256 verification (if expected hash is provided from manifest)
 			if expectedSHA256 != "" {
-				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusVerifying})
+				emitDownloadProgress(DownloadProgress{Percentage: 100, Status: downloadProgressStatusVerifying})
 				if verifyErr := verifySHA256File(path, expectedSHA256); verifyErr != nil {
 					a.log(fmt.Sprintf("DownloadUpdate: SHA256 verification failed for %s: %v", candidateURL, verifyErr))
 					err = verifyErr
@@ -11776,7 +11875,7 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 				}
 				// Authorize this exact file for the later silent launch.
 				a.rememberVerifiedInstaller(path, expectedSHA256)
-				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
+				emitDownloadProgress(DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
 				return path, nil
 			}
 		}
@@ -11794,12 +11893,19 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 			break
 		}
 	}
+	if ctx.Err() == context.Canceled {
+		// A user cancel is not a failed mirror sweep. Emitting the terminal
+		// error after the cancelled event would race the dialog's cleanup and
+		// can re-display "download cancelled" as a failure.
+		emitDownloadProgress(DownloadProgress{Status: downloadProgressStatusCancelled})
+		return "", fmt.Errorf("download cancelled")
+	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all download sources failed")
 	} else if len(failures) > 1 {
 		lastErr = fmt.Errorf("all download sources failed: %s", strings.Join(failures, "; "))
 	}
-	a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusError, Error: lastErr.Error()})
+	emitDownloadProgress(DownloadProgress{Status: downloadProgressStatusError, Error: lastErr.Error()})
 	return "", lastErr
 }
 
@@ -11856,7 +11962,10 @@ func verifySHA256File(path, expected string) error {
 	return nil
 }
 
-func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName string, destPath string) (string, error) {
+func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName string, destPath string, emitDownloadProgress func(DownloadProgress)) (string, error) {
+	if emitDownloadProgress == nil {
+		emitDownloadProgress = func(DownloadProgress) {}
+	}
 	sourceTimeout := 30 * time.Minute
 	if strings.Contains(url, "github.com/") || strings.Contains(url, "githubusercontent.com/") {
 		sourceTimeout = 90 * time.Second
@@ -11950,7 +12059,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 				if size > 0 {
 					percentage = float64(downloaded) / float64(size) * 100
 				}
-				a.emitEvent("download-progress", DownloadProgress{Percentage: percentage, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
+				emitDownloadProgress(DownloadProgress{Percentage: percentage, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
 				lastReport = time.Now()
 			}
 		}
@@ -11959,7 +12068,8 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 		}
 		if err != nil {
 			if ctx.Err() == context.Canceled {
-				a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusCancelled})
+				// The outer multi-source wrapper owns the terminal cancelled
+				// event; emitting here as well would double-publish it.
 				return "", fmt.Errorf("download cancelled")
 			}
 			if sourceCtx.Err() == context.DeadlineExceeded {
@@ -11976,7 +12086,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 	if err := out.Close(); err != nil {
 		return "", fmt.Errorf("closing installer file: %w", err)
 	}
-	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
+	emitDownloadProgress(DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
 	return destPath, nil
 }
 func (a *App) CancelDownload(downloadID string) {

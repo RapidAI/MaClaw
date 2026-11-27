@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -907,6 +908,37 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		return fmt.Sprintf("文件不存在或无法访问: %s", err.Error())
 	}
 	if info.IsDir() {
+		if ln, _ := args["line_numbers"].(bool); ln {
+			entries, rerr := os.ReadDir(absPath)
+			if rerr != nil {
+				return fmt.Sprintf("读取目录失败: %s", rerr.Error())
+			}
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() {
+					name += "/"
+				}
+				names = append(names, name)
+			}
+			sort.SliceStable(names, func(i, j int) bool {
+				iDir := strings.HasSuffix(names[i], "/")
+				jDir := strings.HasSuffix(names[j], "/")
+				if iDir != jDir {
+					return iDir
+				}
+				return names[i] < names[j]
+			})
+			startEntry := 1
+			if n, ok := args["start_line"].(float64); ok && n > 1 {
+				startEntry = int(n)
+			}
+			maxEntries := readFileMaxLines
+			if n, ok := args["lines"].(float64); ok && n > 0 && int(n) < maxEntries {
+				maxEntries = int(n)
+			}
+			return coretool.FormatNumberedReadDir(p, names, startEntry, maxEntries)
+		}
 		return fmt.Sprintf("%s 是目录，请使用 list_directory 工具", absPath)
 	}
 
@@ -923,6 +955,7 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		startLine = int(n)
 		explicitStart = true
 	}
+	lineNumbers, _ := args["line_numbers"].(bool)
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
@@ -942,6 +975,17 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		startIdx := totalLines - tailN
 		tailContent := strings.Join(lines[startIdx:], "")
 		return fmt.Sprintf("... (跳过前 %d 行，显示最后 %d 行，共 %d 行)\n%s", startIdx, tailN, totalLines, tailContent)
+	}
+
+	if lineNumbers {
+		if bytes.IndexByte(data, 0) >= 0 {
+			return fmt.Sprintf("无法以文本读取二进制文件 %s", p)
+		}
+		startIdx := startLine - 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		return coretool.FormatNumberedReadPage(p, lines, startIdx, maxLines)
 	}
 
 	// 自适应策略：LLM 未指定 start_line/lines 时，根据文件大小自动决定返回内容
@@ -968,9 +1012,7 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		// This helps the LLM use edit_lines with correct line numbers.
 		if explicitStart {
 			var numbered strings.Builder
-			for i, line := range chunk {
-				numbered.WriteString(fmt.Sprintf("%4d | %s", startLine+i, line))
-			}
+			coretool.AppendNumberedTextLines(&numbered, chunk, startLine, false)
 			return numbered.String() + fmt.Sprintf(
 				"\n... (共 %d 行，显示第 %d-%d 行。下一段: start_line=%d)",
 				totalLines, startLine, endLine, nextStart)
@@ -984,9 +1026,7 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 		// Add line numbers for precise reads.
 		if explicitStart {
 			var numbered strings.Builder
-			for i, line := range remaining {
-				numbered.WriteString(fmt.Sprintf("%4d | %s", startLine+i, line))
-			}
+			coretool.AppendNumberedTextLines(&numbered, remaining, startLine, false)
 			return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, numbered.String())
 		}
 		return fmt.Sprintf("(第 %d-%d 行，共 %d 行)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, ""))
@@ -1078,7 +1118,8 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 	}
 	original, hasOriginal := localToolCodePreviewOriginal(absPath)
 	replaceAll, _ := args["replace_all"].(bool)
-	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
+	requireUnique, _ := args["require_unique"].(bool)
+	res, err := coretool.EditTextFileMode(absPath, oldString, newString, replaceAll, requireUnique)
 	if err != nil {
 		if classifyLocalFileToolError(err).ReturnRawError() {
 			return err.Error()

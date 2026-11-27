@@ -2285,6 +2285,7 @@ export namespace corelib {
 	    screen_dim_timeout_min: number;
 	    workstation_mode: boolean;
 	    check_update_on_startup: boolean;
+	    silent_update_enabled: boolean;
 	    prefer_beta_channel?: boolean;
 	    pause_env_check: boolean;
 	    env_check_done: boolean;
@@ -2595,6 +2596,7 @@ export namespace corelib {
 	        this.screen_dim_timeout_min = source["screen_dim_timeout_min"];
 	        this.workstation_mode = source["workstation_mode"];
 	        this.check_update_on_startup = source["check_update_on_startup"];
+	        this.silent_update_enabled = source["silent_update_enabled"];
 	        this.prefer_beta_channel = source["prefer_beta_channel"];
 	        this.pause_env_check = source["pause_env_check"];
 	        this.env_check_done = source["env_check_done"];

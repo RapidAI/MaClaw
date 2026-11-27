@@ -905,6 +905,57 @@ func TestParseContentToolCallsDetailed_FencedBareJSONToolCall(t *testing.T) {
 	}
 }
 
+func TestParseContentToolCallsDetailed_CompactJSONWithDanglingHy3Args(t *testing.T) {
+	content := "web_search {\"query\":\"北京 天气 今天 实时\"}\n" +
+		"web_fetch {\"url\":\"https://wttr.in/Beijing?format=j1\"}</arg_value:6124c78e><arg_key:6124c78e>timeout</arg_key:6124c78e><arg_value:6124c78e>30</arg_value:6124c78e>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatalf("complete compact calls with recognizable dangling Hy3 noise should recover: %#v", calls)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected both compact calls, got %#v", calls)
+	}
+	if calls[0].Function.Name != "web_search" || !strings.Contains(calls[0].Function.Arguments, `"query":"北京 天气 今天 实时"`) {
+		t.Fatalf("web_search = %#v", calls[0])
+	}
+	if calls[1].Function.Name != "web_fetch" || !strings.Contains(calls[1].Function.Arguments, `"url":"https://wttr.in/Beijing?format=j1"`) {
+		t.Fatalf("web_fetch = %#v", calls[1])
+	}
+	if !strings.Contains(calls[1].Function.Arguments, `"timeout":30`) {
+		t.Fatalf("dangling Hy3 timeout was not merged: %q", calls[1].Function.Arguments)
+	}
+
+	closeOnly := "web_fetch {\"url\":\"https://wttr.in/Beijing?format=j1\"}</arg_value:6124c78e>"
+	calls, malformed = ParseContentToolCallsDetailed(closeOnly)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_fetch" {
+		t.Fatalf("close-only dangling Hy3 = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"url":"https://wttr.in/Beijing?format=j1"`) {
+		t.Fatalf("close-only arguments = %q", calls[0].Function.Arguments)
+	}
+
+	msg := &Message{Content: content}
+	finish, changed := adoptLeakedToolCalls(msg, msg.Content)
+	if !changed || finish != "tool_calls" || len(msg.ToolCalls) != 2 || msg.Content != "" {
+		t.Fatalf("adopted hybrid finish=%q changed=%v content=%q calls=%#v", finish, changed, msg.Content, msg.ToolCalls)
+	}
+}
+
+func TestHoldContentToolCallStream_CompactJSONCallDoesNotLeak(t *testing.T) {
+	prefix := "我先查询实时天气。\n"
+	visible, hold, suppress := HoldContentToolCallStream(prefix+"web_search {\"query\":\"北京", false)
+	if strings.Contains(visible, "web_search") || strings.Contains(visible, "query") {
+		t.Fatalf("partial compact call leaked: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	if !suppress || visible != prefix || hold != "" {
+		t.Fatalf("partial compact call was not suppressed at the marker: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, _, suppress = HoldContentToolCallStream(prefix+"web_search {\"query\":\"北京天气\"}\nweb_fetch {\"url\":\"https://wttr.in/Beijing?format=j1\"}</arg_value:6124c78e>", true)
+	if !suppress || visible != prefix {
+		t.Fatalf("complete compact calls were not suppressed: visible=%q suppress=%v", visible, suppress)
+	}
+}
+
 func TestParseContentToolCallsDetailed_LineOrientedLeakedGlob(t *testing.T) {
 	content := "截图里高亮的是「几何图像」中 `R^n` 没进公式渲染。正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\Users\\ma139\\.maclaw\\workspace\\ai-math-handbook\nglob_pattern\n**/*.{html,md,json}<|eos|>"
 	calls, malformed := ParseContentToolCallsDetailed(content)
@@ -2005,7 +2056,6 @@ func TestParseSSEStreamWithReasoningFailsAfterTooManySkippedLines(t *testing.T) 
 	}
 }
 
-
 // Eight skipped events are still a recoverable cut. The ninth is the fuse.
 func TestParseSSEStreamWithReasoningSkippedEventBoundary(t *testing.T) {
 	const maxLine = 128
@@ -2080,4 +2130,3 @@ func TestParseSSEToResponseAllowsEightSkippedEvents(t *testing.T) {
 		t.Fatalf("a closed text turn was marked truncated: %#v", resp.Choices[0])
 	}
 }
-

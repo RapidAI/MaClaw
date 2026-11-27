@@ -720,6 +720,7 @@ func codingTaskRunFileChangeFacts(changes []v2.TaskFileChange) []codingagent.Fin
 		out = append(out, codingagent.FinalAnswerFileChangeFact{
 			Path:      path,
 			Created:   change.Created,
+			Deleted:   change.Deleted,
 			Added:     change.Added,
 			Removed:   change.Removed,
 			HasCounts: change.HasCounts,
@@ -748,6 +749,7 @@ func codingSubAgentTaskFileChanges(stat *SubAgentDiffStat, filesCreated []string
 		out = append(out, v2.TaskFileChange{
 			Path:      path,
 			Created:   created,
+			Deleted:   file.Deleted,
 			Added:     file.Insertions,
 			Removed:   file.Deletions,
 			HasCounts: file.HasCounts,

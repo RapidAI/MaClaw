@@ -1,10 +1,138 @@
 package llm
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+type openCodeFreeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f openCodeFreeRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func openCodeFreeSSEBody(t *testing.T, events ...map[string]any) string {
+	t.Helper()
+	var body strings.Builder
+	for _, event := range events {
+		payload, err := json.Marshal(map[string]any{"choices": []any{event}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.WriteString("data: ")
+		body.Write(payload)
+		body.WriteString("\n\n")
+	}
+	body.WriteString("data: [DONE]\n\n")
+	return body.String()
+}
+
+func openCodeFreeTestRequestBody(t *testing.T, prompt string) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"model": "deepseek-v4.1-flash-free",
+		"messages": []any{map[string]any{
+			"role":    "user",
+			"content": prompt,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func installOpenCodeFreeTestTransport(t *testing.T, bodyForRequest func([]byte) string) {
+	t.Helper()
+	oldClient := openCodeFreeHTTP
+	openCodeFreeHTTP = &http.Client{Transport: openCodeFreeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		payload, _ := io.ReadAll(req.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(bodyForRequest(payload))),
+			Request:    req,
+		}, nil
+	})}
+	t.Cleanup(func() { openCodeFreeHTTP = oldClient })
+}
+
+func TestOpenCodeFreeClientStreamsDirectTokens(t *testing.T) {
+	sse := openCodeFreeSSEBody(t,
+		map[string]any{"delta": map[string]any{"content": "hello "}},
+		map[string]any{"delta": map[string]any{"content": "world"}, "finish_reason": "stop"},
+	)
+	installOpenCodeFreeTestTransport(t, func([]byte) string { return sse })
+
+	var streamed strings.Builder
+	resp, err := completeOpenCodeFreeClient(context.Background(), openCodeFreeTestRequestBody(t, "hi"), func(delta string) {
+		streamed.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamed.String() != "hello world" {
+		t.Fatalf("streamed = %q", streamed.String())
+	}
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].Message.Content != "hello world" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestOpenCodeFreeDirectStreamsOnceAndKeepsReasoningFallback(t *testing.T) {
+	visibleSSE := openCodeFreeSSEBody(t,
+		map[string]any{"delta": map[string]any{"content": "hello "}},
+		map[string]any{"delta": map[string]any{"content": "world"}, "finish_reason": "stop"},
+	)
+	reasoningSSE := openCodeFreeSSEBody(t,
+		map[string]any{"delta": map[string]any{"reasoning_content": "thinking"}, "finish_reason": "stop"},
+	)
+	installOpenCodeFreeTestTransport(t, func(payload []byte) string {
+		if bytes.Contains(payload, []byte("reasoning-only")) {
+			return reasoningSSE
+		}
+		return visibleSSE
+	})
+
+	cfg := corelib.MaclawLLMConfig{URL: "https://opencode.ai/zen/v1", Key: "test-key", Model: "deepseek-v4.1-flash-free"}
+	client := &http.Client{Transport: &http.Transport{}}
+	call := func(prompt string) string {
+		var streamed strings.Builder
+		resp, status, _, err, handled := openCodeFreeDirect(context.Background(), cfg, openCodeFreeTestRequestBody(t, prompt), client, func(delta string) {
+			streamed.WriteString(delta)
+		}, nil)
+		if !handled || err != nil || status != http.StatusOK || resp == nil {
+			t.Fatalf("direct resp=%#v status=%d err=%v handled=%v", resp, status, err, handled)
+		}
+		return streamed.String()
+	}
+	if got := call("visible"); got != "hello world" {
+		t.Fatalf("visible stream = %q", got)
+	}
+	if got := call("reasoning-only"); got != "thinking" {
+		t.Fatalf("reasoning-only fallback = %q", got)
+	}
+
+	var visible, reasoning strings.Builder
+	resp, status, _, err, handled := openCodeFreeDirect(context.Background(), cfg, openCodeFreeTestRequestBody(t, "reasoning-only"), client, func(delta string) {
+		visible.WriteString(delta)
+	}, func(delta string) {
+		reasoning.WriteString(delta)
+	})
+	if !handled || err != nil || status != http.StatusOK || resp == nil {
+		t.Fatalf("reasoning lane resp=%#v status=%d err=%v handled=%v", resp, status, err, handled)
+	}
+	if visible.String() != "" || reasoning.String() != "thinking" {
+		t.Fatalf("reasoning lane visible=%q reasoning=%q", visible.String(), reasoning.String())
+	}
+}
 
 func TestOpenCodeFreeOfficialToolsMatchProfile(t *testing.T) {
 	var tools []struct {
@@ -26,7 +154,7 @@ func TestOpenCodeFreeOfficialToolsMatchProfile(t *testing.T) {
 }
 
 func TestOpenCodeFreeHostExtrasSkipOfficialAndMapped(t *testing.T) {
-	got := OpenCodeFreeHostExtras([]string{"goal", "bash", "shell", "write_file", "generate_pdf", "goal", "read"})
+	got := OpenCodeFreeHostExtras([]string{"goal", "bash", "shell", "write_file", "edit_file", "Glob", "ripgrep", "generate_pdf", "goal", "read"})
 	want := []string{"generate_pdf", "goal"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("extras = %v", got)
@@ -89,6 +217,236 @@ func TestOpenCodeFreeAdaptExecuteBecomesGoal(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeIncompleteCompactCallIsMalformed(t *testing.T) {
+	calls, malformed := parseOpenCodeFreeContentToolCalls(`websearch {"query":"北京天气"`)
+	if len(calls) != 0 || !malformed {
+		t.Fatalf("incomplete compact call calls=%#v malformed=%v", calls, malformed)
+	}
+	msg := &Message{Content: `websearch {"query":"北京天气"`}
+	finish, changed := adoptLeakedToolCallsWithParser(msg, msg.Content, parseOpenCodeFreeContentToolCalls)
+	if !changed || finish != "stop" || msg.Content != MalformedContentToolCallErrorMsg {
+		t.Fatalf("malformed compact adoption finish=%q changed=%v content=%q", finish, changed, msg.Content)
+	}
+}
+
+func TestOpenCodeFreeShellTimeoutUsesEffectiveHostBounds(t *testing.T) {
+	got := AdaptOpenCodeFreeToolCalls(nil, []ToolCall{
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"a","timeout":1500}`}},
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"b","timeout":999}`}},
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"c","timeout":0}`}},
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"d"}`}},
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"e","background":true}`}},
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"f","timeout":300500}`}},
+	})
+	if len(got) != 6 {
+		t.Fatalf("calls = %+v", got)
+	}
+	want := []float64{240, 240}
+	for i := range want {
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(got[i].Function.Arguments), &args); err != nil {
+			t.Fatal(err)
+		}
+		if args["timeout"] != want[i] {
+			t.Fatalf("timeout %d = %#v, want %v", i, args["timeout"], want[i])
+		}
+	}
+	if args := openCodeFreeArgs(t, got[2].Function.Arguments); args["timeout"] != nil {
+		t.Fatalf("zero timeout should not reach Maclaw validation: %s", got[2].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[3].Function.Arguments); args["timeout"] != float64(240) {
+		t.Fatalf("omitted shell timeout = %#v, want effective host floor 240s: %s", args["timeout"], got[3].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[4].Function.Arguments); args["timeout"] != nil {
+		t.Fatalf("background shell without timeout must stay unbounded: %s", got[4].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[5].Function.Arguments); args["timeout"] != float64(301) {
+		t.Fatalf("in-range shell timeout = %#v, want rounded 301s: %s", args["timeout"], got[5].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeWebFetchTimeoutUsesOfficialBounds(t *testing.T) {
+	got := AdaptOpenCodeFreeToolCalls(nil, []ToolCall{
+		{Function: ToolCallFunction{Name: "webfetch", Arguments: `{"url":"https://example.com","format":"html","timeout":1.5}`}},
+		{Function: ToolCallFunction{Name: "webfetch", Arguments: `{"url":"https://example.com"}`}},
+		{Function: ToolCallFunction{Name: "webfetch", Arguments: `{"url":"https://example.com","timeout":600}`}},
+	})
+	if len(got) != 3 {
+		t.Fatalf("calls = %+v", got)
+	}
+	for i, want := range []float64{2, 30, 120} {
+		if got[i].Function.Name != "web_fetch" {
+			t.Fatalf("call %d = %+v", i, got[i])
+		}
+		if args := openCodeFreeArgs(t, got[i].Function.Arguments); args["timeout"] != want {
+			t.Fatalf("webfetch timeout %d = %#v, want %v: %s", i, args["timeout"], want, got[i].Function.Arguments)
+		}
+	}
+	if args := openCodeFreeArgs(t, got[0].Function.Arguments); args["format"] != "html" {
+		t.Fatalf("webfetch format = %s", got[0].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeReplayWebFetchTimeoutStaysWithinOfficialSchema(t *testing.T) {
+	official, replay, ok := openCodeFreeOfficialReplayCall("web_fetch", `{"url":"https://example.com","timeout":600}`)
+	if !ok || official != "webfetch" {
+		t.Fatalf("replay = %q ok=%v", official, ok)
+	}
+	args := openCodeFreeArgs(t, replay)
+	if args["timeout"] != float64(120) {
+		t.Fatalf("webfetch replay timeout = %#v, want 120: %s", args["timeout"], replay)
+	}
+}
+
+func TestOpenCodeFreeTimeoutOverflowDoesNotWrapNegative(t *testing.T) {
+	got := AdaptOpenCodeFreeToolCalls(nil, []ToolCall{
+		{Function: ToolCallFunction{Name: "shell", Arguments: `{"command":"x","timeout":1e30}`}},
+		{Function: ToolCallFunction{Name: "webfetch", Arguments: `{"url":"https://example.com","timeout":1e30}`}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("calls=%#v", got)
+	}
+	if args := openCodeFreeArgs(t, got[0].Function.Arguments); args["timeout"] != float64(600) {
+		t.Fatalf("shell overflow timeout = %#v, want host cap 600: %s", args["timeout"], got[0].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[1].Function.Arguments); args["timeout"] != float64(120) {
+		t.Fatalf("webfetch overflow timeout = %#v, want official cap 120: %s", args["timeout"], got[1].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeAdaptSearchAndEditTools(t *testing.T) {
+	got := AdaptOpenCodeFreeToolCalls(nil, []ToolCall{
+		{Function: ToolCallFunction{Name: "edit", Arguments: `{"path":"a.go","oldString":"old","newString":"new","replaceAll":true}`}},
+		{Function: ToolCallFunction{Name: "glob", Arguments: `{"pattern":"**/*.go","path":".","hidden":true,"limit":30}`}},
+		{Function: ToolCallFunction{Name: "grep", Arguments: `{"pattern":"needle","path":".","include":"*.go","literal":true,"caseSensitive":false,"limit":20}`}},
+		{Function: ToolCallFunction{Name: "grep", Arguments: `{"pattern":"needle"}`}},
+	})
+	if len(got) != 4 || got[0].Function.Name != "edit_file" || got[1].Function.Name != "Glob" || got[2].Function.Name != "ripgrep" || got[3].Function.Name != "ripgrep" {
+		t.Fatalf("adapted names = %+v", got)
+	}
+	editArgs := openCodeFreeArgs(t, got[0].Function.Arguments)
+	if editArgs["old_string"] != "old" || editArgs["new_string"] != "new" || editArgs["replace_all"] != true || editArgs["oldString"] != nil || editArgs["newString"] != nil || editArgs["replaceAll"] != nil {
+		t.Fatalf("edit args = %s", got[0].Function.Arguments)
+	}
+	globArgs := openCodeFreeArgs(t, got[1].Function.Arguments)
+	if globArgs["include_hidden"] != true || globArgs["max_results"] != float64(30) || globArgs["hidden"] != nil || globArgs["limit"] != nil {
+		t.Fatalf("glob args = %s", got[1].Function.Arguments)
+	}
+	grepArgs := openCodeFreeArgs(t, got[2].Function.Arguments)
+	if grepArgs["glob"] != "*.go" || grepArgs["fixed_string"] != true || grepArgs["case_sensitive"] != false || grepArgs["max_results"] != float64(20) || grepArgs["include"] != nil || grepArgs["literal"] != nil || grepArgs["caseSensitive"] != nil || grepArgs["limit"] != nil {
+		t.Fatalf("grep args = %s", got[2].Function.Arguments)
+	}
+	defaultGrep := openCodeFreeArgs(t, got[3].Function.Arguments)
+	if defaultGrep["case_sensitive"] != true {
+		t.Fatalf("official grep default case sensitivity was not preserved: %s", got[3].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeAdaptReadGlobAndEditDefaultsUseOfficialContract(t *testing.T) {
+	got := AdaptOpenCodeFreeToolCalls(nil, []ToolCall{
+		{Function: ToolCallFunction{Name: "read", Arguments: `{"path":"a.txt"}`}},
+		{Function: ToolCallFunction{Name: "read", Arguments: `{"path":"a.txt","limit":5000}`}},
+		{Function: ToolCallFunction{Name: "glob", Arguments: `{"pattern":"**/*.go"}`}},
+		{Function: ToolCallFunction{Name: "edit", Arguments: `{"path":"a.go","oldString":"old","newString":"new","require_unique":false}`}},
+	})
+	if len(got) != 4 {
+		t.Fatalf("calls=%#v", got)
+	}
+	if args := openCodeFreeArgs(t, got[0].Function.Arguments); args["lines"] != float64(2000) || args["start_line"] != float64(1) || args["line_numbers"] != true {
+		t.Fatalf("read omitted page contract = %#v, want numbered 1-based 2000-line page: %s", args, got[0].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[1].Function.Arguments); args["lines"] != float64(2000) {
+		t.Fatalf("read oversized limit = %#v, want official cap 2000: %s", args["lines"], got[1].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[2].Function.Arguments); args["max_results"] != float64(100) {
+		t.Fatalf("glob omitted limit = %#v, want official default 100: %s", args["max_results"], got[2].Function.Arguments)
+	}
+	if args := openCodeFreeArgs(t, got[3].Function.Arguments); args["require_unique"] != true {
+		t.Fatalf("edit without replaceAll must carry unique-match contract: %s", got[3].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeReplaySearchAndEditToolsUseOfficialSchema(t *testing.T) {
+	cases := []struct {
+		host       string
+		official   string
+		input      string
+		wantKeys   []string
+		absentKeys []string
+	}{
+		{host: "edit_file", official: "edit", input: `{"path":"a.go","old_string":"old","new_string":"new","replace_all":true,"require_unique":true}`, wantKeys: []string{"oldString", "newString", "replaceAll"}, absentKeys: []string{"old_string", "new_string", "replace_all", "require_unique"}},
+		{host: "Glob", official: "glob", input: `{"pattern":"**/*.go","include_hidden":true,"max_results":30}`, wantKeys: []string{"hidden", "limit"}, absentKeys: []string{"include_hidden", "max_results"}},
+		{host: "ripgrep", official: "grep", input: `{"pattern":"needle","glob":"*.go","fixed_string":true,"case_sensitive":true,"max_results":20}`, wantKeys: []string{"include", "literal", "caseSensitive", "limit"}, absentKeys: []string{"glob", "fixed_string", "case_sensitive", "max_results"}},
+	}
+	for _, tc := range cases {
+		official, replay, ok := openCodeFreeOfficialReplayCall(tc.host, tc.input)
+		if !ok || official != tc.official {
+			t.Fatalf("%s replay = %q ok=%v", tc.host, official, ok)
+		}
+		args := openCodeFreeArgs(t, replay)
+		for _, key := range tc.wantKeys {
+			if _, exists := args[key]; !exists {
+				t.Fatalf("%s replay missing %s: %s", tc.host, key, replay)
+			}
+		}
+		for _, key := range tc.absentKeys {
+			if _, exists := args[key]; exists {
+				t.Fatalf("%s replay retained host key %s: %s", tc.host, key, replay)
+			}
+		}
+	}
+	_, replay, ok := openCodeFreeOfficialReplayCall("ripgrep", `{"pattern":"needle"}`)
+	if !ok {
+		t.Fatal("ripgrep replay did not cross to grep")
+	}
+	if args := openCodeFreeArgs(t, replay); args["caseSensitive"] != false {
+		t.Fatalf("host grep default case-insensitivity was not explicit in replay: %s", replay)
+	}
+}
+
+func TestOpenCodeFreeReplayDoesNotInvertReadTailOffsetMeaning(t *testing.T) {
+	_, replay, ok := openCodeFreeOfficialReplayCall("read_file", `{"path":"a.txt","offset":50}`)
+	if !ok {
+		t.Fatal("read_file replay did not cross to read")
+	}
+	if args := openCodeFreeArgs(t, replay); args["offset"] != nil {
+		t.Fatalf("host tail offset was replayed as official start offset with opposite meaning: %s", replay)
+	}
+	_, replay, ok = openCodeFreeOfficialReplayCall("read_file", `{"path":"a.txt","start_line":10,"lines":20,"line_numbers":true}`)
+	if !ok {
+		t.Fatal("read_file range replay did not cross to read")
+	}
+	args := openCodeFreeArgs(t, replay)
+	if args["offset"] != float64(10) || args["limit"] != float64(20) || args["start_line"] != nil || args["lines"] != nil || args["line_numbers"] != nil {
+		t.Fatalf("read range replay = %s", replay)
+	}
+}
+
+func TestOpenCodeFreeReplayDropsHostOnlyArgumentKeys(t *testing.T) {
+	_, shellReplay, ok := openCodeFreeOfficialReplayCall("bash", `{"command":"pwd","working_dir":"D:/oc","timeout":120,"stderr_limit":1000,"minimal_env":true}`)
+	if !ok {
+		t.Fatal("bash replay did not cross to shell")
+	}
+	shellArgs := openCodeFreeArgs(t, shellReplay)
+	if shellArgs["stderr_limit"] != nil || shellArgs["minimal_env"] != nil {
+		t.Fatalf("host-only shell keys leaked into replay: %s", shellReplay)
+	}
+	if shellArgs["command"] != "pwd" || shellArgs["workdir"] != "D:/oc" || shellArgs["timeout"] != float64(120000) {
+		t.Fatalf("official shell keys were not preserved: %s", shellReplay)
+	}
+	_, writeReplay, ok := openCodeFreeOfficialReplayCall("write_file", `{"path":"a.txt","content":"x","mode":"append","phase_id":"p1"}`)
+	if !ok {
+		t.Fatal("write_file replay did not cross to write")
+	}
+	writeArgs := openCodeFreeArgs(t, writeReplay)
+	if writeArgs["mode"] != nil || writeArgs["phase_id"] != nil {
+		t.Fatalf("host-only write keys leaked into replay: %s", writeReplay)
+	}
+	if writeArgs["path"] != "a.txt" || writeArgs["content"] != "x" {
+		t.Fatalf("official write keys were not preserved: %s", writeReplay)
+	}
+}
+
 func TestOpenCodeFreeClientBodyKeepsFingerprintAndAddsHostNote(t *testing.T) {
 	caller := []byte(`{"model":"hy4-flash-free","tools":[{"type":"function","function":{"name":"goal"}},{"type":"function","function":{"name":"bash"}},{"type":"function","function":{"name":"generate_pdf","parameters":{"type":"object","properties":{"content":{"type":"string"},"title":{"type":"string"},"phase_id":{"type":"string"}},"required":["content"]}}}],"messages":[{"role":"system","content":"host prompt"},{"role":"user","content":"调用 goal(action=\"plan\")"}]}`)
 	body, err := openCodeFreeClientBody(caller)
@@ -147,6 +505,17 @@ func TestOpenCodeFreeClientBodyKeepsFingerprintAndAddsHostNote(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeOfficialToolsTrackEmbeddedCatalog(t *testing.T) {
+	for _, name := range []string{"edit", "execute", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write"} {
+		if !openCodeFreeOfficialToolName(name) {
+			t.Fatalf("embedded official tool %s is missing from the classifier", name)
+		}
+	}
+	if len(openCodeFreeOfficialTools) != 12 {
+		t.Fatalf("official catalog size = %d", len(openCodeFreeOfficialTools))
+	}
+}
+
 func TestOpenCodeFreeHostChannelRetryKeepsExecuteOpen(t *testing.T) {
 	got := OpenCodeFreeHostChannelRetry([]string{"goal", "read_file", "bash"})
 	if !strings.Contains(got, "MACLAW_CALL") || !strings.Contains(got, "goal") {
@@ -161,8 +530,11 @@ func TestOpenCodeFreeHostChannelRetryKeepsExecuteOpen(t *testing.T) {
 	if strings.Contains(got, "read_file") || strings.Contains(got, "bash") {
 		t.Fatal("mapped tools were listed as host extras")
 	}
-	if !strings.Contains(OpenCodeFreeHostChannelRetry(nil), "shell") {
-		t.Fatal("empty extras retry lost the direct tools")
+	retry := OpenCodeFreeHostChannelRetry(nil)
+	for _, name := range []string{"shell", "read", "write", "edit", "glob", "grep", "webfetch", "websearch"} {
+		if !strings.Contains(retry, name) {
+			t.Fatalf("empty extras retry omits direct %s: %q", name, retry)
+		}
 	}
 }
 
@@ -280,6 +652,151 @@ func TestOpenCodeFreeToolsCallBecomesHostTool(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFreeClientBodyReplaysMappedHostCallsInOfficialNamespace(t *testing.T) {
+	caller := []byte(`{"model":"hy4-flash-free","messages":[{"role":"user","content":"北京天气，生成pdf"},{"role":"assistant","content":"","tool_calls":[{"function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}},{"function":{"name":"bash","arguments":"{\"command\":\"python --version\",\"working_dir\":\"D:/oc\",\"timeout\":120}"}},{"function":{"name":"read_file","arguments":"{\"path\":\"a.txt\",\"start_line\":10,\"lines\":20}"}},{"function":{"name":"web_fetch","arguments":"{\"url\":\"https://wttr.in/Beijing?format=j1\",\"timeout\":30}"}},{"function":{"name":"write_file","arguments":"{\"path\":\"a.txt\",\"content\":\"x\"}"}}]}]}`)
+	body, err := openCodeFreeClientBody(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	var assistant string
+	for _, msg := range parsed.Messages {
+		if msg.Role == "assistant" {
+			assistant = msg.Content
+		}
+	}
+	if assistant == "" {
+		t.Fatalf("assistant replay missing: %s", body)
+	}
+	for _, official := range []string{"websearch", "shell", "read", "webfetch", "write"} {
+		if !strings.Contains(assistant, official) {
+			t.Fatalf("official %s missing from replay: %s", official, assistant)
+		}
+	}
+	for _, host := range []string{"web_search", "web_fetch", "read_file", "write_file", "working_dir"} {
+		if strings.Contains(assistant, host) {
+			t.Fatalf("host-only token %s leaked into upstream replay: %s", host, assistant)
+		}
+	}
+	if strings.Contains(assistant, " bash") || strings.HasPrefix(strings.TrimSpace(assistant), "bash ") {
+		t.Fatalf("host bash leaked into upstream replay: %s", assistant)
+	}
+	if !strings.Contains(assistant, `"workdir":"D:/oc"`) || !strings.Contains(assistant, `"timeout":120000`) {
+		t.Fatalf("shell args were not converted back to official schema: %s", assistant)
+	}
+	if !strings.Contains(assistant, `"offset":10`) || !strings.Contains(assistant, `"limit":20`) {
+		t.Fatalf("read args were not converted back to official schema: %s", assistant)
+	}
+	if !strings.Contains(assistant, `"timeout":30`) {
+		t.Fatalf("webfetch timeout must stay seconds: %s", assistant)
+	}
+}
+
+func TestOpenCodeFreeCompactTranscriptImitationBecomesToolCalls(t *testing.T) {
+	wire := []byte(`{"choices":[{"message":{"role":"assistant","content":"websearch {\"query\":\"北京天气\"}\nshell {\"command\":\"python --version\",\"workdir\":\"D:/oc\",\"timeout\":120000}"},"finish_reason":"stop"}]}`)
+	resp, err := parseNonStreamOpenAIResponseBodyWithToolParser(wire, parseOpenCodeFreeContentToolCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := resp.Choices[0]
+	if choice.FinishReason != "tool_calls" || choice.Message.Content != "" {
+		t.Fatalf("choice = finish=%q content=%q", choice.FinishReason, choice.Message.Content)
+	}
+	if len(choice.Message.ToolCalls) != 2 || choice.Message.ToolCalls[0].Function.Name != "websearch" || choice.Message.ToolCalls[1].Function.Name != "shell" {
+		t.Fatalf("calls = %+v", choice.Message.ToolCalls)
+	}
+	adapted := AdaptOpenCodeFreeToolCalls(nil, choice.Message.ToolCalls)
+	if len(adapted) != 2 || adapted[0].Function.Name != "web_search" || adapted[1].Function.Name != "bash" {
+		t.Fatalf("adapted = %+v", adapted)
+	}
+	if strings.Contains(adapted[1].Function.Arguments, "workdir") || !strings.Contains(adapted[1].Function.Arguments, `"working_dir":"D:/oc"`) || !strings.Contains(adapted[1].Function.Arguments, `"timeout":240`) {
+		t.Fatalf("shell adaptation = %s", adapted[1].Function.Arguments)
+	}
+}
+
+func TestOpenCodeFreeSSECompactTranscriptImitationBecomesToolCalls(t *testing.T) {
+	content := "websearch {\"query\":\"北京天气\"}\nshell {\"command\":\"python --version\"}"
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"delta":         map[string]any{"content": content},
+			"finish_reason": "stop",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "data: " + string(payload) + "\n\n" + "data: [DONE]" + "\n\n"
+	resp, err := parseSSEStreamWithReasoningToolParser(strings.NewReader(body), nil, nil, parseOpenCodeFreeContentToolCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice := resp.Choices[0]
+	if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) != 2 || choice.Message.ToolCalls[0].Function.Name != "websearch" || choice.Message.ToolCalls[1].Function.Name != "shell" {
+		t.Fatalf("sse choice = %#v calls=%+v", choice, choice.Message.ToolCalls)
+	}
+}
+
+func TestOpenCodeFreeSSEOfficialCompactCallDoesNotStreamArguments(t *testing.T) {
+	prefix := "我先抓取页面。\n"
+	first, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"delta": map[string]any{"content": prefix + "webfetch {\"url\":\"https://wt"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"delta":         map[string]any{"content": "tr.in/Beijing\"}"},
+			"finish_reason": "stop",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "data: " + string(first) + "\n\n" + "data: " + string(second) + "\n\n" + "data: [DONE]\n\n"
+	var streamed strings.Builder
+	resp, err := parseSSEStreamWithReasoningToolParserCompactNames(strings.NewReader(body), func(delta string) {
+		streamed.WriteString(delta)
+	}, nil, parseOpenCodeFreeContentToolCalls, openCodeFreeCompactToolName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(streamed.String(), "webfetch") || strings.Contains(streamed.String(), "wttr.in") {
+		t.Fatalf("official compact call streamed to user: %q", streamed.String())
+	}
+	choice := resp.Choices[0]
+	if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) != 1 || choice.Message.ToolCalls[0].Function.Name != "webfetch" {
+		t.Fatalf("sse choice = %#v calls=%+v", choice, choice.Message.ToolCalls)
+	}
+}
+func TestOpenCodeFreeMixedCompactDialectsKeepEveryCall(t *testing.T) {
+	content := "web_search {\"query\":\"北京天气\"}\nwebfetch {\"url\":\"https://wttr.in/Beijing?format=j1\"}"
+	calls, malformed := parseOpenCodeFreeContentToolCalls(content)
+	if malformed || len(calls) != 2 {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "web_search" || calls[1].Function.Name != "webfetch" {
+		t.Fatalf("mixed dialect calls = %#v", calls)
+	}
+
+	reversedInput := `webfetch {"url":"https://wttr.in/Beijing?format=j1"}
+web_search {"query":"北京天气"}`
+	reversed, malformed := parseOpenCodeFreeContentToolCalls(reversedInput)
+	if malformed || len(reversed) != 2 || reversed[0].Function.Name != "webfetch" || reversed[1].Function.Name != "web_search" {
+		t.Fatalf("compact call order = %#v malformed=%v", reversed, malformed)
+	}
+}
+
 func TestOpenCodeFreeMaclawCallUsesNameBridge(t *testing.T) {
 	code := `return MACLAW_CALL("shell", {"command":"dir","workdir":"D:\\oc","timeout":120000}); return MACLAW_CALL("read", {"filePath":"a.txt","offset":10,"limit":20})`
 	raw, err := json.Marshal(map[string]string{"code": code})
@@ -294,7 +811,7 @@ func TestOpenCodeFreeMaclawCallUsesNameBridge(t *testing.T) {
 		t.Fatalf("calls = %+v", got)
 	}
 	shellArgs := openCodeFreeArgs(t, got[0].Function.Arguments)
-	if got[0].ID != "call-1" || got[0].Function.Name != "bash" || shellArgs["working_dir"] == nil || shellArgs["workdir"] != nil || shellArgs["timeout"] != float64(120) {
+	if got[0].ID != "call-1" || got[0].Function.Name != "bash" || shellArgs["working_dir"] == nil || shellArgs["workdir"] != nil || shellArgs["timeout"] != float64(240) {
 		t.Fatalf("shell = %s %s", got[0].Function.Name, got[0].Function.Arguments)
 	}
 	readArgs := openCodeFreeArgs(t, got[1].Function.Arguments)

@@ -52,6 +52,7 @@ type AppConfig struct {
 	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
 	WorkstationMode      bool            `json:"workstation_mode"`
 	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
+	SilentUpdateEnabled  bool            `json:"silent_update_enabled"`
 	PreferBetaChannel    bool            `json:"prefer_beta_channel,omitempty"`
 	// Environment check settings
 	PauseEnvCheck    bool   `json:"pause_env_check"`
@@ -1770,6 +1771,7 @@ func AppConfigDefaults() AppConfig {
 		FileOutboundEnabled:      true,
 		ImageOutboundEnabled:     true,
 		CheckUpdateOnStartup:     true,
+		SilentUpdateEnabled:      true,
 		VectorSearchEnabled:      true,
 		// OfficeRead is the default text extractor for every supported Office
 		// format. The legacy engine and the per-format allowlist remain available

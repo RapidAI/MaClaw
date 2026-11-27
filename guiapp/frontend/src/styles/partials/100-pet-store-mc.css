@@ -921,7 +921,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference task navigation pane */
 .mc-task-pane { background: var(--theme-surface); border-right: 0; }
 .mc-task-pane > .mc-task-pane__header { min-height: 44px; padding: 0 8px 10px !important; color: var(--theme-text-primary) !important; font-size: 15px !important; }
-.mc-task-pane > .mc-task-pane__header button { width: 32px !important; height: 32px !important; border-radius: var(--radius-md) !important; background: var(--mc-accent, #2e75cb) !important; border-color: var(--mc-accent, #2e75cb) !important; color: var(--theme-on-primary) !important; }
+/* :where() keeps this rule's specificity identical to the old plain-selector
+   form (0,2,1) so every other header button resolves exactly as before; the
+   sidebar toggle cluster stays ghost-styled by .sb-toggle-btn (110 partial). */
+.mc-task-pane > .mc-task-pane__header :where(button:not(.sb-toggle-btn)) { width: 32px !important; height: 32px !important; border-radius: var(--radius-md) !important; background: var(--mc-accent, #2e75cb) !important; border-color: var(--mc-accent, #2e75cb) !important; color: var(--theme-on-primary) !important; }
 .mc-task-pane .sidebar-task-row { margin: 2px; padding: 4px 6px 4px 8px !important; border-radius: var(--radius-md); }
 .mc-task-pane [data-task-kind] { margin-bottom: 0; }
 

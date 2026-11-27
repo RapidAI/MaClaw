@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Spike 2</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 12px/1.6 monospace; background: #eef2ff; padding: 12px; }
+</style>
+</head>
+<body>
+  <div>C6 第二窗口（frameless=false 对照）</div>
+  <div id="state">runtime 加载中…</div>
+  <script type="module">
+    import { Events } from '/wails/runtime.js';
+    window.Wails = { Events };
+    const state = document.getElementById('state');
+    Events.Emit('spike:second-ready', { href: location.href })
+      .then(() => { state.textContent = 'second-ready 已发送'; })
+      .catch((err) => { state.textContent = 'Emit 失败: ' + String(err); });
+  </script>
+</body>
+</html>

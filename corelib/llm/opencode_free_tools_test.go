@@ -19,7 +19,7 @@ func TestPresentOpenCodeFreeMessageUsesCallerTools(t *testing.T) {
 	if msg.Content != "" || msg.ReasoningContent != "think" {
 		t.Fatalf("content %q reasoning %q", msg.Content, msg.ReasoningContent)
 	}
-	if msg.ToolCalls[0].Function.Name != "bash" || !strings.Contains(msg.ToolCalls[0].Function.Arguments, `"working_dir"`) || !strings.Contains(msg.ToolCalls[0].Function.Arguments, `"timeout":120`) {
+	if msg.ToolCalls[0].Function.Name != "bash" || !strings.Contains(msg.ToolCalls[0].Function.Arguments, `"working_dir"`) || !strings.Contains(msg.ToolCalls[0].Function.Arguments, `"timeout":240`) {
 		t.Fatalf("shell = %s %s", msg.ToolCalls[0].Function.Name, msg.ToolCalls[0].Function.Arguments)
 	}
 	if msg.ToolCalls[1].Function.Name != "read_file" || strings.Contains(msg.ToolCalls[1].Function.Arguments, "filePath") || !strings.Contains(msg.ToolCalls[1].Function.Arguments, `"start_line":10`) {

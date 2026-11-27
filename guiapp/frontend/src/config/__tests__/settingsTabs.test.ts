@@ -92,6 +92,19 @@ describe('getSettingsTabOptions', () => {
         expect(both).not.toContain('sharedPages');
     });
 
+    it('hides the cloud-agent tab until Hub enables cloud agents', () => {
+        const disabled = getSettingsTabOptions('zh-Hans', { hideCloudAgent: true });
+        expect(disabled.map((tab) => tab.id)).not.toContain('cloudAgent');
+        expect(disabled.filter((tab) => tab.group === 'integration').map((tab) => tab.id))
+            .toEqual(['virtualEmployee', 'im', 'email', 'github', 'hardware']);
+
+        const enabled = getSettingsTabOptions('zh-Hans', { hideCloudAgent: false }).map((tab) => tab.id);
+        expect(enabled).toContain('cloudAgent');
+
+        const all = getSettingsTabOptions('zh-Hans').map((tab) => tab.id);
+        expect(all).toContain('cloudAgent');
+    });
+
     it('keeps memory, knowledge, MIS data, and migration in Data & Memory', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const data = zh.filter((tab) => tab.group === 'data').map((tab) => tab.id);
@@ -143,5 +156,8 @@ describe('resolveSettingsTabId', () => {
         expect(resolveSettingsTabId('sharedPages', { hideDesktopBotTabs: true })).toBe('general');
         expect(resolveSettingsTabId('sharedPages', { hideDesktopBotTabs: false })).toBe('sharedPages');
         expect(resolveSettingsTabId('sharedPages')).toBe('sharedPages');
+        expect(resolveSettingsTabId('cloudAgent', { hideCloudAgent: true })).toBe('general');
+        expect(resolveSettingsTabId('cloudAgent', { hideCloudAgent: false })).toBe('cloudAgent');
+        expect(resolveSettingsTabId('cloudAgent')).toBe('cloudAgent');
     });
 });

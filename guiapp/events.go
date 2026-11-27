@@ -83,6 +83,10 @@ const (
 	// (startup delay + periodic re-check) finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"
 
+	// EventAppUpdateDownloaded is emitted when a silent background download is
+	// ready. Installation still requires an explicit user choice.
+	EventAppUpdateDownloaded = "app-update-downloaded"
+
 	// Skill evolution / self-repair events (EvolutionPipeline + SkillRunner).
 	// Values must match corelib/skill event constants and frontend events.ts.
 	EventSkillUsageUpdated            = "skill:usage_updated"

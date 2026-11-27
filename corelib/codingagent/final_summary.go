@@ -24,6 +24,7 @@ type FinalAnswerVerificationFact struct {
 type FinalAnswerFileChangeFact struct {
 	Path      string
 	Created   bool
+	Deleted   bool
 	Added     int
 	Removed   int
 	HasCounts bool
@@ -178,6 +179,7 @@ func LooksLikeVerificationCommand(command string) bool {
 type finalAnswerFileChangeRow struct {
 	Path      string
 	Created   bool
+	Deleted   bool
 	Added     int
 	Removed   int
 	HasCounts bool
@@ -261,9 +263,10 @@ func finalAnswerFileChangeRows(filesCreated, filesModified []string, facts []Fin
 		ordered[key] = true
 		row, ok := merged[key]
 		if !ok {
-			row = finalAnswerFileChangeRow{Path: path, Created: fact.Created, HasCounts: fact.HasCounts}
+			row = finalAnswerFileChangeRow{Path: path, Created: fact.Created, Deleted: fact.Deleted, HasCounts: fact.HasCounts}
 		} else {
 			row.Created = row.Created || fact.Created
+			row.Deleted = row.Deleted || fact.Deleted
 			row.HasCounts = row.HasCounts || fact.HasCounts
 		}
 		if fact.HasCounts {
@@ -297,7 +300,7 @@ func finalAnswerFileChangeRows(filesCreated, filesModified []string, facts []Fin
 		// not a changed file. Keep exact zero rows for newly created files (an
 		// empty new file is still a creation), but do not noise the table with
 		// write/revert churn on pre-existing files.
-		if row.HasCounts && row.Added == 0 && row.Removed == 0 && !row.Created {
+		if row.HasCounts && row.Added == 0 && row.Removed == 0 && !row.Created && !row.Deleted {
 			continue
 		}
 		out = append(out, row)
@@ -320,6 +323,7 @@ func appendFinalAnswerMergedRow(rows []finalAnswerFileChangeRow, row finalAnswer
 				existing.Added += row.Added
 				existing.Removed += row.Removed
 				existing.Created = existing.Created || row.Created
+				existing.Deleted = existing.Deleted || row.Deleted
 				rows[i] = existing
 				merged = true
 				break
@@ -328,11 +332,14 @@ func appendFinalAnswerMergedRow(rows []finalAnswerFileChangeRow, row finalAnswer
 		}
 		if !existing.HasCounts && row.HasCounts {
 			row.Created = row.Created || existing.Created
+			row.Deleted = row.Deleted || existing.Deleted
 			rows[i] = row
 		} else if existing.HasCounts && !row.HasCounts {
 			rows[i].Created = rows[i].Created || row.Created
+			rows[i].Deleted = rows[i].Deleted || row.Deleted
 		} else {
 			existing.Created = existing.Created || row.Created
+			existing.Deleted = existing.Deleted || row.Deleted
 			if len(row.Path) < len(existing.Path) {
 				existing.Path = row.Path
 			}
@@ -394,7 +401,17 @@ func renderFinalAnswerFileChangeTable(rows []finalAnswerFileChangeRow, zh bool) 
 		if zh {
 			status = "修改"
 		}
-		if row.Created {
+		if row.Created && row.Deleted {
+			status = "created then deleted"
+			if zh {
+				status = "新建后删除"
+			}
+		} else if row.Deleted {
+			status = "deleted"
+			if zh {
+				status = "删除"
+			}
+		} else if row.Created {
 			status = "created"
 			if zh {
 				status = "新建"

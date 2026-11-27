@@ -971,6 +971,10 @@ func (h *agentHost) fileChangeFacts() []codingagent.FinalAnswerFileChangeFact {
 			if after, ok := cloudReadTextForDiff(abs); ok {
 				fact.Added, fact.Removed = codingagent.CountTextLineChanges(baseline, after)
 				fact.HasCounts = true
+			} else if _, err := os.Stat(abs); os.IsNotExist(err) {
+				fact.Added, fact.Removed = codingagent.CountTextLineChanges(baseline, "")
+				fact.Deleted = true
+				fact.HasCounts = true
 			} else {
 				fact.Added, fact.Removed = 0, 0
 				fact.HasCounts = false

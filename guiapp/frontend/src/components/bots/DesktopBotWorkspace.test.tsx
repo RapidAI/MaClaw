@@ -1405,6 +1405,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('tabindex')).toBeNull();
 
         fireEvent.click(screen.getByTestId('desktop-bot-screen-expand'));
@@ -1418,6 +1419,38 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
         expect(screen.getByTestId('desktop-bot-chat').inert).toBe(false);
+    });
+
+    it('pops the desktop stage out to a native window when the binding is supported', async () => {
+        const stageBinding = {
+            DesktopStageWindowSupported: vi.fn(async () => true),
+            OpenDesktopStageWindow: vi.fn(async () => undefined),
+            CloseDesktopStageWindow: vi.fn(async () => undefined),
+        };
+        (window as unknown as { go?: unknown }).go = { main: { App: stageBinding } };
+        onTestFinished(() => { delete (window as unknown as { go?: unknown }).go; });
+
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+
+        // probe resolves → the dock shows the pop-out control (v2 builds
+        // without the binding never see it — the probe fails closed)
+        const popout = await screen.findByTestId('desktop-bot-stage-popout');
+        expect(stageBinding.DesktopStageWindowSupported).toHaveBeenCalled();
+        expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
+
+        fireEvent.click(popout);
+        await waitFor(() => expect(stageBinding.OpenDesktopStageWindow).toHaveBeenCalledWith(0, 10));
+        // the in-panel iframe is unmounted while the native window streams
+        expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        expect(popout.textContent).toContain('回到主窗口');
+
+        fireEvent.click(popout);
+        await waitFor(() => expect(stageBinding.CloseDesktopStageWindow).toHaveBeenCalled());
+        expect(screen.getByTestId('desktop-bot-handoff')).toBeTruthy();
     });
 
     it('scales the watch stream to the stage and caps it at 10fps, while a live frame keeps the server rate', async () => {
@@ -4197,6 +4230,8 @@ describe('DesktopBotWorkspace', () => {
         const chat = screen.getByTestId('desktop-bot-chat');
         const header = screen.getByTestId('desktop-bot-identity');
         const button = screen.getByTestId('desktop-bot-open-desktop');
+        // Every agent-chat header carries the bug-report control.
+        expect(screen.getByTestId('task-bug-report-btn')).toBeTruthy();
         Object.defineProperty(chat, 'clientWidth', { configurable: true, value: 800 });
         Object.defineProperty(chat, 'clientHeight', { configurable: true, value: 600 });
         Object.defineProperty(header, 'offsetWidth', { configurable: true, value: 160 });

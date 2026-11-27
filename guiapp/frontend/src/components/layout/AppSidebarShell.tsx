@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
+import type { SidebarTogglesState } from './SidebarToggleCluster';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
@@ -53,6 +54,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navRailCollapsed?: boolean;
     /** Toggle for the task pane collapse state (also fired by divider double-click). */
     onToggleTaskPane?: () => void;
+    /** Toggle for the nav rail collapse state (also Ctrl+Shift+B). */
+    onToggleRail?: () => void;
     /** Explicit "open the task list" intent (工作台 nav item) — restores a collapsed pane. */
     onRequestTaskPaneOpen?: () => void;
     activeTool: string;
@@ -192,6 +195,7 @@ export const AppSidebarShell = ({
     taskPaneCollapsed = false,
     navRailCollapsed = false,
     onToggleTaskPane,
+    onToggleRail,
     onRequestTaskPaneOpen,
     activeTool,
     toolDropdownOpen,
@@ -305,6 +309,15 @@ export const AppSidebarShell = ({
     // Collapsed columns drop out of the shell width; the pane keeps its saved width
     // for when it comes back (the drag strip mirrors the same computation).
     const shellWidth = railWidth + (paneVisible ? taskManagementPaneWidth + (railWidth ? SIDEBAR_AI_PANE_GAP : 0) : 0);
+    // One toggles object shared with the window headers: the pane's search row
+    // renders it, headers re-render it as restore-only while the pane is gone.
+    // No-op fallbacks only fire if App omitted the handlers (collapse disabled).
+    const sidebarToggles: SidebarTogglesState = {
+        paneCollapsed: taskPaneCollapsed === true,
+        railCollapsed: navRailCollapsed === true,
+        onTogglePane: onToggleTaskPane || (() => {}),
+        onToggleRail: onToggleRail || (() => {}),
+    };
     return (
 <>
             <div className="mc-sidebar-drag-strip" data-window-drag style={{
@@ -360,6 +373,7 @@ export const AppSidebarShell = ({
                     <SidebarAiPane
                         taskManagementPaneWidth={taskManagementPaneWidth}
                         onToggleTaskPane={onToggleTaskPane}
+                        sidebarToggles={sidebarToggles}
                         lang={lang}
                         aiThemeMode={aiThemeMode}
                         aiLightSchemeId={aiLightSchemeId}

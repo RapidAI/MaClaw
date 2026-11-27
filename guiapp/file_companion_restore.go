@@ -26,7 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/formula"
 	"github.com/RapidAI/CodeClaw/corelib/tablestruct"
 	gopdf2 "github.com/VantageDataChat/GoPDF2"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // fileCompanionRestoreRecognize replaces PP-OCRv6 in tests. It receives the

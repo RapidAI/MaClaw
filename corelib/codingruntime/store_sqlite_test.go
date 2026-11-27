@@ -7,6 +7,175 @@ import (
 	"time"
 )
 
+func TestInterruptRunsForReplacementClosesWaitingApproval(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	task, err := store.CreateTask(Task{ProjectRef: "approval-project", Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkTaskWaitingApproval(task.TaskID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InterruptRunsForReplacement(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetTask(task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != TaskInterrupted {
+		t.Fatalf("waiting approval status=%q after replacement sweep, want interrupted", got.Status)
+	}
+}
+
+func TestInterruptRunsForReplacementClosesWaitingParentWithoutLiveChildren(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	root := "waiting-parent-project"
+	parent, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentAttempt, err := store.StartAttempt(parent.TaskID, "owner", time.Minute, PolicySnapshot{ProjectRoot: root, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := ChildTaskService{Store: store, Now: func() time.Time { return now }}
+	handle, err := service.AdmitReadOnlyChild(parentAttempt.AttemptID, "owner", ChildTaskSpec{Name: "inspect", RequestedWork: "inspect", ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model the narrow durable gap where every child has finished but the parent
+	// review handoff has not yet requeued the parent. Restart reconciliation
+	// intentionally preserves this handoff; data-dir replacement must not copy
+	// it forward as live work merely because no child is still queued/running.
+	childAttempt, err := store.StartAttempt(handle.TaskID, "owner", time.Minute, PolicySnapshot{ProjectRoot: root, Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childAttempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: childAttempt.Version, EvidenceDigest: "sha256:child"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InterruptRunsForReplacement(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetTask(parent.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != TaskInterrupted {
+		t.Fatalf("waiting parent status=%q after replacement sweep, want interrupted", got.Status)
+	}
+	gotAttempt, err := store.GetAttempt(parentAttempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAttempt.Status != TaskInterrupted {
+		t.Fatalf("waiting parent attempt status=%q after replacement sweep, want interrupted", gotAttempt.Status)
+	}
+	events, err := store.ListEvents(parentAttempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReplacementEvent := false
+	for _, event := range events {
+		if event.Type == "data_dir_replaced" {
+			foundReplacementEvent = true
+			break
+		}
+	}
+	if !foundReplacementEvent {
+		t.Fatalf("waiting parent audit events do not name data_dir_replaced: %#v", events)
+	}
+}
+
+func TestInterruptWaitingParentTxWithEventRewritesReplacementEventTimestamp(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	root := "replacement-parent-time"
+	parent, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentAttempt, err := store.StartAttempt(parent.TaskID, "owner", time.Minute, PolicySnapshot{ProjectRoot: root, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := ChildTaskService{Store: store, Now: func() time.Time { return now }}
+	handle, err := service.AdmitReadOnlyChild(parentAttempt.AttemptID, "owner", ChildTaskSpec{Name: "inspect", RequestedWork: "inspect", ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childAttempt, err := store.StartAttempt(handle.TaskID, "owner", time.Minute, PolicySnapshot{ProjectRoot: root, Mode: "local", ReadOnly: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childAttempt.AttemptID, "owner", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectConfirmed, ExpectedVersion: childAttempt.Version, EvidenceDigest: "sha256:child"}, now); err != nil {
+		t.Fatal(err)
+	}
+	replacementTime := now.Add(2 * time.Second)
+	if _, err := store.InterruptRunsForReplacement(replacementTime); err != nil {
+		t.Fatal(err)
+	}
+
+	childLeaseEnd := now.Add(time.Second)
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.interruptWaitingParentTxWithEvent(tx, parent.TaskID, childLeaseEnd, "data_dir_replaced"); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	gotTask, err := store.GetTask(parent.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTask.UpdatedAt.UnixNano() != childLeaseEnd.UnixNano() {
+		t.Fatalf("parent task updated_at=%s, want replacement child lease end %s", gotTask.UpdatedAt, childLeaseEnd)
+	}
+	gotAttempt, err := store.GetAttempt(parentAttempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAttempt.FinishedAt.UnixNano() != childLeaseEnd.UnixNano() {
+		t.Fatalf("parent attempt finished_at=%s, want replacement child lease end %s", gotAttempt.FinishedAt, childLeaseEnd)
+	}
+	events, err := store.ListEvents(parentAttempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == "data_dir_replaced" {
+			found = true
+			if event.CreatedAt.UnixNano() != childLeaseEnd.UnixNano() {
+				t.Fatalf("replacement event created_at=%s, want replacement child lease end %s", event.CreatedAt, childLeaseEnd)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("replacement event missing: %#v", events)
+	}
+}
+
 func TestSQLiteStorePersistsInterruptedRecoveryCandidate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coding_runtime.db")
 	store, err := NewSQLiteStore(path)

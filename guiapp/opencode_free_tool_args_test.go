@@ -30,6 +30,16 @@ func TestConfineOpenCodeFreeToolArgsMovesPromptDirectory(t *testing.T) {
 	}
 }
 
+func TestConfineOpenCodeFreeToolArgsMovesSearchAndEditPaths(t *testing.T) {
+	workspace := `C:\task`
+	for _, name := range []string{"edit_file", "Glob", "ripgrep"} {
+		got := confineOpenCodeFreeToolArgs(name, `{"path":"D:\\oc-empty\\src","pattern":"x","old_string":"a","new_string":"b"}`, workspace)
+		if strings.Contains(strings.ToLower(got), "oc-empty") || !strings.Contains(got, `C:/task/src`) {
+			t.Fatalf("%s path = %s", name, got)
+		}
+	}
+}
+
 func TestConfineOpenCodeFreeToolArgsRewritesShell(t *testing.T) {
 	workspace := `C:\task`
 	got := confineOpenCodeFreeToolArgs("bash", `{"command":"python D:\\oc-empty\\gen_pdf.py","working_dir":"D:\\oc-empty"}`, workspace)

@@ -1,0 +1,597 @@
+//go:build darwin && !ios && !server && !purego
+
+package application
+
+/*
+
+#cgo CFLAGS: -mmacosx-version-min=10.13 -x objective-c
+#cgo LDFLAGS: -framework Cocoa -mmacosx-version-min=10.13
+
+#include "application_darwin.h"
+#include "application_darwin_delegate.h"
+#include "webview_window_darwin.h"
+#include <stdlib.h>
+
+extern void registerListener(unsigned int event);
+
+#import <Cocoa/Cocoa.h>
+#import <Foundation/Foundation.h>
+
+static AppDelegate *appDelegate = nil;
+
+static void init(void) {
+    [NSApplication sharedApplication];
+    appDelegate = [[AppDelegate alloc] init];
+    [NSApp setDelegate:appDelegate];
+
+	[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown handler:^NSEvent * _Nullable(NSEvent * _Nonnull event) {
+		NSWindow* eventWindow = [event window];
+		if (eventWindow == nil ) {
+			return event;
+        }
+		WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[eventWindow delegate];
+		if (windowDelegate == nil) {
+			return event;
+		}
+		if ([windowDelegate respondsToSelector:@selector(handleLeftMouseDown:)]) {
+			[windowDelegate handleLeftMouseDown:event];
+		}
+		return event;
+	}];
+
+	[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseUp handler:^NSEvent * _Nullable(NSEvent * _Nonnull event) {
+		NSWindow* eventWindow = [event window];
+		if (eventWindow == nil ) {
+			return event;
+        }
+		WebviewWindowDelegate* windowDelegate = (WebviewWindowDelegate*)[eventWindow delegate];
+		if (windowDelegate == nil) {
+			return event;
+		}
+		if ([windowDelegate respondsToSelector:@selector(handleLeftMouseUp:)]) {
+			[windowDelegate handleLeftMouseUp:eventWindow];
+		}
+		return event;
+	}];
+
+	NSDistributedNotificationCenter *center = [NSDistributedNotificationCenter defaultCenter];
+	[center addObserver:appDelegate selector:@selector(themeChanged:) name:@"AppleInterfaceThemeChangedNotification" object:nil];
+
+	// Workspace power notifications are posted on a separate notification
+	// center from the default one — apps must observe NSWorkspace's centre
+	// to receive sleep/wake events. Mirrors WM_POWERBROADCAST on Windows.
+	NSNotificationCenter *workspaceCenter = [[NSWorkspace sharedWorkspace] notificationCenter];
+	[workspaceCenter addObserver:appDelegate selector:@selector(workspaceWillSleep:) name:NSWorkspaceWillSleepNotification object:nil];
+	[workspaceCenter addObserver:appDelegate selector:@selector(workspaceDidWake:) name:NSWorkspaceDidWakeNotification object:nil];
+	[workspaceCenter addObserver:appDelegate selector:@selector(workspaceScreensDidSleep:) name:NSWorkspaceScreensDidSleepNotification object:nil];
+	[workspaceCenter addObserver:appDelegate selector:@selector(workspaceScreensDidWake:) name:NSWorkspaceScreensDidWakeNotification object:nil];
+
+	// Register the custom URL scheme handler
+	StartCustomProtocolHandler();
+}
+
+static bool isDarkMode(void) {
+	NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
+	if (userDefaults == nil) {
+		return false;
+	}
+
+	NSString *interfaceStyle = [userDefaults stringForKey:@"AppleInterfaceStyle"];
+	if (interfaceStyle == nil) {
+		return false;
+	}
+
+	return [interfaceStyle isEqualToString:@"Dark"];
+}
+
+static char* getAccentColor(void) {
+	@autoreleasepool {
+		NSColor *accentColor;
+		if (@available(macOS 10.14, *)) {
+			accentColor = [NSColor controlAccentColor];
+		} else {
+			// Fallback to system blue for older macOS versions
+			accentColor = [NSColor systemBlueColor];
+		}
+		// Convert to RGB color space
+		NSColor *rgbColor = [accentColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+		if (rgbColor == nil) {
+			rgbColor = accentColor;
+		}
+		// Get RGB components
+		CGFloat red, green, blue, alpha;
+		[rgbColor getRed:&red green:&green blue:&blue alpha:&alpha];
+		// Convert to 0-255 range and format as rgb() string
+		int r = (int)(red * 255);
+		int g = (int)(green * 255);
+		int b = (int)(blue * 255);
+		NSString *colorString = [NSString stringWithFormat:@"rgb(%d,%d,%d)", r, g, b];
+		return strdup([colorString UTF8String]);
+	}
+}
+
+static void setApplicationShouldTerminateAfterLastWindowClosed(bool shouldTerminate) {
+	// Get the NSApp delegate
+	AppDelegate *appDelegate = (AppDelegate*)[NSApp delegate];
+	// Set the applicationShouldTerminateAfterLastWindowClosed boolean
+	appDelegate.shouldTerminateWhenLastWindowClosed = shouldTerminate;
+}
+
+static void setActivationPolicy(int policy) {
+    [NSApp setActivationPolicy:policy];
+}
+
+static void activateIgnoringOtherApps() {
+	[NSApp activateIgnoringOtherApps:YES];
+}
+
+static void run(void) {
+    @autoreleasepool {
+        [NSApp run];
+        [appDelegate release];
+		[NSApp abortModal];
+    }
+}
+
+// destroyApp destroys the application
+static void destroyApp(void) {
+	[NSApp terminate:nil];
+}
+
+// Set the application menu
+static void setApplicationMenu(void *menu) {
+	NSMenu *nsMenu = (__bridge NSMenu *)menu;
+	void (^apply)(void) = ^{
+		[NSApp setMainMenu:nsMenu];
+	};
+
+	// AppKit requires the main menu to be replaced on the main thread. Menu.Set
+	// may be called from Wails event listeners, which execute on worker
+	// goroutines, so marshal the update synchronously. Avoid dispatch_sync when
+	// already on the main thread because that would deadlock.
+	if ([NSThread isMainThread]) {
+		apply();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), apply);
+	}
+}
+
+// Get the application name
+static char* getAppName(void) {
+	NSString *appName = [NSRunningApplication currentApplication].localizedName;
+	if( appName == nil ) {
+		appName = [[NSProcessInfo processInfo] processName];
+	}
+	return strdup([appName UTF8String]);
+}
+
+// get the current window ID
+static unsigned int getCurrentWindowID(void) {
+	// AppKit must be accessed on the main thread. This function may be called
+	// from arbitrary Go goroutines, so we hop to the main queue when needed.
+	__block unsigned int result = 0;
+	if (NSApp == nil) {
+		return result;
+	}
+	void (^resolve)(void) = ^{
+		NSWindow *window = [NSApp keyWindow];
+		if (window == nil) {
+			window = [NSApp mainWindow];
+		}
+		if (window == nil) {
+			return;
+		}
+		// System panels (e.g. PMPrintPanelController) can become the key window;
+		// their delegates are not WebviewWindowDelegate and would crash on windowId.
+		id delegateObj = [window delegate];
+		if (![delegateObj isKindOfClass:[WebviewWindowDelegate class]]) {
+			return;
+		}
+		WebviewWindowDelegate *delegate = (WebviewWindowDelegate*)delegateObj;
+		if (delegate != nil) {
+			result = delegate.windowId;
+		}
+	};
+	if ([NSThread isMainThread]) {
+		resolve();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), resolve);
+	}
+	return result;
+}
+
+// Set the application icon
+static void setApplicationIcon(void *icon, int length) {
+    // On main thread
+	dispatch_async(dispatch_get_main_queue(), ^{
+		NSImage *image = [[NSImage alloc] initWithData:[NSData dataWithBytes:icon length:length]];
+		[NSApp setApplicationIconImage:image];
+	});
+}
+
+// Hide the application
+static void hide(void) {
+	[NSApp hide:nil];
+}
+
+// Show the application
+static void show(void) {
+	[NSApp unhide:nil];
+}
+
+static const char* serializationNSDictionary(void *dict) {
+	@autoreleasepool {
+		NSDictionary *nsDict = (__bridge NSDictionary *)dict;
+
+		if ([NSJSONSerialization isValidJSONObject:nsDict]) {
+			NSError *error;
+			NSData *data = [NSJSONSerialization dataWithJSONObject:nsDict options:kNilOptions error:&error];
+			NSString *result = [[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];
+
+			return strdup([result UTF8String]);
+		}
+	}
+
+	return nil;
+}
+
+static void startSingleInstanceListener(const char *uniqueID) {
+	// Convert to NSString
+	NSString *uid = [NSString stringWithUTF8String:uniqueID];
+	[[NSDistributedNotificationCenter defaultCenter] addObserver:appDelegate
+          selector:@selector(handleSecondInstanceNotification:) name:uid object:nil];
+}
+*/
+import "C"
+import (
+	"sync"
+	"time"
+	"unsafe"
+
+	"encoding/json"
+
+	"github.com/wailsapp/wails/v3/internal/assetserver/webview"
+	"github.com/wailsapp/wails/v3/pkg/events"
+)
+
+func (m *macosApp) isDarkMode() bool {
+	return bool(C.isDarkMode())
+}
+
+func (m *macosApp) getAccentColor() string {
+	accentColorC := C.getAccentColor()
+	defer C.free(unsafe.Pointer(accentColorC))
+	return C.GoString(accentColorC)
+}
+
+func (m *macosApp) hide() {
+	C.hide()
+}
+
+func (m *macosApp) show() {
+	C.show()
+}
+
+func (m *macosApp) on(eventID uint) {
+	C.registerListener(C.uint(eventID))
+}
+
+func (m *macosApp) setIcon(icon []byte) {
+	C.setApplicationIcon(unsafe.Pointer(&icon[0]), C.int(len(icon)))
+}
+
+func (m *macosApp) name() string {
+	appName := C.getAppName()
+	defer C.free(unsafe.Pointer(appName))
+	return C.GoString(appName)
+}
+
+func (m *macosApp) getCurrentWindowID() uint {
+	return uint(C.getCurrentWindowID())
+}
+
+func (m *macosApp) setApplicationMenu(menu *Menu) {
+	if menu == nil {
+		// Create a default menu for mac
+		menu = DefaultApplicationMenu()
+	}
+	menu.Update()
+
+	// Convert impl to macosMenu object
+	m.applicationMenu = (menu.impl).(*macosMenu).nsMenu
+	C.setApplicationMenu(m.applicationMenu)
+}
+
+func (m *macosApp) run() error {
+	if m.parent.options.SingleInstance != nil {
+		cUniqueID := C.CString(m.parent.options.SingleInstance.UniqueID)
+		defer C.free(unsafe.Pointer(cUniqueID))
+		C.startSingleInstanceListener(cUniqueID)
+	}
+	// Add a hook to the ApplicationDidFinishLaunching event
+	m.parent.Event.OnApplicationEvent(
+		events.Mac.ApplicationDidFinishLaunching,
+		func(*ApplicationEvent) {
+			C.setApplicationShouldTerminateAfterLastWindowClosed(
+				C.bool(m.parent.options.Mac.ApplicationShouldTerminateAfterLastWindowClosed),
+			)
+			C.setActivationPolicy(C.int(m.parent.options.Mac.ActivationPolicy))
+			// Only bring the app to the foreground for a regular (UI) app.
+			// Accessory and Prohibited apps are background/agent processes;
+			// force-activating them steals focus from whatever the user was
+			// using (e.g. the terminal that launched a headless server), which a
+			// background app should never do.
+			if m.parent.options.Mac.ActivationPolicy == ActivationPolicyRegular {
+				C.activateIgnoringOtherApps()
+			}
+			if err := m.processAndCacheScreens(); err != nil {
+				m.parent.handleError(err)
+			}
+		},
+	)
+	// Refresh screen cache when display configuration changes
+	m.parent.Event.OnApplicationEvent(
+		events.Mac.ApplicationDidChangeScreenParameters,
+		func(*ApplicationEvent) {
+			if err := m.processAndCacheScreens(); err != nil {
+				m.parent.handleError(err)
+			}
+		},
+	)
+	m.setupCommonEvents()
+	// setup event listeners
+	for eventID := range m.parent.applicationEventListeners {
+		m.on(eventID)
+	}
+	C.run()
+	return nil
+}
+
+func (m *macosApp) destroy() {
+	C.destroyApp()
+}
+
+func newPlatformApp(app *App) *macosApp {
+	C.init()
+	return &macosApp{
+		parent: app,
+	}
+}
+
+//export processApplicationEvent
+func processApplicationEvent(eventID C.uint, data unsafe.Pointer) {
+	event := newApplicationEvent(events.ApplicationEventType(eventID))
+
+	if data != nil {
+		dataCStrJSON := C.serializationNSDictionary(data)
+		if dataCStrJSON != nil {
+			defer C.free(unsafe.Pointer(dataCStrJSON))
+
+			dataJSON := C.GoString(dataCStrJSON)
+			var result map[string]any
+			err := json.Unmarshal([]byte(dataJSON), &result)
+
+			if err != nil {
+				panic(err)
+			}
+
+			event.Context().setData(result)
+		}
+	}
+
+	switch event.Id {
+	case uint(events.Mac.ApplicationDidChangeTheme):
+		isDark := globalApplication.Env.IsDarkMode()
+		event.Context().setIsDarkMode(isDark)
+	}
+	applicationEvents <- event
+}
+
+//export processWindowEvent
+func processWindowEvent(windowID C.uint, eventID C.uint) {
+	windowEvents <- &windowEvent{
+		WindowID: uint(windowID),
+		EventID:  uint(eventID),
+	}
+}
+
+//export processMessage
+func processMessage(windowID C.uint, message *C.char, origin *C.char, isMainFrame bool) {
+	o := ""
+	if origin != nil {
+		o = C.GoString(origin)
+	}
+	windowMessageBuffer <- &windowMessage{
+		windowId: uint(windowID),
+		message:  C.GoString(message),
+		originInfo: &OriginInfo{
+			Origin:      o,
+			IsMainFrame: isMainFrame,
+		},
+		childFrame: !isMainFrame,
+	}
+}
+
+//export cancelURLRequest
+func cancelURLRequest(wkUrlSchemeTask unsafe.Pointer) {
+	webview.CancelRequest(wkUrlSchemeTask)
+}
+
+// acceleratorFromKeyPress names a key press the way a key binding is written.
+// The naming lives in Go, in accelerator_darwin.go, so that it can be tested
+// without standing up AppKit. The caller owns the returned string.
+//
+//export acceleratorFromKeyPress
+func acceleratorFromKeyPress(keyCode C.ushort, modifiers C.ulong, character C.uint, hasCharacter C.int) *C.char {
+	return C.CString(macAccelerator(uint16(keyCode), uint(modifiers), rune(character), hasCharacter != 0))
+}
+
+//export processWindowKeyDownEvent
+func processWindowKeyDownEvent(windowID C.uint, acceleratorString *C.char) {
+	windowKeyEvents <- &windowKeyEvent{
+		windowId:          uint(windowID),
+		acceleratorString: C.GoString(acceleratorString),
+	}
+}
+
+// processWindowKeyEquivalent is the synchronous counterpart to
+// processWindowKeyDownEvent. Called from -[WebviewWindow performKeyEquivalent:]
+// before the responder chain runs, so the caller can decide whether to
+// consume a modifier-key combo (returning true) or let the WKWebView see it
+// (returning false). Required for accelerators the webview would otherwise
+// swallow before NSWindow's keyDown: is ever reached — Ctrl+Tab is the
+// canonical example.
+//
+//export processWindowKeyEquivalent
+func processWindowKeyEquivalent(windowID C.uint, acceleratorString *C.char) C.bool {
+	if globalApplication == nil {
+		return C.bool(false)
+	}
+	globalApplication.windowsLock.RLock()
+	window, ok := globalApplication.windows[uint(windowID)]
+	globalApplication.windowsLock.RUnlock()
+	if !ok {
+		return C.bool(false)
+	}
+	webviewWindow, ok := window.(*WebviewWindow)
+	if !ok {
+		return C.bool(false)
+	}
+	accelerator, err := parseAccelerator(C.GoString(acceleratorString))
+	if err != nil {
+		return C.bool(false)
+	}
+	return C.bool(webviewWindow.processKeyBinding(accelerator.String()))
+}
+
+//export processDragItems
+func processDragItems(windowID C.uint, arr **C.char, length C.int, x C.int, y C.int) {
+	var filenames []string
+	// Convert the C array to a Go slice
+	goSlice := (*[1 << 30]*C.char)(unsafe.Pointer(arr))[:length:length]
+	for _, str := range goSlice {
+		filenames = append(filenames, C.GoString(str))
+	}
+
+	globalApplication.debug(
+		"[DragDropDebug] processDragItems called",
+		"windowID",
+		windowID,
+		"fileCount",
+		len(filenames),
+		"x",
+		x,
+		"y",
+		y,
+	)
+	targetWindow, ok := globalApplication.Window.GetByID(uint(windowID))
+	if !ok || targetWindow == nil {
+		println("Error: processDragItems could not find window with ID:", uint(windowID))
+		return
+	}
+
+	globalApplication.debug(
+		"[DragDropDebug] processDragItems: Calling targetWindow.InitiateFrontendDropProcessing",
+	)
+	targetWindow.InitiateFrontendDropProcessing(filenames, int(x), int(y))
+}
+
+var (
+	// Pre-allocated buffer for drag JS calls to avoid allocations
+	dragOverJSBuffer = make([]byte, 128) // Increased for safety
+	dragOverJSMutex  sync.Mutex          // Protects dragOverJSBuffer
+	dragOverJSPrefix = []byte("window._wails.handleDragOver(")
+
+	// Cache window references to avoid repeated lookups
+	windowImplCache sync.Map // windowID -> *macosWebviewWindow
+
+	// Per-window drag throttle state
+	dragThrottle sync.Map // windowID -> *dragThrottleState
+)
+
+type dragThrottleState struct {
+	mu           sync.Mutex // Protects all fields below
+	lastX, lastY int
+	timer        *time.Timer
+	pendingX     int
+	pendingY     int
+	hasPending   bool
+}
+
+//export processMenuItemClick
+func processMenuItemClick(menuID C.uint) {
+	menuItemClicked <- uint(menuID)
+}
+
+//export shouldQuitApplication
+func shouldQuitApplication() C.bool {
+	// TODO: This should be configurable
+	return C.bool(globalApplication.shouldQuit())
+}
+
+//export cleanup
+func cleanup() {
+	globalApplication.cleanup()
+}
+
+func (a *App) platformEnvironment() map[string]any {
+	return map[string]any{}
+}
+
+func fatalHandler(errFunc func(error)) {
+	return
+}
+
+//export HandleOpenFile
+func HandleOpenFile(filePath *C.char) {
+	goFilepath := C.GoString(filePath)
+	// Create new application event context
+	eventContext := newApplicationEventContext()
+	eventContext.setOpenedWithFile(goFilepath)
+	// EmitEvent application started event
+	applicationEvents <- &ApplicationEvent{
+		Id:  uint(events.Common.ApplicationOpenedWithFile),
+		ctx: eventContext,
+	}
+}
+
+//export HandleOpenURL
+func HandleOpenURL(urlCString *C.char) {
+	urlString := C.GoString(urlCString)
+	eventContext := newApplicationEventContext()
+	eventContext.setURL(urlString)
+
+	// Emit the standard event with the URL string as data
+	applicationEvents <- &ApplicationEvent{
+		Id:  uint(events.Common.ApplicationLaunchedWithUrl),
+		ctx: eventContext,
+	}
+}
+
+// macosOnDragOver is the //export entry point for the drag-over callback.
+//
+//export macosOnDragOver
+func macosOnDragOver(windowID C.uint, x C.int, y C.int) {
+	throttleDragOver(uint(windowID), int(x), int(y))
+}
+
+// processURLRequest is the //export entry point for WKURLSchemeTask requests.
+//
+//export processURLRequest
+func processURLRequest(windowID C.uint, wkUrlSchemeTask unsafe.Pointer) {
+	handleURLRequest(uint(windowID), wkUrlSchemeTask)
+}
+
+// macosOnDragEnter is the //export entry point for a drag entering a window.
+//
+//export macosOnDragEnter
+func macosOnDragEnter(windowID C.uint) {
+	handleDragEnter(uint(windowID))
+}
+
+// macosOnDragExit is the //export entry point for a drag leaving a window.
+//
+//export macosOnDragExit
+func macosOnDragExit(windowID C.uint) {
+	handleDragExit(uint(windowID))
+}

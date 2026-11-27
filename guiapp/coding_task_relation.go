@@ -91,7 +91,7 @@ func (h verifiedCodingTaskHandle) complete() bool {
 type codingTaskRelationService struct {
 	// mu linearizes close and handle lifecycle transitions with the cross-store
 	// attempt bind. SQLite serializes individual statements, but it cannot serialize
-	// "verify handle -> anchor runtime attempt -> record the bridge" as one
+	// "verify handle -> anchor runtime attempt -> revalidate the handle" as one
 	// in-process lifecycle decision. Cancellation and continuation must observe
 	// that decision either wholly before or wholly after the bind.
 	mu sync.Mutex
@@ -114,7 +114,7 @@ func newCodingTaskRelationService(dbPath string) (*codingTaskRelationService, er
 	}
 	// The service mutex already serializes lifecycle decisions; pin the pool to
 	// one connection as well so no pooled SQLite connection can retain an older
-	// read snapshot across the verify/bridge transaction boundary.
+	// read snapshot across the verify/anchor/revalidate boundary.
 	db.SetMaxOpenConns(1)
 	service := &codingTaskRelationService{db: db}
 	if err := service.migrate(); err != nil {
@@ -367,10 +367,11 @@ WHERE handle_id IN descendants AND status=?`, current.handleID, codingTaskRelati
 
 // BindCodingAttempt is R1b's sole bridge from an authenticated task relation
 // to a runtime attempt. It verifies the opaque handle in its durable scope,
-// registers the turn-unique runtime anchor, and only then records the attempt
-// bridge. Neither the runtime nor the agent is allowed to supply root/turn
+// then makes the turn-unique runtime anchor the single durable authorization
+// commit. Neither the runtime nor the agent is allowed to supply root/turn
 // fields directly. Repeating the same binding is idempotent while the attempt
-// remains live; any drift in the attempt or anchor is rejected.
+// remains live; any drift in the attempt or anchor is rejected. Legacy bridge
+// rows remain read-only compatibility fences but are no longer written.
 func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubject, handle verifiedCodingTaskHandle, store codingruntime.Store, request codingruntime.ExecutionRequest, now time.Time) (*trustedCodingInvocationIdentity, error) {
 	if !validVerifiedCodingSubject(subject) {
 		return nil, errVerifiedCodingSubjectInvalid
@@ -395,9 +396,8 @@ func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubj
 		return nil, fmt.Errorf("coding task relation service is unavailable")
 	}
 
-	// First verify the durable handle and inspect any existing bridge row. This
-	// preflight rejects an already-consumed handle before touching the runtime
-	// ledger; the authoritative write still happens after the anchor below.
+	// First verify the durable handle before touching the runtime ledger. The
+	// runtime anchor below is the only durable authorization write.
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -416,16 +416,9 @@ func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubj
 		}
 		return nil, err
 	}
-	var boundTaskID, boundAttemptID string
-	bindErr := tx.QueryRow(`SELECT runtime_task_id,runtime_attempt_id FROM coding_task_attempt_bindings WHERE handle_id=?`, current.handleID).Scan(&boundTaskID, &boundAttemptID)
-	if bindErr == nil {
-		if boundTaskID != request.Task.TaskID || boundAttemptID != request.Attempt.AttemptID {
-			_ = tx.Rollback()
-			return nil, errCodingTaskHandleConsumed
-		}
-	} else if !errors.Is(bindErr, sql.ErrNoRows) {
+	if err := validateCodingAttemptBridge(tx, current.handleID, request.Task.TaskID, request.Attempt.AttemptID); err != nil {
 		_ = tx.Rollback()
-		return nil, bindErr
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
@@ -435,16 +428,18 @@ func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubj
 		TenantID: current.tenantID, PrincipalID: current.principalID, SessionID: current.sessionID,
 		RootTaskID: current.rootTaskID, TurnID: current.turnID,
 	}
-	// The runtime anchor is the first durable fence. It is atomically unique for
-	// this semantic turn in the runtime store, so a failure here cannot leave the
-	// relation database claiming that the handle was already bound. The reverse
-	// ordering used to commit that relation row first and then lose the anchor to
-	// a transient runtime-store error, producing a permanent half-bound handle.
+	// The runtime anchor is atomically unique for this semantic turn in the
+	// runtime store. It is the only durable authorization commit: a failure
+	// before this point leaves no authority, and a failure after this point is
+	// closed by the post-validation below before the caller may execute.
 	if _, err = anchors.RegisterSemanticTaskAnchor(codingruntime.SemanticTaskAnchor{
 		RuntimeTaskID: request.Task.TaskID, RuntimeAttemptID: request.Attempt.AttemptID,
 		TenantID: identity.TenantID, PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
 		RootTaskID: identity.RootTaskID, TurnID: identity.TurnID,
 	}); err != nil {
+		if errors.Is(err, codingruntime.ErrSemanticAnchorConflict) {
+			return nil, errCodingTaskHandleConsumed
+		}
 		return nil, fmt.Errorf("register coding semantic task anchor: %w", err)
 	}
 	resolved, err := anchors.ResolveSemanticTaskAnchor(request.Task.TaskID, request.Attempt.AttemptID)
@@ -456,10 +451,9 @@ func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubj
 		return nil, fmt.Errorf("resolve coding semantic task anchor")
 	}
 
-	// Revalidate and record the bridge only after the anchor exists. If this
-	// write fails, retrying the same attempt is safe: anchor registration is
-	// idempotent for that attempt, while a different attempt is rejected by the
-	// runtime turn-unique anchor before this relation row can drift.
+	// Revalidate the handle after the anchor exists. This second validation is
+	// the linearization fence for cancellation or continuation; no second
+	// authorization write is needed beyond the turn-unique runtime anchor.
 	tx, err = s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -478,19 +472,7 @@ func (s *codingTaskRelationService) BindCodingAttempt(subject verifiedCodingSubj
 		}
 		return nil, err
 	}
-	boundTaskID, boundAttemptID = "", ""
-	err = tx.QueryRow(`SELECT runtime_task_id,runtime_attempt_id FROM coding_task_attempt_bindings WHERE handle_id=?`, current.handleID).Scan(&boundTaskID, &boundAttemptID)
-	if err == nil {
-		if boundTaskID != request.Task.TaskID || boundAttemptID != request.Attempt.AttemptID {
-			_ = tx.Rollback()
-			return nil, errCodingTaskHandleConsumed
-		}
-	} else if errors.Is(err, sql.ErrNoRows) {
-		if _, err = tx.Exec(`INSERT INTO coding_task_attempt_bindings(handle_id,runtime_task_id,runtime_attempt_id,bound_at) VALUES(?,?,?,?)`, current.handleID, request.Task.TaskID, request.Attempt.AttemptID, now.UnixNano()); err != nil {
-			_ = tx.Rollback()
-			return nil, errCodingTaskHandleConsumed
-		}
-	} else {
+	if err := validateCodingAttemptBridge(tx, current.handleID, request.Task.TaskID, request.Attempt.AttemptID); err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}
@@ -530,6 +512,21 @@ func normalizedCodingRelationTime(now time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return now.UTC()
+}
+
+func validateCodingAttemptBridge(q interface{ QueryRow(string, ...any) *sql.Row }, handleID, runtimeTaskID, runtimeAttemptID string) error {
+	var boundTaskID, boundAttemptID string
+	err := q.QueryRow(`SELECT runtime_task_id,runtime_attempt_id FROM coding_task_attempt_bindings WHERE handle_id=?`, handleID).Scan(&boundTaskID, &boundAttemptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if boundTaskID != runtimeTaskID || boundAttemptID != runtimeAttemptID {
+		return errCodingTaskHandleConsumed
+	}
+	return nil
 }
 
 func loadCodingTaskHandle(q interface{ QueryRow(string, ...any) *sql.Row }, handleID string) (verifiedCodingTaskHandle, codingTaskRelationStatus, error) {

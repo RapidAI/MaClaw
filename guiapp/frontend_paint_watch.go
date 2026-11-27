@@ -4,7 +4,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 const dumpFrontendDOMJS = `(function(){
@@ -203,6 +203,8 @@ func (a *App) watchFirstPaintForGPUFailure() {
 		}
 		bootLog("first-paint watchdog: no frame after %s despite htmlReady=true assets=%d; recording GPU failure",
 			firstPaintGPUFailureGrace, frontendAssetRequests.Load())
+		// 渲染端上报通道已实证（绑定修复后 firstPaintMark 正常置位），
+		// GPU 自愈标记恢复 v2 全语义。
 		recordWebviewGPUFailure(defaultWebviewUserDataPath(), "no-first-paint")
 	}()
 }

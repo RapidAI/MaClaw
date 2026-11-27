@@ -13,6 +13,11 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
   SetEmbedHWAccel: (...args: unknown[]) => SetEmbedHWAccel(...args),
 }));
 
+vi.mock("../../../../wailsjs/runtime", () => ({
+  EventsOn: vi.fn(() => () => {}),
+  EventsOff: vi.fn(),
+}));
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -86,6 +91,26 @@ describe("SystemSettingsPanel", () => {
     fireEvent.change(skillRunnerInput, { target: { value: "20000" } });
 
     expect(saveRemoteConfigField).toHaveBeenCalledWith({ skill_runner_timeout_sec: 14400 });
+  });
+
+  it("enables silent updates by default and saves opt-out", () => {
+    const { saveRemoteConfigField } = renderPanel();
+    const box = screen.getByLabelText("Silent updates");
+
+    expect(box).toHaveProperty("checked", true);
+    fireEvent.click(box);
+
+    expect(saveRemoteConfigField).toHaveBeenCalledWith({ silent_update_enabled: false });
+  });
+
+  it("saves silent updates opt-in when disabled", () => {
+    const { saveRemoteConfigField } = renderPanel({ silent_update_enabled: false });
+    const box = screen.getByLabelText("Silent updates");
+
+    expect(box).toHaveProperty("checked", false);
+    fireEvent.click(box);
+
+    expect(saveRemoteConfigField).toHaveBeenCalledWith({ silent_update_enabled: true });
   });
 
   it("saves workstation mode through config patch flow", () => {

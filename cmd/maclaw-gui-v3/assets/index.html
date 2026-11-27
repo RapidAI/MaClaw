@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MaClaw Spike</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #f3f5f7; }
+  body { display: flex; flex-direction: column; }
+  .bar {
+    height: 38px; background: #1f2937; color: #fff;
+    display: flex; align-items: center; padding: 0 12px;
+    --wails-draggable: drag; user-select: none; flex: none;
+  }
+  .bar span { --wails-draggable: no-drag; }
+  #guardedDrag { --wails-draggable: no-drag; margin: 8px; padding: 8px 14px; align-self: flex-start; }
+  #log { flex: 1; overflow: auto; font: 12px/1.5 monospace; padding: 8px; white-space: pre-wrap; color: #374151; }
+</style>
+</head>
+<body>
+  <div class="bar"><span>C1 frameless 标题栏 — 拖我试试</span></div>
+  <button id="guardedDrag">守卫式拖拽（guiapp 同款逻辑）</button>
+  <div id="log">spike 前端已加载</div>
+  <script type="module">
+    import { Events, Call } from '/wails/runtime.js';
+    // Expose for ExecJS-initiated probes (they run outside the module scope).
+    window.Wails = { Events, Call };
+    const logEl = document.getElementById('log');
+    const log = (...a) => { logEl.textContent += '\n' + a.join(' '); };
+
+    Events.On('spike:ping', (e) => {
+      log('recv spike:ping', JSON.stringify(e.data));
+      Events.Emit('spike:pong', e.data);
+    });
+
+    // C4: asset middleware POST route.
+    try {
+      const r = await fetch('/maclaw-spike/append', { method: 'POST', body: 'x' });
+      const j = await r.json();
+      Events.Emit('spike:fetch-result', { status: r.status, ok: j.ok });
+    } catch (err) {
+      Events.Emit('spike:fetch-result', { error: String(err) });
+    }
+    // C5: module-load probe (redundant with the Go-side ExecJS retry probe).
+    Events.Emit('spike:probe', { href: location.href, title: document.title, from: 'module' });
+
+    // mousedown, not click: click fires after mouse-up, which would make the
+    // GetAsyncKeyState guard refuse every time and the POST path never test.
+    document.getElementById('guardedDrag').addEventListener('mousedown', async (ev) => {
+      ev.preventDefault();
+      try {
+        const r = await Call.ByName('main.SpikeService.GuardedDragBegin');
+        log('guarded drag:', JSON.stringify(r));
+      } catch (err) {
+        log('guarded drag failed:', String(err));
+      }
+    });
+    log('runtime module ready');
+  </script>
+</body>
+</html>

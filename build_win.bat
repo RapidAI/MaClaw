@@ -6,6 +6,16 @@ REM == Batch Script to Build and Package MaClaw (GUI + TUI/CLI + maclaw-cli + Da
 REM ==============================================================================
 
 echo [INFO] Starting the build process...
+REM -- /w3 switch: build the GUI with the wails3 runtime (branch
+REM    wails3-migration). Default remains the wails v2 runtime until the
+REM    wails3 promotion is signed off (AGENTS.md promotion checklist).
+set "WAILS3_GUI=1"
+for %%a in (%*) do (
+    if /i "%%a"=="/w3" set "WAILS3_GUI=1"
+)
+echo [INFO] GUI builds with -tags wails3 + CGO (promoted default; see AGENTS.md wails3 section).
+set "GUI_TAGS=wails3,desktop,production"
+
 
 REM -- Build mutex: dist\, guiapp\resource_windows_*.syso, guiapp\frontend\dist
 REM    and the shared service binary names are used by every build_win*.bat
@@ -42,7 +52,8 @@ set "GO_EXE=C:\Program Files\Go\bin\go.exe"
 
 REM -- Ensure Go tools are in PATH --
 set "GOPATH=%USERPROFILE%\go"
-set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin"
+set "PATH=%SystemRoot%\System32;%SystemRoot%;C:\Program Files\nodejs;C:\Program Files\Go\bin;%GOPATH%\bin;C:\msys64\mingw64\bin"
+REM wails3 CGO needs gcc; C:/msys64/mingw64/bin appended to PATH above
 set "GOMAXPROCS=1"
 
 REM -- Clean previous MaClaw build artifacts (preserve other brands' files) --
@@ -128,10 +139,11 @@ REM -- Clean locked Go temp dirs to prevent "Access is denied" errors --
 set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=0"
+if "%WAILS3_GUI%"=="1" set "CGO_ENABLED=1"
 set "CC="
 call :generate_windows_resources "amd64" "%~dp0guiapp\resource_windows_amd64.syso"
 if errorlevel 1 goto :error
-call :go_build -p 1 -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./cmd/maclaw-gui/
+call :go_build -p 1 -tags %GUI_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./cmd/maclaw-gui/
 if errorlevel 1 (
     echo [ERROR] Go build for GUI amd64 failed.
     goto :error
@@ -146,6 +158,7 @@ if errorlevel 1 goto :error
 del "%~dp0guiapp\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=0"
+if "%WAILS3_GUI%"=="1" set "CGO_ENABLED=1"
 set "CC="
 if not exist "%~dp0build\windows\wails.exe.manifest.tmp" (
     echo [ERROR] Windows manifest resource input is missing.
@@ -157,7 +170,7 @@ if not exist "%~dp0build\windows\versioninfo.json.tmp" (
 )
 call :generate_windows_resources "arm64" "%~dp0guiapp\resource_windows_arm64.syso"
 if errorlevel 1 goto :error
-call :go_build -p 1 -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./cmd/maclaw-gui/
+call :go_build -p 1 -tags %GUI_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./cmd/maclaw-gui/
 if errorlevel 1 (
     echo [ERROR] Go build for GUI arm64 failed.
     goto :error

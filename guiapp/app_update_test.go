@@ -1122,6 +1122,111 @@ func TestDownloadUpdateReportsChecksumFailureBeforeTryingFallback(t *testing.T) 
 	}
 }
 
+func TestDownloadUpdateProgressEventsCanBeSuppressedForSilentUpdate(t *testing.T) {
+	payload := make([]byte, 5*1024*1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
+		t.Fatalf("create Downloads directory: %v", err)
+	}
+	for _, tc := range []struct {
+		name         string
+		emitProgress bool
+		wantEvents   bool
+	}{
+		{name: "manual download keeps progress events", emitProgress: true, wantEvents: true},
+		{name: "silent download suppresses progress events", emitProgress: false, wantEvents: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{testHomeDir: home, downloadCancelers: make(map[string]*downloadCanceler)}
+			events := 0
+			app.testEmit = func(name string, _ ...interface{}) {
+				if name == "download-progress" {
+					events++
+				}
+			}
+			if _, err := app.downloadUpdateWithSHA256(server.URL, "MaClaw-Setup.exe", "", tc.emitProgress); err != nil {
+				t.Fatalf("downloadUpdateWithSHA256() error = %v", err)
+			}
+			if gotEvents := events > 0; gotEvents != tc.wantEvents {
+				t.Fatalf("download-progress emitted = %v, want %v", gotEvents, tc.wantEvents)
+			}
+		})
+	}
+}
+
+func TestDownloadUpdateCancelDoesNotEmitTerminalErrorAfterCancelled(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", 5*1024*1024))
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
+		t.Fatalf("create Downloads directory: %v", err)
+	}
+	app := &App{testHomeDir: home, downloadCancelers: make(map[string]*downloadCanceler)}
+	statuses := make(chan downloadProgressStatus, 16)
+	app.testEmit = func(name string, args ...interface{}) {
+		if name != "download-progress" || len(args) == 0 {
+			return
+		}
+		if progress, ok := args[0].(DownloadProgress); ok {
+			statuses <- progress.Status
+		}
+	}
+
+	downloadDone := make(chan error, 1)
+	go func() {
+		_, err := app.DownloadUpdate(server.URL, "MaClaw-Setup.exe")
+		downloadDone <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("download request did not start")
+	}
+	app.CancelDownload("MaClaw-Setup.exe")
+	select {
+	case err := <-downloadDone:
+		if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			t.Fatalf("DownloadUpdate() error = %v, want cancellation", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled download did not return")
+	}
+
+	cancelledEvents := 0
+	for len(statuses) > 0 {
+		status := <-statuses
+		if status == downloadProgressStatusCancelled {
+			cancelledEvents++
+		}
+		if status == downloadProgressStatusError {
+			t.Fatal("cancelled download emitted a terminal error event")
+		}
+	}
+	if cancelledEvents != 1 {
+		t.Fatalf("cancelled progress events = %d, want exactly 1", cancelledEvents)
+	}
+}
+
 func TestFetchManifestLatestReleaseRejectsManifestWithoutVersion(t *testing.T) {
 	// A parseable body that carries no tag/version must count as a failed
 	// check; treating it as success would skip the mirror fallback entirely.

@@ -71,6 +71,13 @@ const MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具�
 // ParseContentToolCallsDetailed extracts tool calls emitted in assistant
 // content by OpenAI-compatible providers that fail to populate tool_calls.
 func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
+	return parseContentToolCallsDetailed(content, looksLikeLineOrientedToolName)
+}
+
+func parseContentToolCallsDetailed(content string, allowCompactName func(string) bool) ([]ToolCall, bool) {
+	if allowCompactName == nil {
+		allowCompactName = looksLikeLineOrientedToolName
+	}
 	if looksLikeDSMLContent(content) {
 		if calls, malformed := parseDSMLContentToolCalls(content); len(calls) > 0 || malformed {
 			return calls, malformed
@@ -160,6 +167,17 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	if parenMalformed {
 		malformed = true
 	}
+	// A gateway that loses Hy3's wrapper can leave one-line
+	// `web_fetch {"url":...}` calls followed by orphaned suffixed argument
+	// tags. The JSON object is already a complete invocation, so recover it
+	// instead of letting tool grammar become the final answer.
+	compactCalls, compactMalformed := parseCompactJSONContentToolCallsMatching(content, allowCompactName)
+	if len(compactCalls) > 0 {
+		calls = append(calls, compactCalls...)
+	}
+	if compactMalformed {
+		malformed = true
+	}
 	// Some providers emit a line-oriented call that the legacy plain parser
 	// partially recognizes (typically dropping later arguments). Prefer the
 	// structured line parse whenever it succeeds so tool arguments are not lost.
@@ -176,18 +194,27 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	return calls, malformed
 }
 
+type contentToolCallParser func(string) ([]ToolCall, bool)
+
 // adoptLeakedToolCalls promotes tool grammar that arrived as text. Hy3 writes
 // <tool_call:suffix> into reasoning_content when the gateway does not run the
 // hy_v3 parser, then continues with an answer that never searched. A recovered
 // call replaces that answer so the loop executes the tool. The raw tags are
 // removed from the thinking text either way.
 func adoptLeakedToolCalls(msg *Message, visibleContent string) (finishReason string, changed bool) {
+	return adoptLeakedToolCallsWithParser(msg, visibleContent, nil)
+}
+
+func adoptLeakedToolCallsWithParser(msg *Message, visibleContent string, parse contentToolCallParser) (finishReason string, changed bool) {
 	if msg == nil {
 		return "", false
 	}
+	if parse == nil {
+		parse = ParseContentToolCallsDetailed
+	}
 	reasoning := msg.ReasoningContent
 	if len(msg.ToolCalls) == 0 {
-		if calls, malformed := ParseContentToolCallsDetailed(visibleContent); len(calls) > 0 {
+		if calls, malformed := parse(visibleContent); len(calls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, calls...)
 			msg.Content = ""
 			finishReason, changed = "tool_calls", true
@@ -1005,19 +1032,25 @@ func bareJSONLooksLikeToolCall(obj map[string]json.RawMessage) bool {
 }
 
 type contentToolCallDeltaFilter struct {
-	downstream      TokenCallback
-	downstreamFlush func()
-	pending         strings.Builder
-	suppressed      bool
+	downstream       TokenCallback
+	downstreamFlush  func()
+	allowCompactName func(string) bool
+	pending          strings.Builder
+	suppressed       bool
 }
 
 func newContentToolCallDeltaFilter(downstream TokenCallback) *contentToolCallDeltaFilter {
+	return newContentToolCallDeltaFilterWithCompactNames(downstream, nil)
+}
+
+func newContentToolCallDeltaFilterWithCompactNames(downstream TokenCallback, allowCompactName func(string) bool) *contentToolCallDeltaFilter {
+	filter := &contentToolCallDeltaFilter{downstream: downstream, allowCompactName: allowCompactName}
 	if downstream != nil {
 		details := &detailsFilter{downstream: downstream}
-		downstream = details.Write
-		return &contentToolCallDeltaFilter{downstream: downstream, downstreamFlush: details.Flush}
+		filter.downstream = details.Write
+		filter.downstreamFlush = details.Flush
 	}
-	return &contentToolCallDeltaFilter{downstream: downstream}
+	return filter
 }
 
 func (f *contentToolCallDeltaFilter) Write(delta string) {
@@ -1057,7 +1090,7 @@ func (f *contentToolCallDeltaFilter) drain(force bool) {
 			return
 		}
 	}
-	visible, hold, suppress := HoldContentToolCallStream(s, force)
+	visible, hold, suppress := holdContentToolCallStreamMatching(s, force, f.allowCompactName)
 	if visible != "" {
 		f.downstream(visible)
 	}
@@ -1105,7 +1138,11 @@ func ContentToolCallMarkerSuffixLen(s string) int {
 // a tool-call body and must not reach the chat. On flush, a partial DSML
 // fence is dropped instead of leaked.
 func HoldContentToolCallStream(s string, force bool) (visible, hold string, suppress bool) {
-	if idx := firstContentToolCallMarkerIndex(s); idx >= 0 {
+	return holdContentToolCallStreamMatching(s, force, nil)
+}
+
+func holdContentToolCallStreamMatching(s string, force bool, allowCompactName func(string) bool) (visible, hold string, suppress bool) {
+	if idx := firstContentToolCallMarkerIndexMatching(s, allowCompactName); idx >= 0 {
 		if idx > 0 {
 			visible = s[:idx]
 		}
@@ -1127,7 +1164,7 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 		return s, "", false
 	}
 	partial := contentToolCallMarkerSuffixLen(s)
-	if n := leakedLineOrientedIncompleteLineHoldLen(s); n > partial {
+	if n := leakedLineOrientedIncompleteLineHoldLenMatching(s, allowCompactName); n > partial {
 		partial = n
 	}
 	if n := parenToolCallIncompleteLineHoldLen(s); n > partial {
@@ -1145,13 +1182,17 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 		// The trailing span never became a call. Show it.
 		return s, "", false
 	}
-	if dropPartialContentToolCallOnFlush(suffix) {
+	if dropPartialContentToolCallOnFlushMatching(suffix, allowCompactName) {
 		return visible, "", true
 	}
 	return s, "", false
 }
 
 func dropPartialContentToolCallOnFlush(suffix string) bool {
+	return dropPartialContentToolCallOnFlushMatching(suffix, nil)
+}
+
+func dropPartialContentToolCallOnFlushMatching(suffix string, allowCompactName func(string) bool) bool {
 	collapsed := collapseDSMLFence(suffix)
 	if strings.HasPrefix(collapsed, "<|") {
 		return true
@@ -1162,27 +1203,38 @@ func dropPartialContentToolCallOnFlush(suffix string) bool {
 			return true
 		}
 	}
-	return couldBecomeLeakedLineOrientedToolLine(suffix)
+	return couldBecomeLeakedLineOrientedToolLineMatching(suffix, allowCompactName)
 }
 
 func leakedLineOrientedIncompleteLineHoldLen(s string) int {
+	return leakedLineOrientedIncompleteLineHoldLenMatching(s, nil)
+}
+
+func leakedLineOrientedIncompleteLineHoldLenMatching(s string, allowCompactName func(string) bool) int {
 	idx := strings.LastIndexByte(s, '\n')
 	last := s
 	if idx >= 0 {
 		last = s[idx+1:]
 	}
-	if last == "" || !couldBecomeLeakedLineOrientedToolLine(last) {
+	if last == "" || !couldBecomeLeakedLineOrientedToolLineMatching(last, allowCompactName) {
 		return 0
 	}
 	return len(last)
 }
 
 func couldBecomeLeakedLineOrientedToolLine(line string) bool {
+	return couldBecomeLeakedLineOrientedToolLineMatching(line, nil)
+}
+
+func couldBecomeLeakedLineOrientedToolLineMatching(line string, allowCompactName func(string) bool) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return false
 	}
 	if name := lineOrientedToolName(trimmed); name != "" && leakedToolNameShouldSuppressStream(name) {
+		return true
+	}
+	if name := compactJSONToolLineNameMatching(trimmed, compactStreamNameValidator(allowCompactName)); name != "" {
 		return true
 	}
 	fields := strings.Fields(trimmed)
@@ -1224,6 +1276,10 @@ var contentToolCallASCIIMarkers = []string{
 }
 
 func firstContentToolCallMarkerIndex(s string) int {
+	return firstContentToolCallMarkerIndexMatching(s, nil)
+}
+
+func firstContentToolCallMarkerIndexMatching(s string, allowCompactName func(string) bool) int {
 	best := -1
 	for _, marker := range contentToolCallASCIIMarkers {
 		if idx := indexASCIIFold(s, marker); idx >= 0 && (best < 0 || idx < best) {
@@ -1234,6 +1290,9 @@ func firstContentToolCallMarkerIndex(s string) int {
 		best = loc[0]
 	}
 	if idx := leakedLineOrientedToolMarkerIndex(s); idx >= 0 && (best < 0 || idx < best) {
+		best = idx
+	}
+	if idx := compactJSONToolMarkerIndexMatching(s, allowCompactName); idx >= 0 && (best < 0 || idx < best) {
 		best = idx
 	}
 	return best
@@ -1767,6 +1826,118 @@ func closedParenMarkdownSpan(s string) bool {
 	return trimWrappingMarkdown(s) != s
 }
 
+// parseCompactJSONContentToolCallsMatching recovers calls written as one line of
+// `<tool-name> <json-object>`. Hy3 can lose its <tool_call:suffix> wrapper
+// while the model still writes the separator payload as text; the observed
+// remainder is an orphaned close tag plus ordinary <arg_key>/<arg_value>
+// pairs. A complete JSON object plus recognizable Hy3 residue is therefore
+// executable intent, not prose for the user.
+func parseCompactJSONContentToolCallsMatching(content string, allowName func(string) bool) ([]ToolCall, bool) {
+	if allowName == nil {
+		allowName = looksLikeLineOrientedToolName
+	}
+	var calls []ToolCall
+	malformed := false
+	for _, line := range strings.Split(content, "\n") {
+		line = stripContentSpecialTokens(strings.TrimSpace(line))
+		if line == "" {
+			continue
+		}
+		name, rest, ok := splitLeadingToolName(line)
+		if !ok || !allowName(name) || !strings.HasPrefix(rest, "{") {
+			continue
+		}
+		raw, ok := extractJSONObjectAfter(rest)
+		if !ok {
+			malformed = true
+			continue
+		}
+		start := strings.Index(rest, raw)
+		if start < 0 {
+			malformed = true
+			continue
+		}
+		tail := strings.TrimSpace(rest[start+len(raw):])
+		args, ok := parseCompactJSONObjectArguments(json.RawMessage(raw), tail)
+		if !ok {
+			malformed = true
+			continue
+		}
+		call, ok := normalizePlainContentToolCall(name, args)
+		if !ok {
+			malformed = true
+			continue
+		}
+		calls = append(calls, call)
+	}
+	return calls, malformed
+}
+
+func parseCompactJSONObjectArguments(raw json.RawMessage, tail string) (json.RawMessage, bool) {
+	var args map[string]interface{}
+	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
+		return nil, false
+	}
+	tail = stripLeadingHy3OrphanClosers(strings.TrimSpace(tail))
+	if tail == "" {
+		return raw, true
+	}
+	suffix, _, ok := hy3ArgTagSuffix(tail, "<arg_key:")
+	if !ok {
+		return nil, false
+	}
+	extraRaw, ok := parseHy3ArgPairs(suffix, tail)
+	if !ok {
+		return nil, false
+	}
+	var extra map[string]interface{}
+	if err := json.Unmarshal(extraRaw, &extra); err != nil {
+		return nil, false
+	}
+	for key, value := range extra {
+		if _, exists := args[key]; exists {
+			return nil, false
+		}
+		args[key] = value
+	}
+	merged, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
+func stripLeadingHy3OrphanClosers(tail string) string {
+	for {
+		tail = strings.TrimSpace(tail)
+		if tail == "" {
+			return ""
+		}
+		_, after, ok := hy3ArgTagSuffix(tail, "</arg_value:")
+		if !ok {
+			_, after, ok = hy3ArgTagSuffix(tail, "</arg_key:")
+		}
+		if !ok {
+			return tail
+		}
+		tail = after
+	}
+}
+
+// hy3ArgTagSuffix reads a case-insensitive Hy3 argument tag at the start of
+// s and returns the opaque suffix plus the bytes after '>'.
+func hy3ArgTagSuffix(s, lowerOpen string) (suffix, after string, ok bool) {
+	if !asciiHasPrefix(s, lowerOpen) {
+		return "", s, false
+	}
+	rest := s[len(lowerOpen):]
+	end := strings.IndexByte(rest, '>')
+	if end <= 0 {
+		return "", s, false
+	}
+	return rest[:end], rest[end+1:], true
+}
+
 func parseLineOrientedContentToolCalls(content string) ([]ToolCall, bool) {
 	_, name, rest := findLineOrientedToolCall(content)
 	if name == "" {
@@ -1974,6 +2145,49 @@ func looksLikeUnparsedLeakedToolCall(content string) bool {
 		}
 	}
 	return false
+}
+
+func compactStreamNameValidator(allowName func(string) bool) func(string) bool {
+	if allowName != nil {
+		return allowName
+	}
+	return looksLikeLineOrientedToolName
+}
+
+func compactJSONToolLineName(line string) string {
+	return compactJSONToolLineNameMatching(line, looksLikeLineOrientedToolName)
+}
+
+func compactJSONToolLineNameMatching(line string, allowName func(string) bool) string {
+	line = stripContentSpecialTokens(strings.TrimSpace(line))
+	if line == "" {
+		return ""
+	}
+	name, rest, ok := splitLeadingToolName(line)
+	if !ok || !strings.HasPrefix(rest, "{") || !allowName(name) {
+		return ""
+	}
+	return name
+}
+
+func compactJSONToolMarkerIndex(s string) int {
+	return compactJSONToolMarkerIndexMatching(s, nil)
+}
+
+func compactJSONToolMarkerIndexMatching(s string, allowName func(string) bool) int {
+	allowName = compactStreamNameValidator(allowName)
+	parts := strings.Split(s, "\n")
+	offset := 0
+	for i, line := range parts {
+		if name := compactJSONToolLineNameMatching(line, allowName); name != "" {
+			return offset
+		}
+		offset += len(line)
+		if i < len(parts)-1 {
+			offset++
+		}
+	}
+	return -1
 }
 
 func leakedLineOrientedToolMarkerIndex(s string) int {

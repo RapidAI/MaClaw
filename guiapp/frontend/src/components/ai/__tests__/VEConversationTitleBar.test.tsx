@@ -13,12 +13,22 @@ vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOff: vi.fn(),
 }));
 
+// BugReportButton ships in the title bar; mock its capture bindings so the
+// real generated module is never touched.
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    CaptureGUIBugReportScreenshot: vi.fn(),
+    GUIBugReportScreenshotDataURL: vi.fn(),
+    DiscardGUIBugReportScreenshot: vi.fn(),
+    SubmitGUIBugReport: vi.fn(),
+}));
+
 const employee: AITab = { id: "ve-tab", type: "ve", title: "安妮", veId: "ve_emp_1", closable: true };
 
 describe("VEConversationTitleBar", () => {
     it("follows a live offline event instead of staying on the initial status", () => {
         render(<VEConversationTitleBar tab={{ ...employee, onlineStatus: "online" }} lang="zh-CN" />);
         expect(screen.getByRole("heading", { name: "安妮" }).textContent).toBe("安妮");
+        expect(screen.getByTestId("task-bug-report-btn")).toBeTruthy();
         expect(screen.getByRole("status").textContent).toContain("在线");
 
         act(() => {
@@ -41,5 +51,7 @@ describe("VEConversationTitleBar", () => {
         const status = screen.getByRole("status");
         expect(status.textContent).toContain("2 位参与者");
         expect(status.className).not.toContain("mc-task-execution-status--completed");
+        // The bug-report control renders even without switcher/window chrome.
+        expect(screen.getByTestId("task-bug-report-btn")).toBeTruthy();
     });
 });

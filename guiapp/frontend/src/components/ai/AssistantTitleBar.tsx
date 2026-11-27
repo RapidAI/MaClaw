@@ -114,7 +114,9 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
         <>
         <div className="mc-ai-titlebar" data-testid="ai-title-bar" {...windowDragHandleProps(inline, rootStyle)} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }}>
             <div data-testid="ai-titlebar-leading" style={{ display: "flex", alignItems: "center", gap: inline ? "12px" : "10px", minWidth: 0, flex: "1 1 auto" }}>
-                {inline && sidebarToggles && <SidebarToggleCluster {...sidebarToggles} lang={lang} />}
+                {/* Restore-only: the collapse pair lives in the task pane's search
+                    row; the header shows it just while the pane is collapsed. */}
+                {inline && sidebarToggles?.paneCollapsed && <SidebarToggleCluster {...sidebarToggles} lang={lang} />}
                 {inline && <>
                     <span className="mc-header-brand" data-testid="ai-titlebar-brand" aria-label="MaClaw">
                         <span className="mc-header-brand-mark" aria-hidden="true">

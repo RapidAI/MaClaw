@@ -192,7 +192,7 @@ func TestSrvConnSingleUsableSrvIsTheDefault(t *testing.T) {
 	// A configured-but-unusable public connection does not count: the one
 	// usable link is still the default.
 	settings.kv[SrvSettingsKey("tenant-a")] = `{
-		"base_url": "http://10.0.0.9", "admin_secret": "x",
+		"base_url": "http://10.0.0.9",
 		"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
 	}`
 	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
@@ -201,7 +201,8 @@ func TestSrvConnSingleUsableSrvIsTheDefault(t *testing.T) {
 	}
 
 	// A second usable endpoint reinstates the public default: the admin
-	// has to pin explicitly.
+	// has to pin explicitly. The registered address counts the same way
+	// loopback does — a remote https card is a full default candidate.
 	settings.kv[SrvSettingsKey("tenant-a")] = `{
 		"base_url": "http://127.0.0.1:9", "admin_secret": "pub-sec",
 		"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
@@ -209,6 +210,14 @@ func TestSrvConnSingleUsableSrvIsTheDefault(t *testing.T) {
 	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
 	if err != nil || conn.LinkID != "" || conn.BaseURL != "http://127.0.0.1:9" {
 		t.Fatalf("two-endpoint default = %+v err=%v", conn, err)
+	}
+	settings.kv[SrvSettingsKey("tenant-a")] = `{
+		"base_url": "https://maclawsrv.example", "admin_secret": "pub-sec",
+		"srv_links": [{"id": "srv-a", "base_url": "https://a.example.com", "admin_secret": "a-sec"}]
+	}`
+	conn, err = svc.srvConn(context.Background(), "tenant-a", "user-1")
+	if err != nil || conn.LinkID != "" || conn.BaseURL != "https://maclawsrv.example" {
+		t.Fatalf("remote-card default = %+v err=%v", conn, err)
 	}
 }
 

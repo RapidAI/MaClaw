@@ -1,0 +1,9 @@
+module {{.ModulePath}}
+
+go 1.26.0
+
+require github.com/wailsapp/wails/v3 {{.WailsVersion}}
+
+{{if .LocalModulePath}}
+replace github.com/wailsapp/wails/v3 => {{.LocalModulePath}}v3
+{{end}}

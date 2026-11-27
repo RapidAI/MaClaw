@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/RapidAI/CodeClaw/guiapp/wruntime"
 	"golang.org/x/crypto/scrypt"
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"

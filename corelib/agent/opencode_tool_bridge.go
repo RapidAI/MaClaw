@@ -9,7 +9,8 @@ import (
 
 // openCodeFreeAgentRequest is a chat turn whose upstream body was replaced
 // with the official OpenCode agent tools. The model then calls those names
-// (shell, webfetch, websearch) even though this loop rendered Maclaw tools.
+// (shell, edit, glob, grep, webfetch, websearch) even though this loop
+// rendered Maclaw tools.
 func openCodeFreeAgentRequest(cfg corelib.MaclawLLMConfig) bool {
 	wire := corelib.OpenCodeWireModel(cfg.URL, cfg.Key, cfg.UpstreamModel())
 	if !corelib.OpenCodeZenAgentModel(wire) {
@@ -35,7 +36,7 @@ func OpenCodeFreeHostTool(cfg corelib.MaclawLLMConfig, name string) bool {
 		return false
 	}
 	switch strings.TrimSpace(name) {
-	case "bash", "read_file", "write_file", "web_fetch", "web_search":
+	case "bash", "read_file", "write_file", "edit_file", "Glob", "ripgrep", "web_fetch", "web_search":
 		return true
 	default:
 		return false

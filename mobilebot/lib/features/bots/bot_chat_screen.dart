@@ -449,10 +449,17 @@ class _BotChatScreenState extends ConsumerState<BotChatScreen> {
     if (!supportsVoiceInput || !supportsVoiceOutput) return;
     final S = context.S;
     final tts = _tts ??= FlutterTts();
+    // Constructor replaces the process-wide channel handler. Register before
+    // the language await so the other page's in-flight readback still ends.
+    noteSystemTtsReceiver(tts);
     try {
       await tts.setLanguage('zh-CN');
       tts.setCompletionHandler(_onVoiceTurnDone);
       tts.setErrorHandler((_) => _onVoiceTurnDone());
+      // setCompletionHandler replaces the wrapper installed above. Re-wrap
+      // before the next await, or a reply still speaking on the other page
+      // ends and this page's own completion handler is gone.
+      noteSystemTtsReceiver(tts);
       // 基线：开启时已有回复不再朗读，只读开启后的新回复。
       _lastSpokenMsgId = _latestAssistantId(ref.read(botChatProvider));
     } catch (_) {

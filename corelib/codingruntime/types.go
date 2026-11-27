@@ -35,6 +35,10 @@ var (
 	ErrRecoveryNotReady   = errors.New("coding runtime recovery is not ready for continuation")
 	ErrPolicyMismatch     = errors.New("coding runtime policy snapshot mismatch")
 	ErrWriterConflict     = errors.New("coding runtime writer admission denied")
+	// ErrStoreRetired means this ledger instance was retired by a data-directory
+	// replacement or close. A runner must not create new work on it even if a
+	// caller still holds the old pointer.
+	ErrStoreRetired = errors.New("coding runtime store retired")
 	// ErrContinuationRequired means a parent has durable child results awaiting
 	// an explicit review handoff. Starting that queued task as an ordinary run
 	// would bypass the fresh parent decision boundary and is therefore denied.

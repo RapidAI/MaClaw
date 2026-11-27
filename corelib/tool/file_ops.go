@@ -654,8 +654,18 @@ type EditTextFileResult struct {
 }
 
 func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditTextFileResult, error) {
+	return EditTextFileMode(path, oldString, newString, replaceAll, false)
+}
+
+// EditTextFileMode is EditTextFile with an optional uniqueness constraint.
+// requireUnique matches the OpenCode edit contract: without replaceAll, an
+// ambiguous passage is an error rather than an accidental first-match edit.
+func EditTextFileMode(path, oldString, newString string, replaceAll bool, requireUnique bool) (*EditTextFileResult, error) {
 	if oldString == "" {
 		return nil, fmt.Errorf("缺少 old_string 参数")
+	}
+	if oldString == newString {
+		return nil, fmt.Errorf("old_string 与 new_string 相同，没有可应用的编辑")
 	}
 	var result *EditTextFileResult
 	err := withTextFileWriteLock(path, func() error {
@@ -669,6 +679,9 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 				return fmt.Errorf("未找到要替换的内容")
 			}
 			return err
+		}
+		if requireUnique && !replaceAll && replaced.Matches > 1 {
+			return fmt.Errorf("old_string 匹配 %d 处，必须唯一；请增加上下文或设置 replace_all=true", replaced.Matches)
 		}
 		if err := os.WriteFile(path, []byte(replaced.Text), 0o644); err != nil {
 			return fmt.Errorf("写入文件失败 %s: %w", path, err)

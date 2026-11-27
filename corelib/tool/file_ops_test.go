@@ -463,3 +463,36 @@ func TestEditTextFile_NotFound(t *testing.T) {
 		t.Fatal("expected not found error")
 	}
 }
+
+func TestEditTextFileModeRequireUniqueRejectsAmbiguousEdit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup.txt")
+	original := "alpha target omega target\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := EditTextFileMode(path, "target", "replacement", false, true)
+	if err == nil {
+		t.Fatalf("requireUnique err = %v", err)
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(body) != original {
+		t.Fatalf("ambiguous edit mutated file: %q", string(body))
+	}
+	res, err := EditTextFileMode(path, "target", "replacement", false, false)
+	if err != nil || res.Count != 1 {
+		t.Fatalf("legacy first-match edit res=%+v err=%v", res, err)
+	}
+}
+
+func TestEditTextFileRejectsIdenticalReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "same.txt")
+	if err := os.WriteFile(path, []byte("target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EditTextFile(path, "target", "target", false); err == nil {
+		t.Fatal("identical edit unexpectedly succeeded")
+	}
+}

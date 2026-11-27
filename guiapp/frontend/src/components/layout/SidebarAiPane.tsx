@@ -3,6 +3,7 @@ import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, 
 import { EVENT_OPEN_CREATE_CODING_TASK } from '../../constants/events';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
+import type { SidebarTogglesState } from './SidebarToggleCluster';
 import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
 import { SidebarTasksPane, middleContentSlotStyle } from './SidebarTasksPane';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
@@ -66,6 +67,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     showCloudWorkspaceCreation?: boolean;
     /** Restore durable cloud task rows while keeping project controls hidden. */
     restoreCloudWorkspaceTasks?: boolean;
+    /** Sidebar collapse toggles for the task pane's search-row cluster. */
+    sidebarToggles?: SidebarTogglesState;
     config: any;
     activeTool: string;
     toolDropdownOpen: boolean;
@@ -187,6 +190,7 @@ export const SidebarAiPane = ({
     showCloudWorkspaceManagement,
     showCloudWorkspaceCreation,
     restoreCloudWorkspaceTasks,
+    sidebarToggles,
     config,
     activeTool,
     toolDropdownOpen,
@@ -328,7 +332,7 @@ export const SidebarAiPane = ({
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
-                    <SidebarTasksPane {...{ lang, themeMode: aiThemeMode, tasks, tasksLoading, cloudTasksLoading, renamingTaskPath, setRenamingTaskPath, renameValue, setRenameValue, resumeTask, continueWorkflowProject, assistantReady, onTaskSwitchBlocked, createTask, onCreateExpertTask, refreshTasks, taskContextMenu, setTaskContextMenu, renameTask, pinTask, hideTask, activateTask, openProjectTabPaths, openProjectTabIdentities, openExpertTabIDs, activeAssistantTask, activeAssistantTaskRunning, busyTaskRuns, taskListVisible: middleTab === 'tasks', showCloudWorkspaceManagement: showCloudWorkspaceManagement ?? showCodingToolEntry, showCloudWorkspaceCreation: showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry, restoreCloudWorkspaceTasks }} />
+                    <SidebarTasksPane {...{ lang, themeMode: aiThemeMode, tasks, tasksLoading, cloudTasksLoading, renamingTaskPath, setRenamingTaskPath, renameValue, setRenameValue, resumeTask, continueWorkflowProject, assistantReady, onTaskSwitchBlocked, createTask, onCreateExpertTask, refreshTasks, taskContextMenu, setTaskContextMenu, renameTask, pinTask, hideTask, activateTask, openProjectTabPaths, openProjectTabIdentities, openExpertTabIDs, activeAssistantTask, activeAssistantTaskRunning, busyTaskRuns, taskListVisible: middleTab === 'tasks', showCloudWorkspaceManagement: showCloudWorkspaceManagement ?? showCodingToolEntry, showCloudWorkspaceCreation: showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry, restoreCloudWorkspaceTasks, sidebarToggles }} />
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>

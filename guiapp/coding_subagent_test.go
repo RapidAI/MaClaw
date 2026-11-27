@@ -15183,6 +15183,18 @@ func TestRemoteLateBaselineAfterEarlierMutationIsRejected(t *testing.T) {
 	}
 }
 
+func TestRemoteFileExistenceProbeDoesNotEchoMarkersAndKeepsBrokenSymlinks(t *testing.T) {
+	cmd := remoteFileExistenceProbeCommand("/repo/a file")
+	if !strings.Contains(cmd, "[ -L ") {
+		t.Fatalf("probe must treat a broken symlink as an existing directory entry: %s", cmd)
+	}
+	for _, marker := range []string{"__MACLAW_EXISTS__", "__MACLAW_MISSING__"} {
+		if strings.Contains(cmd, marker) {
+			t.Fatalf("probe command must not echo result marker %s through PTY transcription: %s", marker, cmd)
+		}
+	}
+}
+
 func TestRemoteWriteFilePythonDiffMatchesGitNumstatEdgeCases(t *testing.T) {
 	python, err := exec.LookPath("python")
 	if err != nil {
@@ -15280,6 +15292,26 @@ func TestCodingNetFileLineDeltasKeepUnknownWhenFinalUndiffable(t *testing.T) {
 	}
 	if stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 0 {
 		t.Fatalf("final undiffable bytes must be unknown zero evidence, got %+v", stats[0])
+	}
+}
+
+func TestCodingNetFileLineDeltasDeletedFileCountsRemovedLines(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: root}}
+	cb.trackFile(path)
+	if !cb.rememberFileLineBaseline(path, "a\nb\n") {
+		t.Fatal("first mutation baseline should be retained")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	stats := cb.getNetFileLineDeltas()
+	if len(stats) != 1 || !stats[0].Deleted || !stats[0].HasCounts || stats[0].Insertions != 0 || stats[0].Deletions != 2 {
+		t.Fatalf("deleted file net stat = %+v, want deleted +0 -2", stats)
 	}
 }
 

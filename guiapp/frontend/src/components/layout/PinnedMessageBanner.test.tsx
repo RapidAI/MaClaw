@@ -380,4 +380,78 @@ describe("PinnedMessageBanner", () => {
     );
     expect(container.querySelector(".mc-pinned-banner")).toBeNull();
   });
+
+  it("repositions when the sidebar shell resizes without any window resize (nav rail collapse)", () => {
+    // jsdom has no ResizeObserver; stub it and capture what the card observes.
+    const instances: Array<{ observed: Element[]; disconnect: ReturnType<typeof vi.fn>; cb: ResizeObserverCallback }> = [];
+    class ResizeObserverStub {
+      observed: Element[] = [];
+      disconnect = vi.fn(() => { this.observed.length = 0; });
+      constructor(cb: ResizeObserverCallback) {
+        instances.push({ observed: this.observed, disconnect: this.disconnect, cb });
+      }
+      observe(el: Element) { this.observed.push(el); }
+      unobserve() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    // The reposition path is rAF-throttled; stub the frame queue so the test
+    // flushes it deterministically.
+    const rafQueue: Array<FrameRequestCallback> = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    // Anchor inside the sidebar shell: the row and its `.sidebar` ancestor.
+    const shell = document.createElement("div");
+    shell.className = "sidebar";
+    const row = document.createElement("div");
+    shell.appendChild(row);
+    document.body.appendChild(shell);
+    let rect = { left: 200, top: 800, width: 428, height: 36 };
+    row.getBoundingClientRect = (() => ({
+      x: rect.left, y: rect.top, left: rect.left, top: rect.top,
+      width: rect.width, height: rect.height,
+      right: rect.left + rect.width, bottom: rect.top + rect.height,
+      toJSON: () => ({}),
+    })) as () => DOMRect;
+    const ref = { current: row } as React.RefObject<HTMLDivElement>;
+
+    try {
+      const { container, unmount } = render(
+        <PinnedMessageBanner messages={[pin()]} lang="zh-Hans" anchorRef={ref} onDismiss={() => {}} />,
+      );
+      const banner = container.querySelector(".mc-pinned-banner") as HTMLElement;
+      expect(banner).toBeTruthy();
+      expect(banner.style.left).toBe("200px");
+      expect(banner.style.width).toBe("428px");
+
+      // The card watches both the row and the shell that carries it.
+      expect(instances).toHaveLength(1);
+      expect(instances[0].observed).toContain(row);
+      expect(instances[0].observed).toContain(shell);
+
+      // Collapsing the nav rail moves the row without a window resize event.
+      rect = { left: 88, top: 800, width: 316, height: 36 };
+      act(() => { instances[0].cb([], {} as ResizeObserver); });
+      act(() => { rafQueue.splice(0).forEach((cb) => cb(0)); });
+      expect(banner.style.left).toBe("88px");
+      expect(banner.style.width).toBe("316px");
+
+      // A display:none anchor (≤900px bucket keeps the pane mounted but
+      // CSS-hides it) reports an all-zero rect: the card parks (data-open
+      // false) instead of pinning a degenerate position.
+      rect = { left: 0, top: 0, width: 0, height: 0 };
+      act(() => { instances[0].cb([], {} as ResizeObserver); });
+      act(() => { rafQueue.splice(0).forEach((cb) => cb(0)); });
+      expect(banner.getAttribute("data-open")).toBe("false");
+
+      unmount();
+      expect(instances[0].disconnect).toHaveBeenCalled();
+    } finally {
+      shell.remove();
+      vi.unstubAllGlobals();
+    }
+  });
 });

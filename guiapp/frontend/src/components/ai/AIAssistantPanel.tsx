@@ -7881,12 +7881,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    {sidebarToggles && (
+                    {/* Restore-only: the collapse pair lives in the task pane's
+                        search row; this header shows it just while the pane is
+                        collapsed (then it carries the rail toggle too, whose
+                        search-row home is gone with the pane). */}
+                    {sidebarToggles?.paneCollapsed && (
                         <div {...windowNoDragRegionProps({ flexShrink: 0, display: 'flex', alignItems: 'center' })}>
                             <SidebarToggleCluster {...sidebarToggles} lang={lang} />
                         </div>
                     )}
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={remoteChat ? { tone: remoteChat.canSend ? "running" : "pending", label: remoteChat.canSend ? remoteChat.machineName : localizeText(lang, remoteChat.offline ? "Offline" : "Read-only", remoteChat.offline ? "离线" : "只读", remoteChat.offline ? "離線" : "唯讀") } : (warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus)} taskCreatedLabel={remoteChat ? "" : taskCreatedLabel} workingDirPath={remoteChat ? "" : activeTabWorkingDirPath} remoteWorkspace={remoteChat ? null : remoteWorkspace} remoteWorkspaceLabel={remoteChat ? (remoteChat.serverLabel || remoteChat.machineName) : remoteWorkspaceLabel} cloudGitRepo={remoteChat?.cloudGit?.connected ? (remoteChat.cloudGit.repo || "") : ""} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             {/* The visible bell lives on the sidebar status row; this

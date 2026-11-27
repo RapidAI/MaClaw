@@ -25,7 +25,8 @@ export type TaskConfigIconName =
     | "lock"
     | "ban"
     | "file"
-    | "cpu";
+    | "cpu"
+    | "git";
 
 const PATHS: Record<TaskConfigIconName, ReactNode> = {
     gear: (<><circle {...s} cx="12" cy="12" r="3" /><path {...s} d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8" /></>),
@@ -51,6 +52,7 @@ const PATHS: Record<TaskConfigIconName, ReactNode> = {
     ban: (<><circle {...s} cx="12" cy="12" r="8.5" /><path {...s} d="m6 6 12 12" /></>),
     file: (<><path {...s} d="M7 3.5h7l5 5V20a1.5 1.5 0 0 1-1.5 1.5h-10.5A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5Z" /><path {...s} d="M14 3.5V9h5.5" /></>),
     cpu: (<><rect {...s} x="6" y="6" width="12" height="12" rx="2" /><path {...s} d="M9 2.5v3.5M12 2.5v3.5M15 2.5v3.5M9 18v3.5M12 18v3.5M15 18v3.5M2.5 9H6M2.5 12H6M2.5 15H6M18 9h3.5M18 12h3.5M18 15h3.5" /></>),
+    git: (<><circle {...s} cx="6" cy="5.5" r="2.3" /><circle {...s} cx="6" cy="18.5" r="2.3" /><circle {...s} cx="18" cy="8" r="2.3" /><path {...s} d="M6 7.8v8.4" /><path {...s} d="M18 10.3c0 3.7-3.4 4.5-7.6 4.9-2.1.2-3.4.5-4.1 1.4" /></>),
 };
 
 export function TaskConfigIcon({ name, size = 15, style }: { name: TaskConfigIconName; size?: number; style?: CSSProperties }) {

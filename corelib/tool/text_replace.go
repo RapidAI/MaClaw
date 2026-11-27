@@ -3,6 +3,8 @@ package tool
 import (
 	"errors"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -24,6 +26,23 @@ type TextReplaceResult struct {
 	Applied int
 }
 
+// ReplaceTextPassage replaces oldString inside text. It first attempts the
+// exact match, then falls back to the OpenCode edit contract: unicode
+// quote/dash/space variants, then trailing whitespace on each line. The
+// replacement text is inserted verbatim at the original byte span.
+func ReplaceTextPassage(text, oldString, newString string, replaceAll bool) (TextReplaceResult, error) {
+	if oldString == "" {
+		return TextReplaceResult{}, ErrTextPassageEmpty
+	}
+	res, err := replaceTextPassageExact(text, oldString, newString, replaceAll)
+	if errors.Is(err, ErrTextPassageNotFound) {
+		if fuzzy, ok := fuzzyReplaceTextPassage(text, oldString, newString, replaceAll); ok {
+			return fuzzy, nil
+		}
+	}
+	return res, err
+}
+
 // ReplaceTextPassage replaces oldString inside text.
 //
 // A source file is a sequence of lines plus a newline convention. The
@@ -36,7 +55,7 @@ type TextReplaceResult struct {
 // The match is on logical lines. Bytes outside the match are not rewritten.
 // Newlines inside the inserted text adopt the convention of the matched span,
 // or the file's majority convention when the span itself has no line break.
-func ReplaceTextPassage(text, oldString, newString string, replaceAll bool) (TextReplaceResult, error) {
+func replaceTextPassageExact(text, oldString, newString string, replaceAll bool) (TextReplaceResult, error) {
 	if oldString == "" {
 		return TextReplaceResult{}, ErrTextPassageEmpty
 	}
@@ -306,4 +325,188 @@ func encodeNewlines(s, ending string) string {
 		return logical
 	}
 	return strings.ReplaceAll(logical, "\n", ending)
+}
+
+// fuzzyReplaceTextPassage implements the upstream edit fallback tiers on the
+// LF logical view: first unicode quote/dash/space variants, then trailing
+// whitespace per line. Spans are mapped back to the source bytes so mixed
+// line endings outside the match are never rewritten.
+func fuzzyReplaceTextPassage(text, oldString, newString string, replaceAll bool) (TextReplaceResult, bool) {
+	logicalFile, origin, fallback := logicalTextMap(text)
+	logicalOld := normalizeNewlines(oldString)
+	if logicalOld == "" {
+		return TextReplaceResult{}, false
+	}
+	logicalNew := normalizeNewlines(newString)
+
+	var spans [][2]int
+	normFile, normOrigin := normalizeTypographicMap(logicalFile)
+	normOld, _ := normalizeTypographicMap(logicalOld)
+	if normFile != logicalFile || normOld != logicalOld {
+		for _, at := range indexAll(normFile, normOld) {
+			end := at + len(normOld)
+			spans = append(spans, [2]int{normOrigin[at], normOrigin[end]})
+		}
+	}
+	if len(spans) == 0 {
+		spans = findTrimmedLineSpans(logicalFile, logicalOld)
+	}
+	if len(spans) == 0 {
+		return TextReplaceResult{}, false
+	}
+	matches := len(spans)
+	applied := spans
+	if !replaceAll {
+		applied = spans[:1]
+	}
+	updated := spliceLogicalSpans(text, origin, applied, logicalNew, fallback)
+	return TextReplaceResult{Text: updated, Matches: matches, Applied: len(applied)}, true
+}
+
+func spliceLogicalSpans(text string, origin []int, spans [][2]int, newString, fallback string) string {
+	var b strings.Builder
+	b.Grow(len(text) + len(newString)*len(spans))
+	encoded := map[string]string{}
+	cursor := 0
+	for _, sp := range spans {
+		start := origin[sp[0]]
+		end := origin[sp[1]]
+		b.WriteString(text[cursor:start])
+		ending, ok := firstNewline(text[start:end])
+		if !ok {
+			ending = fallback
+		}
+		piece, ok := encoded[ending]
+		if !ok {
+			piece = encodeNewlines(newString, ending)
+			encoded[ending] = piece
+		}
+		b.WriteString(piece)
+		cursor = end
+	}
+	b.WriteString(text[cursor:])
+	return b.String()
+}
+
+// normalizeTypographicMap maps typographic quote, dash, and space variants to
+// their ASCII forms, one output byte per replacement, and records for every
+// output byte position the input byte offset it came from.
+func normalizeTypographicMap(s string) (string, []int) {
+	var b strings.Builder
+	b.Grow(len(s))
+	origin := make([]int, 0, len(s)+1)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		var out string
+		if rep, ok := typographicASCII(r); ok {
+			out = string(rep)
+		} else {
+			out = s[i : i+size]
+		}
+		for k := 0; k < len(out); k++ {
+			origin = append(origin, i)
+		}
+		b.WriteString(out)
+		i += size
+	}
+	origin = append(origin, len(s))
+	return b.String(), origin
+}
+
+func normalizeTypographicString(s string) string {
+	out, _ := normalizeTypographicMap(s)
+	return out
+}
+
+func typographicASCII(r rune) (byte, bool) {
+	switch r {
+	case '‘', '’', '‚', '‛':
+		return '\'', true
+	case '“', '”', '„', '‟':
+		return '"', true
+	case '‐', '‑', '‒', '–', '—', '―', '−':
+		return '-', true
+	case ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '　':
+		return ' ', true
+	}
+	return 0, false
+}
+
+// findTrimmedLineSpans matches a search line sequence ignoring trailing
+// whitespace and typographic variants on each line, mirroring the upstream
+// edit trailing-whitespace tier.
+func findTrimmedLineSpans(content, search string) [][2]int {
+	trailingNewline := strings.HasSuffix(search, "\n")
+	expected := strings.Split(search, "\n")
+	if trailingNewline {
+		expected = expected[:len(expected)-1]
+	}
+	if len(expected) == 0 {
+		return nil
+	}
+	type sourceLine struct {
+		start   int
+		end     int
+		text    string
+		newline bool
+	}
+	var lines []sourceLine
+	pos := 0
+	for pos < len(content) {
+		nl := strings.IndexByte(content[pos:], '\n')
+		var end int
+		hasNL := nl >= 0
+		if hasNL {
+			end = pos + nl + 1
+		} else {
+			end = len(content)
+		}
+		row := content[pos:end]
+		text := row
+		if hasNL {
+			text = row[:len(row)-1]
+		}
+		lines = append(lines, sourceLine{start: pos, end: end, text: text, newline: hasNL})
+		pos = end
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	key := func(line string) string {
+		return normalizeTypographicString(strings.TrimRightFunc(line, unicode.IsSpace))
+	}
+	var spans [][2]int
+	for i := 0; i+len(expected) <= len(lines); i++ {
+		actual := lines[i : i+len(expected)]
+		match := true
+		for j, item := range actual {
+			if key(item.text) != key(expected[j]) {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		last := actual[len(actual)-1]
+		if trailingNewline && !last.newline {
+			continue
+		}
+		end := last.start + len(last.text)
+		if trailingNewline {
+			end = last.end
+		}
+		candidate := [2]int{actual[0].start, end}
+		overlap := false
+		for _, prior := range spans {
+			if prior[1] > candidate[0] && prior[0] < candidate[1] {
+				overlap = true
+				break
+			}
+		}
+		if !overlap {
+			spans = append(spans, candidate)
+		}
+	}
+	return spans
 }

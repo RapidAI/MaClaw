@@ -116,6 +116,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
     if (supportsVoiceOutput) {
       _tts = FlutterTts();
+      // Constructor replaces the process-wide channel handler. Register
+      // before any await so a reply still speaking on another page ends,
+      // and this page keeps the wrapper around its own completion handler.
+      noteSystemTtsReceiver(_tts!);
       unawaited(_tts!.setLanguage('zh-CN').then((_) {}).catchError((_) {}));
     }
   }

@@ -1058,10 +1058,84 @@
 }
 
 .update-modal__complete-title {
-    margin: 10px 0 14px;
+    margin: 10px 0 6px;
     color: var(--theme-text-primary);
     font-size: 0.88rem;
     font-weight: 700;
+}
+
+.update-modal__complete-message {
+    margin: 0 0 14px;
+    color: var(--theme-text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+
+.update-modal__install-choice {
+    width: 100%;
+}
+
+.update-modal__defer-panel {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border);
+    text-align: left;
+}
+
+.update-modal__defer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.update-modal__defer-row + .update-modal__defer-row {
+    margin-top: 8px;
+}
+
+.update-modal__defer-row--secondary {
+    justify-content: flex-end;
+}
+
+.update-modal__defer-label {
+    flex: 0 0 auto;
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+}
+
+.update-modal__defer-options {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.update-modal__defer-button {
+    min-height: 28px;
+    padding: 5px 9px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.72rem;
+    transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.update-modal__defer-button:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    color: var(--theme-text-primary);
+}
+
+.update-modal__defer-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.update-modal__defer-button--danger:hover:not(:disabled) {
+    border-color: var(--theme-danger);
+    color: var(--theme-danger);
 }
 
 .update-modal__cta {
@@ -1220,6 +1294,12 @@
 
 .update-modal__rollback-link {
     min-height: 30px;
+}
+
+.update-modal__ignore-link:hover:not(:disabled) {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
 }
 
 .update-modal__close {

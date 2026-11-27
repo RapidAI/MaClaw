@@ -1849,6 +1849,16 @@ export function ShowFileCompanionLibrary():Promise<void>;
 
 export function UnregisterFileCompanionLinuxDesktop():Promise<void>;
 
+export function DeferDownloadedUpdateInstall(arg1:string,arg2:number):Promise<void>;
+
+export function DeferDownloadedUpdateInstallToNextStartup(arg1:string):Promise<void>;
+
+export function IgnoreUpdateVersion(arg1:string):Promise<void>;
+
+export function InstallDownloadedUpdate(arg1:string):Promise<void>;
+
+export function RegisterDownloadedUpdate(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function LaunchInstallerAndExit(arg1:string,arg2:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;

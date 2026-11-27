@@ -483,6 +483,26 @@ func TestNormalizeAgentTimeoutSec(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebFetchTimeoutSec(t *testing.T) {
+	tests := []struct {
+		in   int
+		want int
+	}{
+		{0, DefaultAgentTimeoutSec},
+		{-1, DefaultAgentTimeoutSec},
+		{1, 1},
+		{30, 30},
+		{120, 120},
+		{600, 600},
+		{601, 600},
+	}
+	for _, tt := range tests {
+		if got := NormalizeWebFetchTimeoutSec(tt.in); got != tt.want {
+			t.Fatalf("NormalizeWebFetchTimeoutSec(%d) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestNormalizeLongRunTimeoutSec(t *testing.T) {
 	tests := []struct {
 		name string

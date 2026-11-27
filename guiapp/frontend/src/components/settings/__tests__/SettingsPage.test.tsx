@@ -84,6 +84,7 @@ const baseContentProps = {
     setQQBotQRError: vi.fn(),
     veNavigationAvailable: false,
     desktopBotTabsAvailable: false,
+    cloudAgentAvailable: false,
     veSettingsAuthorized: false,
     virtualEmployeeLayoutClassName: 'settings-ve-layout',
     userFavoriteEmployeeIds: [] as string[],

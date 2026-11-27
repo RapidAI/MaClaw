@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +36,37 @@ type PendingUpdateNotice struct {
 	// InstallerStillPresent lets the UI offer "reveal in folder" only while the
 	// installer is actually still on disk.
 	InstallerStillPresent bool `json:"installer_still_present"`
+}
+
+// updateRunningVersionReachesTarget reports whether the currently running
+// build proves that the recorded install target was applied. Normal release
+// targets use ordinary version comparison. Stable-history rollback targets can
+// be a bare build number ("11970") while the linked running version is the
+// full product version ("8.1.0.11970"); compare that monotonic build component
+// too, or every successful rollback would look like a failed update forever.
+func updateRunningVersionReachesTarget(current, target string) bool {
+	if compareVersions(current, target) >= 0 {
+		return true
+	}
+	clean := func(value string) string {
+		value = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(value)), "v")
+		return strings.Split(value, " ")[0]
+	}
+	numericTarget, preTarget := splitVersionPreRelease(clean(target))
+	if preTarget != "" || strings.Contains(numericTarget, ".") {
+		return false
+	}
+	targetBuild, err := strconv.ParseInt(numericTarget, 10, 64)
+	if err != nil {
+		return false
+	}
+	numericCurrent, _ := splitVersionPreRelease(clean(current))
+	parts := strings.Split(numericCurrent, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	currentBuild, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	return err == nil && currentBuild >= targetBuild
 }
 
 // pendingUpdatePath is the app-owned state file holding the last launch record.
@@ -84,7 +116,9 @@ func (a *App) recordPendingUpdate(targetVersion, installerPath string) {
 		a.log(fmt.Sprintf("[update-install] cannot encode pending-update record: %v", err))
 		return
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// This record is read after a reboot/crash to decide whether the user
+	// needs a failed-update notice. Never leave a torn half-write behind.
+	if err := atomicWriteFile(path, data); err != nil {
 		a.log(fmt.Sprintf("[update-install] cannot write pending-update record: %v", err))
 		return
 	}
@@ -139,12 +173,20 @@ func (a *App) readPendingUpdate() (pendingUpdate, bool) {
 		_ = os.Remove(path)
 		return empty, false
 	}
-	if !record.LaunchedAt.IsZero() && time.Since(record.LaunchedAt) > pendingUpdateMaxAge {
+	if record.LaunchedAt.IsZero() {
+		// Without a launch time the record can never expire. It is not produced
+		// by recordPendingUpdate, so treat it as corrupt rather than warning the
+		// user forever.
+		a.log(fmt.Sprintf("[update-install] discarding malformed pending-update record for %s", record.TargetVersion))
+		_ = os.Remove(path)
+		return empty, false
+	}
+	if time.Since(record.LaunchedAt) > pendingUpdateMaxAge {
 		a.log(fmt.Sprintf("[update-install] pending-update record for %s expired", record.TargetVersion))
 		_ = os.Remove(path)
 		return empty, false
 	}
-	if current, ok := linkedReleaseVersion(); ok && compareVersions(current, record.TargetVersion) >= 0 {
+	if current, ok := linkedReleaseVersion(); ok && updateRunningVersionReachesTarget(current, record.TargetVersion) {
 		a.log(fmt.Sprintf("[update-install] update to %s confirmed (running %s); cleared pending record", record.TargetVersion, current))
 		_ = os.Remove(path)
 		return empty, false

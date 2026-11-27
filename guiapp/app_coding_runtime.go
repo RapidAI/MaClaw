@@ -13,6 +13,28 @@ import (
 	"github.com/google/uuid"
 )
 
+// codingRuntimeDataDirResetWait bounds how long replacement teardown waits
+// for a cancelled executor to leave the old ledger before the durable sweep
+// marks that attempt interrupted anyway. It is a var so tests can shrink the
+// quiescence window without weakening production cancellation semantics.
+var codingRuntimeDataDirResetWait = 2 * time.Second
+
+// codingAuthorizationDataDirForApp returns the data-dir epoch currently
+// visible to coding authorization stores. The epoch intentionally lags
+// GetDataDir while a switch is quiescing old runners and copying history, so
+// no replacement-ledger write can appear before the migration commit point.
+func (a *App) codingAuthorizationDataDirForApp() string {
+	if a == nil {
+		return ""
+	}
+	if dir, ok := a.codingAuthorizationDataDir.Load().(string); ok && strings.TrimSpace(dir) != "" {
+		return filepath.Clean(dir)
+	}
+	dir := filepath.Clean(a.GetDataDir())
+	a.codingAuthorizationDataDir.Store(dir)
+	return dir
+}
+
 // openExistingCodingRuntimeStore returns the ledger when this process already
 // has it open, or when a previous run left the database on disk. It does not
 // create the file. The task list calls this on every refresh, and opening a
@@ -26,15 +48,25 @@ func (a *App) openExistingCodingRuntimeStore() *codingruntime.SQLiteStore {
 	if a.codingRuntimeStoreClosed {
 		return nil
 	}
-	dir := filepath.Clean(a.GetDataDir())
+	dir := a.codingAuthorizationDataDirForApp()
 	if store := a.codingRuntimeStore; store != nil {
-		if a.codingRuntimeStorePath == dir {
+		if sameCodingDataDirPath(a.codingRuntimeStorePath, dir) {
 			return store
 		}
 		a.codingRuntimeStore = nil
 		a.codingRuntimeStorePath = ""
 		if err := store.Close(); err != nil {
 			log.Printf("[coding-runtime] close replaced ledger failed: %v", err)
+		}
+	}
+	// A missing final database does not mean there is no existing ledger while
+	// a migration journal is present: the interrupted copy may simply not have
+	// reached the install phase yet. Recovery is not ledger creation; it is the
+	// only way this read-only probe can see the history that already belongs here.
+	if codingAuthorizationMigrationPending(dir) {
+		if err := resumeCodingAuthorizationMigrationIfPending(dir); err != nil {
+			log.Printf("[coding-runtime] existing-ledger probe could not resume migration in %q: %v", dir, err)
+			return nil
 		}
 	}
 	dbPath := filepath.Join(dir, "coding_runtime.db")
@@ -56,12 +88,22 @@ func (a *App) ensureCodingRuntimeStore() *codingruntime.SQLiteStore {
 	if a.codingRuntimeStoreClosed {
 		return nil
 	}
-	return a.openCodingRuntimeStoreLocked(filepath.Clean(a.GetDataDir()))
+	return a.openCodingRuntimeStoreLocked(a.codingAuthorizationDataDirForApp())
 }
 
 func (a *App) openCodingRuntimeStoreLocked(dir string) *codingruntime.SQLiteStore {
+	if codingAuthorizationMigrationPending(dir) {
+		if err := resumeCodingAuthorizationMigrationIfPending(dir); err != nil {
+			log.Printf("[coding-runtime] interrupted data-dir migration in %q could not be resumed: %v", dir, err)
+			return nil
+		}
+	}
+	if codingAuthorizationMigrationPending(dir) {
+		log.Printf("[coding-runtime] ledger open deferred: interrupted data-dir migration in %q", dir)
+		return nil
+	}
 	if a.codingRuntimeStore != nil {
-		if a.codingRuntimeStorePath == dir {
+		if sameCodingDataDirPath(a.codingRuntimeStorePath, dir) {
 			return a.codingRuntimeStore
 		}
 		old := a.codingRuntimeStore
@@ -118,20 +160,154 @@ func (a *App) closeCodingRuntimeStore() {
 	}
 }
 
-func (a *App) resetCodingRuntimeStoreForDataDirChange() {
+func (a *App) retireCodingRuntimeStoreForDataDirChange() {
 	if a == nil {
 		return
 	}
-	a.codingRuntimeStoreMu.Lock()
-	defer a.codingRuntimeStoreMu.Unlock()
-	if a.codingRuntimeStoreClosed {
+	a.retireCodingRuntimeStoreForDataDirChangeTo(filepath.Clean(a.GetDataDir()))
+}
+
+func (a *App) retireCodingRuntimeStoreForDataDirChangeTo(replacementDir string) {
+	if a == nil {
 		return
 	}
+	replacementDir = filepath.Clean(strings.TrimSpace(replacementDir))
+	a.codingRuntimeStoreMu.Lock()
 	store := a.codingRuntimeStore
-	a.codingRuntimeStore = nil
-	a.codingRuntimeStorePath = ""
-	if store != nil {
-		_ = store.Close()
+	storePath := a.codingRuntimeStorePath
+	a.codingRuntimeStoreMu.Unlock()
+	if store != nil && storePath != "" && !sameCodingDataDirPath(storePath, replacementDir) {
+		store.RetireForReplacement()
+	}
+}
+
+func (a *App) resetCodingRuntimeStoreForDataDirChange() {
+	// Runtime and relation authorization state share one data-dir epoch.
+	// Resetting only the ledger would leave relation capabilities and durable
+	// migration behind, so even the legacy runtime-named entry point uses the
+	// combined lifecycle reset.
+	a.resetCodingAuthorizationStoresForDataDirChange("")
+}
+
+// resetCodingAuthorizationStoresForDataDirChange is the synchronized coding
+// half of a data-dir switch. It quiesces old runners first, then holds both
+// store lifecycle locks while the relation service and runtime ledger are
+// retired and their durable files are copied. Holding both locks closes the
+// race where a concurrent caller opens the replacement database between
+// teardown and migration and thereby makes the migration decision mixed.
+func (a *App) resetCodingAuthorizationStoresForDataDirChange(fallbackSourceDir string) {
+	a.resetCodingAuthorizationStoresForDataDirChangeTo(fallbackSourceDir, filepath.Clean(a.GetDataDir()))
+}
+
+func (a *App) resetCodingAuthorizationStoresForDataDirChangeTo(fallbackSourceDir, replacementDir string) {
+	if a == nil {
+		return
+	}
+	replacementDir = filepath.Clean(strings.TrimSpace(replacementDir))
+	if replacementDir == "" || replacementDir == "." {
+		log.Printf("[coding-runtime] data-dir reset skipped: replacement data directory is empty")
+		return
+	}
+	if committed, ok := a.codingAuthorizationDataDir.Load().(string); ok && strings.TrimSpace(committed) != "" && sameCodingDataDirPath(committed, replacementDir) {
+		// Rapid config edits can be coalesced before the coding epoch ever moves
+		// (for example A→B→A). In that case no coding-authorization transition
+		// linearized, so the stores must not be half-cancelled as if one had.
+		return
+	}
+	replacementLedgerPath := filepath.Join(replacementDir, "coding_runtime.db")
+	a.retireCodingRuntimeStoreForDataDirChangeTo(replacementDir)
+	codingruntime.CancelLiveCodingAttemptsOutsideSQLiteStorePath(replacementLedgerPath)
+	if !codingruntime.WaitLiveCodingAttemptsOutsideSQLiteStorePath(replacementLedgerPath, codingRuntimeDataDirResetWait) {
+		log.Printf("[coding-runtime] data-dir reset timed out waiting for cancelled attempts to stop")
+	}
+
+	// Lock order is fixed as runtime-store then relation-issuer. No other path
+	// acquires both locks; relations handed to callers do not depend on the
+	// app-level store mutex while executing their already-linearized critical
+	// sections.
+	a.codingRuntimeStoreMu.Lock()
+	a.codingCaps.relationsMu.Lock()
+	defer a.codingCaps.relationsMu.Unlock()
+	defer a.codingRuntimeStoreMu.Unlock()
+	defer codingruntime.CancelLiveCodingAttemptsOutsideSQLiteStorePath(replacementLedgerPath)
+	// Commit the new coding epoch before releasing either lifecycle lock. This
+	// is the linearization point after which callers may open the replacement
+	// stores; before it they continue to see the retired directory and are
+	// cancellation-swept as transition-era work.
+	defer a.codingAuthorizationDataDir.Store(replacementDir)
+
+	runtimeSourceDir := a.codingRuntimeStorePath
+	relationSourceDir := a.codingCaps.relationsPath
+	if !a.codingCaps.relationsClosed {
+		a.codingCaps.closeRelationServiceLocked()
+		a.codingCaps.invalidateRelationCapabilitiesForDataDirChange()
+	}
+	if !a.codingRuntimeStoreClosed {
+		store := a.codingRuntimeStore
+		storePath := a.codingRuntimeStorePath
+		if store == nil || !sameCodingDataDirPath(storePath, replacementDir) {
+			a.codingRuntimeStore = nil
+			a.codingRuntimeStorePath = ""
+			if store != nil {
+				store.RetireForReplacement()
+				if interrupted, err := store.InterruptRunsForReplacement(time.Now().UTC()); err != nil {
+					log.Printf("[coding-runtime] interrupt data-dir attempts before close failed: %v", err)
+				} else if len(interrupted) > 0 {
+					log.Printf("[coding-runtime] marked %d data-dir attempt(s) interrupted before ledger close", len(interrupted))
+				}
+				if err := store.Close(); err != nil {
+					log.Printf("[coding-runtime] close data-dir ledger failed: %v", err)
+				}
+			}
+		}
+	}
+	codingruntime.CancelLiveCodingAttemptsOutsideSQLiteStorePath(replacementLedgerPath)
+
+	sourceDir := ""
+	contradictorySource := false
+	mergeSource := func(dir string) {
+		dir = filepath.Clean(strings.TrimSpace(dir))
+		if dir == "." || dir == "" || sameCodingDataDirPath(dir, replacementDir) {
+			return
+		}
+		if sourceDir == "" {
+			sourceDir = dir
+			return
+		}
+		if !sameCodingDataDirPath(sourceDir, dir) {
+			contradictorySource = true
+		}
+	}
+	// Paths recorded on actually-open stores and the not-yet-committed coding
+	// epoch are stronger evidence than the pending config transition: they
+	// describe the files this process had live or the directory it most recently
+	// committed as authoritative. The epoch matters for rapid A→B→C switches
+	// where B was committed but never opened; a stale pre-commit fallback would
+	// otherwise skip B and copy A directly into C. The config value is only the
+	// fallback for durable files never opened here.
+	mergeSource(runtimeSourceDir)
+	mergeSource(relationSourceDir)
+	mergeSource(a.codingAuthorizationDataDirForApp())
+	if sourceDir == "" {
+		sourceDir = filepath.Clean(strings.TrimSpace(fallbackSourceDir))
+		if sourceDir == "." {
+			sourceDir = ""
+		}
+	}
+	if contradictorySource {
+		log.Printf("[coding-runtime] data-dir migration skipped: runtime, relation, or epoch source directories disagree (%q vs %q)", runtimeSourceDir, relationSourceDir)
+		return
+	}
+	if sourceDir == "." || sourceDir == "" || sameCodingDataDirPath(sourceDir, replacementDir) {
+		return
+	}
+	migrated, err := migrateCodingAuthorizationStoresSerialized(sourceDir, replacementDir)
+	if err != nil {
+		log.Printf("[coding-runtime] data-dir coding store migration failed: %v", err)
+		return
+	}
+	if migrated {
+		log.Printf("[coding-runtime] migrated coding runtime/relation history from %q to %q", sourceDir, replacementDir)
 	}
 }
 
@@ -240,11 +416,19 @@ func (i *desktopCodingCapabilityIssuer) relationService(dataDir string) (*coding
 		return nil, fmt.Errorf("coding task relation host is closed")
 	}
 	if i.relations != nil {
-		if i.relationsPath == dataDir {
+		if sameCodingDataDirPath(i.relationsPath, dataDir) {
 			return i.relations, nil
 		}
 		i.closeRelationServiceLocked()
 		i.invalidateRelationCapabilitiesForDataDirChange()
+	}
+	if codingAuthorizationMigrationPending(dataDir) {
+		if err := resumeCodingAuthorizationMigrationIfPending(dataDir); err != nil {
+			return nil, fmt.Errorf("resume coding task relation migration in %q: %w", dataDir, err)
+		}
+	}
+	if codingAuthorizationMigrationPending(dataDir) {
+		return nil, fmt.Errorf("coding task relation migration is interrupted in %q", dataDir)
 	}
 	service, err := newCodingTaskRelationService(filepath.Join(dataDir, "coding_task_relations.db"))
 	if err != nil {
@@ -1026,7 +1210,7 @@ func (a *App) codingTaskRelationServiceForApp() (*codingTaskRelationService, err
 	if a == nil {
 		return nil, fmt.Errorf("coding task relation host is unavailable")
 	}
-	return a.codingCaps.relationService(a.GetDataDir())
+	return a.codingCaps.relationService(a.codingAuthorizationDataDirForApp())
 }
 
 func (a *App) closeCodingTaskRelationService() {
@@ -1107,7 +1291,7 @@ func (a *App) nextDesktopCodingRootStepRelation(token, ownerID string) (*codingT
 	if a == nil {
 		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 	}
-	return a.codingCaps.nextRootStepRelation(a.GetDataDir(), token, ownerID)
+	return a.codingCaps.nextRootStepRelation(a.codingAuthorizationDataDirForApp(), token, ownerID)
 }
 
 // nextDesktopCodingRootStepRelationForExecution atomically binds the exact
@@ -1116,7 +1300,7 @@ func (a *App) nextDesktopCodingRootStepRelationForExecution(token, ownerID, work
 	if a == nil {
 		return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 	}
-	return a.codingCaps.nextRootStepRelationForExecution(a.GetDataDir(), token, ownerID, workspaceDir, writableSurface)
+	return a.codingCaps.nextRootStepRelationForExecution(a.codingAuthorizationDataDirForApp(), token, ownerID, workspaceDir, writableSurface)
 }
 
 func (a *App) armDesktopCodingContinuationBudget(ownerID string, steps int) {
@@ -1137,12 +1321,12 @@ func (a *App) revokeDesktopCodingTaskRelation(ownerID string) {
 	if a == nil {
 		return
 	}
-	a.codingCaps.revokeRelation(a.GetDataDir(), ownerID)
+	a.codingCaps.revokeRelation(a.codingAuthorizationDataDirForApp(), ownerID)
 }
 
 func (a *App) fenceDesktopCodingTaskRelation(ownerID string, revokeRelation bool) {
 	if a == nil {
 		return
 	}
-	a.codingCaps.fence(a.GetDataDir(), ownerID, revokeRelation)
+	a.codingCaps.fence(a.codingAuthorizationDataDirForApp(), ownerID, revokeRelation)
 }

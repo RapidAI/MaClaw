@@ -579,6 +579,10 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		}
 	}, func() *RemoteCodingSubAgentResult {
 		return execution.executeTask(taskDescription, taskContext)
+	}, func() {
+		if r.loopCtx != nil {
+			r.loopCtx.Cancel()
+		}
 	})
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
@@ -2172,6 +2176,11 @@ func (c *remoteCodingCallbacks) getRemoteNetFileLineDeltas() []SubAgentFileDiffS
 	out := make([]SubAgentFileDiffStat, 0, len(c.fileLineBaselines))
 	for _, baseline := range c.fileLineBaselines {
 		after, available, truncated := c.readRemotePreviewContent(baseline.Path)
+		if !available && c.remoteFileMissingAtFinalSweep(baseline.Path) {
+			added, removed := codingagent.CountTextLineChanges(baseline.Text, "")
+			out = append(out, SubAgentFileDiffStat{Path: c.displayRemoteProjectPath(baseline.Path), Insertions: added, Deletions: removed, Deleted: true, HasCounts: true})
+			continue
+		}
 		if !available || truncated || remoteTextExceedsLineDiffCap(after) {
 			// A first complete baseline proves this turn touched the file. If the
 			// final remote bytes cannot be diffed, keep explicit unknown evidence
@@ -2189,6 +2198,25 @@ func (c *remoteCodingCallbacks) getRemoteNetFileLineDeltas() []SubAgentFileDiffS
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
+}
+
+func remoteFileExistenceProbeCommand(path string) string {
+	// Split the markers in the shell source so PTY echo of the command itself
+	// cannot look like the probe result.
+	return "if [ -e " + remoteShellQuote(path) + " ] || [ -L " + remoteShellQuote(path) + " ]; then printf '%s' '__MACLAW_EXI''STS__'; else printf '%s' '__MACLAW_MIS''SING__'; fi"
+}
+
+func (c *remoteCodingCallbacks) remoteFileMissingAtFinalSweep(path string) bool {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return false
+	}
+	result := c.execSSH(remoteFileExistenceProbeCommand(path), 5)
+	if strings.Contains(result, "__MACLAW_MISSING__") {
+		return true
+	}
+	// Missing markers can be absent when SSH itself failed; stay conservative and
+	// keep the row unknown rather than inventing a deletion.
+	return false
 }
 
 func (c *remoteCodingCallbacks) trackRemoteFileRead(path string) {

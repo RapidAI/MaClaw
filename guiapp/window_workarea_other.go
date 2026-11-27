@@ -5,7 +5,7 @@ package guiapp
 import (
 	"time"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	wailsruntime "github.com/RapidAI/CodeClaw/guiapp/wruntime"
 )
 
 // ClampMaximizedWindowToWorkArea is a no-op outside Windows.

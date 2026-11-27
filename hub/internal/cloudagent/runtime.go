@@ -284,10 +284,11 @@ func (d *Dispatcher) provision(ctx context.Context, inst *Instance) error {
 	loopback := hubLoopback()
 	origin := hubPublicOrigin()
 	if conn.NodeID != "" || !loopbackBaseURL(conn.BaseURL) {
-		// A private or off-host srv cannot reach hub's loopback; it calls
-		// the public origin directly. Hub accepts its link secret from any
-		// address. Without a configured public origin the instance could
-		// never call back, so fail instead of provisioning a dead agent.
+		// A private, off-host, or registered-remote srv cannot rely on
+		// hub's loopback being reachable; it calls the public origin
+		// directly. Hub accepts its link secret from any address. Without
+		// a configured public origin the instance could never call back,
+		// so fail instead of provisioning a dead agent.
 		if origin == "" {
 			return fail(503, "OFFLINE", "私有 maclawsrv 需要 Hub 先配置 MACLAW_HUB_URL 公网地址")
 		}
@@ -415,6 +416,22 @@ func loopbackBaseURL(raw string) bool {
 	}
 	host := strings.Trim(strings.ToLower(parsed.Hostname()), ".")
 	return host == "127.0.0.1" || host == "::1"
+}
+
+// dialableBaseURL accepts the addresses an admin may register for the hub
+// to dial: loopback or any http(s) host — the same shape botmgmt's save
+// path enforces on the settings record. node.invalid hosts are
+// tunnel-internal and never a hub-dialed address.
+func dialableBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), ".")
+	return host != "node.invalid" && !strings.HasSuffix(host, ".node.invalid")
 }
 
 func hubPublicOrigin() string {

@@ -36,7 +36,7 @@ func confineOpenCodeFreeToolArgs(name, argsJSON, workspace string) string {
 	}
 	changed := false
 	switch strings.TrimSpace(name) {
-	case "read_file", "write_file":
+	case "read_file", "write_file", "edit_file", "Glob", "ripgrep":
 		path, _ := args["path"].(string)
 		if next, ok := relocateOpenCodePath(path, workspace); ok {
 			args["path"] = next
