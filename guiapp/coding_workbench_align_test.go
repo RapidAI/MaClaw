@@ -317,6 +317,13 @@ func TestHistoricalGoVerifyIgnoresUntouchedVet(t *testing.T) {
 	if historicalGoVerifyOnly("corelib/vk/device.go:4:2: undefined: Queue\n", nestedRoot, nestedFiles) {
 		t.Fatal("a dependency compile error was ignored, so the task package was not shown to build")
 	}
+	// A syntax error is a compile diagnostic. Filtering it by package is not
+	// the gate: the step verifies a tree of HEAD plus this task's files, so
+	// another package's uncommitted break is not on that tree.
+	foreignSyntax := "corelib/agent/commit_gate.go:1501:6: syntax error: unexpected name joinTypedPowerShellTarget, expected (\n"
+	if historicalGoVerifyOnly(foreignSyntax, "", []string{"guiapp/coding_subagent_command_tools.go"}) {
+		t.Fatal("a syntax error was ignored instead of judged on the verify tree")
+	}
 	prefixed := "[stderr] corelib/opus/entcode/encoder.go:65:20: self-assignment of x to x\ncommand exited with code 1\n"
 	if !historicalGoVerifyOnly(prefixed, "", files) {
 		t.Fatal("a one-line stderr vet nit was not recognized")
@@ -1179,5 +1186,93 @@ func assertDisplayedRoundIndexes(t *testing.T, list []codingWorkbenchStepStatus,
 		if st.Index != want[i] {
 			t.Fatalf("index %d = %d want %d", i, st.Index, want[i])
 		}
+	}
+}
+
+func TestStepVerifyOverlayHidesForeignUncommittedSyntax(t *testing.T) {
+	repo := initParallelRepo(t)
+	commitParallelFile(t, repo, "go.mod", "module example.com/app\n\ngo 1.22\n")
+	commitParallelFile(t, repo, "guiapp/ok.go", "package guiapp\n\nimport \"example.com/app/corelib/agent\"\n\nfunc OK() int { return agent.Join() }\n")
+	commitParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join() int { return 1 }\n")
+	writeParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join( {\nfunc Broken() int { return 2 }\n")
+	head := parallelHead(t, repo)
+
+	overlay, release, err := committedDepOverlay(repo, []string{"guiapp/ok.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlay == "" || release == nil {
+		t.Fatal("foreign syntax error was left on the verify tree")
+	}
+	defer release()
+	if got := readParallelFile(t, repo, "corelib/agent/commit_gate.go"); !strings.Contains(got, "func Join(") {
+		t.Fatal("overlay rewrote the shared working tree")
+	}
+	if parallelHead(t, repo) != head {
+		t.Fatal("overlay moved HEAD")
+	}
+	body, err := os.ReadFile(overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "commit_gate.go") || strings.Contains(string(body), "ok.go") {
+		t.Fatalf("overlay replaced the wrong files: %s", body)
+	}
+	cmd := exec.Command("go", "build", "./guiapp")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GOFLAGS=-overlay="+overlay)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("task package still failed on another package's uncommitted syntax error: %v\n%s", err, out)
+	}
+}
+
+func TestStepGatePassesWhenForeignUncommittedSyntaxIsNotOnVerifyTree(t *testing.T) {
+	repo := initParallelRepo(t)
+	commitParallelFile(t, repo, "go.mod", "module example.com/app\n\ngo 1.22\n")
+	commitParallelFile(t, repo, "guiapp/ok.go", "package guiapp\n\nimport \"example.com/app/corelib/agent\"\n\nfunc OK() int { return agent.Join() }\n")
+	commitParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join() int { return 1 }\n")
+	// Another task left this uncommitted and is no longer the checkout owner.
+	writeParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join( {\nfunc Broken() int { return 2 }\n")
+	head := parallelHead(t, repo)
+	dirty := readParallelFile(t, repo, "corelib/agent/commit_gate.go")
+
+	ok, cmd, output, skipped := runCodingWorkbenchStepVerifyForTask(context.Background(), repo, []string{"guiapp/ok.go"})
+	if skipped {
+		t.Fatalf("step gate skipped the reproduction: %s", output)
+	}
+	if !ok {
+		t.Fatalf("shared-tree syntax error failed this task\ncmd: %s\n%s", cmd, output)
+	}
+	if !strings.Contains(cmd, "go vet") || !strings.Contains(cmd, "./guiapp") || !strings.Contains(cmd, "-overlay=") {
+		t.Fatalf("gate did not verify guiapp against committed dependencies: %s", cmd)
+	}
+	if strings.Contains(cmd, "go vet ./...") || strings.Contains(cmd, "go build ./...") {
+		t.Fatalf("gate compiled the whole module: %s", cmd)
+	}
+	if got := readParallelFile(t, repo, "corelib/agent/commit_gate.go"); got != dirty {
+		t.Fatal("step gate rewrote the other task's uncommitted file")
+	}
+	if parallelHead(t, repo) != head {
+		t.Fatal("step gate moved HEAD")
+	}
+}
+
+func TestStepGateBuildSurvivesForeignUncommittedSyntax(t *testing.T) {
+	repo := initParallelRepo(t)
+	commitParallelFile(t, repo, "go.mod", "module example.com/app\n\ngo 1.22\n")
+	commitParallelFile(t, repo, "cmd/app/main.go", "package main\n\nimport \"example.com/app/corelib/agent\"\n\nfunc main() { println(agent.Join()) }\n")
+	commitParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join() int { return 1 }\n")
+	writeParallelFile(t, repo, "corelib/agent/commit_gate.go", "package agent\n\nfunc Join( {\nfunc Broken() int { return 2 }\n")
+	head := parallelHead(t, repo)
+
+	ok, cmd, output, skipped := runCodingWorkbenchStepVerifyForTask(context.Background(), repo, []string{"cmd/app/main.go"})
+	if skipped || !ok {
+		t.Fatalf("build gate failed on another package's uncommitted syntax error\ncmd: %s\n%s", cmd, output)
+	}
+	if !strings.Contains(cmd, "go build") || !strings.Contains(cmd, "./cmd/app") || !strings.Contains(cmd, "-overlay=") || !strings.Contains(cmd, verifyBuildOKMarker) {
+		t.Fatalf("gate did not build the task package against committed dependencies: %s", cmd)
+	}
+	if parallelHead(t, repo) != head || !strings.Contains(readParallelFile(t, repo, "corelib/agent/commit_gate.go"), "func Join(") {
+		t.Fatal("build gate rewrote the shared tree or moved HEAD")
 	}
 }
