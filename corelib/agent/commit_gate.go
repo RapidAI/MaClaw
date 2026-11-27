@@ -1433,7 +1433,8 @@ func skipPowerShellValue(tokens []string) ([]string, bool) {
 // command. A call such as & $git = push is not an assignment and stays on
 // the caller path. git = push is a git argument, not an assignment. The
 // value may be several words ($a = New-Item -Force), so a later command is
-// still scanned by expressionTailPushes.
+// still scanned by expressionTailPushes. ($a) = git, $a,$b = git, and
+// $a = $b = git are the same statement. git = push is not.
 // splitPowerShellAssignment separates forms the shell tokenizer keeps
 // together: $x+=git, and [int] $n = git. Comparison tokens are left alone.
 func splitPowerShellAssignment(tokens []string) []string {
@@ -1476,6 +1477,41 @@ func joinTypedPowerShellTarget(tokens []string) (string, []string, bool) {
 	return b.String(), tokens[i+1:], true
 }
 
+// joinPowerShellAssignmentList glues a comma-separated target list.
+// $a,$b = git and ($a, $b) = git are one assignment. $a, git push is not.
+func joinPowerShellAssignmentList(tokens []string) (string, []string, bool) {
+	if len(tokens) < 3 {
+		return "", nil, false
+	}
+	i := 0
+	var b strings.Builder
+	sawComma := false
+	for i < len(tokens) {
+		part := strings.TrimSuffix(tokens[i], ",")
+		if part == "" || !powershellAssignmentTarget(part) {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(part)
+		gluedComma := part != tokens[i]
+		i++
+		if gluedComma || (i < len(tokens) && tokens[i] == ",") {
+			sawComma = true
+			if !gluedComma {
+				i++
+			}
+			continue
+		}
+		break
+	}
+	if !sawComma || i >= len(tokens) || !powershellAssignmentOp(tokens[i]) {
+		return "", nil, false
+	}
+	return b.String(), tokens[i:], true
+}
+
 func skipPowerShellAssignment(tokens []string) ([]string, bool) {
 	if len(tokens) < 2 {
 		return nil, false
@@ -1487,6 +1523,12 @@ func skipPowerShellAssignment(tokens []string) ([]string, bool) {
 		}
 		rest := tokens[0][strings.Index(tokens[0], op)+len(op):]
 		return append([]string{rest}, tokens[1:]...), true
+	}
+	if _, rest, ok := joinPowerShellAssignmentList(tokens); ok {
+		if len(rest) < 2 || !powershellAssignmentOp(rest[0]) {
+			return nil, false
+		}
+		return rest[1:], true
 	}
 	if !powershellAssignmentOp(tokens[1]) || !powershellAssignmentTarget(tokens[0]) {
 		return nil, false
@@ -1519,12 +1561,16 @@ func powershellAssignmentTarget(token string) bool {
 	if token == "" || strings.ContainsAny(token, " \t") {
 		return false
 	}
-	if strings.HasPrefix(token, "$") || strings.HasPrefix(token, "@") {
+	if strings.HasPrefix(token, "$") || strings.HasPrefix(token, "@") || strings.HasPrefix(token, "(") {
 		// A glued operator is not part of the name. $x+=git is a target; $x+git is not.
 		if op := gluedPowerShellAssignmentOp(token); op != "" && strings.Contains(token, op) && op != token {
 			token = token[:strings.Index(token, op)]
 		}
 		return powershellAssignableExpr(token)
+	}
+	// The tokenizer keeps the comma on the left name: $a, $b = git.
+	if strings.HasSuffix(token, ",") {
+		return powershellAssignmentTarget(strings.TrimSuffix(token, ","))
 	}
 	if strings.HasPrefix(token, "[") {
 		rest, ok := stripPowerShellAttributes(token)
@@ -1548,6 +1594,9 @@ func stripPowerShellAttributes(token string) (string, bool) {
 		rest = rest[end+1:]
 		stripped = true
 	}
+	// The tokenizer keeps the attribute quotes. [ValidatePattern('a]b')]
+	// is one attribute; the quote must not look like the end of the cast.
+	rest = strings.Trim(rest, "'\"")
 	if !stripped || rest == "" {
 		return "", false
 	}
@@ -1559,8 +1608,18 @@ func matchingPowerShellBracket(token string) int {
 		return -1
 	}
 	depth := 0
+	var quote byte
 	for i := 0; i < len(token); i++ {
-		switch token[i] {
+		ch := token[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
 		case '[':
 			depth++
 		case ']':
@@ -1579,15 +1638,26 @@ func matchingPowerShellBracket(token string) int {
 func powershellAssignableExpr(token string) bool {
 	for i := 0; i < len(token); {
 		switch token[i] {
-		case '.', '[':
-			return true
-		case '$', '@', ':', '_':
+		case '.', '{', '}', '(', ')', ',', '\'', '"':
+			// A property, brace, or parenthesized target is assignable.
+			// The braces and quotes are part of ${name}; a comma separates
+			// $a,$b. A scriptblock or call still starts with { or (, so this
+			// only runs after the $ / @ / ( prefix check.
 			i++
-		default:
-			if !psIdentByte(token[i]) {
+		case '[':
+			end := matchingPowerShellBracket(token[i:])
+			if end < 0 {
 				return false
 			}
+			i += end + 1
+		case '$', '@', ':', '_', '?':
 			i++
+		default:
+			if token[i] >= 0x80 || psIdentByte(token[i]) {
+				i++
+				continue
+			}
+			return false
 		}
 	}
 	return true
