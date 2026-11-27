@@ -53,14 +53,18 @@ type desktopTaskPin struct {
 	ClientMessageID    string `json:"client_message_id,omitempty"`
 	DesktopUser        string `json:"desktop_user,omitempty"`
 	TaskOutcome        string `json:"task_outcome,omitempty"`
+	Continuation       bool   `json:"continuation,omitempty"`
 }
 
 // DesktopTaskStatus is one run as a status question would see it.
 type DesktopTaskStatus struct {
-	RunID        string    `json:"run_id"`
-	BotID        string    `json:"bot_id"`
-	Task         string    `json:"task"`
-	Status       string    `json:"status"`
+	RunID  string `json:"run_id"`
+	BotID  string `json:"bot_id"`
+	Task   string `json:"task"`
+	Status string `json:"status"`
+	// Continuation marks a hand-back or resume turn: Task holds the control
+	// instruction, so a status answer names the continuation, not that text.
+	Continuation bool      `json:"continuation,omitempty"`
 	Text         string    `json:"text,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	WhereWeAre   string    `json:"where_we_are,omitempty"`
@@ -79,6 +83,9 @@ type DesktopTaskDelivery struct {
 	Phase  string `json:"phase,omitempty"`
 	Reply  Reply  `json:"reply"`
 	Error  string `json:"error,omitempty"`
+	// Continuation marks a hand-back or resume turn: Task holds the control
+	// instruction, not the person's request, so it is not worth quoting.
+	Continuation bool `json:"continuation,omitempty"`
 }
 
 func newRunningDesktopTask(job admittedDesktopFollow) *desktopAdmitState {
@@ -98,6 +105,7 @@ func newRunningDesktopTask(job admittedDesktopFollow) *desktopAdmitState {
 		clientMessageID: strings.TrimSpace(job.ClientMessageID),
 		session:         strings.TrimSpace(job.Session),
 		desktopUser:     strings.TrimSpace(job.DesktopUser),
+		continuation:    job.Continuation,
 	}
 }
 
@@ -158,6 +166,7 @@ func (st *desktopAdmitState) pinLocked() *desktopTaskPin {
 		ClientMessageID:    strings.TrimSpace(st.clientMessageID),
 		DesktopUser:        strings.TrimSpace(st.desktopUser),
 		TaskOutcome:        desktopTaskOutcome(st.reply.TaskOutcome),
+		Continuation:       st.continuation,
 	}
 	if !st.started.IsZero() {
 		pin.Started = st.started.UTC().Format(time.RFC3339)
@@ -226,6 +235,7 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 			delivered:       pin.Delivered,
 			clientMessageID: strings.TrimSpace(pin.ClientMessageID),
 			desktopUser:     strings.TrimSpace(pin.DesktopUser),
+			continuation:    pin.Continuation,
 			reply: Reply{
 				Text:               pin.Text,
 				SendToUser:         pin.SendToUser,
@@ -259,15 +269,16 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 		s.desktopAdmits[key] = state
 		if running && state.instanceID != "" && state.runID != "" {
 			job := admittedDesktopFollow{
-				TenantID:    tenantID,
-				UserID:      state.userID,
-				BotID:       state.botID,
-				InstanceID:  state.instanceID,
-				RunID:       state.runID,
-				Phase:       state.phase,
-				Task:        state.task,
-				Started:     state.started,
-				DesktopUser: state.desktopUser,
+				TenantID:     tenantID,
+				UserID:       state.userID,
+				BotID:        state.botID,
+				InstanceID:   state.instanceID,
+				RunID:        state.runID,
+				Phase:        state.phase,
+				Task:         state.task,
+				Started:      state.started,
+				DesktopUser:  state.desktopUser,
+				Continuation: pin.Continuation,
 			}
 			go s.watchAdmittedDesktopRun(job, state)
 		}
@@ -653,6 +664,7 @@ func statusFromState(state *desktopAdmitState) DesktopTaskStatus {
 		WhereWeAre:   state.progressWhere,
 		NextStep:     state.progressNext,
 		OpenProblems: state.progressOpen,
+		Continuation: state.continuation,
 		TaskOutcome:  desktopTaskOutcome(state.reply.TaskOutcome),
 		Started:      state.started,
 	}
@@ -691,13 +703,14 @@ func deliveryFromState(state *desktopAdmitState) DesktopTaskDelivery {
 		phase = ""
 	}
 	return DesktopTaskDelivery{
-		BotID:  view.BotID,
-		RunID:  view.RunID,
-		Task:   view.Task,
-		Status: view.Status,
-		Phase:  phase,
-		Reply:  reply,
-		Error:  view.Error,
+		BotID:        view.BotID,
+		RunID:        view.RunID,
+		Task:         view.Task,
+		Status:       view.Status,
+		Phase:        phase,
+		Reply:        reply,
+		Error:        view.Error,
+		Continuation: state.continuation,
 	}
 }
 
@@ -988,6 +1001,28 @@ func desktopTaskTitle(task string) string {
 	return clipDesktopRunes(line, desktopTaskLabelKeep)
 }
 
+// desktopTaskStatusLabel is how a status answer names one run. A continuation
+// has no request of its own — its stored task is the control instruction — so
+// it is named for what it is: the work the person handed back. Any other run
+// keeps its title, falling back to the run id as before.
+func desktopTaskStatusLabel(item DesktopTaskStatus, lang string) string {
+	hant, en := desktopTaskLang(lang)
+	if item.Continuation {
+		if en {
+			return "the one you handed back"
+		}
+		if hant {
+			return "剛才交還的那件"
+		}
+		return "刚才交还的那件"
+	}
+	label := desktopTaskTitle(item.Task)
+	if label == "" {
+		label = item.RunID
+	}
+	return label
+}
+
 func desktopTaskLang(lang string) (hant bool, en bool) {
 	hant = strings.Contains(lang, "Hant")
 	en = strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en")
@@ -1028,11 +1063,7 @@ func formatDesktopTaskStatus(chosen, recent []DesktopTaskStatus, lang string, ma
 			limit = 3
 		}
 		for _, item := range recent[:limit] {
-			label := desktopTaskTitle(item.Task)
-			if label == "" {
-				label = item.RunID
-			}
-			lines = append(lines, label)
+			lines = append(lines, desktopTaskStatusLabel(item, lang))
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -1060,11 +1091,7 @@ func formatDesktopTaskRunning(items []DesktopTaskStatus, lang string) string {
 	hant, en := desktopTaskLang(lang)
 	labels := make([]string, 0, len(items))
 	for _, item := range items {
-		label := desktopTaskTitle(item.Task)
-		if label == "" {
-			label = item.RunID
-		}
-		labels = append(labels, label)
+		labels = append(labels, desktopTaskStatusLabel(item, lang))
 	}
 	if len(labels) == 1 {
 		line := "在做。这件是「" + labels[0] + "」。"
@@ -1091,10 +1118,7 @@ func formatDesktopTaskRunning(items []DesktopTaskStatus, lang string) string {
 }
 
 func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, showTitle bool) string {
-	label := desktopTaskTitle(item.Task)
-	if label == "" {
-		label = item.RunID
-	}
+	label := desktopTaskStatusLabel(item, lang)
 	hant, en := desktopTaskLang(lang)
 	var line string
 	switch item.Status {

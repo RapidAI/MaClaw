@@ -42,10 +42,13 @@ type desktopQueueItem struct {
 	// written into the bot record (json "-"). They live as long as this
 	// queued message, which is desktopQueueTTL, and are cleared once the
 	// message is dispatched.
-	Secrets    map[string]string `json:"-"`
-	EnqueuedAt time.Time         `json:"enqueued_at"`
-	Held       bool              `json:"held,omitempty"`
-	State      string            `json:"state,omitempty"`
+	Secrets map[string]string `json:"-"`
+	// Continuation is the admit-time mark of a hand-back or resume turn. It
+	// is persisted with the item so the replay still admits as one.
+	Continuation bool      `json:"continuation,omitempty"`
+	EnqueuedAt   time.Time `json:"enqueued_at"`
+	Held         bool      `json:"held,omitempty"`
+	State        string    `json:"state,omitempty"`
 	// WaitKind is why the message is parked. desktopQueueWaitMemory is the
 	// memory line. Empty means the ordinary busy or keyboard queue.
 	WaitKind string `json:"wait_kind,omitempty"`
@@ -501,10 +504,11 @@ func (s *Service) memoryGiveUpDeliveriesLocked(tenantID, userID string) []Deskto
 				continue
 			}
 			out = append(out, DesktopTaskDelivery{
-				BotID:  parts[2],
-				RunID:  item.ClientMessageID,
-				Task:   item.Content,
-				Status: "failed",
+				BotID:        parts[2],
+				RunID:        item.ClientMessageID,
+				Task:         item.Content,
+				Status:       "failed",
+				Continuation: item.Continuation,
 				Reply: Reply{
 					Text:        item.Outcome,
 					SendToUser:  item.Outcome,
@@ -599,7 +603,7 @@ func (s *Service) pushFrontDesktopQueue(tenantID, userID, botID string, item *de
 	s.persistDesktopState(tenantID)
 }
 
-func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string) (BotAdmission, bool) {
+func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string, continuation bool) (BotAdmission, bool) {
 	// A delegate or a mailbox wake uses an xdel-/xwake- key. Those turns wait
 	// on the same node queue as a person's message; the dispatch claim stays
 	// until the queue actually starts the run.
@@ -618,6 +622,7 @@ func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenant
 		WaitSince:       s.now(),
 		Secrets:         desktopSecretBag(ctx),
 		NoteIDs:         dispatchNotes(ctx),
+		Continuation:    continuation,
 	})
 	if err != nil {
 		return BotAdmission{}, false
@@ -633,12 +638,12 @@ func (s *Service) parkOfflineNodeMessage(ctx context.Context, admit bool, tenant
 // A recognized drop that is not parked — a replay, a synchronous send, or a
 // turn the queue will not take — returns ErrNodeOffline so the person sees
 // the same sentence.
-func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string, err error) (BotAdmission, error, bool) {
+func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession string, continuation bool, err error) (BotAdmission, error, bool) {
 	if err == nil || strings.TrimSpace(nodeID) == "" || !nodeLinkOffline(err) {
 		return BotAdmission{}, nil, false
 	}
 	if !desktopReplay(ctx) {
-		if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession); ok {
+		if parked, ok := s.parkOfflineNodeMessage(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, continuation); ok {
 			return parked, nil, true
 		}
 	}
@@ -649,11 +654,11 @@ func (s *Service) nodeOfflineAdmission(ctx context.Context, admit bool, tenantID
 // A parked tunnel drop returns the queue ack. Any other tunnel drop gives
 // the keyboard back and returns ErrNodeOffline. A replay keeps the same
 // queue item and does not touch the keyboard.
-func (s *Service) failAdmit(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID string, opened bool, cause error) (BotAdmission, error, bool) {
+func (s *Service) failAdmit(ctx context.Context, admit bool, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, desktopUser, instanceID string, opened bool, continuation bool, cause error) (BotAdmission, error, bool) {
 	if cause == nil {
 		return BotAdmission{}, nil, false
 	}
-	admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, cause)
+	admission, offlineErr, parked := s.nodeOfflineAdmission(ctx, admit, tenantID, userID, botID, nodeID, clientMessageID, content, phase, continueSession, continuation, cause)
 	if parked {
 		return admission, nil, true
 	}
@@ -729,6 +734,9 @@ func (s *Service) dispatchQueuedItem(tenantID, userID, botID string, item *deskt
 	// back on the replay only, then drop them from the item.
 	ctx = withDesktopSecretBag(ctx, item.Secrets)
 	item.Secrets = nil
+	if item.Continuation {
+		ctx = WithDesktopContinuation(ctx)
+	}
 	admission, err := s.AdmitDesktopMessageAct(ctx, tenantID, userID, botID, text, item.Phase, item.ClientMessageID, item.ContinueSession, "")
 	if err != nil {
 		return err

@@ -40,6 +40,9 @@ type desktopAdmitState struct {
 	// same execute, not a second one. It is persisted only once a real run id
 	// exists, so a restart can still replay that run.
 	clientMessageID string
+	// continuation is the admitted follow's mark: this run is a hand-back or
+	// resume turn, so its task is control text rather than a request.
+	continuation bool
 	// posting is how many message posts are still in flight for an empty-run
 	// reserve. The reserve stays while this is above zero. The last post to
 	// leave deletes it.
@@ -162,16 +165,19 @@ const botPreferenceWithdrawRounds = 20
 // background run. It does not carry the caller's request context: that
 // request has already returned.
 type admittedDesktopFollow struct {
-	TenantID        string
-	UserID          string
-	BotID           string
-	InstanceID      string
-	Novnc           string
-	RunID           string
-	Phase           string
-	Task            string
-	Opened          bool
-	Isolated        bool
+	TenantID   string
+	UserID     string
+	BotID      string
+	InstanceID string
+	Novnc      string
+	RunID      string
+	Phase      string
+	Task       string
+	Opened     bool
+	Isolated   bool
+	// Continuation marks a hand-back or resume turn: its task text is the
+	// control instruction, not a request, so a delivery must not quote it.
+	Continuation    bool
 	Started         time.Time
 	ClientMessageID string
 	// Session is the srv conversation the run is in (bot id or a thread).
