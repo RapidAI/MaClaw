@@ -2489,13 +2489,60 @@ jobs:
           if [ -z "$desktop_version" ] || [ "$desktop_version" = "main" ]; then
             desktop_version="0.1.0-ci.${GITHUB_RUN_NUMBER}"
           fi
-          wails_args=(build -platform '${{ matrix.platform }}' -clean -o '${{ matrix.output_name }}'
-            -ldflags "-X main.releaseBuild=true -X main.buildVersion=$desktop_version -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY")
+          # ClawMateMaker is a wails v3 module (go.mod replaces wails/v3 ->
+          # ../third_party/wails3); the wails v2 CLI above can't build it
+          # ("Unable to find Wails in go.mod"). The frontend is a pre-built
+          # single index.html embedded via go:embed, so build the Go binary
+          # directly with per-platform CGO settings that mirror the green
+          # build-windows / build-macos toolchains (msys2 mingw gcc on
+          # windows-latest, system WebKit + clang on macos-latest).
+          platform="${{ matrix.platform }}"
+          goos="${platform%%/*}"
+          goarch="${platform##*/}"
+          go_build_tags=""
           if [ -n "${CLAWMATE_WAILS_BUILD_TAGS:-}" ]; then
-            wails_args+=(-tags "$CLAWMATE_WAILS_BUILD_TAGS")
+            go_build_tags="-tags ${CLAWMATE_WAILS_BUILD_TAGS}"
           fi
-          wails "${wails_args[@]}"
-          test -s "build/bin/${{ matrix.executable }}"
+          ldflags="-X main.releaseBuild=true -X main.buildVersion=$desktop_version -X main.releaseKeyID=$CLAWMATE_FIRMWARE_SIGNING_KEY_ID -X main.releasePublicKeyBase64=$CLAWMATE_FIRMWARE_PUBLIC_KEY"
+          exec_path="build/bin/${{ matrix.executable }}"
+          rm -rf build/bin
+          case "$goos" in
+            linux)
+              mkdir -p "$(dirname "$exec_path")"
+              CGO_ENABLED=1 GOOS=linux GOARCH="$goarch" \
+                go build $go_build_tags -ldflags "$ldflags" -o "$exec_path" .
+              ;;
+            windows)
+              mkdir -p "$(dirname "$exec_path")"
+              CGO_ENABLED=1 CC="C:/msys64/mingw64/bin/gcc.exe" GOOS=windows GOARCH="$goarch" \
+                go build $go_build_tags -ldflags "$ldflags" -o "$exec_path" .
+              ;;
+            darwin)
+              # macOS ships as an .app bundle (matrix.executable = <App>.app/Contents/MacOS/<bin>).
+              exec_dir="$(dirname "$exec_path")"
+              app_bundle="$(dirname "$(dirname "$exec_path")")"
+              mkdir -p "$exec_dir" "$app_bundle/Contents/Resources"
+              bin_name="$(basename "$exec_path")"
+              {
+                echo '<?xml version="1.0" encoding="UTF-8"?>'
+                echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                echo '<plist version="1.0"><dict>'
+                echo "  <key>CFBundleExecutable</key><string>${bin_name}</string>"
+                echo '  <key>CFBundleIdentifier</key><string>ai.clawmate.maker</string>'
+                echo '  <key>CFBundleName</key><string>ClawMate Maker</string>'
+                echo '  <key>CFBundlePackageType</key><string>APPL</string>'
+                echo "  <key>CFBundleShortVersionString</key><string>${desktop_version}</string>"
+                echo '  <key>LSMinimumSystemVersion</key><string>11.0</string>'
+                echo '  <key>NSHighResolutionCapable</key><true/>'
+                echo '</dict></plist>'
+              } > "$app_bundle/Contents/Info.plist"
+              CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
+                MACOSX_DEPLOYMENT_TARGET=11.0 GOOS=darwin GOARCH="$goarch" \
+                go build $go_build_tags -ldflags "$ldflags" -o "$exec_path" .
+              chmod +x "$exec_path"
+              ;;
+          esac
+          test -s "$exec_path"
       - name: Build managed esptool sidecar
         shell: bash
         env:
