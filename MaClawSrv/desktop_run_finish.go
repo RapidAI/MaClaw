@@ -344,7 +344,7 @@ func desktopFinishSuggestion(f desktopRunFinish) string {
 		return "换一种做法，或者你接手这一步"
 	default:
 		if f.Status == "failure" {
-			return "指出卡在哪一步，我再继续"
+			return "你告诉我卡在哪一步，我再继续"
 		}
 		return ""
 	}

@@ -121,5 +121,10 @@ func desktopOutcomeSentence(outcome, sentence string, meta map[string]string) st
 	if meta != nil && strings.TrimSpace(meta["outcome_next"]) == "improve" {
 		return sentence
 	}
+	// A run-finish sentence already opens with what happened ("这一步没能
+	// 做成…"), so the one-line not-done prepend only repeats it.
+	if strings.Contains(sentence, "没能做成") {
+		return sentence
+	}
 	return line + "\n" + sentence
 }
