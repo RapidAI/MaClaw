@@ -50,6 +50,14 @@ export function LogFatal(message) {
 }
 
 export function EventsOnMultiple(eventName, callback, maxCallbacks) {
+    // Synchronous fast path: a natively injected runtime (window.runtime, e.g.
+    // the parse-time preload) returns its unsubscribe synchronously — delegate
+    // and return it verbatim instead of the lazy async v3 bridge, so effect
+    // cleanups never see a Promise-shaped unsubscribe.
+    if (typeof window !== 'undefined' && window.runtime &&
+        typeof window.runtime.EventsOnMultiple === 'function') {
+        return window.runtime.EventsOnMultiple(eventName, callback, maxCallbacks);
+    }
     // v2 returns the unsubscribe function synchronously. React effect cleanups
     // (and `return EventsOn(...)` itself) call that value. The wails3 subscribe
     // is async because the runtime module loads lazily; handing the Promise
