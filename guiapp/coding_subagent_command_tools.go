@@ -272,11 +272,46 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	}
 	exitCode := -1
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		exitCode = exitErr.ExitCode()
+		if code, recovered := codingWindowsPipelineStopExitCode(command, exitErr, output); recovered {
+			exitCode = code
+		} else {
+			exitCode = exitErr.ExitCode()
+		}
 	}
 	output = codingEmptySearchOutput(command, output, exitCode)
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
+}
+
+// codingWindowsPipelineStopExitCode separates the two meanings of the
+// wrapper's exit status -1 on Windows. A pipeline consumer that stops early
+// (Select-Object -First) kills the upstream native command; PowerShell then
+// records $LASTEXITCODE = -1 although the command itself succeeded. A native
+// command that exits -1 on its own reports the same status. Both leave $?
+// false and $Error empty, so only the host side can tell them apart: the
+// wrapper prints no Last error line, and a PowerShell process that failed on
+// its own always ends at 1 or sets a real native code. When the recorded
+// failure is that empty -1, the command's own exit status is used instead;
+// an early pipeline stop leaves it 0, a self-exited -1 keeps it -1.
+func codingWindowsPipelineStopExitCode(command string, exitErr *exec.ExitError, output string) (int, bool) {
+	if runtime.GOOS != "windows" || exitErr == nil || exitErr.ExitCode() != -1 {
+		return 0, false
+	}
+	if strings.Contains(output, "Last error:") || strings.Contains(output, "PowerShell error:") || strings.Contains(output, "PowerShell exception:") {
+		return 0, false
+	}
+	shell, _ := windowsCodingBashInvocation(command)
+	if filepath.Base(shell) != "powershell.exe" {
+		return 0, false
+	}
+	exitCode := 0
+	if exitErr.ProcessState != nil {
+		exitCode = exitErr.ProcessState.ExitCode()
+	}
+	if exitCode == -1 {
+		return 0, false
+	}
+	return exitCode, true
 }
 
 func windowsCodingBashInvocation(command string) (string, []string) {
@@ -617,15 +652,19 @@ try {
 	[Console]::Error.WriteLine("PowerShell exception: " + $_.Exception.Message)
 	$exitCode = 1
 }
-if ($exitCode -eq 0 -and $null -ne $nativeExit -and $nativeExit -ne 0) {
-	# Only a native error explains this exit status. An older cmdlet error in
-	# $Error would otherwise be printed as the cause of an unrelated failure.
-	$nativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -like 'NativeCommandError*' })
-	if ($nativeErrors.Count -gt 0) {
-		[Console]::Error.WriteLine("Last error: " + $nativeErrors[0].ToString())
+	if ($exitCode -eq 0 -and $null -ne $nativeExit -and $nativeExit -ne 0) {
+		# Only a native error explains this exit status. An older cmdlet error in
+		# $Error would otherwise be printed as the cause of an unrelated failure.
+		# A code of -1 is ambiguous here: a consumer that closes the pipe turns
+		# it into -1, and a native command can exit -1 on its own. Both leave
+		# $? false and $Error empty, so PowerShell cannot tell them apart and
+		# leaves the decision to the host's process exit code.
+		$nativeErrors = @($Error | Where-Object { $_.FullyQualifiedErrorId -like 'NativeCommandError*' })
+		if ($nativeErrors.Count -gt 0) {
+			[Console]::Error.WriteLine("Last error: " + $nativeErrors[0].ToString())
+		}
+		$exitCode = $nativeExit
 	}
-	$exitCode = $nativeExit
-}
 if ($exitCode -eq 0 -and -not $maclawSilencedErrors -and -not $psSucceeded -and $Error.Count -gt 0) {
 	# PowerShell tags redirected native stderr as NativeCommandError for the
 	# first line and NativeCommandErrorMessage for the rest; both are the
